@@ -1,4 +1,7 @@
 /// Data model types for roadmaps, phases, and tasks.
+use std::fmt;
+use std::str::FromStr;
+
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +17,33 @@ pub enum PhaseStatus {
     Done,
     /// Phase is blocked by an external dependency.
     Blocked,
+}
+
+impl fmt::Display for PhaseStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PhaseStatus::NotStarted => write!(f, "not-started"),
+            PhaseStatus::InProgress => write!(f, "in-progress"),
+            PhaseStatus::Done => write!(f, "done"),
+            PhaseStatus::Blocked => write!(f, "blocked"),
+        }
+    }
+}
+
+impl FromStr for PhaseStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "not-started" => Ok(PhaseStatus::NotStarted),
+            "in-progress" => Ok(PhaseStatus::InProgress),
+            "done" => Ok(PhaseStatus::Done),
+            "blocked" => Ok(PhaseStatus::Blocked),
+            other => Err(format!(
+                "invalid phase status: '{other}' (expected not-started, in-progress, done, or blocked)"
+            )),
+        }
+    }
 }
 
 /// Status of a standalone task.
@@ -104,6 +134,26 @@ pub struct Roadmap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phase_status_display_from_str_round_trip() {
+        let variants = [
+            (PhaseStatus::NotStarted, "not-started"),
+            (PhaseStatus::InProgress, "in-progress"),
+            (PhaseStatus::Done, "done"),
+            (PhaseStatus::Blocked, "blocked"),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: PhaseStatus = expected.parse().unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn phase_status_from_str_invalid() {
+        assert!("invalid".parse::<PhaseStatus>().is_err());
+    }
 
     #[test]
     fn phase_status_round_trip() {

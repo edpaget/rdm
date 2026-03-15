@@ -3,6 +3,8 @@
 
 /// Plan repo configuration (`rdm.toml`).
 pub mod config;
+/// Display formatting functions for roadmaps, phases, and projects.
+pub mod display;
 /// Generic document wrapper combining frontmatter with a markdown body.
 pub mod document;
 /// Error types for rdm-core.

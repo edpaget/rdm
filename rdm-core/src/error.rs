@@ -15,6 +15,14 @@ pub enum Error {
     AlreadyInitialized,
     /// The specified project was not found.
     ProjectNotFound(String),
+    /// The specified roadmap was not found.
+    RoadmapNotFound(String),
+    /// The specified phase was not found.
+    PhaseNotFound(String),
+    /// A slug already exists.
+    DuplicateSlug(String),
+    /// No project was specified and no default project is configured.
+    ProjectNotSpecified,
 }
 
 impl std::fmt::Display for Error {
@@ -30,7 +38,30 @@ impl std::fmt::Display for Error {
             Error::AlreadyInitialized => {
                 write!(f, "plan repo is already initialized (rdm.toml exists)")
             }
-            Error::ProjectNotFound(name) => write!(f, "project not found: {name}"),
+            Error::ProjectNotFound(name) => {
+                write!(
+                    f,
+                    "project not found: {name} — create it with `rdm project create`"
+                )
+            }
+            Error::RoadmapNotFound(name) => {
+                write!(
+                    f,
+                    "roadmap not found: {name} — create it with `rdm roadmap create`"
+                )
+            }
+            Error::PhaseNotFound(name) => {
+                write!(f, "phase not found: {name}")
+            }
+            Error::DuplicateSlug(slug) => {
+                write!(f, "'{slug}' already exists — choose a different name")
+            }
+            Error::ProjectNotSpecified => {
+                write!(
+                    f,
+                    "no project specified — use --project or set default_project in rdm.toml"
+                )
+            }
         }
     }
 }

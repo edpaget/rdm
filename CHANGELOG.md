@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm project create` and `rdm project list` CLI commands
+- `rdm roadmap create` and `rdm roadmap show` CLI commands
+- `rdm phase create`, `rdm phase show`, and `rdm phase update` CLI commands
+- `rdm list` command with `--project` and `--all` flags for roadmap progress summaries
+- Project resolution: `--project` flag > `default_project` in `rdm.toml` > actionable error
+- `PlanRepo::create_project`, `list_projects` for project management
+- `PlanRepo::create_roadmap`, `list_roadmaps` for roadmap management
+- `PlanRepo::create_phase`, `list_phases`, `update_phase` for phase management
+- Auto-numbering for phases (next available number) with explicit `--number` override
+- Auto-set `completed` date when phase status transitions to `Done`; auto-clear on non-`Done`
+- `Display` and `FromStr` impls for `PhaseStatus` (enables `--status` CLI arg via clap)
+- `rdm-core::display` module with `format_roadmap_summary`, `format_phase_detail`, `format_roadmap_list`
+- Error variants: `RoadmapNotFound`, `PhaseNotFound`, `DuplicateSlug`, `ProjectNotSpecified`
+- Integration tests for all new CLI commands (`cli_project`, `cli_roadmap`, `cli_phase`, `cli_list`, `cli_project_resolution`)
 - Cargo workspace with `rdm-core`, `rdm-cli`, and `rdm-server` crates
 - Data model types: `PhaseStatus`, `TaskStatus`, `Priority`, `Phase`, `Task`, `Roadmap`, `Project`
 - Markdown frontmatter parsing and rendering (`split_frontmatter`, `join_frontmatter`)
