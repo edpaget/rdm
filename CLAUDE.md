@@ -47,7 +47,7 @@ Write tests **before** implementation code:
 2. Write the minimal code to make the test pass
 3. Refactor while keeping tests green
 
-Run tests with `cargo test`. Run specific crate tests with `cargo test -p rdm-core`, etc.
+Run tests with `cargo nextest run`. Run specific crate tests with `cargo nextest run -p rdm-core`, etc. Use `cargo watch -x 'nextest run'` for continuous testing during development.
 
 ### Changelog
 
@@ -78,7 +78,7 @@ If `rdm-server` becomes optional, gate it behind a cargo feature flag so users w
 
 ### Edition & MSRV
 
-Pin a minimum supported Rust version in `Cargo.toml` (`rust-version`). CI and contributors must target this version.
+Rust version and dev tools are managed via [mise](https://mise.jdx.dev/) (see `.mise.toml`). Run `mise install` to set up the environment. Pin the same version as `rust-version` in `Cargo.toml`.
 
 ### Dependency Auditing
 
@@ -92,7 +92,7 @@ Hooks live in `.githooks/` and are shared via the repo. New clones need to confi
 git config core.hooksPath .githooks
 ```
 
-The pre-commit hook runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test`.
+The pre-commit hook runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo nextest run`.
 
 ## CI Expectations
 
@@ -105,11 +105,19 @@ cargo test
 cargo deny check        # license & advisory audit
 ```
 
+## Setup
+
+```bash
+mise install                  # install Rust + dev tools from .mise.toml
+git config core.hooksPath .githooks   # enable pre-commit hooks
+```
+
 ## Build & Test
 
 ```bash
-cargo build            # build all crates
-cargo test             # run all tests
-cargo clippy           # lint
-cargo fmt --check      # check formatting
+cargo build                    # build all crates
+cargo nextest run              # run all tests
+cargo watch -x 'nextest run'   # re-run tests on file change
+cargo clippy                   # lint
+cargo fmt --check              # check formatting
 ```

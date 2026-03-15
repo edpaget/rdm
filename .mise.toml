@@ -1,0 +1,8 @@
+[tools]
+rust = "1.87"
+"cargo:cargo-deny" = "latest"
+"cargo:cargo-nextest" = "latest"
+"cargo:cargo-watch" = "latest"
+
+[env]
+RUSTFLAGS = "-D warnings"
