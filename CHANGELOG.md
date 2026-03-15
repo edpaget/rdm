@@ -6,8 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `task list --status` now uses `TaskStatusFilter` enum for proper clap validation instead of raw string
+- `promote` preserves task metadata (priority, created date, tags) in the roadmap body
+- `list_tasks` returns `ProjectNotFound` for nonexistent projects instead of an empty list
+
 ### Added
 
+- `TaskStatusFilter` type with `Display`/`FromStr` for type-safe status filtering (accepts `all` or any `TaskStatus`)
 - `rdm task create`, `rdm task show`, `rdm task update`, and `rdm task list` CLI commands
 - `rdm promote` command to convert a task into a roadmap with an initial phase
 - `task list` defaults to showing `open` + `in-progress` tasks; `--status all` shows everything

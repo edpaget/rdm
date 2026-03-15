@@ -101,6 +101,18 @@ pub enum Priority {
     Critical,
 }
 
+/// Filter value for task list status filtering.
+///
+/// Wraps the special `"all"` keyword alongside real [`TaskStatus`] values,
+/// giving clap proper validation without a raw `String`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskStatusFilter {
+    /// Show tasks of all statuses.
+    All,
+    /// Show tasks matching this specific status.
+    Status(TaskStatus),
+}
+
 impl fmt::Display for Priority {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -124,6 +136,26 @@ impl FromStr for Priority {
             other => Err(format!(
                 "invalid priority: '{other}' (expected low, medium, high, or critical)"
             )),
+        }
+    }
+}
+
+impl fmt::Display for TaskStatusFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TaskStatusFilter::All => write!(f, "all"),
+            TaskStatusFilter::Status(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl FromStr for TaskStatusFilter {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "all" => Ok(TaskStatusFilter::All),
+            other => other.parse::<TaskStatus>().map(TaskStatusFilter::Status),
         }
     }
 }
@@ -247,6 +279,25 @@ mod tests {
     #[test]
     fn priority_from_str_invalid() {
         assert!("invalid".parse::<Priority>().is_err());
+    }
+
+    #[test]
+    fn task_status_filter_all() {
+        let f: TaskStatusFilter = "all".parse().unwrap();
+        assert_eq!(f, TaskStatusFilter::All);
+        assert_eq!(f.to_string(), "all");
+    }
+
+    #[test]
+    fn task_status_filter_specific() {
+        let f: TaskStatusFilter = "done".parse().unwrap();
+        assert_eq!(f, TaskStatusFilter::Status(TaskStatus::Done));
+        assert_eq!(f.to_string(), "done");
+    }
+
+    #[test]
+    fn task_status_filter_invalid() {
+        assert!("invalid".parse::<TaskStatusFilter>().is_err());
     }
 
     #[test]

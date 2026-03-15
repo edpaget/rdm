@@ -4,7 +4,7 @@ use std::process;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use rdm_core::display;
-use rdm_core::model::{PhaseStatus, Priority, TaskStatus};
+use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
 
 #[derive(Parser)]
@@ -205,9 +205,9 @@ enum TaskCommand {
         /// Project to list tasks for.
         #[arg(long)]
         project: Option<String>,
-        /// Filter by status (use "all" to show all).
+        /// Filter by status (open, in-progress, done, wont-fix, or all).
         #[arg(long)]
-        status: Option<String>,
+        status: Option<TaskStatusFilter>,
         /// Filter by priority.
         #[arg(long)]
         priority: Option<Priority>,
@@ -406,28 +406,14 @@ fn run() -> Result<()> {
                     let project = resolve_project(project, &repo)?;
                     let all_tasks = repo.list_tasks(&project).context("failed to list tasks")?;
 
-                    let show_all = status.as_deref() == Some("all");
-                    let status_filter: Option<TaskStatus> = if show_all {
-                        None
-                    } else {
-                        status
-                            .as_deref()
-                            .map(|s| s.parse::<TaskStatus>())
-                            .transpose()
-                            .map_err(|e| anyhow::anyhow!(e))?
-                    };
-
                     let filtered: Vec<(String, _)> = all_tasks
                         .into_iter()
-                        .filter(|(_, doc)| {
-                            if let Some(ref s) = status_filter {
-                                doc.frontmatter.status == *s
-                            } else if !show_all {
-                                // Default: show open + in-progress
+                        .filter(|(_, doc)| match status {
+                            Some(TaskStatusFilter::All) => true,
+                            Some(TaskStatusFilter::Status(s)) => doc.frontmatter.status == s,
+                            None => {
                                 doc.frontmatter.status == TaskStatus::Open
                                     || doc.frontmatter.status == TaskStatus::InProgress
-                            } else {
-                                true
                             }
                         })
                         .filter(|(_, doc)| priority.is_none_or(|p| doc.frontmatter.priority == p))

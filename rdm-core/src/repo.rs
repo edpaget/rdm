@@ -539,6 +539,9 @@ impl PlanRepo {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
     /// task file has invalid frontmatter.
     pub fn list_tasks(&self, project: &str) -> Result<Vec<(String, Document<Task>)>> {
+        if !self.project_path(project).exists() {
+            return Err(Error::ProjectNotFound(project.to_string()));
+        }
         let dir = self.tasks_dir(project);
         if !dir.exists() {
             return Ok(Vec::new());
@@ -629,6 +632,16 @@ impl PlanRepo {
 
         let phase_slug = format!("phase-1-{task_slug}");
 
+        let mut roadmap_body = String::new();
+        roadmap_body.push_str(&format!(
+            "Promoted from task `{task_slug}` (priority: {}, created: {})",
+            task_doc.frontmatter.priority, task_doc.frontmatter.created
+        ));
+        if let Some(ref tags) = task_doc.frontmatter.tags {
+            roadmap_body.push_str(&format!(", tags: {}", tags.join(", ")));
+        }
+        roadmap_body.push('\n');
+
         let roadmap_doc = Document {
             frontmatter: Roadmap {
                 project: project.to_string(),
@@ -637,7 +650,7 @@ impl PlanRepo {
                 phases: vec![phase_slug.clone()],
                 dependencies: None,
             },
-            body: String::new(),
+            body: roadmap_body,
         };
         self.write_roadmap(project, roadmap_slug, &roadmap_doc)?;
 
@@ -1155,11 +1168,11 @@ mod tests {
     }
 
     #[test]
-    fn list_tasks_no_tasks_dir() {
+    fn list_tasks_project_not_found() {
         let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::open(dir.path());
-        let tasks = repo.list_tasks("nonexistent").unwrap();
-        assert!(tasks.is_empty());
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        let result = repo.list_tasks("nonexistent");
+        assert!(matches!(result, Err(Error::ProjectNotFound(_))));
     }
 
     #[test]
@@ -1221,7 +1234,7 @@ mod tests {
                 status: TaskStatus::Open,
                 priority: Priority::High,
                 created: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
-                tags: None,
+                tags: Some(vec!["infra".to_string()]),
             },
             body: "Task body content.\n".to_string(),
         };
@@ -1237,9 +1250,12 @@ mod tests {
         // Task file should be removed
         assert!(!repo.task_path("fbm", "big-feature").exists());
 
-        // Roadmap and phase should exist
+        // Roadmap should preserve task metadata in body
         let loaded_rm = repo.load_roadmap("fbm", "big-feature-rm").unwrap();
         assert_eq!(loaded_rm.frontmatter.title, "Big Feature");
+        assert!(loaded_rm.body.contains("priority: high"));
+        assert!(loaded_rm.body.contains("created: 2026-03-15"));
+        assert!(loaded_rm.body.contains("tags: infra"));
 
         let loaded_phase = repo
             .load_phase("fbm", "big-feature-rm", "phase-1-big-feature")
