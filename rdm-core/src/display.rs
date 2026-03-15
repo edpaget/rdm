@@ -59,6 +59,25 @@ pub fn format_phase_detail(stem: &str, doc: &Document<Phase>) -> String {
     out
 }
 
+/// Formats a list of phases as a table with number, title, status, and stem.
+pub fn format_phase_list(phases: &[(String, Document<Phase>)]) -> String {
+    if phases.is_empty() {
+        return "No phases yet.\n".to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str("| # | Phase | Status | Stem |\n");
+    out.push_str("|---|-------|--------|------|\n");
+    for (stem, doc) in phases {
+        let fm = &doc.frontmatter;
+        out.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            fm.phase, fm.title, fm.status, stem
+        ));
+    }
+    out
+}
+
 /// Formats a list of roadmaps with progress summaries.
 pub fn format_roadmap_list(entries: &[RoadmapWithPhases]) -> String {
     if entries.is_empty() {
@@ -160,6 +179,30 @@ mod tests {
         let output = format_phase_detail("phase-2-service", &doc);
         assert!(output.contains("Status: not-started"));
         assert!(!output.contains("Completed:"));
+    }
+
+    #[test]
+    fn phase_list_with_entries() {
+        let phases = vec![
+            (
+                "phase-1-core".to_string(),
+                make_phase_doc(1, "Core", PhaseStatus::Done),
+            ),
+            (
+                "phase-2-service".to_string(),
+                make_phase_doc(2, "Service", PhaseStatus::InProgress),
+            ),
+        ];
+        let output = format_phase_list(&phases);
+        assert!(output.contains("| # | Phase | Status | Stem |"));
+        assert!(output.contains("| 1 | Core | done | phase-1-core |"));
+        assert!(output.contains("| 2 | Service | in-progress | phase-2-service |"));
+    }
+
+    #[test]
+    fn phase_list_empty() {
+        let output = format_phase_list(&[]);
+        assert_eq!(output, "No phases yet.\n");
     }
 
     #[test]

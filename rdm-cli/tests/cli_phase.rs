@@ -6,6 +6,25 @@ fn rdm() -> Command {
     Command::cargo_bin("rdm").unwrap()
 }
 
+fn create_phase(dir: &TempDir, slug: &str, title: &str) {
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            slug,
+            "--title",
+            title,
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+}
+
 fn init_with_roadmap(dir: &TempDir) {
     rdm()
         .arg("--root")
@@ -281,4 +300,116 @@ fn phase_update_done_then_back() {
             predicate::str::contains("Status: in-progress")
                 .and(predicate::str::contains("Completed:").not()),
         );
+}
+
+#[test]
+fn phase_list() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+    create_phase(&dir, "service", "Keeper Service");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["phase", "list", "--roadmap", "two-way", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("| # | Phase | Status | Stem |")
+                .and(predicate::str::contains(
+                    "| 1 | Core Valuation | not-started | phase-1-core |",
+                ))
+                .and(predicate::str::contains(
+                    "| 2 | Keeper Service | not-started | phase-2-service |",
+                )),
+        );
+}
+
+#[test]
+fn phase_list_empty() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["phase", "list", "--roadmap", "two-way", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No phases yet."));
+}
+
+#[test]
+fn phase_show_by_number() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "1",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Phase 1: Core Valuation")
+                .and(predicate::str::contains("Stem: phase-1-core")),
+        );
+}
+
+#[test]
+fn phase_show_by_number_not_found() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "99",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("phase not found: 99"));
+}
+
+#[test]
+fn phase_update_by_number() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "1",
+            "--status",
+            "done",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated 'phase-1-core' → done"));
 }

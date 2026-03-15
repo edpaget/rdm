@@ -104,9 +104,18 @@ enum PhaseCommand {
         #[arg(long)]
         number: Option<u32>,
     },
+    /// List phases in a roadmap.
+    List {
+        /// Roadmap to list phases for.
+        #[arg(long)]
+        roadmap: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Show a phase.
     Show {
-        /// Phase stem (e.g. phase-1-core).
+        /// Phase stem or number (e.g. phase-1-core or 1).
         stem: String,
         /// Roadmap the phase belongs to.
         #[arg(long)]
@@ -117,7 +126,7 @@ enum PhaseCommand {
     },
     /// Update a phase's status.
     Update {
-        /// Phase stem (e.g. phase-1-core).
+        /// Phase stem or number (e.g. phase-1-core or 1).
         stem: String,
         /// New status.
         #[arg(long)]
@@ -234,12 +243,22 @@ fn run() -> Result<()> {
                     let stem = format!("phase-{}-{slug}", doc.frontmatter.phase);
                     println!("Created phase '{stem}' in roadmap '{roadmap}'");
                 }
+                PhaseCommand::List { roadmap, project } => {
+                    let project = resolve_project(project, &repo)?;
+                    let phases = repo
+                        .list_phases(&project, &roadmap)
+                        .context("failed to list phases")?;
+                    print!("{}", display::format_phase_list(&phases));
+                }
                 PhaseCommand::Show {
                     stem,
                     roadmap,
                     project,
                 } => {
                     let project = resolve_project(project, &repo)?;
+                    let stem = repo
+                        .resolve_phase_stem(&project, &roadmap, &stem)
+                        .context("failed to resolve phase")?;
                     let doc = repo
                         .load_phase(&project, &roadmap, &stem)
                         .context("failed to load phase")?;
@@ -252,6 +271,9 @@ fn run() -> Result<()> {
                     project,
                 } => {
                     let project = resolve_project(project, &repo)?;
+                    let stem = repo
+                        .resolve_phase_stem(&project, &roadmap, &stem)
+                        .context("failed to resolve phase")?;
                     repo.update_phase(&project, &roadmap, &stem, status)
                         .context("failed to update phase")?;
                     println!("Updated '{stem}' → {status}");

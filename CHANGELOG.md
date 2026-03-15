@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm phase list` command to show phases in a roadmap with number, title, status, and stem
+- Phase commands (`phase show`, `phase update`) accept phase number as alternative to stem
 - `rdm project create` and `rdm project list` CLI commands
 - `rdm roadmap create` and `rdm roadmap show` CLI commands
 - `rdm phase create`, `rdm phase show`, and `rdm phase update` CLI commands

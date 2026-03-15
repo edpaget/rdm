@@ -459,6 +459,34 @@ impl PlanRepo {
         Ok(doc)
     }
 
+    /// Resolves a phase identifier to a file stem.
+    ///
+    /// If `identifier` parses as a `u32`, looks up the phase by number.
+    /// Otherwise, returns `identifier` as-is for downstream validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PhaseNotFound`] if `identifier` is numeric but no
+    /// phase with that number exists. Also propagates errors from
+    /// [`list_phases`].
+    pub fn resolve_phase_stem(
+        &self,
+        project: &str,
+        roadmap: &str,
+        identifier: &str,
+    ) -> Result<String> {
+        if let Ok(num) = identifier.parse::<u32>() {
+            let phases = self.list_phases(project, roadmap)?;
+            for (stem, doc) in phases {
+                if doc.frontmatter.phase == num {
+                    return Ok(stem);
+                }
+            }
+            return Err(Error::PhaseNotFound(identifier.to_string()));
+        }
+        Ok(identifier.to_string())
+    }
+
     // -- Init --
 
     /// Initializes a new plan repo at the configured root.
@@ -845,6 +873,35 @@ mod tests {
         let (_dir, repo) = setup_with_roadmap();
         let result = repo.update_phase("fbm", "two-way", "phase-99-nope", PhaseStatus::Done);
         assert!(matches!(result, Err(Error::PhaseNotFound(_))));
+    }
+
+    #[test]
+    fn resolve_by_number() {
+        let (_dir, repo) = setup_with_roadmap();
+        repo.create_phase("fbm", "two-way", "core", "Core", Some(1))
+            .unwrap();
+        repo.create_phase("fbm", "two-way", "service", "Service", Some(2))
+            .unwrap();
+        let stem = repo.resolve_phase_stem("fbm", "two-way", "2").unwrap();
+        assert_eq!(stem, "phase-2-service");
+    }
+
+    #[test]
+    fn resolve_by_stem_passthrough() {
+        let (_dir, repo) = setup_with_roadmap();
+        let stem = repo
+            .resolve_phase_stem("fbm", "two-way", "phase-1-core")
+            .unwrap();
+        assert_eq!(stem, "phase-1-core");
+    }
+
+    #[test]
+    fn resolve_number_not_found() {
+        let (_dir, repo) = setup_with_roadmap();
+        repo.create_phase("fbm", "two-way", "core", "Core", Some(1))
+            .unwrap();
+        let result = repo.resolve_phase_stem("fbm", "two-way", "99");
+        assert!(matches!(result, Err(Error::PhaseNotFound(ref s)) if s == "99"));
     }
 
     #[test]
