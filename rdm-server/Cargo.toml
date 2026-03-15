@@ -1,0 +1,15 @@
+[package]
+name = "rdm-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "REST API server for rdm"
+
+[[bin]]
+name = "rdm-server"
+path = "src/main.rs"
+
+[dependencies]
+rdm-core = { path = "../rdm-core" }
+anyhow = { workspace = true }

@@ -1,0 +1,58 @@
+/// Plan repo configuration (`rdm.toml`).
+use serde::{Deserialize, Serialize};
+
+/// Configuration stored in `rdm.toml` at the plan repo root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Config {
+    /// The default project to use when `--project` is not specified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_project: Option<String>,
+}
+
+impl Config {
+    /// Parses a `Config` from a TOML string.
+    pub fn from_toml(s: &str) -> std::result::Result<Self, toml::de::Error> {
+        toml::from_str(s)
+    }
+
+    /// Serializes the config to a TOML string.
+    pub fn to_toml(&self) -> std::result::Result<String, toml::ser::Error> {
+        toml::to_string_pretty(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_minimal_config() {
+        let toml_str = r#"default_project = "fbm""#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert_eq!(config.default_project, Some("fbm".to_string()));
+    }
+
+    #[test]
+    fn parse_empty_config() {
+        let config = Config::from_toml("").unwrap();
+        assert_eq!(config.default_project, None);
+    }
+
+    #[test]
+    fn config_round_trip() {
+        let config = Config {
+            default_project: Some("fbm".to_string()),
+        };
+        let toml_str = config.to_toml().unwrap();
+        let parsed = Config::from_toml(&toml_str).unwrap();
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn empty_config_round_trip() {
+        let config = Config::default();
+        let toml_str = config.to_toml().unwrap();
+        let parsed = Config::from_toml(&toml_str).unwrap();
+        assert_eq!(parsed, config);
+    }
+}
