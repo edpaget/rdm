@@ -13,11 +13,20 @@ pub struct Config {
 
 impl Config {
     /// Parses a `Config` from a TOML string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConfigParse`] if the string is not valid TOML or does
+    /// not match the expected config schema.
     pub fn from_toml(s: &str) -> Result<Self> {
         Ok(toml::from_str(s)?)
     }
 
     /// Serializes the config to a TOML string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`toml::ser::Error`] if serialization fails.
     pub fn to_toml(&self) -> std::result::Result<String, toml::ser::Error> {
         toml::to_string_pretty(self)
     }

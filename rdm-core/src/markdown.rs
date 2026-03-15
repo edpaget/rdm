@@ -10,6 +10,11 @@ const DELIMITER: &str = "---";
 ///
 /// Returns `(yaml, body)` where `yaml` does not include the delimiters and
 /// `body` does not include the trailing delimiter line.
+///
+/// # Errors
+///
+/// Returns [`Error::FrontmatterMissing`] if the content does not start with
+/// a `---` delimiter or is missing the closing `---` delimiter.
 pub fn split_frontmatter(content: &str) -> Result<(&str, &str)> {
     let trimmed = content.trim_start();
     let Some(after_open) = trimmed.strip_prefix(DELIMITER) else {

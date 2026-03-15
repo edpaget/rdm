@@ -75,6 +75,12 @@ impl PlanRepo {
     // -- Load operations --
 
     /// Loads and parses `rdm.toml` from the plan repo root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConfigNotFound`] if `rdm.toml` does not exist,
+    /// [`Error::Io`] on read failure, or [`Error::ConfigParse`] if the file
+    /// is not valid TOML.
     pub fn load_config(&self) -> Result<Config> {
         let path = self.config_path();
         if !path.exists() {
@@ -85,12 +91,24 @@ impl PlanRepo {
     }
 
     /// Loads and parses a roadmap document from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the file cannot be read,
+    /// [`Error::FrontmatterMissing`] if delimiters are absent, or
+    /// [`Error::FrontmatterParse`] if the YAML is invalid.
     pub fn load_roadmap(&self, project: &str, roadmap: &str) -> Result<Document<Roadmap>> {
         let content = fs::read_to_string(self.roadmap_path(project, roadmap))?;
         Document::parse(&content)
     }
 
     /// Loads and parses a phase document from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the file cannot be read,
+    /// [`Error::FrontmatterMissing`] if delimiters are absent, or
+    /// [`Error::FrontmatterParse`] if the YAML is invalid.
     pub fn load_phase(
         &self,
         project: &str,
@@ -102,6 +120,12 @@ impl PlanRepo {
     }
 
     /// Loads and parses a task document from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the file cannot be read,
+    /// [`Error::FrontmatterMissing`] if delimiters are absent, or
+    /// [`Error::FrontmatterParse`] if the YAML is invalid.
     pub fn load_task(&self, project: &str, task_slug: &str) -> Result<Document<Task>> {
         let content = fs::read_to_string(self.task_path(project, task_slug))?;
         Document::parse(&content)
@@ -122,6 +146,11 @@ impl PlanRepo {
     }
 
     /// Writes a roadmap document to disk, creating parent directories as needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if directory creation or file writing fails, or
+    /// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
     pub fn write_roadmap(
         &self,
         project: &str,
@@ -136,6 +165,11 @@ impl PlanRepo {
     }
 
     /// Writes a phase document to disk, creating parent directories as needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if directory creation or file writing fails, or
+    /// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
     pub fn write_phase(
         &self,
         project: &str,
@@ -151,6 +185,11 @@ impl PlanRepo {
     }
 
     /// Writes a task document to disk, creating parent directories as needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if directory creation or file writing fails, or
+    /// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
     pub fn write_task(&self, project: &str, task_slug: &str, doc: &Document<Task>) -> Result<()> {
         let path = self.task_path(project, task_slug);
         Self::ensure_parent_dir(&path)?;
@@ -164,7 +203,11 @@ impl PlanRepo {
     /// Initializes a new plan repo at the configured root.
     ///
     /// Creates `rdm.toml`, `projects/`, and `INDEX.md`.
-    /// Returns an error if the repo is already initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::AlreadyInitialized`] if `rdm.toml` already exists, or
+    /// [`Error::Io`] if directory or file creation fails.
     pub fn init(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         let repo = PlanRepo { root };

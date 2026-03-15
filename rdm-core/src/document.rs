@@ -18,6 +18,12 @@ where
     T: for<'de> Deserialize<'de>,
 {
     /// Parses a markdown string with YAML frontmatter into a `Document`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::FrontmatterMissing`] if the content lacks frontmatter
+    /// delimiters, or [`Error::FrontmatterParse`] if the YAML cannot be
+    /// deserialized into `T`.
     pub fn parse(content: &str) -> Result<Self> {
         let (yaml, body) = markdown::split_frontmatter(content)?;
         let frontmatter: T = serde_yaml::from_str(yaml)?;
@@ -33,6 +39,11 @@ where
     T: Serialize,
 {
     /// Renders the document back to a markdown string with YAML frontmatter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::FrontmatterParse`] if the frontmatter cannot be
+    /// serialized to YAML.
     pub fn render(&self) -> Result<String> {
         let yaml = serde_yaml::to_string(&self.frontmatter)?;
         Ok(markdown::join_frontmatter(&yaml, &self.body))
