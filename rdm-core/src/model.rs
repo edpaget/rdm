@@ -44,6 +44,15 @@ pub enum Priority {
     Critical,
 }
 
+/// Frontmatter for a project directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Project {
+    /// Project slug identifier (used in directory names and references).
+    pub name: String,
+    /// Human-readable title.
+    pub title: String,
+}
+
 /// Frontmatter for a roadmap phase file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Phase {
@@ -242,6 +251,21 @@ phases:
 "#;
         let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(roadmap.dependencies, None);
+    }
+
+    #[test]
+    fn project_round_trip() {
+        let yaml = r#"
+name: fbm
+title: Fantasy Baseball Manager
+"#;
+        let project: Project = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(project.name, "fbm");
+        assert_eq!(project.title, "Fantasy Baseball Manager");
+
+        let serialized = serde_yaml::to_string(&project).unwrap();
+        let parsed: Project = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(parsed, project);
     }
 
     #[test]

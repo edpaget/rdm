@@ -74,6 +74,16 @@ impl PlanRepo {
 
     // -- Load operations --
 
+    /// Loads and parses `rdm.toml` from the plan repo root.
+    pub fn load_config(&self) -> Result<Config> {
+        let path = self.config_path();
+        if !path.exists() {
+            return Err(Error::ConfigNotFound);
+        }
+        let content = fs::read_to_string(path)?;
+        Config::from_toml(&content)
+    }
+
     /// Loads and parses a roadmap document from disk.
     pub fn load_roadmap(&self, project: &str, roadmap: &str) -> Result<Document<Roadmap>> {
         let content = fs::read_to_string(self.roadmap_path(project, roadmap))?;
@@ -99,6 +109,18 @@ impl PlanRepo {
 
     // -- Write operations --
 
+    /// Ensures parent directories exist for the given path.
+    fn ensure_parent_dir(path: &Path) -> Result<()> {
+        let parent = path.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "path has no parent directory",
+            )
+        })?;
+        fs::create_dir_all(parent)?;
+        Ok(())
+    }
+
     /// Writes a roadmap document to disk, creating parent directories as needed.
     pub fn write_roadmap(
         &self,
@@ -107,7 +129,7 @@ impl PlanRepo {
         doc: &Document<Roadmap>,
     ) -> Result<()> {
         let path = self.roadmap_path(project, roadmap);
-        fs::create_dir_all(path.parent().unwrap())?;
+        Self::ensure_parent_dir(&path)?;
         let content = doc.render()?;
         fs::write(path, content)?;
         Ok(())
@@ -122,7 +144,7 @@ impl PlanRepo {
         doc: &Document<Phase>,
     ) -> Result<()> {
         let path = self.phase_path(project, roadmap, phase_stem);
-        fs::create_dir_all(path.parent().unwrap())?;
+        Self::ensure_parent_dir(&path)?;
         let content = doc.render()?;
         fs::write(path, content)?;
         Ok(())
@@ -131,7 +153,7 @@ impl PlanRepo {
     /// Writes a task document to disk, creating parent directories as needed.
     pub fn write_task(&self, project: &str, task_slug: &str, doc: &Document<Task>) -> Result<()> {
         let path = self.task_path(project, task_slug);
-        fs::create_dir_all(path.parent().unwrap())?;
+        Self::ensure_parent_dir(&path)?;
         let content = doc.render()?;
         fs::write(path, content)?;
         Ok(())
@@ -292,6 +314,22 @@ mod tests {
         // Config should be parseable
         let toml_str = fs::read_to_string(repo.config_path()).unwrap();
         Config::from_toml(&toml_str).unwrap();
+    }
+
+    #[test]
+    fn load_config_after_init() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        let config = repo.load_config().unwrap();
+        assert_eq!(config.default_project, None);
+    }
+
+    #[test]
+    fn load_config_not_found() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::open(dir.path());
+        let result = repo.load_config();
+        assert!(matches!(result, Err(Error::ConfigNotFound)));
     }
 
     #[test]

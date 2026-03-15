@@ -404,6 +404,7 @@ dependencies = [
  "clap",
  "predicates",
  "rdm-core",
+ "tempfile",
 ]
 
 [[package]]

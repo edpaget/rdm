@@ -58,5 +58,11 @@ impl From<serde_yaml::Error> for Error {
     }
 }
 
+impl From<toml::de::Error> for Error {
+    fn from(e: toml::de::Error) -> Self {
+        Error::ConfigParse(e)
+    }
+}
+
 /// A convenient `Result` type for rdm-core.
 pub type Result<T> = std::result::Result<T, Error>;

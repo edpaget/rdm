@@ -1,6 +1,8 @@
 /// Plan repo configuration (`rdm.toml`).
 use serde::{Deserialize, Serialize};
 
+use crate::error::Result;
+
 /// Configuration stored in `rdm.toml` at the plan repo root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -11,8 +13,8 @@ pub struct Config {
 
 impl Config {
     /// Parses a `Config` from a TOML string.
-    pub fn from_toml(s: &str) -> std::result::Result<Self, toml::de::Error> {
-        toml::from_str(s)
+    pub fn from_toml(s: &str) -> Result<Self> {
+        Ok(toml::from_str(s)?)
     }
 
     /// Serializes the config to a TOML string.
