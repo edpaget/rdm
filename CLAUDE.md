@@ -60,7 +60,16 @@ Maintain a `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.co
 
 ### Public API Docs
 
-`rdm-core` must have `#![warn(missing_docs)]`. All public types and functions in the core library require doc comments.
+`rdm-core` must have `#![warn(missing_docs)]`. All public types and functions in the core library require doc comments. Use `///` for items and `//!` for module-level docs. Content is Markdown.
+
+Include these rustdoc sections where applicable:
+
+- **`# Errors`** — required on any function returning `Result`. List each error variant and when it occurs.
+- **`# Panics`** — required if the function can panic. Describe the conditions.
+- **`# Examples`** — encouraged for public API entry points. Examples are compiled and run by `cargo test`.
+- **`# Safety`** — required on any `unsafe fn`. Document the invariants the caller must uphold.
+
+Optional sections (`# Arguments`, `# Returns`) are fine but not required — prefer making signatures self-documenting with descriptive parameter names and types.
 
 ### Unsafe Policy
 
