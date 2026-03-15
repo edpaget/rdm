@@ -66,9 +66,11 @@ Maintain a `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.co
 
 No `unsafe` without a `// SAFETY:` comment explaining the invariant. Prefer safe alternatives.
 
-### Error Messages
+### Error Handling
 
-User-facing CLI errors must be actionable: state what went wrong and what the user can do about it. Do not surface raw debug output or backtraces by default.
+- **`rdm-core`**: hand-written error enums implementing `std::error::Error` + `Display`. Keep errors matchable — no `anyhow` or type erasure in the library.
+- **`rdm-cli` / `rdm-server`**: use `anyhow` with `.context()` for readable error chains. Add `anyhow` only when context chaining becomes useful; `Box<dyn Error>` is fine to start.
+- User-facing CLI errors must be actionable: state what went wrong and what the user can do about it. Do not surface raw debug output or backtraces by default.
 
 ### Feature Flags
 
