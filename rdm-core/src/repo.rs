@@ -7,7 +7,7 @@ use chrono::Local;
 use crate::config::Config;
 use crate::document::Document;
 use crate::error::{Error, Result};
-use crate::model::{Phase, PhaseStatus, Project, Roadmap, Task};
+use crate::model::{Phase, PhaseStatus, Priority, Project, Roadmap, Task, TaskStatus};
 
 /// Represents an rdm plan repository on disk.
 #[derive(Debug, Clone)]
@@ -487,6 +487,176 @@ impl PlanRepo {
         Ok(identifier.to_string())
     }
 
+    // -- Task operations --
+
+    /// Creates a new task within a project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
+    /// [`Error::DuplicateSlug`] if a task with the same slug already exists,
+    /// [`Error::Io`] if file creation fails, or
+    /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
+    pub fn create_task(
+        &self,
+        project: &str,
+        slug: &str,
+        title: &str,
+        priority: Priority,
+        tags: Option<Vec<String>>,
+    ) -> Result<Document<Task>> {
+        if !self.project_path(project).exists() {
+            return Err(Error::ProjectNotFound(project.to_string()));
+        }
+        let path = self.task_path(project, slug);
+        if path.exists() {
+            return Err(Error::DuplicateSlug(slug.to_string()));
+        }
+
+        let doc = Document {
+            frontmatter: Task {
+                project: project.to_string(),
+                title: title.to_string(),
+                status: TaskStatus::Open,
+                priority,
+                created: Local::now().date_naive(),
+                tags,
+            },
+            body: String::new(),
+        };
+        self.write_task(project, slug, &doc)?;
+        Ok(doc)
+    }
+
+    /// Lists all tasks for a project, sorted by slug.
+    ///
+    /// Returns `(slug, Document<Task>)` tuples. Returns an empty vec if the
+    /// tasks directory doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the directory cannot be read, or
+    /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
+    /// task file has invalid frontmatter.
+    pub fn list_tasks(&self, project: &str) -> Result<Vec<(String, Document<Task>)>> {
+        let dir = self.tasks_dir(project);
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut tasks: Vec<(String, Document<Task>)> = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if !name.ends_with(".md") {
+                continue;
+            }
+            let slug = name.trim_end_matches(".md").to_string();
+            let doc = self.load_task(project, &slug)?;
+            tasks.push((slug, doc));
+        }
+        tasks.sort_by(|(a, _), (b, _)| a.cmp(b));
+        Ok(tasks)
+    }
+
+    /// Updates a task's status, priority, and/or tags.
+    ///
+    /// Only fields that are `Some(...)` are updated; others are left unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TaskNotFound`] if the task file doesn't exist,
+    /// [`Error::Io`] if reading or writing fails, or
+    /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+    /// existing task file has invalid frontmatter.
+    pub fn update_task(
+        &self,
+        project: &str,
+        slug: &str,
+        status: Option<TaskStatus>,
+        priority: Option<Priority>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Document<Task>> {
+        let path = self.task_path(project, slug);
+        if !path.exists() {
+            return Err(Error::TaskNotFound(slug.to_string()));
+        }
+
+        let mut doc = self.load_task(project, slug)?;
+        if let Some(s) = status {
+            doc.frontmatter.status = s;
+        }
+        if let Some(p) = priority {
+            doc.frontmatter.priority = p;
+        }
+        if let Some(t) = tags {
+            doc.frontmatter.tags = if t.is_empty() { None } else { Some(t) };
+        }
+        self.write_task(project, slug, &doc)?;
+        Ok(doc)
+    }
+
+    /// Promotes a task to a roadmap.
+    ///
+    /// Creates a new roadmap directory, writes `roadmap.md` from task metadata,
+    /// creates `phase-1-*.md` from the task body, and removes the original task file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TaskNotFound`] if the task doesn't exist,
+    /// [`Error::DuplicateSlug`] if the roadmap already exists,
+    /// [`Error::Io`] if file operations fail, or
+    /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
+    pub fn promote_task(
+        &self,
+        project: &str,
+        task_slug: &str,
+        roadmap_slug: &str,
+    ) -> Result<Document<Roadmap>> {
+        let task_path = self.task_path(project, task_slug);
+        if !task_path.exists() {
+            return Err(Error::TaskNotFound(task_slug.to_string()));
+        }
+
+        let task_doc = self.load_task(project, task_slug)?;
+
+        let roadmap_dir = self.roadmap_dir(project, roadmap_slug);
+        if roadmap_dir.exists() {
+            return Err(Error::DuplicateSlug(roadmap_slug.to_string()));
+        }
+
+        let phase_slug = format!("phase-1-{task_slug}");
+
+        let roadmap_doc = Document {
+            frontmatter: Roadmap {
+                project: project.to_string(),
+                roadmap: roadmap_slug.to_string(),
+                title: task_doc.frontmatter.title.clone(),
+                phases: vec![phase_slug.clone()],
+                dependencies: None,
+            },
+            body: String::new(),
+        };
+        self.write_roadmap(project, roadmap_slug, &roadmap_doc)?;
+
+        let phase_doc = Document {
+            frontmatter: Phase {
+                phase: 1,
+                title: task_doc.frontmatter.title,
+                status: PhaseStatus::NotStarted,
+                completed: None,
+            },
+            body: task_doc.body,
+        };
+        self.write_phase(project, roadmap_slug, &phase_slug, &phase_doc)?;
+
+        fs::remove_file(task_path)?;
+
+        Ok(roadmap_doc)
+    }
+
     // -- Init --
 
     /// Initializes a new plan repo at the configured root.
@@ -902,6 +1072,198 @@ mod tests {
             .unwrap();
         let result = repo.resolve_phase_stem("fbm", "two-way", "99");
         assert!(matches!(result, Err(Error::PhaseNotFound(ref s)) if s == "99"));
+    }
+
+    // -- Task tests --
+
+    fn setup_with_project() -> (TempDir, PlanRepo) {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        repo.create_project("fbm", "FBM").unwrap();
+        (dir, repo)
+    }
+
+    #[test]
+    fn create_task_success() {
+        let (_dir, repo) = setup_with_project();
+        let doc = repo
+            .create_task("fbm", "fix-bug", "Fix the bug", Priority::High, None)
+            .unwrap();
+        assert_eq!(doc.frontmatter.title, "Fix the bug");
+        assert_eq!(doc.frontmatter.status, TaskStatus::Open);
+        assert_eq!(doc.frontmatter.priority, Priority::High);
+        assert!(doc.frontmatter.tags.is_none());
+
+        // Should be loadable
+        let loaded = repo.load_task("fbm", "fix-bug").unwrap();
+        assert_eq!(loaded.frontmatter, doc.frontmatter);
+    }
+
+    #[test]
+    fn create_task_with_tags() {
+        let (_dir, repo) = setup_with_project();
+        let doc = repo
+            .create_task(
+                "fbm",
+                "fix-bug",
+                "Fix the bug",
+                Priority::High,
+                Some(vec!["bug".to_string(), "urgent".to_string()]),
+            )
+            .unwrap();
+        assert_eq!(
+            doc.frontmatter.tags,
+            Some(vec!["bug".to_string(), "urgent".to_string()])
+        );
+    }
+
+    #[test]
+    fn create_task_project_not_found() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        let result = repo.create_task("nope", "slug", "Title", Priority::Low, None);
+        assert!(matches!(result, Err(Error::ProjectNotFound(_))));
+    }
+
+    #[test]
+    fn create_task_duplicate() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None)
+            .unwrap();
+        let result = repo.create_task("fbm", "fix-bug", "Dup", Priority::Low, None);
+        assert!(matches!(result, Err(Error::DuplicateSlug(_))));
+    }
+
+    #[test]
+    fn list_tasks_sorted() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_task("fbm", "zzz-task", "Z", Priority::Low, None)
+            .unwrap();
+        repo.create_task("fbm", "aaa-task", "A", Priority::High, None)
+            .unwrap();
+        let tasks = repo.list_tasks("fbm").unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].0, "aaa-task");
+        assert_eq!(tasks[1].0, "zzz-task");
+    }
+
+    #[test]
+    fn list_tasks_empty() {
+        let (_dir, repo) = setup_with_project();
+        let tasks = repo.list_tasks("fbm").unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn list_tasks_no_tasks_dir() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::open(dir.path());
+        let tasks = repo.list_tasks("nonexistent").unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn update_task_status() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None)
+            .unwrap();
+        let updated = repo
+            .update_task("fbm", "fix-bug", Some(TaskStatus::Done), None, None)
+            .unwrap();
+        assert_eq!(updated.frontmatter.status, TaskStatus::Done);
+
+        let loaded = repo.load_task("fbm", "fix-bug").unwrap();
+        assert_eq!(loaded.frontmatter.status, TaskStatus::Done);
+    }
+
+    #[test]
+    fn update_task_priority() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None)
+            .unwrap();
+        let updated = repo
+            .update_task("fbm", "fix-bug", None, Some(Priority::Critical), None)
+            .unwrap();
+        assert_eq!(updated.frontmatter.priority, Priority::Critical);
+    }
+
+    #[test]
+    fn update_task_tags() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None)
+            .unwrap();
+        let updated = repo
+            .update_task(
+                "fbm",
+                "fix-bug",
+                None,
+                None,
+                Some(vec!["new-tag".to_string()]),
+            )
+            .unwrap();
+        assert_eq!(updated.frontmatter.tags, Some(vec!["new-tag".to_string()]));
+    }
+
+    #[test]
+    fn update_task_not_found() {
+        let (_dir, repo) = setup_with_project();
+        let result = repo.update_task("fbm", "nope", Some(TaskStatus::Done), None, None);
+        assert!(matches!(result, Err(Error::TaskNotFound(_))));
+    }
+
+    #[test]
+    fn promote_task_to_roadmap() {
+        let (_dir, repo) = setup_with_project();
+        let task = Document {
+            frontmatter: Task {
+                project: "fbm".to_string(),
+                title: "Big Feature".to_string(),
+                status: TaskStatus::Open,
+                priority: Priority::High,
+                created: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+                tags: None,
+            },
+            body: "Task body content.\n".to_string(),
+        };
+        repo.write_task("fbm", "big-feature", &task).unwrap();
+
+        let roadmap_doc = repo
+            .promote_task("fbm", "big-feature", "big-feature-rm")
+            .unwrap();
+        assert_eq!(roadmap_doc.frontmatter.title, "Big Feature");
+        assert_eq!(roadmap_doc.frontmatter.roadmap, "big-feature-rm");
+        assert_eq!(roadmap_doc.frontmatter.phases, vec!["phase-1-big-feature"]);
+
+        // Task file should be removed
+        assert!(!repo.task_path("fbm", "big-feature").exists());
+
+        // Roadmap and phase should exist
+        let loaded_rm = repo.load_roadmap("fbm", "big-feature-rm").unwrap();
+        assert_eq!(loaded_rm.frontmatter.title, "Big Feature");
+
+        let loaded_phase = repo
+            .load_phase("fbm", "big-feature-rm", "phase-1-big-feature")
+            .unwrap();
+        assert_eq!(loaded_phase.frontmatter.title, "Big Feature");
+        assert_eq!(loaded_phase.body, "Task body content.\n");
+    }
+
+    #[test]
+    fn promote_task_not_found() {
+        let (_dir, repo) = setup_with_project();
+        let result = repo.promote_task("fbm", "nope", "rm-slug");
+        assert!(matches!(result, Err(Error::TaskNotFound(_))));
+    }
+
+    #[test]
+    fn promote_task_duplicate_roadmap() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_task("fbm", "my-task", "Task", Priority::Low, None)
+            .unwrap();
+        repo.create_roadmap("fbm", "existing-rm", "Existing")
+            .unwrap();
+        let result = repo.promote_task("fbm", "my-task", "existing-rm");
+        assert!(matches!(result, Err(Error::DuplicateSlug(_))));
     }
 
     #[test]

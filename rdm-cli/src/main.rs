@@ -4,7 +4,7 @@ use std::process;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use rdm_core::display;
-use rdm_core::model::PhaseStatus;
+use rdm_core::model::{PhaseStatus, Priority, TaskStatus};
 use rdm_core::repo::PlanRepo;
 
 #[derive(Parser)]
@@ -36,6 +36,22 @@ enum Command {
     Phase {
         #[command(subcommand)]
         command: PhaseCommand,
+    },
+    /// Manage tasks.
+    Task {
+        #[command(subcommand)]
+        command: TaskCommand,
+    },
+    /// Promote a task to a roadmap.
+    Promote {
+        /// Task slug to promote.
+        task_slug: String,
+        /// Roadmap slug for the new roadmap.
+        #[arg(long)]
+        roadmap_slug: String,
+        /// Project the task belongs to.
+        #[arg(long)]
+        project: Option<String>,
     },
     /// List roadmaps and their progress.
     List {
@@ -137,6 +153,67 @@ enum PhaseCommand {
         /// Project the roadmap belongs to.
         #[arg(long)]
         project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum TaskCommand {
+    /// Create a new task.
+    Create {
+        /// Task slug.
+        slug: String,
+        /// Human-readable title.
+        #[arg(long)]
+        title: Option<String>,
+        /// Project to create the task in.
+        #[arg(long)]
+        project: Option<String>,
+        /// Priority level.
+        #[arg(long, default_value = "medium")]
+        priority: Priority,
+        /// Comma-separated tags.
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+    },
+    /// Show a task.
+    Show {
+        /// Task slug.
+        slug: String,
+        /// Project the task belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Update a task.
+    Update {
+        /// Task slug.
+        slug: String,
+        /// Project the task belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// New status.
+        #[arg(long)]
+        status: Option<TaskStatus>,
+        /// New priority.
+        #[arg(long)]
+        priority: Option<Priority>,
+        /// New comma-separated tags (replaces existing).
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+    },
+    /// List tasks.
+    List {
+        /// Project to list tasks for.
+        #[arg(long)]
+        project: Option<String>,
+        /// Filter by status (use "all" to show all).
+        #[arg(long)]
+        status: Option<String>,
+        /// Filter by priority.
+        #[arg(long)]
+        priority: Option<Priority>,
+        /// Filter by tag.
+        #[arg(long)]
+        tag: Option<String>,
     },
 }
 
@@ -279,6 +356,110 @@ fn run() -> Result<()> {
                     println!("Updated '{stem}' → {status}");
                 }
             }
+        }
+
+        Command::Task { command } => {
+            let repo = PlanRepo::open(&root);
+            match command {
+                TaskCommand::Create {
+                    slug,
+                    title,
+                    project,
+                    priority,
+                    tags,
+                } => {
+                    let project = resolve_project(project, &repo)?;
+                    let title = title.as_deref().unwrap_or(&slug);
+                    repo.create_task(&project, &slug, title, priority, tags)
+                        .context("failed to create task")?;
+                    println!("Created task '{slug}' in project '{project}'");
+                }
+                TaskCommand::Show { slug, project } => {
+                    let project = resolve_project(project, &repo)?;
+                    let doc = repo
+                        .load_task(&project, &slug)
+                        .context("failed to load task")?;
+                    print!("{}", display::format_task_detail(&slug, &doc));
+                }
+                TaskCommand::Update {
+                    slug,
+                    project,
+                    status,
+                    priority,
+                    tags,
+                } => {
+                    let project = resolve_project(project, &repo)?;
+                    let doc = repo
+                        .update_task(&project, &slug, status, priority, tags)
+                        .context("failed to update task")?;
+                    println!(
+                        "Updated task '{slug}' → status: {}, priority: {}",
+                        doc.frontmatter.status, doc.frontmatter.priority
+                    );
+                }
+                TaskCommand::List {
+                    project,
+                    status,
+                    priority,
+                    tag,
+                } => {
+                    let project = resolve_project(project, &repo)?;
+                    let all_tasks = repo.list_tasks(&project).context("failed to list tasks")?;
+
+                    let show_all = status.as_deref() == Some("all");
+                    let status_filter: Option<TaskStatus> = if show_all {
+                        None
+                    } else {
+                        status
+                            .as_deref()
+                            .map(|s| s.parse::<TaskStatus>())
+                            .transpose()
+                            .map_err(|e| anyhow::anyhow!(e))?
+                    };
+
+                    let filtered: Vec<(String, _)> = all_tasks
+                        .into_iter()
+                        .filter(|(_, doc)| {
+                            if let Some(ref s) = status_filter {
+                                doc.frontmatter.status == *s
+                            } else if !show_all {
+                                // Default: show open + in-progress
+                                doc.frontmatter.status == TaskStatus::Open
+                                    || doc.frontmatter.status == TaskStatus::InProgress
+                            } else {
+                                true
+                            }
+                        })
+                        .filter(|(_, doc)| priority.is_none_or(|p| doc.frontmatter.priority == p))
+                        .filter(|(_, doc)| {
+                            tag.as_ref().is_none_or(|t| {
+                                doc.frontmatter
+                                    .tags
+                                    .as_ref()
+                                    .is_some_and(|tags| tags.contains(t))
+                            })
+                        })
+                        .collect();
+
+                    print!("{}", display::format_task_list(&filtered));
+                }
+            }
+        }
+
+        Command::Promote {
+            task_slug,
+            roadmap_slug,
+            project,
+        } => {
+            let repo = PlanRepo::open(&root);
+            let project = resolve_project(project, &repo)?;
+            let doc = repo
+                .promote_task(&project, &task_slug, &roadmap_slug)
+                .context("failed to promote task")?;
+            println!(
+                "Promoted task '{task_slug}' → roadmap '{}'",
+                doc.frontmatter.roadmap
+            );
         }
 
         Command::List { project, all } => {

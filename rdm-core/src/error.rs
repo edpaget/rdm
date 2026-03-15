@@ -19,6 +19,8 @@ pub enum Error {
     RoadmapNotFound(String),
     /// The specified phase was not found.
     PhaseNotFound(String),
+    /// The specified task was not found.
+    TaskNotFound(String),
     /// A slug already exists.
     DuplicateSlug(String),
     /// No project was specified and no default project is configured.
@@ -54,6 +56,9 @@ impl std::fmt::Display for Error {
             }
             Error::PhaseNotFound(name) => {
                 write!(f, "phase not found: {name}")
+            }
+            Error::TaskNotFound(name) => {
+                write!(f, "task not found: {name}")
             }
             Error::DuplicateSlug(slug) => {
                 write!(f, "'{slug}' already exists — choose a different name")

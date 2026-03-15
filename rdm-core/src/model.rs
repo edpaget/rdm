@@ -60,6 +60,33 @@ pub enum TaskStatus {
     WontFix,
 }
 
+impl fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TaskStatus::Open => write!(f, "open"),
+            TaskStatus::InProgress => write!(f, "in-progress"),
+            TaskStatus::Done => write!(f, "done"),
+            TaskStatus::WontFix => write!(f, "wont-fix"),
+        }
+    }
+}
+
+impl FromStr for TaskStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(TaskStatus::Open),
+            "in-progress" => Ok(TaskStatus::InProgress),
+            "done" => Ok(TaskStatus::Done),
+            "wont-fix" => Ok(TaskStatus::WontFix),
+            other => Err(format!(
+                "invalid task status: '{other}' (expected open, in-progress, done, or wont-fix)"
+            )),
+        }
+    }
+}
+
 /// Priority level for a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -72,6 +99,33 @@ pub enum Priority {
     High,
     /// Critical priority.
     Critical,
+}
+
+impl fmt::Display for Priority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Priority::Low => write!(f, "low"),
+            Priority::Medium => write!(f, "medium"),
+            Priority::High => write!(f, "high"),
+            Priority::Critical => write!(f, "critical"),
+        }
+    }
+}
+
+impl FromStr for Priority {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "low" => Ok(Priority::Low),
+            "medium" => Ok(Priority::Medium),
+            "high" => Ok(Priority::High),
+            "critical" => Ok(Priority::Critical),
+            other => Err(format!(
+                "invalid priority: '{other}' (expected low, medium, high, or critical)"
+            )),
+        }
+    }
 }
 
 /// Frontmatter for a project directory.
@@ -153,6 +207,46 @@ mod tests {
     #[test]
     fn phase_status_from_str_invalid() {
         assert!("invalid".parse::<PhaseStatus>().is_err());
+    }
+
+    #[test]
+    fn task_status_display_from_str_round_trip() {
+        let variants = [
+            (TaskStatus::Open, "open"),
+            (TaskStatus::InProgress, "in-progress"),
+            (TaskStatus::Done, "done"),
+            (TaskStatus::WontFix, "wont-fix"),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: TaskStatus = expected.parse().unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn task_status_from_str_invalid() {
+        assert!("invalid".parse::<TaskStatus>().is_err());
+    }
+
+    #[test]
+    fn priority_display_from_str_round_trip() {
+        let variants = [
+            (Priority::Low, "low"),
+            (Priority::Medium, "medium"),
+            (Priority::High, "high"),
+            (Priority::Critical, "critical"),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: Priority = expected.parse().unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn priority_from_str_invalid() {
+        assert!("invalid".parse::<Priority>().is_err());
     }
 
     #[test]
