@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-rdm is a zero-dependency Rust CLI for managing project roadmaps, phases, and tasks. It separates the **tool** (this repo) from the **plan repo** (a git-managed directory of markdown files).
+rdm is a Rust CLI for managing project roadmaps, phases, and tasks. "Zero-dependency" means users only need the compiled binary — no runtime dependencies, interpreters, or external tools. Cargo crate dependencies are fine. It separates the **tool** (this repo) from the **plan repo** (a git-managed directory of markdown files).
 
 ### Architecture
 
@@ -57,6 +57,51 @@ Maintain a `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.co
 - Categories: Added, Changed, Deprecated, Removed, Fixed, Security
 - Move entries from Unreleased to a versioned section on release
 - Update the changelog with every user-facing change
+
+### Public API Docs
+
+`rdm-core` must have `#![warn(missing_docs)]`. All public types and functions in the core library require doc comments.
+
+### Unsafe Policy
+
+No `unsafe` without a `// SAFETY:` comment explaining the invariant. Prefer safe alternatives.
+
+### Error Messages
+
+User-facing CLI errors must be actionable: state what went wrong and what the user can do about it. Do not surface raw debug output or backtraces by default.
+
+### Feature Flags
+
+If `rdm-server` becomes optional, gate it behind a cargo feature flag so users who only need the CLI can skip it.
+
+### Edition & MSRV
+
+Pin a minimum supported Rust version in `Cargo.toml` (`rust-version`). CI and contributors must target this version.
+
+### Dependency Auditing
+
+Use `cargo deny` for license and advisory checks. Run it in CI.
+
+## Pre-commit Hooks
+
+Hooks live in `.githooks/` and are shared via the repo. New clones need to configure the hooks path:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The pre-commit hook runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test`.
+
+## CI Expectations
+
+All of the following must pass before merging:
+
+```bash
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test
+cargo deny check        # license & advisory audit
+```
 
 ## Build & Test
 
