@@ -114,6 +114,24 @@ cargo test
 cargo deny check        # license & advisory audit
 ```
 
+## Dogfooding
+
+rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.toml` to `~/Projects/rdm-atlas-repo`). Before starting implementation work, build and use the CLI to check the current plan:
+
+```bash
+eval "$(mise env -s bash)"        # load RDM_ROOT from .mise.toml
+cargo build                        # build the rdm binary
+./target/debug/rdm list --project rdm   # see roadmap progress
+./target/debug/rdm roadmap show <slug> --project rdm   # see phases in a roadmap
+./target/debug/rdm phase show <stem> --roadmap <slug> --project rdm  # read phase details
+```
+
+Use this to understand what phase you're working on, what the acceptance criteria are, and what comes next. When a phase is complete, update its status:
+
+```bash
+./target/debug/rdm phase update <stem> --status done --roadmap <slug> --project rdm
+```
+
 ## Setup
 
 ```bash
