@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `format_task_detail` and `format_task_list` display functions in rdm-core
 - `TaskNotFound` error variant in rdm-core
 - Integration tests for all task CLI commands and promote
+- `rdm phase reorder` command to move a phase to a new position (renumbers all phases sequentially)
 - `rdm phase list` command to show phases in a roadmap with number, title, status, and stem
 - Phase commands (`phase show`, `phase update`) accept phase number as alternative to stem
 - `rdm project create` and `rdm project list` CLI commands

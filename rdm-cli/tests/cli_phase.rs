@@ -390,6 +390,77 @@ fn phase_show_by_number_not_found() {
 }
 
 #[test]
+fn phase_reorder_basic() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "alpha", "Alpha");
+    create_phase(&dir, "beta", "Beta");
+    create_phase(&dir, "gamma", "Gamma");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "reorder",
+            "phase-3-gamma",
+            "--number",
+            "1",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Reordered 'phase-3-gamma' to position 1",
+        ));
+
+    // Verify with phase list
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["phase", "list", "--roadmap", "two-way", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("| 1 | Gamma")
+                .and(predicate::str::contains("| 2 | Alpha"))
+                .and(predicate::str::contains("| 3 | Beta")),
+        );
+}
+
+#[test]
+fn phase_reorder_by_number() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "alpha", "Alpha");
+    create_phase(&dir, "beta", "Beta");
+    create_phase(&dir, "gamma", "Gamma");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "reorder",
+            "3",
+            "--number",
+            "1",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Reordered 'phase-3-gamma' to position 1",
+        ));
+}
+
+#[test]
 fn phase_update_by_number() {
     let dir = TempDir::new().unwrap();
     init_with_roadmap(&dir);

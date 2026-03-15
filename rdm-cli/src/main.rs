@@ -146,6 +146,20 @@ enum PhaseCommand {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Reorder a phase to a new position.
+    Reorder {
+        /// Phase stem or number (e.g. phase-1-core or 1).
+        stem: String,
+        /// Target position (1-based).
+        #[arg(long)]
+        number: u32,
+        /// Roadmap the phase belongs to.
+        #[arg(long)]
+        roadmap: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Update a phase's status.
     Update {
         /// Phase stem or number (e.g. phase-1-core or 1).
@@ -363,6 +377,20 @@ fn run() -> Result<()> {
                         .load_phase(&project, &roadmap, &stem)
                         .context("failed to load phase")?;
                     print!("{}", display::format_phase_detail(&stem, &doc));
+                }
+                PhaseCommand::Reorder {
+                    stem,
+                    number,
+                    roadmap,
+                    project,
+                } => {
+                    let project = resolve_project(project, &repo)?;
+                    let stem = repo
+                        .resolve_phase_stem(&project, &roadmap, &stem)
+                        .context("failed to resolve phase")?;
+                    repo.reorder_phase(&project, &roadmap, &stem, number)
+                        .context("failed to reorder phase")?;
+                    println!("Reordered '{stem}' to position {number}");
                 }
                 PhaseCommand::Update {
                     stem,

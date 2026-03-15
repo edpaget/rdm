@@ -27,6 +27,13 @@ pub enum Error {
     ProjectNotSpecified,
     /// Failed to serialize the config file.
     ConfigSerialize(toml::ser::Error),
+    /// The requested phase number is out of range.
+    InvalidPhaseNumber {
+        /// The requested position.
+        requested: u32,
+        /// The maximum valid position (number of phases).
+        max: u32,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -70,6 +77,10 @@ impl std::fmt::Display for Error {
                 )
             }
             Error::ConfigSerialize(e) => write!(f, "failed to serialize config: {e}"),
+            Error::InvalidPhaseNumber { requested, max } => write!(
+                f,
+                "invalid phase number: {requested} (roadmap has {max} phases, valid range is 1\u{2013}{max})"
+            ),
         }
     }
 }

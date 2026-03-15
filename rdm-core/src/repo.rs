@@ -10,6 +10,16 @@ use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus, Priority, Project, Roadmap, Task, TaskStatus};
 
+/// Extracts the slug portion from a phase stem, stripping the `phase-N-` prefix.
+///
+/// For example, `"phase-1-core"` → `"core"`, `"phase-12-multi-word"` → `"multi-word"`.
+fn extract_phase_slug(stem: &str) -> &str {
+    // Strip "phase-", then skip digits and the following "-"
+    stem.strip_prefix("phase-")
+        .and_then(|rest| rest.find('-').map(|i| &rest[i + 1..]))
+        .unwrap_or(stem)
+}
+
 /// Represents an rdm plan repository on disk.
 #[derive(Debug, Clone)]
 pub struct PlanRepo {
@@ -728,6 +738,88 @@ impl PlanRepo {
         Ok(())
     }
 
+    // -- Reorder operations --
+
+    /// Reorders a phase to a new position within a roadmap.
+    ///
+    /// After the move, all phases are renumbered sequentially 1..N with no gaps.
+    /// If the phase is already at the requested position, this is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidPhaseNumber`] if `new_position` is 0 or greater
+    /// than the number of phases.
+    /// Returns [`Error::PhaseNotFound`] if no phase matches `phase_stem`.
+    /// Also propagates I/O and frontmatter errors.
+    pub fn reorder_phase(
+        &self,
+        project: &str,
+        roadmap: &str,
+        phase_stem: &str,
+        new_position: u32,
+    ) -> Result<()> {
+        let phases = self.list_phases(project, roadmap)?;
+        let max = phases.len() as u32;
+
+        if new_position == 0 || new_position > max {
+            return Err(Error::InvalidPhaseNumber {
+                requested: new_position,
+                max,
+            });
+        }
+
+        // Find the target phase index
+        let src_idx = phases
+            .iter()
+            .position(|(stem, _)| stem == phase_stem)
+            .ok_or_else(|| Error::PhaseNotFound(phase_stem.to_string()))?;
+
+        let dest_idx = (new_position - 1) as usize;
+
+        // No-op if already at position
+        if src_idx == dest_idx {
+            return Ok(());
+        }
+
+        // Remove and reinsert at new position
+        let mut reordered = phases;
+        let entry = reordered.remove(src_idx);
+        reordered.insert(dest_idx, entry);
+
+        // Build rename plan: compute new stems and detect changes
+        let mut rename_plan: Vec<(String, String, Document<Phase>)> = Vec::new(); // (old_stem, new_stem, doc)
+        let mut new_stems: Vec<String> = Vec::new();
+
+        for (i, (old_stem, mut doc)) in reordered.into_iter().enumerate() {
+            let new_number = (i + 1) as u32;
+            let slug = extract_phase_slug(&old_stem);
+            let new_stem = format!("phase-{new_number}-{slug}");
+            doc.frontmatter.phase = new_number;
+            new_stems.push(new_stem.clone());
+            if old_stem != new_stem {
+                rename_plan.push((old_stem, new_stem, doc));
+            }
+        }
+
+        // Delete old files first to avoid collisions
+        for (old_stem, _, _) in &rename_plan {
+            let path = self.phase_path(project, roadmap, old_stem);
+            fs::remove_file(&path)?;
+        }
+
+        // Write new files
+        for (_, new_stem, doc) in &rename_plan {
+            self.write_phase(project, roadmap, new_stem, doc)?;
+        }
+
+        // Update roadmap phases list
+        let mut roadmap_doc = self.load_roadmap(project, roadmap)?;
+        roadmap_doc.frontmatter.phases = new_stems;
+        self.write_roadmap(project, roadmap, &roadmap_doc)?;
+
+        Ok(())
+    }
+
     // -- Init --
 
     /// Initializes a new plan repo at the configured root.
@@ -1403,5 +1495,134 @@ mod tests {
         let low_pos = content.find("low-task").unwrap();
         assert!(crit_pos < high_pos);
         assert!(high_pos < low_pos);
+    }
+
+    // -- extract_phase_slug tests --
+
+    #[test]
+    fn extract_slug_simple() {
+        assert_eq!(extract_phase_slug("phase-1-core"), "core");
+    }
+
+    #[test]
+    fn extract_slug_multi_word() {
+        assert_eq!(extract_phase_slug("phase-12-multi-word"), "multi-word");
+    }
+
+    // -- reorder_phase tests --
+
+    fn setup_with_three_phases() -> (TempDir, PlanRepo) {
+        let (dir, repo) = setup_with_roadmap();
+        repo.create_phase("fbm", "two-way", "alpha", "Alpha", None)
+            .unwrap();
+        repo.create_phase("fbm", "two-way", "beta", "Beta", None)
+            .unwrap();
+        repo.create_phase("fbm", "two-way", "gamma", "Gamma", None)
+            .unwrap();
+        (dir, repo)
+    }
+
+    #[test]
+    fn reorder_move_to_first() {
+        let (_dir, repo) = setup_with_three_phases();
+        repo.reorder_phase("fbm", "two-way", "phase-3-gamma", 1)
+            .unwrap();
+
+        let phases = repo.list_phases("fbm", "two-way").unwrap();
+        assert_eq!(phases.len(), 3);
+        assert_eq!(phases[0].0, "phase-1-gamma");
+        assert_eq!(phases[0].1.frontmatter.phase, 1);
+        assert_eq!(phases[1].0, "phase-2-alpha");
+        assert_eq!(phases[1].1.frontmatter.phase, 2);
+        assert_eq!(phases[2].0, "phase-3-beta");
+        assert_eq!(phases[2].1.frontmatter.phase, 3);
+
+        // Verify roadmap phases list is updated
+        let roadmap = repo.load_roadmap("fbm", "two-way").unwrap();
+        assert_eq!(
+            roadmap.frontmatter.phases,
+            vec!["phase-1-gamma", "phase-2-alpha", "phase-3-beta"]
+        );
+    }
+
+    #[test]
+    fn reorder_move_to_last() {
+        let (_dir, repo) = setup_with_three_phases();
+        repo.reorder_phase("fbm", "two-way", "phase-1-alpha", 3)
+            .unwrap();
+
+        let phases = repo.list_phases("fbm", "two-way").unwrap();
+        assert_eq!(phases[0].0, "phase-1-beta");
+        assert_eq!(phases[1].0, "phase-2-gamma");
+        assert_eq!(phases[2].0, "phase-3-alpha");
+    }
+
+    #[test]
+    fn reorder_move_middle() {
+        let (_dir, repo) = setup_with_three_phases();
+        repo.reorder_phase("fbm", "two-way", "phase-1-alpha", 2)
+            .unwrap();
+
+        let phases = repo.list_phases("fbm", "two-way").unwrap();
+        assert_eq!(phases[0].0, "phase-1-beta");
+        assert_eq!(phases[1].0, "phase-2-alpha");
+        assert_eq!(phases[2].0, "phase-3-gamma");
+    }
+
+    #[test]
+    fn reorder_same_position_noop() {
+        let (_dir, repo) = setup_with_three_phases();
+        repo.reorder_phase("fbm", "two-way", "phase-2-beta", 2)
+            .unwrap();
+
+        // Everything should remain unchanged
+        let phases = repo.list_phases("fbm", "two-way").unwrap();
+        assert_eq!(phases[0].0, "phase-1-alpha");
+        assert_eq!(phases[1].0, "phase-2-beta");
+        assert_eq!(phases[2].0, "phase-3-gamma");
+    }
+
+    #[test]
+    fn reorder_invalid_position_zero() {
+        let (_dir, repo) = setup_with_three_phases();
+        let result = repo.reorder_phase("fbm", "two-way", "phase-1-alpha", 0);
+        assert!(matches!(
+            result,
+            Err(Error::InvalidPhaseNumber {
+                requested: 0,
+                max: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn reorder_invalid_position_too_large() {
+        let (_dir, repo) = setup_with_three_phases();
+        let result = repo.reorder_phase("fbm", "two-way", "phase-1-alpha", 4);
+        assert!(matches!(
+            result,
+            Err(Error::InvalidPhaseNumber {
+                requested: 4,
+                max: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn reorder_preserves_body() {
+        let (_dir, repo) = setup_with_three_phases();
+
+        // Write a body to phase 3
+        let mut doc = repo.load_phase("fbm", "two-way", "phase-3-gamma").unwrap();
+        doc.body = "## Acceptance Criteria\n\n- Things work.\n".to_string();
+        repo.write_phase("fbm", "two-way", "phase-3-gamma", &doc)
+            .unwrap();
+
+        repo.reorder_phase("fbm", "two-way", "phase-3-gamma", 1)
+            .unwrap();
+
+        let loaded = repo.load_phase("fbm", "two-way", "phase-1-gamma").unwrap();
+        assert_eq!(loaded.body, "## Acceptance Criteria\n\n- Things work.\n");
+        assert_eq!(loaded.frontmatter.title, "Gamma");
     }
 }
