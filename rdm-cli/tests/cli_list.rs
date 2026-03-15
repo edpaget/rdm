@@ -101,6 +101,72 @@ fn list_with_progress() {
 }
 
 #[test]
+fn list_all_projects() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    // Create two projects with roadmaps
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "create", "alpha", "--title", "Alpha Project"])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "create", "beta", "--title", "Beta Project"])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "r1",
+            "--title",
+            "Road One",
+            "--project",
+            "alpha",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "r2",
+            "--title",
+            "Road Two",
+            "--project",
+            "beta",
+        ])
+        .assert()
+        .success();
+
+    let assert = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["list", "--all"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("Project: alpha"));
+    assert!(stdout.contains("Project: beta"));
+    assert!(stdout.contains("r1 — Road One"));
+    assert!(stdout.contains("r2 — Road Two"));
+}
+
+#[test]
 fn list_no_project_fails() {
     let dir = TempDir::new().unwrap();
     rdm()

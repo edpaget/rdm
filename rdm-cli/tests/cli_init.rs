@@ -42,6 +42,37 @@ fn init_twice_fails() {
 }
 
 #[test]
+fn init_via_rdm_root_env_var() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .env("RDM_ROOT", dir.path())
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Initialized plan repo"));
+
+    assert!(dir.path().join("rdm.toml").exists());
+}
+
+#[test]
+fn root_flag_overrides_rdm_root_env() {
+    let env_dir = TempDir::new().unwrap();
+    let flag_dir = TempDir::new().unwrap();
+
+    rdm()
+        .env("RDM_ROOT", env_dir.path())
+        .arg("--root")
+        .arg(flag_dir.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    // Flag dir should have the repo, env dir should not
+    assert!(flag_dir.path().join("rdm.toml").exists());
+    assert!(!env_dir.path().join("rdm.toml").exists());
+}
+
+#[test]
 fn no_subcommand_shows_usage() {
     rdm()
         .assert()

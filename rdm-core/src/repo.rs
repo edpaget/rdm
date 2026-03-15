@@ -204,8 +204,12 @@ impl PlanRepo {
 
     /// Creates a new project directory with `roadmaps/` and `tasks/` subdirectories.
     ///
-    /// Returns `DuplicateSlug` if the project directory already exists.
-    pub fn create_project(&self, name: &str, title: &str) -> Result<()> {
+    /// # Errors
+    ///
+    /// Returns [`Error::DuplicateSlug`] if the project directory already exists,
+    /// [`Error::Io`] if directory or file creation fails, or
+    /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
+    pub fn create_project(&self, name: &str, title: &str) -> Result<Document<Project>> {
         let path = self.project_path(name);
         if path.exists() {
             return Err(Error::DuplicateSlug(name.to_string()));
@@ -222,10 +226,14 @@ impl PlanRepo {
         };
         let content = doc.render()?;
         fs::write(path.join("project.md"), content)?;
-        Ok(())
+        Ok(doc)
     }
 
     /// Lists all projects in the plan repo, sorted alphabetically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the projects directory cannot be read.
     pub fn list_projects(&self) -> Result<Vec<String>> {
         let projects_dir = self.root.join("projects");
         if !projects_dir.exists() {
@@ -249,8 +257,12 @@ impl PlanRepo {
 
     /// Creates a new roadmap within a project.
     ///
-    /// Returns `ProjectNotFound` if the project doesn't exist, or
-    /// `DuplicateSlug` if the roadmap directory already exists.
+    /// # Errors
+    ///
+    /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
+    /// [`Error::DuplicateSlug`] if the roadmap directory already exists,
+    /// [`Error::Io`] if file creation fails, or
+    /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
     pub fn create_roadmap(
         &self,
         project: &str,
@@ -281,7 +293,12 @@ impl PlanRepo {
 
     /// Lists all roadmaps for a project, sorted by slug.
     ///
-    /// Returns `ProjectNotFound` if the project doesn't exist.
+    /// # Errors
+    ///
+    /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
+    /// [`Error::Io`] if the directory cannot be read, or
+    /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
+    /// roadmap file has invalid frontmatter.
     pub fn list_roadmaps(&self, project: &str) -> Result<Vec<Document<Roadmap>>> {
         if !self.project_path(project).exists() {
             return Err(Error::ProjectNotFound(project.to_string()));
@@ -315,6 +332,13 @@ impl PlanRepo {
     /// Lists all phases in a roadmap, sorted by phase number.
     ///
     /// Returns `(stem, Document<Phase>)` tuples.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RoadmapNotFound`] if the roadmap directory doesn't
+    /// exist, [`Error::Io`] if the directory cannot be read, or
+    /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
+    /// phase file has invalid frontmatter.
     pub fn list_phases(
         &self,
         project: &str,
@@ -328,7 +352,9 @@ impl PlanRepo {
         let mut phases: Vec<(String, Document<Phase>)> = Vec::new();
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
-            let name = entry.file_name().into_string().unwrap_or_default();
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
             if name == "roadmap.md" || !name.ends_with(".md") {
                 continue;
             }
@@ -343,8 +369,13 @@ impl PlanRepo {
     /// Creates a new phase within a roadmap.
     ///
     /// If `phase_number` is `None`, auto-assigns the next number.
-    /// Returns `RoadmapNotFound` if the roadmap doesn't exist, or
-    /// `DuplicateSlug` if a phase with the same stem already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
+    /// [`Error::DuplicateSlug`] if a phase with the same stem already exists,
+    /// [`Error::Io`] if file creation fails, or
+    /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
     pub fn create_phase(
         &self,
         project: &str,
@@ -398,6 +429,13 @@ impl PlanRepo {
     ///
     /// When status is `Done`, auto-sets `completed` to today.
     /// When status is not `Done`, clears `completed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PhaseNotFound`] if the phase file doesn't exist,
+    /// [`Error::Io`] if reading or writing fails, or
+    /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+    /// existing phase file has invalid frontmatter.
     pub fn update_phase(
         &self,
         project: &str,
@@ -442,9 +480,7 @@ impl PlanRepo {
         fs::create_dir_all(repo.root())?;
 
         let config = Config::default();
-        let toml_str = config
-            .to_toml()
-            .expect("default config serialization should not fail");
+        let toml_str = config.to_toml()?;
         fs::write(repo.config_path(), toml_str)?;
 
         fs::create_dir_all(repo.root().join("projects"))?;

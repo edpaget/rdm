@@ -26,9 +26,9 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Returns [`toml::ser::Error`] if serialization fails.
-    pub fn to_toml(&self) -> std::result::Result<String, toml::ser::Error> {
-        toml::to_string_pretty(self)
+    /// Returns [`Error::ConfigSerialize`] if serialization fails.
+    pub fn to_toml(&self) -> Result<String> {
+        Ok(toml::to_string_pretty(self)?)
     }
 }
 

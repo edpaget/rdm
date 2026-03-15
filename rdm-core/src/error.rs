@@ -23,6 +23,8 @@ pub enum Error {
     DuplicateSlug(String),
     /// No project was specified and no default project is configured.
     ProjectNotSpecified,
+    /// Failed to serialize the config file.
+    ConfigSerialize(toml::ser::Error),
 }
 
 impl std::fmt::Display for Error {
@@ -62,6 +64,7 @@ impl std::fmt::Display for Error {
                     "no project specified — use --project or set default_project in rdm.toml"
                 )
             }
+            Error::ConfigSerialize(e) => write!(f, "failed to serialize config: {e}"),
         }
     }
 }
@@ -72,6 +75,7 @@ impl std::error::Error for Error {
             Error::Io(e) => Some(e),
             Error::FrontmatterParse(e) => Some(e),
             Error::ConfigParse(e) => Some(e),
+            Error::ConfigSerialize(e) => Some(e),
             _ => None,
         }
     }
@@ -92,6 +96,12 @@ impl From<serde_yaml::Error> for Error {
 impl From<toml::de::Error> for Error {
     fn from(e: toml::de::Error) -> Self {
         Error::ConfigParse(e)
+    }
+}
+
+impl From<toml::ser::Error> for Error {
+    fn from(e: toml::ser::Error) -> Self {
+        Error::ConfigSerialize(e)
     }
 }
 

@@ -168,9 +168,10 @@ fn run() -> Result<()> {
             match command {
                 ProjectCommand::Create { name, title } => {
                     let title = title.as_deref().unwrap_or(&name);
-                    repo.create_project(&name, title)
+                    let doc = repo
+                        .create_project(&name, title)
                         .context("failed to create project")?;
-                    println!("Created project '{name}'");
+                    println!("Created project '{}'", doc.frontmatter.name);
                 }
                 ProjectCommand::List => {
                     let projects = repo.list_projects().context("failed to list projects")?;
@@ -276,9 +277,10 @@ fn run() -> Result<()> {
                     .context("failed to list roadmaps")?;
                 let mut entries = Vec::new();
                 for roadmap_doc in roadmaps {
+                    let slug = &roadmap_doc.frontmatter.roadmap;
                     let phases = repo
-                        .list_phases(project, &roadmap_doc.frontmatter.roadmap)
-                        .unwrap_or_default();
+                        .list_phases(project, slug)
+                        .with_context(|| format!("failed to list phases for roadmap '{slug}'"))?;
                     entries.push((roadmap_doc, phases));
                 }
                 print!("{}", display::format_roadmap_list(&entries));

@@ -34,7 +34,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Hand-written error types in `rdm-core` with `Display`/`Error` impls
 - `rdm-server` stub binary
 
+### Changed
+
+- `create_project` now returns `Document<Project>` for consistency with other create methods
+- `Config::to_toml` now returns `crate::error::Result` instead of leaking `toml::ser::Error`
+
 ### Fixed
 
 - `Config::from_toml` now returns `crate::error::Error` instead of leaking `toml::de::Error`
+- `rdm list` now propagates phase-loading errors instead of silently swallowing them
 - CLI integration tests use `tempfile::TempDir` instead of `.tmp/` in project root
