@@ -484,3 +484,202 @@ fn phase_update_by_number() {
         .success()
         .stdout(predicate::str::contains("Updated 'phase-1-core' → done"));
 }
+
+// -- phase move tests --
+
+fn init_with_two_roadmaps(dir: &TempDir) {
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("init")
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "create", "fbm"])
+        .assert()
+        .success();
+    for (slug, title) in [("src", "Source"), ("dst", "Destination")] {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args([
+                "roadmap",
+                "create",
+                slug,
+                "--title",
+                title,
+                "--project",
+                "fbm",
+            ])
+            .assert()
+            .success();
+    }
+    for (slug, title, roadmap) in [
+        ("alpha", "Alpha", "src"),
+        ("beta", "Beta", "src"),
+        ("gamma", "Gamma", "src"),
+        ("delta", "Delta", "dst"),
+        ("epsilon", "Epsilon", "dst"),
+    ] {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args([
+                "phase",
+                "create",
+                slug,
+                "--title",
+                title,
+                "--roadmap",
+                roadmap,
+                "--project",
+                "fbm",
+            ])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn phase_move_basic() {
+    let dir = TempDir::new().unwrap();
+    init_with_two_roadmaps(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "move",
+            "phase-2-beta",
+            "--from",
+            "src",
+            "--to",
+            "dst",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Moved 'phase-2-beta' from 'src' to 'dst'",
+        ));
+
+    // Verify source
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["phase", "list", "--roadmap", "src", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("| 1 | Alpha")
+                .and(predicate::str::contains("| 2 | Gamma"))
+                .and(predicate::str::contains("Beta").not()),
+        );
+
+    // Verify destination
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["phase", "list", "--roadmap", "dst", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("| 1 | Delta")
+                .and(predicate::str::contains("| 2 | Epsilon"))
+                .and(predicate::str::contains("| 3 | Beta")),
+        );
+}
+
+#[test]
+fn phase_move_with_position() {
+    let dir = TempDir::new().unwrap();
+    init_with_two_roadmaps(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "move",
+            "phase-1-alpha",
+            "--from",
+            "src",
+            "--to",
+            "dst",
+            "--number",
+            "1",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["phase", "list", "--roadmap", "dst", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("| 1 | Alpha")
+                .and(predicate::str::contains("| 2 | Delta"))
+                .and(predicate::str::contains("| 3 | Epsilon")),
+        );
+}
+
+#[test]
+fn phase_move_by_number() {
+    let dir = TempDir::new().unwrap();
+    init_with_two_roadmaps(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "move",
+            "2",
+            "--from",
+            "src",
+            "--to",
+            "dst",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Moved 'phase-2-beta' from 'src' to 'dst'",
+        ));
+}
+
+#[test]
+fn phase_move_same_roadmap_error() {
+    let dir = TempDir::new().unwrap();
+    init_with_two_roadmaps(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "move",
+            "phase-1-alpha",
+            "--from",
+            "src",
+            "--to",
+            "src",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("source and destination roadmaps are the same")
+                .and(predicate::str::contains("rdm phase reorder")),
+        );
+}

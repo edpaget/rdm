@@ -738,6 +738,54 @@ impl PlanRepo {
         Ok(())
     }
 
+    // -- Renumber helper --
+
+    /// Renumbers a list of phases sequentially 1..N, deleting old files whose
+    /// stems changed, writing new files, and updating the roadmap's phases list.
+    ///
+    /// Returns the new stems in order.
+    fn renumber_phases(
+        &self,
+        project: &str,
+        roadmap: &str,
+        ordered_phases: Vec<(String, Document<Phase>)>,
+    ) -> Result<Vec<String>> {
+        let mut rename_plan: Vec<(String, String, Document<Phase>)> = Vec::new();
+        let mut new_stems: Vec<String> = Vec::new();
+
+        for (i, (old_stem, mut doc)) in ordered_phases.into_iter().enumerate() {
+            let new_number = (i + 1) as u32;
+            let slug = extract_phase_slug(&old_stem);
+            let new_stem = format!("phase-{new_number}-{slug}");
+            doc.frontmatter.phase = new_number;
+            new_stems.push(new_stem.clone());
+            if old_stem != new_stem {
+                rename_plan.push((old_stem, new_stem, doc));
+            }
+        }
+
+        // Delete old files first to avoid collisions (skip if file doesn't exist,
+        // e.g. a placeholder stem from move_phase)
+        for (old_stem, _, _) in &rename_plan {
+            let path = self.phase_path(project, roadmap, old_stem);
+            if path.exists() {
+                fs::remove_file(&path)?;
+            }
+        }
+
+        // Write new files
+        for (_, new_stem, doc) in &rename_plan {
+            self.write_phase(project, roadmap, new_stem, doc)?;
+        }
+
+        // Update roadmap phases list
+        let mut roadmap_doc = self.load_roadmap(project, roadmap)?;
+        roadmap_doc.frontmatter.phases = new_stems.clone();
+        self.write_roadmap(project, roadmap, &roadmap_doc)?;
+
+        Ok(new_stems)
+    }
+
     // -- Reorder operations --
 
     /// Reorders a phase to a new position within a roadmap.
@@ -786,36 +834,85 @@ impl PlanRepo {
         let entry = reordered.remove(src_idx);
         reordered.insert(dest_idx, entry);
 
-        // Build rename plan: compute new stems and detect changes
-        let mut rename_plan: Vec<(String, String, Document<Phase>)> = Vec::new(); // (old_stem, new_stem, doc)
-        let mut new_stems: Vec<String> = Vec::new();
+        self.renumber_phases(project, roadmap, reordered)?;
+        Ok(())
+    }
 
-        for (i, (old_stem, mut doc)) in reordered.into_iter().enumerate() {
-            let new_number = (i + 1) as u32;
-            let slug = extract_phase_slug(&old_stem);
-            let new_stem = format!("phase-{new_number}-{slug}");
-            doc.frontmatter.phase = new_number;
-            new_stems.push(new_stem.clone());
-            if old_stem != new_stem {
-                rename_plan.push((old_stem, new_stem, doc));
+    // -- Move operations --
+
+    /// Moves a phase from one roadmap to another.
+    ///
+    /// Removes the phase from `from_roadmap`, inserts it into `to_roadmap` at
+    /// the given `position` (1-based, or appended if `None`), and renumbers
+    /// both roadmaps so neither has gaps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SameRoadmap`] if `from_roadmap == to_roadmap`.
+    /// Returns [`Error::PhaseNotFound`] if no phase matches `phase_stem` in the source.
+    /// Returns [`Error::DuplicateSlug`] if the destination already has a phase with the same slug.
+    /// Returns [`Error::InvalidPhaseNumber`] if `position` is 0 or greater than dest len + 1.
+    /// Also propagates I/O and frontmatter errors.
+    pub fn move_phase(
+        &self,
+        project: &str,
+        from_roadmap: &str,
+        to_roadmap: &str,
+        phase_stem: &str,
+        position: Option<u32>,
+    ) -> Result<()> {
+        if from_roadmap == to_roadmap {
+            return Err(Error::SameRoadmap(from_roadmap.to_string()));
+        }
+
+        // Load source phases and find the target
+        let mut src_phases = self.list_phases(project, from_roadmap)?;
+        let src_idx = src_phases
+            .iter()
+            .position(|(stem, _)| stem == phase_stem)
+            .ok_or_else(|| Error::PhaseNotFound(phase_stem.to_string()))?;
+
+        // Check for duplicate slug in destination
+        let moved_slug = extract_phase_slug(&src_phases[src_idx].0).to_string();
+        let dest_phases = self.list_phases(project, to_roadmap)?;
+        for (dest_stem, _) in &dest_phases {
+            if extract_phase_slug(dest_stem) == moved_slug {
+                return Err(Error::DuplicateSlug(moved_slug));
             }
         }
 
-        // Delete old files first to avoid collisions
-        for (old_stem, _, _) in &rename_plan {
-            let path = self.phase_path(project, roadmap, old_stem);
-            fs::remove_file(&path)?;
-        }
+        // Validate position
+        let dest_len = dest_phases.len() as u32;
+        let insert_pos = match position {
+            Some(p) => {
+                if p == 0 || p > dest_len + 1 {
+                    return Err(Error::InvalidPhaseNumber {
+                        requested: p,
+                        max: dest_len + 1,
+                    });
+                }
+                (p - 1) as usize
+            }
+            None => dest_phases.len(),
+        };
 
-        // Write new files
-        for (_, new_stem, doc) in &rename_plan {
-            self.write_phase(project, roadmap, new_stem, doc)?;
-        }
+        // Remove from source
+        let (_, moved_doc) = src_phases.remove(src_idx);
 
-        // Update roadmap phases list
-        let mut roadmap_doc = self.load_roadmap(project, roadmap)?;
-        roadmap_doc.frontmatter.phases = new_stems;
-        self.write_roadmap(project, roadmap, &roadmap_doc)?;
+        // Delete the old source file
+        let old_path = self.phase_path(project, from_roadmap, phase_stem);
+        fs::remove_file(&old_path)?;
+
+        // Renumber source (close gap)
+        self.renumber_phases(project, from_roadmap, src_phases)?;
+
+        // Insert into destination at position
+        let mut dest_phases = dest_phases;
+        let placeholder_stem = format!("phase-0-{moved_slug}");
+        dest_phases.insert(insert_pos, (placeholder_stem, moved_doc));
+
+        // Renumber destination
+        self.renumber_phases(project, to_roadmap, dest_phases)?;
 
         Ok(())
     }
@@ -1609,6 +1706,18 @@ mod tests {
     }
 
     #[test]
+    fn reorder_preserves_body_after_refactor() {
+        // Extra sanity check that renumber_phases helper works via reorder
+        let (_dir, repo) = setup_with_three_phases();
+        repo.reorder_phase("fbm", "two-way", "phase-2-beta", 1)
+            .unwrap();
+        let phases = repo.list_phases("fbm", "two-way").unwrap();
+        assert_eq!(phases[0].0, "phase-1-beta");
+        assert_eq!(phases[1].0, "phase-2-alpha");
+        assert_eq!(phases[2].0, "phase-3-gamma");
+    }
+
+    #[test]
     fn reorder_preserves_body() {
         let (_dir, repo) = setup_with_three_phases();
 
@@ -1624,5 +1733,184 @@ mod tests {
         let loaded = repo.load_phase("fbm", "two-way", "phase-1-gamma").unwrap();
         assert_eq!(loaded.body, "## Acceptance Criteria\n\n- Things work.\n");
         assert_eq!(loaded.frontmatter.title, "Gamma");
+    }
+
+    // -- move_phase tests --
+
+    fn setup_with_two_roadmaps() -> (TempDir, PlanRepo) {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        repo.create_project("fbm", "FBM").unwrap();
+        repo.create_roadmap("fbm", "src", "Source").unwrap();
+        repo.create_roadmap("fbm", "dst", "Destination").unwrap();
+
+        repo.create_phase("fbm", "src", "alpha", "Alpha", None)
+            .unwrap();
+        repo.create_phase("fbm", "src", "beta", "Beta", None)
+            .unwrap();
+        repo.create_phase("fbm", "src", "gamma", "Gamma", None)
+            .unwrap();
+
+        repo.create_phase("fbm", "dst", "delta", "Delta", None)
+            .unwrap();
+        repo.create_phase("fbm", "dst", "epsilon", "Epsilon", None)
+            .unwrap();
+
+        (dir, repo)
+    }
+
+    #[test]
+    fn move_phase_append() {
+        let (_dir, repo) = setup_with_two_roadmaps();
+        repo.move_phase("fbm", "src", "dst", "phase-2-beta", None)
+            .unwrap();
+
+        let src = repo.list_phases("fbm", "src").unwrap();
+        assert_eq!(src.len(), 2);
+        assert_eq!(src[0].0, "phase-1-alpha");
+        assert_eq!(src[1].0, "phase-2-gamma");
+
+        let dst = repo.list_phases("fbm", "dst").unwrap();
+        assert_eq!(dst.len(), 3);
+        assert_eq!(dst[0].0, "phase-1-delta");
+        assert_eq!(dst[1].0, "phase-2-epsilon");
+        assert_eq!(dst[2].0, "phase-3-beta");
+    }
+
+    #[test]
+    fn move_phase_insert_at_position() {
+        let (_dir, repo) = setup_with_two_roadmaps();
+        repo.move_phase("fbm", "src", "dst", "phase-1-alpha", Some(1))
+            .unwrap();
+
+        let dst = repo.list_phases("fbm", "dst").unwrap();
+        assert_eq!(dst.len(), 3);
+        assert_eq!(dst[0].0, "phase-1-alpha");
+        assert_eq!(dst[1].0, "phase-2-delta");
+        assert_eq!(dst[2].0, "phase-3-epsilon");
+    }
+
+    #[test]
+    fn move_phase_insert_middle() {
+        let (_dir, repo) = setup_with_two_roadmaps();
+        repo.move_phase("fbm", "src", "dst", "phase-1-alpha", Some(2))
+            .unwrap();
+
+        let dst = repo.list_phases("fbm", "dst").unwrap();
+        assert_eq!(dst.len(), 3);
+        assert_eq!(dst[0].0, "phase-1-delta");
+        assert_eq!(dst[1].0, "phase-2-alpha");
+        assert_eq!(dst[2].0, "phase-3-epsilon");
+    }
+
+    #[test]
+    fn move_phase_same_roadmap_error() {
+        let (_dir, repo) = setup_with_two_roadmaps();
+        let result = repo.move_phase("fbm", "src", "src", "phase-1-alpha", None);
+        assert!(matches!(result, Err(Error::SameRoadmap(ref s)) if s == "src"));
+    }
+
+    #[test]
+    fn move_phase_not_found() {
+        let (_dir, repo) = setup_with_two_roadmaps();
+        let result = repo.move_phase("fbm", "src", "dst", "phase-99-nope", None);
+        assert!(matches!(result, Err(Error::PhaseNotFound(_))));
+    }
+
+    #[test]
+    fn move_phase_duplicate_slug() {
+        let (_dir, repo) = setup_with_two_roadmaps();
+        // Create a phase with slug "delta" in src — dst already has "delta"
+        repo.create_phase("fbm", "src", "delta", "Delta Dup", Some(4))
+            .unwrap();
+        let result = repo.move_phase("fbm", "src", "dst", "phase-4-delta", None);
+        assert!(matches!(result, Err(Error::DuplicateSlug(ref s)) if s == "delta"));
+    }
+
+    #[test]
+    fn move_phase_invalid_position_zero() {
+        let (_dir, repo) = setup_with_two_roadmaps();
+        let result = repo.move_phase("fbm", "src", "dst", "phase-1-alpha", Some(0));
+        assert!(matches!(
+            result,
+            Err(Error::InvalidPhaseNumber {
+                requested: 0,
+                max: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn move_phase_invalid_position_too_large() {
+        let (_dir, repo) = setup_with_two_roadmaps();
+        let result = repo.move_phase("fbm", "src", "dst", "phase-1-alpha", Some(4));
+        assert!(matches!(
+            result,
+            Err(Error::InvalidPhaseNumber {
+                requested: 4,
+                max: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn move_phase_preserves_body() {
+        let (_dir, repo) = setup_with_two_roadmaps();
+
+        // Add body content to the phase we'll move
+        let mut doc = repo.load_phase("fbm", "src", "phase-2-beta").unwrap();
+        doc.body = "## Goals\n\n- Ship it.\n".to_string();
+        repo.write_phase("fbm", "src", "phase-2-beta", &doc)
+            .unwrap();
+
+        repo.move_phase("fbm", "src", "dst", "phase-2-beta", None)
+            .unwrap();
+
+        let loaded = repo.load_phase("fbm", "dst", "phase-3-beta").unwrap();
+        assert_eq!(loaded.body, "## Goals\n\n- Ship it.\n");
+        assert_eq!(loaded.frontmatter.title, "Beta");
+    }
+
+    #[test]
+    fn move_phase_source_becomes_empty() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        repo.create_project("fbm", "FBM").unwrap();
+        repo.create_roadmap("fbm", "src", "Source").unwrap();
+        repo.create_roadmap("fbm", "dst", "Destination").unwrap();
+        repo.create_phase("fbm", "src", "only", "Only Phase", None)
+            .unwrap();
+
+        repo.move_phase("fbm", "src", "dst", "phase-1-only", None)
+            .unwrap();
+
+        let src = repo.list_phases("fbm", "src").unwrap();
+        assert!(src.is_empty());
+
+        let src_roadmap = repo.load_roadmap("fbm", "src").unwrap();
+        assert!(src_roadmap.frontmatter.phases.is_empty());
+
+        let dst = repo.list_phases("fbm", "dst").unwrap();
+        assert_eq!(dst.len(), 1);
+        assert_eq!(dst[0].0, "phase-1-only");
+    }
+
+    #[test]
+    fn move_phase_both_roadmaps_updated() {
+        let (_dir, repo) = setup_with_two_roadmaps();
+        repo.move_phase("fbm", "src", "dst", "phase-2-beta", Some(1))
+            .unwrap();
+
+        let src_roadmap = repo.load_roadmap("fbm", "src").unwrap();
+        assert_eq!(
+            src_roadmap.frontmatter.phases,
+            vec!["phase-1-alpha", "phase-2-gamma"]
+        );
+
+        let dst_roadmap = repo.load_roadmap("fbm", "dst").unwrap();
+        assert_eq!(
+            dst_roadmap.frontmatter.phases,
+            vec!["phase-1-beta", "phase-2-delta", "phase-3-epsilon"]
+        );
     }
 }

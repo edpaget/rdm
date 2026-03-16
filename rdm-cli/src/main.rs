@@ -146,6 +146,23 @@ enum PhaseCommand {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Move a phase from one roadmap to another.
+    Move {
+        /// Phase stem or number (e.g. phase-1-core or 1).
+        stem: String,
+        /// Source roadmap.
+        #[arg(long)]
+        from: String,
+        /// Destination roadmap.
+        #[arg(long)]
+        to: String,
+        /// Position in destination (1-based, appends if omitted).
+        #[arg(long)]
+        number: Option<u32>,
+        /// Project the roadmaps belong to.
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Reorder a phase to a new position.
     Reorder {
         /// Phase stem or number (e.g. phase-1-core or 1).
@@ -377,6 +394,21 @@ fn run() -> Result<()> {
                         .load_phase(&project, &roadmap, &stem)
                         .context("failed to load phase")?;
                     print!("{}", display::format_phase_detail(&stem, &doc));
+                }
+                PhaseCommand::Move {
+                    stem,
+                    from,
+                    to,
+                    number,
+                    project,
+                } => {
+                    let project = resolve_project(project, &repo)?;
+                    let stem = repo
+                        .resolve_phase_stem(&project, &from, &stem)
+                        .context("failed to resolve phase")?;
+                    repo.move_phase(&project, &from, &to, &stem, number)
+                        .context("failed to move phase")?;
+                    println!("Moved '{stem}' from '{from}' to '{to}'");
                 }
                 PhaseCommand::Reorder {
                     stem,

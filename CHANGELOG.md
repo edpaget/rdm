@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm phase move` command to move a phase between roadmaps with automatic renumbering
 - `TaskStatusFilter` type with `Display`/`FromStr` for type-safe status filtering (accepts `all` or any `TaskStatus`)
 - `rdm task create`, `rdm task show`, `rdm task update`, and `rdm task list` CLI commands
 - `rdm promote` command to convert a task into a roadmap with an initial phase
