@@ -352,7 +352,7 @@ fn open_editor() -> Result<Option<String>> {
 
     writeln!(
         tmp,
-        "# Enter body content below. Lines starting with '#' will be stripped."
+        "<!-- Enter body content below. This comment will be removed. -->"
     )?;
     tmp.flush()?;
 
@@ -374,7 +374,10 @@ fn open_editor() -> Result<Option<String>> {
 
     let body: String = content
         .lines()
-        .filter(|line| !line.starts_with('#'))
+        .filter(|line| {
+            let trimmed = line.trim();
+            !(trimmed.starts_with("<!--") && trimmed.ends_with("-->"))
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let body = body.trim().to_string();
