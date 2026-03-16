@@ -355,3 +355,26 @@ fn roadmap_create_missing_project() {
         .failure()
         .stderr(predicate::str::contains("project not found"));
 }
+
+#[test]
+fn roadmap_create_no_edit_skips_editor() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "no-edit-rm",
+            "--title",
+            "No Edit Roadmap",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created roadmap 'no-edit-rm'"));
+}

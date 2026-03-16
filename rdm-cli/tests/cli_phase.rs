@@ -679,3 +679,54 @@ fn phase_show_body_and_no_body() {
                 .and(predicate::str::contains("Phase body content.").not()),
         );
 }
+
+#[test]
+fn phase_create_no_edit_skips_editor() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "no-edit",
+            "--title",
+            "No Edit Phase",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created phase"));
+}
+
+#[test]
+fn phase_update_no_edit_skips_editor() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "1",
+            "--status",
+            "in-progress",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("in-progress"));
+}

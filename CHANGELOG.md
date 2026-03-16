@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `phase remove` command to delete a phase from a roadmap (accepts stem or number)
+- Interactive `$EDITOR` fallback when no `--body` or stdin is provided (checks `$VISUAL`, then `$EDITOR`, then `vi`)
+- `--no-edit` flag on all `create` and `update` commands to suppress interactive editor
 - `--body` flag on all `create` and `update` commands for roadmaps, phases, and tasks
 - Piped stdin support: body content can be provided via stdin (e.g., `cat notes.md | rdm task create ...`)
 - `rdm roadmap show` now displays document body content after the phase table

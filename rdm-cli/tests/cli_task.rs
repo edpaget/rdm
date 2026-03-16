@@ -603,3 +603,92 @@ fn task_show_body_and_no_body() {
                 .and(predicate::str::contains("Task body content.").not()),
         );
 }
+
+#[test]
+fn task_create_no_edit_skips_editor() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "no-edit-task",
+            "--title",
+            "No Edit",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created task 'no-edit-task'"));
+
+    // Verify no body content was written
+    let task_file = dir.path().join("projects/fbm/tasks/no-edit-task.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    // File should have frontmatter but no body after the closing ---
+    let after_frontmatter = content.split("---").nth(2).unwrap_or("");
+    assert!(
+        after_frontmatter.trim().is_empty(),
+        "expected no body, got: {after_frontmatter}"
+    );
+}
+
+#[test]
+fn task_update_no_edit_skips_editor() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "my-task", "My Task");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "my-task",
+            "--status",
+            "in-progress",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("status: in-progress"));
+}
+
+#[test]
+fn task_create_no_edit_with_body_flag_still_works() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    // --no-edit + --body should use the body flag content
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "both-flags",
+            "--title",
+            "Both Flags",
+            "--project",
+            "fbm",
+            "--body",
+            "Explicit body.",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let task_file = dir.path().join("projects/fbm/tasks/both-flags.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    assert!(
+        content.contains("Explicit body."),
+        "expected body content, got: {content}"
+    );
+}

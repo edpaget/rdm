@@ -1,4 +1,4 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process;
 
@@ -101,6 +101,9 @@ enum RoadmapCommand {
         /// Body content for the roadmap.
         #[arg(long)]
         body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
     },
     /// Show a roadmap and its phases.
     Show {
@@ -142,6 +145,9 @@ enum PhaseCommand {
         /// Body content for the phase.
         #[arg(long)]
         body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
     },
     /// List phases in a roadmap.
     List {
@@ -182,6 +188,9 @@ enum PhaseCommand {
         /// Body content for the phase.
         #[arg(long)]
         body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
     },
     /// Remove a phase from a roadmap.
     Remove {
@@ -217,6 +226,9 @@ enum TaskCommand {
         /// Body content for the task.
         #[arg(long)]
         body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
     },
     /// Show a task.
     Show {
@@ -248,6 +260,9 @@ enum TaskCommand {
         /// Body content for the task.
         #[arg(long)]
         body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
     },
     /// List tasks.
     List {
@@ -291,10 +306,12 @@ fn resolve_project(flag: Option<String>, repo: &PlanRepo) -> Result<String> {
     )
 }
 
-/// Resolve body content from `--body` flag or piped stdin.
-/// Returns an error if both are provided.
-fn resolve_body(body_flag: Option<String>) -> Result<Option<String>> {
-    let stdin_body = if !io::stdin().is_terminal() {
+/// Resolve body content from `--body` flag, piped stdin, or interactive editor.
+/// Returns an error if both `--body` and stdin are provided.
+fn resolve_body(body_flag: Option<String>, no_edit: bool) -> Result<Option<String>> {
+    let is_tty = io::stdin().is_terminal();
+
+    let stdin_body = if !is_tty {
         let mut buf = String::new();
         io::stdin().read_to_string(&mut buf)?;
         let trimmed = buf.trim_end_matches('\n');
@@ -310,7 +327,62 @@ fn resolve_body(body_flag: Option<String>) -> Result<Option<String>> {
     match (body_flag, stdin_body) {
         (Some(_), Some(_)) => bail!("cannot use --body and piped stdin together; pick one"),
         (Some(b), None) => Ok(Some(b)),
-        (None, stdin) => Ok(stdin),
+        (None, Some(s)) => Ok(Some(s)),
+        (None, None) => {
+            if no_edit || !is_tty {
+                Ok(None)
+            } else {
+                open_editor()
+            }
+        }
+    }
+}
+
+/// Launch `$VISUAL` / `$EDITOR` / `vi` to interactively edit body content.
+/// Returns `None` if the user saves an empty file.
+fn open_editor() -> Result<Option<String>> {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+
+    let mut tmp = tempfile::Builder::new()
+        .suffix(".md")
+        .tempfile()
+        .context("failed to create temp file for editor")?;
+
+    writeln!(
+        tmp,
+        "# Enter body content below. Lines starting with '#' will be stripped."
+    )?;
+    tmp.flush()?;
+
+    let path = tmp.path().to_owned();
+
+    let status = std::process::Command::new(&editor)
+        .arg(&path)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .with_context(|| format!("failed to launch editor '{editor}'"))?;
+
+    if !status.success() {
+        bail!("editor exited with non-zero status");
+    }
+
+    let content = std::fs::read_to_string(&path).context("failed to read editor temp file")?;
+
+    let body: String = content
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = body.trim().to_string();
+
+    if body.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(body))
     }
 }
 
@@ -372,10 +444,11 @@ fn run() -> Result<()> {
                     title,
                     project,
                     body,
+                    no_edit,
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let title = title.as_deref().unwrap_or(&slug);
-                    let body = resolve_body(body)?;
+                    let body = resolve_body(body, no_edit)?;
                     repo.create_roadmap(&project, &slug, title, body.as_deref())
                         .context("failed to create roadmap")?;
                     println!("Created roadmap '{slug}' in project '{project}'");
@@ -426,10 +499,11 @@ fn run() -> Result<()> {
                     project,
                     number,
                     body,
+                    no_edit,
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let title = title.as_deref().unwrap_or(&slug);
-                    let body = resolve_body(body)?;
+                    let body = resolve_body(body, no_edit)?;
                     let doc = repo
                         .create_phase(&project, &roadmap, &slug, title, number, body.as_deref())
                         .context("failed to create phase")?;
@@ -468,12 +542,13 @@ fn run() -> Result<()> {
                     roadmap,
                     project,
                     body,
+                    no_edit,
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
                         .context("failed to resolve phase")?;
-                    let body = resolve_body(body)?;
+                    let body = resolve_body(body, no_edit)?;
                     repo.update_phase(&project, &roadmap, &stem, status, body.as_deref())
                         .context("failed to update phase")?;
                     println!("Updated '{stem}' → {status}");
@@ -506,10 +581,11 @@ fn run() -> Result<()> {
                     priority,
                     tags,
                     body,
+                    no_edit,
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let title = title.as_deref().unwrap_or(&slug);
-                    let body = resolve_body(body)?;
+                    let body = resolve_body(body, no_edit)?;
                     repo.create_task(&project, &slug, title, priority, tags, body.as_deref())
                         .context("failed to create task")?;
                     println!("Created task '{slug}' in project '{project}'");
@@ -536,9 +612,10 @@ fn run() -> Result<()> {
                     priority,
                     tags,
                     body,
+                    no_edit,
                 } => {
                     let project = resolve_project(project, &repo)?;
-                    let body = resolve_body(body)?;
+                    let body = resolve_body(body, no_edit)?;
                     let doc = repo
                         .update_task(&project, &slug, status, priority, tags, body.as_deref())
                         .context("failed to update task")?;
