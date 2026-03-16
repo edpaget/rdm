@@ -416,6 +416,122 @@ fn phase_update_by_number() {
 }
 
 #[test]
+fn phase_create_with_body_flag() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--title",
+            "Core Valuation",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "Phase description here.",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Phase description here."));
+}
+
+#[test]
+fn phase_update_with_body_flag() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--status",
+            "in-progress",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "Updated body content.",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated body content."));
+}
+
+#[test]
+fn phase_create_with_stdin_pipe() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--title",
+            "Core Valuation",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .write_stdin("piped phase content")
+        .assert()
+        .success();
+
+    let phase_file = dir
+        .path()
+        .join("projects/fbm/roadmaps/two-way/phase-1-core.md");
+    let content = fs::read_to_string(&phase_file).unwrap();
+    assert!(
+        content.contains("piped phase content"),
+        "expected piped content in file, got: {content}"
+    );
+}
+
+#[test]
 fn phase_remove_by_stem() {
     let dir = TempDir::new().unwrap();
     init_with_roadmap(&dir);

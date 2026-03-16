@@ -1,8 +1,10 @@
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use is_terminal::IsTerminal;
 use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
@@ -96,6 +98,9 @@ enum RoadmapCommand {
         /// Project to create the roadmap in.
         #[arg(long)]
         project: Option<String>,
+        /// Body content for the roadmap.
+        #[arg(long)]
+        body: Option<String>,
     },
     /// Show a roadmap and its phases.
     Show {
@@ -134,6 +139,9 @@ enum PhaseCommand {
         /// Explicit phase number (auto-assigned if omitted).
         #[arg(long)]
         number: Option<u32>,
+        /// Body content for the phase.
+        #[arg(long)]
+        body: Option<String>,
     },
     /// List phases in a roadmap.
     List {
@@ -171,6 +179,9 @@ enum PhaseCommand {
         /// Project the roadmap belongs to.
         #[arg(long)]
         project: Option<String>,
+        /// Body content for the phase.
+        #[arg(long)]
+        body: Option<String>,
     },
     /// Remove a phase from a roadmap.
     Remove {
@@ -203,6 +214,9 @@ enum TaskCommand {
         /// Comma-separated tags.
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
+        /// Body content for the task.
+        #[arg(long)]
+        body: Option<String>,
     },
     /// Show a task.
     Show {
@@ -231,6 +245,9 @@ enum TaskCommand {
         /// New comma-separated tags (replaces existing).
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
+        /// Body content for the task.
+        #[arg(long)]
+        body: Option<String>,
     },
     /// List tasks.
     List {
@@ -272,6 +289,29 @@ fn resolve_project(flag: Option<String>, repo: &PlanRepo) -> Result<String> {
     bail!(
         "no project specified — use --project, set RDM_PROJECT, or set default_project in rdm.toml"
     )
+}
+
+/// Resolve body content from `--body` flag or piped stdin.
+/// Returns an error if both are provided.
+fn resolve_body(body_flag: Option<String>) -> Result<Option<String>> {
+    let stdin_body = if !io::stdin().is_terminal() {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        let trimmed = buf.trim_end_matches('\n');
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    } else {
+        None
+    };
+
+    match (body_flag, stdin_body) {
+        (Some(_), Some(_)) => bail!("cannot use --body and piped stdin together; pick one"),
+        (Some(b), None) => Ok(Some(b)),
+        (None, stdin) => Ok(stdin),
+    }
 }
 
 fn maybe_regenerate_index(repo: &PlanRepo, no_index: bool) -> Result<()> {
@@ -331,10 +371,12 @@ fn run() -> Result<()> {
                     slug,
                     title,
                     project,
+                    body,
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let title = title.as_deref().unwrap_or(&slug);
-                    repo.create_roadmap(&project, &slug, title, None)
+                    let body = resolve_body(body)?;
+                    repo.create_roadmap(&project, &slug, title, body.as_deref())
                         .context("failed to create roadmap")?;
                     println!("Created roadmap '{slug}' in project '{project}'");
                     maybe_regenerate_index(&repo, cli.no_index)?;
@@ -383,11 +425,13 @@ fn run() -> Result<()> {
                     roadmap,
                     project,
                     number,
+                    body,
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let title = title.as_deref().unwrap_or(&slug);
+                    let body = resolve_body(body)?;
                     let doc = repo
-                        .create_phase(&project, &roadmap, &slug, title, number, None)
+                        .create_phase(&project, &roadmap, &slug, title, number, body.as_deref())
                         .context("failed to create phase")?;
                     let stem = format!("phase-{}-{slug}", doc.frontmatter.phase);
                     println!("Created phase '{stem}' in roadmap '{roadmap}'");
@@ -423,12 +467,14 @@ fn run() -> Result<()> {
                     status,
                     roadmap,
                     project,
+                    body,
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
                         .context("failed to resolve phase")?;
-                    repo.update_phase(&project, &roadmap, &stem, status, None)
+                    let body = resolve_body(body)?;
+                    repo.update_phase(&project, &roadmap, &stem, status, body.as_deref())
                         .context("failed to update phase")?;
                     println!("Updated '{stem}' → {status}");
                     maybe_regenerate_index(&repo, cli.no_index)?;
@@ -459,10 +505,12 @@ fn run() -> Result<()> {
                     project,
                     priority,
                     tags,
+                    body,
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let title = title.as_deref().unwrap_or(&slug);
-                    repo.create_task(&project, &slug, title, priority, tags, None)
+                    let body = resolve_body(body)?;
+                    repo.create_task(&project, &slug, title, priority, tags, body.as_deref())
                         .context("failed to create task")?;
                     println!("Created task '{slug}' in project '{project}'");
                     maybe_regenerate_index(&repo, cli.no_index)?;
@@ -487,10 +535,12 @@ fn run() -> Result<()> {
                     status,
                     priority,
                     tags,
+                    body,
                 } => {
                     let project = resolve_project(project, &repo)?;
+                    let body = resolve_body(body)?;
                     let doc = repo
-                        .update_task(&project, &slug, status, priority, tags, None)
+                        .update_task(&project, &slug, status, priority, tags, body.as_deref())
                         .context("failed to update task")?;
                     println!(
                         "Updated task '{slug}' → status: {}, priority: {}",

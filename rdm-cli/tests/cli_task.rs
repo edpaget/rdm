@@ -448,6 +448,123 @@ fn promote_nonexistent_task() {
 }
 
 #[test]
+fn task_create_with_body_flag() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix the bug",
+            "--project",
+            "fbm",
+            "--body",
+            "Task body content here.",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "fix-bug", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Task body content here."));
+}
+
+#[test]
+fn task_update_with_body_flag() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-bug", "Fix the bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--body",
+            "Updated task body.",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "fix-bug", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated task body."));
+}
+
+#[test]
+fn task_create_with_stdin_pipe() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix the bug",
+            "--project",
+            "fbm",
+        ])
+        .write_stdin("piped task body")
+        .assert()
+        .success();
+
+    let task_file = dir.path().join("projects/fbm/tasks/fix-bug.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    assert!(
+        content.contains("piped task body"),
+        "expected piped content in file, got: {content}"
+    );
+}
+
+#[test]
+fn body_flag_and_stdin_errors() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix the bug",
+            "--project",
+            "fbm",
+            "--body",
+            "inline body",
+        ])
+        .write_stdin("piped body")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "cannot use --body and piped stdin together",
+        ));
+}
+
+#[test]
 fn task_show_body_and_no_body() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);

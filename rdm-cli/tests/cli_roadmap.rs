@@ -246,6 +246,37 @@ fn roadmap_list_with_progress() {
 }
 
 #[test]
+fn roadmap_create_with_body_flag() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way Players",
+            "--project",
+            "fbm",
+            "--body",
+            "Roadmap body content.",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "show", "two-way", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Roadmap body content."));
+}
+
+#[test]
 fn roadmap_show_body_and_no_body() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);
