@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `phase remove` command to delete a phase from a roadmap (accepts stem or number)
 - `rdm roadmap show` now displays document body content after the phase table
 - `--no-body` flag on `roadmap show`, `phase show`, and `task show` to suppress body output
 - `RDM_PROJECT` environment variable for session-level default project (resolution order: `--project` flag > `RDM_PROJECT` env var > `default_project` in `rdm.toml`)

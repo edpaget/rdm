@@ -501,6 +501,31 @@ impl PlanRepo {
         Ok(doc)
     }
 
+    /// Removes a phase from a roadmap.
+    ///
+    /// Deletes the phase file and removes its stem from the roadmap's `phases`
+    /// list.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PhaseNotFound`] if the phase file doesn't exist,
+    /// [`Error::Io`] if the file cannot be deleted or the roadmap cannot be
+    /// updated, or [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`]
+    /// if the roadmap file has invalid frontmatter.
+    pub fn remove_phase(&self, project: &str, roadmap: &str, phase_stem: &str) -> Result<()> {
+        let path = self.phase_path(project, roadmap, phase_stem);
+        if !path.exists() {
+            return Err(Error::PhaseNotFound(phase_stem.to_string()));
+        }
+        fs::remove_file(&path)?;
+
+        // Remove stem from roadmap's phases list
+        let mut roadmap_doc = self.load_roadmap(project, roadmap)?;
+        roadmap_doc.frontmatter.phases.retain(|s| s != phase_stem);
+        self.write_roadmap(project, roadmap, &roadmap_doc)?;
+        Ok(())
+    }
+
     /// Resolves a phase identifier to a file stem.
     ///
     /// If `identifier` parses as a `u32`, looks up the phase by number.
@@ -1313,6 +1338,41 @@ mod tests {
             .unwrap();
         let result = repo.resolve_phase_stem("fbm", "two-way", "99");
         assert!(matches!(result, Err(Error::PhaseNotFound(ref s)) if s == "99"));
+    }
+
+    // -- Remove phase tests --
+
+    #[test]
+    fn remove_phase_deletes_file() {
+        let (_dir, repo) = setup_with_roadmap();
+        repo.create_phase("fbm", "two-way", "core", "Core", None, None)
+            .unwrap();
+        let path = repo.phase_path("fbm", "two-way", "phase-1-core");
+        assert!(path.exists());
+
+        repo.remove_phase("fbm", "two-way", "phase-1-core").unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn remove_phase_updates_roadmap() {
+        let (_dir, repo) = setup_with_roadmap();
+        repo.create_phase("fbm", "two-way", "core", "Core", None, None)
+            .unwrap();
+        repo.create_phase("fbm", "two-way", "service", "Service", None, None)
+            .unwrap();
+
+        repo.remove_phase("fbm", "two-way", "phase-1-core").unwrap();
+
+        let roadmap = repo.load_roadmap("fbm", "two-way").unwrap();
+        assert_eq!(roadmap.frontmatter.phases, vec!["phase-2-service"]);
+    }
+
+    #[test]
+    fn remove_phase_not_found() {
+        let (_dir, repo) = setup_with_roadmap();
+        let result = repo.remove_phase("fbm", "two-way", "phase-99-nope");
+        assert!(matches!(result, Err(Error::PhaseNotFound(ref s)) if s == "phase-99-nope"));
     }
 
     // -- Task tests --

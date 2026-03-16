@@ -416,6 +416,96 @@ fn phase_update_by_number() {
 }
 
 #[test]
+fn phase_remove_by_stem() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+    create_phase(&dir, "service", "Keeper Service");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "remove",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed phase 'phase-1-core'"));
+
+    // Verify it no longer appears in phase list
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["phase", "list", "--roadmap", "two-way", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Keeper Service")
+                .and(predicate::str::contains("Core Valuation").not()),
+        );
+}
+
+#[test]
+fn phase_remove_by_number() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "remove",
+            "1",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed phase 'phase-1-core'"));
+
+    // Verify phase list is empty
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["phase", "list", "--roadmap", "two-way", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No phases yet."));
+}
+
+#[test]
+fn phase_remove_not_found() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "remove",
+            "phase-99-nope",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("phase not found"));
+}
+
+#[test]
 fn phase_show_body_and_no_body() {
     let dir = TempDir::new().unwrap();
     init_with_roadmap(&dir);

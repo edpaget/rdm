@@ -172,6 +172,17 @@ enum PhaseCommand {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Remove a phase from a roadmap.
+    Remove {
+        /// Phase stem or number (e.g. phase-1-core or 1).
+        stem: String,
+        /// Roadmap the phase belongs to.
+        #[arg(long)]
+        roadmap: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -420,6 +431,20 @@ fn run() -> Result<()> {
                     repo.update_phase(&project, &roadmap, &stem, status, None)
                         .context("failed to update phase")?;
                     println!("Updated '{stem}' → {status}");
+                    maybe_regenerate_index(&repo, cli.no_index)?;
+                }
+                PhaseCommand::Remove {
+                    stem,
+                    roadmap,
+                    project,
+                } => {
+                    let project = resolve_project(project, &repo)?;
+                    let stem = repo
+                        .resolve_phase_stem(&project, &roadmap, &stem)
+                        .context("failed to resolve phase")?;
+                    repo.remove_phase(&project, &roadmap, &stem)
+                        .context("failed to remove phase")?;
+                    println!("Removed phase '{stem}' from roadmap '{roadmap}'");
                     maybe_regenerate_index(&repo, cli.no_index)?;
                 }
             }
