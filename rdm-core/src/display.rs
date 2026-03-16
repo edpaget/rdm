@@ -31,6 +31,7 @@ pub struct RoadmapIndexEntry {
 /// Formats the plan index as a Markdown string.
 ///
 /// Produces the complete `INDEX.md` content from pre-aggregated project data.
+#[must_use]
 pub fn format_index(projects: &[ProjectIndex]) -> String {
     let mut out = String::new();
     out.push_str("# Plan Index\n\n");
