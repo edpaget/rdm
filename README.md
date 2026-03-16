@@ -1,5 +1,7 @@
 # rdm
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+
 A zero-dependency CLI for managing project roadmaps, phases, and tasks across multiple projects from a central plan repository.
 
 `rdm` separates the **tool** (this repo — a Rust binary) from the **plan repo** (a git-managed directory of markdown files). The plan repo is where your roadmaps and tasks live; `rdm` is how you read and write them.
@@ -201,4 +203,4 @@ cargo install --path rdm-cli
 
 ## License
 
-MIT
+This project is licensed under the [GNU General Public License v3.0](LICENSE).

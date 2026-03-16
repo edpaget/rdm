@@ -120,16 +120,22 @@ rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.to
 
 ```bash
 cargo build                        # build the rdm binary
-./target/debug/rdm list --project rdm   # see roadmap progress
+./target/debug/rdm roadmap list --project rdm   # list all roadmaps with progress
 ./target/debug/rdm roadmap show <slug> --project rdm   # see phases in a roadmap
 ./target/debug/rdm phase list --roadmap <slug> --project rdm  # list phases with numbers, titles, and statuses
 ./target/debug/rdm phase show <stem-or-number> --roadmap <slug> --project rdm  # read phase details
 ```
 
-Use this to understand what phase you're working on, what the acceptance criteria are, and what comes next. Phase commands accept either a file stem or a phase number for convenience. When a phase is complete, update its status:
+Use this to understand what phase you're working on, what the acceptance criteria are, and what comes next. Phase and task commands accept either a file stem or a number for convenience.
+
+After committing your work, update the plan to reflect progress:
 
 ```bash
+# Mark a phase as done after all its acceptance criteria are met and changes are committed
 ./target/debug/rdm phase update <stem-or-number> --status done --roadmap <slug> --project rdm
+
+# Mark a task as done after changes are committed
+./target/debug/rdm task update <slug> --status done --project rdm
 ```
 
 ## Setup
