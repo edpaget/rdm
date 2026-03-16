@@ -118,6 +118,8 @@ cargo deny check        # license & advisory audit
 
 rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.toml` to `~/Projects/rdm-atlas-repo`). **You MUST use the rdm CLI to read and update plan data — never read or write the plan repo's markdown files directly.** There are no exceptions; all operations the plan requires are supported by the CLI.
 
+**Hard rule — no direct access to the plan repo.** Do NOT use the Read, Glob, Grep, or Bash tools to read, search, list, or modify any files under `~/Projects/rdm-atlas-repo` (or whatever `$RDM_ROOT` resolves to). Every interaction with plan data — reading, creating, updating, deleting — MUST go through `./target/debug/rdm`. If the CLI cannot do something you need, that is a bug to fix in rdm, not a reason to bypass it.
+
 ### Reading the plan
 
 Before starting implementation work, build the CLI and check the current plan:
