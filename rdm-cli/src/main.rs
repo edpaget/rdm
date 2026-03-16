@@ -314,7 +314,7 @@ fn run() -> Result<()> {
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let title = title.as_deref().unwrap_or(&slug);
-                    repo.create_roadmap(&project, &slug, title)
+                    repo.create_roadmap(&project, &slug, title, None)
                         .context("failed to create roadmap")?;
                     println!("Created roadmap '{slug}' in project '{project}'");
                     maybe_regenerate_index(&repo, cli.no_index)?;
@@ -363,7 +363,7 @@ fn run() -> Result<()> {
                     let project = resolve_project(project, &repo)?;
                     let title = title.as_deref().unwrap_or(&slug);
                     let doc = repo
-                        .create_phase(&project, &roadmap, &slug, title, number)
+                        .create_phase(&project, &roadmap, &slug, title, number, None)
                         .context("failed to create phase")?;
                     let stem = format!("phase-{}-{slug}", doc.frontmatter.phase);
                     println!("Created phase '{stem}' in roadmap '{roadmap}'");
@@ -400,7 +400,7 @@ fn run() -> Result<()> {
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
                         .context("failed to resolve phase")?;
-                    repo.update_phase(&project, &roadmap, &stem, status)
+                    repo.update_phase(&project, &roadmap, &stem, status, None)
                         .context("failed to update phase")?;
                     println!("Updated '{stem}' → {status}");
                     maybe_regenerate_index(&repo, cli.no_index)?;
@@ -420,7 +420,7 @@ fn run() -> Result<()> {
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let title = title.as_deref().unwrap_or(&slug);
-                    repo.create_task(&project, &slug, title, priority, tags)
+                    repo.create_task(&project, &slug, title, priority, tags, None)
                         .context("failed to create task")?;
                     println!("Created task '{slug}' in project '{project}'");
                     maybe_regenerate_index(&repo, cli.no_index)?;
@@ -441,7 +441,7 @@ fn run() -> Result<()> {
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let doc = repo
-                        .update_task(&project, &slug, status, priority, tags)
+                        .update_task(&project, &slug, status, priority, tags, None)
                         .context("failed to update task")?;
                     println!(
                         "Updated task '{slug}' → status: {}, priority: {}",

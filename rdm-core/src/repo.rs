@@ -258,6 +258,9 @@ impl PlanRepo {
 
     /// Creates a new roadmap within a project.
     ///
+    /// `body` sets the markdown body below the frontmatter. Pass `None` for
+    /// an empty body.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
@@ -269,6 +272,7 @@ impl PlanRepo {
         project: &str,
         slug: &str,
         title: &str,
+        body: Option<&str>,
     ) -> Result<Document<Roadmap>> {
         if !self.project_path(project).exists() {
             return Err(Error::ProjectNotFound(project.to_string()));
@@ -286,8 +290,37 @@ impl PlanRepo {
                 phases: Vec::new(),
                 dependencies: None,
             },
-            body: String::new(),
+            body: body.unwrap_or_default().to_string(),
         };
+        self.write_roadmap(project, slug, &doc)?;
+        Ok(doc)
+    }
+
+    /// Updates a roadmap's body.
+    ///
+    /// When `body` is `Some`, replaces the existing body; `None` preserves it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
+    /// [`Error::Io`] if reading or writing fails, or
+    /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+    /// existing roadmap file has invalid frontmatter.
+    pub fn update_roadmap(
+        &self,
+        project: &str,
+        slug: &str,
+        body: Option<&str>,
+    ) -> Result<Document<Roadmap>> {
+        let path = self.roadmap_path(project, slug);
+        if !path.exists() {
+            return Err(Error::RoadmapNotFound(slug.to_string()));
+        }
+
+        let mut doc = self.load_roadmap(project, slug)?;
+        if let Some(b) = body {
+            doc.body = b.to_string();
+        }
         self.write_roadmap(project, slug, &doc)?;
         Ok(doc)
     }
@@ -370,6 +403,8 @@ impl PlanRepo {
     /// Creates a new phase within a roadmap.
     ///
     /// If `phase_number` is `None`, auto-assigns the next number.
+    /// `body` sets the markdown body below the frontmatter. Pass `None` for
+    /// an empty body.
     ///
     /// # Errors
     ///
@@ -384,6 +419,7 @@ impl PlanRepo {
         slug: &str,
         title: &str,
         phase_number: Option<u32>,
+        body: Option<&str>,
     ) -> Result<Document<Phase>> {
         let roadmap_dir = self.roadmap_dir(project, roadmap);
         if !roadmap_dir.exists() {
@@ -414,7 +450,7 @@ impl PlanRepo {
                 status: PhaseStatus::NotStarted,
                 completed: None,
             },
-            body: String::new(),
+            body: body.unwrap_or_default().to_string(),
         };
         self.write_phase(project, roadmap, &stem, &doc)?;
 
@@ -426,10 +462,11 @@ impl PlanRepo {
         Ok(doc)
     }
 
-    /// Updates a phase's status.
+    /// Updates a phase's status and/or body.
     ///
     /// When status is `Done`, auto-sets `completed` to today.
     /// When status is not `Done`, clears `completed`.
+    /// When `body` is `Some`, replaces the existing body; `None` preserves it.
     ///
     /// # Errors
     ///
@@ -443,6 +480,7 @@ impl PlanRepo {
         roadmap: &str,
         phase_stem: &str,
         status: PhaseStatus,
+        body: Option<&str>,
     ) -> Result<Document<Phase>> {
         let path = self.phase_path(project, roadmap, phase_stem);
         if !path.exists() {
@@ -456,6 +494,9 @@ impl PlanRepo {
         } else {
             None
         };
+        if let Some(b) = body {
+            doc.body = b.to_string();
+        }
         self.write_phase(project, roadmap, phase_stem, &doc)?;
         Ok(doc)
     }
@@ -492,6 +533,9 @@ impl PlanRepo {
 
     /// Creates a new task within a project.
     ///
+    /// `body` sets the markdown body below the frontmatter. Pass `None` for
+    /// an empty body.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
@@ -505,6 +549,7 @@ impl PlanRepo {
         title: &str,
         priority: Priority,
         tags: Option<Vec<String>>,
+        body: Option<&str>,
     ) -> Result<Document<Task>> {
         if !self.project_path(project).exists() {
             return Err(Error::ProjectNotFound(project.to_string()));
@@ -523,7 +568,7 @@ impl PlanRepo {
                 created: Local::now().date_naive(),
                 tags,
             },
-            body: String::new(),
+            body: body.unwrap_or_default().to_string(),
         };
         self.write_task(project, slug, &doc)?;
         Ok(doc)
@@ -565,7 +610,7 @@ impl PlanRepo {
         Ok(tasks)
     }
 
-    /// Updates a task's status, priority, and/or tags.
+    /// Updates a task's status, priority, tags, and/or body.
     ///
     /// Only fields that are `Some(...)` are updated; others are left unchanged.
     ///
@@ -582,6 +627,7 @@ impl PlanRepo {
         status: Option<TaskStatus>,
         priority: Option<Priority>,
         tags: Option<Vec<String>>,
+        body: Option<&str>,
     ) -> Result<Document<Task>> {
         let path = self.task_path(project, slug);
         if !path.exists() {
@@ -597,6 +643,9 @@ impl PlanRepo {
         }
         if let Some(t) = tags {
             doc.frontmatter.tags = if t.is_empty() { None } else { Some(t) };
+        }
+        if let Some(b) = body {
+            doc.body = b.to_string();
         }
         self.write_task(project, slug, &doc)?;
         Ok(doc)
@@ -954,7 +1003,7 @@ mod tests {
         let repo = PlanRepo::init(dir.path()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         let doc = repo
-            .create_roadmap("fbm", "two-way", "Two-Way Players")
+            .create_roadmap("fbm", "two-way", "Two-Way Players", None)
             .unwrap();
         assert_eq!(doc.frontmatter.project, "fbm");
         assert_eq!(doc.frontmatter.roadmap, "two-way");
@@ -967,10 +1016,25 @@ mod tests {
     }
 
     #[test]
+    fn create_roadmap_with_body() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        repo.create_project("fbm", "FBM").unwrap();
+        let body = "# Description\n\nA roadmap for two-way players.\n";
+        let doc = repo
+            .create_roadmap("fbm", "two-way", "Two-Way Players", Some(body))
+            .unwrap();
+        assert_eq!(doc.body, body);
+
+        let loaded = repo.load_roadmap("fbm", "two-way").unwrap();
+        assert_eq!(loaded.body, body);
+    }
+
+    #[test]
     fn create_roadmap_project_not_found() {
         let dir = TempDir::new().unwrap();
         let repo = PlanRepo::init(dir.path()).unwrap();
-        let result = repo.create_roadmap("nope", "slug", "Title");
+        let result = repo.create_roadmap("nope", "slug", "Title", None);
         assert!(matches!(result, Err(Error::ProjectNotFound(_))));
     }
 
@@ -979,10 +1043,46 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let repo = PlanRepo::init(dir.path()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
-        repo.create_roadmap("fbm", "two-way", "Two-Way Players")
+        repo.create_roadmap("fbm", "two-way", "Two-Way Players", None)
             .unwrap();
-        let result = repo.create_roadmap("fbm", "two-way", "Dup");
+        let result = repo.create_roadmap("fbm", "two-way", "Dup", None);
         assert!(matches!(result, Err(Error::DuplicateSlug(_))));
+    }
+
+    #[test]
+    fn update_roadmap_body_replaces_existing() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        repo.create_project("fbm", "FBM").unwrap();
+        repo.create_roadmap("fbm", "two-way", "Two-Way", Some("Original.\n"))
+            .unwrap();
+        let updated = repo
+            .update_roadmap("fbm", "two-way", Some("Replaced.\n"))
+            .unwrap();
+        assert_eq!(updated.body, "Replaced.\n");
+
+        let loaded = repo.load_roadmap("fbm", "two-way").unwrap();
+        assert_eq!(loaded.body, "Replaced.\n");
+    }
+
+    #[test]
+    fn update_roadmap_none_body_preserves_existing() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        repo.create_project("fbm", "FBM").unwrap();
+        repo.create_roadmap("fbm", "two-way", "Two-Way", Some("Keep this.\n"))
+            .unwrap();
+        let updated = repo.update_roadmap("fbm", "two-way", None).unwrap();
+        assert_eq!(updated.body, "Keep this.\n");
+    }
+
+    #[test]
+    fn update_roadmap_not_found() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        repo.create_project("fbm", "FBM").unwrap();
+        let result = repo.update_roadmap("fbm", "nope", Some("body"));
+        assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
     }
 
     #[test]
@@ -990,8 +1090,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let repo = PlanRepo::init(dir.path()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
-        repo.create_roadmap("fbm", "zzz-road", "Z").unwrap();
-        repo.create_roadmap("fbm", "aaa-road", "A").unwrap();
+        repo.create_roadmap("fbm", "zzz-road", "Z", None).unwrap();
+        repo.create_roadmap("fbm", "aaa-road", "A", None).unwrap();
         let roadmaps = repo.list_roadmaps("fbm").unwrap();
         assert_eq!(roadmaps.len(), 2);
         assert_eq!(roadmaps[0].frontmatter.roadmap, "aaa-road");
@@ -1021,7 +1121,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let repo = PlanRepo::init(dir.path()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
-        repo.create_roadmap("fbm", "two-way", "Two-Way Players")
+        repo.create_roadmap("fbm", "two-way", "Two-Way Players", None)
             .unwrap();
         (dir, repo)
     }
@@ -1030,13 +1130,13 @@ mod tests {
     fn create_phase_auto_number() {
         let (_dir, repo) = setup_with_roadmap();
         let doc = repo
-            .create_phase("fbm", "two-way", "core", "Core Valuation", None)
+            .create_phase("fbm", "two-way", "core", "Core Valuation", None, None)
             .unwrap();
         assert_eq!(doc.frontmatter.phase, 1);
         assert_eq!(doc.frontmatter.status, PhaseStatus::NotStarted);
 
         let doc2 = repo
-            .create_phase("fbm", "two-way", "service", "Keeper Service", None)
+            .create_phase("fbm", "two-way", "service", "Keeper Service", None, None)
             .unwrap();
         assert_eq!(doc2.frontmatter.phase, 2);
 
@@ -1052,7 +1152,7 @@ mod tests {
     fn create_phase_explicit_number() {
         let (_dir, repo) = setup_with_roadmap();
         let doc = repo
-            .create_phase("fbm", "two-way", "core", "Core", Some(5))
+            .create_phase("fbm", "two-way", "core", "Core", Some(5), None)
             .unwrap();
         assert_eq!(doc.frontmatter.phase, 5);
 
@@ -1062,20 +1162,33 @@ mod tests {
     }
 
     #[test]
+    fn create_phase_with_body() {
+        let (_dir, repo) = setup_with_roadmap();
+        let body = "## Acceptance Criteria\n\n- [ ] Criterion one\n- [ ] Criterion two\n";
+        let doc = repo
+            .create_phase("fbm", "two-way", "core", "Core", None, Some(body))
+            .unwrap();
+        assert_eq!(doc.body, body);
+
+        let loaded = repo.load_phase("fbm", "two-way", "phase-1-core").unwrap();
+        assert_eq!(loaded.body, body);
+    }
+
+    #[test]
     fn create_phase_roadmap_not_found() {
         let dir = TempDir::new().unwrap();
         let repo = PlanRepo::init(dir.path()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
-        let result = repo.create_phase("fbm", "nope", "s", "T", None);
+        let result = repo.create_phase("fbm", "nope", "s", "T", None, None);
         assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
     }
 
     #[test]
     fn list_phases_sorted() {
         let (_dir, repo) = setup_with_roadmap();
-        repo.create_phase("fbm", "two-way", "core", "Core", Some(2))
+        repo.create_phase("fbm", "two-way", "core", "Core", Some(2), None)
             .unwrap();
-        repo.create_phase("fbm", "two-way", "service", "Service", Some(1))
+        repo.create_phase("fbm", "two-way", "service", "Service", Some(1), None)
             .unwrap();
         let phases = repo.list_phases("fbm", "two-way").unwrap();
         assert_eq!(phases.len(), 2);
@@ -1086,10 +1199,10 @@ mod tests {
     #[test]
     fn update_phase_to_done_sets_completed() {
         let (_dir, repo) = setup_with_roadmap();
-        repo.create_phase("fbm", "two-way", "core", "Core", None)
+        repo.create_phase("fbm", "two-way", "core", "Core", None, None)
             .unwrap();
         let updated = repo
-            .update_phase("fbm", "two-way", "phase-1-core", PhaseStatus::Done)
+            .update_phase("fbm", "two-way", "phase-1-core", PhaseStatus::Done, None)
             .unwrap();
         assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
         assert!(updated.frontmatter.completed.is_some());
@@ -1098,30 +1211,87 @@ mod tests {
     #[test]
     fn update_phase_from_done_clears_completed() {
         let (_dir, repo) = setup_with_roadmap();
-        repo.create_phase("fbm", "two-way", "core", "Core", None)
+        repo.create_phase("fbm", "two-way", "core", "Core", None, None)
             .unwrap();
-        repo.update_phase("fbm", "two-way", "phase-1-core", PhaseStatus::Done)
+        repo.update_phase("fbm", "two-way", "phase-1-core", PhaseStatus::Done, None)
             .unwrap();
         let updated = repo
-            .update_phase("fbm", "two-way", "phase-1-core", PhaseStatus::InProgress)
+            .update_phase(
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                PhaseStatus::InProgress,
+                None,
+            )
             .unwrap();
         assert_eq!(updated.frontmatter.status, PhaseStatus::InProgress);
         assert_eq!(updated.frontmatter.completed, None);
     }
 
     #[test]
+    fn update_phase_body_replaces_existing() {
+        let (_dir, repo) = setup_with_roadmap();
+        repo.create_phase(
+            "fbm",
+            "two-way",
+            "core",
+            "Core",
+            None,
+            Some("Original body.\n"),
+        )
+        .unwrap();
+        let updated = repo
+            .update_phase(
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                PhaseStatus::InProgress,
+                Some("Replaced body.\n"),
+            )
+            .unwrap();
+        assert_eq!(updated.body, "Replaced body.\n");
+
+        let loaded = repo.load_phase("fbm", "two-way", "phase-1-core").unwrap();
+        assert_eq!(loaded.body, "Replaced body.\n");
+    }
+
+    #[test]
+    fn update_phase_none_body_preserves_existing() {
+        let (_dir, repo) = setup_with_roadmap();
+        repo.create_phase(
+            "fbm",
+            "two-way",
+            "core",
+            "Core",
+            None,
+            Some("Keep this body.\n"),
+        )
+        .unwrap();
+        let updated = repo
+            .update_phase(
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                PhaseStatus::InProgress,
+                None,
+            )
+            .unwrap();
+        assert_eq!(updated.body, "Keep this body.\n");
+    }
+
+    #[test]
     fn update_phase_not_found() {
         let (_dir, repo) = setup_with_roadmap();
-        let result = repo.update_phase("fbm", "two-way", "phase-99-nope", PhaseStatus::Done);
+        let result = repo.update_phase("fbm", "two-way", "phase-99-nope", PhaseStatus::Done, None);
         assert!(matches!(result, Err(Error::PhaseNotFound(_))));
     }
 
     #[test]
     fn resolve_by_number() {
         let (_dir, repo) = setup_with_roadmap();
-        repo.create_phase("fbm", "two-way", "core", "Core", Some(1))
+        repo.create_phase("fbm", "two-way", "core", "Core", Some(1), None)
             .unwrap();
-        repo.create_phase("fbm", "two-way", "service", "Service", Some(2))
+        repo.create_phase("fbm", "two-way", "service", "Service", Some(2), None)
             .unwrap();
         let stem = repo.resolve_phase_stem("fbm", "two-way", "2").unwrap();
         assert_eq!(stem, "phase-2-service");
@@ -1139,7 +1309,7 @@ mod tests {
     #[test]
     fn resolve_number_not_found() {
         let (_dir, repo) = setup_with_roadmap();
-        repo.create_phase("fbm", "two-way", "core", "Core", Some(1))
+        repo.create_phase("fbm", "two-way", "core", "Core", Some(1), None)
             .unwrap();
         let result = repo.resolve_phase_stem("fbm", "two-way", "99");
         assert!(matches!(result, Err(Error::PhaseNotFound(ref s)) if s == "99"));
@@ -1158,7 +1328,7 @@ mod tests {
     fn create_task_success() {
         let (_dir, repo) = setup_with_project();
         let doc = repo
-            .create_task("fbm", "fix-bug", "Fix the bug", Priority::High, None)
+            .create_task("fbm", "fix-bug", "Fix the bug", Priority::High, None, None)
             .unwrap();
         assert_eq!(doc.frontmatter.title, "Fix the bug");
         assert_eq!(doc.frontmatter.status, TaskStatus::Open);
@@ -1180,6 +1350,7 @@ mod tests {
                 "Fix the bug",
                 Priority::High,
                 Some(vec!["bug".to_string(), "urgent".to_string()]),
+                None,
             )
             .unwrap();
         assert_eq!(
@@ -1189,28 +1360,41 @@ mod tests {
     }
 
     #[test]
+    fn create_task_with_body() {
+        let (_dir, repo) = setup_with_project();
+        let body = "## Notes\n\nSome detailed task notes.\n";
+        let doc = repo
+            .create_task("fbm", "fix-bug", "Fix", Priority::High, None, Some(body))
+            .unwrap();
+        assert_eq!(doc.body, body);
+
+        let loaded = repo.load_task("fbm", "fix-bug").unwrap();
+        assert_eq!(loaded.body, body);
+    }
+
+    #[test]
     fn create_task_project_not_found() {
         let dir = TempDir::new().unwrap();
         let repo = PlanRepo::init(dir.path()).unwrap();
-        let result = repo.create_task("nope", "slug", "Title", Priority::Low, None);
+        let result = repo.create_task("nope", "slug", "Title", Priority::Low, None, None);
         assert!(matches!(result, Err(Error::ProjectNotFound(_))));
     }
 
     #[test]
     fn create_task_duplicate() {
         let (_dir, repo) = setup_with_project();
-        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None)
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
             .unwrap();
-        let result = repo.create_task("fbm", "fix-bug", "Dup", Priority::Low, None);
+        let result = repo.create_task("fbm", "fix-bug", "Dup", Priority::Low, None, None);
         assert!(matches!(result, Err(Error::DuplicateSlug(_))));
     }
 
     #[test]
     fn list_tasks_sorted() {
         let (_dir, repo) = setup_with_project();
-        repo.create_task("fbm", "zzz-task", "Z", Priority::Low, None)
+        repo.create_task("fbm", "zzz-task", "Z", Priority::Low, None, None)
             .unwrap();
-        repo.create_task("fbm", "aaa-task", "A", Priority::High, None)
+        repo.create_task("fbm", "aaa-task", "A", Priority::High, None, None)
             .unwrap();
         let tasks = repo.list_tasks("fbm").unwrap();
         assert_eq!(tasks.len(), 2);
@@ -1236,10 +1420,10 @@ mod tests {
     #[test]
     fn update_task_status() {
         let (_dir, repo) = setup_with_project();
-        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None)
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
             .unwrap();
         let updated = repo
-            .update_task("fbm", "fix-bug", Some(TaskStatus::Done), None, None)
+            .update_task("fbm", "fix-bug", Some(TaskStatus::Done), None, None, None)
             .unwrap();
         assert_eq!(updated.frontmatter.status, TaskStatus::Done);
 
@@ -1250,10 +1434,10 @@ mod tests {
     #[test]
     fn update_task_priority() {
         let (_dir, repo) = setup_with_project();
-        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None)
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
             .unwrap();
         let updated = repo
-            .update_task("fbm", "fix-bug", None, Some(Priority::Critical), None)
+            .update_task("fbm", "fix-bug", None, Some(Priority::Critical), None, None)
             .unwrap();
         assert_eq!(updated.frontmatter.priority, Priority::Critical);
     }
@@ -1261,7 +1445,7 @@ mod tests {
     #[test]
     fn update_task_tags() {
         let (_dir, repo) = setup_with_project();
-        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None)
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
             .unwrap();
         let updated = repo
             .update_task(
@@ -1270,15 +1454,55 @@ mod tests {
                 None,
                 None,
                 Some(vec!["new-tag".to_string()]),
+                None,
             )
             .unwrap();
         assert_eq!(updated.frontmatter.tags, Some(vec!["new-tag".to_string()]));
     }
 
     #[test]
+    fn update_task_body_replaces_existing() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_task(
+            "fbm",
+            "fix-bug",
+            "Fix",
+            Priority::Low,
+            None,
+            Some("Original.\n"),
+        )
+        .unwrap();
+        let updated = repo
+            .update_task("fbm", "fix-bug", None, None, None, Some("Replaced.\n"))
+            .unwrap();
+        assert_eq!(updated.body, "Replaced.\n");
+
+        let loaded = repo.load_task("fbm", "fix-bug").unwrap();
+        assert_eq!(loaded.body, "Replaced.\n");
+    }
+
+    #[test]
+    fn update_task_none_body_preserves_existing() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_task(
+            "fbm",
+            "fix-bug",
+            "Fix",
+            Priority::Low,
+            None,
+            Some("Keep this.\n"),
+        )
+        .unwrap();
+        let updated = repo
+            .update_task("fbm", "fix-bug", Some(TaskStatus::Done), None, None, None)
+            .unwrap();
+        assert_eq!(updated.body, "Keep this.\n");
+    }
+
+    #[test]
     fn update_task_not_found() {
         let (_dir, repo) = setup_with_project();
-        let result = repo.update_task("fbm", "nope", Some(TaskStatus::Done), None, None);
+        let result = repo.update_task("fbm", "nope", Some(TaskStatus::Done), None, None, None);
         assert!(matches!(result, Err(Error::TaskNotFound(_))));
     }
 
@@ -1332,9 +1556,9 @@ mod tests {
     #[test]
     fn promote_task_duplicate_roadmap() {
         let (_dir, repo) = setup_with_project();
-        repo.create_task("fbm", "my-task", "Task", Priority::Low, None)
+        repo.create_task("fbm", "my-task", "Task", Priority::Low, None, None)
             .unwrap();
-        repo.create_roadmap("fbm", "existing-rm", "Existing")
+        repo.create_roadmap("fbm", "existing-rm", "Existing", None)
             .unwrap();
         let result = repo.promote_task("fbm", "my-task", "existing-rm");
         assert!(matches!(result, Err(Error::DuplicateSlug(_))));
@@ -1353,9 +1577,9 @@ mod tests {
     #[test]
     fn generate_index_creates_file() {
         let (_dir, repo) = setup_with_project();
-        repo.create_roadmap("fbm", "alpha", "Alpha Roadmap")
+        repo.create_roadmap("fbm", "alpha", "Alpha Roadmap", None)
             .unwrap();
-        repo.create_phase("fbm", "alpha", "core", "Core", None)
+        repo.create_phase("fbm", "alpha", "core", "Core", None, None)
             .unwrap();
         repo.generate_index().unwrap();
 
@@ -1369,7 +1593,7 @@ mod tests {
     #[test]
     fn generate_index_idempotent() {
         let (_dir, repo) = setup_with_project();
-        repo.create_roadmap("fbm", "alpha", "Alpha").unwrap();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.generate_index().unwrap();
         let first = fs::read_to_string(repo.index_path()).unwrap();
         repo.generate_index().unwrap();
@@ -1389,11 +1613,18 @@ mod tests {
     #[test]
     fn generate_index_task_priority_ordering() {
         let (_dir, repo) = setup_with_project();
-        repo.create_task("fbm", "low-task", "Low", Priority::Low, None)
+        repo.create_task("fbm", "low-task", "Low", Priority::Low, None, None)
             .unwrap();
-        repo.create_task("fbm", "crit-task", "Critical", Priority::Critical, None)
-            .unwrap();
-        repo.create_task("fbm", "high-task", "High", Priority::High, None)
+        repo.create_task(
+            "fbm",
+            "crit-task",
+            "Critical",
+            Priority::Critical,
+            None,
+            None,
+        )
+        .unwrap();
+        repo.create_task("fbm", "high-task", "High", Priority::High, None, None)
             .unwrap();
         repo.generate_index().unwrap();
 
