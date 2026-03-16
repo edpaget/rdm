@@ -236,9 +236,12 @@ fn main() {
     }
 }
 
-/// Resolves project: --project flag > config default_project > error.
+/// Resolves project: --project flag > `RDM_PROJECT` env var > config default_project > error.
 fn resolve_project(flag: Option<String>, repo: &PlanRepo) -> Result<String> {
     if let Some(p) = flag {
+        return Ok(p);
+    }
+    if let Ok(p) = std::env::var("RDM_PROJECT") {
         return Ok(p);
     }
     if let Ok(config) = repo.load_config() {
@@ -246,7 +249,9 @@ fn resolve_project(flag: Option<String>, repo: &PlanRepo) -> Result<String> {
             return Ok(p);
         }
     }
-    bail!("no project specified — use --project or set default_project in rdm.toml")
+    bail!(
+        "no project specified — use --project, set RDM_PROJECT, or set default_project in rdm.toml"
+    )
 }
 
 fn maybe_regenerate_index(repo: &PlanRepo, no_index: bool) -> Result<()> {

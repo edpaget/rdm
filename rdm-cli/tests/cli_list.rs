@@ -177,6 +177,7 @@ fn list_no_project_fails() {
         .success();
 
     rdm()
+        .env_remove("RDM_PROJECT")
         .arg("--root")
         .arg(dir.path())
         .args(["list"])

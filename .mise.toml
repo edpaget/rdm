@@ -7,3 +7,4 @@ rust = "1.87"
 [env]
 RUSTFLAGS = "-D warnings"
 RDM_ROOT = "{{env.HOME}}/Projects/rdm-atlas-repo"
+RDM_PROJECT = "rdm"
