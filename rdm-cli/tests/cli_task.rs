@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::fs;
 use tempfile::TempDir;
 
 fn rdm() -> Command {
@@ -444,4 +445,44 @@ fn promote_nonexistent_task() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("task not found"));
+}
+
+#[test]
+fn task_show_body_and_no_body() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-bug", "Fix the bug");
+
+    // Append body text to the task file
+    let task_file = dir.path().join("projects/fbm/tasks/fix-bug.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    fs::write(
+        &task_file,
+        format!("{content}\n## Notes\n\nTask body content.\n"),
+    )
+    .unwrap();
+
+    // show includes body
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "fix-bug", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("# Fix the bug")
+                .and(predicate::str::contains("Task body content.")),
+        );
+
+    // show --no-body suppresses body
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "fix-bug", "--project", "fbm", "--no-body"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("# Fix the bug")
+                .and(predicate::str::contains("Task body content.").not()),
+        );
 }

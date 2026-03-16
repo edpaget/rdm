@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::fs;
 use tempfile::TempDir;
 
 fn rdm() -> Command {
@@ -412,4 +413,63 @@ fn phase_update_by_number() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Updated 'phase-1-core' → done"));
+}
+
+#[test]
+fn phase_show_body_and_no_body() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    // Append body text to the phase file
+    let phase_file = dir
+        .path()
+        .join("projects/fbm/roadmaps/two-way/phase-1-core.md");
+    let content = fs::read_to_string(&phase_file).unwrap();
+    fs::write(
+        &phase_file,
+        format!("{content}\n## Details\n\nPhase body content.\n"),
+    )
+    .unwrap();
+
+    // show includes body
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Phase 1: Core Valuation")
+                .and(predicate::str::contains("Phase body content.")),
+        );
+
+    // show --no-body suppresses body
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-body",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Phase 1: Core Valuation")
+                .and(predicate::str::contains("Phase body content.").not()),
+        );
 }

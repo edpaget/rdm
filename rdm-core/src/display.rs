@@ -108,8 +108,16 @@ pub fn format_index(projects: &[ProjectIndex]) -> String {
 /// A roadmap document paired with its phases (stem + phase document).
 pub type RoadmapWithPhases = (Document<Roadmap>, Vec<(String, Document<Phase>)>);
 
-/// Formats a roadmap summary with a status table of its phases.
-pub fn format_roadmap_summary(roadmap: &Roadmap, phases: &[(String, Document<Phase>)]) -> String {
+/// Formats a roadmap summary with a status table of its phases and optional body.
+///
+/// Displays the roadmap title, project/slug metadata, phase progress table,
+/// and any body content from the document. If the document body is non-empty,
+/// it is appended after the phase table (or "No phases yet." message).
+pub fn format_roadmap_summary(
+    doc: &Document<Roadmap>,
+    phases: &[(String, Document<Phase>)],
+) -> String {
+    let roadmap = &doc.frontmatter;
     let mut out = String::new();
     out.push_str(&format!("# {}\n\n", roadmap.title));
     out.push_str(&format!(
@@ -119,27 +127,30 @@ pub fn format_roadmap_summary(roadmap: &Roadmap, phases: &[(String, Document<Pha
 
     if phases.is_empty() {
         out.push_str("\nNo phases yet.\n");
-        return out;
+    } else {
+        let done_count = phases
+            .iter()
+            .filter(|(_, d)| d.frontmatter.status == PhaseStatus::Done)
+            .count();
+        out.push_str(&format!(
+            "Progress: {}/{} phases done\n\n",
+            done_count,
+            phases.len()
+        ));
+
+        out.push_str("| # | Phase | Status |\n");
+        out.push_str("|---|-------|--------|\n");
+        for (_, d) in phases {
+            let fm = &d.frontmatter;
+            out.push_str(&format!(
+                "| {} | {} | {} |\n",
+                fm.phase, fm.title, fm.status
+            ));
+        }
     }
 
-    let done_count = phases
-        .iter()
-        .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
-        .count();
-    out.push_str(&format!(
-        "Progress: {}/{} phases done\n\n",
-        done_count,
-        phases.len()
-    ));
-
-    out.push_str("| # | Phase | Status |\n");
-    out.push_str("|---|-------|--------|\n");
-    for (_, doc) in phases {
-        let fm = &doc.frontmatter;
-        out.push_str(&format!(
-            "| {} | {} | {} |\n",
-            fm.phase, fm.title, fm.status
-        ));
+    if !doc.body.is_empty() {
+        out.push_str(&format!("\n{}", doc.body));
     }
     out
 }
@@ -274,9 +285,16 @@ mod tests {
         }
     }
 
+    fn make_roadmap_doc(project: &str, slug: &str, title: &str) -> Document<Roadmap> {
+        Document {
+            frontmatter: make_roadmap(project, slug, title),
+            body: String::new(),
+        }
+    }
+
     #[test]
     fn roadmap_summary_with_phases() {
-        let rm = make_roadmap("fbm", "two-way", "Two-Way Players");
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
         let phases = vec![
             (
                 "phase-1-core".to_string(),
@@ -287,7 +305,7 @@ mod tests {
                 make_phase_doc(2, "Service", PhaseStatus::InProgress),
             ),
         ];
-        let output = format_roadmap_summary(&rm, &phases);
+        let output = format_roadmap_summary(&doc, &phases);
         assert!(output.contains("# Two-Way Players"));
         assert!(output.contains("1/2 phases done"));
         assert!(output.contains("| 1 | Core | done |"));
@@ -296,9 +314,40 @@ mod tests {
 
     #[test]
     fn roadmap_summary_no_phases() {
-        let rm = make_roadmap("fbm", "two-way", "Two-Way Players");
-        let output = format_roadmap_summary(&rm, &[]);
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        let output = format_roadmap_summary(&doc, &[]);
         assert!(output.contains("No phases yet."));
+    }
+
+    #[test]
+    fn roadmap_summary_with_body() {
+        let mut doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        doc.body = "## Overview\n\nThis roadmap covers two-way player valuation.\n".to_string();
+        let phases = vec![(
+            "phase-1-core".to_string(),
+            make_phase_doc(1, "Core", PhaseStatus::InProgress),
+        )];
+        let output = format_roadmap_summary(&doc, &phases);
+        assert!(output.contains("| 1 | Core | in-progress |"));
+        assert!(output.contains("## Overview"));
+        assert!(output.contains("This roadmap covers two-way player valuation."));
+    }
+
+    #[test]
+    fn roadmap_summary_no_phases_with_body() {
+        let mut doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        doc.body = "Some body text.\n".to_string();
+        let output = format_roadmap_summary(&doc, &[]);
+        assert!(output.contains("No phases yet."));
+        assert!(output.contains("Some body text."));
+    }
+
+    #[test]
+    fn roadmap_summary_empty_body() {
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        let output = format_roadmap_summary(&doc, &[]);
+        // Should end with "No phases yet.\n" — no trailing blank line from body
+        assert!(output.ends_with("No phases yet.\n"));
     }
 
     #[test]

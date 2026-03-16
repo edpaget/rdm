@@ -116,17 +116,21 @@ cargo deny check        # license & advisory audit
 
 ## Dogfooding
 
-rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.toml` to `~/Projects/rdm-atlas-repo`). Before starting implementation work, build and use the CLI to check the current plan:
+rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.toml` to `~/Projects/rdm-atlas-repo`). **You MUST use the rdm CLI to read and update plan data.** Do not read or write the plan repo's markdown files directly — always go through the CLI. The only exception is when you need to perform an operation the CLI does not yet support (e.g., editing body content), in which case direct file access is acceptable.
+
+Before starting implementation work, build and use the CLI to check the current plan:
 
 ```bash
 cargo build                        # build the rdm binary
 ./target/debug/rdm roadmap list --project rdm   # list all roadmaps with progress
-./target/debug/rdm roadmap show <slug> --project rdm   # see phases in a roadmap
+./target/debug/rdm roadmap show <slug> --project rdm   # see phases in a roadmap (includes body)
 ./target/debug/rdm phase list --roadmap <slug> --project rdm  # list phases with numbers, titles, and statuses
-./target/debug/rdm phase show <stem-or-number> --roadmap <slug> --project rdm  # read phase details
+./target/debug/rdm phase show <stem-or-number> --roadmap <slug> --project rdm  # read phase details (includes body)
+./target/debug/rdm task list --project rdm       # list tasks
+./target/debug/rdm task show <slug> --project rdm # read task details (includes body)
 ```
 
-Use this to understand what phase you're working on, what the acceptance criteria are, and what comes next. Phase and task commands accept either a file stem or a number for convenience.
+Use this to understand what phase you're working on, what the acceptance criteria are, and what comes next. Phase and task commands accept either a file stem or a number for convenience. Use `--no-body` on any show command to suppress body content when you only need metadata.
 
 After committing your work, update the plan to reflect progress:
 

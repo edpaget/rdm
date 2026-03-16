@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::fs;
 use tempfile::TempDir;
 
 fn rdm() -> Command {
@@ -242,6 +243,67 @@ fn roadmap_list_with_progress() {
         .assert()
         .success()
         .stdout(predicate::str::contains("1/2 done"));
+}
+
+#[test]
+fn roadmap_show_body_and_no_body() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way Players",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    // Append body text to the roadmap file
+    let roadmap_file = dir.path().join("projects/fbm/roadmaps/two-way/roadmap.md");
+    let content = fs::read_to_string(&roadmap_file).unwrap();
+    fs::write(
+        &roadmap_file,
+        format!("{content}\n## Overview\n\nBody text here.\n"),
+    )
+    .unwrap();
+
+    // show includes body
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "show", "two-way", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Two-Way Players")
+                .and(predicate::str::contains("Body text here.")),
+        );
+
+    // show --no-body suppresses body
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "show",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-body",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Two-Way Players")
+                .and(predicate::str::contains("Body text here.").not()),
+        );
 }
 
 #[test]

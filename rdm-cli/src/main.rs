@@ -104,6 +104,9 @@ enum RoadmapCommand {
         /// Project the roadmap belongs to.
         #[arg(long)]
         project: Option<String>,
+        /// Suppress body content in output.
+        #[arg(long)]
+        no_body: bool,
     },
     /// List all roadmaps in a project.
     List {
@@ -151,6 +154,9 @@ enum PhaseCommand {
         /// Project the roadmap belongs to.
         #[arg(long)]
         project: Option<String>,
+        /// Suppress body content in output.
+        #[arg(long)]
+        no_body: bool,
     },
     /// Update a phase's status.
     Update {
@@ -194,6 +200,9 @@ enum TaskCommand {
         /// Project the task belongs to.
         #[arg(long)]
         project: Option<String>,
+        /// Suppress body content in output.
+        #[arg(long)]
+        no_body: bool,
     },
     /// Update a task.
     Update {
@@ -319,18 +328,22 @@ fn run() -> Result<()> {
                     println!("Created roadmap '{slug}' in project '{project}'");
                     maybe_regenerate_index(&repo, cli.no_index)?;
                 }
-                RoadmapCommand::Show { slug, project } => {
+                RoadmapCommand::Show {
+                    slug,
+                    project,
+                    no_body,
+                } => {
                     let project = resolve_project(project, &repo)?;
-                    let roadmap_doc = repo
+                    let mut roadmap_doc = repo
                         .load_roadmap(&project, &slug)
                         .context("failed to load roadmap")?;
                     let phases = repo
                         .list_phases(&project, &slug)
                         .context("failed to list phases")?;
-                    print!(
-                        "{}",
-                        display::format_roadmap_summary(&roadmap_doc.frontmatter, &phases)
-                    );
+                    if no_body {
+                        roadmap_doc.body = String::new();
+                    }
+                    print!("{}", display::format_roadmap_summary(&roadmap_doc, &phases));
                 }
                 RoadmapCommand::List { project } => {
                     let project = resolve_project(project, &repo)?;
@@ -380,14 +393,18 @@ fn run() -> Result<()> {
                     stem,
                     roadmap,
                     project,
+                    no_body,
                 } => {
                     let project = resolve_project(project, &repo)?;
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
                         .context("failed to resolve phase")?;
-                    let doc = repo
+                    let mut doc = repo
                         .load_phase(&project, &roadmap, &stem)
                         .context("failed to load phase")?;
+                    if no_body {
+                        doc.body = String::new();
+                    }
                     print!("{}", display::format_phase_detail(&stem, &doc));
                 }
                 PhaseCommand::Update {
@@ -425,11 +442,18 @@ fn run() -> Result<()> {
                     println!("Created task '{slug}' in project '{project}'");
                     maybe_regenerate_index(&repo, cli.no_index)?;
                 }
-                TaskCommand::Show { slug, project } => {
+                TaskCommand::Show {
+                    slug,
+                    project,
+                    no_body,
+                } => {
                     let project = resolve_project(project, &repo)?;
-                    let doc = repo
+                    let mut doc = repo
                         .load_task(&project, &slug)
                         .context("failed to load task")?;
+                    if no_body {
+                        doc.body = String::new();
+                    }
                     print!("{}", display::format_task_detail(&slug, &doc));
                 }
                 TaskCommand::Update {
