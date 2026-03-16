@@ -138,6 +138,9 @@ After committing your work, update the plan to reflect progress:
 # Mark a phase as done after all its acceptance criteria are met and changes are committed
 ./target/debug/rdm phase update <stem-or-number> --status done --roadmap <slug> --project rdm
 
+# Remove a phase that is no longer needed
+./target/debug/rdm phase remove <stem-or-number> --roadmap <slug> --project rdm
+
 # Mark a task as done after changes are committed
 ./target/debug/rdm task update <slug> --status done --project rdm
 ```
