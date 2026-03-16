@@ -1,6 +1,8 @@
 #![warn(missing_docs)]
 //! rdm-core: data model, parsing, file I/O, and index generation for rdm.
 
+/// Internal Markdown AST types for structured document generation.
+pub mod ast;
 /// Plan repo configuration (`rdm.toml`).
 pub mod config;
 /// Display formatting functions for roadmaps, phases, and projects.
