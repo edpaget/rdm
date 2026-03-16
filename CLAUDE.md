@@ -116,9 +116,11 @@ cargo deny check        # license & advisory audit
 
 ## Dogfooding
 
-rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.toml` to `~/Projects/rdm-atlas-repo`). **You MUST use the rdm CLI to read and update plan data.** Do not read or write the plan repo's markdown files directly — always go through the CLI. The only exception is when you need to perform an operation the CLI does not yet support (e.g., editing body content), in which case direct file access is acceptable.
+rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.toml` to `~/Projects/rdm-atlas-repo`). **You MUST use the rdm CLI to read and update plan data — never read or write the plan repo's markdown files directly.** There are no exceptions; all operations the plan requires are supported by the CLI.
 
-Before starting implementation work, build and use the CLI to check the current plan:
+### Reading the plan
+
+Before starting implementation work, build the CLI and check the current plan:
 
 ```bash
 cargo build                        # build the rdm binary
@@ -132,18 +134,43 @@ cargo build                        # build the rdm binary
 
 Use this to understand what phase you're working on, what the acceptance criteria are, and what comes next. Phase and task commands accept either a file stem or a number for convenience. Use `--no-body` on any show command to suppress body content when you only need metadata.
 
-After committing your work, update the plan to reflect progress:
+### Updating the plan
+
+After committing your work, update the plan to reflect progress. **Always pass `--no-edit`** to prevent the CLI from opening an interactive editor (which will hang in non-interactive agent contexts):
 
 ```bash
-# Mark a phase as done after all its acceptance criteria are met and changes are committed
-./target/debug/rdm phase update <stem-or-number> --status done --roadmap <slug> --project rdm
+# Mark a phase as done
+./target/debug/rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> --project rdm
 
 # Remove a phase that is no longer needed
 ./target/debug/rdm phase remove <stem-or-number> --roadmap <slug> --project rdm
 
-# Mark a task as done after changes are committed
-./target/debug/rdm task update <slug> --status done --project rdm
+# Mark a task as done
+./target/debug/rdm task update <slug> --status done --no-edit --project rdm
 ```
+
+### Creating plan items
+
+When you need to create new roadmaps, phases, or tasks, use `--body` for inline content and `--no-edit` to suppress the editor:
+
+```bash
+# Create a task with body content
+./target/debug/rdm task create <slug> --title "Title" --body "Description here." --no-edit --project rdm
+
+# Create a phase with body content
+./target/debug/rdm phase create --title "Title" --number <n> --body "Details." --no-edit --roadmap <slug> --project rdm
+
+# Create a roadmap with body content
+./target/debug/rdm roadmap create <slug> --title "Title" --body "Summary." --no-edit --project rdm
+```
+
+You can also pipe body content from stdin instead of using `--body`:
+
+```bash
+echo "Long description..." | ./target/debug/rdm task create <slug> --title "Title" --no-edit --project rdm
+```
+
+Do **not** use `--body` and stdin together — the CLI will error.
 
 ## Setup
 
