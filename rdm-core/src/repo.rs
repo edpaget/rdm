@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use chrono::Local;
 
 use crate::config::Config;
+use crate::display::{self, ProjectIndex, RoadmapIndexEntry};
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus, Priority, Project, Roadmap, Task, TaskStatus};
@@ -670,6 +671,63 @@ impl PlanRepo {
         Ok(roadmap_doc)
     }
 
+    // -- Index generation --
+
+    /// Generates `INDEX.md` from the current repo state.
+    ///
+    /// Scans all projects, roadmaps (with phase progress), and tasks,
+    /// then writes a formatted index to the root `INDEX.md`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if directory reads or the final write fail,
+    /// or frontmatter errors if any document file is malformed.
+    pub fn generate_index(&self) -> Result<()> {
+        let project_names = self.list_projects()?;
+        let mut project_indices = Vec::new();
+
+        for project_name in &project_names {
+            // Roadmaps
+            let roadmap_docs = self.list_roadmaps(project_name)?;
+            let mut roadmap_entries = Vec::new();
+            for roadmap_doc in &roadmap_docs {
+                let slug = &roadmap_doc.frontmatter.roadmap;
+                let phases = self.list_phases(project_name, slug)?;
+                let done_count = phases
+                    .iter()
+                    .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
+                    .count();
+                roadmap_entries.push(RoadmapIndexEntry {
+                    slug: slug.clone(),
+                    project: project_name.clone(),
+                    phase_count: phases.len(),
+                    done_count,
+                    dependencies: roadmap_doc.frontmatter.dependencies.clone(),
+                });
+            }
+
+            // Tasks — sorted by priority desc, then slug asc
+            let mut tasks = self.list_tasks(project_name)?;
+            tasks.sort_by(|(slug_a, doc_a), (slug_b, doc_b)| {
+                doc_b
+                    .frontmatter
+                    .priority
+                    .cmp(&doc_a.frontmatter.priority)
+                    .then_with(|| slug_a.cmp(slug_b))
+            });
+
+            project_indices.push(ProjectIndex {
+                name: project_name.clone(),
+                roadmaps: roadmap_entries,
+                tasks,
+            });
+        }
+
+        let content = display::format_index(&project_indices);
+        fs::write(self.index_path(), content)?;
+        Ok(())
+    }
+
     // -- Init --
 
     /// Initializes a new plan repo at the configured root.
@@ -1288,5 +1346,62 @@ mod tests {
         PlanRepo::init(dir.path()).unwrap();
         let result = PlanRepo::init(dir.path());
         assert!(matches!(result, Err(Error::AlreadyInitialized)));
+    }
+
+    // -- Index generation tests --
+
+    #[test]
+    fn generate_index_creates_file() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha Roadmap")
+            .unwrap();
+        repo.create_phase("fbm", "alpha", "core", "Core", None)
+            .unwrap();
+        repo.generate_index().unwrap();
+
+        let content = fs::read_to_string(repo.index_path()).unwrap();
+        assert!(content.contains("# Plan Index"));
+        assert!(content.contains("## Project: fbm"));
+        assert!(content.contains("alpha"));
+        assert!(content.contains("not started"));
+    }
+
+    #[test]
+    fn generate_index_idempotent() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha").unwrap();
+        repo.generate_index().unwrap();
+        let first = fs::read_to_string(repo.index_path()).unwrap();
+        repo.generate_index().unwrap();
+        let second = fs::read_to_string(repo.index_path()).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn generate_index_empty_repo() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        repo.generate_index().unwrap();
+        let content = fs::read_to_string(repo.index_path()).unwrap();
+        assert!(content.contains("# Plan Index"));
+    }
+
+    #[test]
+    fn generate_index_task_priority_ordering() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_task("fbm", "low-task", "Low", Priority::Low, None)
+            .unwrap();
+        repo.create_task("fbm", "crit-task", "Critical", Priority::Critical, None)
+            .unwrap();
+        repo.create_task("fbm", "high-task", "High", Priority::High, None)
+            .unwrap();
+        repo.generate_index().unwrap();
+
+        let content = fs::read_to_string(repo.index_path()).unwrap();
+        let crit_pos = content.find("crit-task").unwrap();
+        let high_pos = content.find("high-task").unwrap();
+        let low_pos = content.find("low-task").unwrap();
+        assert!(crit_pos < high_pos);
+        assert!(high_pos < low_pos);
     }
 }

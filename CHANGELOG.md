@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `rdm index` command to generate `INDEX.md` from current repo state
+- `PlanRepo::generate_index` in rdm-core for full index generation (projects, roadmaps with progress, tasks sorted by priority)
+- `format_index` display function with `ProjectIndex` and `RoadmapIndexEntry` structs
+- `--no-index` global flag to suppress automatic INDEX.md regeneration after mutations
+- Auto-regenerate INDEX.md after all mutation commands (project/roadmap/phase/task create, phase/task update, promote)
+- `Ord`/`PartialOrd` derive on `Priority` enum (Low < Medium < High < Critical)
+- Integration tests for index generation, idempotency, sorting, dependency graphs, auto-index, and `--no-index`
+
 ### Changed
 
 - `task list --status` now uses `TaskStatusFilter` enum for proper clap validation instead of raw string

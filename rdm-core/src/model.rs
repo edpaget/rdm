@@ -88,7 +88,9 @@ impl FromStr for TaskStatus {
 }
 
 /// Priority level for a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Variants are ordered from lowest to highest: `Low < Medium < High < Critical`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Priority {
     /// Low priority.
@@ -461,6 +463,14 @@ title: Fantasy Baseball Manager
         let serialized = serde_yaml::to_string(&project).unwrap();
         let parsed: Project = serde_yaml::from_str(&serialized).unwrap();
         assert_eq!(parsed, project);
+    }
+
+    #[test]
+    fn priority_ordering() {
+        assert!(Priority::Critical > Priority::High);
+        assert!(Priority::High > Priority::Medium);
+        assert!(Priority::Medium > Priority::Low);
+        assert!(Priority::Low < Priority::Medium);
     }
 
     #[test]

@@ -14,6 +14,10 @@ struct Cli {
     #[arg(long, env = "RDM_ROOT")]
     root: Option<PathBuf>,
 
+    /// Suppress automatic INDEX.md regeneration after mutations.
+    #[arg(long, global = true)]
+    no_index: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -53,6 +57,8 @@ enum Command {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Generate INDEX.md from current repo state.
+    Index,
     /// List roadmaps and their progress.
     List {
         /// Project to list roadmaps for.
@@ -237,6 +243,14 @@ fn resolve_project(flag: Option<String>, repo: &PlanRepo) -> Result<String> {
     bail!("no project specified — use --project or set default_project in rdm.toml")
 }
 
+fn maybe_regenerate_index(repo: &PlanRepo, no_index: bool) -> Result<()> {
+    if !no_index {
+        repo.generate_index()
+            .context("failed to regenerate INDEX.md")?;
+    }
+    Ok(())
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let root = cli
@@ -249,6 +263,12 @@ fn run() -> Result<()> {
             println!("Initialized plan repo at {}", root.display());
         }
 
+        Command::Index => {
+            let repo = PlanRepo::open(&root);
+            repo.generate_index().context("failed to generate index")?;
+            println!("Generated INDEX.md");
+        }
+
         Command::Project { command } => {
             let repo = PlanRepo::open(&root);
             match command {
@@ -258,6 +278,7 @@ fn run() -> Result<()> {
                         .create_project(&name, title)
                         .context("failed to create project")?;
                     println!("Created project '{}'", doc.frontmatter.name);
+                    maybe_regenerate_index(&repo, cli.no_index)?;
                 }
                 ProjectCommand::List => {
                     let projects = repo.list_projects().context("failed to list projects")?;
@@ -285,6 +306,7 @@ fn run() -> Result<()> {
                     repo.create_roadmap(&project, &slug, title)
                         .context("failed to create roadmap")?;
                     println!("Created roadmap '{slug}' in project '{project}'");
+                    maybe_regenerate_index(&repo, cli.no_index)?;
                 }
                 RoadmapCommand::Show { slug, project } => {
                     let project = resolve_project(project, &repo)?;
@@ -319,6 +341,7 @@ fn run() -> Result<()> {
                         .context("failed to create phase")?;
                     let stem = format!("phase-{}-{slug}", doc.frontmatter.phase);
                     println!("Created phase '{stem}' in roadmap '{roadmap}'");
+                    maybe_regenerate_index(&repo, cli.no_index)?;
                 }
                 PhaseCommand::List { roadmap, project } => {
                     let project = resolve_project(project, &repo)?;
@@ -354,6 +377,7 @@ fn run() -> Result<()> {
                     repo.update_phase(&project, &roadmap, &stem, status)
                         .context("failed to update phase")?;
                     println!("Updated '{stem}' → {status}");
+                    maybe_regenerate_index(&repo, cli.no_index)?;
                 }
             }
         }
@@ -373,6 +397,7 @@ fn run() -> Result<()> {
                     repo.create_task(&project, &slug, title, priority, tags)
                         .context("failed to create task")?;
                     println!("Created task '{slug}' in project '{project}'");
+                    maybe_regenerate_index(&repo, cli.no_index)?;
                 }
                 TaskCommand::Show { slug, project } => {
                     let project = resolve_project(project, &repo)?;
@@ -396,6 +421,7 @@ fn run() -> Result<()> {
                         "Updated task '{slug}' → status: {}, priority: {}",
                         doc.frontmatter.status, doc.frontmatter.priority
                     );
+                    maybe_regenerate_index(&repo, cli.no_index)?;
                 }
                 TaskCommand::List {
                     project,
@@ -446,6 +472,7 @@ fn run() -> Result<()> {
                 "Promoted task '{task_slug}' → roadmap '{}'",
                 doc.frontmatter.roadmap
             );
+            maybe_regenerate_index(&repo, cli.no_index)?;
         }
 
         Command::List { project, all } => {
