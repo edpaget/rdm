@@ -27,15 +27,6 @@ pub enum Error {
     ProjectNotSpecified,
     /// Failed to serialize the config file.
     ConfigSerialize(toml::ser::Error),
-    /// The source and destination roadmaps are the same.
-    SameRoadmap(String),
-    /// The requested phase number is out of range.
-    InvalidPhaseNumber {
-        /// The requested position.
-        requested: u32,
-        /// The maximum valid position (number of phases).
-        max: u32,
-    },
 }
 
 impl std::fmt::Display for Error {
@@ -79,14 +70,6 @@ impl std::fmt::Display for Error {
                 )
             }
             Error::ConfigSerialize(e) => write!(f, "failed to serialize config: {e}"),
-            Error::SameRoadmap(slug) => write!(
-                f,
-                "source and destination roadmaps are the same: {slug} — use 'rdm phase reorder' instead"
-            ),
-            Error::InvalidPhaseNumber { requested, max } => write!(
-                f,
-                "invalid phase number: {requested} (roadmap has {max} phases, valid range is 1\u{2013}{max})"
-            ),
         }
     }
 }

@@ -104,6 +104,147 @@ fn roadmap_show_with_phases() {
 }
 
 #[test]
+fn roadmap_list() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way Players",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "draft",
+            "--title",
+            "Draft Strategy",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    let assert = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "list", "--project", "fbm"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("two-way") && stdout.contains("Two-Way Players"));
+    assert!(stdout.contains("draft") && stdout.contains("Draft Strategy"));
+}
+
+#[test]
+fn roadmap_list_empty() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "list", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No roadmaps found."));
+}
+
+#[test]
+fn roadmap_list_with_progress() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way Players",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--title",
+            "Core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "ui",
+            "--title",
+            "UI",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "1",
+            "--status",
+            "done",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "list", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1/2 done"));
+}
+
+#[test]
 fn roadmap_create_missing_project() {
     let dir = TempDir::new().unwrap();
     rdm()

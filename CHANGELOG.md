@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm roadmap list --project P` command to list all roadmaps with phase progress
 - `rdm index` command to generate `INDEX.md` from current repo state
 - `PlanRepo::generate_index` in rdm-core for full index generation (projects, roadmaps with progress, tasks sorted by priority)
 - `format_index` display function with `ProjectIndex` and `RoadmapIndexEntry` structs
@@ -24,7 +25,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `rdm phase move` command to move a phase between roadmaps with automatic renumbering
 - `TaskStatusFilter` type with `Display`/`FromStr` for type-safe status filtering (accepts `all` or any `TaskStatus`)
 - `rdm task create`, `rdm task show`, `rdm task update`, and `rdm task list` CLI commands
 - `rdm promote` command to convert a task into a roadmap with an initial phase
@@ -35,7 +35,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `format_task_detail` and `format_task_list` display functions in rdm-core
 - `TaskNotFound` error variant in rdm-core
 - Integration tests for all task CLI commands and promote
-- `rdm phase reorder` command to move a phase to a new position (renumbers all phases sequentially)
 - `rdm phase list` command to show phases in a roadmap with number, title, status, and stem
 - Phase commands (`phase show`, `phase update`) accept phase number as alternative to stem
 - `rdm project create` and `rdm project list` CLI commands

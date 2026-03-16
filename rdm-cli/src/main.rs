@@ -105,6 +105,12 @@ enum RoadmapCommand {
         #[arg(long)]
         project: Option<String>,
     },
+    /// List all roadmaps in a project.
+    List {
+        /// Project to list roadmaps for.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -139,37 +145,6 @@ enum PhaseCommand {
     Show {
         /// Phase stem or number (e.g. phase-1-core or 1).
         stem: String,
-        /// Roadmap the phase belongs to.
-        #[arg(long)]
-        roadmap: String,
-        /// Project the roadmap belongs to.
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// Move a phase from one roadmap to another.
-    Move {
-        /// Phase stem or number (e.g. phase-1-core or 1).
-        stem: String,
-        /// Source roadmap.
-        #[arg(long)]
-        from: String,
-        /// Destination roadmap.
-        #[arg(long)]
-        to: String,
-        /// Position in destination (1-based, appends if omitted).
-        #[arg(long)]
-        number: Option<u32>,
-        /// Project the roadmaps belong to.
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// Reorder a phase to a new position.
-    Reorder {
-        /// Phase stem or number (e.g. phase-1-core or 1).
-        stem: String,
-        /// Target position (1-based).
-        #[arg(long)]
-        number: u32,
         /// Roadmap the phase belongs to.
         #[arg(long)]
         roadmap: String,
@@ -352,6 +327,21 @@ fn run() -> Result<()> {
                         display::format_roadmap_summary(&roadmap_doc.frontmatter, &phases)
                     );
                 }
+                RoadmapCommand::List { project } => {
+                    let project = resolve_project(project, &repo)?;
+                    let roadmaps = repo
+                        .list_roadmaps(&project)
+                        .context("failed to list roadmaps")?;
+                    let mut entries = Vec::new();
+                    for roadmap_doc in roadmaps {
+                        let slug = &roadmap_doc.frontmatter.roadmap;
+                        let phases = repo.list_phases(&project, slug).with_context(|| {
+                            format!("failed to list phases for roadmap '{slug}'")
+                        })?;
+                        entries.push((roadmap_doc, phases));
+                    }
+                    print!("{}", display::format_roadmap_list(&entries));
+                }
             }
         }
 
@@ -394,35 +384,6 @@ fn run() -> Result<()> {
                         .load_phase(&project, &roadmap, &stem)
                         .context("failed to load phase")?;
                     print!("{}", display::format_phase_detail(&stem, &doc));
-                }
-                PhaseCommand::Move {
-                    stem,
-                    from,
-                    to,
-                    number,
-                    project,
-                } => {
-                    let project = resolve_project(project, &repo)?;
-                    let stem = repo
-                        .resolve_phase_stem(&project, &from, &stem)
-                        .context("failed to resolve phase")?;
-                    repo.move_phase(&project, &from, &to, &stem, number)
-                        .context("failed to move phase")?;
-                    println!("Moved '{stem}' from '{from}' to '{to}'");
-                }
-                PhaseCommand::Reorder {
-                    stem,
-                    number,
-                    roadmap,
-                    project,
-                } => {
-                    let project = resolve_project(project, &repo)?;
-                    let stem = repo
-                        .resolve_phase_stem(&project, &roadmap, &stem)
-                        .context("failed to resolve phase")?;
-                    repo.reorder_phase(&project, &roadmap, &stem, number)
-                        .context("failed to reorder phase")?;
-                    println!("Reordered '{stem}' to position {number}");
                 }
                 PhaseCommand::Update {
                     stem,
