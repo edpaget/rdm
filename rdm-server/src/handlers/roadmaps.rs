@@ -1,3 +1,4 @@
+use askama::Template;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -6,9 +7,12 @@ use rdm_core::hal::{HalLink, HalResource};
 use rdm_core::model::PhaseStatus;
 
 use crate::content_type::ResponseFormat;
-use crate::error::AppError;
-use crate::extract::{hal_response, require_hal_json};
+use crate::error::error_response;
+use crate::extract::hal_response;
 use crate::state::AppState;
+use crate::templates::{
+    PhaseRow, RoadmapDetailPage, RoadmapSummaryView, RoadmapsPage, phase_status_class,
+};
 
 /// Summary data for a roadmap in a collection.
 #[derive(Serialize)]
@@ -38,43 +42,74 @@ pub async fn list_roadmaps(
     State(state): State<AppState>,
     Path(project): Path<String>,
 ) -> Result<Response, Response> {
-    require_hal_json(format)?;
-
     let repo = state.plan_repo();
     let roadmaps = repo
         .list_roadmaps(&project)
-        .map_err(|e| AppError(e).into_response())?;
+        .map_err(|e| error_response(e, format))?;
 
-    let mut embedded = Vec::new();
+    let mut summaries = Vec::new();
     for roadmap_doc in &roadmaps {
         let slug = &roadmap_doc.frontmatter.roadmap;
         let phases = repo
             .list_phases(&project, slug)
-            .map_err(|e| AppError(e).into_response())?;
+            .map_err(|e| error_response(e, format))?;
         let done_count = phases
             .iter()
             .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
             .count();
-
-        let summary = HalResource::new(
-            RoadmapSummary {
-                slug: slug.clone(),
-                title: roadmap_doc.frontmatter.title.clone(),
-                total_phases: phases.len(),
-                done_phases: done_count,
-            },
-            format!("/projects/{project}/roadmaps/{slug}"),
-        )
-        .with_link("project", HalLink::new(format!("/projects/{project}")));
-        embedded.push(serde_json::to_value(&summary).unwrap());
+        summaries.push((
+            slug.clone(),
+            roadmap_doc.frontmatter.title.clone(),
+            phases.len(),
+            done_count,
+        ));
     }
 
-    let self_href = format!("/projects/{project}/roadmaps");
-    let resource = HalResource::new(RoadmapsCollection {}, self_href)
-        .with_link("project", HalLink::new(format!("/projects/{project}")))
-        .with_embedded("roadmaps", embedded);
+    match format {
+        ResponseFormat::HalJson => {
+            let mut embedded = Vec::new();
+            for (slug, title, total, done) in &summaries {
+                let summary = HalResource::new(
+                    RoadmapSummary {
+                        slug: slug.clone(),
+                        title: title.clone(),
+                        total_phases: *total,
+                        done_phases: *done,
+                    },
+                    format!("/projects/{project}/roadmaps/{slug}"),
+                )
+                .with_link("project", HalLink::new(format!("/projects/{project}")));
+                embedded.push(serde_json::to_value(&summary).unwrap());
+            }
 
-    Ok(hal_response(resource))
+            let self_href = format!("/projects/{project}/roadmaps");
+            let resource = HalResource::new(RoadmapsCollection {}, self_href)
+                .with_link("project", HalLink::new(format!("/projects/{project}")))
+                .with_embedded("roadmaps", embedded);
+
+            Ok(hal_response(resource))
+        }
+        ResponseFormat::Html => {
+            let views: Vec<RoadmapSummaryView> = summaries
+                .into_iter()
+                .map(|(slug, title, total, done)| RoadmapSummaryView {
+                    slug,
+                    title,
+                    total_phases: total,
+                    done_phases: done,
+                })
+                .collect();
+            let page = RoadmapsPage {
+                project,
+                roadmaps: views,
+            };
+            Ok((
+                [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                page.render().expect("template rendering cannot fail"),
+            )
+                .into_response())
+        }
+    }
 }
 
 /// `GET /projects/:project/roadmaps/:roadmap` — roadmap detail with embedded phases.
@@ -83,38 +118,67 @@ pub async fn get_roadmap(
     State(state): State<AppState>,
     Path((project, roadmap)): Path<(String, String)>,
 ) -> Result<Response, Response> {
-    require_hal_json(format)?;
-
     let repo = state.plan_repo();
     let roadmap_doc = repo
         .load_roadmap(&project, &roadmap)
-        .map_err(|e| AppError(e).into_response())?;
+        .map_err(|e| error_response(e, format))?;
     let phases = repo
         .list_phases(&project, &roadmap)
-        .map_err(|e| AppError(e).into_response())?;
+        .map_err(|e| error_response(e, format))?;
 
-    let mut phase_embedded = Vec::new();
-    for (stem, phase_doc) in &phases {
-        let phase_resource = HalResource::new(
-            &phase_doc.frontmatter,
-            format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}"),
-        );
-        phase_embedded.push(serde_json::to_value(&phase_resource).unwrap());
+    match format {
+        ResponseFormat::HalJson => {
+            let mut phase_embedded = Vec::new();
+            for (stem, phase_doc) in &phases {
+                let phase_resource = HalResource::new(
+                    &phase_doc.frontmatter,
+                    format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}"),
+                );
+                phase_embedded.push(serde_json::to_value(&phase_resource).unwrap());
+            }
+
+            let self_href = format!("/projects/{project}/roadmaps/{roadmap}");
+            let resource = HalResource::new(
+                RoadmapDetail {
+                    slug: roadmap_doc.frontmatter.roadmap,
+                    title: roadmap_doc.frontmatter.title,
+                    dependencies: roadmap_doc.frontmatter.dependencies,
+                },
+                self_href,
+            )
+            .with_link("project", HalLink::new(format!("/projects/{project}")))
+            .with_embedded("phases", phase_embedded);
+
+            Ok(hal_response(resource))
+        }
+        ResponseFormat::Html => {
+            let phase_rows: Vec<PhaseRow> = phases
+                .iter()
+                .map(|(stem, doc)| {
+                    let status_cls = phase_status_class(&doc.frontmatter.status).to_string();
+                    PhaseRow {
+                        phase: doc.frontmatter.phase,
+                        stem: stem.clone(),
+                        title: doc.frontmatter.title.clone(),
+                        status: doc.frontmatter.status.to_string(),
+                        status_class: status_cls,
+                    }
+                })
+                .collect();
+            let page = RoadmapDetailPage {
+                project,
+                slug: roadmap_doc.frontmatter.roadmap,
+                title: roadmap_doc.frontmatter.title,
+                dependencies: roadmap_doc.frontmatter.dependencies,
+                phases: phase_rows,
+            };
+            Ok((
+                [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                page.render().expect("template rendering cannot fail"),
+            )
+                .into_response())
+        }
     }
-
-    let self_href = format!("/projects/{project}/roadmaps/{roadmap}");
-    let resource = HalResource::new(
-        RoadmapDetail {
-            slug: roadmap_doc.frontmatter.roadmap,
-            title: roadmap_doc.frontmatter.title,
-            dependencies: roadmap_doc.frontmatter.dependencies,
-        },
-        self_href,
-    )
-    .with_link("project", HalLink::new(format!("/projects/{project}")))
-    .with_embedded("phases", phase_embedded);
-
-    Ok(hal_response(resource))
 }
 
 #[cfg(test)]
@@ -228,7 +292,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_roadmaps_406_for_html() {
+    async fn list_roadmaps_returns_html() {
         let (_dir, state) = setup();
         let app = build_router(state);
         let response = app
@@ -240,6 +304,33 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), 406);
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("Alpha Roadmap"));
+        assert!(html.contains("1/2 phases done"));
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_returns_html() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("Alpha Roadmap"));
+        assert!(html.contains("First Phase"));
+        assert!(html.contains("badge-done"));
     }
 }

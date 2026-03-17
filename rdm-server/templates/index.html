@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Projects - rdm{% endblock %}
+
+{% block breadcrumb %}
+<li><a href="/" aria-current="page">Home</a></li>
+{% endblock %}
+
+{% block content %}
+<h1>Projects</h1>
+{% if projects.is_empty() %}
+<p>No projects found.</p>
+{% else %}
+<ul>
+{% for p in projects %}
+  <li><a href="/projects/{{ p.name }}/roadmaps">{{ p.title }}</a></li>
+{% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

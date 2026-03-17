@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Tasks - {{ project }} - rdm{% endblock %}
+
+{% block breadcrumb %}
+<li><a href="/">Home</a></li>
+<li><a href="/projects/{{ project }}/roadmaps">{{ project }}</a></li>
+<li><a href="/projects/{{ project }}/tasks" aria-current="page">Tasks</a></li>
+{% endblock %}
+
+{% block content %}
+<h1>Tasks for {{ project }}</h1>
+{% if tasks.is_empty() %}
+<p>No tasks found.</p>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th scope="col">Task</th>
+      <th scope="col">Status</th>
+      <th scope="col">Priority</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for t in tasks %}
+    <tr>
+      <td><a href="/projects/{{ project }}/tasks/{{ t.slug }}">{{ t.title }}</a></td>
+      <td><span class="badge badge-{{ t.status_class }}">{{ t.status }}</span></td>
+      <td><span class="badge badge-{{ t.priority_class }}">{{ t.priority }}</span></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

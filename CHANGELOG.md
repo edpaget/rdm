@@ -18,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `search` module in rdm-core: fuzzy search across roadmaps, phases, and tasks by title and body content using `nucleo-matcher`
 - `SearchFilter` for narrowing results by item kind, project, or status
 - `SearchResult` with kind, identifier, project, title, snippet, and score
+- HTML rendering for all endpoints with content negotiation: browsers get accessible HTML pages, API clients get HAL+JSON
+- WCAG 2.1 AA accessibility: skip-to-content link, breadcrumb navigation with `aria-label` and `aria-current`, proper `<th scope>`, status conveyed by text (not color alone), focus outlines, sufficient color contrast
+- Markdown-to-HTML rendering for phase and task body content using pulldown-cmark (raw HTML stripped)
+- Format-aware error pages: HTML requests get styled error pages, HAL+JSON requests get RFC 9457 Problem Details
+- Askama compile-time templates for all pages: index, roadmaps, roadmap detail, phase detail, task list, task detail, error
 - Read-only HAL+JSON endpoints: `GET /` (root with project links), `GET /projects`, `GET /projects/:project/roadmaps`, `GET /projects/:project/roadmaps/:roadmap` (with embedded phases), `GET /projects/:project/roadmaps/:roadmap/phases/:phase` (with prev/next sibling links), `GET /projects/:project/tasks` (with `?status=`, `?priority=`, `?tag=` filters), `GET /projects/:project/tasks/:task`
 - `load_project()` method on `PlanRepo` for loading project documents
 - HAL+JSON response helpers (`require_hal_json`, `hal_response`) in `rdm-server::extract`
@@ -43,6 +48,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Auto-regenerate INDEX.md after all mutation commands (project/roadmap/phase/task create, phase/task update, promote)
 - `Ord`/`PartialOrd` derive on `Priority` enum (Low < Medium < High < Critical)
 - Integration tests for index generation, idempotency, sorting, dependency graphs, auto-index, and `--no-index`
+
+### Removed
+
+- `require_hal_json()` guard — all endpoints now support both HTML and HAL+JSON via content negotiation
 
 ### Changed
 

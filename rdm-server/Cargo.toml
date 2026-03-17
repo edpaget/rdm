@@ -21,6 +21,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 headers-accept = { workspace = true }
 mediatype = { workspace = true }
+askama = { workspace = true }
+pulldown-cmark = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }

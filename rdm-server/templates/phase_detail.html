@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - rdm{% endblock %}
+
+{% block breadcrumb %}
+<li><a href="/">Home</a></li>
+<li><a href="/projects/{{ project }}/roadmaps">{{ project }}</a></li>
+<li><a href="/projects/{{ project }}/roadmaps/{{ roadmap }}">{{ roadmap }}</a></li>
+<li><a href="/projects/{{ project }}/roadmaps/{{ roadmap }}/phases/{{ stem }}" aria-current="page">Phase {{ phase_number }}</a></li>
+{% endblock %}
+
+{% block content %}
+<h1>Phase {{ phase_number }}: {{ title }}</h1>
+<dl class="meta">
+  <dt>Status</dt>
+  <dd><span class="badge badge-{{ status_class }}">{{ status }}</span></dd>
+  {% if let Some(date) = completed %}
+  <dt>Completed</dt>
+  <dd>{{ date }}</dd>
+  {% endif %}
+</dl>
+{% if !body_html.is_empty() %}
+<div class="body-content">{{ body_html|safe }}</div>
+{% endif %}
+<nav class="sibling-nav" aria-label="Phase navigation">
+  {% if let Some(prev) = prev_href %}
+  <a href="{{ prev }}">Previous phase</a>
+  {% else %}
+  <span></span>
+  {% endif %}
+  {% if let Some(next) = next_href %}
+  <a href="{{ next }}">Next phase</a>
+  {% else %}
+  <span></span>
+  {% endif %}
+</nav>
+{% endblock %}

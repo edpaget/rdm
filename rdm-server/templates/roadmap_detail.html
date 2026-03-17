@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - rdm{% endblock %}
+
+{% block breadcrumb %}
+<li><a href="/">Home</a></li>
+<li><a href="/projects/{{ project }}/roadmaps">{{ project }}</a></li>
+<li><a href="/projects/{{ project }}/roadmaps/{{ slug }}" aria-current="page">{{ title }}</a></li>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+{% if let Some(deps) = dependencies %}
+{% if !deps.is_empty() %}
+<p>Dependencies: {% for d in deps %}{% if !loop.first %}, {% endif %}<a href="/projects/{{ project }}/roadmaps/{{ d }}">{{ d }}</a>{% endfor %}</p>
+{% endif %}
+{% endif %}
+{% if phases.is_empty() %}
+<p>No phases defined.</p>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th scope="col">#</th>
+      <th scope="col">Phase</th>
+      <th scope="col">Status</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for p in phases %}
+    <tr>
+      <td>{{ p.phase }}</td>
+      <td><a href="/projects/{{ project }}/roadmaps/{{ slug }}/phases/{{ p.stem }}">{{ p.title }}</a></td>
+      <td><span class="badge badge-{{ p.status_class }}">{{ p.status }}</span></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

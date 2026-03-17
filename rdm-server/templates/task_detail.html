@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - rdm{% endblock %}
+
+{% block breadcrumb %}
+<li><a href="/">Home</a></li>
+<li><a href="/projects/{{ project }}/roadmaps">{{ project }}</a></li>
+<li><a href="/projects/{{ project }}/tasks">Tasks</a></li>
+<li><a href="/projects/{{ project }}/tasks/{{ slug }}" aria-current="page">{{ title }}</a></li>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+<dl class="meta">
+  <dt>Status</dt>
+  <dd><span class="badge badge-{{ status_class }}">{{ status }}</span></dd>
+  <dt>Priority</dt>
+  <dd><span class="badge badge-{{ priority_class }}">{{ priority }}</span></dd>
+  <dt>Created</dt>
+  <dd>{{ created }}</dd>
+  {% if let Some(tags) = tags %}
+  {% if !tags.is_empty() %}
+  <dt>Tags</dt>
+  <dd>{{ tags.join(", ") }}</dd>
+  {% endif %}
+  {% endif %}
+</dl>
+{% if !body_html.is_empty() %}
+<div class="body-content">{{ body_html|safe }}</div>
+{% endif %}
+{% endblock %}

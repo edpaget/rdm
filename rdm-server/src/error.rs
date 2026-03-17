@@ -1,12 +1,18 @@
+//! Error handling: core errors to RFC 9457 Problem Details responses or HTML error pages.
+
+use askama::Template;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use rdm_core::problem::ProblemDetail;
 
+use crate::content_type::ResponseFormat;
+use crate::templates::ErrorPage;
+
 /// Content type for RFC 9457 Problem Details responses.
 const PROBLEM_JSON: &str = "application/problem+json";
 
-/// Converts a [`ProblemDetail`] into an axum [`Response`].
+/// Converts a [`ProblemDetail`] into an axum [`Response`] with JSON body.
 pub(crate) fn problem_detail_into_response(pd: ProblemDetail) -> Response {
     let status = StatusCode::from_u16(pd.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let body = serde_json::to_string(&pd).expect("ProblemDetail serialization cannot fail");
@@ -19,7 +25,35 @@ pub(crate) fn problem_detail_into_response(pd: ProblemDetail) -> Response {
         .into_response()
 }
 
+/// Returns an error response in the appropriate format (JSON Problem Details or HTML error page).
+pub fn error_response(err: rdm_core::error::Error, format: ResponseFormat) -> Response {
+    let pd = ProblemDetail::from(&err);
+    match format {
+        ResponseFormat::HalJson => problem_detail_into_response(pd),
+        ResponseFormat::Html => {
+            let status =
+                StatusCode::from_u16(pd.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let page = ErrorPage {
+                status: pd.status,
+                title: pd.title,
+                detail: pd.detail,
+            };
+            match page.render() {
+                Ok(html) => (
+                    status,
+                    [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                    html,
+                )
+                    .into_response(),
+                Err(_) => problem_detail_into_response(ProblemDetail::from(&err)),
+            }
+        }
+    }
+}
+
 /// Wrapper around [`rdm_core::error::Error`] that implements [`IntoResponse`].
+///
+/// Defaults to JSON Problem Details. For format-aware errors, use [`error_response`] directly.
 pub struct AppError(pub rdm_core::error::Error);
 
 impl IntoResponse for AppError {
@@ -80,5 +114,37 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], 404);
         assert!(json["detail"].as_str().unwrap().contains("demo"));
+    }
+
+    #[tokio::test]
+    async fn error_response_html_returns_html() {
+        let err = rdm_core::error::Error::ProjectNotFound("demo".to_string());
+        let response = error_response(err, ResponseFormat::Html);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(
+            response
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("text/html")
+        );
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("404"));
+        assert!(html.contains("Not Found"));
+    }
+
+    #[tokio::test]
+    async fn error_response_json_returns_problem_details() {
+        let err = rdm_core::error::Error::ProjectNotFound("demo".to_string());
+        let response = error_response(err, ResponseFormat::HalJson);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/problem+json"
+        );
     }
 }

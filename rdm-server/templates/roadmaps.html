@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Roadmaps - {{ project }} - rdm{% endblock %}
+
+{% block breadcrumb %}
+<li><a href="/">Home</a></li>
+<li><a href="/projects/{{ project }}/roadmaps" aria-current="page">{{ project }}</a></li>
+{% endblock %}
+
+{% block content %}
+<h1>Roadmaps for {{ project }}</h1>
+{% if roadmaps.is_empty() %}
+<p>No roadmaps found.</p>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th scope="col">Roadmap</th>
+      <th scope="col">Progress</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in roadmaps %}
+    <tr>
+      <td><a href="/projects/{{ project }}/roadmaps/{{ r.slug }}">{{ r.title }}</a></td>
+      <td>{{ r.done_phases }}/{{ r.total_phases }} phases done</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+<p><a href="/projects/{{ project }}/tasks">View tasks</a></p>
+{% endblock %}

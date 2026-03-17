@@ -9,7 +9,11 @@ pub mod error;
 pub mod extract;
 /// HTTP request handlers.
 pub mod handlers;
+/// Markdown-to-HTML rendering.
+pub mod markdown;
 /// Axum router construction.
 pub mod router;
 /// Shared application state.
 pub mod state;
+/// Askama template structs for HTML pages.
+pub mod templates;

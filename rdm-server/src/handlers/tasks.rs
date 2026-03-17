@@ -1,3 +1,4 @@
+use askama::Template;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
@@ -7,9 +8,11 @@ use rdm_core::model::{Priority, Task, TaskStatus};
 use rdm_core::problem::ProblemDetail;
 
 use crate::content_type::ResponseFormat;
-use crate::error::{AppError, problem_detail_into_response};
-use crate::extract::{hal_response, require_hal_json};
+use crate::error::{error_response, problem_detail_into_response};
+use crate::extract::hal_response;
+use crate::markdown::render_markdown;
 use crate::state::AppState;
+use crate::templates::{TaskDetailPage, TaskListPage, TaskRow, priority_class, task_status_class};
 
 /// Query parameters for filtering the task list.
 #[derive(Debug, Deserialize, Default)]
@@ -42,8 +45,6 @@ pub async fn list_tasks(
     Path(project): Path<String>,
     Query(filters): Query<TaskFilters>,
 ) -> Result<Response, Response> {
-    require_hal_json(format)?;
-
     // Validate filter values up front.
     let status_filter = match &filters.status {
         Some(s) => match s.parse::<TaskStatus>() {
@@ -84,46 +85,78 @@ pub async fn list_tasks(
     let repo = state.plan_repo();
     let tasks = repo
         .list_tasks(&project)
-        .map_err(|e| AppError(e).into_response())?;
+        .map_err(|e| error_response(e, format))?;
 
-    let mut embedded = Vec::new();
-    for (slug, doc) in &tasks {
-        // Apply filters.
-        if let Some(ref sf) = status_filter {
-            if doc.frontmatter.status != *sf {
-                continue;
+    // Filter tasks.
+    let filtered: Vec<_> = tasks
+        .iter()
+        .filter(|(_, doc)| {
+            if let Some(ref sf) = status_filter {
+                if doc.frontmatter.status != *sf {
+                    return false;
+                }
             }
-        }
-        if let Some(ref pf) = priority_filter {
-            if doc.frontmatter.priority != *pf {
-                continue;
+            if let Some(ref pf) = priority_filter {
+                if doc.frontmatter.priority != *pf {
+                    return false;
+                }
             }
-        }
-        if let Some(ref tag) = filters.tag {
-            let has_tag = doc
-                .frontmatter
-                .tags
-                .as_ref()
-                .is_some_and(|tags| tags.contains(tag));
-            if !has_tag {
-                continue;
+            if let Some(ref tag) = filters.tag {
+                let has_tag = doc
+                    .frontmatter
+                    .tags
+                    .as_ref()
+                    .is_some_and(|tags| tags.contains(tag));
+                if !has_tag {
+                    return false;
+                }
             }
-        }
+            true
+        })
+        .collect();
 
-        let task_resource = HalResource::new(
-            &doc.frontmatter,
-            format!("/projects/{project}/tasks/{slug}"),
-        )
-        .with_link("project", HalLink::new(format!("/projects/{project}")));
-        embedded.push(serde_json::to_value(&task_resource).unwrap());
+    match format {
+        ResponseFormat::HalJson => {
+            let mut embedded = Vec::new();
+            for (slug, doc) in &filtered {
+                let task_resource = HalResource::new(
+                    &doc.frontmatter,
+                    format!("/projects/{project}/tasks/{slug}"),
+                )
+                .with_link("project", HalLink::new(format!("/projects/{project}")));
+                embedded.push(serde_json::to_value(&task_resource).unwrap());
+            }
+
+            let self_href = format!("/projects/{project}/tasks");
+            let resource = HalResource::new(TasksCollection {}, self_href)
+                .with_link("project", HalLink::new(format!("/projects/{project}")))
+                .with_embedded("tasks", embedded);
+
+            Ok(hal_response(resource))
+        }
+        ResponseFormat::Html => {
+            let rows: Vec<TaskRow> = filtered
+                .iter()
+                .map(|(slug, doc)| TaskRow {
+                    slug: (*slug).clone(),
+                    title: doc.frontmatter.title.clone(),
+                    status: doc.frontmatter.status.to_string(),
+                    status_class: task_status_class(&doc.frontmatter.status).to_string(),
+                    priority: doc.frontmatter.priority.to_string(),
+                    priority_class: priority_class(&doc.frontmatter.priority).to_string(),
+                })
+                .collect();
+            let page = TaskListPage {
+                project,
+                tasks: rows,
+            };
+            Ok((
+                [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                page.render().expect("template rendering cannot fail"),
+            )
+                .into_response())
+        }
     }
-
-    let self_href = format!("/projects/{project}/tasks");
-    let resource = HalResource::new(TasksCollection {}, self_href)
-        .with_link("project", HalLink::new(format!("/projects/{project}")))
-        .with_embedded("tasks", embedded);
-
-    Ok(hal_response(resource))
 }
 
 /// `GET /projects/:project/tasks/:task` — task detail.
@@ -132,25 +165,46 @@ pub async fn get_task(
     State(state): State<AppState>,
     Path((project, task_slug)): Path<(String, String)>,
 ) -> Result<Response, Response> {
-    require_hal_json(format)?;
-
     let repo = state.plan_repo();
     let doc = repo
         .load_task(&project, &task_slug)
-        .map_err(|e| AppError(e).into_response())?;
+        .map_err(|e| error_response(e, format))?;
 
-    let self_href = format!("/projects/{project}/tasks/{task_slug}");
-    let resource = HalResource::new(
-        TaskDetail {
-            slug: task_slug,
-            task: doc.frontmatter,
-            body: doc.body,
-        },
-        self_href,
-    )
-    .with_link("project", HalLink::new(format!("/projects/{project}")));
+    match format {
+        ResponseFormat::HalJson => {
+            let self_href = format!("/projects/{project}/tasks/{task_slug}");
+            let resource = HalResource::new(
+                TaskDetail {
+                    slug: task_slug,
+                    task: doc.frontmatter,
+                    body: doc.body,
+                },
+                self_href,
+            )
+            .with_link("project", HalLink::new(format!("/projects/{project}")));
 
-    Ok(hal_response(resource))
+            Ok(hal_response(resource))
+        }
+        ResponseFormat::Html => {
+            let page = TaskDetailPage {
+                project,
+                slug: task_slug,
+                title: doc.frontmatter.title,
+                status: doc.frontmatter.status.to_string(),
+                status_class: task_status_class(&doc.frontmatter.status).to_string(),
+                priority: doc.frontmatter.priority.to_string(),
+                priority_class: priority_class(&doc.frontmatter.priority).to_string(),
+                created: doc.frontmatter.created.to_string(),
+                tags: doc.frontmatter.tags,
+                body_html: render_markdown(&doc.body),
+            };
+            Ok((
+                [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                page.render().expect("template rendering cannot fail"),
+            )
+                .into_response())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -339,7 +393,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_tasks_406_for_html() {
+    async fn list_tasks_returns_html() {
         let (_dir, state) = setup();
         let app = build_router(state);
         let response = app
@@ -351,6 +405,56 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), 406);
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("Fix the Bug"));
+        assert!(html.contains("New Feature"));
+        assert!(html.contains("badge-high"));
+    }
+
+    #[tokio::test]
+    async fn get_task_returns_html() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/tasks/bug-fix")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("Fix the Bug"));
+        assert!(html.contains("Bug details."));
+        assert!(html.contains("badge-high"));
+        assert!(html.contains("#main-content"));
+        assert!(html.contains("aria-current=\"page\""));
+    }
+
+    #[tokio::test]
+    async fn get_task_404_returns_html_error() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/tasks/nonexistent")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("Not Found"));
     }
 }

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - rdm{% endblock %}
+
+{% block breadcrumb %}
+<li><a href="/">Home</a></li>
+<li><span aria-current="page">Error</span></li>
+{% endblock %}
+
+{% block content %}
+<h1>{{ status }} {{ title }}</h1>
+{% if let Some(detail) = detail %}
+<p>{{ detail }}</p>
+{% endif %}
+<p><a href="/">Return to home</a></p>
+{% endblock %}
