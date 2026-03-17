@@ -93,6 +93,23 @@ impl PlanRepo {
         Config::from_toml(&content)
     }
 
+    /// Loads and parses a project document from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ProjectNotFound`] if the project directory or
+    /// `project.md` does not exist, [`Error::Io`] on read failure, or
+    /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+    /// YAML is invalid.
+    pub fn load_project(&self, name: &str) -> Result<Document<Project>> {
+        let path = self.project_path(name).join("project.md");
+        if !path.exists() {
+            return Err(Error::ProjectNotFound(name.to_string()));
+        }
+        let content = fs::read_to_string(path)?;
+        Document::parse(&content)
+    }
+
     /// Loads and parses a roadmap document from disk.
     ///
     /// # Errors
@@ -936,6 +953,25 @@ mod tests {
         let loaded = repo.load_task("fbm", "fix-barrel-nulls").unwrap();
         assert_eq!(loaded.frontmatter, doc.frontmatter);
         assert_eq!(loaded.body, doc.body);
+    }
+
+    #[test]
+    fn load_project_success() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        repo.create_project("fbm", "Fantasy Baseball Manager")
+            .unwrap();
+        let doc = repo.load_project("fbm").unwrap();
+        assert_eq!(doc.frontmatter.name, "fbm");
+        assert_eq!(doc.frontmatter.title, "Fantasy Baseball Manager");
+    }
+
+    #[test]
+    fn load_project_not_found() {
+        let dir = TempDir::new().unwrap();
+        let repo = PlanRepo::init(dir.path()).unwrap();
+        let result = repo.load_project("nonexistent");
+        assert!(matches!(result, Err(Error::ProjectNotFound(ref s)) if s == "nonexistent"));
     }
 
     #[test]

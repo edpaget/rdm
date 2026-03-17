@@ -7,7 +7,7 @@ use rdm_core::problem::ProblemDetail;
 const PROBLEM_JSON: &str = "application/problem+json";
 
 /// Converts a [`ProblemDetail`] into an axum [`Response`].
-fn problem_detail_into_response(pd: ProblemDetail) -> Response {
+pub(crate) fn problem_detail_into_response(pd: ProblemDetail) -> Response {
     let status = StatusCode::from_u16(pd.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let body = serde_json::to_string(&pd).expect("ProblemDetail serialization cannot fail");
 

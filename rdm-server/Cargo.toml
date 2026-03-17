@@ -24,3 +24,4 @@ mediatype = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }
+tempfile = { workspace = true }
