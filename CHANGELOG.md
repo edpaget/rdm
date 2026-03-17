@@ -18,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `search` module in rdm-core: fuzzy search across roadmaps, phases, and tasks by title and body content using `nucleo-matcher`
 - `SearchFilter` for narrowing results by item kind, project, or status
 - `SearchResult` with kind, identifier, project, title, snippet, and score
+- Server foundation: `rdm-server` binary with axum, health check endpoint (`GET /healthz`), and shared `AppState`
+- HAL (Hypertext Application Language) response types in `rdm-core`: `HalLink` and `HalResource<T>` with builder API
+- RFC 9457 Problem Details type in `rdm-core` with mappings from all `rdm-core::Error` variants
+- Content negotiation extractor parsing `Accept` header for `application/hal+json` and `text/html` (defaults to HTML)
+- `AppError` wrapper in `rdm-server` converting core errors to Problem Details HTTP responses
 - `phase remove` command to delete a phase from a roadmap (accepts stem or number)
 - Interactive `$EDITOR` fallback when no `--body` or stdin is provided (checks `$VISUAL`, then `$EDITOR`, then `vi`)
 - `--no-edit` flag on all `create` and `update` commands to suppress interactive editor
