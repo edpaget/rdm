@@ -264,6 +264,175 @@ fn section_status_transitions() -> String {
         .to_string()
 }
 
+/// A generated skill file with its relative path and content.
+pub struct SkillFile {
+    /// Relative path within the output directory (e.g., "rdm-roadmap/SKILL.md").
+    pub relative_path: &'static str,
+    /// The full content of the skill file.
+    pub content: String,
+}
+
+/// Options for generating skill definition files.
+pub struct SkillOptions {
+    /// Project name to embed in skill CLI invocations.
+    pub project: Option<String>,
+    /// Optional path to a principles file to reference.
+    pub principles_file: Option<String>,
+}
+
+/// Generates Claude Code skill definition files.
+///
+/// Returns a vector of [`SkillFile`]s, each containing the relative path
+/// and content for a skill definition. Skills are reusable agent behaviors
+/// triggered by slash commands in Claude Code.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::{SkillOptions, generate_skills};
+///
+/// let skills = generate_skills(&SkillOptions {
+///     project: Some("myproj".to_string()),
+///     principles_file: None,
+/// });
+/// assert_eq!(skills.len(), 3);
+/// assert!(skills[0].content.contains("--project myproj"));
+/// ```
+pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
+    let proj_flag = proj_flag_str(opts.project.as_deref());
+    let principles_note = opts.principles_file.as_deref().map(skill_principles_note);
+    vec![
+        skill_roadmap(&proj_flag, principles_note.as_deref()),
+        skill_implement(&proj_flag, principles_note.as_deref()),
+        skill_tasks(&proj_flag, principles_note.as_deref()),
+    ]
+}
+
+fn skill_principles_note(path: &str) -> String {
+    format!(
+        "\n## Principles\n\nRead `{path}` before starting. It contains project conventions that should guide your work."
+    )
+}
+
+fn skill_roadmap(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    let principles = principles_note.unwrap_or("");
+    SkillFile {
+        relative_path: "rdm-roadmap/SKILL.md",
+        content: format!(
+            r#"---
+name: rdm-roadmap
+description: Create an rdm roadmap with phases for a topic
+allowed-tools:
+  - Read
+  - Bash
+  - Glob
+  - Grep
+---
+
+Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
+{principles}
+## Steps
+
+1. **Explore the codebase** to understand the current state relevant to `$ARGUMENTS`. Read key files, search for related code, and build context.
+2. **Design phases** that break the work into independently deliverable increments. Each phase should produce a working, testable result.
+3. **Create the roadmap**: `rdm roadmap create <slug> --title "Title" --body "Summary." --no-edit {proj_flag}`
+4. **Create each phase** with context, steps, and acceptance criteria in the body:
+   ```bash
+   rdm phase create <slug> --title "Phase title" --number <n> --no-edit --roadmap <roadmap-slug> {proj_flag} <<'EOF'
+   ## Context
+   Why this phase exists and what it builds on.
+
+   ## Steps
+   1. First step
+   2. Second step
+
+   ## Acceptance Criteria
+   - [ ] Criterion one
+   - [ ] Criterion two
+   EOF
+   ```
+5. **Verify** the roadmap looks correct: `rdm roadmap show <slug> {proj_flag}`
+
+## Guidelines
+
+- Aim for 2–6 phases per roadmap
+- Each phase should be independently deliverable and testable
+- Include Context, Steps, and Acceptance Criteria in every phase body
+- Order phases so each builds on the previous one
+- Use clear, descriptive slugs (e.g., `add-caching`, `migrate-auth`)
+"#
+        ),
+    }
+}
+
+fn skill_implement(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    let principles = principles_note.unwrap_or("");
+    SkillFile {
+        relative_path: "rdm-implement/SKILL.md",
+        content: format!(
+            r#"---
+name: rdm-implement
+description: Implement the next phase of an rdm roadmap
+allowed-tools:
+  - Read
+  - Bash
+  - Glob
+  - Grep
+  - Write
+  - Edit
+---
+
+Implement a phase from an rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [phase-number]`.
+{principles}
+## Steps
+
+1. **Parse arguments**: extract the roadmap slug and optional phase number from `$ARGUMENTS`.
+2. **Find the phase**: if no phase number was given, run `rdm phase list --roadmap <slug> {proj_flag}` and pick the first `not-started` or `in-progress` phase.
+3. **Read the phase**: `rdm phase show <phase> --roadmap <slug> {proj_flag}` to get full context, steps, and acceptance criteria.
+4. **Mark in-progress**: `rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> {proj_flag}`
+5. **Plan the implementation** and present your approach to the user for approval before writing code.
+6. **Execute the plan**: implement the work described in the phase, following the steps and acceptance criteria.
+7. **Mark done**: `rdm phase update <phase> --status done --no-edit --roadmap <slug> {proj_flag}`
+8. **Handle side-work**: if you discover bugs or unrelated improvements, create tasks instead of fixing them inline:
+   ```bash
+   rdm task create <slug> --title "Description" --body "Details." --no-edit {proj_flag}
+   ```
+"#
+        ),
+    }
+}
+
+fn skill_tasks(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    let principles = principles_note.unwrap_or("");
+    SkillFile {
+        relative_path: "rdm-tasks/SKILL.md",
+        content: format!(
+            r#"---
+name: rdm-tasks
+description: Work on rdm tasks
+allowed-tools:
+  - Read
+  - Bash
+  - Glob
+  - Grep
+  - Write
+  - Edit
+---
+
+Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
+{principles}
+## Steps
+
+1. **List tasks**: `rdm task list {proj_flag}` to see open and in-progress tasks.
+2. **Show details**: if a task slug was provided in `$ARGUMENTS`, run `rdm task show <slug> {proj_flag}`. Otherwise, present the task list and ask the user which task to work on.
+3. **Mark in-progress**: `rdm task update <slug> --status in-progress --no-edit {proj_flag}`
+4. **Implement** the work described in the task.
+5. **Mark done**: `rdm task update <slug> --status done --no-edit {proj_flag}`
+"#
+        ),
+    }
+}
+
 fn section_principles(path: &str) -> String {
     format!(
         r#"## Principles
@@ -486,5 +655,212 @@ mod tests {
             principles_file: None,
         });
         assert!(!content.contains("## Principles"));
+    }
+
+    // --- Skill generation tests ---
+
+    #[test]
+    fn generate_skills_returns_three_files() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        assert_eq!(skills.len(), 3);
+    }
+
+    #[test]
+    fn generate_skills_correct_paths() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        assert_eq!(skills[0].relative_path, "rdm-roadmap/SKILL.md");
+        assert_eq!(skills[1].relative_path, "rdm-implement/SKILL.md");
+        assert_eq!(skills[2].relative_path, "rdm-tasks/SKILL.md");
+    }
+
+    #[test]
+    fn skills_have_yaml_frontmatter() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        for skill in &skills {
+            assert!(
+                skill.content.starts_with("---\n"),
+                "skill {} missing frontmatter",
+                skill.relative_path
+            );
+            assert!(
+                skill.content.contains("name:"),
+                "skill {} missing name",
+                skill.relative_path
+            );
+            assert!(
+                skill.content.contains("allowed-tools:"),
+                "skill {} missing allowed-tools",
+                skill.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn skills_have_correct_names() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        assert!(skills[0].content.contains("name: rdm-roadmap"));
+        assert!(skills[1].content.contains("name: rdm-implement"));
+        assert!(skills[2].content.contains("name: rdm-tasks"));
+    }
+
+    #[test]
+    fn skills_use_project_flag() {
+        let skills = generate_skills(&SkillOptions {
+            project: Some("myproj".to_string()),
+            principles_file: None,
+        });
+        for skill in &skills {
+            assert!(
+                skill.content.contains("--project myproj"),
+                "skill {} missing project flag",
+                skill.relative_path
+            );
+            assert!(
+                !skill.content.contains("<PROJECT>"),
+                "skill {} has placeholder",
+                skill.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn skills_use_placeholder_without_project() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        for skill in &skills {
+            assert!(
+                skill.content.contains("--project <PROJECT>"),
+                "skill {} missing placeholder",
+                skill.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn skills_contain_arguments_variable() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        for skill in &skills {
+            assert!(
+                skill.content.contains("$ARGUMENTS"),
+                "skill {} missing $ARGUMENTS",
+                skill.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn skill_roadmap_contains_rdm_commands() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[0].content;
+        assert!(content.contains("rdm roadmap create"));
+        assert!(content.contains("rdm phase create"));
+        assert!(content.contains("rdm roadmap show"));
+    }
+
+    #[test]
+    fn skill_implement_contains_rdm_commands() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("rdm phase list"));
+        assert!(content.contains("rdm phase show"));
+        assert!(content.contains("rdm phase update"));
+        assert!(content.contains("rdm task create"));
+    }
+
+    #[test]
+    fn skill_tasks_contains_rdm_commands() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("rdm task list"));
+        assert!(content.contains("rdm task show"));
+        assert!(content.contains("rdm task update"));
+    }
+
+    #[test]
+    fn skills_include_principles_when_specified() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: Some("docs/principles.md".to_string()),
+        });
+        for skill in &skills {
+            assert!(
+                skill.content.contains("## Principles"),
+                "skill {} missing principles",
+                skill.relative_path
+            );
+            assert!(
+                skill.content.contains("docs/principles.md"),
+                "skill {} missing principles path",
+                skill.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn skills_exclude_principles_when_not_specified() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        for skill in &skills {
+            assert!(
+                !skill.content.contains("## Principles"),
+                "skill {} has unexpected principles",
+                skill.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn skill_implement_has_write_edit_tools() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("Write"));
+        assert!(content.contains("Edit"));
+    }
+
+    #[test]
+    fn skill_roadmap_no_write_edit_tools() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        // Roadmap skill should only have Read, Bash, Glob, Grep
+        let frontmatter = skills[0]
+            .content
+            .split("---")
+            .nth(1)
+            .expect("missing frontmatter");
+        assert!(!frontmatter.contains("Write"));
+        assert!(!frontmatter.contains("Edit"));
     }
 }

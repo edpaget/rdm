@@ -167,6 +167,136 @@ fn agent_config_no_principles_without_flag() {
 }
 
 #[test]
+fn agent_config_skills_requires_claude_platform() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("agents-md")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--skills is only supported for the claude platform",
+        ));
+}
+
+#[test]
+fn agent_config_skills_requires_out() {
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--skills requires --out"));
+}
+
+#[test]
+fn agent_config_skills_generates_three_files() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote").count(3));
+
+    assert!(dir.path().join("rdm-roadmap/SKILL.md").exists());
+    assert!(dir.path().join("rdm-implement/SKILL.md").exists());
+    assert!(dir.path().join("rdm-tasks/SKILL.md").exists());
+}
+
+#[test]
+fn agent_config_skills_have_valid_frontmatter() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    for name in &["rdm-roadmap", "rdm-implement", "rdm-tasks"] {
+        let path = dir.path().join(format!("{name}/SKILL.md"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.starts_with("---\n"),
+            "{name} missing frontmatter start"
+        );
+        assert!(content.contains("name:"), "{name} missing name field");
+        assert!(
+            content.contains("allowed-tools:"),
+            "{name} missing allowed-tools"
+        );
+    }
+}
+
+#[test]
+fn agent_config_skills_embed_project_flag() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--project")
+        .arg("testproj")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    for name in &["rdm-roadmap", "rdm-implement", "rdm-tasks"] {
+        let path = dir.path().join(format!("{name}/SKILL.md"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("--project testproj"),
+            "{name} missing project flag"
+        );
+    }
+}
+
+#[test]
+fn agent_config_skills_include_principles() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--principles-file")
+        .arg("docs/principles.md")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(dir.path().join("rdm-implement/SKILL.md")).unwrap();
+    assert!(content.contains("## Principles"));
+    assert!(content.contains("docs/principles.md"));
+}
+
+#[test]
+fn agent_config_skills_does_not_require_plan_repo() {
+    let dir = TempDir::new().unwrap();
+    let out = TempDir::new().unwrap();
+    rdm()
+        .current_dir(dir.path())
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--out")
+        .arg(out.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn agent_config_principles_with_project_and_out() {
     let dir = TempDir::new().unwrap();
     rdm()

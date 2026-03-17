@@ -5,7 +5,7 @@ use std::process;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use is_terminal::IsTerminal;
-use rdm_core::agent_config::{self, AgentConfigOptions, Platform};
+use rdm_core::agent_config::{self, AgentConfigOptions, Platform, SkillOptions};
 use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
@@ -77,6 +77,9 @@ enum Command {
         /// Path to a principles/conventions file to reference in generated instructions.
         #[arg(long)]
         principles_file: Option<String>,
+        /// Generate Claude Code skill files instead of an instruction file.
+        #[arg(long)]
+        skills: bool,
     },
     /// Search across roadmaps, phases, and tasks.
     Search {
@@ -808,25 +811,51 @@ fn run() -> Result<()> {
             project,
             out,
             principles_file,
+            skills,
         } => {
             let platform: Platform = platform.parse().map_err(|e: String| anyhow::anyhow!(e))?;
-            let content = agent_config::generate_agent_config(&AgentConfigOptions {
-                platform,
-                project,
-                principles_file,
-            });
-            if let Some(dir) = out {
-                let path = dir.join(platform.conventional_path());
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).with_context(|| {
-                        format!("failed to create directory {}", parent.display())
-                    })?;
+
+            if skills {
+                if platform != Platform::Claude {
+                    bail!("--skills is only supported for the claude platform");
                 }
-                std::fs::write(&path, &content)
-                    .with_context(|| format!("failed to write {}", path.display()))?;
-                println!("Wrote {}", path.display());
+                let dir = out.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("--skills requires --out to specify the output directory")
+                })?;
+                let skill_files = agent_config::generate_skills(&SkillOptions {
+                    project,
+                    principles_file,
+                });
+                for skill in &skill_files {
+                    let path = dir.join(skill.relative_path);
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).with_context(|| {
+                            format!("failed to create directory {}", parent.display())
+                        })?;
+                    }
+                    std::fs::write(&path, &skill.content)
+                        .with_context(|| format!("failed to write {}", path.display()))?;
+                    println!("Wrote {}", path.display());
+                }
             } else {
-                print!("{content}");
+                let content = agent_config::generate_agent_config(&AgentConfigOptions {
+                    platform,
+                    project,
+                    principles_file,
+                });
+                if let Some(dir) = out {
+                    let path = dir.join(platform.conventional_path());
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).with_context(|| {
+                            format!("failed to create directory {}", parent.display())
+                        })?;
+                    }
+                    std::fs::write(&path, &content)
+                        .with_context(|| format!("failed to write {}", path.display()))?;
+                    println!("Wrote {}", path.display());
+                } else {
+                    print!("{content}");
+                }
             }
         }
 
