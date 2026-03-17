@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- CLAUDE.md "Searching the plan" subsection documenting `rdm search` usage for AI agents
 - `rdm search <query>` CLI command with fuzzy matching across roadmaps, phases, and tasks
 - Search flags: `--type` (roadmap|phase|task), `--status`, `--project`, `--limit`, `--format` (text|json)
 - Text output displays ranked table with type, title, identifier, and snippet columns

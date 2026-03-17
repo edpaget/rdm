@@ -136,6 +136,26 @@ cargo build                        # build the rdm binary
 
 Use this to understand what phase you're working on, what the acceptance criteria are, and what comes next. Phase and task commands accept either a file stem or a number for convenience. Use `--no-body` on any show command to suppress body content when you only need metadata.
 
+### Searching the plan
+
+When looking for specific items by keyword, **prefer `rdm search` over listing and manually scanning results**. Search is fuzzy (typo-tolerant) and matches against both titles and body content.
+
+```bash
+# Find items mentioning "auth"
+./target/debug/rdm search auth --project rdm
+
+# Find only tasks matching "index"
+./target/debug/rdm search index --type task --project rdm
+
+# Find in-progress items matching "search"
+./target/debug/rdm search search --status in-progress --project rdm
+
+# Get structured output for chaining with other tools
+./target/debug/rdm search auth --format json --project rdm
+```
+
+Available filters: `--type` (roadmap|phase|task), `--status` (e.g., done, in-progress, open), `--limit` (default 20), `--format` (text|json).
+
 ### Updating the plan
 
 After committing your work, update the plan to reflect progress. **Always pass `--no-edit`** to prevent the CLI from opening an interactive editor (which will hang in non-interactive agent contexts):
