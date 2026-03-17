@@ -17,3 +17,5 @@ pub mod markdown;
 pub mod model;
 /// Plan repo operations: path resolution, file I/O, and initialization.
 pub mod repo;
+/// Fuzzy search across plan repo content (roadmaps, phases, and tasks).
+pub mod search;

@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `search` module in rdm-core: fuzzy search across roadmaps, phases, and tasks by title and body content using `nucleo-matcher`
+- `SearchFilter` for narrowing results by item kind, project, or status
+- `SearchResult` with kind, identifier, project, title, snippet, and score
 - `phase remove` command to delete a phase from a roadmap (accepts stem or number)
 - Interactive `$EDITOR` fallback when no `--body` or stdin is provided (checks `$VISUAL`, then `$EDITOR`, then `vi`)
 - `--no-edit` flag on all `create` and `update` commands to suppress interactive editor
