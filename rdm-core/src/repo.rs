@@ -114,11 +114,16 @@ impl PlanRepo {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] if the file cannot be read,
-    /// [`Error::FrontmatterMissing`] if delimiters are absent, or
-    /// [`Error::FrontmatterParse`] if the YAML is invalid.
+    /// Returns [`Error::RoadmapNotFound`] if the roadmap file does not exist,
+    /// [`Error::Io`] on read failure, or
+    /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+    /// YAML is invalid.
     pub fn load_roadmap(&self, project: &str, roadmap: &str) -> Result<Document<Roadmap>> {
-        let content = fs::read_to_string(self.roadmap_path(project, roadmap))?;
+        let path = self.roadmap_path(project, roadmap);
+        if !path.exists() {
+            return Err(Error::RoadmapNotFound(roadmap.to_string()));
+        }
+        let content = fs::read_to_string(path)?;
         Document::parse(&content)
     }
 
@@ -143,11 +148,16 @@ impl PlanRepo {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] if the file cannot be read,
-    /// [`Error::FrontmatterMissing`] if delimiters are absent, or
-    /// [`Error::FrontmatterParse`] if the YAML is invalid.
+    /// Returns [`Error::TaskNotFound`] if the task file does not exist,
+    /// [`Error::Io`] on read failure, or
+    /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+    /// YAML is invalid.
     pub fn load_task(&self, project: &str, task_slug: &str) -> Result<Document<Task>> {
-        let content = fs::read_to_string(self.task_path(project, task_slug))?;
+        let path = self.task_path(project, task_slug);
+        if !path.exists() {
+            return Err(Error::TaskNotFound(task_slug.to_string()));
+        }
+        let content = fs::read_to_string(path)?;
         Document::parse(&content)
     }
 
@@ -975,10 +985,17 @@ mod tests {
     }
 
     #[test]
-    fn load_nonexistent_file_is_io_error() {
+    fn load_roadmap_not_found() {
+        let (_dir, repo) = make_repo();
+        let result = repo.load_roadmap("fbm", "nonexistent");
+        assert!(matches!(result, Err(Error::RoadmapNotFound(ref s)) if s == "nonexistent"));
+    }
+
+    #[test]
+    fn load_task_not_found() {
         let (_dir, repo) = make_repo();
         let result = repo.load_task("fbm", "does-not-exist");
-        assert!(matches!(result, Err(Error::Io(_))));
+        assert!(matches!(result, Err(Error::TaskNotFound(ref s)) if s == "does-not-exist"));
     }
 
     // -- Init tests --

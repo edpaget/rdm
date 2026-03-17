@@ -18,6 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `search` module in rdm-core: fuzzy search across roadmaps, phases, and tasks by title and body content using `nucleo-matcher`
 - `SearchFilter` for narrowing results by item kind, project, or status
 - `SearchResult` with kind, identifier, project, title, snippet, and score
+- Read-only HAL+JSON endpoints: `GET /` (root with project links), `GET /projects`, `GET /projects/:project/roadmaps`, `GET /projects/:project/roadmaps/:roadmap` (with embedded phases), `GET /projects/:project/roadmaps/:roadmap/phases/:phase` (with prev/next sibling links), `GET /projects/:project/tasks` (with `?status=`, `?priority=`, `?tag=` filters), `GET /projects/:project/tasks/:task`
+- `load_project()` method on `PlanRepo` for loading project documents
+- HAL+JSON response helpers (`require_hal_json`, `hal_response`) in `rdm-server::extract`
 - Server foundation: `rdm-server` binary with axum, health check endpoint (`GET /healthz`), and shared `AppState`
 - HAL (Hypertext Application Language) response types in `rdm-core`: `HalLink` and `HalResource<T>` with builder API
 - RFC 9457 Problem Details type in `rdm-core` with mappings from all `rdm-core::Error` variants
@@ -43,6 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `load_roadmap` and `load_task` now return `RoadmapNotFound`/`TaskNotFound` (404) instead of `Io` error (500) when the resource file does not exist
 - `task list --status` now uses `TaskStatusFilter` enum for proper clap validation instead of raw string
 - `promote` preserves task metadata (priority, created date, tags) in the roadmap body
 - `list_tasks` returns `ProjectNotFound` for nonexistent projects instead of an empty list
