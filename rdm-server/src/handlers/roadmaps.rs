@@ -1,14 +1,15 @@
 use askama::Template;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use rdm_core::hal::{HalLink, HalResource};
 use rdm_core::model::PhaseStatus;
 
 use crate::content_type::ResponseFormat;
-use crate::error::error_response;
-use crate::extract::hal_response;
+use crate::error::{error_response, json_rejection_response};
+use crate::extract::{hal_created_response, hal_response, see_other_response};
 use crate::state::AppState;
 use crate::templates::{
     PhaseRow, RoadmapDetailPage, RoadmapSummaryView, RoadmapsPage, phase_status_class,
@@ -181,6 +182,47 @@ pub async fn get_roadmap(
     }
 }
 
+/// Request body for `POST /projects/:project/roadmaps`.
+#[derive(Deserialize)]
+pub struct CreateRoadmapRequest {
+    slug: String,
+    title: String,
+    body: Option<String>,
+}
+
+/// `POST /projects/:project/roadmaps` — create a new roadmap.
+pub async fn create_roadmap(
+    format: ResponseFormat,
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    payload: Result<axum::Json<CreateRoadmapRequest>, JsonRejection>,
+) -> Result<Response, Response> {
+    let axum::Json(req) = payload.map_err(json_rejection_response)?;
+    let repo = state.plan_repo();
+    let doc = repo
+        .create_roadmap(&project, &req.slug, &req.title, req.body.as_deref())
+        .map_err(|e| error_response(e, format))?;
+    repo.generate_index()
+        .map_err(|e| error_response(e, format))?;
+
+    let location = format!("/projects/{project}/roadmaps/{}", doc.frontmatter.roadmap);
+    match format {
+        ResponseFormat::HalJson => {
+            let resource = HalResource::new(
+                RoadmapDetail {
+                    slug: doc.frontmatter.roadmap.clone(),
+                    title: doc.frontmatter.title.clone(),
+                    dependencies: doc.frontmatter.dependencies,
+                },
+                &location,
+            )
+            .with_link("project", HalLink::new(format!("/projects/{project}")));
+            Ok(hal_created_response(resource, &location))
+        }
+        ResponseFormat::Html => Ok(see_other_response(&location)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
@@ -332,5 +374,84 @@ mod tests {
         assert!(html.contains("Alpha Roadmap"));
         assert!(html.contains("First Phase"));
         assert!(html.contains("badge-done"));
+    }
+
+    fn post_json(uri: &str, body: &str) -> Request<axum::body::Body> {
+        Request::post(uri)
+            .header("accept", "application/hal+json")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_roadmap_returns_201() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json(
+                "/projects/demo/roadmaps",
+                r#"{"slug":"beta","title":"Beta Roadmap"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 201);
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            "/projects/demo/roadmaps/beta"
+        );
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["slug"], "beta");
+        assert_eq!(json["title"], "Beta Roadmap");
+    }
+
+    #[tokio::test]
+    async fn create_roadmap_missing_project_returns_404() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json(
+                "/projects/nonexistent/roadmaps",
+                r#"{"slug":"beta","title":"Beta"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn create_roadmap_duplicate_returns_409() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json(
+                "/projects/demo/roadmaps",
+                r#"{"slug":"alpha","title":"Alpha Again"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 409);
+    }
+
+    #[tokio::test]
+    async fn create_roadmap_html_returns_303() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::post("/projects/demo/roadmaps")
+                    .header("accept", "text/html")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"slug":"beta","title":"Beta"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 303);
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            "/projects/demo/roadmaps/beta"
+        );
     }
 }

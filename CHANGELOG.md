@@ -18,6 +18,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `search` module in rdm-core: fuzzy search across roadmaps, phases, and tasks by title and body content using `nucleo-matcher`
 - `SearchFilter` for narrowing results by item kind, project, or status
 - `SearchResult` with kind, identifier, project, title, snippet, and score
+- POST endpoints for creating projects, roadmaps, phases, and tasks (201 Created + Location header)
+- PATCH endpoints for updating phase status and task fields (status, priority, tags, body)
+- POST endpoint for promoting tasks to roadmaps (`/projects/{project}/tasks/{task}/promote`)
+- Automatic index regeneration after all write operations
+- Content negotiation for write responses: HAL+JSON returns resource, HTML returns 303 See Other redirect
+- 422 Unprocessable Content for invalid request bodies (RFC 9457 Problem Details format)
+- `hal_created_response` and `see_other_response` helpers in `rdm-server::extract`
+- `validation_error` and `json_rejection_response` helpers in `rdm-server::error`
 - HTML rendering for all endpoints with content negotiation: browsers get accessible HTML pages, API clients get HAL+JSON
 - WCAG 2.1 AA accessibility: skip-to-content link, breadcrumb navigation with `aria-label` and `aria-current`, proper `<th scope>`, status conveyed by text (not color alone), focus outlines, sufficient color contrast
 - Markdown-to-HTML rendering for phase and task body content using pulldown-cmark (raw HTML stripped)

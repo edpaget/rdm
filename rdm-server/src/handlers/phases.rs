@@ -1,14 +1,15 @@
 use askama::Template;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use rdm_core::hal::{HalLink, HalResource};
-use rdm_core::model::Phase;
+use rdm_core::model::{Phase, PhaseStatus};
 
 use crate::content_type::ResponseFormat;
-use crate::error::error_response;
-use crate::extract::hal_response;
+use crate::error::{error_response, json_rejection_response, validation_error};
+use crate::extract::{hal_created_response, hal_response, see_other_response};
 use crate::markdown::render_markdown;
 use crate::state::AppState;
 use crate::templates::{PhaseDetailPage, phase_status_class};
@@ -97,6 +98,112 @@ pub async fn get_phase(
             )
                 .into_response())
         }
+    }
+}
+
+/// Request body for `POST /projects/:project/roadmaps/:roadmap/phases`.
+#[derive(Deserialize)]
+pub struct CreatePhaseRequest {
+    slug: String,
+    title: String,
+    number: Option<u32>,
+    body: Option<String>,
+}
+
+/// `POST /projects/:project/roadmaps/:roadmap/phases` — create a new phase.
+pub async fn create_phase(
+    format: ResponseFormat,
+    State(state): State<AppState>,
+    Path((project, roadmap)): Path<(String, String)>,
+    payload: Result<axum::Json<CreatePhaseRequest>, JsonRejection>,
+) -> Result<Response, Response> {
+    let axum::Json(req) = payload.map_err(json_rejection_response)?;
+    let repo = state.plan_repo();
+    let doc = repo
+        .create_phase(
+            &project,
+            &roadmap,
+            &req.slug,
+            &req.title,
+            req.number,
+            req.body.as_deref(),
+        )
+        .map_err(|e| error_response(e, format))?;
+    repo.generate_index()
+        .map_err(|e| error_response(e, format))?;
+
+    let stem = format!("phase-{}-{}", doc.frontmatter.phase, req.slug);
+    let location = format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}");
+    match format {
+        ResponseFormat::HalJson => {
+            let resource = HalResource::new(
+                PhaseDetail {
+                    phase: doc.frontmatter,
+                    stem: stem.clone(),
+                    body: doc.body,
+                },
+                &location,
+            )
+            .with_link(
+                "roadmap",
+                HalLink::new(format!("/projects/{project}/roadmaps/{roadmap}")),
+            );
+            Ok(hal_created_response(resource, &location))
+        }
+        ResponseFormat::Html => Ok(see_other_response(&location)),
+    }
+}
+
+/// Request body for `PATCH /projects/:project/roadmaps/:roadmap/phases/:phase`.
+#[derive(Deserialize)]
+pub struct UpdatePhaseRequest {
+    status: String,
+    body: Option<String>,
+}
+
+/// `PATCH /projects/:project/roadmaps/:roadmap/phases/:phase` — update a phase.
+pub async fn update_phase(
+    format: ResponseFormat,
+    State(state): State<AppState>,
+    Path((project, roadmap, phase_id)): Path<(String, String, String)>,
+    payload: Result<axum::Json<UpdatePhaseRequest>, JsonRejection>,
+) -> Result<Response, Response> {
+    let axum::Json(req) = payload.map_err(json_rejection_response)?;
+    let status: PhaseStatus = req.status.parse().map_err(|_| {
+        validation_error(format!(
+            "invalid status: '{}' (expected not-started, in-progress, done, or blocked)",
+            req.status
+        ))
+    })?;
+
+    let repo = state.plan_repo();
+    let stem = repo
+        .resolve_phase_stem(&project, &roadmap, &phase_id)
+        .map_err(|e| error_response(e, format))?;
+    let doc = repo
+        .update_phase(&project, &roadmap, &stem, status, req.body.as_deref())
+        .map_err(|e| error_response(e, format))?;
+    repo.generate_index()
+        .map_err(|e| error_response(e, format))?;
+
+    let self_href = format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}");
+    match format {
+        ResponseFormat::HalJson => {
+            let resource = HalResource::new(
+                PhaseDetail {
+                    phase: doc.frontmatter,
+                    stem: stem.clone(),
+                    body: doc.body,
+                },
+                &self_href,
+            )
+            .with_link(
+                "roadmap",
+                HalLink::new(format!("/projects/{project}/roadmaps/{roadmap}")),
+            );
+            Ok(hal_response(resource))
+        }
+        ResponseFormat::Html => Ok(see_other_response(&self_href)),
     }
 }
 
@@ -302,5 +409,208 @@ mod tests {
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Not Found"));
+    }
+
+    fn post_json(uri: &str, body: &str) -> Request<axum::body::Body> {
+        Request::post(uri)
+            .header("accept", "application/hal+json")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn patch_json(uri: &str, body: &str) -> Request<axum::body::Body> {
+        Request::patch(uri)
+            .header("accept", "application/hal+json")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_phase_returns_201() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json(
+                "/projects/demo/roadmaps/alpha/phases",
+                r#"{"slug":"fourth","title":"Fourth Phase","number":4}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 201);
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            "/projects/demo/roadmaps/alpha/phases/phase-4-fourth"
+        );
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["phase"], 4);
+        assert_eq!(json["title"], "Fourth Phase");
+        assert_eq!(json["stem"], "phase-4-fourth");
+    }
+
+    #[tokio::test]
+    async fn create_phase_auto_number() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json(
+                "/projects/demo/roadmaps/alpha/phases",
+                r#"{"slug":"auto","title":"Auto Phase"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 201);
+        // Should auto-assign number 4 (after 1, 2, 3)
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            "/projects/demo/roadmaps/alpha/phases/phase-4-auto"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_phase_missing_roadmap_returns_404() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json(
+                "/projects/demo/roadmaps/nonexistent/phases",
+                r#"{"slug":"x","title":"X"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn create_phase_duplicate_returns_409() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json(
+                "/projects/demo/roadmaps/alpha/phases",
+                r#"{"slug":"first","title":"First Again","number":1}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 409);
+    }
+
+    #[tokio::test]
+    async fn create_phase_html_returns_303() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::post("/projects/demo/roadmaps/alpha/phases")
+                    .header("accept", "text/html")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"slug":"fourth","title":"Fourth","number":4}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 303);
+        assert!(
+            response
+                .headers()
+                .get("location")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("phase-4-fourth")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_phase_returns_200() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(patch_json(
+                "/projects/demo/roadmaps/alpha/phases/phase-2-second",
+                r#"{"status":"done"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "done");
+        assert!(json["completed"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn update_phase_by_number() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(patch_json(
+                "/projects/demo/roadmaps/alpha/phases/2",
+                r#"{"status":"in-progress"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "in-progress");
+    }
+
+    #[tokio::test]
+    async fn update_phase_not_found_returns_404() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(patch_json(
+                "/projects/demo/roadmaps/alpha/phases/99",
+                r#"{"status":"done"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn update_phase_invalid_status_returns_422() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(patch_json(
+                "/projects/demo/roadmaps/alpha/phases/1",
+                r#"{"status":"bogus"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 422);
+    }
+
+    #[tokio::test]
+    async fn update_phase_html_returns_303() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::patch("/projects/demo/roadmaps/alpha/phases/1")
+                    .header("accept", "text/html")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"status":"done"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 303);
+        assert!(
+            response
+                .headers()
+                .get("location")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("phase-1-first")
+        );
     }
 }

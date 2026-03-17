@@ -6,6 +6,8 @@ use axum::response::{IntoResponse, Response};
 
 use rdm_core::problem::ProblemDetail;
 
+use axum::extract::rejection::JsonRejection;
+
 use crate::content_type::ResponseFormat;
 use crate::templates::ErrorPage;
 
@@ -49,6 +51,22 @@ pub fn error_response(err: rdm_core::error::Error, format: ResponseFormat) -> Re
             }
         }
     }
+}
+
+/// Returns a `422 Unprocessable Content` response with the given detail message.
+pub fn validation_error(detail: String) -> Response {
+    problem_detail_into_response(ProblemDetail {
+        problem_type: "about:blank".to_string(),
+        title: "Unprocessable Content".to_string(),
+        status: 422,
+        detail: Some(detail),
+        instance: None,
+    })
+}
+
+/// Wraps an axum [`JsonRejection`] as a `422 Unprocessable Content` Problem Details response.
+pub fn json_rejection_response(rejection: JsonRejection) -> Response {
+    validation_error(rejection.body_text())
 }
 
 /// Wrapper around [`rdm_core::error::Error`] that implements [`IntoResponse`].
@@ -135,6 +153,26 @@ mod tests {
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("404"));
         assert!(html.contains("Not Found"));
+    }
+
+    #[tokio::test]
+    async fn validation_error_returns_422() {
+        let response = validation_error("field is required".to_string());
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/problem+json"
+        );
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], 422);
+        assert_eq!(json["title"], "Unprocessable Content");
+        assert!(
+            json["detail"]
+                .as_str()
+                .unwrap()
+                .contains("field is required")
+        );
     }
 
     #[tokio::test]

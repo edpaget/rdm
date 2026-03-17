@@ -1,13 +1,14 @@
 use askama::Template;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use rdm_core::hal::{HalLink, HalResource};
 
 use crate::content_type::ResponseFormat;
-use crate::error::error_response;
-use crate::extract::hal_response;
+use crate::error::{error_response, json_rejection_response};
+use crate::extract::{hal_created_response, hal_response, see_other_response};
 use crate::state::AppState;
 use crate::templates::{IndexPage, ProjectView};
 
@@ -80,6 +81,51 @@ pub async fn list_projects(
             )
                 .into_response())
         }
+    }
+}
+
+/// Request body for `POST /projects`.
+#[derive(Deserialize)]
+pub struct CreateProjectRequest {
+    name: String,
+    title: String,
+}
+
+/// `POST /projects` — create a new project.
+pub async fn create_project(
+    format: ResponseFormat,
+    State(state): State<AppState>,
+    payload: Result<axum::Json<CreateProjectRequest>, JsonRejection>,
+) -> Result<Response, Response> {
+    let axum::Json(req) = payload.map_err(json_rejection_response)?;
+    let repo = state.plan_repo();
+    let doc = repo
+        .create_project(&req.name, &req.title)
+        .map_err(|e| error_response(e, format))?;
+    repo.generate_index()
+        .map_err(|e| error_response(e, format))?;
+
+    let location = format!("/projects/{}/roadmaps", doc.frontmatter.name);
+    match format {
+        ResponseFormat::HalJson => {
+            let resource = HalResource::new(
+                ProjectData {
+                    name: doc.frontmatter.name.clone(),
+                    title: doc.frontmatter.title.clone(),
+                },
+                format!("/projects/{}", doc.frontmatter.name),
+            )
+            .with_link(
+                "roadmaps",
+                HalLink::new(format!("/projects/{}/roadmaps", doc.frontmatter.name)),
+            )
+            .with_link(
+                "tasks",
+                HalLink::new(format!("/projects/{}/tasks", doc.frontmatter.name)),
+            );
+            Ok(hal_created_response(resource, &location))
+        }
+        ResponseFormat::Html => Ok(see_other_response(&location)),
     }
 }
 
@@ -188,5 +234,98 @@ mod tests {
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Alpha Project"));
         assert!(html.contains("Beta Project"));
+    }
+
+    fn post_json(uri: &str, body: &str) -> Request<axum::body::Body> {
+        Request::post(uri)
+            .header("accept", "application/hal+json")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn post_json_html(uri: &str, body: &str) -> Request<axum::body::Body> {
+        Request::post(uri)
+            .header("accept", "text/html")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_project_returns_201() {
+        let dir = TempDir::new().unwrap();
+        PlanRepo::init(dir.path()).unwrap();
+        let state = AppState {
+            plan_root: dir.path().to_path_buf(),
+        };
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json(
+                "/projects",
+                r#"{"name":"gamma","title":"Gamma Project"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 201);
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            "/projects/gamma/roadmaps"
+        );
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/hal+json"
+        );
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["name"], "gamma");
+        assert_eq!(json["title"], "Gamma Project");
+    }
+
+    #[tokio::test]
+    async fn create_project_duplicate_returns_409() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json(
+                "/projects",
+                r#"{"name":"alpha","title":"Alpha Again"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 409);
+    }
+
+    #[tokio::test]
+    async fn create_project_malformed_json_returns_422() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json("/projects", r#"{"bad":true}"#))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 422);
+    }
+
+    #[tokio::test]
+    async fn create_project_html_returns_303() {
+        let dir = TempDir::new().unwrap();
+        PlanRepo::init(dir.path()).unwrap();
+        let state = AppState {
+            plan_root: dir.path().to_path_buf(),
+        };
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json_html(
+                "/projects",
+                r#"{"name":"gamma","title":"Gamma Project"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 303);
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            "/projects/gamma/roadmaps"
+        );
     }
 }
