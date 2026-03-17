@@ -118,3 +118,72 @@ fn agent_config_does_not_require_plan_repo() {
         .assert()
         .success();
 }
+
+#[test]
+fn agent_config_contains_planning_workflow() {
+    rdm()
+        .arg("agent-config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Planning workflow"))
+        .stdout(predicate::str::contains("Before starting work"))
+        .stdout(predicate::str::contains("Implementing a roadmap phase"))
+        .stdout(predicate::str::contains("Discovering bugs"))
+        .stdout(predicate::str::contains("rdm promote"));
+}
+
+#[test]
+fn agent_config_contains_status_transitions() {
+    rdm()
+        .arg("agent-config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Status transitions"))
+        .stdout(predicate::str::contains("### Phase statuses"))
+        .stdout(predicate::str::contains("### Task statuses"))
+        .stdout(predicate::str::contains("`not-started` → `in-progress`"))
+        .stdout(predicate::str::contains("`open` → `wont-fix`"));
+}
+
+#[test]
+fn agent_config_principles_file_included() {
+    rdm()
+        .arg("agent-config")
+        .arg("--principles-file")
+        .arg("docs/principles.md")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Principles"))
+        .stdout(predicate::str::contains("docs/principles.md"));
+}
+
+#[test]
+fn agent_config_no_principles_without_flag() {
+    rdm()
+        .arg("agent-config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Principles").not());
+}
+
+#[test]
+fn agent_config_principles_with_project_and_out() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--project")
+        .arg("myproj")
+        .arg("--principles-file")
+        .arg("PRINCIPLES.md")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    let path = dir.path().join("CLAUDE.md");
+    let content = std::fs::read_to_string(path).unwrap();
+    assert!(content.contains("--project myproj"));
+    assert!(content.contains("## Principles"));
+    assert!(content.contains("PRINCIPLES.md"));
+}

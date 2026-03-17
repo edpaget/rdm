@@ -74,6 +74,9 @@ enum Command {
         /// Write to platform-conventional path within this directory.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Path to a principles/conventions file to reference in generated instructions.
+        #[arg(long)]
+        principles_file: Option<String>,
     },
     /// Search across roadmaps, phases, and tasks.
     Search {
@@ -804,10 +807,14 @@ fn run() -> Result<()> {
             platform,
             project,
             out,
+            principles_file,
         } => {
             let platform: Platform = platform.parse().map_err(|e: String| anyhow::anyhow!(e))?;
-            let content =
-                agent_config::generate_agent_config(&AgentConfigOptions { platform, project });
+            let content = agent_config::generate_agent_config(&AgentConfigOptions {
+                platform,
+                project,
+                principles_file,
+            });
             if let Some(dir) = out {
                 let path = dir.join(platform.conventional_path());
                 if let Some(parent) = path.parent() {

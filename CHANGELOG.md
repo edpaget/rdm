@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `rdm agent-config` command to generate AI agent instruction files for Claude Code, Cursor, GitHub Copilot, and AGENTS.md
 - Supports `--project` to embed project name in examples and `--out` to write to platform-conventional file paths
 - `rdm-core::agent_config` module with `Platform` enum, `AgentConfigOptions`, and `generate_agent_config` function
+- "Planning workflow" section in agent config output teaching agents when and how to use rdm commands
+- "Status transitions" section documenting valid phase and task status transitions
+- `--principles-file` flag on `rdm agent-config` to reference a project principles file in generated instructions
 - CLAUDE.md "Searching the plan" subsection documenting `rdm search` usage for AI agents
 - `rdm search <query>` CLI command with fuzzy matching across roadmaps, phases, and tasks
 - Search flags: `--type` (roadmap|phase|task), `--status`, `--project`, `--limit`, `--format` (text|json)
