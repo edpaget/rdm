@@ -5,6 +5,7 @@ use std::process;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use is_terminal::IsTerminal;
+use rdm_core::agent_config::{self, AgentConfigOptions, Platform};
 use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
@@ -62,6 +63,18 @@ enum Command {
     },
     /// Generate INDEX.md from current repo state.
     Index,
+    /// Generate agent configuration for AI coding assistants.
+    AgentConfig {
+        /// Target platform (claude, agents-md, cursor, copilot).
+        #[arg(default_value = "agents-md")]
+        platform: String,
+        /// Project name to embed in generated examples.
+        #[arg(long)]
+        project: Option<String>,
+        /// Write to platform-conventional path within this directory.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Search across roadmaps, phases, and tasks.
     Search {
         /// The search query (fuzzy matched against titles and body content).
@@ -785,6 +798,29 @@ fn run() -> Result<()> {
                 doc.frontmatter.roadmap
             );
             maybe_regenerate_index(&repo, cli.no_index)?;
+        }
+
+        Command::AgentConfig {
+            platform,
+            project,
+            out,
+        } => {
+            let platform: Platform = platform.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+            let content =
+                agent_config::generate_agent_config(&AgentConfigOptions { platform, project });
+            if let Some(dir) = out {
+                let path = dir.join(platform.conventional_path());
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("failed to create directory {}", parent.display())
+                    })?;
+                }
+                std::fs::write(&path, &content)
+                    .with_context(|| format!("failed to write {}", path.display()))?;
+                println!("Wrote {}", path.display());
+            } else {
+                print!("{content}");
+            }
         }
 
         Command::Search {
