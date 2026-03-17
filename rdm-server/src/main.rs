@@ -16,6 +16,29 @@ async fn main() -> anyhow::Result<()> {
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
     eprintln!("rdm-server listening on http://127.0.0.1:3000");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+    }
+
+    eprintln!("\nShutting down gracefully...");
 }

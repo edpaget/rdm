@@ -40,13 +40,12 @@ pub async fn index(
         ResponseFormat::Html => {
             let mut projects = Vec::new();
             for name in &names {
-                let doc = repo
-                    .load_project(name)
-                    .map_err(|e| error_response(e, format))?;
-                projects.push(ProjectView {
-                    name: doc.frontmatter.name,
-                    title: doc.frontmatter.title,
-                });
+                if let Ok(doc) = repo.load_project(name) {
+                    projects.push(ProjectView {
+                        name: doc.frontmatter.name,
+                        title: doc.frontmatter.title,
+                    });
+                }
             }
             let page = IndexPage { projects };
             Ok((

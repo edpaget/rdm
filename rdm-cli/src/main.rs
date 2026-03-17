@@ -82,6 +82,16 @@ enum Command {
         #[arg(long, default_value = "text")]
         format: OutputFormat,
     },
+    /// Start the rdm REST API server.
+    #[cfg(feature = "server")]
+    Serve {
+        /// Port to listen on.
+        #[arg(long, default_value = "3000")]
+        port: u16,
+        /// Address to bind to.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+    },
     /// List roadmaps and their progress.
     List {
         /// Project to list roadmaps for.
@@ -464,6 +474,28 @@ fn open_editor() -> Result<Option<String>> {
     }
 }
 
+#[cfg(feature = "server")]
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+    }
+
+    eprintln!("\nShutting down gracefully...");
+}
+
 fn maybe_regenerate_index(repo: &PlanRepo, no_index: bool) -> Result<()> {
     if !no_index {
         repo.generate_index()
@@ -792,6 +824,28 @@ fn run() -> Result<()> {
                     );
                 }
             }
+        }
+
+        #[cfg(feature = "server")]
+        Command::Serve { port, bind } => {
+            let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+            rt.block_on(async {
+                let state = rdm_server::state::AppState {
+                    plan_root: root.clone(),
+                };
+                let app = rdm_server::router::build_router(state);
+                let addr = format!("{bind}:{port}");
+                let listener = tokio::net::TcpListener::bind(&addr)
+                    .await
+                    .with_context(|| format!("failed to bind to {addr}"))?;
+                let local_addr = listener.local_addr()?;
+                eprintln!("rdm serve listening on http://{local_addr}");
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(shutdown_signal())
+                    .await
+                    .context("server error")?;
+                Ok::<(), anyhow::Error>(())
+            })?;
         }
 
         Command::List { project, all } => {

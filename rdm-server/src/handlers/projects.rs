@@ -37,25 +37,24 @@ pub async fn list_projects(
         ResponseFormat::HalJson => {
             let mut embedded = Vec::new();
             for name in &names {
-                let doc = repo
-                    .load_project(name)
-                    .map_err(|e| error_response(e, format))?;
-                let project_resource = HalResource::new(
-                    ProjectData {
-                        name: doc.frontmatter.name.clone(),
-                        title: doc.frontmatter.title.clone(),
-                    },
-                    format!("/projects/{}", doc.frontmatter.name),
-                )
-                .with_link(
-                    "roadmaps",
-                    HalLink::new(format!("/projects/{}/roadmaps", doc.frontmatter.name)),
-                )
-                .with_link(
-                    "tasks",
-                    HalLink::new(format!("/projects/{}/tasks", doc.frontmatter.name)),
-                );
-                embedded.push(serde_json::to_value(&project_resource).unwrap());
+                if let Ok(doc) = repo.load_project(name) {
+                    let project_resource = HalResource::new(
+                        ProjectData {
+                            name: doc.frontmatter.name.clone(),
+                            title: doc.frontmatter.title.clone(),
+                        },
+                        format!("/projects/{}", doc.frontmatter.name),
+                    )
+                    .with_link(
+                        "roadmaps",
+                        HalLink::new(format!("/projects/{}/roadmaps", doc.frontmatter.name)),
+                    )
+                    .with_link(
+                        "tasks",
+                        HalLink::new(format!("/projects/{}/tasks", doc.frontmatter.name)),
+                    );
+                    embedded.push(serde_json::to_value(&project_resource).unwrap());
+                }
             }
 
             let resource = HalResource::new(ProjectsCollection {}, "/projects")
@@ -66,13 +65,12 @@ pub async fn list_projects(
         ResponseFormat::Html => {
             let mut projects = Vec::new();
             for name in &names {
-                let doc = repo
-                    .load_project(name)
-                    .map_err(|e| error_response(e, format))?;
-                projects.push(ProjectView {
-                    name: doc.frontmatter.name,
-                    title: doc.frontmatter.title,
-                });
+                if let Ok(doc) = repo.load_project(name) {
+                    projects.push(ProjectView {
+                        name: doc.frontmatter.name,
+                        title: doc.frontmatter.title,
+                    });
+                }
             }
             let page = IndexPage { projects };
             Ok((

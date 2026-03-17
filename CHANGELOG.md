@@ -18,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `search` module in rdm-core: fuzzy search across roadmaps, phases, and tasks by title and body content using `nucleo-matcher`
 - `SearchFilter` for narrowing results by item kind, project, or status
 - `SearchResult` with kind, identifier, project, title, snippet, and score
+- `rdm serve` command with `--port`, `--bind`, and `--root` options
+- Graceful shutdown on SIGINT/SIGTERM for `rdm serve` and `rdm-server` binary
+- `server` feature flag on `rdm-cli` (enabled by default; disable with `--no-default-features`)
+- Integration tests for all server endpoints using reqwest against real TCP server
+- Accessibility smoke tests verifying WCAG landmark structure, heading hierarchy, and ARIA attributes
 - POST endpoints for creating projects, roadmaps, phases, and tasks (201 Created + Location header)
 - PATCH endpoints for updating phase status and task fields (status, priority, tags, body)
 - POST endpoint for promoting tasks to roadmaps (`/projects/{project}/tasks/{task}/promote`)

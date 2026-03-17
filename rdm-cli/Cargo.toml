@@ -12,11 +12,18 @@ path = "src/main.rs"
 
 [dependencies]
 rdm-core = { path = "../rdm-core" }
+rdm-server = { path = "../rdm-server", optional = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 is-terminal = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+
+[features]
+default = ["server"]
+server = ["dep:rdm-server", "dep:tokio", "dep:axum"]
 
 [dev-dependencies]
 assert_cmd = "2"
