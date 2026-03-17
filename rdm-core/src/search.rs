@@ -5,13 +5,15 @@
 
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
+use serde::Serialize;
 
 use crate::error::Result;
 use crate::model::{PhaseStatus, TaskStatus};
 use crate::repo::PlanRepo;
 
 /// The kind of plan item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ItemKind {
     /// A roadmap.
     Roadmap,
@@ -52,7 +54,7 @@ pub struct SearchFilter {
 }
 
 /// A single search result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SearchResult {
     /// The kind of item matched.
     pub kind: ItemKind,

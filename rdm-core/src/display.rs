@@ -3,6 +3,7 @@
 /// Pure functions — no I/O. These produce human-readable output strings.
 use crate::document::Document;
 use crate::model::{Phase, PhaseStatus, Roadmap, Task};
+use crate::search::SearchResult;
 
 /// Aggregated index data for a single project.
 pub struct ProjectIndex {
@@ -251,6 +252,69 @@ pub fn format_task_list(tasks: &[(String, Document<Task>)]) -> String {
         ));
     }
     out
+}
+
+/// Formats search results as a ranked text table.
+#[must_use]
+pub fn format_search_results(results: &[SearchResult]) -> String {
+    if results.is_empty() {
+        return String::new();
+    }
+
+    // Calculate column widths
+    let type_width = results
+        .iter()
+        .map(|r| r.kind.to_string().len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let title_width = results
+        .iter()
+        .map(|r| r.title.len())
+        .max()
+        .unwrap_or(5)
+        .max(5);
+    let id_width = results
+        .iter()
+        .map(|r| r.identifier.len())
+        .max()
+        .unwrap_or(10)
+        .max(10);
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "| # | {:<type_width$} | {:<title_width$} | {:<id_width$} | Snippet |\n",
+        "Type", "Title", "Identifier"
+    ));
+    out.push_str(&format!(
+        "|---|{:-<type_width$}--|{:-<title_width$}--|{:-<id_width$}--|---------|\n",
+        "", "", ""
+    ));
+    for (i, r) in results.iter().enumerate() {
+        let snippet = truncate_snippet(&r.snippet, 40);
+        out.push_str(&format!(
+            "| {} | {:<type_width$} | {:<title_width$} | {:<id_width$} | {} |\n",
+            i + 1,
+            r.kind,
+            r.title,
+            r.identifier,
+            snippet,
+        ));
+    }
+    out
+}
+
+/// Truncates a snippet to `max_len` characters, appending "..." if needed.
+fn truncate_snippet(s: &str, max_len: usize) -> String {
+    let trimmed = s.trim();
+    if trimmed.len() <= max_len {
+        return trimmed.to_string();
+    }
+    let mut end = max_len;
+    while end > 0 && !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &trimmed[..end])
 }
 
 #[cfg(test)]

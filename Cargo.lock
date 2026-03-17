@@ -505,6 +505,7 @@ dependencies = [
  "is-terminal",
  "predicates",
  "rdm-core",
+ "serde_json",
  "tempfile",
 ]
 

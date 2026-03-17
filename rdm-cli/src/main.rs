@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use std::process;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use is_terminal::IsTerminal;
 use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
+use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
 
 #[derive(Parser)]
 #[command(name = "rdm", about = "Manage project roadmaps, phases, and tasks")]
@@ -61,6 +62,26 @@ enum Command {
     },
     /// Generate INDEX.md from current repo state.
     Index,
+    /// Search across roadmaps, phases, and tasks.
+    Search {
+        /// The search query (fuzzy matched against titles and body content).
+        query: String,
+        /// Filter by item type.
+        #[arg(long = "type")]
+        kind: Option<ItemKindArg>,
+        /// Filter by status (e.g., done, in-progress, open).
+        #[arg(long)]
+        status: Option<String>,
+        /// Filter by project.
+        #[arg(long)]
+        project: Option<String>,
+        /// Maximum number of results to return.
+        #[arg(long, default_value = "20")]
+        limit: usize,
+        /// Output format.
+        #[arg(long, default_value = "text")]
+        format: OutputFormat,
+    },
     /// List roadmaps and their progress.
     List {
         /// Project to list roadmaps for.
@@ -279,6 +300,60 @@ enum TaskCommand {
         #[arg(long)]
         tag: Option<String>,
     },
+}
+
+/// Item type argument for `--type` flag.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ItemKindArg {
+    Roadmap,
+    Phase,
+    Task,
+}
+
+impl From<ItemKindArg> for ItemKind {
+    fn from(arg: ItemKindArg) -> Self {
+        match arg {
+            ItemKindArg::Roadmap => ItemKind::Roadmap,
+            ItemKindArg::Phase => ItemKind::Phase,
+            ItemKindArg::Task => ItemKind::Task,
+        }
+    }
+}
+
+/// Output format for search results.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
+/// Parses a status string into an `ItemStatus`, using the `--type` hint if available.
+fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatus> {
+    match kind {
+        Some(ItemKindArg::Phase) => {
+            let s: PhaseStatus = status.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
+            Ok(ItemStatus::Phase(s))
+        }
+        Some(ItemKindArg::Task) => {
+            let s: TaskStatus = status.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
+            Ok(ItemStatus::Task(s))
+        }
+        Some(ItemKindArg::Roadmap) => {
+            bail!("roadmaps do not have a status — remove --status or change --type")
+        }
+        None => {
+            // Try both; phase first then task
+            if let Ok(s) = status.parse::<PhaseStatus>() {
+                Ok(ItemStatus::Phase(s))
+            } else if let Ok(s) = status.parse::<TaskStatus>() {
+                Ok(ItemStatus::Task(s))
+            } else {
+                bail!(
+                    "invalid status '{status}' — use a phase status (not-started, in-progress, done, blocked) or task status (open, in-progress, done, wont-fix)"
+                )
+            }
+        }
+    }
 }
 
 fn main() {
@@ -678,6 +753,45 @@ fn run() -> Result<()> {
                 doc.frontmatter.roadmap
             );
             maybe_regenerate_index(&repo, cli.no_index)?;
+        }
+
+        Command::Search {
+            query,
+            kind,
+            status,
+            project,
+            limit,
+            format,
+        } => {
+            let repo = PlanRepo::open(&root);
+            let item_status = status
+                .as_deref()
+                .map(|s| parse_status(s, kind))
+                .transpose()?;
+            let filter = SearchFilter {
+                kind: kind.map(ItemKind::from),
+                project,
+                status: item_status,
+            };
+            let results = search::search(&repo, &query, &filter).context("search failed")?;
+            let results: Vec<_> = results.into_iter().take(limit).collect();
+
+            match format {
+                OutputFormat::Text => {
+                    if results.is_empty() {
+                        println!("No results found for '{query}'.");
+                    } else {
+                        print!("{}", display::format_search_results(&results));
+                    }
+                }
+                OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&results)
+                            .context("failed to serialize results")?
+                    );
+                }
+            }
         }
 
         Command::List { project, all } => {

@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm search <query>` CLI command with fuzzy matching across roadmaps, phases, and tasks
+- Search flags: `--type` (roadmap|phase|task), `--status`, `--project`, `--limit`, `--format` (text|json)
+- Text output displays ranked table with type, title, identifier, and snippet columns
+- JSON output (`--format json`) for agent/programmatic consumption
+- `format_search_results()` display function in rdm-core for text table formatting
+- `Serialize` derives on `SearchResult` and `ItemKind` for JSON serialization
 - `search` module in rdm-core: fuzzy search across roadmaps, phases, and tasks by title and body content using `nucleo-matcher`
 - `SearchFilter` for narrowing results by item kind, project, or status
 - `SearchResult` with kind, identifier, project, title, snippet, and score
