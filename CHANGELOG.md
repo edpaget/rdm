@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `sign-release.yml` workflow: Sigstore cosign keyless signing of release artifacts with verification instructions appended to GitHub Release notes
 - `prepare-release.yml` workflow: one-click version bump, changelog update, commit, tag, and push via `workflow_dispatch`
 - cargo-dist configuration for automated binary releases (`rdm` binary for `aarch64-apple-darwin`)
 - GitHub Actions release workflow (`.github/workflows/release.yml`) triggered by version tags

@@ -1,0 +1,83 @@
+name: Sign Release
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  sign:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract tag name
+        id: tag
+        run: echo "tag=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p artifacts
+          gh release download "${{ steps.tag.outputs.tag }}" --dir artifacts
+
+      - name: Sign artifacts
+        run: |
+          cd artifacts
+          for file in *; do
+            case "$file" in
+              *.bundle|*.sig|*.pem) continue ;;
+            esac
+            echo "Signing $file"
+            cosign sign-blob --yes --bundle "${file}.bundle" "$file"
+          done
+
+      - name: Upload signatures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload "${{ steps.tag.outputs.tag }}" artifacts/*.bundle
+
+      - name: Append verification instructions to release body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          body="$(gh release view "$TAG" --json body -q .body)"
+
+          if echo "$body" | grep -q "## Verifying Signatures"; then
+            echo "Verification instructions already present, skipping."
+            exit 0
+          fi
+
+          instructions="$(cat <<'EOF'
+
+          ---
+
+          ## Verifying Signatures
+
+          All release artifacts are signed with [Sigstore cosign](https://docs.sigstore.dev/) using keyless signing. To verify an artifact:
+
+          ```sh
+          cosign verify-blob <artifact> \
+            --bundle <artifact>.bundle \
+            --certificate-identity-regexp "https://github\.com/edpaget/rdm/\.github/workflows/sign-release\.yml@refs/tags/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          ```
+          EOF
+          )"
+
+          gh release edit "$TAG" --notes "${body}${instructions}"
