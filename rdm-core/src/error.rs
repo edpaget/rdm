@@ -29,6 +29,8 @@ pub enum Error {
     ProjectNotSpecified,
     /// Failed to serialize the config file.
     ConfigSerialize(toml::ser::Error),
+    /// A relative path is invalid.
+    InvalidPath(String),
 }
 
 impl std::fmt::Display for Error {
@@ -75,6 +77,7 @@ impl std::fmt::Display for Error {
                 )
             }
             Error::ConfigSerialize(e) => write!(f, "failed to serialize config: {e}"),
+            Error::InvalidPath(msg) => write!(f, "invalid path: {msg}"),
         }
     }
 }

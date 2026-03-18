@@ -90,7 +90,8 @@ impl From<&Error> for ProblemDetail {
             | Error::FrontmatterMissing
             | Error::ConfigParse(_)
             | Error::ConfigNotFound
-            | Error::ConfigSerialize(_) => ProblemDetail {
+            | Error::ConfigSerialize(_)
+            | Error::InvalidPath(_) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Internal Server Error".to_string(),
                 status: 500,

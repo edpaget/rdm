@@ -26,3 +26,5 @@ pub mod problem;
 pub mod repo;
 /// Fuzzy search across plan repo content (roadmaps, phases, and tasks).
 pub mod search;
+/// Storage abstraction layer for plan repo data.
+pub mod store;
