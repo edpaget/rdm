@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Theme preference persists to `localStorage` across sessions
 - Computed overall status badge (done / in-progress / not-started) on roadmap list and detail pages
 - Last-changed timestamp on roadmap list and detail pages, derived from file modification times
+- `rdm-store-git` crate — git-backed Store with automatic commits via gitoxide; every `commit()` builds a tree from the working directory and creates a git commit with an auto-generated message
+- `git` feature flag on `rdm-cli` (default-on) — enables `GitStore` for automatic git commits on all plan repo mutations
+- `Error::Git(String)` variant in rdm-core for git-specific errors
 - `rdm-store-fs` crate: filesystem-backed `Store` with in-memory staging — writes buffer in memory, `commit()` flushes to disk using write-to-temp + rename for best-effort atomicity, `discard()` drops the buffer
 - `PlanRepo` mutation methods now auto-commit staged changes, so callers don't need explicit `commit()` calls
 

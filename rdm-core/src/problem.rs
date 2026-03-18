@@ -91,7 +91,8 @@ impl From<&Error> for ProblemDetail {
             | Error::ConfigParse(_)
             | Error::ConfigNotFound
             | Error::ConfigSerialize(_)
-            | Error::InvalidPath(_) => ProblemDetail {
+            | Error::InvalidPath(_)
+            | Error::Git(_) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Internal Server Error".to_string(),
                 status: 500,

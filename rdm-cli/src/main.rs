@@ -1,5 +1,5 @@
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use anyhow::{Context, Result, bail};
@@ -10,7 +10,13 @@ use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
+#[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
+
+#[cfg(feature = "git")]
+type AppStore = rdm_store_git::GitStore;
+#[cfg(not(feature = "git"))]
+type AppStore = FsStore;
 
 #[derive(Parser)]
 #[command(name = "rdm", about = "Manage project roadmaps, phases, and tasks")]
@@ -425,6 +431,30 @@ fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatus> {
     }
 }
 
+/// Opens a store for an existing plan repo.
+fn make_store(root: &Path) -> Result<AppStore> {
+    #[cfg(feature = "git")]
+    {
+        rdm_store_git::GitStore::new(root).context("failed to open git repository")
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        Ok(FsStore::new(root))
+    }
+}
+
+/// Creates a store for initializing a new plan repo.
+fn make_init_store(root: &Path) -> Result<AppStore> {
+    #[cfg(feature = "git")]
+    {
+        rdm_store_git::GitStore::init(root).context("failed to initialize git repository")
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        Ok(FsStore::new(root))
+    }
+}
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("error: {err:#}");
@@ -433,7 +463,7 @@ fn main() {
 }
 
 /// Resolves project: --project flag > `RDM_PROJECT` env var > config default_project > error.
-fn resolve_project(flag: Option<String>, repo: &PlanRepo<FsStore>) -> Result<String> {
+fn resolve_project(flag: Option<String>, repo: &PlanRepo<AppStore>) -> Result<String> {
     if let Some(p) = flag {
         return Ok(p);
     }
@@ -555,7 +585,7 @@ async fn shutdown_signal() {
     eprintln!("\nShutting down gracefully...");
 }
 
-fn maybe_regenerate_index(repo: &mut PlanRepo<FsStore>, no_index: bool) -> Result<()> {
+fn maybe_regenerate_index(repo: &mut PlanRepo<AppStore>, no_index: bool) -> Result<()> {
     if !no_index {
         repo.generate_index()
             .context("failed to regenerate INDEX.md")?;
@@ -571,18 +601,18 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Init => {
-            PlanRepo::init(FsStore::new(&root)).context("failed to initialize plan repo")?;
+            PlanRepo::init(make_init_store(&root)?).context("failed to initialize plan repo")?;
             println!("Initialized plan repo at {}", root.display());
         }
 
         Command::Index => {
-            let mut repo = PlanRepo::new(FsStore::new(&root));
+            let mut repo = PlanRepo::new(make_store(&root)?);
             repo.generate_index().context("failed to generate index")?;
             println!("Generated INDEX.md");
         }
 
         Command::Project { command } => {
-            let mut repo = PlanRepo::new(FsStore::new(&root));
+            let mut repo = PlanRepo::new(make_store(&root)?);
             match command {
                 ProjectCommand::Create { name, title } => {
                     let title = title.as_deref().unwrap_or(&name);
@@ -606,7 +636,7 @@ fn run() -> Result<()> {
         }
 
         Command::Roadmap { command } => {
-            let mut repo = PlanRepo::new(FsStore::new(&root));
+            let mut repo = PlanRepo::new(make_store(&root)?);
             match command {
                 RoadmapCommand::Create {
                     slug,
@@ -696,7 +726,7 @@ fn run() -> Result<()> {
         }
 
         Command::Phase { command } => {
-            let mut repo = PlanRepo::new(FsStore::new(&root));
+            let mut repo = PlanRepo::new(make_store(&root)?);
             match command {
                 PhaseCommand::Create {
                     slug,
@@ -779,7 +809,7 @@ fn run() -> Result<()> {
         }
 
         Command::Task { command } => {
-            let mut repo = PlanRepo::new(FsStore::new(&root));
+            let mut repo = PlanRepo::new(make_store(&root)?);
             match command {
                 TaskCommand::Create {
                     slug,
@@ -872,7 +902,7 @@ fn run() -> Result<()> {
             roadmap_slug,
             project,
         } => {
-            let mut repo = PlanRepo::new(FsStore::new(&root));
+            let mut repo = PlanRepo::new(make_store(&root)?);
             let project = resolve_project(project, &repo)?;
             let doc = repo
                 .promote_task(&project, &task_slug, &roadmap_slug)
@@ -945,7 +975,7 @@ fn run() -> Result<()> {
             limit,
             format,
         } => {
-            let repo = PlanRepo::new(FsStore::new(&root));
+            let repo = PlanRepo::new(make_store(&root)?);
             let item_status = status
                 .as_deref()
                 .map(|s| parse_status(s, kind))
@@ -999,7 +1029,7 @@ fn run() -> Result<()> {
         }
 
         Command::List { project, all } => {
-            let repo = PlanRepo::new(FsStore::new(&root));
+            let repo = PlanRepo::new(make_store(&root)?);
             let projects = if all {
                 repo.list_projects().context("failed to list projects")?
             } else {
