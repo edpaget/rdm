@@ -10,7 +10,7 @@ use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
-use rdm_core::store::FsStore;
+use rdm_store_fs::FsStore;
 
 #[derive(Parser)]
 #[command(name = "rdm", about = "Manage project roadmaps, phases, and tasks")]

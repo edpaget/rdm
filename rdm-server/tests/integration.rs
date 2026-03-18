@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use rdm_core::model::{PhaseStatus, Priority};
 use rdm_core::repo::PlanRepo;
-use rdm_core::store::FsStore;
+use rdm_store_fs::FsStore;
 use reqwest::Client;
 use tempfile::TempDir;
 

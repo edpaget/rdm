@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Theme preference persists to `localStorage` across sessions
 - Computed overall status badge (done / in-progress / not-started) on roadmap list and detail pages
 - Last-changed timestamp on roadmap list and detail pages, derived from file modification times
+- `rdm-store-fs` crate: filesystem-backed `Store` with in-memory staging — writes buffer in memory, `commit()` flushes to disk using write-to-temp + rename for best-effort atomicity, `discard()` drops the buffer
+- `PlanRepo` mutation methods now auto-commit staged changes, so callers don't need explicit `commit()` calls
 
 ### Changed
 
@@ -37,6 +39,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `repository` field added to workspace package metadata
 
 ### Changed
+
+- `FsStore` moved from `rdm-core::store::FsStore` to `rdm_store_fs::FsStore`; import path updated in `rdm-cli` and `rdm-server`
 
 - `rdm phase update` no longer requires `--status`; omitting it preserves the existing status, enabling content-only updates
 - `PlanRepo::update_phase` now accepts `Option<PhaseStatus>` instead of `PhaseStatus`

@@ -264,6 +264,7 @@ impl<S: Store> PlanRepo<S> {
         };
         let content = doc.render()?;
         self.store.write(&md_path, content)?;
+        self.store.commit()?;
         Ok(doc)
     }
 
@@ -323,6 +324,7 @@ impl<S: Store> PlanRepo<S> {
             body: body.unwrap_or_default().to_string(),
         };
         self.write_roadmap(project, slug, &doc)?;
+        self.store.commit()?;
         Ok(doc)
     }
 
@@ -352,6 +354,7 @@ impl<S: Store> PlanRepo<S> {
             doc.body = b.to_string();
         }
         self.write_roadmap(project, slug, &doc)?;
+        self.store.commit()?;
         Ok(doc)
     }
 
@@ -487,6 +490,7 @@ impl<S: Store> PlanRepo<S> {
         let mut roadmap_doc = self.load_roadmap(project, roadmap)?;
         roadmap_doc.frontmatter.phases.push(stem);
         self.write_roadmap(project, roadmap, &roadmap_doc)?;
+        self.store.commit()?;
 
         Ok(doc)
     }
@@ -530,6 +534,7 @@ impl<S: Store> PlanRepo<S> {
             doc.body = b.to_string();
         }
         self.write_phase(project, roadmap, phase_stem, &doc)?;
+        self.store.commit()?;
         Ok(doc)
     }
 
@@ -555,6 +560,7 @@ impl<S: Store> PlanRepo<S> {
         let mut roadmap_doc = self.load_roadmap(project, roadmap)?;
         roadmap_doc.frontmatter.phases.retain(|s| s != phase_stem);
         self.write_roadmap(project, roadmap, &roadmap_doc)?;
+        self.store.commit()?;
         Ok(())
     }
 
@@ -628,6 +634,7 @@ impl<S: Store> PlanRepo<S> {
             body: body.unwrap_or_default().to_string(),
         };
         self.write_task(project, slug, &doc)?;
+        self.store.commit()?;
         Ok(doc)
     }
 
@@ -702,6 +709,7 @@ impl<S: Store> PlanRepo<S> {
             doc.body = b.to_string();
         }
         self.write_task(project, slug, &doc)?;
+        self.store.commit()?;
         Ok(doc)
     }
 
@@ -770,6 +778,7 @@ impl<S: Store> PlanRepo<S> {
         self.write_phase(project, roadmap_slug, &phase_slug, &phase_doc)?;
 
         self.store.delete(&task_path)?;
+        self.store.commit()?;
 
         Ok(roadmap_doc)
     }
@@ -834,6 +843,7 @@ impl<S: Store> PlanRepo<S> {
 
         deps.push(depends_on.to_string());
         self.write_roadmap(project, slug, &doc)?;
+        self.store.commit()?;
         Ok(doc)
     }
 
@@ -863,6 +873,7 @@ impl<S: Store> PlanRepo<S> {
         }
 
         self.write_roadmap(project, slug, &doc)?;
+        self.store.commit()?;
         Ok(doc)
     }
 
@@ -959,6 +970,7 @@ impl<S: Store> PlanRepo<S> {
         // Remove all files in the roadmap directory
         let dir = self.roadmap_dir(project, slug);
         self.delete_tree(&dir)?;
+        self.store.commit()?;
         Ok(())
     }
 
@@ -1017,6 +1029,7 @@ impl<S: Store> PlanRepo<S> {
         let content = display::format_index(&project_indices);
         let index_path = self.index_path();
         self.store.write(&index_path, content)?;
+        self.store.commit()?;
         Ok(())
     }
 
@@ -1049,6 +1062,7 @@ impl<S: Store> PlanRepo<S> {
                 .to_string(),
         )?;
 
+        repo.store.commit()?;
         Ok(repo)
     }
 }

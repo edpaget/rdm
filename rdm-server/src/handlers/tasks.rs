@@ -390,7 +390,7 @@ mod tests {
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let mut repo = PlanRepo::init(rdm_core::store::FsStore::new(dir.path())).unwrap();
+        let mut repo = PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
         repo.create_project("demo", "Demo").unwrap();
         repo.create_task(
             "demo",

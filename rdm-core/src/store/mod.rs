@@ -3,10 +3,8 @@
 //! This module provides a [`Store`] trait that decouples rdm-core from the
 //! filesystem, enabling in-memory backends for testing and future git backends.
 
-mod fs;
 mod memory;
 
-pub use fs::FsStore;
 pub use memory::MemoryStore;
 
 use crate::error::{Error, Result};

@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 rdm-core = { path = "../rdm-core" }
+rdm-store-fs = { path = "../rdm-store-fs" }
 anyhow = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

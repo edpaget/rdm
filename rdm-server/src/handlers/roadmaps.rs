@@ -10,6 +10,7 @@ use rdm_core::document::Document;
 use rdm_core::hal::{HalLink, HalResource};
 use rdm_core::model::{Phase, PhaseStatus};
 use rdm_core::repo::PlanRepo;
+use rdm_store_fs::FsStore;
 
 use crate::content_type::ResponseFormat;
 use crate::error::{error_response, json_rejection_response};
@@ -28,7 +29,7 @@ fn format_system_time(t: SystemTime) -> String {
 
 /// Compute the most recent modification date across the roadmap and phase files.
 fn last_changed_date(
-    repo: &PlanRepo,
+    repo: &PlanRepo<FsStore>,
     project: &str,
     roadmap: &str,
     phases: &[(String, Document<Phase>)],
@@ -36,7 +37,8 @@ fn last_changed_date(
     let mut latest: Option<SystemTime> = None;
 
     // Check roadmap.md itself
-    if let Ok(meta) = std::fs::metadata(repo.roadmap_path(project, roadmap))
+    let root = repo.store().root();
+    if let Ok(meta) = std::fs::metadata(root.join(repo.roadmap_path(project, roadmap).as_str()))
         && let Ok(modified) = meta.modified()
     {
         latest = Some(modified);
@@ -44,7 +46,8 @@ fn last_changed_date(
 
     // Check each phase file
     for (stem, _) in phases {
-        if let Ok(meta) = std::fs::metadata(repo.phase_path(project, roadmap, stem))
+        if let Ok(meta) =
+            std::fs::metadata(root.join(repo.phase_path(project, roadmap, stem).as_str()))
             && let Ok(modified) = meta.modified()
         {
             latest = Some(match latest {
@@ -321,7 +324,7 @@ mod tests {
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let mut repo = PlanRepo::init(rdm_core::store::FsStore::new(dir.path())).unwrap();
+        let mut repo = PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
         repo.create_project("demo", "Demo Project").unwrap();
         repo.create_roadmap("demo", "alpha", "Alpha Roadmap", None)
             .unwrap();
@@ -590,7 +593,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let roadmaps = json["_embedded"]["roadmaps"].as_array().unwrap();
         assert_eq!(roadmaps[0]["status"], "in-progress");
@@ -610,7 +613,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("badge-in-progress"));
         assert!(html.contains("Last Changed"));
@@ -629,7 +632,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "in-progress");
         assert!(json["last_changed"].is_string());
@@ -648,7 +651,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("badge-in-progress"));
         assert!(html.contains("Last changed:"));

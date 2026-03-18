@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use rdm_core::repo::PlanRepo;
-use rdm_core::store::FsStore;
+use rdm_store_fs::FsStore;
 
 /// Shared application state for the rdm server.
 #[derive(Debug, Clone)]
