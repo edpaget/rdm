@@ -378,3 +378,202 @@ fn roadmap_create_no_edit_skips_editor() {
         .success()
         .stdout(predicate::str::contains("Created roadmap 'no-edit-rm'"));
 }
+
+// -- Dependency tests --
+
+fn init_with_two_roadmaps(dir: &TempDir) {
+    init_with_project(dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "alpha",
+            "--title",
+            "Alpha",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "beta",
+            "--title",
+            "Beta",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn roadmap_depend_and_deps() {
+    let dir = TempDir::new().unwrap();
+    init_with_two_roadmaps(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "depend",
+            "beta",
+            "--on",
+            "alpha",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added dependency: beta → alpha"));
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "deps", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("beta → alpha"));
+}
+
+#[test]
+fn roadmap_undepend() {
+    let dir = TempDir::new().unwrap();
+    init_with_two_roadmaps(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "depend",
+            "beta",
+            "--on",
+            "alpha",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "undepend",
+            "beta",
+            "--on",
+            "alpha",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed dependency: beta → alpha"));
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "deps", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No dependencies found."));
+}
+
+#[test]
+fn roadmap_depend_cycle_rejected() {
+    let dir = TempDir::new().unwrap();
+    init_with_two_roadmaps(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "depend",
+            "beta",
+            "--on",
+            "alpha",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "depend",
+            "alpha",
+            "--on",
+            "beta",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cyclic dependency"));
+}
+
+#[test]
+fn roadmap_depend_nonexistent_target() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "alpha",
+            "--title",
+            "Alpha",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "depend",
+            "alpha",
+            "--on",
+            "nonexistent",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("roadmap not found"));
+}
+
+#[test]
+fn roadmap_deps_empty() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "deps", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No dependencies found."));
+}

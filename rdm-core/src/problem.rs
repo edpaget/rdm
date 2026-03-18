@@ -63,6 +63,13 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("'{slug}' already exists")),
                 instance: None,
             },
+            Error::CyclicDependency(msg) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(format!("cyclic dependency: {msg}")),
+                instance: None,
+            },
             Error::AlreadyInitialized => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),

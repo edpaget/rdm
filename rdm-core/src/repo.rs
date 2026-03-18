@@ -775,6 +775,146 @@ impl PlanRepo {
         Ok(roadmap_doc)
     }
 
+    // -- Dependency management --
+
+    /// Adds a dependency from one roadmap to another.
+    ///
+    /// Appends `depends_on` to the `dependencies` list of the roadmap
+    /// identified by `slug`. Validates that both roadmaps exist, the
+    /// dependency is not already present, and adding it would not create
+    /// a cycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RoadmapNotFound`] if either roadmap doesn't exist,
+    /// [`Error::CyclicDependency`] if adding the dependency would create a cycle,
+    /// [`Error::Io`] if reading or writing fails, or
+    /// [`Error::FrontmatterParse`] if frontmatter is invalid.
+    pub fn add_dependency(
+        &self,
+        project: &str,
+        slug: &str,
+        depends_on: &str,
+    ) -> Result<Document<Roadmap>> {
+        // Verify both roadmaps exist
+        let mut doc = self.load_roadmap(project, slug)?;
+        let _target = self.load_roadmap(project, depends_on)?;
+
+        // Check for self-dependency
+        if slug == depends_on {
+            return Err(Error::CyclicDependency(format!(
+                "{slug} cannot depend on itself"
+            )));
+        }
+
+        // Check for duplicate
+        let deps = doc.frontmatter.dependencies.get_or_insert_with(Vec::new);
+        if deps.contains(&depends_on.to_string()) {
+            return Ok(doc);
+        }
+
+        // Check for cycles: build adjacency list, add proposed edge, then DFS
+        let all_roadmaps = self.list_roadmaps(project)?;
+        let mut adj: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+        for rm in &all_roadmaps {
+            let s = rm.frontmatter.roadmap.as_str();
+            if let Some(ref d) = rm.frontmatter.dependencies {
+                for dep in d {
+                    adj.entry(s).or_default().push(dep.as_str());
+                }
+            }
+        }
+        // Add the proposed edge
+        adj.entry(slug).or_default().push(depends_on);
+
+        if Self::has_cycle(&adj, slug) {
+            return Err(Error::CyclicDependency(format!(
+                "adding {slug} → {depends_on} would create a cycle"
+            )));
+        }
+
+        deps.push(depends_on.to_string());
+        self.write_roadmap(project, slug, &doc)?;
+        Ok(doc)
+    }
+
+    /// Removes a dependency from a roadmap.
+    ///
+    /// Removes `depends_on` from the `dependencies` list. If the dependency
+    /// is not present, this is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
+    /// [`Error::Io`] if reading or writing fails, or
+    /// [`Error::FrontmatterParse`] if frontmatter is invalid.
+    pub fn remove_dependency(
+        &self,
+        project: &str,
+        slug: &str,
+        depends_on: &str,
+    ) -> Result<Document<Roadmap>> {
+        let mut doc = self.load_roadmap(project, slug)?;
+
+        if let Some(ref mut deps) = doc.frontmatter.dependencies {
+            deps.retain(|d| d != depends_on);
+            if deps.is_empty() {
+                doc.frontmatter.dependencies = None;
+            }
+        }
+
+        self.write_roadmap(project, slug, &doc)?;
+        Ok(doc)
+    }
+
+    /// Returns the dependency graph for all roadmaps in a project.
+    ///
+    /// Each entry is `(roadmap_slug, vec_of_dependency_slugs)`.
+    /// Only roadmaps with at least one dependency are included.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
+    /// [`Error::Io`] if directory reads fail, or frontmatter errors if
+    /// any roadmap file is malformed.
+    pub fn dependency_graph(&self, project: &str) -> Result<Vec<(String, Vec<String>)>> {
+        let roadmaps = self.list_roadmaps(project)?;
+        let mut graph = Vec::new();
+        for rm in roadmaps {
+            if let Some(deps) = rm.frontmatter.dependencies {
+                if !deps.is_empty() {
+                    graph.push((rm.frontmatter.roadmap, deps));
+                }
+            }
+        }
+        Ok(graph)
+    }
+
+    /// Detects whether `start` participates in a cycle in the adjacency list.
+    fn has_cycle(adj: &std::collections::HashMap<&str, Vec<&str>>, start: &str) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        let mut stack = vec![start];
+        // Skip the start node on first visit — we want to detect if we
+        // can reach `start` again by following edges.
+        let mut is_first = true;
+        while let Some(node) = stack.pop() {
+            if !is_first && node == start {
+                return true;
+            }
+            is_first = false;
+            if visited.contains(node) {
+                continue;
+            }
+            visited.insert(node);
+            if let Some(neighbors) = adj.get(node) {
+                for &n in neighbors {
+                    stack.push(n);
+                }
+            }
+        }
+        false
+    }
+
     // -- Index generation --
 
     /// Generates `INDEX.md` from the current repo state.
@@ -1696,6 +1836,175 @@ mod tests {
             .unwrap();
         let result = repo.promote_task("fbm", "my-task", "existing-rm");
         assert!(matches!(result, Err(Error::DuplicateSlug(_))));
+    }
+
+    // -- Dependency tests --
+
+    #[test]
+    fn add_dependency_success() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+
+        let doc = repo.add_dependency("fbm", "beta", "alpha").unwrap();
+        assert_eq!(
+            doc.frontmatter.dependencies,
+            Some(vec!["alpha".to_string()])
+        );
+
+        // Verify persisted
+        let loaded = repo.load_roadmap("fbm", "beta").unwrap();
+        assert_eq!(
+            loaded.frontmatter.dependencies,
+            Some(vec!["alpha".to_string()])
+        );
+    }
+
+    #[test]
+    fn add_dependency_multiple() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+        repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
+
+        repo.add_dependency("fbm", "gamma", "alpha").unwrap();
+        let doc = repo.add_dependency("fbm", "gamma", "beta").unwrap();
+        assert_eq!(
+            doc.frontmatter.dependencies,
+            Some(vec!["alpha".to_string(), "beta".to_string()])
+        );
+    }
+
+    #[test]
+    fn add_dependency_duplicate_is_noop() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+
+        repo.add_dependency("fbm", "beta", "alpha").unwrap();
+        let doc = repo.add_dependency("fbm", "beta", "alpha").unwrap();
+        assert_eq!(
+            doc.frontmatter.dependencies,
+            Some(vec!["alpha".to_string()])
+        );
+    }
+
+    #[test]
+    fn add_dependency_self_cycle() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+
+        let result = repo.add_dependency("fbm", "alpha", "alpha");
+        assert!(matches!(result, Err(Error::CyclicDependency(_))));
+    }
+
+    #[test]
+    fn add_dependency_direct_cycle() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+
+        repo.add_dependency("fbm", "beta", "alpha").unwrap();
+        let result = repo.add_dependency("fbm", "alpha", "beta");
+        assert!(matches!(result, Err(Error::CyclicDependency(_))));
+    }
+
+    #[test]
+    fn add_dependency_transitive_cycle() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+        repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
+
+        repo.add_dependency("fbm", "beta", "alpha").unwrap();
+        repo.add_dependency("fbm", "gamma", "beta").unwrap();
+        // gamma → beta → alpha, now alpha → gamma would create a cycle
+        let result = repo.add_dependency("fbm", "alpha", "gamma");
+        assert!(matches!(result, Err(Error::CyclicDependency(_))));
+    }
+
+    #[test]
+    fn add_dependency_target_not_found() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+
+        let result = repo.add_dependency("fbm", "alpha", "nonexistent");
+        assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
+    }
+
+    #[test]
+    fn add_dependency_source_not_found() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+
+        let result = repo.add_dependency("fbm", "nonexistent", "alpha");
+        assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
+    }
+
+    #[test]
+    fn remove_dependency_success() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+
+        repo.add_dependency("fbm", "beta", "alpha").unwrap();
+        let doc = repo.remove_dependency("fbm", "beta", "alpha").unwrap();
+        assert_eq!(doc.frontmatter.dependencies, None);
+
+        let loaded = repo.load_roadmap("fbm", "beta").unwrap();
+        assert_eq!(loaded.frontmatter.dependencies, None);
+    }
+
+    #[test]
+    fn remove_dependency_not_present_is_noop() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+
+        let doc = repo
+            .remove_dependency("fbm", "alpha", "nonexistent")
+            .unwrap();
+        assert_eq!(doc.frontmatter.dependencies, None);
+    }
+
+    #[test]
+    fn remove_dependency_preserves_others() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+        repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
+
+        repo.add_dependency("fbm", "gamma", "alpha").unwrap();
+        repo.add_dependency("fbm", "gamma", "beta").unwrap();
+        let doc = repo.remove_dependency("fbm", "gamma", "alpha").unwrap();
+        assert_eq!(doc.frontmatter.dependencies, Some(vec!["beta".to_string()]));
+    }
+
+    #[test]
+    fn dependency_graph_returns_entries() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+        repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
+
+        repo.add_dependency("fbm", "beta", "alpha").unwrap();
+        repo.add_dependency("fbm", "gamma", "alpha").unwrap();
+        repo.add_dependency("fbm", "gamma", "beta").unwrap();
+
+        let graph = repo.dependency_graph("fbm").unwrap();
+        assert_eq!(graph.len(), 2);
+        // sorted by slug
+        assert_eq!(graph[0].0, "beta");
+        assert_eq!(graph[0].1, vec!["alpha"]);
+        assert_eq!(graph[1].0, "gamma");
+        assert_eq!(graph[1].1, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn dependency_graph_empty() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        let graph = repo.dependency_graph("fbm").unwrap();
+        assert!(graph.is_empty());
     }
 
     #[test]

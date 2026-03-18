@@ -254,6 +254,23 @@ pub fn format_task_list(tasks: &[(String, Document<Task>)]) -> String {
     out
 }
 
+/// Formats a dependency graph as a human-readable list.
+///
+/// Each entry shows a roadmap and what it depends on.
+/// If the graph is empty, returns a message indicating no dependencies.
+#[must_use]
+pub fn format_dependency_graph(graph: &[(String, Vec<String>)]) -> String {
+    if graph.is_empty() {
+        return "No dependencies found.\n".to_string();
+    }
+
+    let mut out = String::new();
+    for (slug, deps) in graph {
+        out.push_str(&format!("{slug} → {}\n", deps.join(", ")));
+    }
+    out
+}
+
 /// Formats search results as a ranked text table.
 #[must_use]
 pub fn format_search_results(results: &[SearchResult]) -> String {

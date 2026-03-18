@@ -172,6 +172,34 @@ enum RoadmapCommand {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Add a dependency on another roadmap.
+    Depend {
+        /// Roadmap slug that will depend on another.
+        slug: String,
+        /// The roadmap to depend on.
+        #[arg(long)]
+        on: String,
+        /// Project the roadmaps belong to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Remove a dependency on another roadmap.
+    Undepend {
+        /// Roadmap slug to remove a dependency from.
+        slug: String,
+        /// The dependency to remove.
+        #[arg(long)]
+        on: String,
+        /// Project the roadmaps belong to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Show the dependency graph for all roadmaps.
+    Deps {
+        /// Project to show dependencies for.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -614,6 +642,27 @@ fn run() -> Result<()> {
                         entries.push((roadmap_doc, phases));
                     }
                     print!("{}", display::format_roadmap_list(&entries));
+                }
+                RoadmapCommand::Depend { slug, on, project } => {
+                    let project = resolve_project(project, &repo)?;
+                    repo.add_dependency(&project, &slug, &on)
+                        .context("failed to add dependency")?;
+                    println!("Added dependency: {slug} → {on}");
+                    maybe_regenerate_index(&repo, cli.no_index)?;
+                }
+                RoadmapCommand::Undepend { slug, on, project } => {
+                    let project = resolve_project(project, &repo)?;
+                    repo.remove_dependency(&project, &slug, &on)
+                        .context("failed to remove dependency")?;
+                    println!("Removed dependency: {slug} → {on}");
+                    maybe_regenerate_index(&repo, cli.no_index)?;
+                }
+                RoadmapCommand::Deps { project } => {
+                    let project = resolve_project(project, &repo)?;
+                    let graph = repo
+                        .dependency_graph(&project)
+                        .context("failed to get dependency graph")?;
+                    print!("{}", display::format_dependency_graph(&graph));
                 }
             }
         }

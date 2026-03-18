@@ -23,6 +23,8 @@ pub enum Error {
     TaskNotFound(String),
     /// A slug already exists.
     DuplicateSlug(String),
+    /// Adding a dependency would create a cycle.
+    CyclicDependency(String),
     /// No project was specified and no default project is configured.
     ProjectNotSpecified,
     /// Failed to serialize the config file.
@@ -62,6 +64,9 @@ impl std::fmt::Display for Error {
             }
             Error::DuplicateSlug(slug) => {
                 write!(f, "'{slug}' already exists — choose a different name")
+            }
+            Error::CyclicDependency(msg) => {
+                write!(f, "cyclic dependency: {msg}")
             }
             Error::ProjectNotSpecified => {
                 write!(

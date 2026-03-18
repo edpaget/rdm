@@ -14,6 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm roadmap depend <slug> --on <other>` to add a dependency between roadmaps
+- `rdm roadmap undepend <slug> --on <other>` to remove a dependency
+- `rdm roadmap deps` to display the dependency graph for all roadmaps in a project
+- Circular dependency detection rejects cycles with a clear error message
+- `CyclicDependency` error variant in rdm-core for dependency cycle detection
+- `add_dependency`, `remove_dependency`, and `dependency_graph` methods on `PlanRepo`
+- `format_dependency_graph` display function in rdm-core
 - `--skills` flag on `rdm agent-config claude` to generate Claude Code skill files (`rdm-roadmap`, `rdm-implement`, `rdm-tasks`) as reusable slash commands
 - `rdm-core::agent_config::SkillFile`, `SkillOptions`, and `generate_skills` public API for skill generation
 - `rdm agent-config` command to generate AI agent instruction files for Claude Code, Cursor, GitHub Copilot, and AGENTS.md
