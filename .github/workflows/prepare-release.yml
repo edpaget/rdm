@@ -1,0 +1,107 @@
+# Prepare Release workflow
+#
+# A workflow_dispatch workflow that prepares a release by bumping the version
+# in Cargo.toml, updating CHANGELOG.md, committing, tagging, and pushing.
+# The resulting vX.Y.Z tag triggers the cargo-dist Release workflow.
+#
+# Backport / release branch workflow:
+#   This workflow runs on whatever branch it is dispatched from (github.ref).
+#   To cut a release from a maintenance branch:
+#     1. Create a branch named release/X.Y (e.g. release/0.1)
+#     2. Cherry-pick or backport fixes onto that branch
+#     3. Dispatch this workflow from the release/X.Y branch with the
+#        desired bump level (usually "patch")
+#   The workflow will commit, tag, and push on that branch, triggering
+#   cargo-dist just like a main-branch release.
+
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump level"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ github.ref }}
+
+      - name: Read current version
+        id: current
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Current version: $version"
+
+      - name: Compute new version
+        id: next
+        run: |
+          IFS='.' read -r major minor patch <<< "${{ steps.current.outputs.version }}"
+          case "${{ inputs.bump }}" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+          esac
+          new_version="${major}.${minor}.${patch}"
+          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "New version: $new_version"
+
+      - name: Update Cargo.toml
+        run: |
+          sed -i '/^\[workspace\.package\]/,/^\[/{s/^version = ".*"/version = "${{ steps.next.outputs.version }}"/}' Cargo.toml
+
+      - name: Regenerate Cargo.lock
+        run: cargo check --workspace
+
+      - name: Update CHANGELOG.md
+        run: |
+          today=$(date +%Y-%m-%d)
+          # Insert a new version heading after the [Unreleased] line
+          sed -i "s/^## \[Unreleased\]$/## [Unreleased]\n\n## [${{ steps.next.outputs.version }}] - ${today}/" CHANGELOG.md
+
+      - name: Configure git user
+        run: |
+          # Use the GitHub App bot identity for commits
+          bot_name="github-actions[bot]"
+          bot_email="41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "$bot_name"
+          git config user.email "$bot_email"
+
+      - name: Commit, tag, and push
+        run: |
+          version="${{ steps.next.outputs.version }}"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): v${version}"
+          git tag "v${version}"
+          git push origin HEAD "v${version}"
