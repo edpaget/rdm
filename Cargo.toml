@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.94"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/edpaget/rdm"
+homepage = "https://github.com/edpaget/rdm"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

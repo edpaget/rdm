@@ -193,12 +193,11 @@ The core library is the source of truth. CLI and server are thin layers that par
 ## Installation
 
 ```bash
+# Homebrew (macOS)
+brew install edpaget/rdm/rdm
+
 # From source
 cargo install --path rdm-cli
-
-# Pre-built binaries (coming soon)
-# brew install rdm
-# curl -sSf https://rdm.dev/install.sh | sh
 ```
 
 ## License
