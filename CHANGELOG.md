@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm-implement` and `rdm-tasks` skills now use plan mode (`EnterPlanMode`/`ExitPlanMode`) for a deliberate plan-then-execute workflow with explicit user approval before finalizing
+- Generated skills from `rdm agent-config --skills` include the same plan mode workflow
 - `rdm roadmap depend <slug> --on <other>` to add a dependency between roadmaps
 - `rdm roadmap undepend <slug> --on <other>` to remove a dependency
 - `rdm roadmap deps` to display the dependency graph for all roadmaps in a project

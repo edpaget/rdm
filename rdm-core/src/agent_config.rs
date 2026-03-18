@@ -380,6 +380,8 @@ allowed-tools:
   - Grep
   - Write
   - Edit
+  - EnterPlanMode
+  - ExitPlanMode
 ---
 
 Implement a phase from an rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [phase-number]`.
@@ -390,13 +392,21 @@ Implement a phase from an rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [p
 2. **Find the phase**: if no phase number was given, run `rdm phase list --roadmap <slug> {proj_flag}` and pick the first `not-started` or `in-progress` phase.
 3. **Read the phase**: `rdm phase show <phase> --roadmap <slug> {proj_flag}` to get full context, steps, and acceptance criteria.
 4. **Mark in-progress**: `rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> {proj_flag}`
-5. **Plan the implementation** and present your approach to the user for approval before writing code.
-6. **Execute the plan**: implement the work described in the phase, following the steps and acceptance criteria.
-7. **Mark done**: `rdm phase update <phase> --status done --no-edit --roadmap <slug> {proj_flag}`
-8. **Handle side-work**: if you discover bugs or unrelated improvements, create tasks instead of fixing them inline:
-   ```bash
-   rdm task create <slug> --title "Description" --body "Details." --no-edit {proj_flag}
-   ```
+5. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
+6. **Create an implementation plan** using the planning tool. The plan should:
+   - Break the phase into concrete implementation steps based on the phase description and acceptance criteria
+   - Include a final step: "Review changes with user, commit, and mark phase done"
+7. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
+8. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
+9. **Execute the plan**: implement each step, following the plan and the phase's acceptance criteria.
+10. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
+11. **Finalize**: on user acceptance:
+    - Commit the implementation changes
+    - Mark the phase done: `rdm phase update <phase> --status done --no-edit --roadmap <slug> {proj_flag}`
+12. **Handle side-work**: if you discover bugs or unrelated improvements, create tasks instead of fixing them inline:
+    ```bash
+    rdm task create <slug> --title "Description" --body "Details." --no-edit {proj_flag}
+    ```
 "#
         ),
     }
@@ -417,6 +427,8 @@ allowed-tools:
   - Grep
   - Write
   - Edit
+  - EnterPlanMode
+  - ExitPlanMode
 ---
 
 Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
@@ -426,8 +438,17 @@ Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
 1. **List tasks**: `rdm task list {proj_flag}` to see open and in-progress tasks.
 2. **Show details**: if a task slug was provided in `$ARGUMENTS`, run `rdm task show <slug> {proj_flag}`. Otherwise, present the task list and ask the user which task to work on.
 3. **Mark in-progress**: `rdm task update <slug> --status in-progress --no-edit {proj_flag}`
-4. **Implement** the work described in the task.
-5. **Mark done**: `rdm task update <slug> --status done --no-edit {proj_flag}`
+4. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
+5. **Create an implementation plan** using the planning tool. The plan should:
+   - Break the task into concrete implementation steps based on the task description
+   - Include a final step: "Review changes with user, commit, and mark task done"
+6. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
+7. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
+8. **Execute the plan**: implement each step, following the plan.
+9. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
+10. **Finalize**: on user acceptance:
+    - Commit the implementation changes
+    - Mark the task done: `rdm task update <slug> --status done --no-edit {proj_flag}`
 "#
         ),
     }
@@ -846,6 +867,52 @@ mod tests {
         let content = &skills[1].content;
         assert!(content.contains("Write"));
         assert!(content.contains("Edit"));
+    }
+
+    #[test]
+    fn skill_implement_has_plan_mode_tools() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("EnterPlanMode"));
+        assert!(content.contains("ExitPlanMode"));
+    }
+
+    #[test]
+    fn skill_tasks_has_plan_mode_tools() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("EnterPlanMode"));
+        assert!(content.contains("ExitPlanMode"));
+    }
+
+    #[test]
+    fn skill_implement_uses_plan_mode_workflow() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("Enter plan mode"));
+        assert!(content.contains("Exit plan mode"));
+        assert!(content.contains("implementation plan"));
+    }
+
+    #[test]
+    fn skill_tasks_uses_plan_mode_workflow() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("Enter plan mode"));
+        assert!(content.contains("Exit plan mode"));
+        assert!(content.contains("implementation plan"));
     }
 
     #[test]
