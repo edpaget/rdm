@@ -27,7 +27,7 @@ mediatype = "0.19"
 tempfile = "3"
 is-terminal = "0.4"
 nucleo-matcher = "0.3"
-askama = "0.13"
+askama = "0.15"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
