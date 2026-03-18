@@ -96,7 +96,7 @@ pub async fn create_project(
     payload: Result<axum::Json<CreateProjectRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let repo = state.plan_repo();
+    let mut repo = state.plan_repo();
     let doc = repo
         .create_project(&req.name, &req.title)
         .map_err(|e| error_response(e, format))?;
@@ -141,7 +141,7 @@ mod tests {
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(rdm_core::store::FsStore::new(dir.path())).unwrap();
         repo.create_project("alpha", "Alpha Project").unwrap();
         repo.create_project("beta", "Beta Project").unwrap();
         let state = AppState {
@@ -184,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn list_projects_empty() {
         let dir = TempDir::new().unwrap();
-        PlanRepo::init(dir.path()).unwrap();
+        PlanRepo::init(rdm_core::store::FsStore::new(dir.path())).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };
@@ -253,7 +253,7 @@ mod tests {
     #[tokio::test]
     async fn create_project_returns_201() {
         let dir = TempDir::new().unwrap();
-        PlanRepo::init(dir.path()).unwrap();
+        PlanRepo::init(rdm_core::store::FsStore::new(dir.path())).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };
@@ -308,7 +308,7 @@ mod tests {
     #[tokio::test]
     async fn create_project_html_returns_303() {
         let dir = TempDir::new().unwrap();
-        PlanRepo::init(dir.path()).unwrap();
+        PlanRepo::init(rdm_core::store::FsStore::new(dir.path())).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };

@@ -18,7 +18,6 @@ fn init_creates_plan_repo() {
         .stdout(predicate::str::contains("Initialized plan repo"));
 
     assert!(dir.path().join("rdm.toml").exists());
-    assert!(dir.path().join("projects").is_dir());
     assert!(dir.path().join("INDEX.md").exists());
 }
 

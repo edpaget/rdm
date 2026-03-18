@@ -34,9 +34,7 @@ fn project_create_success() {
         .success()
         .stdout(predicate::str::contains("Created project 'fbm'"));
 
-    assert!(dir.path().join("projects/fbm").is_dir());
-    assert!(dir.path().join("projects/fbm/roadmaps").is_dir());
-    assert!(dir.path().join("projects/fbm/tasks").is_dir());
+    assert!(dir.path().join("projects/fbm/project.md").exists());
 }
 
 #[test]

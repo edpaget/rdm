@@ -1,7 +1,4 @@
 /// Plan repo operations: path resolution, file I/O, and initialization.
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use chrono::Local;
 
 use crate::config::Config;
@@ -9,70 +6,93 @@ use crate::display::{self, ProjectIndex, RoadmapIndexEntry};
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus, Priority, Project, Roadmap, Task, TaskStatus};
+use crate::store::{DirEntryKind, RelPath, Store};
 
-/// Represents an rdm plan repository on disk.
+/// Represents an rdm plan repository backed by a [`Store`].
 #[derive(Debug, Clone)]
-pub struct PlanRepo {
-    root: PathBuf,
+pub struct PlanRepo<S: Store> {
+    store: S,
 }
 
-impl PlanRepo {
-    /// Opens an existing plan repo at the given root path.
-    pub fn open(root: impl Into<PathBuf>) -> Self {
-        PlanRepo { root: root.into() }
+impl<S: Store> PlanRepo<S> {
+    /// Creates a new `PlanRepo` backed by the given store.
+    pub fn new(store: S) -> Self {
+        PlanRepo { store }
     }
 
-    /// Returns the root path of the plan repo.
-    pub fn root(&self) -> &Path {
-        &self.root
+    /// Returns a reference to the underlying store.
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
+    /// Returns a mutable reference to the underlying store.
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
+    }
+
+    /// Commits any staged changes in the underlying store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the commit fails.
+    pub fn commit(&mut self) -> Result<()> {
+        self.store.commit()
     }
 
     // -- Path builders --
 
     /// Returns the path to `rdm.toml`.
-    pub fn config_path(&self) -> PathBuf {
-        self.root.join("rdm.toml")
+    pub fn config_path(&self) -> RelPath {
+        RelPath::new("rdm.toml").expect("valid path")
     }
 
     /// Returns the path to `INDEX.md`.
-    pub fn index_path(&self) -> PathBuf {
-        self.root.join("INDEX.md")
+    pub fn index_path(&self) -> RelPath {
+        RelPath::new("INDEX.md").expect("valid path")
     }
 
     /// Returns the path to a project's directory.
-    pub fn project_path(&self, project: &str) -> PathBuf {
-        self.root.join("projects").join(project)
+    pub fn project_path(&self, project: &str) -> RelPath {
+        RelPath::new(&format!("projects/{project}")).expect("valid path")
+    }
+
+    /// Returns the path to a project's `project.md` file.
+    fn project_md_path(&self, project: &str) -> RelPath {
+        RelPath::new(&format!("projects/{project}/project.md")).expect("valid path")
     }
 
     /// Returns the path to a project's roadmaps directory.
-    pub fn roadmaps_dir(&self, project: &str) -> PathBuf {
-        self.project_path(project).join("roadmaps")
+    pub fn roadmaps_dir(&self, project: &str) -> RelPath {
+        RelPath::new(&format!("projects/{project}/roadmaps")).expect("valid path")
     }
 
     /// Returns the path to a specific roadmap directory.
-    pub fn roadmap_dir(&self, project: &str, roadmap: &str) -> PathBuf {
-        self.roadmaps_dir(project).join(roadmap)
+    pub fn roadmap_dir(&self, project: &str, roadmap: &str) -> RelPath {
+        RelPath::new(&format!("projects/{project}/roadmaps/{roadmap}")).expect("valid path")
     }
 
     /// Returns the path to a roadmap's `roadmap.md` file.
-    pub fn roadmap_path(&self, project: &str, roadmap: &str) -> PathBuf {
-        self.roadmap_dir(project, roadmap).join("roadmap.md")
+    pub fn roadmap_path(&self, project: &str, roadmap: &str) -> RelPath {
+        RelPath::new(&format!("projects/{project}/roadmaps/{roadmap}/roadmap.md"))
+            .expect("valid path")
     }
 
     /// Returns the path to a phase file within a roadmap directory.
-    pub fn phase_path(&self, project: &str, roadmap: &str, phase_stem: &str) -> PathBuf {
-        self.roadmap_dir(project, roadmap)
-            .join(format!("{phase_stem}.md"))
+    pub fn phase_path(&self, project: &str, roadmap: &str, phase_stem: &str) -> RelPath {
+        RelPath::new(&format!(
+            "projects/{project}/roadmaps/{roadmap}/{phase_stem}.md"
+        ))
+        .expect("valid path")
     }
 
     /// Returns the path to a project's tasks directory.
-    pub fn tasks_dir(&self, project: &str) -> PathBuf {
-        self.project_path(project).join("tasks")
+    pub fn tasks_dir(&self, project: &str) -> RelPath {
+        RelPath::new(&format!("projects/{project}/tasks")).expect("valid path")
     }
 
     /// Returns the path to a task file.
-    pub fn task_path(&self, project: &str, task_slug: &str) -> PathBuf {
-        self.tasks_dir(project).join(format!("{task_slug}.md"))
+    pub fn task_path(&self, project: &str, task_slug: &str) -> RelPath {
+        RelPath::new(&format!("projects/{project}/tasks/{task_slug}.md")).expect("valid path")
     }
 
     // -- Load operations --
@@ -86,14 +106,14 @@ impl PlanRepo {
     /// is not valid TOML.
     pub fn load_config(&self) -> Result<Config> {
         let path = self.config_path();
-        if !path.exists() {
+        if !self.store.exists(&path) {
             return Err(Error::ConfigNotFound);
         }
-        let content = fs::read_to_string(path)?;
+        let content = self.store.read(&path)?;
         Config::from_toml(&content)
     }
 
-    /// Loads and parses a project document from disk.
+    /// Loads and parses a project document from the store.
     ///
     /// # Errors
     ///
@@ -102,15 +122,15 @@ impl PlanRepo {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// YAML is invalid.
     pub fn load_project(&self, name: &str) -> Result<Document<Project>> {
-        let path = self.project_path(name).join("project.md");
-        if !path.exists() {
+        let path = self.project_md_path(name);
+        if !self.store.exists(&path) {
             return Err(Error::ProjectNotFound(name.to_string()));
         }
-        let content = fs::read_to_string(path)?;
+        let content = self.store.read(&path)?;
         Document::parse(&content)
     }
 
-    /// Loads and parses a roadmap document from disk.
+    /// Loads and parses a roadmap document from the store.
     ///
     /// # Errors
     ///
@@ -120,14 +140,14 @@ impl PlanRepo {
     /// YAML is invalid.
     pub fn load_roadmap(&self, project: &str, roadmap: &str) -> Result<Document<Roadmap>> {
         let path = self.roadmap_path(project, roadmap);
-        if !path.exists() {
+        if !self.store.exists(&path) {
             return Err(Error::RoadmapNotFound(roadmap.to_string()));
         }
-        let content = fs::read_to_string(path)?;
+        let content = self.store.read(&path)?;
         Document::parse(&content)
     }
 
-    /// Loads and parses a phase document from disk.
+    /// Loads and parses a phase document from the store.
     ///
     /// # Errors
     ///
@@ -140,11 +160,13 @@ impl PlanRepo {
         roadmap: &str,
         phase_stem: &str,
     ) -> Result<Document<Phase>> {
-        let content = fs::read_to_string(self.phase_path(project, roadmap, phase_stem))?;
+        let content = self
+            .store
+            .read(&self.phase_path(project, roadmap, phase_stem))?;
         Document::parse(&content)
     }
 
-    /// Loads and parses a task document from disk.
+    /// Loads and parses a task document from the store.
     ///
     /// # Errors
     ///
@@ -154,96 +176,84 @@ impl PlanRepo {
     /// YAML is invalid.
     pub fn load_task(&self, project: &str, task_slug: &str) -> Result<Document<Task>> {
         let path = self.task_path(project, task_slug);
-        if !path.exists() {
+        if !self.store.exists(&path) {
             return Err(Error::TaskNotFound(task_slug.to_string()));
         }
-        let content = fs::read_to_string(path)?;
+        let content = self.store.read(&path)?;
         Document::parse(&content)
     }
 
     // -- Write operations --
 
-    /// Ensures parent directories exist for the given path.
-    fn ensure_parent_dir(path: &Path) -> Result<()> {
-        let parent = path.parent().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "path has no parent directory",
-            )
-        })?;
-        fs::create_dir_all(parent)?;
-        Ok(())
-    }
-
-    /// Writes a roadmap document to disk, creating parent directories as needed.
+    /// Writes a roadmap document to the store.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] if directory creation or file writing fails, or
+    /// Returns [`Error::Io`] if writing fails, or
     /// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
     pub fn write_roadmap(
-        &self,
+        &mut self,
         project: &str,
         roadmap: &str,
         doc: &Document<Roadmap>,
     ) -> Result<()> {
         let path = self.roadmap_path(project, roadmap);
-        Self::ensure_parent_dir(&path)?;
         let content = doc.render()?;
-        fs::write(path, content)?;
+        self.store.write(&path, content)?;
         Ok(())
     }
 
-    /// Writes a phase document to disk, creating parent directories as needed.
+    /// Writes a phase document to the store.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] if directory creation or file writing fails, or
+    /// Returns [`Error::Io`] if writing fails, or
     /// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
     pub fn write_phase(
-        &self,
+        &mut self,
         project: &str,
         roadmap: &str,
         phase_stem: &str,
         doc: &Document<Phase>,
     ) -> Result<()> {
         let path = self.phase_path(project, roadmap, phase_stem);
-        Self::ensure_parent_dir(&path)?;
         let content = doc.render()?;
-        fs::write(path, content)?;
+        self.store.write(&path, content)?;
         Ok(())
     }
 
-    /// Writes a task document to disk, creating parent directories as needed.
+    /// Writes a task document to the store.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] if directory creation or file writing fails, or
+    /// Returns [`Error::Io`] if writing fails, or
     /// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
-    pub fn write_task(&self, project: &str, task_slug: &str, doc: &Document<Task>) -> Result<()> {
+    pub fn write_task(
+        &mut self,
+        project: &str,
+        task_slug: &str,
+        doc: &Document<Task>,
+    ) -> Result<()> {
         let path = self.task_path(project, task_slug);
-        Self::ensure_parent_dir(&path)?;
         let content = doc.render()?;
-        fs::write(path, content)?;
+        self.store.write(&path, content)?;
         Ok(())
     }
 
     // -- Project operations --
 
-    /// Creates a new project directory with `roadmaps/` and `tasks/` subdirectories.
+    /// Creates a new project with `roadmaps/` and `tasks/` subdirectories.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::DuplicateSlug`] if the project directory already exists,
-    /// [`Error::Io`] if directory or file creation fails, or
+    /// Returns [`Error::DuplicateSlug`] if the project already exists,
+    /// [`Error::Io`] if file creation fails, or
     /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
-    pub fn create_project(&self, name: &str, title: &str) -> Result<Document<Project>> {
-        let path = self.project_path(name);
-        if path.exists() {
+    pub fn create_project(&mut self, name: &str, title: &str) -> Result<Document<Project>> {
+        let md_path = self.project_md_path(name);
+        if self.store.exists(&md_path) {
             return Err(Error::DuplicateSlug(name.to_string()));
         }
-        fs::create_dir_all(self.roadmaps_dir(name))?;
-        fs::create_dir_all(self.tasks_dir(name))?;
 
         let doc = Document {
             frontmatter: Project {
@@ -253,7 +263,7 @@ impl PlanRepo {
             body: String::new(),
         };
         let content = doc.render()?;
-        fs::write(path.join("project.md"), content)?;
+        self.store.write(&md_path, content)?;
         Ok(doc)
     }
 
@@ -263,19 +273,12 @@ impl PlanRepo {
     ///
     /// Returns [`Error::Io`] if the projects directory cannot be read.
     pub fn list_projects(&self) -> Result<Vec<String>> {
-        let projects_dir = self.root.join("projects");
-        if !projects_dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut names: Vec<String> = fs::read_dir(projects_dir)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                if entry.file_type().ok()?.is_dir() {
-                    entry.file_name().into_string().ok()
-                } else {
-                    None
-                }
-            })
+        let projects_dir = RelPath::new("projects").expect("valid path");
+        let entries = self.store.list(&projects_dir)?;
+        let mut names: Vec<String> = entries
+            .into_iter()
+            .filter(|e| e.kind == DirEntryKind::Dir)
+            .map(|e| e.name)
             .collect();
         names.sort();
         Ok(names)
@@ -291,21 +294,21 @@ impl PlanRepo {
     /// # Errors
     ///
     /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
-    /// [`Error::DuplicateSlug`] if the roadmap directory already exists,
+    /// [`Error::DuplicateSlug`] if the roadmap already exists,
     /// [`Error::Io`] if file creation fails, or
     /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
     pub fn create_roadmap(
-        &self,
+        &mut self,
         project: &str,
         slug: &str,
         title: &str,
         body: Option<&str>,
     ) -> Result<Document<Roadmap>> {
-        if !self.project_path(project).exists() {
+        if !self.store.exists(&self.project_md_path(project)) {
             return Err(Error::ProjectNotFound(project.to_string()));
         }
-        let dir = self.roadmap_dir(project, slug);
-        if dir.exists() {
+        let roadmap_file = self.roadmap_path(project, slug);
+        if self.store.exists(&roadmap_file) {
             return Err(Error::DuplicateSlug(slug.to_string()));
         }
 
@@ -334,13 +337,13 @@ impl PlanRepo {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// existing roadmap file has invalid frontmatter.
     pub fn update_roadmap(
-        &self,
+        &mut self,
         project: &str,
         slug: &str,
         body: Option<&str>,
     ) -> Result<Document<Roadmap>> {
         let path = self.roadmap_path(project, slug);
-        if !path.exists() {
+        if !self.store.exists(&path) {
             return Err(Error::RoadmapNotFound(slug.to_string()));
         }
 
@@ -361,27 +364,24 @@ impl PlanRepo {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
     /// roadmap file has invalid frontmatter.
     pub fn list_roadmaps(&self, project: &str) -> Result<Vec<Document<Roadmap>>> {
-        if !self.project_path(project).exists() {
+        if !self.store.exists(&self.project_md_path(project)) {
             return Err(Error::ProjectNotFound(project.to_string()));
         }
         let roadmaps_dir = self.roadmaps_dir(project);
-        if !roadmaps_dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut entries: Vec<String> = fs::read_dir(&roadmaps_dir)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                if entry.file_type().ok()?.is_dir() {
-                    entry.file_name().into_string().ok()
-                } else {
-                    None
-                }
-            })
+        let entries = self.store.list(&roadmaps_dir)?;
+        let mut slugs: Vec<String> = entries
+            .into_iter()
+            .filter(|e| e.kind == DirEntryKind::Dir)
+            .map(|e| e.name)
             .collect();
-        entries.sort();
+        slugs.sort();
 
         let mut roadmaps = Vec::new();
-        for slug in entries {
+        for slug in slugs {
+            // Skip directories without a roadmap.md (e.g., leftover empty dirs)
+            if !self.store.exists(&self.roadmap_path(project, &slug)) {
+                continue;
+            }
             let doc = self.load_roadmap(project, &slug)?;
             roadmaps.push(doc);
         }
@@ -396,8 +396,8 @@ impl PlanRepo {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::RoadmapNotFound`] if the roadmap directory doesn't
-    /// exist, [`Error::Io`] if the directory cannot be read, or
+    /// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
+    /// [`Error::Io`] if the directory cannot be read, or
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
     /// phase file has invalid frontmatter.
     pub fn list_phases(
@@ -405,21 +405,23 @@ impl PlanRepo {
         project: &str,
         roadmap: &str,
     ) -> Result<Vec<(String, Document<Phase>)>> {
-        let dir = self.roadmap_dir(project, roadmap);
-        if !dir.exists() {
+        let roadmap_file = self.roadmap_path(project, roadmap);
+        if !self.store.exists(&roadmap_file) {
             return Err(Error::RoadmapNotFound(roadmap.to_string()));
         }
 
+        let dir = self.roadmap_dir(project, roadmap);
+        let entries = self.store.list(&dir)?;
+
         let mut phases: Vec<(String, Document<Phase>)> = Vec::new();
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let Ok(name) = entry.file_name().into_string() else {
-                continue;
-            };
-            if name == "roadmap.md" || !name.ends_with(".md") {
+        for entry in entries {
+            if entry.kind != DirEntryKind::File {
                 continue;
             }
-            let stem = name.trim_end_matches(".md").to_string();
+            if entry.name == "roadmap.md" || !entry.name.ends_with(".md") {
+                continue;
+            }
+            let stem = entry.name.trim_end_matches(".md").to_string();
             let doc = self.load_phase(project, roadmap, &stem)?;
             phases.push((stem, doc));
         }
@@ -440,7 +442,7 @@ impl PlanRepo {
     /// [`Error::Io`] if file creation fails, or
     /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
     pub fn create_phase(
-        &self,
+        &mut self,
         project: &str,
         roadmap: &str,
         slug: &str,
@@ -448,8 +450,8 @@ impl PlanRepo {
         phase_number: Option<u32>,
         body: Option<&str>,
     ) -> Result<Document<Phase>> {
-        let roadmap_dir = self.roadmap_dir(project, roadmap);
-        if !roadmap_dir.exists() {
+        let roadmap_file = self.roadmap_path(project, roadmap);
+        if !self.store.exists(&roadmap_file) {
             return Err(Error::RoadmapNotFound(roadmap.to_string()));
         }
 
@@ -466,7 +468,7 @@ impl PlanRepo {
 
         let stem = format!("phase-{number}-{slug}");
         let path = self.phase_path(project, roadmap, &stem);
-        if path.exists() {
+        if self.store.exists(&path) {
             return Err(Error::DuplicateSlug(stem));
         }
 
@@ -503,7 +505,7 @@ impl PlanRepo {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// existing phase file has invalid frontmatter.
     pub fn update_phase(
-        &self,
+        &mut self,
         project: &str,
         roadmap: &str,
         phase_stem: &str,
@@ -511,7 +513,7 @@ impl PlanRepo {
         body: Option<&str>,
     ) -> Result<Document<Phase>> {
         let path = self.phase_path(project, roadmap, phase_stem);
-        if !path.exists() {
+        if !self.store.exists(&path) {
             return Err(Error::PhaseNotFound(phase_stem.to_string()));
         }
 
@@ -542,12 +544,12 @@ impl PlanRepo {
     /// [`Error::Io`] if the file cannot be deleted or the roadmap cannot be
     /// updated, or [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`]
     /// if the roadmap file has invalid frontmatter.
-    pub fn remove_phase(&self, project: &str, roadmap: &str, phase_stem: &str) -> Result<()> {
+    pub fn remove_phase(&mut self, project: &str, roadmap: &str, phase_stem: &str) -> Result<()> {
         let path = self.phase_path(project, roadmap, phase_stem);
-        if !path.exists() {
+        if !self.store.exists(&path) {
             return Err(Error::PhaseNotFound(phase_stem.to_string()));
         }
-        fs::remove_file(&path)?;
+        self.store.delete(&path)?;
 
         // Remove stem from roadmap's phases list
         let mut roadmap_doc = self.load_roadmap(project, roadmap)?;
@@ -598,7 +600,7 @@ impl PlanRepo {
     /// [`Error::Io`] if file creation fails, or
     /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
     pub fn create_task(
-        &self,
+        &mut self,
         project: &str,
         slug: &str,
         title: &str,
@@ -606,11 +608,11 @@ impl PlanRepo {
         tags: Option<Vec<String>>,
         body: Option<&str>,
     ) -> Result<Document<Task>> {
-        if !self.project_path(project).exists() {
+        if !self.store.exists(&self.project_md_path(project)) {
             return Err(Error::ProjectNotFound(project.to_string()));
         }
         let path = self.task_path(project, slug);
-        if path.exists() {
+        if self.store.exists(&path) {
             return Err(Error::DuplicateSlug(slug.to_string()));
         }
 
@@ -640,24 +642,21 @@ impl PlanRepo {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
     /// task file has invalid frontmatter.
     pub fn list_tasks(&self, project: &str) -> Result<Vec<(String, Document<Task>)>> {
-        if !self.project_path(project).exists() {
+        if !self.store.exists(&self.project_md_path(project)) {
             return Err(Error::ProjectNotFound(project.to_string()));
         }
         let dir = self.tasks_dir(project);
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
+        let entries = self.store.list(&dir)?;
 
         let mut tasks: Vec<(String, Document<Task>)> = Vec::new();
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let Ok(name) = entry.file_name().into_string() else {
-                continue;
-            };
-            if !name.ends_with(".md") {
+        for entry in entries {
+            if entry.kind != DirEntryKind::File {
                 continue;
             }
-            let slug = name.trim_end_matches(".md").to_string();
+            if !entry.name.ends_with(".md") {
+                continue;
+            }
+            let slug = entry.name.trim_end_matches(".md").to_string();
             let doc = self.load_task(project, &slug)?;
             tasks.push((slug, doc));
         }
@@ -676,7 +675,7 @@ impl PlanRepo {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// existing task file has invalid frontmatter.
     pub fn update_task(
-        &self,
+        &mut self,
         project: &str,
         slug: &str,
         status: Option<TaskStatus>,
@@ -685,7 +684,7 @@ impl PlanRepo {
         body: Option<&str>,
     ) -> Result<Document<Task>> {
         let path = self.task_path(project, slug);
-        if !path.exists() {
+        if !self.store.exists(&path) {
             return Err(Error::TaskNotFound(slug.to_string()));
         }
 
@@ -718,20 +717,20 @@ impl PlanRepo {
     /// [`Error::Io`] if file operations fail, or
     /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
     pub fn promote_task(
-        &self,
+        &mut self,
         project: &str,
         task_slug: &str,
         roadmap_slug: &str,
     ) -> Result<Document<Roadmap>> {
         let task_path = self.task_path(project, task_slug);
-        if !task_path.exists() {
+        if !self.store.exists(&task_path) {
             return Err(Error::TaskNotFound(task_slug.to_string()));
         }
 
         let task_doc = self.load_task(project, task_slug)?;
 
-        let roadmap_dir = self.roadmap_dir(project, roadmap_slug);
-        if roadmap_dir.exists() {
+        let roadmap_file = self.roadmap_path(project, roadmap_slug);
+        if self.store.exists(&roadmap_file) {
             return Err(Error::DuplicateSlug(roadmap_slug.to_string()));
         }
 
@@ -770,7 +769,7 @@ impl PlanRepo {
         };
         self.write_phase(project, roadmap_slug, &phase_slug, &phase_doc)?;
 
-        fs::remove_file(task_path)?;
+        self.store.delete(&task_path)?;
 
         Ok(roadmap_doc)
     }
@@ -791,7 +790,7 @@ impl PlanRepo {
     /// [`Error::Io`] if reading or writing fails, or
     /// [`Error::FrontmatterParse`] if frontmatter is invalid.
     pub fn add_dependency(
-        &self,
+        &mut self,
         project: &str,
         slug: &str,
         depends_on: &str,
@@ -849,7 +848,7 @@ impl PlanRepo {
     /// [`Error::Io`] if reading or writing fails, or
     /// [`Error::FrontmatterParse`] if frontmatter is invalid.
     pub fn remove_dependency(
-        &self,
+        &mut self,
         project: &str,
         slug: &str,
         depends_on: &str,
@@ -915,7 +914,20 @@ impl PlanRepo {
         false
     }
 
-    /// Deletes a roadmap and its directory (including all phase files).
+    /// Recursively deletes all files under a directory path in the store.
+    fn delete_tree(&mut self, path: &RelPath) -> Result<()> {
+        let entries = self.store.list(path)?;
+        for entry in entries {
+            let child = path.join(&entry.name).expect("valid path");
+            match entry.kind {
+                DirEntryKind::File => self.store.delete(&child)?,
+                DirEntryKind::Dir => self.delete_tree(&child)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Deletes a roadmap and all its phase files.
     ///
     /// Also removes this roadmap from the dependency lists of any other
     /// roadmaps in the same project.
@@ -923,11 +935,11 @@ impl PlanRepo {
     /// # Errors
     ///
     /// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
-    /// [`Error::Io`] if directory removal or file writes fail, or
+    /// [`Error::Io`] if file removal or writes fail, or
     /// frontmatter errors if any roadmap file is malformed.
-    pub fn delete_roadmap(&self, project: &str, slug: &str) -> Result<()> {
-        let dir = self.roadmap_dir(project, slug);
-        if !dir.exists() {
+    pub fn delete_roadmap(&mut self, project: &str, slug: &str) -> Result<()> {
+        let roadmap_file = self.roadmap_path(project, slug);
+        if !self.store.exists(&roadmap_file) {
             return Err(Error::RoadmapNotFound(slug.to_string()));
         }
 
@@ -944,8 +956,9 @@ impl PlanRepo {
             }
         }
 
-        // Remove the roadmap directory and all its contents
-        fs::remove_dir_all(&dir)?;
+        // Remove all files in the roadmap directory
+        let dir = self.roadmap_dir(project, slug);
+        self.delete_tree(&dir)?;
         Ok(())
     }
 
@@ -960,7 +973,7 @@ impl PlanRepo {
     ///
     /// Returns [`Error::Io`] if directory reads or the final write fail,
     /// or frontmatter errors if any document file is malformed.
-    pub fn generate_index(&self) -> Result<()> {
+    pub fn generate_index(&mut self) -> Result<()> {
         let project_names = self.list_projects()?;
         let mut project_indices = Vec::new();
 
@@ -1002,39 +1015,38 @@ impl PlanRepo {
         }
 
         let content = display::format_index(&project_indices);
-        fs::write(self.index_path(), content)?;
+        let index_path = self.index_path();
+        self.store.write(&index_path, content)?;
         Ok(())
     }
 
     // -- Init --
 
-    /// Initializes a new plan repo at the configured root.
+    /// Initializes a new plan repo with the given store.
     ///
-    /// Creates `rdm.toml`, `projects/`, and `INDEX.md`.
+    /// Creates `rdm.toml` and `INDEX.md`.
     ///
     /// # Errors
     ///
     /// Returns [`Error::AlreadyInitialized`] if `rdm.toml` already exists, or
-    /// [`Error::Io`] if directory or file creation fails.
-    pub fn init(root: impl Into<PathBuf>) -> Result<Self> {
-        let root = root.into();
-        let repo = PlanRepo { root };
+    /// [`Error::Io`] if file creation fails.
+    pub fn init(store: S) -> Result<Self> {
+        let mut repo = PlanRepo { store };
 
-        if repo.config_path().exists() {
+        if repo.store.exists(&repo.config_path()) {
             return Err(Error::AlreadyInitialized);
         }
 
-        fs::create_dir_all(repo.root())?;
-
         let config = Config::default();
         let toml_str = config.to_toml()?;
-        fs::write(repo.config_path(), toml_str)?;
+        let config_path = repo.config_path();
+        repo.store.write(&config_path, toml_str)?;
 
-        fs::create_dir_all(repo.root().join("projects"))?;
-
-        fs::write(
-            repo.index_path(),
-            "# Plan Index\n\n<!-- This file is auto-generated by rdm. Do not edit by hand. -->\n",
+        let index_path = repo.index_path();
+        repo.store.write(
+            &index_path,
+            "# Plan Index\n\n<!-- This file is auto-generated by rdm. Do not edit by hand. -->\n"
+                .to_string(),
         )?;
 
         Ok(repo)
@@ -1045,43 +1057,47 @@ impl PlanRepo {
 mod tests {
     use super::*;
     use crate::model::*;
+    use crate::store::MemoryStore;
     use chrono::NaiveDate;
-    use tempfile::TempDir;
 
-    fn make_repo() -> (TempDir, PlanRepo) {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::open(dir.path());
-        (dir, repo)
+    fn make_repo() -> PlanRepo<MemoryStore> {
+        PlanRepo::new(MemoryStore::new())
     }
 
     // -- Path builder tests --
 
     #[test]
     fn roadmap_path_is_correct() {
-        let (_dir, repo) = make_repo();
+        let repo = make_repo();
         let path = repo.roadmap_path("fbm", "two-way-players");
-        assert!(path.ends_with("projects/fbm/roadmaps/two-way-players/roadmap.md"));
+        assert_eq!(
+            path.as_str(),
+            "projects/fbm/roadmaps/two-way-players/roadmap.md"
+        );
     }
 
     #[test]
     fn phase_path_is_correct() {
-        let (_dir, repo) = make_repo();
+        let repo = make_repo();
         let path = repo.phase_path("fbm", "two-way-players", "phase-1-core-valuation");
-        assert!(path.ends_with("projects/fbm/roadmaps/two-way-players/phase-1-core-valuation.md"));
+        assert_eq!(
+            path.as_str(),
+            "projects/fbm/roadmaps/two-way-players/phase-1-core-valuation.md"
+        );
     }
 
     #[test]
     fn task_path_is_correct() {
-        let (_dir, repo) = make_repo();
+        let repo = make_repo();
         let path = repo.task_path("fbm", "fix-barrel-nulls");
-        assert!(path.ends_with("projects/fbm/tasks/fix-barrel-nulls.md"));
+        assert_eq!(path.as_str(), "projects/fbm/tasks/fix-barrel-nulls.md");
     }
 
     // -- Write + Load round-trip tests --
 
     #[test]
     fn write_and_load_roadmap() {
-        let (_dir, repo) = make_repo();
+        let mut repo = make_repo();
         let doc = Document {
             frontmatter: Roadmap {
                 project: "fbm".to_string(),
@@ -1103,7 +1119,7 @@ mod tests {
 
     #[test]
     fn write_and_load_phase() {
-        let (_dir, repo) = make_repo();
+        let mut repo = make_repo();
         let doc = Document {
             frontmatter: Phase {
                 phase: 1,
@@ -1124,7 +1140,7 @@ mod tests {
 
     #[test]
     fn write_and_load_task() {
-        let (_dir, repo) = make_repo();
+        let mut repo = make_repo();
         let doc = Document {
             frontmatter: Task {
                 project: "fbm".to_string(),
@@ -1144,8 +1160,7 @@ mod tests {
 
     #[test]
     fn load_project_success() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "Fantasy Baseball Manager")
             .unwrap();
         let doc = repo.load_project("fbm").unwrap();
@@ -1155,22 +1170,21 @@ mod tests {
 
     #[test]
     fn load_project_not_found() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let repo = PlanRepo::init(MemoryStore::new()).unwrap();
         let result = repo.load_project("nonexistent");
         assert!(matches!(result, Err(Error::ProjectNotFound(ref s)) if s == "nonexistent"));
     }
 
     #[test]
     fn load_roadmap_not_found() {
-        let (_dir, repo) = make_repo();
+        let repo = make_repo();
         let result = repo.load_roadmap("fbm", "nonexistent");
         assert!(matches!(result, Err(Error::RoadmapNotFound(ref s)) if s == "nonexistent"));
     }
 
     #[test]
     fn load_task_not_found() {
-        let (_dir, repo) = make_repo();
+        let repo = make_repo();
         let result = repo.load_task("fbm", "does-not-exist");
         assert!(matches!(result, Err(Error::TaskNotFound(ref s)) if s == "does-not-exist"));
     }
@@ -1179,30 +1193,26 @@ mod tests {
 
     #[test]
     fn init_creates_structure() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let repo = PlanRepo::init(MemoryStore::new()).unwrap();
 
-        assert!(repo.config_path().exists());
-        assert!(repo.root().join("projects").is_dir());
-        assert!(repo.index_path().exists());
+        assert!(repo.store().exists(&repo.config_path()));
+        assert!(repo.store().exists(&repo.index_path()));
 
         // Config should be parseable
-        let toml_str = fs::read_to_string(repo.config_path()).unwrap();
+        let toml_str = repo.store().read(&repo.config_path()).unwrap();
         Config::from_toml(&toml_str).unwrap();
     }
 
     #[test]
     fn load_config_after_init() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let repo = PlanRepo::init(MemoryStore::new()).unwrap();
         let config = repo.load_config().unwrap();
         assert_eq!(config.default_project, None);
     }
 
     #[test]
     fn load_config_not_found() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::open(dir.path());
+        let repo = make_repo();
         let result = repo.load_config();
         assert!(matches!(result, Err(Error::ConfigNotFound)));
     }
@@ -1211,21 +1221,16 @@ mod tests {
 
     #[test]
     fn create_project_success() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "Fantasy Baseball Manager")
             .unwrap();
 
-        assert!(repo.project_path("fbm").is_dir());
-        assert!(repo.roadmaps_dir("fbm").is_dir());
-        assert!(repo.tasks_dir("fbm").is_dir());
-        assert!(repo.project_path("fbm").join("project.md").exists());
+        assert!(repo.store().exists(&repo.project_md_path("fbm")));
     }
 
     #[test]
     fn create_project_duplicate() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "Fantasy Baseball Manager")
             .unwrap();
         let result = repo.create_project("fbm", "Duplicate");
@@ -1234,15 +1239,13 @@ mod tests {
 
     #[test]
     fn list_projects_empty() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let repo = PlanRepo::init(MemoryStore::new()).unwrap();
         assert_eq!(repo.list_projects().unwrap(), Vec::<String>::new());
     }
 
     #[test]
     fn list_projects_sorted() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("zzz", "Last").unwrap();
         repo.create_project("aaa", "First").unwrap();
         repo.create_project("mmm", "Middle").unwrap();
@@ -1254,8 +1257,7 @@ mod tests {
 
     #[test]
     fn create_roadmap_success() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         let doc = repo
             .create_roadmap("fbm", "two-way", "Two-Way Players", None)
@@ -1272,8 +1274,7 @@ mod tests {
 
     #[test]
     fn create_roadmap_with_body() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         let body = "# Description\n\nA roadmap for two-way players.\n";
         let doc = repo
@@ -1287,16 +1288,14 @@ mod tests {
 
     #[test]
     fn create_roadmap_project_not_found() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         let result = repo.create_roadmap("nope", "slug", "Title", None);
         assert!(matches!(result, Err(Error::ProjectNotFound(_))));
     }
 
     #[test]
     fn create_roadmap_duplicate() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         repo.create_roadmap("fbm", "two-way", "Two-Way Players", None)
             .unwrap();
@@ -1306,8 +1305,7 @@ mod tests {
 
     #[test]
     fn update_roadmap_body_replaces_existing() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         repo.create_roadmap("fbm", "two-way", "Two-Way", Some("Original.\n"))
             .unwrap();
@@ -1322,8 +1320,7 @@ mod tests {
 
     #[test]
     fn update_roadmap_none_body_preserves_existing() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         repo.create_roadmap("fbm", "two-way", "Two-Way", Some("Keep this.\n"))
             .unwrap();
@@ -1333,8 +1330,7 @@ mod tests {
 
     #[test]
     fn update_roadmap_not_found() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         let result = repo.update_roadmap("fbm", "nope", Some("body"));
         assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
@@ -1342,8 +1338,7 @@ mod tests {
 
     #[test]
     fn list_roadmaps_sorted() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         repo.create_roadmap("fbm", "zzz-road", "Z", None).unwrap();
         repo.create_roadmap("fbm", "aaa-road", "A", None).unwrap();
@@ -1355,8 +1350,7 @@ mod tests {
 
     #[test]
     fn list_roadmaps_empty() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         let roadmaps = repo.list_roadmaps("fbm").unwrap();
         assert!(roadmaps.is_empty());
@@ -1364,26 +1358,24 @@ mod tests {
 
     #[test]
     fn list_roadmaps_project_not_found() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let repo = PlanRepo::init(MemoryStore::new()).unwrap();
         let result = repo.list_roadmaps("nope");
         assert!(matches!(result, Err(Error::ProjectNotFound(_))));
     }
 
     // -- Phase tests --
 
-    fn setup_with_roadmap() -> (TempDir, PlanRepo) {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+    fn setup_with_roadmap() -> PlanRepo<MemoryStore> {
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         repo.create_roadmap("fbm", "two-way", "Two-Way Players", None)
             .unwrap();
-        (dir, repo)
+        repo
     }
 
     #[test]
     fn create_phase_auto_number() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         let doc = repo
             .create_phase("fbm", "two-way", "core", "Core Valuation", None, None)
             .unwrap();
@@ -1405,7 +1397,7 @@ mod tests {
 
     #[test]
     fn create_phase_explicit_number() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         let doc = repo
             .create_phase("fbm", "two-way", "core", "Core", Some(5), None)
             .unwrap();
@@ -1418,7 +1410,7 @@ mod tests {
 
     #[test]
     fn create_phase_with_body() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         let body = "## Acceptance Criteria\n\n- [ ] Criterion one\n- [ ] Criterion two\n";
         let doc = repo
             .create_phase("fbm", "two-way", "core", "Core", None, Some(body))
@@ -1431,8 +1423,7 @@ mod tests {
 
     #[test]
     fn create_phase_roadmap_not_found() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
         let result = repo.create_phase("fbm", "nope", "s", "T", None, None);
         assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
@@ -1440,7 +1431,7 @@ mod tests {
 
     #[test]
     fn list_phases_sorted() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         repo.create_phase("fbm", "two-way", "core", "Core", Some(2), None)
             .unwrap();
         repo.create_phase("fbm", "two-way", "service", "Service", Some(1), None)
@@ -1453,7 +1444,7 @@ mod tests {
 
     #[test]
     fn update_phase_to_done_sets_completed() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         repo.create_phase("fbm", "two-way", "core", "Core", None, None)
             .unwrap();
         let updated = repo
@@ -1471,7 +1462,7 @@ mod tests {
 
     #[test]
     fn update_phase_from_done_clears_completed() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         repo.create_phase("fbm", "two-way", "core", "Core", None, None)
             .unwrap();
         repo.update_phase(
@@ -1497,7 +1488,7 @@ mod tests {
 
     #[test]
     fn update_phase_body_replaces_existing() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         repo.create_phase(
             "fbm",
             "two-way",
@@ -1524,7 +1515,7 @@ mod tests {
 
     #[test]
     fn update_phase_none_body_preserves_existing() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         repo.create_phase(
             "fbm",
             "two-way",
@@ -1548,7 +1539,7 @@ mod tests {
 
     #[test]
     fn update_phase_not_found() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         let result = repo.update_phase(
             "fbm",
             "two-way",
@@ -1561,7 +1552,7 @@ mod tests {
 
     #[test]
     fn resolve_by_number() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         repo.create_phase("fbm", "two-way", "core", "Core", Some(1), None)
             .unwrap();
         repo.create_phase("fbm", "two-way", "service", "Service", Some(2), None)
@@ -1572,7 +1563,7 @@ mod tests {
 
     #[test]
     fn resolve_by_stem_passthrough() {
-        let (_dir, repo) = setup_with_roadmap();
+        let repo = setup_with_roadmap();
         let stem = repo
             .resolve_phase_stem("fbm", "two-way", "phase-1-core")
             .unwrap();
@@ -1581,7 +1572,7 @@ mod tests {
 
     #[test]
     fn resolve_number_not_found() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         repo.create_phase("fbm", "two-way", "core", "Core", Some(1), None)
             .unwrap();
         let result = repo.resolve_phase_stem("fbm", "two-way", "99");
@@ -1592,19 +1583,19 @@ mod tests {
 
     #[test]
     fn remove_phase_deletes_file() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         repo.create_phase("fbm", "two-way", "core", "Core", None, None)
             .unwrap();
         let path = repo.phase_path("fbm", "two-way", "phase-1-core");
-        assert!(path.exists());
+        assert!(repo.store().exists(&path));
 
         repo.remove_phase("fbm", "two-way", "phase-1-core").unwrap();
-        assert!(!path.exists());
+        assert!(!repo.store().exists(&path));
     }
 
     #[test]
     fn remove_phase_updates_roadmap() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         repo.create_phase("fbm", "two-way", "core", "Core", None, None)
             .unwrap();
         repo.create_phase("fbm", "two-way", "service", "Service", None, None)
@@ -1618,23 +1609,22 @@ mod tests {
 
     #[test]
     fn remove_phase_not_found() {
-        let (_dir, repo) = setup_with_roadmap();
+        let mut repo = setup_with_roadmap();
         let result = repo.remove_phase("fbm", "two-way", "phase-99-nope");
         assert!(matches!(result, Err(Error::PhaseNotFound(ref s)) if s == "phase-99-nope"));
     }
 
     // -- Task tests --
 
-    fn setup_with_project() -> (TempDir, PlanRepo) {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+    fn setup_with_project() -> PlanRepo<MemoryStore> {
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.create_project("fbm", "FBM").unwrap();
-        (dir, repo)
+        repo
     }
 
     #[test]
     fn create_task_success() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         let doc = repo
             .create_task("fbm", "fix-bug", "Fix the bug", Priority::High, None, None)
             .unwrap();
@@ -1650,7 +1640,7 @@ mod tests {
 
     #[test]
     fn create_task_with_tags() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         let doc = repo
             .create_task(
                 "fbm",
@@ -1669,7 +1659,7 @@ mod tests {
 
     #[test]
     fn create_task_with_body() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         let body = "## Notes\n\nSome detailed task notes.\n";
         let doc = repo
             .create_task("fbm", "fix-bug", "Fix", Priority::High, None, Some(body))
@@ -1682,15 +1672,14 @@ mod tests {
 
     #[test]
     fn create_task_project_not_found() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         let result = repo.create_task("nope", "slug", "Title", Priority::Low, None, None);
         assert!(matches!(result, Err(Error::ProjectNotFound(_))));
     }
 
     #[test]
     fn create_task_duplicate() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
             .unwrap();
         let result = repo.create_task("fbm", "fix-bug", "Dup", Priority::Low, None, None);
@@ -1699,7 +1688,7 @@ mod tests {
 
     #[test]
     fn list_tasks_sorted() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_task("fbm", "zzz-task", "Z", Priority::Low, None, None)
             .unwrap();
         repo.create_task("fbm", "aaa-task", "A", Priority::High, None, None)
@@ -1712,22 +1701,21 @@ mod tests {
 
     #[test]
     fn list_tasks_empty() {
-        let (_dir, repo) = setup_with_project();
+        let repo = setup_with_project();
         let tasks = repo.list_tasks("fbm").unwrap();
         assert!(tasks.is_empty());
     }
 
     #[test]
     fn list_tasks_project_not_found() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let repo = PlanRepo::init(MemoryStore::new()).unwrap();
         let result = repo.list_tasks("nonexistent");
         assert!(matches!(result, Err(Error::ProjectNotFound(_))));
     }
 
     #[test]
     fn update_task_status() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
             .unwrap();
         let updated = repo
@@ -1741,7 +1729,7 @@ mod tests {
 
     #[test]
     fn update_task_priority() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
             .unwrap();
         let updated = repo
@@ -1752,7 +1740,7 @@ mod tests {
 
     #[test]
     fn update_task_tags() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
             .unwrap();
         let updated = repo
@@ -1770,7 +1758,7 @@ mod tests {
 
     #[test]
     fn update_task_body_replaces_existing() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_task(
             "fbm",
             "fix-bug",
@@ -1791,7 +1779,7 @@ mod tests {
 
     #[test]
     fn update_task_none_body_preserves_existing() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_task(
             "fbm",
             "fix-bug",
@@ -1809,14 +1797,14 @@ mod tests {
 
     #[test]
     fn update_task_not_found() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         let result = repo.update_task("fbm", "nope", Some(TaskStatus::Done), None, None, None);
         assert!(matches!(result, Err(Error::TaskNotFound(_))));
     }
 
     #[test]
     fn promote_task_to_roadmap() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         let task = Document {
             frontmatter: Task {
                 project: "fbm".to_string(),
@@ -1838,7 +1826,7 @@ mod tests {
         assert_eq!(roadmap_doc.frontmatter.phases, vec!["phase-1-big-feature"]);
 
         // Task file should be removed
-        assert!(!repo.task_path("fbm", "big-feature").exists());
+        assert!(!repo.store().exists(&repo.task_path("fbm", "big-feature")));
 
         // Roadmap should preserve task metadata in body
         let loaded_rm = repo.load_roadmap("fbm", "big-feature-rm").unwrap();
@@ -1856,14 +1844,14 @@ mod tests {
 
     #[test]
     fn promote_task_not_found() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         let result = repo.promote_task("fbm", "nope", "rm-slug");
         assert!(matches!(result, Err(Error::TaskNotFound(_))));
     }
 
     #[test]
     fn promote_task_duplicate_roadmap() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_task("fbm", "my-task", "Task", Priority::Low, None, None)
             .unwrap();
         repo.create_roadmap("fbm", "existing-rm", "Existing", None)
@@ -1876,7 +1864,7 @@ mod tests {
 
     #[test]
     fn add_dependency_success() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
 
@@ -1896,7 +1884,7 @@ mod tests {
 
     #[test]
     fn add_dependency_multiple() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
         repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
@@ -1911,7 +1899,7 @@ mod tests {
 
     #[test]
     fn add_dependency_duplicate_is_noop() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
 
@@ -1925,7 +1913,7 @@ mod tests {
 
     #[test]
     fn add_dependency_self_cycle() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
 
         let result = repo.add_dependency("fbm", "alpha", "alpha");
@@ -1934,7 +1922,7 @@ mod tests {
 
     #[test]
     fn add_dependency_direct_cycle() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
 
@@ -1945,7 +1933,7 @@ mod tests {
 
     #[test]
     fn add_dependency_transitive_cycle() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
         repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
@@ -1959,7 +1947,7 @@ mod tests {
 
     #[test]
     fn add_dependency_target_not_found() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
 
         let result = repo.add_dependency("fbm", "alpha", "nonexistent");
@@ -1968,7 +1956,7 @@ mod tests {
 
     #[test]
     fn add_dependency_source_not_found() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
 
         let result = repo.add_dependency("fbm", "nonexistent", "alpha");
@@ -1977,7 +1965,7 @@ mod tests {
 
     #[test]
     fn remove_dependency_success() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
 
@@ -1991,7 +1979,7 @@ mod tests {
 
     #[test]
     fn remove_dependency_not_present_is_noop() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
 
         let doc = repo
@@ -2002,7 +1990,7 @@ mod tests {
 
     #[test]
     fn remove_dependency_preserves_others() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
         repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
@@ -2015,7 +2003,7 @@ mod tests {
 
     #[test]
     fn dependency_graph_returns_entries() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
         repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
@@ -2035,7 +2023,7 @@ mod tests {
 
     #[test]
     fn dependency_graph_empty() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         let graph = repo.dependency_graph("fbm").unwrap();
         assert!(graph.is_empty());
@@ -2044,29 +2032,29 @@ mod tests {
     // -- Delete roadmap tests --
 
     #[test]
-    fn delete_roadmap_removes_directory() {
-        let (_dir, repo) = setup_with_project();
+    fn delete_roadmap_removes_files() {
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_phase("fbm", "alpha", "core", "Core", None, None)
             .unwrap();
 
-        let roadmap_dir = repo.roadmap_dir("fbm", "alpha");
-        assert!(roadmap_dir.exists());
+        let roadmap_file = repo.roadmap_path("fbm", "alpha");
+        assert!(repo.store().exists(&roadmap_file));
 
         repo.delete_roadmap("fbm", "alpha").unwrap();
-        assert!(!roadmap_dir.exists());
+        assert!(!repo.store().exists(&roadmap_file));
     }
 
     #[test]
     fn delete_roadmap_not_found() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         let result = repo.delete_roadmap("fbm", "nonexistent");
         assert!(matches!(result, Err(Error::RoadmapNotFound(ref s)) if s == "nonexistent"));
     }
 
     #[test]
     fn delete_roadmap_cleans_up_dependencies() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
         repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
@@ -2091,7 +2079,7 @@ mod tests {
 
     #[test]
     fn delete_roadmap_not_in_list() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
 
@@ -2107,9 +2095,8 @@ mod tests {
 
     #[test]
     fn init_already_initialized() {
-        let dir = TempDir::new().unwrap();
-        PlanRepo::init(dir.path()).unwrap();
-        let result = PlanRepo::init(dir.path());
+        let repo = PlanRepo::init(MemoryStore::new()).unwrap();
+        let result = PlanRepo::init(repo.store.clone());
         assert!(matches!(result, Err(Error::AlreadyInitialized)));
     }
 
@@ -2117,14 +2104,14 @@ mod tests {
 
     #[test]
     fn generate_index_creates_file() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha Roadmap", None)
             .unwrap();
         repo.create_phase("fbm", "alpha", "core", "Core", None, None)
             .unwrap();
         repo.generate_index().unwrap();
 
-        let content = fs::read_to_string(repo.index_path()).unwrap();
+        let content = repo.store().read(&repo.index_path()).unwrap();
         assert!(content.contains("# Plan Index"));
         assert!(content.contains("## Project: fbm"));
         assert!(content.contains("alpha"));
@@ -2133,27 +2120,26 @@ mod tests {
 
     #[test]
     fn generate_index_idempotent() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         repo.generate_index().unwrap();
-        let first = fs::read_to_string(repo.index_path()).unwrap();
+        let first = repo.store().read(&repo.index_path()).unwrap();
         repo.generate_index().unwrap();
-        let second = fs::read_to_string(repo.index_path()).unwrap();
+        let second = repo.store().read(&repo.index_path()).unwrap();
         assert_eq!(first, second);
     }
 
     #[test]
     fn generate_index_empty_repo() {
-        let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
         repo.generate_index().unwrap();
-        let content = fs::read_to_string(repo.index_path()).unwrap();
+        let content = repo.store().read(&repo.index_path()).unwrap();
         assert!(content.contains("# Plan Index"));
     }
 
     #[test]
     fn generate_index_task_priority_ordering() {
-        let (_dir, repo) = setup_with_project();
+        let mut repo = setup_with_project();
         repo.create_task("fbm", "low-task", "Low", Priority::Low, None, None)
             .unwrap();
         repo.create_task(
@@ -2169,7 +2155,7 @@ mod tests {
             .unwrap();
         repo.generate_index().unwrap();
 
-        let content = fs::read_to_string(repo.index_path()).unwrap();
+        let content = repo.store().read(&repo.index_path()).unwrap();
         let crit_pos = content.find("crit-task").unwrap();
         let high_pos = content.find("high-task").unwrap();
         let low_pos = content.find("low-task").unwrap();

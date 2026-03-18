@@ -279,7 +279,7 @@ pub async fn create_roadmap(
     payload: Result<axum::Json<CreateRoadmapRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let repo = state.plan_repo();
+    let mut repo = state.plan_repo();
     let doc = repo
         .create_roadmap(&project, &req.slug, &req.title, req.body.as_deref())
         .map_err(|e| error_response(e, format))?;
@@ -321,7 +321,7 @@ mod tests {
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(rdm_core::store::FsStore::new(dir.path())).unwrap();
         repo.create_project("demo", "Demo Project").unwrap();
         repo.create_roadmap("demo", "alpha", "Alpha Roadmap", None)
             .unwrap();

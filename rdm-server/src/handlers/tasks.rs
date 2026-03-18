@@ -234,7 +234,7 @@ pub async fn create_task(
     payload: Result<axum::Json<CreateTaskRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let repo = state.plan_repo();
+    let mut repo = state.plan_repo();
     let doc = repo
         .create_task(
             &project,
@@ -302,7 +302,7 @@ pub async fn update_task(
         None => None,
     };
 
-    let repo = state.plan_repo();
+    let mut repo = state.plan_repo();
     let doc = repo
         .update_task(
             &project,
@@ -348,7 +348,7 @@ pub async fn promote_task(
     payload: Result<axum::Json<PromoteTaskRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let repo = state.plan_repo();
+    let mut repo = state.plan_repo();
     repo.promote_task(&project, &task_slug, &req.roadmap_slug)
         .map_err(|e| error_response(e, format))?;
     repo.generate_index()
@@ -390,7 +390,7 @@ mod tests {
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(rdm_core::store::FsStore::new(dir.path())).unwrap();
         repo.create_project("demo", "Demo").unwrap();
         repo.create_task(
             "demo",

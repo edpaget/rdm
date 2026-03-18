@@ -118,7 +118,7 @@ pub async fn create_phase(
     payload: Result<axum::Json<CreatePhaseRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let repo = state.plan_repo();
+    let mut repo = state.plan_repo();
     let doc = repo
         .create_phase(
             &project,
@@ -183,7 +183,7 @@ pub async fn update_phase(
         )
         .transpose()?;
 
-    let repo = state.plan_repo();
+    let mut repo = state.plan_repo();
     let stem = repo
         .resolve_phase_stem(&project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
@@ -228,7 +228,7 @@ mod tests {
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let repo = PlanRepo::init(dir.path()).unwrap();
+        let mut repo = PlanRepo::init(rdm_core::store::FsStore::new(dir.path())).unwrap();
         repo.create_project("demo", "Demo").unwrap();
         repo.create_roadmap("demo", "alpha", "Alpha", None).unwrap();
         repo.create_phase("demo", "alpha", "first", "First", Some(1), None)

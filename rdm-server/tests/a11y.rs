@@ -2,13 +2,14 @@ use std::net::SocketAddr;
 
 use rdm_core::model::{PhaseStatus, Priority};
 use rdm_core::repo::PlanRepo;
+use rdm_core::store::FsStore;
 use reqwest::Client;
 use tempfile::TempDir;
 
 /// Spawn a real TCP server with seeded data for a11y tests.
 async fn spawn_server() -> (TempDir, SocketAddr, Client) {
     let dir = TempDir::new().unwrap();
-    let repo = PlanRepo::init(dir.path()).unwrap();
+    let mut repo = PlanRepo::init(FsStore::new(dir.path())).unwrap();
 
     repo.create_project("demo", "Demo Project").unwrap();
     repo.create_roadmap("demo", "api", "API Roadmap", None)

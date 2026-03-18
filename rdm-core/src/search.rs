@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::error::Result;
 use crate::model::{PhaseStatus, TaskStatus};
 use crate::repo::PlanRepo;
+use crate::store::Store;
 
 /// The kind of plan item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -79,7 +80,11 @@ pub struct SearchResult {
 ///
 /// Returns an error if the plan repo cannot be read (e.g., missing projects
 /// directory, unreadable files, or invalid frontmatter).
-pub fn search(repo: &PlanRepo, query: &str, filter: &SearchFilter) -> Result<Vec<SearchResult>> {
+pub fn search<S: Store>(
+    repo: &PlanRepo<S>,
+    query: &str,
+    filter: &SearchFilter,
+) -> Result<Vec<SearchResult>> {
     let mut results = Vec::new();
     let mut matcher = Matcher::new(Config::DEFAULT);
     let pattern = Pattern::new(
@@ -240,12 +245,11 @@ mod tests {
     use super::*;
     use crate::model::{PhaseStatus, Priority, TaskStatus};
     use crate::repo::PlanRepo;
-    use tempfile::TempDir;
+    use crate::store::MemoryStore;
 
     /// Sets up a plan repo with sample data for testing.
-    fn setup_test_repo() -> (TempDir, PlanRepo) {
-        let tmp = TempDir::new().unwrap();
-        let repo = PlanRepo::init(tmp.path()).unwrap();
+    fn setup_test_repo() -> PlanRepo<MemoryStore> {
+        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
 
         // Create a project
         repo.create_project("acme", "Acme Corp").unwrap();
@@ -320,12 +324,12 @@ mod tests {
         )
         .unwrap();
 
-        (tmp, repo)
+        repo
     }
 
     #[test]
     fn exact_title_match() {
-        let (_tmp, repo) = setup_test_repo();
+        let repo = setup_test_repo();
         let filter = SearchFilter::default();
         let results = search(&repo, "Fix Login Bug", &filter).unwrap();
         assert!(!results.is_empty());
@@ -334,7 +338,7 @@ mod tests {
 
     #[test]
     fn fuzzy_title_match() {
-        let (_tmp, repo) = setup_test_repo();
+        let repo = setup_test_repo();
         let filter = SearchFilter::default();
         let results = search(&repo, "fx logn bg", &filter).unwrap();
         assert!(
@@ -345,7 +349,7 @@ mod tests {
 
     #[test]
     fn body_content_match() {
-        let (_tmp, repo) = setup_test_repo();
+        let repo = setup_test_repo();
         let filter = SearchFilter::default();
         let results = search(&repo, "special characters", &filter).unwrap();
         assert!(
@@ -356,7 +360,7 @@ mod tests {
 
     #[test]
     fn no_results() {
-        let (_tmp, repo) = setup_test_repo();
+        let repo = setup_test_repo();
         let filter = SearchFilter::default();
         let results = search(&repo, "xyzzy-nonexistent-qqq", &filter).unwrap();
         assert!(results.is_empty(), "Expected no results, got: {results:?}");
@@ -364,7 +368,7 @@ mod tests {
 
     #[test]
     fn filter_by_kind_task() {
-        let (_tmp, repo) = setup_test_repo();
+        let repo = setup_test_repo();
         let filter = SearchFilter {
             kind: Some(ItemKind::Task),
             ..Default::default()
@@ -377,7 +381,7 @@ mod tests {
 
     #[test]
     fn filter_by_kind_phase() {
-        let (_tmp, repo) = setup_test_repo();
+        let repo = setup_test_repo();
         let filter = SearchFilter {
             kind: Some(ItemKind::Phase),
             ..Default::default()
@@ -391,7 +395,7 @@ mod tests {
 
     #[test]
     fn filter_by_status() {
-        let (_tmp, repo) = setup_test_repo();
+        let repo = setup_test_repo();
         let filter = SearchFilter {
             status: Some(ItemStatus::Task(TaskStatus::Done)),
             ..Default::default()
@@ -410,7 +414,7 @@ mod tests {
 
     #[test]
     fn filter_by_project() {
-        let (_tmp, repo) = setup_test_repo();
+        let mut repo = setup_test_repo();
 
         // Create a second project
         repo.create_project("other", "Other Project").unwrap();
@@ -436,7 +440,7 @@ mod tests {
 
     #[test]
     fn results_ranked_by_score() {
-        let (_tmp, repo) = setup_test_repo();
+        let repo = setup_test_repo();
         let filter = SearchFilter::default();
         // "search" appears in the title of "Add Search Feature" and in the body
         // The title match should score higher.
@@ -456,7 +460,7 @@ mod tests {
 
     #[test]
     fn searches_roadmaps() {
-        let (_tmp, repo) = setup_test_repo();
+        let repo = setup_test_repo();
         let filter = SearchFilter::default();
         let results = search(&repo, "Widget Launch", &filter).unwrap();
         assert!(
@@ -469,7 +473,7 @@ mod tests {
 
     #[test]
     fn phase_identifier_includes_roadmap() {
-        let (_tmp, repo) = setup_test_repo();
+        let repo = setup_test_repo();
         let filter = SearchFilter {
             kind: Some(ItemKind::Phase),
             ..Default::default()

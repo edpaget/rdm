@@ -10,6 +10,7 @@ use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
+use rdm_core::store::FsStore;
 
 #[derive(Parser)]
 #[command(name = "rdm", about = "Manage project roadmaps, phases, and tasks")]
@@ -432,7 +433,7 @@ fn main() {
 }
 
 /// Resolves project: --project flag > `RDM_PROJECT` env var > config default_project > error.
-fn resolve_project(flag: Option<String>, repo: &PlanRepo) -> Result<String> {
+fn resolve_project(flag: Option<String>, repo: &PlanRepo<FsStore>) -> Result<String> {
     if let Some(p) = flag {
         return Ok(p);
     }
@@ -554,7 +555,7 @@ async fn shutdown_signal() {
     eprintln!("\nShutting down gracefully...");
 }
 
-fn maybe_regenerate_index(repo: &PlanRepo, no_index: bool) -> Result<()> {
+fn maybe_regenerate_index(repo: &mut PlanRepo<FsStore>, no_index: bool) -> Result<()> {
     if !no_index {
         repo.generate_index()
             .context("failed to regenerate INDEX.md")?;
@@ -570,18 +571,18 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Init => {
-            PlanRepo::init(&root).context("failed to initialize plan repo")?;
+            PlanRepo::init(FsStore::new(&root)).context("failed to initialize plan repo")?;
             println!("Initialized plan repo at {}", root.display());
         }
 
         Command::Index => {
-            let repo = PlanRepo::open(&root);
+            let mut repo = PlanRepo::new(FsStore::new(&root));
             repo.generate_index().context("failed to generate index")?;
             println!("Generated INDEX.md");
         }
 
         Command::Project { command } => {
-            let repo = PlanRepo::open(&root);
+            let mut repo = PlanRepo::new(FsStore::new(&root));
             match command {
                 ProjectCommand::Create { name, title } => {
                     let title = title.as_deref().unwrap_or(&name);
@@ -589,7 +590,7 @@ fn run() -> Result<()> {
                         .create_project(&name, title)
                         .context("failed to create project")?;
                     println!("Created project '{}'", doc.frontmatter.name);
-                    maybe_regenerate_index(&repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index)?;
                 }
                 ProjectCommand::List => {
                     let projects = repo.list_projects().context("failed to list projects")?;
@@ -605,7 +606,7 @@ fn run() -> Result<()> {
         }
 
         Command::Roadmap { command } => {
-            let repo = PlanRepo::open(&root);
+            let mut repo = PlanRepo::new(FsStore::new(&root));
             match command {
                 RoadmapCommand::Create {
                     slug,
@@ -620,7 +621,7 @@ fn run() -> Result<()> {
                     repo.create_roadmap(&project, &slug, title, body.as_deref())
                         .context("failed to create roadmap")?;
                     println!("Created roadmap '{slug}' in project '{project}'");
-                    maybe_regenerate_index(&repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index)?;
                 }
                 RoadmapCommand::Show {
                     slug,
@@ -659,14 +660,14 @@ fn run() -> Result<()> {
                     repo.add_dependency(&project, &slug, &on)
                         .context("failed to add dependency")?;
                     println!("Added dependency: {slug} → {on}");
-                    maybe_regenerate_index(&repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index)?;
                 }
                 RoadmapCommand::Undepend { slug, on, project } => {
                     let project = resolve_project(project, &repo)?;
                     repo.remove_dependency(&project, &slug, &on)
                         .context("failed to remove dependency")?;
                     println!("Removed dependency: {slug} → {on}");
-                    maybe_regenerate_index(&repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index)?;
                 }
                 RoadmapCommand::Deps { project } => {
                     let project = resolve_project(project, &repo)?;
@@ -689,13 +690,13 @@ fn run() -> Result<()> {
                     repo.delete_roadmap(&project, &slug)
                         .context("failed to delete roadmap")?;
                     println!("Deleted roadmap '{slug}' from project '{project}'");
-                    maybe_regenerate_index(&repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index)?;
                 }
             }
         }
 
         Command::Phase { command } => {
-            let repo = PlanRepo::open(&root);
+            let mut repo = PlanRepo::new(FsStore::new(&root));
             match command {
                 PhaseCommand::Create {
                     slug,
@@ -714,7 +715,7 @@ fn run() -> Result<()> {
                         .context("failed to create phase")?;
                     let stem = format!("phase-{}-{slug}", doc.frontmatter.phase);
                     println!("Created phase '{stem}' in roadmap '{roadmap}'");
-                    maybe_regenerate_index(&repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index)?;
                 }
                 PhaseCommand::List { roadmap, project } => {
                     let project = resolve_project(project, &repo)?;
@@ -758,7 +759,7 @@ fn run() -> Result<()> {
                         .update_phase(&project, &roadmap, &stem, status, body.as_deref())
                         .context("failed to update phase")?;
                     println!("Updated '{stem}' → {}", doc.frontmatter.status);
-                    maybe_regenerate_index(&repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index)?;
                 }
                 PhaseCommand::Remove {
                     stem,
@@ -772,13 +773,13 @@ fn run() -> Result<()> {
                     repo.remove_phase(&project, &roadmap, &stem)
                         .context("failed to remove phase")?;
                     println!("Removed phase '{stem}' from roadmap '{roadmap}'");
-                    maybe_regenerate_index(&repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index)?;
                 }
             }
         }
 
         Command::Task { command } => {
-            let repo = PlanRepo::open(&root);
+            let mut repo = PlanRepo::new(FsStore::new(&root));
             match command {
                 TaskCommand::Create {
                     slug,
@@ -795,7 +796,7 @@ fn run() -> Result<()> {
                     repo.create_task(&project, &slug, title, priority, tags, body.as_deref())
                         .context("failed to create task")?;
                     println!("Created task '{slug}' in project '{project}'");
-                    maybe_regenerate_index(&repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index)?;
                 }
                 TaskCommand::Show {
                     slug,
@@ -829,7 +830,7 @@ fn run() -> Result<()> {
                         "Updated task '{slug}' → status: {}, priority: {}",
                         doc.frontmatter.status, doc.frontmatter.priority
                     );
-                    maybe_regenerate_index(&repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index)?;
                 }
                 TaskCommand::List {
                     project,
@@ -871,7 +872,7 @@ fn run() -> Result<()> {
             roadmap_slug,
             project,
         } => {
-            let repo = PlanRepo::open(&root);
+            let mut repo = PlanRepo::new(FsStore::new(&root));
             let project = resolve_project(project, &repo)?;
             let doc = repo
                 .promote_task(&project, &task_slug, &roadmap_slug)
@@ -880,7 +881,7 @@ fn run() -> Result<()> {
                 "Promoted task '{task_slug}' → roadmap '{}'",
                 doc.frontmatter.roadmap
             );
-            maybe_regenerate_index(&repo, cli.no_index)?;
+            maybe_regenerate_index(&mut repo, cli.no_index)?;
         }
 
         Command::AgentConfig {
@@ -944,7 +945,7 @@ fn run() -> Result<()> {
             limit,
             format,
         } => {
-            let repo = PlanRepo::open(&root);
+            let repo = PlanRepo::new(FsStore::new(&root));
             let item_status = status
                 .as_deref()
                 .map(|s| parse_status(s, kind))
@@ -998,7 +999,7 @@ fn run() -> Result<()> {
         }
 
         Command::List { project, all } => {
-            let repo = PlanRepo::open(&root);
+            let repo = PlanRepo::new(FsStore::new(&root));
             let projects = if all {
                 repo.list_projects().context("failed to list projects")?
             } else {
