@@ -30,6 +30,10 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::phases::get_phase).patch(handlers::phases::update_phase),
         )
         .route(
+            "/projects/{project}/search",
+            get(handlers::search::search_items),
+        )
+        .route(
             "/projects/{project}/tasks",
             get(handlers::tasks::list_tasks).post(handlers::tasks::create_task),
         )

@@ -39,12 +39,37 @@
       border-bottom: 2px solid #1a1a1a;
       padding: 1rem 0;
       margin-bottom: 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
     header .site-title {
       font-size: 1.25rem;
       font-weight: 700;
       text-decoration: none;
       color: #1a1a1a;
+    }
+    .header-search {
+      display: flex;
+      gap: 0.25rem;
+    }
+    .header-search input[type="search"] {
+      padding: 0.25rem 0.5rem;
+      border: 1px solid #ccc;
+      border-radius: 0.25rem;
+      font-size: 0.875rem;
+    }
+    .header-search button {
+      padding: 0.25rem 0.75rem;
+      border: 1px solid #0055aa;
+      background: #0055aa;
+      color: #fff;
+      border-radius: 0.25rem;
+      font-size: 0.875rem;
+      cursor: pointer;
+    }
+    .header-search button:hover {
+      background: #004499;
     }
     nav[aria-label="Breadcrumb"] ol {
       list-style: none;
@@ -134,6 +159,7 @@
   <div class="container">
     <header>
       <a href="/" class="site-title">rdm</a>
+      {% block header_search %}{% endblock %}
     </header>
     <nav aria-label="Breadcrumb">
       <ol>

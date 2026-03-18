@@ -8,5 +8,7 @@ pub mod projects;
 pub mod roadmaps;
 /// API root endpoint.
 pub mod root;
+/// Search endpoint.
+pub mod search;
 /// Task list and detail endpoints.
 pub mod tasks;

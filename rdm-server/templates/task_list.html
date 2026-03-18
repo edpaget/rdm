@@ -2,6 +2,14 @@
 
 {% block title %}Tasks - {{ project }} - rdm{% endblock %}
 
+{% block header_search %}
+<form class="header-search" action="/projects/{{ project }}/search" method="get">
+  <label for="header-search-q" class="skip-link">Search</label>
+  <input type="search" id="header-search-q" name="q" placeholder="Search..." aria-label="Search project">
+  <button type="submit">Search</button>
+</form>
+{% endblock %}
+
 {% block breadcrumb %}
 <li><a href="/">Home</a></li>
 <li><a href="/projects/{{ project }}/roadmaps">{{ project }}</a></li>

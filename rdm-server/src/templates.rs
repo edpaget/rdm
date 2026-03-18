@@ -180,6 +180,32 @@ pub struct TaskDetailPage {
     pub body_html: String,
 }
 
+/// A single search result row for the search results page.
+pub struct SearchResultRow {
+    /// Item kind ("roadmap", "phase", or "task").
+    pub kind: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Item identifier.
+    pub identifier: String,
+    /// Short text snippet.
+    pub snippet: String,
+    /// Link to the item detail page.
+    pub href: String,
+}
+
+/// Search results page.
+#[derive(Template)]
+#[template(path = "search_results.html")]
+pub struct SearchResultsPage {
+    /// Project name.
+    pub project: String,
+    /// The search query.
+    pub query: String,
+    /// Search results.
+    pub results: Vec<SearchResultRow>,
+}
+
 /// Error page with status code and message.
 #[derive(Template)]
 #[template(path = "error.html")]
