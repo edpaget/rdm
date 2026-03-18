@@ -1,0 +1,22 @@
+[licenses]
+confidence-threshold = 0.8
+
+allow = [
+    # Permissive licenses (always GPLv3-compatible)
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+
+    # Copyleft licenses compatible with GPLv3
+    "GPL-3.0",
+    "GPL-3.0-or-later",
+    "LGPL-2.1",
+    "LGPL-3.0",
+    "MPL-2.0",
+]
