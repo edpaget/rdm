@@ -116,83 +116,123 @@ cargo deny check        # license & advisory audit
 
 ## Dogfooding
 
-rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.toml` to `~/Projects/rdm-atlas-repo`). **You MUST use the rdm CLI to read and update plan data — never read or write the plan repo's markdown files directly.** There are no exceptions; all operations the plan requires are supported by the CLI.
+rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.toml` to `~/Projects/rdm-atlas-repo`).
 
-**Hard rule — no direct access to the plan repo.** Do NOT use the Read, Glob, Grep, or Bash tools to read, search, list, or modify any files under `~/Projects/rdm-atlas-repo` (or whatever `$RDM_ROOT` resolves to). Every interaction with plan data — reading, creating, updating, deleting — MUST go through `./target/debug/rdm`. If the CLI cannot do something you need, that is a bug to fix in rdm, not a reason to bypass it.
+### *** DEVELOPMENT BUILD REQUIREMENT ***
 
-### Reading the plan
-
-Before starting implementation work, build the CLI and check the current plan:
+**This is the rdm source repo. You MUST build from source and use the local binary — NEVER use a globally installed `rdm`.**
 
 ```bash
-cargo build                        # build the rdm binary
-./target/debug/rdm roadmap list --project rdm   # list all roadmaps with progress
-./target/debug/rdm roadmap show <slug> --project rdm   # see phases in a roadmap (includes body)
-./target/debug/rdm phase list --roadmap <slug> --project rdm  # list phases with numbers, titles, and statuses
-./target/debug/rdm phase show <stem-or-number> --roadmap <slug> --project rdm  # read phase details (includes body)
-./target/debug/rdm task list --project rdm       # list tasks
-./target/debug/rdm task show <slug> --project rdm # read task details (includes body)
+cargo build                    # ALWAYS run this before any rdm command
+./target/debug/rdm <command>   # ALWAYS use this path, not bare `rdm`
 ```
 
-Use this to understand what phase you're working on, what the acceptance criteria are, and what comes next. Phase and task commands accept either a file stem or a number for convenience. Use `--no-body` on any show command to suppress body content when you only need metadata.
+Every `rdm` command shown below MUST be run as `./target/debug/rdm`. If you type bare `rdm` you are using a stale installed version that does not reflect your working changes. **There are zero exceptions.**
 
-### Searching the plan
+If you modify any rdm source code, you MUST `cargo build` again before running any rdm commands.
+
+### Hard rule — no direct access to the plan repo
+
+Do NOT use the Read, Glob, Grep, or Bash tools to read, search, list, or modify any files under `~/Projects/rdm-atlas-repo` (or whatever `$RDM_ROOT` resolves to). Every interaction with plan data — reading, creating, updating, deleting — MUST go through `./target/debug/rdm`. If the CLI cannot do something you need, that is a bug to fix in rdm, not a reason to bypass it.
+
+### Discovering work
+
+```bash
+./target/debug/rdm roadmap list --project rdm       # list all roadmaps with progress
+./target/debug/rdm task list --project rdm           # list open/in-progress tasks
+./target/debug/rdm task list --project rdm --status all  # list all tasks including done
+```
+
+### Reading details
+
+```bash
+./target/debug/rdm roadmap show <slug> --project rdm          # show roadmap with phases and body
+./target/debug/rdm phase list --roadmap <slug> --project rdm  # list phases with numbers and statuses
+./target/debug/rdm phase show <stem-or-number> --roadmap <slug> --project rdm  # show phase details
+./target/debug/rdm task show <slug> --project rdm             # show task details
+```
+
+Add `--no-body` to any `show` command to suppress body content when you only need metadata.
+
+### Searching
 
 When looking for specific items by keyword, **prefer `rdm search` over listing and manually scanning results**. Search is fuzzy (typo-tolerant) and matches against both titles and body content.
 
 ```bash
-# Find items mentioning "auth"
-./target/debug/rdm search auth --project rdm
-
-# Find only tasks matching "index"
-./target/debug/rdm search index --type task --project rdm
-
-# Find in-progress items matching "search"
-./target/debug/rdm search search --status in-progress --project rdm
-
-# Get structured output for chaining with other tools
-./target/debug/rdm search auth --format json --project rdm
+./target/debug/rdm search auth --project rdm                              # find items mentioning "auth"
+./target/debug/rdm search index --type task --project rdm                 # find only tasks matching "index"
+./target/debug/rdm search search --status in-progress --project rdm       # find in-progress items
+./target/debug/rdm search auth --format json --project rdm                # structured output for chaining
 ```
 
 Available filters: `--type` (roadmap|phase|task), `--status` (e.g., done, in-progress, open), `--limit` (default 20), `--format` (text|json).
 
-### Updating the plan
+### Updating status
 
-After committing your work, update the plan to reflect progress. **Always pass `--no-edit`** to prevent the CLI from opening an interactive editor (which will hang in non-interactive agent contexts):
+Always pass `--no-edit` to prevent the CLI from opening an interactive editor (which will hang in non-interactive agent contexts).
 
 ```bash
-# Mark a phase as done
 ./target/debug/rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> --project rdm
-
-# Remove a phase that is no longer needed
-./target/debug/rdm phase remove <stem-or-number> --roadmap <slug> --project rdm
-
-# Mark a task as done
 ./target/debug/rdm task update <slug> --status done --no-edit --project rdm
 ```
 
-### Creating plan items
+### Creating items
 
-When you need to create new roadmaps, phases, or tasks, use `--body` for inline content and `--no-edit` to suppress the editor:
+Always pass `--no-edit` to suppress the interactive editor.
 
 ```bash
-# Create a task with body content
-./target/debug/rdm task create <slug> --title "Title" --body "Description here." --no-edit --project rdm
-
-# Create a phase with body content
-./target/debug/rdm phase create --title "Title" --number <n> --body "Details." --no-edit --roadmap <slug> --project rdm
-
-# Create a roadmap with body content
 ./target/debug/rdm roadmap create <slug> --title "Title" --body "Summary." --no-edit --project rdm
+./target/debug/rdm phase create <slug> --title "Title" --number <n> --body "Details." --no-edit --roadmap <slug> --project rdm
+./target/debug/rdm task create <slug> --title "Title" --body "Description." --no-edit --project rdm
 ```
 
-You can also pipe body content from stdin instead of using `--body`:
+For multiline content, pipe via stdin:
 
 ```bash
-echo "Long description..." | ./target/debug/rdm task create <slug> --title "Title" --no-edit --project rdm
+./target/debug/rdm task create <slug> --title "Title" --no-edit --project rdm <<'EOF'
+Multi-line body content goes here.
+
+It supports full Markdown.
+EOF
 ```
 
 Do **not** use `--body` and stdin together — the CLI will error.
+
+### Planning workflow
+
+#### Before starting work
+
+Run `./target/debug/rdm roadmap list --project rdm` to see all roadmaps and their progress. Check `./target/debug/rdm task list --project rdm` for open tasks. Identify what is in-progress and what comes next before writing any code.
+
+#### Implementing a roadmap phase
+
+1. Read the phase: `./target/debug/rdm phase show <stem-or-number> --roadmap <slug> --project rdm`
+2. Plan your approach and get approval before starting
+3. Implement the work described in the phase
+4. Mark it done: `./target/debug/rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> --project rdm`
+5. Check the next phase: `./target/debug/rdm phase list --roadmap <slug> --project rdm`
+
+#### Discovering bugs or side-work
+
+If you encounter a bug or unrelated improvement while working on a phase, do not fix it inline. Create a task instead:
+
+```bash
+./target/debug/rdm task create <slug> --title "Description of the issue" --body "Details." --no-edit --project rdm
+```
+
+#### When a task grows too complex
+
+If a task becomes large enough to warrant multiple phases, promote it to a roadmap:
+
+```bash
+./target/debug/rdm promote <task-slug> --roadmap-slug <new-roadmap-slug> --project rdm
+```
+
+### Status transitions
+
+**Phase statuses:** `not-started` → `in-progress` → `done` (or `blocked`). `done` is terminal.
+
+**Task statuses:** `open` → `in-progress` → `done` (or `wont-fix`). `done` and `wont-fix` are terminal.
 
 ## Setup
 
