@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-03-18
+
 ### Added
 
 - Homebrew tap (`edpaget/homebrew-rdm`) with auto-updated formula on release via cargo-dist
