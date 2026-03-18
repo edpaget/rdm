@@ -222,13 +222,13 @@ enum PhaseCommand {
         #[arg(long)]
         no_body: bool,
     },
-    /// Update a phase's status.
+    /// Update a phase's status and/or body.
     Update {
         /// Phase stem or number (e.g. phase-1-core or 1).
         stem: String,
-        /// New status.
+        /// New status (omit to preserve existing).
         #[arg(long)]
-        status: PhaseStatus,
+        status: Option<PhaseStatus>,
         /// Roadmap the phase belongs to.
         #[arg(long)]
         roadmap: String,
@@ -678,9 +678,10 @@ fn run() -> Result<()> {
                         .resolve_phase_stem(&project, &roadmap, &stem)
                         .context("failed to resolve phase")?;
                     let body = resolve_body(body, no_edit)?;
-                    repo.update_phase(&project, &roadmap, &stem, status, body.as_deref())
+                    let doc = repo
+                        .update_phase(&project, &roadmap, &stem, status, body.as_deref())
                         .context("failed to update phase")?;
-                    println!("Updated '{stem}' → {status}");
+                    println!("Updated '{stem}' → {}", doc.frontmatter.status);
                     maybe_regenerate_index(&repo, cli.no_index)?;
                 }
                 PhaseCommand::Remove {

@@ -491,8 +491,9 @@ impl PlanRepo {
 
     /// Updates a phase's status and/or body.
     ///
-    /// When status is `Done`, auto-sets `completed` to today.
-    /// When status is not `Done`, clears `completed`.
+    /// When `status` is `Some(Done)`, auto-sets `completed` to today.
+    /// When `status` is `Some` but not `Done`, clears `completed`.
+    /// When `status` is `None`, the existing status is preserved.
     /// When `body` is `Some`, replaces the existing body; `None` preserves it.
     ///
     /// # Errors
@@ -506,7 +507,7 @@ impl PlanRepo {
         project: &str,
         roadmap: &str,
         phase_stem: &str,
-        status: PhaseStatus,
+        status: Option<PhaseStatus>,
         body: Option<&str>,
     ) -> Result<Document<Phase>> {
         let path = self.phase_path(project, roadmap, phase_stem);
@@ -515,12 +516,14 @@ impl PlanRepo {
         }
 
         let mut doc = self.load_phase(project, roadmap, phase_stem)?;
-        doc.frontmatter.status = status;
-        doc.frontmatter.completed = if status == PhaseStatus::Done {
-            Some(Local::now().date_naive())
-        } else {
-            None
-        };
+        if let Some(status) = status {
+            doc.frontmatter.status = status;
+            doc.frontmatter.completed = if status == PhaseStatus::Done {
+                Some(Local::now().date_naive())
+            } else {
+                None
+            };
+        }
         if let Some(b) = body {
             doc.body = b.to_string();
         }
@@ -1280,7 +1283,13 @@ mod tests {
         repo.create_phase("fbm", "two-way", "core", "Core", None, None)
             .unwrap();
         let updated = repo
-            .update_phase("fbm", "two-way", "phase-1-core", PhaseStatus::Done, None)
+            .update_phase(
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                None,
+            )
             .unwrap();
         assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
         assert!(updated.frontmatter.completed.is_some());
@@ -1291,14 +1300,20 @@ mod tests {
         let (_dir, repo) = setup_with_roadmap();
         repo.create_phase("fbm", "two-way", "core", "Core", None, None)
             .unwrap();
-        repo.update_phase("fbm", "two-way", "phase-1-core", PhaseStatus::Done, None)
-            .unwrap();
+        repo.update_phase(
+            "fbm",
+            "two-way",
+            "phase-1-core",
+            Some(PhaseStatus::Done),
+            None,
+        )
+        .unwrap();
         let updated = repo
             .update_phase(
                 "fbm",
                 "two-way",
                 "phase-1-core",
-                PhaseStatus::InProgress,
+                Some(PhaseStatus::InProgress),
                 None,
             )
             .unwrap();
@@ -1323,7 +1338,7 @@ mod tests {
                 "fbm",
                 "two-way",
                 "phase-1-core",
-                PhaseStatus::InProgress,
+                Some(PhaseStatus::InProgress),
                 Some("Replaced body.\n"),
             )
             .unwrap();
@@ -1350,7 +1365,7 @@ mod tests {
                 "fbm",
                 "two-way",
                 "phase-1-core",
-                PhaseStatus::InProgress,
+                Some(PhaseStatus::InProgress),
                 None,
             )
             .unwrap();
@@ -1360,7 +1375,13 @@ mod tests {
     #[test]
     fn update_phase_not_found() {
         let (_dir, repo) = setup_with_roadmap();
-        let result = repo.update_phase("fbm", "two-way", "phase-99-nope", PhaseStatus::Done, None);
+        let result = repo.update_phase(
+            "fbm",
+            "two-way",
+            "phase-99-nope",
+            Some(PhaseStatus::Done),
+            None,
+        );
         assert!(matches!(result, Err(Error::PhaseNotFound(_))));
     }
 

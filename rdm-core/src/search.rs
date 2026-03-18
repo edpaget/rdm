@@ -285,7 +285,7 @@ mod tests {
             "acme",
             "widget-launch",
             "phase-1-design",
-            PhaseStatus::Done,
+            Some(PhaseStatus::Done),
             None,
         )
         .unwrap();

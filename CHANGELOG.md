@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `rdm phase update` no longer requires `--status`; omitting it preserves the existing status, enabling content-only updates
+- `PlanRepo::update_phase` now accepts `Option<PhaseStatus>` instead of `PhaseStatus`
+- Server `PATCH /phases/:phase` endpoint accepts optional `status` field in request body
+
 ### Added
 
 - `--skills` flag on `rdm agent-config claude` to generate Claude Code skill files (`rdm-roadmap`, `rdm-implement`, `rdm-tasks`) as reusable slash commands

@@ -246,8 +246,14 @@ mod tests {
             .unwrap();
         repo.create_phase("demo", "alpha", "second", "Second Phase", Some(2), None)
             .unwrap();
-        repo.update_phase("demo", "alpha", "phase-1-first", PhaseStatus::Done, None)
-            .unwrap();
+        repo.update_phase(
+            "demo",
+            "alpha",
+            "phase-1-first",
+            Some(PhaseStatus::Done),
+            None,
+        )
+        .unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };

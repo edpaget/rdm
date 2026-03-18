@@ -157,7 +157,7 @@ pub async fn create_phase(
 /// Request body for `PATCH /projects/:project/roadmaps/:roadmap/phases/:phase`.
 #[derive(Deserialize)]
 pub struct UpdatePhaseRequest {
-    status: String,
+    status: Option<String>,
     body: Option<String>,
 }
 
@@ -169,12 +169,16 @@ pub async fn update_phase(
     payload: Result<axum::Json<UpdatePhaseRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let status: PhaseStatus = req.status.parse().map_err(|_| {
-        validation_error(format!(
-            "invalid status: '{}' (expected not-started, in-progress, done, or blocked)",
-            req.status
-        ))
-    })?;
+    let status: Option<PhaseStatus> = req
+        .status
+        .map(|s| {
+            s.parse().map_err(|_| {
+                validation_error(format!(
+                    "invalid status: '{s}' (expected not-started, in-progress, done, or blocked)",
+                ))
+            })
+        })
+        .transpose()?;
 
     let repo = state.plan_repo();
     let stem = repo

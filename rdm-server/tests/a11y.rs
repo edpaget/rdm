@@ -24,8 +24,14 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
     .unwrap();
     repo.create_phase("demo", "api", "build", "Build Phase", Some(2), None)
         .unwrap();
-    repo.update_phase("demo", "api", "phase-1-design", PhaseStatus::Done, None)
-        .unwrap();
+    repo.update_phase(
+        "demo",
+        "api",
+        "phase-1-design",
+        Some(PhaseStatus::Done),
+        None,
+    )
+    .unwrap();
     repo.create_task(
         "demo",
         "bug-1",
