@@ -15,5 +15,7 @@ publish-jobs = ["homebrew"]
 targets = ["aarch64-apple-darwin"]
 # Where to host releases
 hosting = "github"
+# Pin Rust toolchain to match workspace MSRV
+rust-toolchain-version = "1.94.0"
 # Homebrew tap repository
 tap = "edpaget/homebrew-rdm"
