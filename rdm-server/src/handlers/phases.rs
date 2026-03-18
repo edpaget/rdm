@@ -171,13 +171,16 @@ pub async fn update_phase(
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let status: Option<PhaseStatus> = req
         .status
-        .map(|s| {
-            s.parse().map_err(|_| {
-                validation_error(format!(
-                    "invalid status: '{s}' (expected not-started, in-progress, done, or blocked)",
-                ))
-            })
-        })
+        .map(
+            #[allow(clippy::result_large_err)]
+            |s| {
+                s.parse().map_err(|_| {
+                    validation_error(format!(
+                        "invalid status: '{s}' (expected not-started, in-progress, done, or blocked)",
+                    ))
+                })
+            },
+        )
         .transpose()?;
 
     let repo = state.plan_repo();

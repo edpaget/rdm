@@ -93,60 +93,59 @@ pub fn search(repo: &PlanRepo, query: &str, filter: &SearchFilter) -> Result<Vec
     let projects = repo.list_projects()?;
 
     for project in &projects {
-        if let Some(ref fp) = filter.project {
-            if fp != project {
-                continue;
-            }
+        if let Some(ref fp) = filter.project
+            && fp != project
+        {
+            continue;
         }
 
         // Search roadmaps (roadmaps have no status; skip when a status filter is active)
         if (filter.kind.is_none() || filter.kind == Some(ItemKind::Roadmap))
             && filter.status.is_none()
+            && let Ok(roadmaps) = repo.list_roadmaps(project)
         {
-            if let Ok(roadmaps) = repo.list_roadmaps(project) {
-                for doc in &roadmaps {
-                    let rm = &doc.frontmatter;
-                    if let Some(result) = score_item(
-                        &pattern,
-                        &mut matcher,
-                        &mut buf,
-                        ItemKind::Roadmap,
-                        &rm.roadmap,
-                        project,
-                        &rm.title,
-                        &doc.body,
-                    ) {
-                        results.push(result);
-                    }
+            for doc in &roadmaps {
+                let rm = &doc.frontmatter;
+                if let Some(result) = score_item(
+                    &pattern,
+                    &mut matcher,
+                    &mut buf,
+                    ItemKind::Roadmap,
+                    &rm.roadmap,
+                    project,
+                    &rm.title,
+                    &doc.body,
+                ) {
+                    results.push(result);
                 }
             }
         }
 
         // Search phases
-        if filter.kind.is_none() || filter.kind == Some(ItemKind::Phase) {
-            if let Ok(roadmaps) = repo.list_roadmaps(project) {
-                for roadmap_doc in &roadmaps {
-                    let roadmap_slug = &roadmap_doc.frontmatter.roadmap;
-                    if let Ok(phases) = repo.list_phases(project, roadmap_slug) {
-                        for (stem, phase_doc) in &phases {
-                            if let Some(ref fs) = filter.status {
-                                if *fs != ItemStatus::Phase(phase_doc.frontmatter.status) {
-                                    continue;
-                                }
-                            }
-                            let identifier = format!("{roadmap_slug}/{stem}");
-                            if let Some(result) = score_item(
-                                &pattern,
-                                &mut matcher,
-                                &mut buf,
-                                ItemKind::Phase,
-                                &identifier,
-                                project,
-                                &phase_doc.frontmatter.title,
-                                &phase_doc.body,
-                            ) {
-                                results.push(result);
-                            }
+        if (filter.kind.is_none() || filter.kind == Some(ItemKind::Phase))
+            && let Ok(roadmaps) = repo.list_roadmaps(project)
+        {
+            for roadmap_doc in &roadmaps {
+                let roadmap_slug = &roadmap_doc.frontmatter.roadmap;
+                if let Ok(phases) = repo.list_phases(project, roadmap_slug) {
+                    for (stem, phase_doc) in &phases {
+                        if let Some(ref fs) = filter.status
+                            && *fs != ItemStatus::Phase(phase_doc.frontmatter.status)
+                        {
+                            continue;
+                        }
+                        let identifier = format!("{roadmap_slug}/{stem}");
+                        if let Some(result) = score_item(
+                            &pattern,
+                            &mut matcher,
+                            &mut buf,
+                            ItemKind::Phase,
+                            &identifier,
+                            project,
+                            &phase_doc.frontmatter.title,
+                            &phase_doc.body,
+                        ) {
+                            results.push(result);
                         }
                     }
                 }
@@ -154,26 +153,26 @@ pub fn search(repo: &PlanRepo, query: &str, filter: &SearchFilter) -> Result<Vec
         }
 
         // Search tasks
-        if filter.kind.is_none() || filter.kind == Some(ItemKind::Task) {
-            if let Ok(tasks) = repo.list_tasks(project) {
-                for (slug, task_doc) in &tasks {
-                    if let Some(ref fs) = filter.status {
-                        if *fs != ItemStatus::Task(task_doc.frontmatter.status) {
-                            continue;
-                        }
-                    }
-                    if let Some(result) = score_item(
-                        &pattern,
-                        &mut matcher,
-                        &mut buf,
-                        ItemKind::Task,
-                        slug,
-                        project,
-                        &task_doc.frontmatter.title,
-                        &task_doc.body,
-                    ) {
-                        results.push(result);
-                    }
+        if (filter.kind.is_none() || filter.kind == Some(ItemKind::Task))
+            && let Ok(tasks) = repo.list_tasks(project)
+        {
+            for (slug, task_doc) in &tasks {
+                if let Some(ref fs) = filter.status
+                    && *fs != ItemStatus::Task(task_doc.frontmatter.status)
+                {
+                    continue;
+                }
+                if let Some(result) = score_item(
+                    &pattern,
+                    &mut matcher,
+                    &mut buf,
+                    ItemKind::Task,
+                    slug,
+                    project,
+                    &task_doc.frontmatter.title,
+                    &task_doc.body,
+                ) {
+                    results.push(result);
                 }
             }
         }

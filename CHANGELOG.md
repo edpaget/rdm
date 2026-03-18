@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- cargo-dist configuration for automated binary releases (`rdm` binary for `aarch64-apple-darwin`)
+- GitHub Actions release workflow (`.github/workflows/release.yml`) triggered by version tags
+- `[profile.dist]` with thin LTO for optimized release builds
+
+### Changed
+
+- Workspace version centralized in root `Cargo.toml`; all crates now use `version.workspace = true`
+- Rust version bumped from 1.87 to 1.94
+- `repository` field added to workspace package metadata
+
 ### Changed
 
 - `rdm phase update` no longer requires `--status`; omitting it preserves the existing status, enabling content-only updates

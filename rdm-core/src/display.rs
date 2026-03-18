@@ -80,10 +80,10 @@ pub fn format_index(projects: &[ProjectIndex]) -> String {
             if has_deps {
                 out.push_str("\n### Dependency Graph\n\n");
                 for rm in &project.roadmaps {
-                    if let Some(ref deps) = rm.dependencies {
-                        if !deps.is_empty() {
-                            out.push_str(&format!("- **{}** → {}\n", rm.slug, deps.join(", ")));
-                        }
+                    if let Some(ref deps) = rm.dependencies
+                        && !deps.is_empty()
+                    {
+                        out.push_str(&format!("- **{}** → {}\n", rm.slug, deps.join(", ")));
                     }
                 }
             }

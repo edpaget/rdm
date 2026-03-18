@@ -3,9 +3,11 @@ members = ["rdm-core", "rdm-cli", "rdm-server"]
 resolver = "2"
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.94"
 license = "GPL-3.0-or-later"
+repository = "https://github.com/edpaget/rdm"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -27,3 +29,8 @@ nucleo-matcher = "0.3"
 askama = "0.13"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

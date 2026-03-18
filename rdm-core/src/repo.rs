@@ -881,10 +881,10 @@ impl PlanRepo {
         let roadmaps = self.list_roadmaps(project)?;
         let mut graph = Vec::new();
         for rm in roadmaps {
-            if let Some(deps) = rm.frontmatter.dependencies {
-                if !deps.is_empty() {
-                    graph.push((rm.frontmatter.roadmap, deps));
-                }
+            if let Some(deps) = rm.frontmatter.dependencies
+                && !deps.is_empty()
+            {
+                graph.push((rm.frontmatter.roadmap, deps));
             }
         }
         Ok(graph)
@@ -937,10 +937,10 @@ impl PlanRepo {
             if rm.frontmatter.roadmap == slug {
                 continue;
             }
-            if let Some(ref deps) = rm.frontmatter.dependencies {
-                if deps.contains(&slug.to_string()) {
-                    self.remove_dependency(project, &rm.frontmatter.roadmap, slug)?;
-                }
+            if let Some(ref deps) = rm.frontmatter.dependencies
+                && deps.contains(&slug.to_string())
+            {
+                self.remove_dependency(project, &rm.frontmatter.roadmap, slug)?;
             }
         }
 

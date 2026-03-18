@@ -94,15 +94,15 @@ pub async fn list_tasks(
     let filtered: Vec<_> = tasks
         .iter()
         .filter(|(_, doc)| {
-            if let Some(ref sf) = status_filter {
-                if doc.frontmatter.status != *sf {
-                    return false;
-                }
+            if let Some(ref sf) = status_filter
+                && doc.frontmatter.status != *sf
+            {
+                return false;
             }
-            if let Some(ref pf) = priority_filter {
-                if doc.frontmatter.priority != *pf {
-                    return false;
-                }
+            if let Some(ref pf) = priority_filter
+                && doc.frontmatter.priority != *pf
+            {
+                return false;
             }
             if let Some(ref tag) = filters.tag {
                 let has_tag = doc

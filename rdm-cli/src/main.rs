@@ -439,10 +439,10 @@ fn resolve_project(flag: Option<String>, repo: &PlanRepo) -> Result<String> {
     if let Ok(p) = std::env::var("RDM_PROJECT") {
         return Ok(p);
     }
-    if let Ok(config) = repo.load_config() {
-        if let Some(p) = config.default_project {
-            return Ok(p);
-        }
+    if let Ok(config) = repo.load_config()
+        && let Some(p) = config.default_project
+    {
+        return Ok(p);
     }
     bail!(
         "no project specified — use --project, set RDM_PROJECT, or set default_project in rdm.toml"

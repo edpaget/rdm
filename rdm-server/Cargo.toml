@@ -1,10 +1,15 @@
 [package]
 name = "rdm-server"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "REST API server for rdm"
+publish = false
+
+[package.metadata.dist]
+dist = false
 
 [[bin]]
 name = "rdm-server"
