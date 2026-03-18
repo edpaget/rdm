@@ -915,6 +915,40 @@ impl PlanRepo {
         false
     }
 
+    /// Deletes a roadmap and its directory (including all phase files).
+    ///
+    /// Also removes this roadmap from the dependency lists of any other
+    /// roadmaps in the same project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
+    /// [`Error::Io`] if directory removal or file writes fail, or
+    /// frontmatter errors if any roadmap file is malformed.
+    pub fn delete_roadmap(&self, project: &str, slug: &str) -> Result<()> {
+        let dir = self.roadmap_dir(project, slug);
+        if !dir.exists() {
+            return Err(Error::RoadmapNotFound(slug.to_string()));
+        }
+
+        // Remove this slug from dependency lists of all other roadmaps
+        let roadmaps = self.list_roadmaps(project)?;
+        for rm in roadmaps {
+            if rm.frontmatter.roadmap == slug {
+                continue;
+            }
+            if let Some(ref deps) = rm.frontmatter.dependencies {
+                if deps.contains(&slug.to_string()) {
+                    self.remove_dependency(project, &rm.frontmatter.roadmap, slug)?;
+                }
+            }
+        }
+
+        // Remove the roadmap directory and all its contents
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
     // -- Index generation --
 
     /// Generates `INDEX.md` from the current repo state.
@@ -2005,6 +2039,70 @@ mod tests {
         repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
         let graph = repo.dependency_graph("fbm").unwrap();
         assert!(graph.is_empty());
+    }
+
+    // -- Delete roadmap tests --
+
+    #[test]
+    fn delete_roadmap_removes_directory() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_phase("fbm", "alpha", "core", "Core", None, None)
+            .unwrap();
+
+        let roadmap_dir = repo.roadmap_dir("fbm", "alpha");
+        assert!(roadmap_dir.exists());
+
+        repo.delete_roadmap("fbm", "alpha").unwrap();
+        assert!(!roadmap_dir.exists());
+    }
+
+    #[test]
+    fn delete_roadmap_not_found() {
+        let (_dir, repo) = setup_with_project();
+        let result = repo.delete_roadmap("fbm", "nonexistent");
+        assert!(matches!(result, Err(Error::RoadmapNotFound(ref s)) if s == "nonexistent"));
+    }
+
+    #[test]
+    fn delete_roadmap_cleans_up_dependencies() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+        repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
+
+        repo.add_dependency("fbm", "beta", "alpha").unwrap();
+        repo.add_dependency("fbm", "gamma", "alpha").unwrap();
+        repo.add_dependency("fbm", "gamma", "beta").unwrap();
+
+        repo.delete_roadmap("fbm", "alpha").unwrap();
+
+        // beta should have no dependencies left
+        let beta = repo.load_roadmap("fbm", "beta").unwrap();
+        assert_eq!(beta.frontmatter.dependencies, None);
+
+        // gamma should still depend on beta but not alpha
+        let gamma = repo.load_roadmap("fbm", "gamma").unwrap();
+        assert_eq!(
+            gamma.frontmatter.dependencies,
+            Some(vec!["beta".to_string()])
+        );
+    }
+
+    #[test]
+    fn delete_roadmap_not_in_list() {
+        let (_dir, repo) = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+
+        repo.delete_roadmap("fbm", "alpha").unwrap();
+
+        let roadmaps = repo.list_roadmaps("fbm").unwrap();
+        let slugs: Vec<_> = roadmaps
+            .iter()
+            .map(|r| r.frontmatter.roadmap.as_str())
+            .collect();
+        assert_eq!(slugs, vec!["beta"]);
     }
 
     #[test]

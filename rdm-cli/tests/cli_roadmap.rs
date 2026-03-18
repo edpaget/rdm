@@ -577,3 +577,146 @@ fn roadmap_deps_empty() {
         .success()
         .stdout(predicate::str::contains("No dependencies found."));
 }
+
+// -- Delete tests --
+
+#[test]
+fn roadmap_delete_with_force() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "alpha",
+            "--title",
+            "Alpha",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // Create a phase so we verify the whole directory is removed
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--title",
+            "Core",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "delete", "alpha", "--force", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted roadmap 'alpha'"));
+
+    // Verify it's gone from listing
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "list", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No roadmaps found."));
+}
+
+#[test]
+fn roadmap_delete_without_force_fails() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "alpha",
+            "--title",
+            "Alpha",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "delete", "alpha", "--project", "fbm"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force"));
+}
+
+#[test]
+fn roadmap_delete_nonexistent() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "delete", "nope", "--force", "--project", "fbm"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("roadmap not found"));
+}
+
+#[test]
+fn roadmap_delete_cleans_up_dependencies() {
+    let dir = TempDir::new().unwrap();
+    init_with_two_roadmaps(&dir);
+
+    // beta depends on alpha
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "depend",
+            "beta",
+            "--on",
+            "alpha",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    // Delete alpha
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "delete", "alpha", "--force", "--project", "fbm"])
+        .assert()
+        .success();
+
+    // Verify beta's deps are cleaned up
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "deps", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No dependencies found."));
+}

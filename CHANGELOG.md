@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm roadmap delete <slug> --force` command to delete a roadmap and all its phases, with automatic cleanup of dependency references from other roadmaps
+- `PlanRepo::delete_roadmap` method in rdm-core for programmatic roadmap deletion
 - `rdm-implement` and `rdm-tasks` skills now use plan mode (`EnterPlanMode`/`ExitPlanMode`) for a deliberate plan-then-execute workflow with explicit user approval before finalizing
 - Generated skills from `rdm agent-config --skills` include the same plan mode workflow
 - `rdm roadmap depend <slug> --on <other>` to add a dependency between roadmaps

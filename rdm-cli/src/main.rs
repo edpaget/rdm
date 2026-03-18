@@ -200,6 +200,17 @@ enum RoadmapCommand {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Delete a roadmap and all its phases.
+    Delete {
+        /// Roadmap slug to delete.
+        slug: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Confirm deletion (required).
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -663,6 +674,22 @@ fn run() -> Result<()> {
                         .dependency_graph(&project)
                         .context("failed to get dependency graph")?;
                     print!("{}", display::format_dependency_graph(&graph));
+                }
+                RoadmapCommand::Delete {
+                    slug,
+                    project,
+                    force,
+                } => {
+                    if !force {
+                        bail!(
+                            "deleting a roadmap is irreversible — pass --force to confirm deletion of '{slug}'"
+                        );
+                    }
+                    let project = resolve_project(project, &repo)?;
+                    repo.delete_roadmap(&project, &slug)
+                        .context("failed to delete roadmap")?;
+                    println!("Deleted roadmap '{slug}' from project '{project}'");
+                    maybe_regenerate_index(&repo, cli.no_index)?;
                 }
             }
         }
