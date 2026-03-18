@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Bump `headers-accept` from 0.1 to 0.3
+- Bump `mediatype` from 0.19 to 0.21
+
 ## [0.1.1] - 2026-03-18
 
 ### Added

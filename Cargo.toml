@@ -22,8 +22,8 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
-headers-accept = "0.1"
-mediatype = "0.19"
+headers-accept = "0.3"
+mediatype = "0.21"
 tempfile = "3"
 is-terminal = "0.4"
 nucleo-matcher = "0.3"
