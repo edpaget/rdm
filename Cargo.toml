@@ -32,7 +32,7 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 tabled = "0.20"
 terminal_size = "0.4"
-rmcp = { version = "0.16", features = ["server", "transport-io"] }
+rmcp = { version = "0.16", features = ["server", "transport-io", "macros"] }
 
 # The profile that 'dist' will build with
 [profile.dist]

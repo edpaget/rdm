@@ -1,28 +1,324 @@
 use std::path::PathBuf;
 
+use rdm_core::display;
+use rdm_core::repo::PlanRepo;
+use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
+use rdm_store_fs::FsStore;
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::Content;
 use rmcp::{
-    ServerHandler, ServiceExt,
-    model::{Implementation, ProtocolVersion, ServerCapabilities, ServerInfo},
+    ErrorData, ServerHandler, ServiceExt,
+    model::{CallToolResult, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo},
+    schemars, serde,
     transport::io::stdio,
 };
+use serde::Deserialize;
+
+/// Converts an `rdm_core::error::Error` into an MCP `CallToolResult` with `is_error` set.
+fn core_err(e: rdm_core::error::Error) -> Result<CallToolResult, ErrorData> {
+    Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
+}
+
+/// Returns a successful `CallToolResult` containing text.
+fn ok_text(text: String) -> Result<CallToolResult, ErrorData> {
+    Ok(CallToolResult::success(vec![Content::text(text)]))
+}
+
+/// Returns an error `CallToolResult` containing a message.
+fn err_text(msg: String) -> Result<CallToolResult, ErrorData> {
+    Ok(CallToolResult::error(vec![Content::text(msg)]))
+}
+
+// ---------- Parameter structs ----------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ProjectParams {
+    /// The project name.
+    project: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RoadmapParams {
+    /// The project name.
+    project: String,
+    /// The roadmap slug.
+    roadmap: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct PhaseParams {
+    /// The project name.
+    project: String,
+    /// The roadmap slug.
+    roadmap: String,
+    /// The phase stem or number.
+    phase: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct TaskShowParams {
+    /// The project name.
+    project: String,
+    /// The task slug.
+    task: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct TaskListParams {
+    /// The project name.
+    project: String,
+    /// Filter by status (e.g. "open", "in-progress", "done", "wont-fix", or "all"). Omit for default (open + in-progress).
+    status: Option<String>,
+    /// Filter by priority (e.g. "low", "medium", "high", "critical").
+    priority: Option<String>,
+    /// Filter by tag.
+    tag: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SearchParams {
+    /// The search query string.
+    query: String,
+    /// Restrict to a specific project.
+    project: Option<String>,
+    /// Restrict to a specific item kind: "roadmap", "phase", or "task".
+    kind: Option<String>,
+    /// Filter by status (e.g. "open", "in-progress", "done").
+    status: Option<String>,
+    /// Maximum number of results to return (default 20).
+    limit: Option<usize>,
+}
+
+// ---------- Server ----------
 
 /// MCP server backed by an rdm plan repo.
 struct RdmMcpServer {
-    #[allow(dead_code)]
-    plan_root: PathBuf,
+    repo: PlanRepo<FsStore>,
+    tool_router: ToolRouter<Self>,
 }
 
 impl RdmMcpServer {
     fn new(plan_root: PathBuf) -> Self {
-        Self { plan_root }
+        Self {
+            repo: PlanRepo::new(FsStore::new(plan_root)),
+            tool_router: Self::tool_router(),
+        }
     }
 }
 
+#[rmcp::tool_router]
+impl RdmMcpServer {
+    /// List all projects in the plan repo.
+    #[rmcp::tool(description = "List all projects in the plan repo")]
+    async fn rdm_project_list(&self) -> Result<CallToolResult, ErrorData> {
+        match self.repo.list_projects() {
+            Ok(projects) => ok_text(projects.join("\n")),
+            Err(e) => core_err(e),
+        }
+    }
+
+    /// List all roadmaps in a project with phase progress.
+    #[rmcp::tool(description = "List all roadmaps in a project with phase progress")]
+    async fn rdm_roadmap_list(
+        &self,
+        Parameters(params): Parameters<ProjectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let roadmaps = match self.repo.list_roadmaps(&params.project) {
+            Ok(r) => r,
+            Err(e) => return core_err(e),
+        };
+
+        let mut entries = Vec::new();
+        for roadmap_doc in roadmaps {
+            let slug = &roadmap_doc.frontmatter.roadmap;
+            let phases = match self.repo.list_phases(&params.project, slug) {
+                Ok(p) => p,
+                Err(e) => return core_err(e),
+            };
+            entries.push((roadmap_doc, phases));
+        }
+
+        ok_text(display::format_roadmap_list(&entries))
+    }
+
+    /// Show details of a specific roadmap including its phases.
+    #[rmcp::tool(description = "Show details of a specific roadmap including its phases")]
+    async fn rdm_roadmap_show(
+        &self,
+        Parameters(params): Parameters<RoadmapParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let doc = match self.repo.load_roadmap(&params.project, &params.roadmap) {
+            Ok(d) => d,
+            Err(e) => return core_err(e),
+        };
+        let phases = match self.repo.list_phases(&params.project, &params.roadmap) {
+            Ok(p) => p,
+            Err(e) => return core_err(e),
+        };
+
+        ok_text(display::format_roadmap_summary(&doc, &phases))
+    }
+
+    /// List all phases in a roadmap.
+    #[rmcp::tool(description = "List all phases in a roadmap")]
+    async fn rdm_phase_list(
+        &self,
+        Parameters(params): Parameters<RoadmapParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self.repo.list_phases(&params.project, &params.roadmap) {
+            Ok(phases) => ok_text(display::format_phase_list(&phases)),
+            Err(e) => core_err(e),
+        }
+    }
+
+    /// Show details of a specific phase.
+    #[rmcp::tool(description = "Show details of a specific phase in a roadmap")]
+    async fn rdm_phase_show(
+        &self,
+        Parameters(params): Parameters<PhaseParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let stem =
+            match self
+                .repo
+                .resolve_phase_stem(&params.project, &params.roadmap, &params.phase)
+            {
+                Ok(s) => s,
+                Err(e) => return core_err(e),
+            };
+        let doc = match self
+            .repo
+            .load_phase(&params.project, &params.roadmap, &stem)
+        {
+            Ok(d) => d,
+            Err(e) => return core_err(e),
+        };
+
+        ok_text(display::format_phase_detail(&stem, &doc))
+    }
+
+    /// List tasks in a project with optional filters.
+    #[rmcp::tool(
+        description = "List tasks in a project, optionally filtered by status, priority, or tag"
+    )]
+    async fn rdm_task_list(
+        &self,
+        Parameters(params): Parameters<TaskListParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let all_tasks = match self.repo.list_tasks(&params.project) {
+            Ok(t) => t,
+            Err(e) => return core_err(e),
+        };
+
+        let filtered: Vec<_> = all_tasks
+            .into_iter()
+            .filter(|(_slug, doc)| {
+                let status_ok = match &params.status {
+                    Some(s) if s == "all" => true,
+                    Some(s) => doc.frontmatter.status.to_string() == *s,
+                    None => matches!(
+                        doc.frontmatter.status,
+                        rdm_core::model::TaskStatus::Open | rdm_core::model::TaskStatus::InProgress
+                    ),
+                };
+                let priority_ok = match &params.priority {
+                    Some(p) => doc.frontmatter.priority.to_string() == *p,
+                    None => true,
+                };
+                let tag_ok = match &params.tag {
+                    Some(tag) => doc
+                        .frontmatter
+                        .tags
+                        .as_ref()
+                        .is_some_and(|tags| tags.contains(tag)),
+                    None => true,
+                };
+                status_ok && priority_ok && tag_ok
+            })
+            .collect();
+
+        ok_text(display::format_task_list(&filtered))
+    }
+
+    /// Show details of a specific task.
+    #[rmcp::tool(description = "Show details of a specific task")]
+    async fn rdm_task_show(
+        &self,
+        Parameters(params): Parameters<TaskShowParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self.repo.load_task(&params.project, &params.task) {
+            Ok(doc) => ok_text(display::format_task_detail(&params.task, &doc)),
+            Err(e) => core_err(e),
+        }
+    }
+
+    /// Search for items across the plan repo.
+    #[rmcp::tool(
+        description = "Search for items across the plan repo by fuzzy-matching titles and body content"
+    )]
+    async fn rdm_search(
+        &self,
+        Parameters(params): Parameters<SearchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let kind = match &params.kind {
+            Some(k) => match k.as_str() {
+                "roadmap" => Some(ItemKind::Roadmap),
+                "phase" => Some(ItemKind::Phase),
+                "task" => Some(ItemKind::Task),
+                other => {
+                    return err_text(format!(
+                        "Invalid kind: {other}. Expected: roadmap, phase, or task"
+                    ));
+                }
+            },
+            None => None,
+        };
+
+        let status = match &params.status {
+            Some(s) => match parse_item_status(s) {
+                Ok(st) => Some(st),
+                Err(msg) => return err_text(msg),
+            },
+            None => None,
+        };
+
+        let filter = SearchFilter {
+            kind,
+            project: params.project,
+            status,
+        };
+
+        match search::search(&self.repo, &params.query, &filter) {
+            Ok(mut results) => {
+                let limit = params.limit.unwrap_or(20);
+                results.truncate(limit);
+                ok_text(display::format_search_results(&results))
+            }
+            Err(e) => core_err(e),
+        }
+    }
+}
+
+/// Parse a status string into an `ItemStatus`.
+fn parse_item_status(s: &str) -> Result<ItemStatus, String> {
+    use std::str::FromStr;
+    if let Ok(ps) = rdm_core::model::PhaseStatus::from_str(s) {
+        return Ok(ItemStatus::Phase(ps));
+    }
+    if let Ok(ts) = rdm_core::model::TaskStatus::from_str(s) {
+        return Ok(ItemStatus::Task(ts));
+    }
+    Err(format!(
+        "Invalid status: {s}. Expected a phase status (not-started, in-progress, done, blocked) or task status (open, in-progress, done, wont-fix)"
+    ))
+}
+
+#[rmcp::tool_handler]
 impl ServerHandler for RdmMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::default(),
-            capabilities: ServerCapabilities::default(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
                 name: "rdm-mcp".into(),
                 version: env!("CARGO_PKG_VERSION").into(),

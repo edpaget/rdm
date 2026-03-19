@@ -13,9 +13,13 @@ dist = false
 
 [dependencies]
 rdm-core = { path = "../rdm-core" }
+rdm-store-fs = { path = "../rdm-store-fs" }
 rmcp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+tempfile = { workspace = true }
