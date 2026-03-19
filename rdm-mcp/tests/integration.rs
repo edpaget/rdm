@@ -685,6 +685,188 @@ fn task_promote() {
 }
 
 #[test]
+fn end_to_end_workflow() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+    let binary = env!("CARGO_MANIFEST_DIR").replace("rdm-mcp", "target/debug/rdm");
+
+    // Minimal setup: just init + project create
+    let run = |args: &[&str]| {
+        let status = Command::new(&binary)
+            .args(args)
+            .status()
+            .unwrap_or_else(|e| panic!("failed to run rdm {}: {e}", args.join(" ")));
+        assert!(
+            status.success(),
+            "rdm {} failed with status {status}",
+            args.join(" ")
+        );
+    };
+    let root_str = root.to_str().unwrap();
+    run(&["--root", root_str, "init"]);
+    run(&[
+        "--root", root_str, "project", "create", "e2e", "--title", "E2E Test",
+    ]);
+
+    let mut h = McpTestHarness::spawn(root);
+
+    // 1. Create roadmap
+    let resp = h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "e2e",
+            "slug": "onboarding",
+            "title": "User Onboarding",
+            "body": "Implement the onboarding flow."
+        }),
+    );
+    assert!(
+        result_text(&resp).contains("User Onboarding"),
+        "roadmap create failed: {}",
+        result_text(&resp)
+    );
+
+    // 2. Create phases
+    let resp = h.call_tool(
+        "rdm_phase_create",
+        serde_json::json!({
+            "project": "e2e",
+            "roadmap": "onboarding",
+            "slug": "design",
+            "title": "Design Onboarding",
+            "number": 1,
+            "body": "Design the onboarding UX."
+        }),
+    );
+    assert!(
+        result_text(&resp).contains("Design Onboarding"),
+        "phase 1 create failed"
+    );
+
+    let resp = h.call_tool(
+        "rdm_phase_create",
+        serde_json::json!({
+            "project": "e2e",
+            "roadmap": "onboarding",
+            "slug": "build",
+            "title": "Build Onboarding",
+            "number": 2,
+            "body": "Implement the onboarding screens."
+        }),
+    );
+    assert!(
+        result_text(&resp).contains("Build Onboarding"),
+        "phase 2 create failed"
+    );
+
+    // 3. Verify roadmap shows phases
+    let resp = h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "e2e", "roadmap": "onboarding"}),
+    );
+    let text = result_text(&resp);
+    assert!(
+        text.contains("Design Onboarding"),
+        "roadmap show missing phase 1"
+    );
+    assert!(
+        text.contains("Build Onboarding"),
+        "roadmap show missing phase 2"
+    );
+
+    // 4. Update phase status
+    let resp = h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "e2e",
+            "roadmap": "onboarding",
+            "phase": "1",
+            "status": "in-progress"
+        }),
+    );
+    assert!(
+        result_text(&resp).contains("in-progress"),
+        "phase update to in-progress failed"
+    );
+
+    let resp = h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "e2e",
+            "roadmap": "onboarding",
+            "phase": "1",
+            "status": "done"
+        }),
+    );
+    assert!(
+        result_text(&resp).contains("done"),
+        "phase update to done failed"
+    );
+
+    // Verify phase status persisted
+    let resp = h.call_tool(
+        "rdm_phase_show",
+        serde_json::json!({"project": "e2e", "roadmap": "onboarding", "phase": "1"}),
+    );
+    assert!(
+        result_text(&resp).contains("done"),
+        "phase show should reflect done status"
+    );
+
+    // 5. Create a task
+    let resp = h.call_tool(
+        "rdm_task_create",
+        serde_json::json!({
+            "project": "e2e",
+            "slug": "fix-tooltip",
+            "title": "Fix tooltip positioning",
+            "body": "Tooltips overflow on mobile screens."
+        }),
+    );
+    assert!(
+        result_text(&resp).contains("Fix tooltip positioning"),
+        "task create failed"
+    );
+
+    // 6. Search for the task
+    let resp = h.call_tool(
+        "rdm_search",
+        serde_json::json!({"query": "tooltip", "project": "e2e"}),
+    );
+    assert!(
+        result_text(&resp).contains("tooltip") || result_text(&resp).contains("Tooltip"),
+        "search should find tooltip task: {}",
+        result_text(&resp)
+    );
+
+    // 7. Promote task to roadmap
+    let resp = h.call_tool(
+        "rdm_task_promote",
+        serde_json::json!({
+            "project": "e2e",
+            "task": "fix-tooltip",
+            "roadmap_slug": "tooltip-fix"
+        }),
+    );
+    let text = result_text(&resp);
+    assert!(
+        text.contains("tooltip") || text.contains("Tooltip"),
+        "promote response should reference tooltip: {text}"
+    );
+
+    // 8. Verify promoted roadmap exists
+    let resp = h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "e2e", "roadmap": "tooltip-fix"}),
+    );
+    let text = result_text(&resp);
+    assert!(
+        text.contains("Fix tooltip positioning") || text.contains("tooltip-fix"),
+        "promoted roadmap should exist: {text}"
+    );
+}
+
+#[test]
 fn error_missing_project() {
     let tmp = tempfile::TempDir::new().unwrap();
     setup_plan_repo(tmp.path());

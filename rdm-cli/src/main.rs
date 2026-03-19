@@ -5,7 +5,7 @@ use std::process;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use is_terminal::IsTerminal;
-use rdm_core::agent_config::{self, AgentConfigOptions, Platform, SkillOptions};
+use rdm_core::agent_config::{self, AgentConfigOptions, McpConfigOptions, Platform, SkillOptions};
 use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
@@ -95,8 +95,11 @@ enum Command {
         #[arg(long)]
         principles_file: Option<String>,
         /// Generate Claude Code skill files instead of an instruction file.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "mcp")]
         skills: bool,
+        /// Generate .mcp.json configuration for MCP server.
+        #[arg(long, conflicts_with = "skills")]
+        mcp: bool,
     },
     /// Search across roadmaps, phases, and tasks.
     Search {
@@ -1096,7 +1099,29 @@ fn run() -> Result<()> {
             out,
             principles_file,
             skills,
+            mcp,
         } => {
+            if mcp {
+                let root_str = root.to_string_lossy().to_string();
+                let content = agent_config::generate_mcp_config(&McpConfigOptions {
+                    root: Some(root_str),
+                });
+                if let Some(dir) = out {
+                    let path = dir.join(".mcp.json");
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).with_context(|| {
+                            format!("failed to create directory {}", parent.display())
+                        })?;
+                    }
+                    std::fs::write(&path, &content)
+                        .with_context(|| format!("failed to write {}", path.display()))?;
+                    println!("Wrote {}", path.display());
+                } else {
+                    print!("{content}");
+                }
+                return Ok(());
+            }
+
             let platform: Platform = platform.parse().map_err(|e: String| anyhow::anyhow!(e))?;
 
             if skills {

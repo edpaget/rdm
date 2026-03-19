@@ -154,11 +154,57 @@ rdm agent-config claude --project fbm > ~/Projects/fbm/.claude/rdm.md
 rdm agent-config claude --skills --project fbm --out ~/Projects/fbm/.claude/skills/
 ```
 
+For agents that support MCP, see the [MCP Server](#mcp-server) section for a more direct integration.
+
 The generated agent config tells the agent:
 - How to read roadmaps and tasks via `rdm show`, `rdm list`
 - How to update phase status via `rdm phase update`
 - How to create tasks for discovered bugs via `rdm task create`
 - The workflow for implementing roadmap phases
+
+## MCP Server
+
+rdm includes a [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes plan repo operations as MCP tools, enabling direct integration with AI agents that support MCP.
+
+```bash
+# Start the MCP server (stdio transport)
+rdm mcp
+
+# With an explicit plan repo root
+rdm --root ~/Projects/my-plans mcp
+```
+
+### Configuration
+
+Generate a `.mcp.json` configuration file for MCP-aware clients:
+
+```bash
+# Print config to stdout
+rdm agent-config --mcp
+
+# Write to a directory
+rdm agent-config --mcp --out ~/Projects/my-app
+# → writes ~/Projects/my-app/.mcp.json
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `rdm_project_list` | List all projects |
+| `rdm_roadmap_list` | List roadmaps with progress |
+| `rdm_roadmap_show` | Show roadmap details with phases |
+| `rdm_roadmap_create` | Create a new roadmap |
+| `rdm_phase_list` | List phases in a roadmap |
+| `rdm_phase_show` | Show phase details |
+| `rdm_phase_create` | Create a new phase |
+| `rdm_phase_update` | Update phase status or content |
+| `rdm_task_list` | List tasks with optional filters |
+| `rdm_task_show` | Show task details |
+| `rdm_task_create` | Create a new task |
+| `rdm_task_update` | Update task status or fields |
+| `rdm_task_promote` | Promote a task to a roadmap |
+| `rdm_search` | Fuzzy search across all items |
 
 ## REST API
 
@@ -185,6 +231,7 @@ GET  /index
 rdm (this repo)
 ├── rdm-core/       # library: data model, parsing, file I/O, index generation
 ├── rdm-cli/        # binary: CLI porcelain over rdm-core
+├── rdm-mcp/        # library: MCP server over rdm-core (stdio transport)
 └── rdm-server/     # binary: REST API over rdm-core
 ```
 

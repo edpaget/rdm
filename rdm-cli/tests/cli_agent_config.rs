@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serde_json::Value;
 use tempfile::TempDir;
 
 fn rdm() -> Command {
@@ -316,4 +317,73 @@ fn agent_config_principles_with_project_and_out() {
     assert!(content.contains("--project myproj"));
     assert!(content.contains("## Principles"));
     assert!(content.contains("PRINCIPLES.md"));
+}
+
+#[test]
+fn agent_config_mcp_stdout() {
+    let output = rdm()
+        .arg("agent-config")
+        .arg("--mcp")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: Value = serde_json::from_slice(&output).expect("should be valid JSON");
+    assert!(parsed["mcpServers"]["rdm"]["command"].as_str().is_some());
+    assert!(parsed["mcpServers"]["rdm"]["args"].is_array());
+}
+
+#[test]
+fn agent_config_mcp_with_root() {
+    let dir = TempDir::new().unwrap();
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("agent-config")
+        .arg("--mcp")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: Value = serde_json::from_slice(&output).expect("should be valid JSON");
+    let args = parsed["mcpServers"]["rdm"]["args"]
+        .as_array()
+        .expect("args should be array");
+    assert!(args.contains(&Value::String("--root".to_string())));
+    assert!(args.contains(&Value::String("mcp".to_string())));
+    // The root path should be in the args
+    let root_str = dir.path().to_string_lossy().to_string();
+    assert!(args.contains(&Value::String(root_str)));
+}
+
+#[test]
+fn agent_config_mcp_out_writes_file() {
+    let out = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("--mcp")
+        .arg("--out")
+        .arg(out.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote"));
+
+    let path = out.path().join(".mcp.json");
+    assert!(path.exists());
+    let content = std::fs::read_to_string(path).unwrap();
+    let parsed: Value = serde_json::from_str(&content).expect("should be valid JSON");
+    assert!(parsed["mcpServers"]["rdm"]["command"].as_str().is_some());
+}
+
+#[test]
+fn agent_config_mcp_no_plan_repo_needed() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .current_dir(dir.path())
+        .arg("agent-config")
+        .arg("--mcp")
+        .assert()
+        .success();
 }

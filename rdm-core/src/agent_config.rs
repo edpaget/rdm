@@ -454,6 +454,51 @@ Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
     }
 }
 
+/// Options for generating MCP server configuration.
+pub struct McpConfigOptions {
+    /// Plan repo root path. When `Some`, the generated config includes `--root <path>`.
+    pub root: Option<String>,
+}
+
+/// Generates a `.mcp.json` configuration for the rdm MCP server.
+///
+/// The output is a JSON object with an `mcpServers.rdm` entry that tells
+/// MCP-aware clients how to launch the rdm MCP server.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::{McpConfigOptions, generate_mcp_config};
+///
+/// let json = generate_mcp_config(&McpConfigOptions { root: None });
+/// assert!(json.contains("mcpServers"));
+/// ```
+///
+/// # Errors
+///
+/// This function does not return errors; it always produces valid JSON.
+pub fn generate_mcp_config(opts: &McpConfigOptions) -> String {
+    let args: Vec<serde_json::Value> = match &opts.root {
+        Some(root) => vec![
+            serde_json::Value::String("--root".to_string()),
+            serde_json::Value::String(root.clone()),
+            serde_json::Value::String("mcp".to_string()),
+        ],
+        None => vec![serde_json::Value::String("mcp".to_string())],
+    };
+
+    let config = serde_json::json!({
+        "mcpServers": {
+            "rdm": {
+                "command": "rdm",
+                "args": args
+            }
+        }
+    });
+
+    serde_json::to_string_pretty(&config).expect("JSON serialization cannot fail")
+}
+
 fn section_principles(path: &str) -> String {
     format!(
         r#"## Principles
@@ -929,5 +974,48 @@ mod tests {
             .expect("missing frontmatter");
         assert!(!frontmatter.contains("Write"));
         assert!(!frontmatter.contains("Edit"));
+    }
+
+    // --- MCP config generation tests ---
+
+    #[test]
+    fn mcp_config_is_valid_json() {
+        let output = generate_mcp_config(&McpConfigOptions { root: None });
+        let parsed: serde_json::Value = serde_json::from_str(&output).expect("invalid JSON");
+        assert!(parsed.is_object());
+    }
+
+    #[test]
+    fn mcp_config_without_root() {
+        let output = generate_mcp_config(&McpConfigOptions { root: None });
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let args = parsed["mcpServers"]["rdm"]["args"]
+            .as_array()
+            .expect("args should be array");
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0], "mcp");
+    }
+
+    #[test]
+    fn mcp_config_with_root() {
+        let output = generate_mcp_config(&McpConfigOptions {
+            root: Some("/home/user/plans".to_string()),
+        });
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let args = parsed["mcpServers"]["rdm"]["args"]
+            .as_array()
+            .expect("args should be array");
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], "--root");
+        assert_eq!(args[1], "/home/user/plans");
+        assert_eq!(args[2], "mcp");
+    }
+
+    #[test]
+    fn mcp_config_has_correct_structure() {
+        let output = generate_mcp_config(&McpConfigOptions { root: None });
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["mcpServers"]["rdm"]["command"], "rdm");
+        assert!(parsed["mcpServers"]["rdm"]["args"].is_array());
     }
 }

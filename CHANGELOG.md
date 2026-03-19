@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `--mcp` flag on `rdm agent-config` to generate `.mcp.json` configuration for MCP-aware clients
+- `generate_mcp_config` function in `rdm-core::agent_config` for programmatic MCP config generation
+- End-to-end MCP workflow integration test covering the full agent lifecycle
+- MCP Server section in README with tool table, config generation, and usage instructions
 - `--format markdown` option for clean Markdown output on list, show, and search commands
 - `--format table` option for pretty terminal tables on list and search commands (powered by `tabled` crate)
 - Global `--format` flag on all read commands (defaults to `human`; `text` accepted as alias for backward compatibility)
