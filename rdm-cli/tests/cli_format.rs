@@ -42,6 +42,23 @@ fn setup_test_data(dir: &TempDir) {
         .arg("--root")
         .arg(dir.path())
         .args([
+            "phase",
+            "create",
+            "setup",
+            "--title",
+            "Setup Phase",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "acme",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
             "task",
             "create",
             "fix-bug",
@@ -202,5 +219,138 @@ fn format_json_on_roadmap_show_returns_error() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not yet supported"));
+        .stderr(predicate::str::contains("not supported"));
+}
+
+#[test]
+fn format_table_on_roadmap_list() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "list", "--project", "acme", "--format", "table"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alpha Roadmap"));
+}
+
+#[test]
+fn format_table_on_phase_list() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "list",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "acme",
+            "--format",
+            "table",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Setup Phase"));
+}
+
+#[test]
+fn format_table_on_task_list() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "list", "--project", "acme", "--format", "table"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Fix Bug"));
+}
+
+#[test]
+fn format_table_on_search() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "Alpha", "--format", "table"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alpha Roadmap"));
+}
+
+#[test]
+fn format_table_on_roadmap_show_returns_error() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "show",
+            "alpha",
+            "--project",
+            "acme",
+            "--format",
+            "table",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not supported"));
+}
+
+#[test]
+fn format_table_on_phase_show_returns_error() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "1",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "acme",
+            "--format",
+            "table",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not supported"));
+}
+
+#[test]
+fn format_table_on_task_show_returns_error() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "show",
+            "fix-bug",
+            "--project",
+            "acme",
+            "--format",
+            "table",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not supported"));
 }

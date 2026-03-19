@@ -30,6 +30,8 @@ nucleo-matcher = "0.3"
 askama = "0.15"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
+tabled = "0.20"
+terminal_size = "0.4"
 
 # The profile that 'dist' will build with
 [profile.dist]

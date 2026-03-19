@@ -13,6 +13,8 @@ use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
 
+mod table;
+
 #[cfg(feature = "git")]
 type AppStore = rdm_store_git::GitStore;
 #[cfg(not(feature = "git"))]
@@ -33,7 +35,7 @@ struct Cli {
     #[arg(long, global = true, env = "RDM_STAGE")]
     stage: bool,
 
-    /// Output format (human or json).
+    /// Output format (human, json, or table).
     #[arg(long, global = true, default_value = "human")]
     format: OutputFormat,
 
@@ -423,6 +425,17 @@ enum OutputFormat {
     #[value(alias = "text")]
     Human,
     Json,
+    Table,
+}
+
+impl std::fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Human => write!(f, "human"),
+            Self::Json => write!(f, "json"),
+            Self::Table => write!(f, "table"),
+        }
+    }
 }
 
 /// Parses a status string into an `ItemStatus`, using the `--type` hint if available.
@@ -629,13 +642,22 @@ async fn shutdown_signal() {
     eprintln!("\nShutting down gracefully...");
 }
 
-fn require_human_format(format: OutputFormat, command_name: &str) -> Result<()> {
-    match format {
-        OutputFormat::Human => Ok(()),
-        OutputFormat::Json => bail!(
-            "--format json is not yet supported for '{command_name}'; use --format human or omit --format"
-        ),
+fn reject_non_human(format: OutputFormat, command_name: &str) -> Result<()> {
+    if format != OutputFormat::Human {
+        bail!(
+            "--format {format} is not supported for '{command_name}'; use --format human or omit --format"
+        );
     }
+    Ok(())
+}
+
+fn reject_json(format: OutputFormat, command_name: &str) -> Result<()> {
+    if format == OutputFormat::Json {
+        bail!(
+            "--format json is not yet supported for '{command_name}'; use --format human or --format table"
+        );
+    }
+    Ok(())
 }
 
 fn maybe_regenerate_index(
@@ -707,7 +729,7 @@ fn run() -> Result<()> {
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 ProjectCommand::List => {
-                    require_human_format(format, "project list")?;
+                    reject_non_human(format, "project list")?;
                     let projects = repo.list_projects().context("failed to list projects")?;
                     if projects.is_empty() {
                         println!("No projects yet.");
@@ -744,7 +766,7 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
-                    require_human_format(format, "roadmap show")?;
+                    reject_non_human(format, "roadmap show")?;
                     let project = resolve_project(project, &repo)?;
                     let mut roadmap_doc = repo
                         .load_roadmap(&project, &slug)
@@ -759,7 +781,7 @@ fn run() -> Result<()> {
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 RoadmapCommand::List { project } => {
-                    require_human_format(format, "roadmap list")?;
+                    reject_json(format, "roadmap list")?;
                     let project = resolve_project(project, &repo)?;
                     let roadmaps = repo
                         .list_roadmaps(&project)
@@ -772,7 +794,11 @@ fn run() -> Result<()> {
                         })?;
                         entries.push((roadmap_doc, phases));
                     }
-                    print!("{}", display::format_roadmap_list(&entries));
+                    match format {
+                        OutputFormat::Human => print!("{}", display::format_roadmap_list(&entries)),
+                        OutputFormat::Table => print!("{}", table::format_roadmap_table(&entries)),
+                        OutputFormat::Json => unreachable!(),
+                    }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 RoadmapCommand::Depend { slug, on, project } => {
@@ -790,7 +816,7 @@ fn run() -> Result<()> {
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 RoadmapCommand::Deps { project } => {
-                    require_human_format(format, "roadmap deps")?;
+                    reject_non_human(format, "roadmap deps")?;
                     let project = resolve_project(project, &repo)?;
                     let graph = repo
                         .dependency_graph(&project)
@@ -840,12 +866,16 @@ fn run() -> Result<()> {
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 PhaseCommand::List { roadmap, project } => {
-                    require_human_format(format, "phase list")?;
+                    reject_json(format, "phase list")?;
                     let project = resolve_project(project, &repo)?;
                     let phases = repo
                         .list_phases(&project, &roadmap)
                         .context("failed to list phases")?;
-                    print!("{}", display::format_phase_list(&phases));
+                    match format {
+                        OutputFormat::Human => print!("{}", display::format_phase_list(&phases)),
+                        OutputFormat::Table => print!("{}", table::format_phase_table(&phases)),
+                        OutputFormat::Json => unreachable!(),
+                    }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 PhaseCommand::Show {
@@ -854,7 +884,7 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
-                    require_human_format(format, "phase show")?;
+                    reject_non_human(format, "phase show")?;
                     let project = resolve_project(project, &repo)?;
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
@@ -929,7 +959,7 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
-                    require_human_format(format, "task show")?;
+                    reject_non_human(format, "task show")?;
                     let project = resolve_project(project, &repo)?;
                     let mut doc = repo
                         .load_task(&project, &slug)
@@ -966,7 +996,7 @@ fn run() -> Result<()> {
                     priority,
                     tag,
                 } => {
-                    require_human_format(format, "task list")?;
+                    reject_json(format, "task list")?;
                     let project = resolve_project(project, &repo)?;
                     let all_tasks = repo.list_tasks(&project).context("failed to list tasks")?;
 
@@ -991,7 +1021,11 @@ fn run() -> Result<()> {
                         })
                         .collect();
 
-                    print!("{}", display::format_task_list(&filtered));
+                    match format {
+                        OutputFormat::Human => print!("{}", display::format_task_list(&filtered)),
+                        OutputFormat::Table => print!("{}", table::format_task_table(&filtered)),
+                        OutputFormat::Json => unreachable!(),
+                    }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
             }
@@ -1093,6 +1127,13 @@ fn run() -> Result<()> {
                         println!("No results found for '{query}'.");
                     } else {
                         print!("{}", display::format_search_results(&results));
+                    }
+                }
+                OutputFormat::Table => {
+                    if results.is_empty() {
+                        println!("No results found for '{query}'.");
+                    } else {
+                        print!("{}", table::format_search_table(&results));
                     }
                 }
                 OutputFormat::Json => {
@@ -1211,7 +1252,7 @@ fn run() -> Result<()> {
         }
 
         Command::List { project, all } => {
-            require_human_format(format, "list")?;
+            reject_json(format, "list")?;
             let repo = PlanRepo::new(make_store(&root, staging)?);
             let projects = if all {
                 repo.list_projects().context("failed to list projects")?
@@ -1235,7 +1276,11 @@ fn run() -> Result<()> {
                         .with_context(|| format!("failed to list phases for roadmap '{slug}'"))?;
                     entries.push((roadmap_doc, phases));
                 }
-                print!("{}", display::format_roadmap_list(&entries));
+                match format {
+                    OutputFormat::Human => print!("{}", display::format_roadmap_list(&entries)),
+                    OutputFormat::Table => print!("{}", table::format_roadmap_table(&entries)),
+                    OutputFormat::Json => unreachable!(),
+                }
             }
             maybe_print_uncommitted_hint(repo.store(), staging);
         }

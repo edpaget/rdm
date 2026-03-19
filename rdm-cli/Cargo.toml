@@ -21,7 +21,9 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 is-terminal = { workspace = true }
 serde_json = { workspace = true }
+tabled = { workspace = true }
 tempfile = { workspace = true }
+terminal_size = { workspace = true }
 tokio = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 
