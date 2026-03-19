@@ -15,6 +15,8 @@ pub mod document;
 pub mod error;
 /// HAL (Hypertext Application Language) response types.
 pub mod hal;
+/// Serializable JSON output types for CLI and API consumers.
+pub mod json;
 
 /// Markdown frontmatter splitting and joining utilities.
 pub mod markdown;

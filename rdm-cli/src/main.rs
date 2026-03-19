@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use is_terminal::IsTerminal;
 use rdm_core::agent_config::{self, AgentConfigOptions, McpConfigOptions, Platform, SkillOptions};
 use rdm_core::display;
+use rdm_core::json;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
@@ -735,15 +736,6 @@ fn reject_non_human(format: OutputFormat, command_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn reject_json(format: OutputFormat, command_name: &str) -> Result<()> {
-    if format == OutputFormat::Json {
-        bail!(
-            "--format json is not yet supported for '{command_name}'; use --format human, --format table, or --format markdown"
-        );
-    }
-    Ok(())
-}
-
 fn maybe_regenerate_index(
     repo: &mut PlanRepo<AppStore>,
     no_index: bool,
@@ -813,13 +805,24 @@ fn run() -> Result<()> {
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 ProjectCommand::List => {
-                    reject_non_human(format, "project list")?;
                     let projects = repo.list_projects().context("failed to list projects")?;
-                    if projects.is_empty() {
-                        println!("No projects yet.");
-                    } else {
-                        for p in &projects {
-                            println!("{p}");
+                    match format {
+                        OutputFormat::Json => {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&projects)
+                                    .context("failed to serialize projects")?
+                            );
+                        }
+                        _ => {
+                            reject_non_human(format, "project list")?;
+                            if projects.is_empty() {
+                                println!("No projects yet.");
+                            } else {
+                                for p in &projects {
+                                    println!("{p}");
+                                }
+                            }
                         }
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
@@ -868,14 +871,21 @@ fn run() -> Result<()> {
                             "{}",
                             display::format_roadmap_summary_md(&roadmap_doc, &phases)
                         ),
-                        _ => bail!(
-                            "--format {format} is not supported for 'roadmap show'; use --format human, --format markdown, or omit --format"
+                        OutputFormat::Json => {
+                            let j = json::roadmap_to_json(&roadmap_doc, &phases);
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&j)
+                                    .context("failed to serialize roadmap")?
+                            );
+                        }
+                        OutputFormat::Table => bail!(
+                            "--format table is not supported for 'roadmap show'; use --format human, --format json, --format markdown, or omit --format"
                         ),
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 RoadmapCommand::List { project, archived } => {
-                    reject_json(format, "roadmap list")?;
                     let project = resolve_project(project, &repo)?;
                     let entries = if archived {
                         let roadmaps = repo
@@ -911,7 +921,17 @@ fn run() -> Result<()> {
                         OutputFormat::Markdown => {
                             print!("{}", display::format_roadmap_list_md(&entries))
                         }
-                        OutputFormat::Json => unreachable!(),
+                        OutputFormat::Json => {
+                            let summaries: Vec<_> = entries
+                                .iter()
+                                .map(|(doc, phases)| json::roadmap_summary_to_json(doc, phases))
+                                .collect();
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&summaries)
+                                    .context("failed to serialize roadmaps")?
+                            );
+                        }
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
@@ -1026,7 +1046,6 @@ fn run() -> Result<()> {
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 PhaseCommand::List { roadmap, project } => {
-                    reject_json(format, "phase list")?;
                     let project = resolve_project(project, &repo)?;
                     let phases = repo
                         .list_phases(&project, &roadmap)
@@ -1037,7 +1056,17 @@ fn run() -> Result<()> {
                         OutputFormat::Markdown => {
                             print!("{}", display::format_phase_list_md(&phases))
                         }
-                        OutputFormat::Json => unreachable!(),
+                        OutputFormat::Json => {
+                            let summaries: Vec<_> = phases
+                                .iter()
+                                .map(|(stem, doc)| json::phase_summary_to_json(stem, doc))
+                                .collect();
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&summaries)
+                                    .context("failed to serialize phases")?
+                            );
+                        }
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
@@ -1064,8 +1093,16 @@ fn run() -> Result<()> {
                         OutputFormat::Markdown => {
                             print!("{}", display::format_phase_detail_md(&stem, &doc))
                         }
-                        _ => bail!(
-                            "--format {format} is not supported for 'phase show'; use --format human, --format markdown, or omit --format"
+                        OutputFormat::Json => {
+                            let j = json::phase_to_json(&stem, &doc, &roadmap);
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&j)
+                                    .context("failed to serialize phase")?
+                            );
+                        }
+                        OutputFormat::Table => bail!(
+                            "--format table is not supported for 'phase show'; use --format human, --format json, --format markdown, or omit --format"
                         ),
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
@@ -1145,8 +1182,16 @@ fn run() -> Result<()> {
                         OutputFormat::Markdown => {
                             print!("{}", display::format_task_detail_md(&slug, &doc))
                         }
-                        _ => bail!(
-                            "--format {format} is not supported for 'task show'; use --format human, --format markdown, or omit --format"
+                        OutputFormat::Json => {
+                            let j = json::task_to_json(&slug, &doc);
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&j)
+                                    .context("failed to serialize task")?
+                            );
+                        }
+                        OutputFormat::Table => bail!(
+                            "--format table is not supported for 'task show'; use --format human, --format json, --format markdown, or omit --format"
                         ),
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
@@ -1177,7 +1222,6 @@ fn run() -> Result<()> {
                     priority,
                     tag,
                 } => {
-                    reject_json(format, "task list")?;
                     let project = resolve_project(project, &repo)?;
                     let all_tasks = repo.list_tasks(&project).context("failed to list tasks")?;
 
@@ -1208,7 +1252,17 @@ fn run() -> Result<()> {
                         OutputFormat::Markdown => {
                             print!("{}", display::format_task_list_md(&filtered))
                         }
-                        OutputFormat::Json => unreachable!(),
+                        OutputFormat::Json => {
+                            let summaries: Vec<_> = filtered
+                                .iter()
+                                .map(|(slug, doc)| json::task_summary_to_json(slug, doc))
+                                .collect();
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&summaries)
+                                    .context("failed to serialize tasks")?
+                            );
+                        }
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
@@ -1564,7 +1618,6 @@ fn run() -> Result<()> {
         }
 
         Command::List { project, all } => {
-            reject_json(format, "list")?;
             let repo = PlanRepo::new(make_store(&root, staging)?);
             let projects = if all {
                 repo.list_projects().context("failed to list projects")?
@@ -1573,8 +1626,11 @@ fn run() -> Result<()> {
                 vec![p]
             };
 
+            // For JSON, collect all projects' summaries into one array.
+            let mut all_summaries: Vec<json::RoadmapSummaryJson> = Vec::new();
+
             for project in &projects {
-                if all {
+                if all && format != OutputFormat::Json {
                     println!("Project: {project}");
                 }
                 let roadmaps = repo
@@ -1594,8 +1650,19 @@ fn run() -> Result<()> {
                     OutputFormat::Markdown => {
                         print!("{}", display::format_roadmap_list_md(&entries))
                     }
-                    OutputFormat::Json => unreachable!(),
+                    OutputFormat::Json => {
+                        for (doc, phases) in &entries {
+                            all_summaries.push(json::roadmap_summary_to_json(doc, phases));
+                        }
+                    }
                 }
+            }
+            if format == OutputFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&all_summaries)
+                        .context("failed to serialize roadmaps")?
+                );
             }
             maybe_print_uncommitted_hint(repo.store(), staging);
         }

@@ -116,17 +116,27 @@ fn format_default_is_human() {
 }
 
 #[test]
-fn format_json_on_roadmap_list_returns_error() {
+fn format_json_on_roadmap_list() {
     let dir = TempDir::new().unwrap();
     setup_test_data(&dir);
 
-    rdm()
+    let output = rdm()
         .arg("--root")
         .arg(dir.path())
         .args(["roadmap", "list", "--project", "acme", "--format", "json"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("not yet supported"));
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    let arr = parsed.as_array().expect("should be an array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["slug"], "alpha");
+    assert_eq!(arr[0]["title"], "Alpha Roadmap");
+    assert!(arr[0]["total_phases"].is_number());
+    assert!(arr[0]["progress"].is_string());
 }
 
 #[test]
@@ -187,25 +197,36 @@ fn format_flag_works_after_subcommand_args() {
 }
 
 #[test]
-fn format_json_on_task_list_returns_error() {
+fn format_json_on_task_list() {
     let dir = TempDir::new().unwrap();
     setup_test_data(&dir);
 
-    rdm()
+    let output = rdm()
         .arg("--root")
         .arg(dir.path())
         .args(["task", "list", "--project", "acme", "--format", "json"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("not yet supported"));
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    let arr = parsed.as_array().expect("should be an array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["slug"], "fix-bug");
+    assert_eq!(arr[0]["title"], "Fix Bug");
+    assert_eq!(arr[0]["status"], "open");
+    assert_eq!(arr[0]["priority"], "medium");
+    assert!(arr[0]["created"].is_string());
 }
 
 #[test]
-fn format_json_on_roadmap_show_returns_error() {
+fn format_json_on_roadmap_show() {
     let dir = TempDir::new().unwrap();
     setup_test_data(&dir);
 
-    rdm()
+    let output = rdm()
         .arg("--root")
         .arg(dir.path())
         .args([
@@ -218,8 +239,133 @@ fn format_json_on_roadmap_show_returns_error() {
             "json",
         ])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("not supported"));
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["slug"], "alpha");
+    assert_eq!(parsed["title"], "Alpha Roadmap");
+    assert!(parsed["phases"].is_array());
+    assert!(parsed["body"].is_string());
+}
+
+#[test]
+fn format_json_on_phase_list() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "list",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    let arr = parsed.as_array().expect("should be an array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["title"], "Setup Phase");
+    assert_eq!(arr[0]["number"], 1);
+    assert!(arr[0]["stem"].as_str().unwrap().contains("setup"));
+    assert_eq!(arr[0]["status"], "not-started");
+}
+
+#[test]
+fn format_json_on_phase_show() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "1",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["title"], "Setup Phase");
+    assert_eq!(parsed["phase"], 1);
+    assert_eq!(parsed["status"], "not-started");
+    assert_eq!(parsed["roadmap"], "alpha");
+    assert!(parsed["body"].is_string());
+}
+
+#[test]
+fn format_json_on_task_show() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "show",
+            "fix-bug",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["slug"], "fix-bug");
+    assert_eq!(parsed["title"], "Fix Bug");
+    assert_eq!(parsed["status"], "open");
+    assert_eq!(parsed["project"], "acme");
+    assert!(parsed["body"].is_string());
+}
+
+#[test]
+fn format_json_on_project_list() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "list", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    let arr = parsed.as_array().expect("should be an array");
+    assert!(arr.contains(&serde_json::Value::String("acme".to_string())));
 }
 
 #[test]
