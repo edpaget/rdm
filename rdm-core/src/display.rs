@@ -1,6 +1,7 @@
 /// Display formatting functions for roadmaps, phases, and projects.
 ///
 /// Pure functions — no I/O. These produce human-readable output strings.
+use crate::ast;
 use crate::document::Document;
 use crate::model::{Phase, PhaseStatus, Roadmap, Task};
 use crate::search::SearchResult;
@@ -119,139 +120,170 @@ pub fn format_roadmap_summary(
     phases: &[(String, Document<Phase>)],
 ) -> String {
     let roadmap = &doc.frontmatter;
-    let mut out = String::new();
-    out.push_str(&format!("# {}\n\n", roadmap.title));
-    out.push_str(&format!(
-        "Project: {}  Slug: {}\n",
+    let mut d = ast::Document::new();
+    d.heading(1, &roadmap.title);
+    d.push(ast::Block::BlankLine);
+    d.paragraph(&format!(
+        "Project: {}  Slug: {}",
         roadmap.project, roadmap.roadmap
     ));
 
     if phases.is_empty() {
-        out.push_str("\nNo phases yet.\n");
+        d.push(ast::Block::BlankLine);
+        d.paragraph("No phases yet.");
     } else {
         let done_count = phases
             .iter()
-            .filter(|(_, d)| d.frontmatter.status == PhaseStatus::Done)
+            .filter(|(_, pd)| pd.frontmatter.status == PhaseStatus::Done)
             .count();
-        out.push_str(&format!(
-            "Progress: {}/{} phases done\n\n",
+        d.paragraph(&format!(
+            "Progress: {}/{} phases done",
             done_count,
             phases.len()
         ));
+        d.push(ast::Block::BlankLine);
 
-        out.push_str("| # | Phase | Status |\n");
-        out.push_str("|---|-------|--------|\n");
-        for (_, d) in phases {
-            let fm = &d.frontmatter;
-            out.push_str(&format!(
-                "| {} | {} | {} |\n",
-                fm.phase, fm.title, fm.status
-            ));
-        }
+        let headers = vec!["#", "Phase", "Status"]
+            .into_iter()
+            .map(|h| vec![ast::Inline::text(h)])
+            .collect();
+        let rows = phases
+            .iter()
+            .map(|(_, pd)| {
+                let fm = &pd.frontmatter;
+                vec![
+                    vec![ast::Inline::Text(fm.phase.to_string())],
+                    vec![ast::Inline::Text(fm.title.clone())],
+                    vec![ast::Inline::Text(fm.status.to_string())],
+                ]
+            })
+            .collect();
+        d.push(ast::Block::Table { headers, rows });
     }
 
     if !doc.body.is_empty() {
-        out.push_str(&format!("\n{}", doc.body));
+        d.push(ast::Block::BlankLine);
+        d.raw(&doc.body);
     }
-    out
+    d.to_string()
 }
 
 /// Formats a single phase detail view.
 pub fn format_phase_detail(stem: &str, doc: &Document<Phase>) -> String {
     let fm = &doc.frontmatter;
-    let mut out = String::new();
-    out.push_str(&format!("# Phase {}: {}\n\n", fm.phase, fm.title));
-    out.push_str(&format!("Stem: {stem}\n"));
-    out.push_str(&format!("Status: {}\n", fm.status));
+    let mut d = ast::Document::new();
+    d.heading(1, &format!("Phase {}: {}", fm.phase, fm.title));
+    d.push(ast::Block::BlankLine);
+    d.paragraph(&format!("Stem: {stem}"));
+    d.paragraph(&format!("Status: {}", fm.status));
     if let Some(date) = fm.completed {
-        out.push_str(&format!("Completed: {date}\n"));
+        d.paragraph(&format!("Completed: {date}"));
     }
     if !doc.body.is_empty() {
-        out.push_str(&format!("\n{}", doc.body));
+        d.push(ast::Block::BlankLine);
+        d.raw(&doc.body);
     }
-    out
+    d.to_string()
 }
 
 /// Formats a list of phases as a table with number, title, status, and stem.
 pub fn format_phase_list(phases: &[(String, Document<Phase>)]) -> String {
+    let mut doc = ast::Document::new();
     if phases.is_empty() {
-        return "No phases yet.\n".to_string();
+        doc.paragraph("No phases yet.");
+    } else {
+        let headers = vec!["#", "Phase", "Status", "Stem"]
+            .into_iter()
+            .map(|h| vec![ast::Inline::text(h)])
+            .collect();
+        let rows = phases
+            .iter()
+            .map(|(stem, d)| {
+                let fm = &d.frontmatter;
+                vec![
+                    vec![ast::Inline::Text(fm.phase.to_string())],
+                    vec![ast::Inline::Text(fm.title.clone())],
+                    vec![ast::Inline::Text(fm.status.to_string())],
+                    vec![ast::Inline::Text(stem.clone())],
+                ]
+            })
+            .collect();
+        doc.push(ast::Block::Table { headers, rows });
     }
-
-    let mut out = String::new();
-    out.push_str("| # | Phase | Status | Stem |\n");
-    out.push_str("|---|-------|--------|------|\n");
-    for (stem, doc) in phases {
-        let fm = &doc.frontmatter;
-        out.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
-            fm.phase, fm.title, fm.status, stem
-        ));
-    }
-    out
+    doc.to_string()
 }
 
 /// Formats a list of roadmaps with progress summaries.
 pub fn format_roadmap_list(entries: &[RoadmapWithPhases]) -> String {
+    let mut d = ast::Document::new();
     if entries.is_empty() {
-        return "No roadmaps found.\n".to_string();
-    }
-
-    let mut out = String::new();
-    for (roadmap_doc, phases) in entries {
-        let rm = &roadmap_doc.frontmatter;
-        let done = phases
-            .iter()
-            .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
-            .count();
-        let total = phases.len();
-        if total > 0 {
-            out.push_str(&format!(
-                "{} — {} ({}/{} done)\n",
-                rm.roadmap, rm.title, done, total
-            ));
-        } else {
-            out.push_str(&format!("{} — {} (no phases)\n", rm.roadmap, rm.title));
+        d.paragraph("No roadmaps found.");
+    } else {
+        for (roadmap_doc, phases) in entries {
+            let rm = &roadmap_doc.frontmatter;
+            let done = phases
+                .iter()
+                .filter(|(_, pd)| pd.frontmatter.status == PhaseStatus::Done)
+                .count();
+            let total = phases.len();
+            if total > 0 {
+                d.paragraph(&format!(
+                    "{} — {} ({}/{} done)",
+                    rm.roadmap, rm.title, done, total
+                ));
+            } else {
+                d.paragraph(&format!("{} — {} (no phases)", rm.roadmap, rm.title));
+            }
         }
     }
-    out
+    d.to_string()
 }
 
 /// Formats a single task detail view.
 pub fn format_task_detail(slug: &str, doc: &Document<Task>) -> String {
     let fm = &doc.frontmatter;
-    let mut out = String::new();
-    out.push_str(&format!("# {}\n\n", fm.title));
-    out.push_str(&format!("Slug: {slug}\n"));
-    out.push_str(&format!("Status: {}\n", fm.status));
-    out.push_str(&format!("Priority: {}\n", fm.priority));
-    out.push_str(&format!("Created: {}\n", fm.created));
+    let mut d = ast::Document::new();
+    d.heading(1, &fm.title);
+    d.push(ast::Block::BlankLine);
+    d.paragraph(&format!("Slug: {slug}"));
+    d.paragraph(&format!("Status: {}", fm.status));
+    d.paragraph(&format!("Priority: {}", fm.priority));
+    d.paragraph(&format!("Created: {}", fm.created));
     if let Some(tags) = &fm.tags {
-        out.push_str(&format!("Tags: {}\n", tags.join(", ")));
+        d.paragraph(&format!("Tags: {}", tags.join(", ")));
     }
     if !doc.body.is_empty() {
-        out.push_str(&format!("\n{}", doc.body));
+        d.push(ast::Block::BlankLine);
+        d.raw(&doc.body);
     }
-    out
+    d.to_string()
 }
 
 /// Formats a list of tasks as a table with slug, title, status, and priority columns.
 pub fn format_task_list(tasks: &[(String, Document<Task>)]) -> String {
+    let mut doc = ast::Document::new();
     if tasks.is_empty() {
-        return "No tasks found.\n".to_string();
+        doc.paragraph("No tasks found.");
+    } else {
+        let headers = vec!["Slug", "Title", "Status", "Priority"]
+            .into_iter()
+            .map(|h| vec![ast::Inline::text(h)])
+            .collect();
+        let rows = tasks
+            .iter()
+            .map(|(slug, d)| {
+                let fm = &d.frontmatter;
+                vec![
+                    vec![ast::Inline::Text(slug.clone())],
+                    vec![ast::Inline::Text(fm.title.clone())],
+                    vec![ast::Inline::Text(fm.status.to_string())],
+                    vec![ast::Inline::Text(fm.priority.to_string())],
+                ]
+            })
+            .collect();
+        doc.push(ast::Block::Table { headers, rows });
     }
-
-    let mut out = String::new();
-    out.push_str("| Slug | Title | Status | Priority |\n");
-    out.push_str("|------|-------|--------|----------|\n");
-    for (slug, doc) in tasks {
-        let fm = &doc.frontmatter;
-        out.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
-            slug, fm.title, fm.status, fm.priority
-        ));
-    }
-    out
+    doc.to_string()
 }
 
 /// Formats a dependency graph as a human-readable list.
@@ -260,15 +292,15 @@ pub fn format_task_list(tasks: &[(String, Document<Task>)]) -> String {
 /// If the graph is empty, returns a message indicating no dependencies.
 #[must_use]
 pub fn format_dependency_graph(graph: &[(String, Vec<String>)]) -> String {
+    let mut d = ast::Document::new();
     if graph.is_empty() {
-        return "No dependencies found.\n".to_string();
+        d.paragraph("No dependencies found.");
+    } else {
+        for (slug, deps) in graph {
+            d.paragraph(&format!("{slug} → {}", deps.join(", ")));
+        }
     }
-
-    let mut out = String::new();
-    for (slug, deps) in graph {
-        out.push_str(&format!("{slug} → {}\n", deps.join(", ")));
-    }
-    out
+    d.to_string()
 }
 
 /// Formats search results as a ranked text table.
@@ -278,47 +310,28 @@ pub fn format_search_results(results: &[SearchResult]) -> String {
         return String::new();
     }
 
-    // Calculate column widths
-    let type_width = results
+    let headers = vec!["#", "Type", "Title", "Identifier", "Snippet"]
+        .into_iter()
+        .map(|h| vec![ast::Inline::text(h)])
+        .collect();
+    let rows = results
         .iter()
-        .map(|r| r.kind.to_string().len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
-    let title_width = results
-        .iter()
-        .map(|r| r.title.len())
-        .max()
-        .unwrap_or(5)
-        .max(5);
-    let id_width = results
-        .iter()
-        .map(|r| r.identifier.len())
-        .max()
-        .unwrap_or(10)
-        .max(10);
+        .enumerate()
+        .map(|(i, r)| {
+            let snippet = truncate_snippet(&r.snippet, 40);
+            vec![
+                vec![ast::Inline::Text((i + 1).to_string())],
+                vec![ast::Inline::Text(r.kind.to_string())],
+                vec![ast::Inline::Text(r.title.clone())],
+                vec![ast::Inline::Text(r.identifier.clone())],
+                vec![ast::Inline::Text(snippet)],
+            ]
+        })
+        .collect();
 
-    let mut out = String::new();
-    out.push_str(&format!(
-        "| # | {:<type_width$} | {:<title_width$} | {:<id_width$} | Snippet |\n",
-        "Type", "Title", "Identifier"
-    ));
-    out.push_str(&format!(
-        "|---|{:-<type_width$}--|{:-<title_width$}--|{:-<id_width$}--|---------|\n",
-        "", "", ""
-    ));
-    for (i, r) in results.iter().enumerate() {
-        let snippet = truncate_snippet(&r.snippet, 40);
-        out.push_str(&format!(
-            "| {} | {:<type_width$} | {:<title_width$} | {:<id_width$} | {} |\n",
-            i + 1,
-            r.kind,
-            r.title,
-            r.identifier,
-            snippet,
-        ));
-    }
-    out
+    let mut d = ast::Document::new();
+    d.push(ast::Block::Table { headers, rows });
+    d.to_string()
 }
 
 /// Truncates a snippet to `max_len` characters, appending "..." if needed.

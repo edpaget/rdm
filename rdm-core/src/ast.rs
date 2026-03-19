@@ -35,6 +35,11 @@ impl Document {
         });
     }
 
+    /// Append raw content that is rendered as-is.
+    pub fn raw(&mut self, content: &str) {
+        self.push(Block::Raw(content.to_owned()));
+    }
+
     /// Append a paragraph with plain text content.
     pub fn paragraph(&mut self, text: &str) {
         self.push(Block::Paragraph {
@@ -80,6 +85,8 @@ pub enum Block {
     HtmlComment(String),
     /// Blank line (controls spacing between blocks).
     BlankLine,
+    /// Raw content rendered as-is with no trailing newline.
+    Raw(String),
 }
 
 /// Inline-level Markdown elements.
@@ -204,6 +211,7 @@ impl fmt::Display for Block {
             }
             Block::HtmlComment(content) => writeln!(f, "<!-- {content} -->"),
             Block::BlankLine => writeln!(f),
+            Block::Raw(content) => write!(f, "{content}"),
         }
     }
 }
@@ -468,6 +476,17 @@ mod tests {
     #[test]
     fn display_blank_line() {
         assert_eq!(Block::BlankLine.to_string(), "\n");
+    }
+
+    #[test]
+    fn display_raw() {
+        let raw = Block::Raw("## Overview\n\nSome body content.\n".to_owned());
+        assert_eq!(raw.to_string(), "## Overview\n\nSome body content.\n");
+    }
+
+    #[test]
+    fn display_raw_empty() {
+        assert_eq!(Block::Raw(String::new()).to_string(), "");
     }
 
     // -- Display tests: Document --
