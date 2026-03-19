@@ -102,6 +102,11 @@ enum Command {
         #[arg(long, conflicts_with = "skills")]
         mcp: bool,
     },
+    /// Describe the rdm data model (entities and their fields).
+    Describe {
+        /// Entity name to describe (project, roadmap, phase, task). Omit to list all.
+        entity: Option<String>,
+    },
     /// Search across roadmaps, phases, and tasks.
     Search {
         /// The search query (fuzzy matched against titles and body content).
@@ -1322,6 +1327,45 @@ fn run() -> Result<()> {
                 doc.frontmatter.roadmap
             );
             maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+        }
+
+        Command::Describe { entity } => {
+            let entities = rdm_core::describe::all_entities();
+            match entity {
+                None => {
+                    let output = match format {
+                        OutputFormat::Json => serde_json::to_string_pretty(&entities)?,
+                        OutputFormat::Markdown => {
+                            rdm_core::describe::format_entity_list_md(&entities)
+                        }
+                        _ => rdm_core::describe::format_entity_list(&entities),
+                    };
+                    print!("{output}");
+                }
+                Some(name) => {
+                    let entity = entities.iter().find(|e| e.name == name);
+                    match entity {
+                        Some(e) => {
+                            let output = match format {
+                                OutputFormat::Json => serde_json::to_string_pretty(e)?,
+                                OutputFormat::Markdown => {
+                                    rdm_core::describe::format_entity_detail_md(e)
+                                }
+                                _ => rdm_core::describe::format_entity_detail(e),
+                            };
+                            print!("{output}");
+                        }
+                        None => {
+                            let valid: Vec<&str> = entities.iter().map(|e| e.name).collect();
+                            bail!(
+                                "unknown entity '{}'. Valid entities: {}",
+                                name,
+                                valid.join(", ")
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         Command::AgentConfig {

@@ -7,6 +7,8 @@ pub mod agent_config;
 pub mod ast;
 /// Plan repo configuration (`rdm.toml`).
 pub mod config;
+/// Model introspection: discover what rdm tracks and the shape of each entity.
+pub mod describe;
 /// Display formatting functions for roadmaps, phases, and projects.
 pub mod display;
 /// Generic document wrapper combining frontmatter with a markdown body.
