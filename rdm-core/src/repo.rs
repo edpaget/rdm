@@ -95,6 +95,24 @@ impl<S: Store> PlanRepo<S> {
         RelPath::new(&format!("projects/{project}/tasks/{task_slug}.md")).expect("valid path")
     }
 
+    /// Returns the path to a project's archived roadmaps directory.
+    pub fn archived_roadmaps_dir(&self, project: &str) -> RelPath {
+        RelPath::new(&format!("projects/{project}/archive/roadmaps")).expect("valid path")
+    }
+
+    /// Returns the path to a specific archived roadmap directory.
+    pub fn archived_roadmap_dir(&self, project: &str, roadmap: &str) -> RelPath {
+        RelPath::new(&format!("projects/{project}/archive/roadmaps/{roadmap}")).expect("valid path")
+    }
+
+    /// Returns the path to an archived roadmap's `roadmap.md` file.
+    pub fn archived_roadmap_path(&self, project: &str, roadmap: &str) -> RelPath {
+        RelPath::new(&format!(
+            "projects/{project}/archive/roadmaps/{roadmap}/roadmap.md"
+        ))
+        .expect("valid path")
+    }
+
     // -- Load operations --
 
     /// Loads and parses `rdm.toml` from the plan repo root.
@@ -925,6 +943,23 @@ impl<S: Store> PlanRepo<S> {
         false
     }
 
+    /// Recursively copies all files from `src` to `dst` in the store.
+    fn copy_tree(&mut self, src: &RelPath, dst: &RelPath) -> Result<()> {
+        let entries = self.store.list(src)?;
+        for entry in entries {
+            let src_child = src.join(&entry.name).expect("valid path");
+            let dst_child = dst.join(&entry.name).expect("valid path");
+            match entry.kind {
+                DirEntryKind::File => {
+                    let content = self.store.read(&src_child)?;
+                    self.store.write(&dst_child, content)?;
+                }
+                DirEntryKind::Dir => self.copy_tree(&src_child, &dst_child)?,
+            }
+        }
+        Ok(())
+    }
+
     /// Recursively deletes all files under a directory path in the store.
     fn delete_tree(&mut self, path: &RelPath) -> Result<()> {
         let entries = self.store.list(path)?;
@@ -970,6 +1005,151 @@ impl<S: Store> PlanRepo<S> {
         // Remove all files in the roadmap directory
         let dir = self.roadmap_dir(project, slug);
         self.delete_tree(&dir)?;
+        self.store.commit()?;
+        Ok(())
+    }
+
+    // -- Archive roadmap --
+
+    /// Archives a completed roadmap, moving it from active to archive.
+    ///
+    /// Unless `force` is true, all phases must have status `Done`.
+    /// Dependency references from other active roadmaps are cleaned up.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
+    /// [`Error::RoadmapHasIncompletePhases`] if any phase is not done and
+    /// `force` is false, or [`Error::Io`] on file I/O failures.
+    pub fn archive_roadmap(&mut self, project: &str, slug: &str, force: bool) -> Result<()> {
+        let roadmap_file = self.roadmap_path(project, slug);
+        if !self.store.exists(&roadmap_file) {
+            return Err(Error::RoadmapNotFound(slug.to_string()));
+        }
+
+        if !force {
+            let phases = self.list_phases(project, slug)?;
+            let all_done = phases
+                .iter()
+                .all(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done);
+            if !all_done {
+                return Err(Error::RoadmapHasIncompletePhases(slug.to_string()));
+            }
+        }
+
+        // Clean up dependency refs from other active roadmaps
+        let roadmaps = self.list_roadmaps(project)?;
+        for rm in roadmaps {
+            if rm.frontmatter.roadmap == slug {
+                continue;
+            }
+            if let Some(ref deps) = rm.frontmatter.dependencies
+                && deps.contains(&slug.to_string())
+            {
+                self.remove_dependency(project, &rm.frontmatter.roadmap, slug)?;
+            }
+        }
+
+        let src = self.roadmap_dir(project, slug);
+        let dst = self.archived_roadmap_dir(project, slug);
+        self.copy_tree(&src, &dst)?;
+        self.delete_tree(&src)?;
+        self.store.commit()?;
+        Ok(())
+    }
+
+    /// Lists archived roadmaps in a project.
+    ///
+    /// Returns an empty vec if the archive directory doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] on read failure, or frontmatter errors
+    /// if any archived roadmap file is malformed.
+    pub fn list_archived_roadmaps(&self, project: &str) -> Result<Vec<Document<Roadmap>>> {
+        let archive_dir = self.archived_roadmaps_dir(project);
+        let entries = self.store.list(&archive_dir)?;
+        let mut slugs: Vec<String> = entries
+            .into_iter()
+            .filter(|e| e.kind == DirEntryKind::Dir)
+            .map(|e| e.name)
+            .collect();
+        slugs.sort();
+
+        let mut roadmaps = Vec::new();
+        for slug in slugs {
+            let path = self.archived_roadmap_path(project, &slug);
+            if !self.store.exists(&path) {
+                continue;
+            }
+            let content = self.store.read(&path)?;
+            let doc: Document<Roadmap> = Document::parse(&content)?;
+            roadmaps.push(doc);
+        }
+        Ok(roadmaps)
+    }
+
+    /// Lists phases in an archived roadmap, sorted by phase number.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RoadmapNotFound`] if the archived roadmap doesn't exist,
+    /// or frontmatter/IO errors if phase files are malformed or unreadable.
+    pub fn list_archived_phases(
+        &self,
+        project: &str,
+        roadmap: &str,
+    ) -> Result<Vec<(String, Document<Phase>)>> {
+        let roadmap_file = self.archived_roadmap_path(project, roadmap);
+        if !self.store.exists(&roadmap_file) {
+            return Err(Error::RoadmapNotFound(roadmap.to_string()));
+        }
+
+        let dir = self.archived_roadmap_dir(project, roadmap);
+        let entries = self.store.list(&dir)?;
+
+        let mut phases: Vec<(String, Document<Phase>)> = Vec::new();
+        for entry in entries {
+            if entry.kind != DirEntryKind::File {
+                continue;
+            }
+            if entry.name == "roadmap.md" || !entry.name.ends_with(".md") {
+                continue;
+            }
+            let stem = entry.name.trim_end_matches(".md").to_string();
+            let path = dir.join(&entry.name).expect("valid path");
+            let content = self.store.read(&path)?;
+            let doc: Document<Phase> = Document::parse(&content)?;
+            phases.push((stem, doc));
+        }
+        phases.sort_by_key(|(_, doc)| doc.frontmatter.phase);
+        Ok(phases)
+    }
+
+    /// Restores an archived roadmap back to active status.
+    ///
+    /// Does not restore dependency references — the user must re-add them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RoadmapNotFound`] if the archived roadmap doesn't exist,
+    /// [`Error::DuplicateSlug`] if an active roadmap with the same slug exists,
+    /// or [`Error::Io`] on file I/O failures.
+    pub fn unarchive_roadmap(&mut self, project: &str, slug: &str) -> Result<()> {
+        let archived_file = self.archived_roadmap_path(project, slug);
+        if !self.store.exists(&archived_file) {
+            return Err(Error::RoadmapNotFound(slug.to_string()));
+        }
+
+        let active_file = self.roadmap_path(project, slug);
+        if self.store.exists(&active_file) {
+            return Err(Error::DuplicateSlug(slug.to_string()));
+        }
+
+        let src = self.archived_roadmap_dir(project, slug);
+        let dst = self.roadmap_dir(project, slug);
+        self.copy_tree(&src, &dst)?;
+        self.delete_tree(&src)?;
         self.store.commit()?;
         Ok(())
     }
@@ -2528,5 +2708,195 @@ mod tests {
         let low_pos = content.find("low-task").unwrap();
         assert!(crit_pos < high_pos);
         assert!(high_pos < low_pos);
+    }
+
+    // -- Archive roadmap tests --
+
+    #[test]
+    fn archive_roadmap_moves_files() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_phase("fbm", "alpha", "core", "Core", None, None)
+            .unwrap();
+        repo.update_phase(
+            "fbm",
+            "alpha",
+            "phase-1-core",
+            Some(PhaseStatus::Done),
+            None,
+        )
+        .unwrap();
+
+        repo.archive_roadmap("fbm", "alpha", false).unwrap();
+
+        // Gone from active
+        assert!(!repo.store().exists(&repo.roadmap_path("fbm", "alpha")));
+        // Present in archive
+        assert!(
+            repo.store()
+                .exists(&repo.archived_roadmap_path("fbm", "alpha"))
+        );
+    }
+
+    #[test]
+    fn archive_roadmap_not_found() {
+        let mut repo = setup_with_project();
+        let result = repo.archive_roadmap("fbm", "nonexistent", false);
+        assert!(matches!(result, Err(Error::RoadmapNotFound(ref s)) if s == "nonexistent"));
+    }
+
+    #[test]
+    fn archive_roadmap_rejects_incomplete_phases() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_phase("fbm", "alpha", "core", "Core", None, None)
+            .unwrap();
+
+        let result = repo.archive_roadmap("fbm", "alpha", false);
+        assert!(matches!(
+            result,
+            Err(Error::RoadmapHasIncompletePhases(ref s)) if s == "alpha"
+        ));
+    }
+
+    #[test]
+    fn archive_roadmap_force_overrides_check() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_phase("fbm", "alpha", "core", "Core", None, None)
+            .unwrap();
+
+        // force=true succeeds even with incomplete phases
+        repo.archive_roadmap("fbm", "alpha", true).unwrap();
+        assert!(
+            repo.store()
+                .exists(&repo.archived_roadmap_path("fbm", "alpha"))
+        );
+    }
+
+    #[test]
+    fn archive_roadmap_all_done_no_force_needed() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_phase("fbm", "alpha", "core", "Core", None, None)
+            .unwrap();
+        repo.update_phase(
+            "fbm",
+            "alpha",
+            "phase-1-core",
+            Some(PhaseStatus::Done),
+            None,
+        )
+        .unwrap();
+
+        // All phases done, force=false should succeed
+        repo.archive_roadmap("fbm", "alpha", false).unwrap();
+        assert!(
+            repo.store()
+                .exists(&repo.archived_roadmap_path("fbm", "alpha"))
+        );
+    }
+
+    #[test]
+    fn archive_roadmap_cleans_up_dependencies() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+        repo.create_roadmap("fbm", "gamma", "Gamma", None).unwrap();
+
+        repo.add_dependency("fbm", "beta", "alpha").unwrap();
+        repo.add_dependency("fbm", "gamma", "alpha").unwrap();
+        repo.add_dependency("fbm", "gamma", "beta").unwrap();
+
+        repo.archive_roadmap("fbm", "alpha", true).unwrap();
+
+        // beta should have no dependencies left
+        let beta = repo.load_roadmap("fbm", "beta").unwrap();
+        assert_eq!(beta.frontmatter.dependencies, None);
+
+        // gamma should still depend on beta but not alpha
+        let gamma = repo.load_roadmap("fbm", "gamma").unwrap();
+        assert_eq!(
+            gamma.frontmatter.dependencies,
+            Some(vec!["beta".to_string()])
+        );
+    }
+
+    #[test]
+    fn archive_roadmap_not_in_active_list() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_roadmap("fbm", "beta", "Beta", None).unwrap();
+
+        repo.archive_roadmap("fbm", "alpha", true).unwrap();
+
+        let roadmaps = repo.list_roadmaps("fbm").unwrap();
+        let slugs: Vec<_> = roadmaps
+            .iter()
+            .map(|r| r.frontmatter.roadmap.as_str())
+            .collect();
+        assert_eq!(slugs, vec!["beta"]);
+    }
+
+    #[test]
+    fn list_archived_roadmaps_returns_archived() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+
+        repo.archive_roadmap("fbm", "alpha", true).unwrap();
+
+        let archived = repo.list_archived_roadmaps("fbm").unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].frontmatter.roadmap, "alpha");
+    }
+
+    #[test]
+    fn list_archived_roadmaps_empty() {
+        let repo = setup_with_project();
+        let archived = repo.list_archived_roadmaps("fbm").unwrap();
+        assert!(archived.is_empty());
+    }
+
+    #[test]
+    fn unarchive_roadmap_restores_files() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_phase("fbm", "alpha", "core", "Core", None, None)
+            .unwrap();
+
+        repo.archive_roadmap("fbm", "alpha", true).unwrap();
+        assert!(!repo.store().exists(&repo.roadmap_path("fbm", "alpha")));
+
+        repo.unarchive_roadmap("fbm", "alpha").unwrap();
+        assert!(repo.store().exists(&repo.roadmap_path("fbm", "alpha")));
+        assert!(
+            !repo
+                .store()
+                .exists(&repo.archived_roadmap_path("fbm", "alpha"))
+        );
+    }
+
+    #[test]
+    fn unarchive_roadmap_not_found() {
+        let mut repo = setup_with_project();
+        let result = repo.unarchive_roadmap("fbm", "nonexistent");
+        assert!(matches!(result, Err(Error::RoadmapNotFound(ref s)) if s == "nonexistent"));
+    }
+
+    #[test]
+    fn unarchive_roadmap_duplicate_slug() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.create_phase("fbm", "alpha", "core", "Core", None, None)
+            .unwrap();
+
+        repo.archive_roadmap("fbm", "alpha", true).unwrap();
+
+        // Create a new active roadmap with the same slug
+        repo.create_roadmap("fbm", "alpha", "Alpha 2", None)
+            .unwrap();
+
+        let result = repo.unarchive_roadmap("fbm", "alpha");
+        assert!(matches!(result, Err(Error::DuplicateSlug(ref s)) if s == "alpha"));
     }
 }

@@ -33,6 +33,8 @@ pub enum Error {
     InvalidPath(String),
     /// A specified phase stem is not part of the source roadmap.
     InvalidPhaseSelection(String),
+    /// The roadmap has incomplete phases and cannot be archived without force.
+    RoadmapHasIncompletePhases(String),
     /// A git operation failed.
     Git(String),
 }
@@ -84,6 +86,12 @@ impl std::fmt::Display for Error {
             Error::InvalidPath(msg) => write!(f, "invalid path: {msg}"),
             Error::InvalidPhaseSelection(msg) => {
                 write!(f, "invalid phase selection: {msg}")
+            }
+            Error::RoadmapHasIncompletePhases(slug) => {
+                write!(
+                    f,
+                    "roadmap '{slug}' has incomplete phases — pass --force to archive anyway"
+                )
             }
             Error::Git(msg) => write!(f, "git error: {msg}"),
         }

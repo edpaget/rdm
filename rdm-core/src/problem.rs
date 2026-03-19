@@ -91,6 +91,15 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("invalid phase selection: {msg}")),
                 instance: None,
             },
+            Error::RoadmapHasIncompletePhases(slug) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(format!(
+                    "roadmap '{slug}' has incomplete phases — pass --force to archive anyway"
+                )),
+                instance: None,
+            },
             // Internal errors: no detail leak
             Error::Io(_)
             | Error::FrontmatterParse(_)

@@ -208,6 +208,9 @@ enum RoadmapCommand {
         /// Project to list roadmaps for.
         #[arg(long)]
         project: Option<String>,
+        /// Show archived roadmaps instead of active ones.
+        #[arg(long)]
+        archived: bool,
     },
     /// Add a dependency on another roadmap.
     Depend {
@@ -267,6 +270,25 @@ enum RoadmapCommand {
         /// Add a dependency from the new roadmap on the source.
         #[arg(long)]
         depends_on: bool,
+    },
+    /// Archive a completed roadmap.
+    Archive {
+        /// Roadmap slug to archive.
+        slug: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Archive even if some phases are not done.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Restore an archived roadmap to active status.
+    Unarchive {
+        /// Roadmap slug to restore.
+        slug: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
     },
 }
 
@@ -818,20 +840,37 @@ fn run() -> Result<()> {
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
-                RoadmapCommand::List { project } => {
+                RoadmapCommand::List { project, archived } => {
                     reject_json(format, "roadmap list")?;
                     let project = resolve_project(project, &repo)?;
-                    let roadmaps = repo
-                        .list_roadmaps(&project)
-                        .context("failed to list roadmaps")?;
-                    let mut entries = Vec::new();
-                    for roadmap_doc in roadmaps {
-                        let slug = &roadmap_doc.frontmatter.roadmap;
-                        let phases = repo.list_phases(&project, slug).with_context(|| {
-                            format!("failed to list phases for roadmap '{slug}'")
-                        })?;
-                        entries.push((roadmap_doc, phases));
-                    }
+                    let entries = if archived {
+                        let roadmaps = repo
+                            .list_archived_roadmaps(&project)
+                            .context("failed to list archived roadmaps")?;
+                        let mut entries = Vec::new();
+                        for roadmap_doc in roadmaps {
+                            let slug = &roadmap_doc.frontmatter.roadmap;
+                            let phases =
+                                repo.list_archived_phases(&project, slug).with_context(|| {
+                                    format!("failed to list phases for archived roadmap '{slug}'")
+                                })?;
+                            entries.push((roadmap_doc, phases));
+                        }
+                        entries
+                    } else {
+                        let roadmaps = repo
+                            .list_roadmaps(&project)
+                            .context("failed to list roadmaps")?;
+                        let mut entries = Vec::new();
+                        for roadmap_doc in roadmaps {
+                            let slug = &roadmap_doc.frontmatter.roadmap;
+                            let phases = repo.list_phases(&project, slug).with_context(|| {
+                                format!("failed to list phases for roadmap '{slug}'")
+                            })?;
+                            entries.push((roadmap_doc, phases));
+                        }
+                        entries
+                    };
                     match format {
                         OutputFormat::Human => print!("{}", display::format_roadmap_list(&entries)),
                         OutputFormat::Table => print!("{}", table::format_roadmap_table(&entries)),
@@ -907,6 +946,24 @@ fn run() -> Result<()> {
                         "Split {} phase(s) from '{slug}' into new roadmap '{into}'",
                         resolved_stems.len()
                     );
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                }
+                RoadmapCommand::Archive {
+                    slug,
+                    project,
+                    force,
+                } => {
+                    let project = resolve_project(project, &repo)?;
+                    repo.archive_roadmap(&project, &slug, force)
+                        .context("failed to archive roadmap")?;
+                    println!("Archived roadmap '{slug}' from project '{project}'");
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                }
+                RoadmapCommand::Unarchive { slug, project } => {
+                    let project = resolve_project(project, &repo)?;
+                    repo.unarchive_roadmap(&project, &slug)
+                        .context("failed to unarchive roadmap")?;
+                    println!("Restored roadmap '{slug}' to project '{project}'");
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
             }

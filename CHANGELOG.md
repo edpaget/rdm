@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Global `--format` flag on all read commands (defaults to `human`; `text` accepted as alias for backward compatibility)
 - 6 mutation MCP tools: `rdm_roadmap_create`, `rdm_phase_create`, `rdm_phase_update`, `rdm_task_create`, `rdm_task_update`, `rdm_task_promote`
 - 8 read-only MCP tools: `rdm_project_list`, `rdm_roadmap_list`, `rdm_roadmap_show`, `rdm_phase_list`, `rdm_phase_show`, `rdm_task_list`, `rdm_task_show`, `rdm_search`
+- `rdm roadmap archive <slug>` command with `--force` flag to archive completed roadmaps
+- `rdm roadmap list --archived` flag to show archived roadmaps
+- `rdm roadmap unarchive <slug>` command to restore archived roadmaps to active status
+- `RoadmapHasIncompletePhases` error variant in rdm-core for archive validation
 - `rdm roadmap split <slug> --phases <stems-or-numbers>... --into <new-slug> --title "Title"` command to extract selected phases from an existing roadmap into a new one, with automatic renumbering and optional `--depends-on` flag
 - `PlanRepo::split_roadmap` method in rdm-core for programmatic roadmap splitting
 - `InvalidPhaseSelection` error variant in rdm-core for phase selection validation
