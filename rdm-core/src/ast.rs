@@ -118,6 +118,105 @@ impl Inline {
     }
 }
 
+use std::fmt;
+
+impl fmt::Display for Inline {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Inline::Text(s) => write!(f, "{s}"),
+            Inline::Bold(content) => {
+                write!(f, "**")?;
+                for node in content {
+                    write!(f, "{node}")?;
+                }
+                write!(f, "**")
+            }
+            Inline::Link { text, url } => {
+                write!(f, "[")?;
+                for node in text {
+                    write!(f, "{node}")?;
+                }
+                write!(f, "]({url})")
+            }
+        }
+    }
+}
+
+impl fmt::Display for Block {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Block::Heading { level, content } => {
+                for _ in 0..*level {
+                    write!(f, "#")?;
+                }
+                write!(f, " ")?;
+                for node in content {
+                    write!(f, "{node}")?;
+                }
+                writeln!(f)
+            }
+            Block::Paragraph { content } => {
+                for node in content {
+                    write!(f, "{node}")?;
+                }
+                writeln!(f)
+            }
+            Block::Table { headers, rows } => {
+                // Header row
+                write!(f, "|")?;
+                for header in headers {
+                    write!(f, " ")?;
+                    for node in header {
+                        write!(f, "{node}")?;
+                    }
+                    write!(f, " |")?;
+                }
+                writeln!(f)?;
+                // Separator row
+                write!(f, "|")?;
+                for _ in headers {
+                    write!(f, "---|")?;
+                }
+                writeln!(f)?;
+                // Data rows
+                for row in rows {
+                    write!(f, "|")?;
+                    for cell in row {
+                        write!(f, " ")?;
+                        for node in cell {
+                            write!(f, "{node}")?;
+                        }
+                        write!(f, " |")?;
+                    }
+                    writeln!(f)?;
+                }
+                Ok(())
+            }
+            Block::UnorderedList { items } => {
+                for item in items {
+                    write!(f, "- ")?;
+                    for node in item {
+                        write!(f, "{node}")?;
+                    }
+                    writeln!(f)?;
+                }
+                Ok(())
+            }
+            Block::HtmlComment(content) => writeln!(f, "<!-- {content} -->"),
+            Block::BlankLine => writeln!(f),
+        }
+    }
+}
+
+impl fmt::Display for Document {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for block in &self.nodes {
+            write!(f, "{block}")?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +377,118 @@ mod tests {
         let doc = Document::new();
         let debug = format!("{:?}", doc);
         assert!(debug.contains("Document"));
+    }
+
+    // -- Display tests: Inline --
+
+    #[test]
+    fn display_inline_text() {
+        assert_eq!(Inline::text("hello").to_string(), "hello");
+    }
+
+    #[test]
+    fn display_inline_bold_plain() {
+        assert_eq!(Inline::bold("strong").to_string(), "**strong**");
+    }
+
+    #[test]
+    fn display_inline_bold_nested() {
+        let bold = Inline::Bold(vec![Inline::text("hello"), Inline::text(" world")]);
+        assert_eq!(bold.to_string(), "**hello world**");
+    }
+
+    #[test]
+    fn display_inline_link() {
+        assert_eq!(
+            Inline::link("click", "https://example.com").to_string(),
+            "[click](https://example.com)"
+        );
+    }
+
+    // -- Display tests: Block --
+
+    #[test]
+    fn display_heading_level_1() {
+        let block = Block::Heading {
+            level: 1,
+            content: vec![Inline::text("Title")],
+        };
+        assert_eq!(block.to_string(), "# Title\n");
+    }
+
+    #[test]
+    fn display_heading_level_3() {
+        let block = Block::Heading {
+            level: 3,
+            content: vec![Inline::text("Title")],
+        };
+        assert_eq!(block.to_string(), "### Title\n");
+    }
+
+    #[test]
+    fn display_paragraph() {
+        let block = Block::Paragraph {
+            content: vec![Inline::text("Hello world")],
+        };
+        assert_eq!(block.to_string(), "Hello world\n");
+    }
+
+    #[test]
+    fn display_table() {
+        let table = Block::Table {
+            headers: vec![vec![Inline::text("Name")], vec![Inline::text("Status")]],
+            rows: vec![
+                vec![vec![Inline::text("alpha")], vec![Inline::bold("done")]],
+                vec![vec![Inline::text("beta")], vec![Inline::text("open")]],
+            ],
+        };
+        assert_eq!(
+            table.to_string(),
+            "| Name | Status |\n|---|---|\n| alpha | **done** |\n| beta | open |\n"
+        );
+    }
+
+    #[test]
+    fn display_unordered_list() {
+        let list = Block::UnorderedList {
+            items: vec![
+                vec![Inline::text("item one")],
+                vec![Inline::text("item two")],
+            ],
+        };
+        assert_eq!(list.to_string(), "- item one\n- item two\n");
+    }
+
+    #[test]
+    fn display_html_comment() {
+        let comment = Block::HtmlComment("auto-generated".to_owned());
+        assert_eq!(comment.to_string(), "<!-- auto-generated -->\n");
+    }
+
+    #[test]
+    fn display_blank_line() {
+        assert_eq!(Block::BlankLine.to_string(), "\n");
+    }
+
+    // -- Display tests: Document --
+
+    #[test]
+    fn display_document_integration() {
+        let mut doc = Document::new();
+        doc.heading(1, "My Doc");
+        doc.push(Block::BlankLine);
+        doc.paragraph("A paragraph.");
+        doc.push(Block::BlankLine);
+        doc.push(Block::Table {
+            headers: vec![vec![Inline::text("Col")]],
+            rows: vec![vec![vec![Inline::text("val")]]],
+        });
+        doc.push(Block::UnorderedList {
+            items: vec![vec![Inline::text("one")], vec![Inline::text("two")]],
+        });
+        assert_eq!(
+            doc.to_string(),
+            "# My Doc\n\nA paragraph.\n\n| Col |\n|---|\n| val |\n- one\n- two\n"
+        );
     }
 }

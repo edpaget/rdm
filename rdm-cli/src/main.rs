@@ -461,12 +461,11 @@ fn resolve_staging(flag: bool, root: &Path) -> bool {
     }
     // Check rdm.toml for stage setting
     let config_path = root.join("rdm.toml");
-    if let Ok(contents) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = rdm_core::config::Config::from_toml(&contents) {
-            if config.stage == Some(true) {
-                return true;
-            }
-        }
+    if let Ok(contents) = std::fs::read_to_string(&config_path)
+        && let Ok(config) = rdm_core::config::Config::from_toml(&contents)
+        && config.stage == Some(true)
+    {
+        return true;
     }
     false
 }
@@ -652,13 +651,13 @@ fn maybe_print_uncommitted_hint(store: &AppStore, staging: bool) {
     if !staging {
         return;
     }
-    if let Ok(statuses) = store.git_status() {
-        if !statuses.is_empty() {
-            println!(
-                "\n  ({} uncommitted change(s) — run `rdm status` for details)",
-                statuses.len()
-            );
-        }
+    if let Ok(statuses) = store.git_status()
+        && !statuses.is_empty()
+    {
+        println!(
+            "\n  ({} uncommitted change(s) — run `rdm status` for details)",
+            statuses.len()
+        );
     }
 }
 
