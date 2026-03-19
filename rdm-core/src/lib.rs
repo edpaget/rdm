@@ -32,3 +32,5 @@ pub mod repo;
 pub mod search;
 /// Storage abstraction layer for plan repo data.
 pub mod store;
+/// Hierarchical tree view of plan repo contents.
+pub mod tree;

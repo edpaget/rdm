@@ -819,3 +819,86 @@ fn phase_update_without_status_and_without_body() {
         .success()
         .stdout(predicate::str::contains("not-started"));
 }
+
+#[test]
+fn phase_show_includes_navigation_hints() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+    create_phase(&dir, "service", "Keeper Service");
+    create_phase(&dir, "ui", "UI Layer");
+
+    // Middle phase has both prev and next
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-2-service",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Prev: rdm phase show phase-1-core")
+                .and(predicate::str::contains("Next: rdm phase show phase-3-ui")),
+        );
+}
+
+#[test]
+fn phase_show_first_phase_no_prev() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+    create_phase(&dir, "service", "Keeper Service");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Next: rdm phase show phase-2-service")
+                .and(predicate::str::contains("Prev:").not()),
+        );
+}
+
+#[test]
+fn phase_show_last_phase_no_next() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+    create_phase(&dir, "service", "Keeper Service");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-2-service",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Prev: rdm phase show phase-1-core")
+                .and(predicate::str::contains("Next:").not()),
+        );
+}

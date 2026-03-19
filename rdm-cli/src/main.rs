@@ -11,6 +11,7 @@ use rdm_core::json;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
+use rdm_core::tree;
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
 
@@ -106,6 +107,12 @@ enum Command {
     Describe {
         /// Entity name to describe (project, roadmap, phase, task). Omit to list all.
         entity: Option<String>,
+    },
+    /// Show a hierarchical tree of a project's roadmaps, phases, and tasks.
+    Tree {
+        /// Project to show the tree for.
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Search across roadmaps, phases, and tasks.
     Search {
@@ -1129,15 +1136,41 @@ fn run() -> Result<()> {
                     if no_body {
                         doc.body = String::new();
                     }
+
+                    // Compute prev/next phase stems for navigation
+                    let phases = repo
+                        .list_phases(&project, &roadmap)
+                        .context("failed to list phases")?;
+                    let pos = phases.iter().position(|(s, _)| s == &stem);
+                    let prev_stem = pos.and_then(|i| {
+                        if i > 0 {
+                            Some(phases[i - 1].0.as_str())
+                        } else {
+                            None
+                        }
+                    });
+                    let next_stem = pos.and_then(|i| phases.get(i + 1).map(|(s, _)| s.as_str()));
+
+                    let nav = display::PhaseNav {
+                        prev: prev_stem,
+                        next: next_stem,
+                        roadmap: &roadmap,
+                        project: &project,
+                    };
+
                     match format {
                         OutputFormat::Human => {
-                            print!("{}", display::format_phase_detail(&stem, &doc))
+                            print!("{}", display::format_phase_detail(&stem, &doc, Some(&nav)))
                         }
                         OutputFormat::Markdown => {
-                            print!("{}", display::format_phase_detail_md(&stem, &doc))
+                            print!(
+                                "{}",
+                                display::format_phase_detail_md(&stem, &doc, Some(&nav))
+                            )
                         }
                         OutputFormat::Json => {
-                            let j = json::phase_to_json(&stem, &doc, &roadmap);
+                            let j =
+                                json::phase_to_json(&stem, &doc, &roadmap, prev_stem, next_stem);
                             println!(
                                 "{}",
                                 serde_json::to_string_pretty(&j)
@@ -1327,6 +1360,26 @@ fn run() -> Result<()> {
                 doc.frontmatter.roadmap
             );
             maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+        }
+
+        Command::Tree { project } => {
+            let repo = PlanRepo::new(make_store(&root, staging)?);
+            let project = resolve_project(project, &repo)?;
+            let node = tree::build_tree(&repo, &project).context("failed to build tree")?;
+            match format {
+                OutputFormat::Human => print!("{}", tree::format_tree(&node)),
+                OutputFormat::Markdown => print!("{}", tree::format_tree_md(&node)),
+                OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&node).context("failed to serialize tree")?
+                    );
+                }
+                OutputFormat::Table => bail!(
+                    "--format table is not supported for 'tree'; use --format human, --format json, --format markdown, or omit --format"
+                ),
+            }
+            maybe_print_uncommitted_hint(repo.store(), staging);
         }
 
         Command::Describe { entity } => {

@@ -300,6 +300,9 @@ pub type RoadmapWithPhases = (Document<Roadmap>, Vec<(String, Document<Phase>)>)
 /// Displays the roadmap title, project/slug metadata, phase progress table,
 /// and any body content from the document. If the document body is non-empty,
 /// it is appended after the phase table (or "No phases yet." message).
+///
+/// When `project` is `Some`, a navigation hint is appended showing how to
+/// drill into individual phases.
 pub fn format_roadmap_summary(
     doc: &Document<Roadmap>,
     phases: &[(String, Document<Phase>)],
@@ -350,11 +353,35 @@ pub fn format_roadmap_summary(
         d.push(ast::Block::BlankLine);
         d.raw(&doc.body);
     }
+
+    if !phases.is_empty() {
+        d.push(ast::Block::BlankLine);
+        d.paragraph(&format!(
+            "Hint: rdm phase show <stem> --roadmap {} --project {}",
+            roadmap.roadmap, roadmap.project
+        ));
+    }
     d.to_string()
 }
 
-/// Formats a single phase detail view.
-pub fn format_phase_detail(stem: &str, doc: &Document<Phase>) -> String {
+/// Navigation context for prev/next phase hints.
+pub struct PhaseNav<'a> {
+    /// Stem of the previous phase, if any.
+    pub prev: Option<&'a str>,
+    /// Stem of the next phase, if any.
+    pub next: Option<&'a str>,
+    /// Parent roadmap slug.
+    pub roadmap: &'a str,
+    /// Project name.
+    pub project: &'a str,
+}
+
+/// Formats a single phase detail view with optional prev/next navigation.
+pub fn format_phase_detail(
+    stem: &str,
+    doc: &Document<Phase>,
+    nav: Option<&PhaseNav<'_>>,
+) -> String {
     let fm = &doc.frontmatter;
     let mut d = ast::Document::new();
     d.heading(1, &format!("Phase {}: {}", fm.phase, fm.title));
@@ -368,7 +395,26 @@ pub fn format_phase_detail(stem: &str, doc: &Document<Phase>) -> String {
         d.push(ast::Block::BlankLine);
         d.raw(&doc.body);
     }
+    if let Some(nav) = nav {
+        append_phase_nav(&mut d, nav);
+    }
     d.to_string()
+}
+
+fn append_phase_nav(d: &mut ast::Document, nav: &PhaseNav<'_>) {
+    d.push(ast::Block::BlankLine);
+    if let Some(prev) = nav.prev {
+        d.paragraph(&format!(
+            "Prev: rdm phase show {prev} --roadmap {} --project {}",
+            nav.roadmap, nav.project
+        ));
+    }
+    if let Some(next) = nav.next {
+        d.paragraph(&format!(
+            "Next: rdm phase show {next} --roadmap {} --project {}",
+            nav.roadmap, nav.project
+        ));
+    }
 }
 
 /// Formats a list of phases as a table with number, title, status, and stem.
@@ -571,6 +617,13 @@ pub fn format_roadmap_summary_md(
     if !doc.body.is_empty() {
         out.push_str(&format!("\n{}", doc.body));
     }
+
+    if !phases.is_empty() {
+        out.push_str(&format!(
+            "\n> Hint: `rdm phase show <stem> --roadmap {} --project {}`\n",
+            roadmap.roadmap, roadmap.project
+        ));
+    }
     out
 }
 
@@ -607,7 +660,11 @@ pub fn format_roadmap_list_md(entries: &[RoadmapWithPhases]) -> String {
 
 /// Formats a single phase detail as Markdown with heading, bullet metadata, and body.
 #[must_use]
-pub fn format_phase_detail_md(stem: &str, doc: &Document<Phase>) -> String {
+pub fn format_phase_detail_md(
+    stem: &str,
+    doc: &Document<Phase>,
+    nav: Option<&PhaseNav<'_>>,
+) -> String {
     let fm = &doc.frontmatter;
     let mut out = String::new();
     out.push_str(&format!("# Phase {}: {}\n\n", fm.phase, fm.title));
@@ -618,6 +675,21 @@ pub fn format_phase_detail_md(stem: &str, doc: &Document<Phase>) -> String {
     }
     if !doc.body.is_empty() {
         out.push_str(&format!("\n{}", doc.body));
+    }
+    if let Some(nav) = nav {
+        out.push('\n');
+        if let Some(prev) = nav.prev {
+            out.push_str(&format!(
+                "> Prev: `rdm phase show {prev} --roadmap {} --project {}`\n",
+                nav.roadmap, nav.project
+            ));
+        }
+        if let Some(next) = nav.next {
+            out.push_str(&format!(
+                "> Next: `rdm phase show {next} --roadmap {} --project {}`\n",
+                nav.roadmap, nav.project
+            ));
+        }
     }
     out
 }
@@ -808,7 +880,7 @@ mod tests {
     #[test]
     fn phase_detail_with_completed() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
-        let output = format_phase_detail("phase-1-core", &doc);
+        let output = format_phase_detail("phase-1-core", &doc, None);
         assert!(output.contains("# Phase 1: Core"));
         assert!(output.contains("Status: done"));
         assert!(output.contains("Completed: 2026-03-14"));
@@ -818,7 +890,7 @@ mod tests {
     #[test]
     fn phase_detail_without_completed() {
         let doc = make_phase_doc(2, "Service", PhaseStatus::NotStarted);
-        let output = format_phase_detail("phase-2-service", &doc);
+        let output = format_phase_detail("phase-2-service", &doc, None);
         assert!(output.contains("Status: not-started"));
         assert!(!output.contains("Completed:"));
     }
@@ -1443,7 +1515,7 @@ mod tests {
     #[test]
     fn phase_detail_md_with_completed() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
-        let output = format_phase_detail_md("phase-1-core", &doc);
+        let output = format_phase_detail_md("phase-1-core", &doc, None);
         assert!(output.contains("# Phase 1: Core"));
         assert!(output.contains("- **Stem:** phase-1-core"));
         assert!(output.contains("- **Status:** done"));
@@ -1453,7 +1525,7 @@ mod tests {
     #[test]
     fn phase_detail_md_without_completed() {
         let doc = make_phase_doc(2, "Service", PhaseStatus::NotStarted);
-        let output = format_phase_detail_md("phase-2-service", &doc);
+        let output = format_phase_detail_md("phase-2-service", &doc, None);
         assert!(output.contains("- **Status:** not-started"));
         assert!(!output.contains("- **Completed:**"));
     }
@@ -1462,7 +1534,7 @@ mod tests {
     fn phase_detail_md_with_body() {
         let mut doc = make_phase_doc(1, "Core", PhaseStatus::InProgress);
         doc.body = "Implementation details.\n".to_string();
-        let output = format_phase_detail_md("phase-1-core", &doc);
+        let output = format_phase_detail_md("phase-1-core", &doc, None);
         assert!(output.contains("Implementation details."));
     }
 
@@ -1576,5 +1648,112 @@ mod tests {
     fn search_results_md_empty() {
         let output = format_search_results_md(&[]);
         assert_eq!(output, "No results found.\n");
+    }
+
+    // -- Navigation hint tests --
+
+    #[test]
+    fn roadmap_summary_includes_hint_when_phases_present() {
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        let phases = vec![(
+            "phase-1-core".to_string(),
+            make_phase_doc(1, "Core", PhaseStatus::InProgress),
+        )];
+        let output = format_roadmap_summary(&doc, &phases);
+        assert!(output.contains("Hint: rdm phase show <stem> --roadmap two-way --project fbm"));
+    }
+
+    #[test]
+    fn roadmap_summary_no_hint_when_no_phases() {
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        let output = format_roadmap_summary(&doc, &[]);
+        assert!(!output.contains("Hint:"));
+    }
+
+    #[test]
+    fn roadmap_summary_md_includes_hint_when_phases_present() {
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        let phases = vec![(
+            "phase-1-core".to_string(),
+            make_phase_doc(1, "Core", PhaseStatus::InProgress),
+        )];
+        let output = format_roadmap_summary_md(&doc, &phases);
+        assert!(output.contains("Hint:"));
+        assert!(output.contains("--roadmap two-way --project fbm"));
+    }
+
+    #[test]
+    fn roadmap_summary_md_no_hint_when_no_phases() {
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        let output = format_roadmap_summary_md(&doc, &[]);
+        assert!(!output.contains("Hint:"));
+    }
+
+    #[test]
+    fn phase_detail_with_nav_prev_and_next() {
+        let doc = make_phase_doc(2, "Service", PhaseStatus::InProgress);
+        let nav = PhaseNav {
+            prev: Some("phase-1-core"),
+            next: Some("phase-3-ui"),
+            roadmap: "two-way",
+            project: "fbm",
+        };
+        let output = format_phase_detail("phase-2-service", &doc, Some(&nav));
+        assert!(
+            output.contains("Prev: rdm phase show phase-1-core --roadmap two-way --project fbm")
+        );
+        assert!(output.contains("Next: rdm phase show phase-3-ui --roadmap two-way --project fbm"));
+    }
+
+    #[test]
+    fn phase_detail_first_phase_no_prev() {
+        let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
+        let nav = PhaseNav {
+            prev: None,
+            next: Some("phase-2-service"),
+            roadmap: "two-way",
+            project: "fbm",
+        };
+        let output = format_phase_detail("phase-1-core", &doc, Some(&nav));
+        assert!(!output.contains("Prev:"));
+        assert!(output.contains("Next: rdm phase show phase-2-service"));
+    }
+
+    #[test]
+    fn phase_detail_last_phase_no_next() {
+        let doc = make_phase_doc(3, "UI", PhaseStatus::NotStarted);
+        let nav = PhaseNav {
+            prev: Some("phase-2-service"),
+            next: None,
+            roadmap: "two-way",
+            project: "fbm",
+        };
+        let output = format_phase_detail("phase-3-ui", &doc, Some(&nav));
+        assert!(output.contains("Prev: rdm phase show phase-2-service"));
+        assert!(!output.contains("Next:"));
+    }
+
+    #[test]
+    fn phase_detail_md_with_nav() {
+        let doc = make_phase_doc(2, "Service", PhaseStatus::InProgress);
+        let nav = PhaseNav {
+            prev: Some("phase-1-core"),
+            next: Some("phase-3-ui"),
+            roadmap: "two-way",
+            project: "fbm",
+        };
+        let output = format_phase_detail_md("phase-2-service", &doc, Some(&nav));
+        assert!(output.contains("> Prev:"));
+        assert!(output.contains("> Next:"));
+        assert!(output.contains("phase-1-core"));
+        assert!(output.contains("phase-3-ui"));
+    }
+
+    #[test]
+    fn phase_detail_no_nav_shows_no_hints() {
+        let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
+        let output = format_phase_detail("phase-1-core", &doc, None);
+        assert!(!output.contains("Prev:"));
+        assert!(!output.contains("Next:"));
     }
 }

@@ -27,6 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `format_project_index` function in `rdm-core::display` for standalone per-project index rendering
 - `PlanRepo::generate_project_index` method and `project_index_path` path builder in `rdm-core`
 - Web UI hides completed roadmaps by default; toggle link (`?show_completed=true`) reveals them
+- `rdm tree` command — hierarchical overview of a project's roadmaps, phases, and tasks with statuses (human, JSON, and Markdown formats)
+- `rdm-core::tree` module with `TreeNode` types, `build_tree()`, and formatting functions
+- Navigation hints in `roadmap show` output — shows how to drill into individual phases
+- Prev/next phase navigation in `phase show` output — human and Markdown formats show commands for adjacent phases; JSON includes `prev_phase`/`next_phase` fields
 - `rdm describe` command for model introspection — lists entity types or shows fields for a specific entity (project, roadmap, phase, task)
 - `rdm-core::describe` module with `Describe` trait, `EntityInfo`/`FieldInfo` types, and formatting functions
 - Drift tests that compare serde keys against `Describe` field names to catch struct/describe mismatches at compile time

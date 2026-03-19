@@ -683,6 +683,55 @@ fn roadmap_delete_nonexistent() {
 }
 
 #[test]
+fn roadmap_show_includes_phase_hint() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way Players",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--title",
+            "Core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "show", "two-way", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Hint: rdm phase show <stem> --roadmap two-way --project fbm",
+        ));
+}
+
+#[test]
 fn roadmap_delete_cleans_up_dependencies() {
     let dir = TempDir::new().unwrap();
     init_with_two_roadmaps(&dir);

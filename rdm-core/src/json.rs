@@ -48,6 +48,12 @@ pub struct PhaseJson {
     pub completed: Option<NaiveDate>,
     /// Parent roadmap slug.
     pub roadmap: String,
+    /// Stem of the previous phase, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_phase: Option<String>,
+    /// Stem of the next phase, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_phase: Option<String>,
     /// Markdown body content.
     pub body: String,
 }
@@ -184,7 +190,15 @@ pub fn roadmap_to_json(
 }
 
 /// Build a [`PhaseJson`] from a phase document, stem, and parent roadmap slug.
-pub fn phase_to_json(stem: &str, doc: &Document<Phase>, roadmap: &str) -> PhaseJson {
+///
+/// `prev` and `next` are optional stems of adjacent phases.
+pub fn phase_to_json(
+    stem: &str,
+    doc: &Document<Phase>,
+    roadmap: &str,
+    prev: Option<&str>,
+    next: Option<&str>,
+) -> PhaseJson {
     let fm = &doc.frontmatter;
     PhaseJson {
         stem: stem.to_string(),
@@ -193,6 +207,8 @@ pub fn phase_to_json(stem: &str, doc: &Document<Phase>, roadmap: &str) -> PhaseJ
         status: fm.status,
         completed: fm.completed,
         roadmap: roadmap.to_string(),
+        prev_phase: prev.map(String::from),
+        next_phase: next.map(String::from),
         body: doc.body.clone(),
     }
 }
@@ -404,7 +420,7 @@ mod tests {
         assert!(!serialized.contains("tags"));
 
         let phase_doc = make_phase_doc(1, "X", PhaseStatus::NotStarted);
-        let pj = phase_to_json("phase-1-x", &phase_doc, "rm");
+        let pj = phase_to_json("phase-1-x", &phase_doc, "rm", None, None);
         let serialized = serde_json::to_string(&pj).unwrap();
         assert!(!serialized.contains("completed"));
     }

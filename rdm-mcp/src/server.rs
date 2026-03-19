@@ -298,7 +298,7 @@ impl RdmMcpServer {
             Err(e) => return core_err(e),
         };
 
-        ok_text(display::format_phase_detail(&stem, &doc))
+        ok_text(display::format_phase_detail(&stem, &doc, None))
     }
 
     /// List tasks in a project with optional filters.
@@ -466,7 +466,7 @@ impl RdmMcpServer {
             return core_err(e);
         }
         let stem = doc.frontmatter.stem(&params.slug);
-        ok_text(display::format_phase_detail(&stem, &doc))
+        ok_text(display::format_phase_detail(&stem, &doc, None))
     }
 
     /// Update a phase's status or body.
@@ -505,7 +505,7 @@ impl RdmMcpServer {
         if let Err(e) = repo.generate_index() {
             return core_err(e);
         }
-        ok_text(display::format_phase_detail(&stem, &doc))
+        ok_text(display::format_phase_detail(&stem, &doc, None))
     }
 
     /// Create a new task in a project.
