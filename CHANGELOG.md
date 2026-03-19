@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Prev/next phase navigation in `phase show` output — human and Markdown formats show commands for adjacent phases; JSON includes `prev_phase`/`next_phase` fields
 - `rdm describe` command for model introspection — lists entity types or shows fields for a specific entity (project, roadmap, phase, task)
 - `rdm-core::describe` module with `Describe` trait, `EntityInfo`/`FieldInfo` types, and formatting functions
+- End-to-end agent workflow integration tests validating the full project → roadmap → phase → body discovery path, JSON parity, schema coverage, and programmatic navigation
 - Drift tests that compare serde keys against `Describe` field names to catch struct/describe mismatches at compile time
 - `project show` command with `--format human/json/markdown` support
 - `--format json` support on all read commands: `roadmap list/show`, `phase list/show`, `task list/show`, `project list/show`, `search`, and top-level `list`
