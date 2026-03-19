@@ -473,10 +473,6 @@ pub struct McpConfigOptions {
 /// let json = generate_mcp_config(&McpConfigOptions { root: None });
 /// assert!(json.contains("mcpServers"));
 /// ```
-///
-/// # Errors
-///
-/// This function does not return errors; it always produces valid JSON.
 pub fn generate_mcp_config(opts: &McpConfigOptions) -> String {
     let args: Vec<serde_json::Value> = match &opts.root {
         Some(root) => vec![
