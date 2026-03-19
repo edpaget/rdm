@@ -234,6 +234,17 @@ If a task becomes large enough to warrant multiple phases, promote it to a roadm
 
 **Task statuses:** `open` → `in-progress` → `done` (or `wont-fix`). `done` and `wont-fix` are terminal.
 
+### Staging mode
+
+By default, every mutation auto-commits to git. Use `--stage` (or `RDM_STAGE=true`, or `stage = true` in `rdm.toml`) to defer git commits — files are written to disk but the git commit is skipped until you explicitly run `rdm commit`.
+
+```bash
+./target/debug/rdm --stage task create fix-bug --title "Fix bug" --no-edit --project rdm  # writes file, no git commit
+./target/debug/rdm status                          # show uncommitted changes
+./target/debug/rdm commit -m "batch: fix bug and update phase"  # explicit git commit
+./target/debug/rdm discard --force                 # reset working directory to HEAD (destructive)
+```
+
 ## Setup
 
 ```bash

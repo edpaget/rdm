@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Theme preference persists to `localStorage` across sessions
 - Computed overall status badge (done / in-progress / not-started) on roadmap list and detail pages
 - Last-changed timestamp on roadmap list and detail pages, derived from file modification times
+- `--stage` global flag and `RDM_STAGE` env var for deferred git commits — files are written to disk but the git commit is skipped until explicitly requested
+- `rdm status` command to show uncommitted changes in the plan repo
+- `rdm commit -m "message"` command for explicit git commits (auto-generates message if `-m` is omitted)
+- `rdm discard --force` command to reset working directory to HEAD state
+- `stage` option in `rdm.toml` for persistent staging mode
+- `staging_mode` on `GitStore` with `git_commit()`, `git_status()`, and `git_discard()` public methods
+- `FileChange` enum and `FileStatus` struct in `rdm-store-git` for working directory status reporting
 - `rdm-store-git` crate — git-backed Store with automatic commits via gitoxide; every `commit()` builds a tree from the working directory and creates a git commit with an auto-generated message
 - `git` feature flag on `rdm-cli` (default-on) — enables `GitStore` for automatic git commits on all plan repo mutations
 - `Error::Git(String)` variant in rdm-core for git-specific errors

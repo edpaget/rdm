@@ -2036,6 +2036,7 @@ dependencies = [
  "assert_cmd",
  "axum",
  "clap",
+ "gix",
  "is-terminal",
  "predicates",
  "rdm-core",

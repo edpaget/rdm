@@ -29,6 +29,10 @@ struct Cli {
     #[arg(long, global = true)]
     no_index: bool,
 
+    /// Defer git commits until an explicit `rdm commit`.
+    #[arg(long, global = true, env = "RDM_STAGE")]
+    stage: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -107,6 +111,23 @@ enum Command {
         /// Output format.
         #[arg(long, default_value = "text")]
         format: OutputFormat,
+    },
+    /// Show uncommitted changes in the plan repo.
+    #[cfg(feature = "git")]
+    Status,
+    /// Commit staged changes to git.
+    #[cfg(feature = "git")]
+    Commit {
+        /// Commit message (auto-generated if omitted).
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+    /// Discard uncommitted changes, restoring the working directory to HEAD.
+    #[cfg(feature = "git")]
+    Discard {
+        /// Confirm the destructive operation.
+        #[arg(long)]
+        force: bool,
     },
     /// Start the rdm REST API server.
     #[cfg(feature = "server")]
@@ -431,14 +452,36 @@ fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatus> {
     }
 }
 
+/// Resolves whether staging mode is active.
+///
+/// Priority: `--stage` flag / `RDM_STAGE` env > `stage` in `rdm.toml` > false.
+fn resolve_staging(flag: bool, root: &Path) -> bool {
+    if flag {
+        return true;
+    }
+    // Check rdm.toml for stage setting
+    let config_path = root.join("rdm.toml");
+    if let Ok(contents) = std::fs::read_to_string(&config_path) {
+        if let Ok(config) = rdm_core::config::Config::from_toml(&contents) {
+            if config.stage == Some(true) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Opens a store for an existing plan repo.
-fn make_store(root: &Path) -> Result<AppStore> {
+fn make_store(root: &Path, staging: bool) -> Result<AppStore> {
     #[cfg(feature = "git")]
     {
-        rdm_store_git::GitStore::new(root).context("failed to open git repository")
+        Ok(rdm_store_git::GitStore::new(root)
+            .context("failed to open git repository")?
+            .with_staging_mode(staging))
     }
     #[cfg(not(feature = "git"))]
     {
+        let _ = staging;
         Ok(FsStore::new(root))
     }
 }
@@ -585,10 +628,17 @@ async fn shutdown_signal() {
     eprintln!("\nShutting down gracefully...");
 }
 
-fn maybe_regenerate_index(repo: &mut PlanRepo<AppStore>, no_index: bool) -> Result<()> {
+fn maybe_regenerate_index(
+    repo: &mut PlanRepo<AppStore>,
+    no_index: bool,
+    staging: bool,
+) -> Result<()> {
     if !no_index {
         repo.generate_index()
             .context("failed to regenerate INDEX.md")?;
+    }
+    if staging {
+        println!("  (staged — run `rdm commit` to persist)");
     }
     Ok(())
 }
@@ -598,6 +648,7 @@ fn run() -> Result<()> {
     let root = cli
         .root
         .unwrap_or_else(|| std::env::current_dir().expect("cannot determine current directory"));
+    let staging = resolve_staging(cli.stage, &root);
 
     match cli.command {
         Command::Init => {
@@ -606,13 +657,13 @@ fn run() -> Result<()> {
         }
 
         Command::Index => {
-            let mut repo = PlanRepo::new(make_store(&root)?);
+            let mut repo = PlanRepo::new(make_store(&root, staging)?);
             repo.generate_index().context("failed to generate index")?;
             println!("Generated INDEX.md");
         }
 
         Command::Project { command } => {
-            let mut repo = PlanRepo::new(make_store(&root)?);
+            let mut repo = PlanRepo::new(make_store(&root, staging)?);
             match command {
                 ProjectCommand::Create { name, title } => {
                     let title = title.as_deref().unwrap_or(&name);
@@ -620,7 +671,7 @@ fn run() -> Result<()> {
                         .create_project(&name, title)
                         .context("failed to create project")?;
                     println!("Created project '{}'", doc.frontmatter.name);
-                    maybe_regenerate_index(&mut repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 ProjectCommand::List => {
                     let projects = repo.list_projects().context("failed to list projects")?;
@@ -636,7 +687,7 @@ fn run() -> Result<()> {
         }
 
         Command::Roadmap { command } => {
-            let mut repo = PlanRepo::new(make_store(&root)?);
+            let mut repo = PlanRepo::new(make_store(&root, staging)?);
             match command {
                 RoadmapCommand::Create {
                     slug,
@@ -651,7 +702,7 @@ fn run() -> Result<()> {
                     repo.create_roadmap(&project, &slug, title, body.as_deref())
                         .context("failed to create roadmap")?;
                     println!("Created roadmap '{slug}' in project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 RoadmapCommand::Show {
                     slug,
@@ -690,14 +741,14 @@ fn run() -> Result<()> {
                     repo.add_dependency(&project, &slug, &on)
                         .context("failed to add dependency")?;
                     println!("Added dependency: {slug} → {on}");
-                    maybe_regenerate_index(&mut repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 RoadmapCommand::Undepend { slug, on, project } => {
                     let project = resolve_project(project, &repo)?;
                     repo.remove_dependency(&project, &slug, &on)
                         .context("failed to remove dependency")?;
                     println!("Removed dependency: {slug} → {on}");
-                    maybe_regenerate_index(&mut repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 RoadmapCommand::Deps { project } => {
                     let project = resolve_project(project, &repo)?;
@@ -720,13 +771,13 @@ fn run() -> Result<()> {
                     repo.delete_roadmap(&project, &slug)
                         .context("failed to delete roadmap")?;
                     println!("Deleted roadmap '{slug}' from project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
             }
         }
 
         Command::Phase { command } => {
-            let mut repo = PlanRepo::new(make_store(&root)?);
+            let mut repo = PlanRepo::new(make_store(&root, staging)?);
             match command {
                 PhaseCommand::Create {
                     slug,
@@ -745,7 +796,7 @@ fn run() -> Result<()> {
                         .context("failed to create phase")?;
                     let stem = format!("phase-{}-{slug}", doc.frontmatter.phase);
                     println!("Created phase '{stem}' in roadmap '{roadmap}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 PhaseCommand::List { roadmap, project } => {
                     let project = resolve_project(project, &repo)?;
@@ -789,7 +840,7 @@ fn run() -> Result<()> {
                         .update_phase(&project, &roadmap, &stem, status, body.as_deref())
                         .context("failed to update phase")?;
                     println!("Updated '{stem}' → {}", doc.frontmatter.status);
-                    maybe_regenerate_index(&mut repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 PhaseCommand::Remove {
                     stem,
@@ -803,13 +854,13 @@ fn run() -> Result<()> {
                     repo.remove_phase(&project, &roadmap, &stem)
                         .context("failed to remove phase")?;
                     println!("Removed phase '{stem}' from roadmap '{roadmap}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
             }
         }
 
         Command::Task { command } => {
-            let mut repo = PlanRepo::new(make_store(&root)?);
+            let mut repo = PlanRepo::new(make_store(&root, staging)?);
             match command {
                 TaskCommand::Create {
                     slug,
@@ -826,7 +877,7 @@ fn run() -> Result<()> {
                     repo.create_task(&project, &slug, title, priority, tags, body.as_deref())
                         .context("failed to create task")?;
                     println!("Created task '{slug}' in project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 TaskCommand::Show {
                     slug,
@@ -860,7 +911,7 @@ fn run() -> Result<()> {
                         "Updated task '{slug}' → status: {}, priority: {}",
                         doc.frontmatter.status, doc.frontmatter.priority
                     );
-                    maybe_regenerate_index(&mut repo, cli.no_index)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 TaskCommand::List {
                     project,
@@ -902,7 +953,7 @@ fn run() -> Result<()> {
             roadmap_slug,
             project,
         } => {
-            let mut repo = PlanRepo::new(make_store(&root)?);
+            let mut repo = PlanRepo::new(make_store(&root, staging)?);
             let project = resolve_project(project, &repo)?;
             let doc = repo
                 .promote_task(&project, &task_slug, &roadmap_slug)
@@ -911,7 +962,7 @@ fn run() -> Result<()> {
                 "Promoted task '{task_slug}' → roadmap '{}'",
                 doc.frontmatter.roadmap
             );
-            maybe_regenerate_index(&mut repo, cli.no_index)?;
+            maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
         }
 
         Command::AgentConfig {
@@ -975,7 +1026,7 @@ fn run() -> Result<()> {
             limit,
             format,
         } => {
-            let repo = PlanRepo::new(make_store(&root)?);
+            let repo = PlanRepo::new(make_store(&root, staging)?);
             let item_status = status
                 .as_deref()
                 .map(|s| parse_status(s, kind))
@@ -1028,8 +1079,90 @@ fn run() -> Result<()> {
             })?;
         }
 
+        #[cfg(feature = "git")]
+        Command::Status => {
+            let store = make_store(&root, staging)?;
+            let statuses = store.git_status().context("failed to get git status")?;
+            if statuses.is_empty() {
+                println!("No uncommitted changes.");
+            } else {
+                println!("Uncommitted changes:");
+                for fs in &statuses {
+                    let prefix = match fs.change {
+                        rdm_store_git::FileChange::Added => "  added:    ",
+                        rdm_store_git::FileChange::Modified => "  modified: ",
+                        rdm_store_git::FileChange::Deleted => "  deleted:  ",
+                    };
+                    println!("{prefix}{}", fs.path);
+                }
+                println!(
+                    "\n{} file(s) changed. Run `rdm commit` to persist or `rdm discard --force` to reset.",
+                    statuses.len()
+                );
+            }
+        }
+
+        #[cfg(feature = "git")]
+        Command::Commit { message } => {
+            let store = make_store(&root, staging)?;
+            let statuses = store.git_status().context("failed to get git status")?;
+            if statuses.is_empty() {
+                println!("Nothing to commit.");
+            } else {
+                let msg = message.unwrap_or_else(|| {
+                    let summary: Vec<String> = statuses
+                        .iter()
+                        .map(|s| {
+                            let kind = match s.change {
+                                rdm_store_git::FileChange::Added => "add",
+                                rdm_store_git::FileChange::Modified => "update",
+                                rdm_store_git::FileChange::Deleted => "delete",
+                            };
+                            format!("{kind} {}", s.path)
+                        })
+                        .collect();
+                    if summary.len() == 1 {
+                        format!("rdm: {}", summary[0])
+                    } else {
+                        let mut msg = format!("rdm: update {} files", statuses.len());
+                        for s in &summary {
+                            msg.push_str(&format!("\n\n- {s}"));
+                        }
+                        msg
+                    }
+                });
+                store
+                    .git_commit(&msg)
+                    .context("failed to create git commit")?;
+                println!("Committed {} file(s).", statuses.len());
+            }
+        }
+
+        #[cfg(feature = "git")]
+        Command::Discard { force } => {
+            if !force {
+                bail!("discarding changes is irreversible — pass --force to confirm");
+            }
+            let store = make_store(&root, staging)?;
+            let statuses = store.git_status().context("failed to get git status")?;
+            if statuses.is_empty() {
+                println!("Nothing to discard.");
+            } else {
+                store.git_discard().context("failed to discard changes")?;
+                println!("Discarded {} file(s).", statuses.len());
+                for fs in &statuses {
+                    let prefix = match fs.change {
+                        rdm_store_git::FileChange::Added => "  removed:  ",
+                        rdm_store_git::FileChange::Modified => "  restored: ",
+                        rdm_store_git::FileChange::Deleted => "  restored: ",
+                    };
+                    println!("{prefix}{}", fs.path);
+                }
+            }
+        }
+
         Command::List { project, all } => {
-            let repo = PlanRepo::new(make_store(&root)?);
+            let repo = PlanRepo::new(make_store(&root, staging)?);
             let projects = if all {
                 repo.list_projects().context("failed to list projects")?
             } else {

@@ -9,6 +9,10 @@ pub struct Config {
     /// The default project to use when `--project` is not specified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_project: Option<String>,
+
+    /// When `true`, defers git commits until an explicit `rdm commit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<bool>,
 }
 
 impl Config {
@@ -53,10 +57,23 @@ mod tests {
     fn config_round_trip() {
         let config = Config {
             default_project: Some("fbm".to_string()),
+            stage: None,
         };
         let toml_str = config.to_toml().unwrap();
         let parsed = Config::from_toml(&toml_str).unwrap();
         assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn config_with_stage_round_trip() {
+        let config = Config {
+            default_project: Some("fbm".to_string()),
+            stage: Some(true),
+        };
+        let toml_str = config.to_toml().unwrap();
+        let parsed = Config::from_toml(&toml_str).unwrap();
+        assert_eq!(parsed, config);
+        assert_eq!(parsed.stage, Some(true));
     }
 
     #[test]
