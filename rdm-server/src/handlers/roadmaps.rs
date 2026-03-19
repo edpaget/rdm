@@ -1,19 +1,61 @@
+use std::time::SystemTime;
+
 use askama::Template;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
+use rdm_core::document::Document;
 use rdm_core::hal::{HalLink, HalResource};
-use rdm_core::model::PhaseStatus;
+use rdm_core::model::{Phase, PhaseStatus};
+use rdm_core::repo::PlanRepo;
 
 use crate::content_type::ResponseFormat;
 use crate::error::{error_response, json_rejection_response};
 use crate::extract::{hal_created_response, hal_response, see_other_response};
 use crate::state::AppState;
 use crate::templates::{
-    PhaseRow, RoadmapDetailPage, RoadmapSummaryView, RoadmapsPage, phase_status_class,
+    PhaseRow, RoadmapDetailPage, RoadmapSummaryView, RoadmapsPage, computed_roadmap_status,
+    phase_status_class,
 };
+
+/// Format a `SystemTime` as a `YYYY-MM-DD` date string.
+fn format_system_time(t: SystemTime) -> String {
+    let dt: chrono::DateTime<chrono::Utc> = t.into();
+    dt.format("%Y-%m-%d").to_string()
+}
+
+/// Compute the most recent modification date across the roadmap and phase files.
+fn last_changed_date(
+    repo: &PlanRepo,
+    project: &str,
+    roadmap: &str,
+    phases: &[(String, Document<Phase>)],
+) -> Option<String> {
+    let mut latest: Option<SystemTime> = None;
+
+    // Check roadmap.md itself
+    if let Ok(meta) = std::fs::metadata(repo.roadmap_path(project, roadmap))
+        && let Ok(modified) = meta.modified()
+    {
+        latest = Some(modified);
+    }
+
+    // Check each phase file
+    for (stem, _) in phases {
+        if let Ok(meta) = std::fs::metadata(repo.phase_path(project, roadmap, stem))
+            && let Ok(modified) = meta.modified()
+        {
+            latest = Some(match latest {
+                Some(prev) if prev >= modified => prev,
+                _ => modified,
+            });
+        }
+    }
+
+    latest.map(format_system_time)
+}
 
 /// Summary data for a roadmap in a collection.
 #[derive(Serialize)]
@@ -22,6 +64,9 @@ struct RoadmapSummary {
     title: String,
     total_phases: usize,
     done_phases: usize,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_changed: Option<String>,
 }
 
 /// Empty data for the roadmaps collection wrapper.
@@ -33,6 +78,9 @@ struct RoadmapsCollection {}
 struct RoadmapDetail {
     slug: String,
     title: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_changed: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dependencies: Option<Vec<String>>,
 }
@@ -58,24 +106,38 @@ pub async fn list_roadmaps(
             .iter()
             .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
             .count();
+
+        let phase_statuses: Vec<PhaseStatus> = phases
+            .iter()
+            .map(|(_, doc)| doc.frontmatter.status)
+            .collect();
+        let (status_text, status_cls) = computed_roadmap_status(&phase_statuses);
+
+        let last_changed = last_changed_date(&repo, &project, slug, &phases);
+
         summaries.push((
             slug.clone(),
             roadmap_doc.frontmatter.title.clone(),
             phases.len(),
             done_count,
+            status_text.to_string(),
+            status_cls.to_string(),
+            last_changed,
         ));
     }
 
     match format {
         ResponseFormat::HalJson => {
             let mut embedded = Vec::new();
-            for (slug, title, total, done) in &summaries {
+            for (slug, title, total, done, status, _status_cls, last_changed) in &summaries {
                 let summary = HalResource::new(
                     RoadmapSummary {
                         slug: slug.clone(),
                         title: title.clone(),
                         total_phases: *total,
                         done_phases: *done,
+                        status: status.clone(),
+                        last_changed: last_changed.clone(),
                     },
                     format!("/projects/{project}/roadmaps/{slug}"),
                 )
@@ -93,12 +155,19 @@ pub async fn list_roadmaps(
         ResponseFormat::Html => {
             let views: Vec<RoadmapSummaryView> = summaries
                 .into_iter()
-                .map(|(slug, title, total, done)| RoadmapSummaryView {
-                    slug,
-                    title,
-                    total_phases: total,
-                    done_phases: done,
-                })
+                .map(
+                    |(slug, title, total, done, status, status_class, last_changed)| {
+                        RoadmapSummaryView {
+                            slug,
+                            title,
+                            total_phases: total,
+                            done_phases: done,
+                            status,
+                            status_class,
+                            last_changed,
+                        }
+                    },
+                )
                 .collect();
             let page = RoadmapsPage {
                 project,
@@ -127,6 +196,13 @@ pub async fn get_roadmap(
         .list_phases(&project, &roadmap)
         .map_err(|e| error_response(e, format))?;
 
+    let phase_statuses: Vec<PhaseStatus> = phases
+        .iter()
+        .map(|(_, doc)| doc.frontmatter.status)
+        .collect();
+    let (status_text, status_cls) = computed_roadmap_status(&phase_statuses);
+    let last_changed = last_changed_date(&repo, &project, &roadmap, &phases);
+
     match format {
         ResponseFormat::HalJson => {
             let mut phase_embedded = Vec::new();
@@ -143,6 +219,8 @@ pub async fn get_roadmap(
                 RoadmapDetail {
                     slug: roadmap_doc.frontmatter.roadmap,
                     title: roadmap_doc.frontmatter.title,
+                    status: status_text.to_string(),
+                    last_changed: last_changed.clone(),
                     dependencies: roadmap_doc.frontmatter.dependencies,
                 },
                 self_href,
@@ -170,6 +248,9 @@ pub async fn get_roadmap(
                 project,
                 slug: roadmap_doc.frontmatter.roadmap,
                 title: roadmap_doc.frontmatter.title,
+                status: status_text.to_string(),
+                status_class: status_cls.to_string(),
+                last_changed,
                 dependencies: roadmap_doc.frontmatter.dependencies,
                 phases: phase_rows,
             };
@@ -212,6 +293,8 @@ pub async fn create_roadmap(
                 RoadmapDetail {
                     slug: doc.frontmatter.roadmap.clone(),
                     title: doc.frontmatter.title.clone(),
+                    status: "not-started".to_string(),
+                    last_changed: None,
                     dependencies: doc.frontmatter.dependencies,
                 },
                 &location,
@@ -459,5 +542,115 @@ mod tests {
             response.headers().get("location").unwrap(),
             "/projects/demo/roadmaps/beta"
         );
+    }
+
+    #[test]
+    fn computed_status_all_done() {
+        use crate::templates::computed_roadmap_status;
+        let statuses = vec![PhaseStatus::Done, PhaseStatus::Done];
+        assert_eq!(computed_roadmap_status(&statuses), ("done", "done"));
+    }
+
+    #[test]
+    fn computed_status_some_in_progress() {
+        use crate::templates::computed_roadmap_status;
+        let statuses = vec![PhaseStatus::Done, PhaseStatus::InProgress];
+        assert_eq!(
+            computed_roadmap_status(&statuses),
+            ("in-progress", "in-progress")
+        );
+    }
+
+    #[test]
+    fn computed_status_none_started() {
+        use crate::templates::computed_roadmap_status;
+        let statuses = vec![PhaseStatus::NotStarted, PhaseStatus::NotStarted];
+        assert_eq!(
+            computed_roadmap_status(&statuses),
+            ("not-started", "not-started")
+        );
+    }
+
+    #[test]
+    fn computed_status_empty_phases() {
+        use crate::templates::computed_roadmap_status;
+        assert_eq!(computed_roadmap_status(&[]), ("not-started", "not-started"));
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_hal_json_includes_status() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let roadmaps = json["_embedded"]["roadmaps"].as_array().unwrap();
+        assert_eq!(roadmaps[0]["status"], "in-progress");
+        assert!(roadmaps[0]["last_changed"].is_string());
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_html_includes_status_badge() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("badge-in-progress"));
+        assert!(html.contains("Last Changed"));
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_hal_json_includes_status_and_last_changed() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "in-progress");
+        assert!(json["last_changed"].is_string());
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_html_includes_status_badge_and_last_changed() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("badge-in-progress"));
+        assert!(html.contains("Last changed:"));
     }
 }

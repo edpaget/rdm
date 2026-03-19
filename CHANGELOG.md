@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Dark mode support for the web UI with toggle button and system-preference detection
 - Theme preference persists to `localStorage` across sessions
+- Computed overall status badge (done / in-progress / not-started) on roadmap list and detail pages
+- Last-changed timestamp on roadmap list and detail pages, derived from file modification times
 
 ### Changed
 

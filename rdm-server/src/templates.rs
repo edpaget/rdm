@@ -1,6 +1,7 @@
 //! Askama template structs for HTML rendering.
 
 use askama::Template;
+use rdm_core::model::PhaseStatus;
 
 /// Helper to map phase status to CSS badge class.
 pub fn phase_status_class(status: &rdm_core::model::PhaseStatus) -> &'static str {
@@ -48,6 +49,27 @@ pub struct IndexPage {
     pub projects: Vec<ProjectView>,
 }
 
+/// Compute an overall roadmap status from its phase statuses.
+///
+/// Returns `(display_text, css_class)`:
+/// - All phases done → `("done", "done")`
+/// - Any phase in-progress, or a mix of done and not-started → `("in-progress", "in-progress")`
+/// - Otherwise (all not-started, all blocked, or no phases) → `("not-started", "not-started")`
+pub fn computed_roadmap_status(phases: &[PhaseStatus]) -> (&'static str, &'static str) {
+    if phases.is_empty() {
+        return ("not-started", "not-started");
+    }
+    if phases.iter().all(|s| *s == PhaseStatus::Done) {
+        return ("done", "done");
+    }
+    let has_done = phases.contains(&PhaseStatus::Done);
+    let has_in_progress = phases.contains(&PhaseStatus::InProgress);
+    if has_in_progress || has_done {
+        return ("in-progress", "in-progress");
+    }
+    ("not-started", "not-started")
+}
+
 /// A roadmap summary for the roadmaps list page.
 pub struct RoadmapSummaryView {
     /// Roadmap slug.
@@ -58,6 +80,12 @@ pub struct RoadmapSummaryView {
     pub total_phases: usize,
     /// Number of completed phases.
     pub done_phases: usize,
+    /// Computed overall status display text.
+    pub status: String,
+    /// CSS class for the status badge.
+    pub status_class: String,
+    /// Last modification date, if available.
+    pub last_changed: Option<String>,
 }
 
 /// Roadmaps list page for a project.
@@ -94,6 +122,12 @@ pub struct RoadmapDetailPage {
     pub slug: String,
     /// Human-readable title.
     pub title: String,
+    /// Computed overall status display text.
+    pub status: String,
+    /// CSS class for the status badge.
+    pub status_class: String,
+    /// Last modification date, if available.
+    pub last_changed: Option<String>,
     /// Optional dependencies.
     pub dependencies: Option<Vec<String>>,
     /// Phases in this roadmap.
