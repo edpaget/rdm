@@ -96,6 +96,8 @@ pub struct RoadmapsPage {
     pub project: String,
     /// All roadmaps with progress.
     pub roadmaps: Vec<RoadmapSummaryView>,
+    /// Whether completed roadmaps are currently shown.
+    pub show_completed: bool,
 }
 
 /// A phase row for the roadmap detail page.

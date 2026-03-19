@@ -12,6 +12,8 @@ use rdm_core::model::{Phase, PhaseStatus};
 use rdm_core::repo::PlanRepo;
 use rdm_store_fs::FsStore;
 
+use axum::extract::Query;
+
 use crate::content_type::ResponseFormat;
 use crate::error::{error_response, json_rejection_response};
 use crate::extract::{hal_created_response, hal_response, see_other_response};
@@ -21,6 +23,13 @@ use crate::templates::{
     PhaseRow, RoadmapDetailPage, RoadmapSummaryView, RoadmapsPage, computed_roadmap_status,
     phase_status_class,
 };
+
+/// Query parameters for filtering the roadmap list.
+#[derive(Debug, Deserialize, Default)]
+pub struct RoadmapFilters {
+    /// When true, include completed roadmaps (all phases done) in the list.
+    pub show_completed: Option<bool>,
+}
 
 /// Format a `SystemTime` as a `YYYY-MM-DD` date string.
 fn format_system_time(t: SystemTime) -> String {
@@ -94,6 +103,7 @@ pub async fn list_roadmaps(
     format: ResponseFormat,
     State(state): State<AppState>,
     Path(project): Path<String>,
+    Query(filters): Query<RoadmapFilters>,
 ) -> Result<Response, Response> {
     let repo = state.plan_repo();
     let roadmaps = repo
@@ -128,6 +138,11 @@ pub async fn list_roadmaps(
             status_cls.to_string(),
             last_changed,
         ));
+    }
+
+    let show_completed = filters.show_completed.unwrap_or(false);
+    if !show_completed {
+        summaries.retain(|(_slug, _title, _total, _done, status, _cls, _changed)| status != "done");
     }
 
     match format {
@@ -176,6 +191,7 @@ pub async fn list_roadmaps(
             let page = RoadmapsPage {
                 project,
                 roadmaps: views,
+                show_completed,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -346,6 +362,108 @@ mod tests {
             plan_root: dir.path().to_path_buf(),
         };
         (dir, state)
+    }
+
+    /// Create a setup with an additional completed roadmap ("beta") for filter tests.
+    fn setup_with_completed() -> (TempDir, AppState) {
+        let (dir, state) = setup();
+        let mut repo = PlanRepo::new(rdm_store_fs::FsStore::new(dir.path()));
+        repo.create_roadmap("demo", "beta", "Beta Roadmap", None)
+            .unwrap();
+        repo.create_phase("demo", "beta", "only", "Only Phase", Some(1), None)
+            .unwrap();
+        repo.update_phase(
+            "demo",
+            "beta",
+            "phase-1-only",
+            Some(PhaseStatus::Done),
+            None,
+        )
+        .unwrap();
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_hides_completed_by_default_html() {
+        let (_dir, state) = setup_with_completed();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("Alpha Roadmap"));
+        assert!(!html.contains("Beta Roadmap"));
+        assert!(html.contains("Show completed roadmaps"));
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_shows_completed_when_requested_html() {
+        let (_dir, state) = setup_with_completed();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps?show_completed=true")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("Alpha Roadmap"));
+        assert!(html.contains("Beta Roadmap"));
+        assert!(html.contains("Hide completed roadmaps"));
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_hides_completed_by_default_hal_json() {
+        let (_dir, state) = setup_with_completed();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let roadmaps = json["_embedded"]["roadmaps"].as_array().unwrap();
+        assert_eq!(roadmaps.len(), 1);
+        assert_eq!(roadmaps[0]["slug"], "alpha");
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_shows_completed_when_requested_hal_json() {
+        let (_dir, state) = setup_with_completed();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps?show_completed=true")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let roadmaps = json["_embedded"]["roadmaps"].as_array().unwrap();
+        assert_eq!(roadmaps.len(), 2);
     }
 
     #[tokio::test]

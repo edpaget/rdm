@@ -17,6 +17,13 @@
 
 {% block content %}
 <h1>Roadmaps for {{ project }}</h1>
+<p>
+{% if show_completed %}
+  <a href="/projects/{{ project }}/roadmaps">Hide completed roadmaps</a>
+{% else %}
+  <a href="/projects/{{ project }}/roadmaps?show_completed=true">Show completed roadmaps</a>
+{% endif %}
+</p>
 {% if roadmaps.is_empty() %}
 <p>No roadmaps found.</p>
 {% else %}

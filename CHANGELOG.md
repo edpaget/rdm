@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Web UI hides completed roadmaps by default; toggle link (`?show_completed=true`) reveals them
 - `--mcp` flag on `rdm agent-config` to generate `.mcp.json` configuration for MCP-aware clients
 - `generate_mcp_config` function in `rdm-core::agent_config` for programmatic MCP config generation
 - End-to-end MCP workflow integration test covering the full agent lifecycle
