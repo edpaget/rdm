@@ -24,6 +24,9 @@
 <p>Dependencies: {% for d in deps %}{% if !loop.first %}, {% endif %}<a href="/projects/{{ project }}/roadmaps/{{ d }}">{{ d }}</a>{% endfor %}</p>
 {% endif %}
 {% endif %}
+{% if !body_html.is_empty() %}
+<div class="body-content">{{ body_html|safe }}</div>
+{% endif %}
 {% if phases.is_empty() %}
 <p>No phases defined.</p>
 {% else %}

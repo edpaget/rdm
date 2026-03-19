@@ -642,3 +642,18 @@ async fn html_404_returns_styled_error_page() {
     assert!(body.contains("<!DOCTYPE html>"));
     assert!(body.contains("Not Found"));
 }
+
+#[tokio::test]
+async fn roadmap_detail_html_renders_body() {
+    let (_dir, addr, client) = spawn_server().await;
+    let resp = client
+        .get(url(addr, "/projects/demo/roadmaps/api"))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("body-content"));
+    assert!(body.contains("API roadmap body."));
+}

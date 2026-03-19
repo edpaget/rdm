@@ -15,6 +15,7 @@ use rdm_store_fs::FsStore;
 use crate::content_type::ResponseFormat;
 use crate::error::{error_response, json_rejection_response};
 use crate::extract::{hal_created_response, hal_response, see_other_response};
+use crate::markdown::render_markdown;
 use crate::state::AppState;
 use crate::templates::{
     PhaseRow, RoadmapDetailPage, RoadmapSummaryView, RoadmapsPage, computed_roadmap_status,
@@ -255,6 +256,7 @@ pub async fn get_roadmap(
                 status_class: status_cls.to_string(),
                 last_changed,
                 dependencies: roadmap_doc.frontmatter.dependencies,
+                body_html: render_markdown(&roadmap_doc.body),
                 phases: phase_rows,
             };
             Ok((

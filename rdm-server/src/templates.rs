@@ -130,6 +130,8 @@ pub struct RoadmapDetailPage {
     pub last_changed: Option<String>,
     /// Optional dependencies.
     pub dependencies: Option<Vec<String>>,
+    /// Rendered HTML body.
+    pub body_html: String,
     /// Phases in this roadmap.
     pub phases: Vec<PhaseRow>,
 }
