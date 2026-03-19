@@ -56,6 +56,11 @@ impl<S: Store> PlanRepo<S> {
         RelPath::new(&format!("projects/{project}")).expect("valid path")
     }
 
+    /// Returns the path to a project's `INDEX.md` file.
+    pub fn project_index_path(&self, project: &str) -> RelPath {
+        RelPath::new(&format!("projects/{project}/INDEX.md")).expect("valid path")
+    }
+
     /// Returns the path to a project's `project.md` file.
     fn project_md_path(&self, project: &str) -> RelPath {
         RelPath::new(&format!("projects/{project}/project.md")).expect("valid path")
@@ -1310,10 +1315,69 @@ impl<S: Store> PlanRepo<S> {
 
     // -- Index generation --
 
+    /// Builds a [`ProjectIndex`] for a single project.
+    ///
+    /// Scans roadmaps (with phase progress) and tasks, returning the
+    /// aggregated index data without performing any I/O beyond reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if directory reads fail, or frontmatter
+    /// errors if any document file is malformed.
+    fn build_project_index(&self, project: &str) -> Result<ProjectIndex> {
+        let roadmap_docs = self.list_roadmaps(project)?;
+        let mut roadmap_entries = Vec::new();
+        for roadmap_doc in &roadmap_docs {
+            let slug = &roadmap_doc.frontmatter.roadmap;
+            let phases = self.list_phases(project, slug)?;
+            let done_count = phases
+                .iter()
+                .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
+                .count();
+            roadmap_entries.push(RoadmapIndexEntry {
+                slug: slug.clone(),
+                project: project.to_string(),
+                phase_count: phases.len(),
+                done_count,
+                dependencies: roadmap_doc.frontmatter.dependencies.clone(),
+            });
+        }
+
+        let mut tasks = self.list_tasks(project)?;
+        tasks.sort_by(|(slug_a, doc_a), (slug_b, doc_b)| {
+            doc_b
+                .frontmatter
+                .priority
+                .cmp(&doc_a.frontmatter.priority)
+                .then_with(|| slug_a.cmp(slug_b))
+        });
+
+        Ok(ProjectIndex {
+            name: project.to_string(),
+            roadmaps: roadmap_entries,
+            tasks,
+        })
+    }
+
+    /// Generates `projects/{project}/INDEX.md` for a single project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if directory reads or the write fail,
+    /// or frontmatter errors if any document file is malformed.
+    pub fn generate_project_index(&mut self, project: &str) -> Result<()> {
+        let pi = self.build_project_index(project)?;
+        let content = display::format_project_index(&pi);
+        let path = self.project_index_path(project);
+        self.store.write(&path, content)?;
+        self.store.commit()?;
+        Ok(())
+    }
+
     /// Generates `INDEX.md` from the current repo state.
     ///
     /// Scans all projects, roadmaps (with phase progress), and tasks,
-    /// then writes a formatted index to the root `INDEX.md`.
+    /// then writes a formatted root index and per-project index files.
     ///
     /// # Errors
     ///
@@ -1324,40 +1388,14 @@ impl<S: Store> PlanRepo<S> {
         let mut project_indices = Vec::new();
 
         for project_name in &project_names {
-            // Roadmaps
-            let roadmap_docs = self.list_roadmaps(project_name)?;
-            let mut roadmap_entries = Vec::new();
-            for roadmap_doc in &roadmap_docs {
-                let slug = &roadmap_doc.frontmatter.roadmap;
-                let phases = self.list_phases(project_name, slug)?;
-                let done_count = phases
-                    .iter()
-                    .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
-                    .count();
-                roadmap_entries.push(RoadmapIndexEntry {
-                    slug: slug.clone(),
-                    project: project_name.clone(),
-                    phase_count: phases.len(),
-                    done_count,
-                    dependencies: roadmap_doc.frontmatter.dependencies.clone(),
-                });
-            }
+            let pi = self.build_project_index(project_name)?;
 
-            // Tasks — sorted by priority desc, then slug asc
-            let mut tasks = self.list_tasks(project_name)?;
-            tasks.sort_by(|(slug_a, doc_a), (slug_b, doc_b)| {
-                doc_b
-                    .frontmatter
-                    .priority
-                    .cmp(&doc_a.frontmatter.priority)
-                    .then_with(|| slug_a.cmp(slug_b))
-            });
+            // Write per-project INDEX.md
+            let project_content = display::format_project_index(&pi);
+            let project_index_path = self.project_index_path(project_name);
+            self.store.write(&project_index_path, project_content)?;
 
-            project_indices.push(ProjectIndex {
-                name: project_name.clone(),
-                roadmaps: roadmap_entries,
-                tasks,
-            });
+            project_indices.push(pi);
         }
 
         let content = display::format_index(&project_indices);
@@ -1422,6 +1460,13 @@ mod tests {
             path.as_str(),
             "projects/fbm/roadmaps/two-way-players/roadmap.md"
         );
+    }
+
+    #[test]
+    fn project_index_path_is_correct() {
+        let repo = make_repo();
+        let path = repo.project_index_path("fbm");
+        assert_eq!(path.as_str(), "projects/fbm/INDEX.md");
     }
 
     #[test]
@@ -2708,6 +2753,40 @@ mod tests {
         let low_pos = content.find("low-task").unwrap();
         assert!(crit_pos < high_pos);
         assert!(high_pos < low_pos);
+    }
+
+    // -- Per-project index tests --
+
+    #[test]
+    fn generate_project_index_creates_file() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha Roadmap", None)
+            .unwrap();
+        repo.create_phase("fbm", "alpha", "core", "Core", None, None)
+            .unwrap();
+        repo.generate_project_index("fbm").unwrap();
+
+        let content = repo.store().read(&repo.project_index_path("fbm")).unwrap();
+        assert!(content.contains("# Project: fbm"));
+        assert!(content.contains("auto-generated by rdm"));
+        assert!(content.contains("roadmaps/alpha/roadmap.md"));
+        assert!(!content.contains("projects/fbm/"));
+    }
+
+    #[test]
+    fn generate_index_writes_project_index() {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
+        repo.generate_index().unwrap();
+
+        // Root index should exist
+        let root = repo.store().read(&repo.index_path()).unwrap();
+        assert!(root.contains("# Plan Index"));
+
+        // Per-project index should also exist
+        let project = repo.store().read(&repo.project_index_path("fbm")).unwrap();
+        assert!(project.contains("# Project: fbm"));
+        assert!(project.contains("roadmaps/alpha/roadmap.md"));
     }
 
     // -- Archive roadmap tests --
