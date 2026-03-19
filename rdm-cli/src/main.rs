@@ -643,6 +643,28 @@ fn maybe_regenerate_index(
     Ok(())
 }
 
+/// Prints a hint about uncommitted changes when staging mode is active.
+///
+/// Called after read-only commands (list, show, search) so the user is aware
+/// that the data they see includes uncommitted staged mutations.
+#[cfg(feature = "git")]
+fn maybe_print_uncommitted_hint(store: &AppStore, staging: bool) {
+    if !staging {
+        return;
+    }
+    if let Ok(statuses) = store.git_status() {
+        if !statuses.is_empty() {
+            println!(
+                "\n  ({} uncommitted change(s) — run `rdm status` for details)",
+                statuses.len()
+            );
+        }
+    }
+}
+
+#[cfg(not(feature = "git"))]
+fn maybe_print_uncommitted_hint(_store: &AppStore, _staging: bool) {}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let root = cli
@@ -682,6 +704,7 @@ fn run() -> Result<()> {
                             println!("{p}");
                         }
                     }
+                    maybe_print_uncommitted_hint(repo.store(), staging);
                 }
             }
         }
@@ -720,6 +743,7 @@ fn run() -> Result<()> {
                         roadmap_doc.body = String::new();
                     }
                     print!("{}", display::format_roadmap_summary(&roadmap_doc, &phases));
+                    maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 RoadmapCommand::List { project } => {
                     let project = resolve_project(project, &repo)?;
@@ -735,6 +759,7 @@ fn run() -> Result<()> {
                         entries.push((roadmap_doc, phases));
                     }
                     print!("{}", display::format_roadmap_list(&entries));
+                    maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 RoadmapCommand::Depend { slug, on, project } => {
                     let project = resolve_project(project, &repo)?;
@@ -756,6 +781,7 @@ fn run() -> Result<()> {
                         .dependency_graph(&project)
                         .context("failed to get dependency graph")?;
                     print!("{}", display::format_dependency_graph(&graph));
+                    maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 RoadmapCommand::Delete {
                     slug,
@@ -804,6 +830,7 @@ fn run() -> Result<()> {
                         .list_phases(&project, &roadmap)
                         .context("failed to list phases")?;
                     print!("{}", display::format_phase_list(&phases));
+                    maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 PhaseCommand::Show {
                     stem,
@@ -822,6 +849,7 @@ fn run() -> Result<()> {
                         doc.body = String::new();
                     }
                     print!("{}", display::format_phase_detail(&stem, &doc));
+                    maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 PhaseCommand::Update {
                     stem,
@@ -892,6 +920,7 @@ fn run() -> Result<()> {
                         doc.body = String::new();
                     }
                     print!("{}", display::format_task_detail(&slug, &doc));
+                    maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 TaskCommand::Update {
                     slug,
@@ -944,6 +973,7 @@ fn run() -> Result<()> {
                         .collect();
 
                     print!("{}", display::format_task_list(&filtered));
+                    maybe_print_uncommitted_hint(repo.store(), staging);
                 }
             }
         }
@@ -1055,6 +1085,7 @@ fn run() -> Result<()> {
                     );
                 }
             }
+            maybe_print_uncommitted_hint(repo.store(), staging);
         }
 
         #[cfg(feature = "server")]
@@ -1187,6 +1218,7 @@ fn run() -> Result<()> {
                 }
                 print!("{}", display::format_roadmap_list(&entries));
             }
+            maybe_print_uncommitted_hint(repo.store(), staging);
         }
     }
 

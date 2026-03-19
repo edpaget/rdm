@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `stage` option in `rdm.toml` for persistent staging mode
 - `staging_mode` on `GitStore` with `git_commit()`, `git_status()`, and `git_discard()` public methods
 - `FileChange` enum and `FileStatus` struct in `rdm-store-git` for working directory status reporting
+- Uncommitted changes hint on read-only commands (list, show, search) when staging mode is active
 - `rdm-store-git` crate — git-backed Store with automatic commits via gitoxide; every `commit()` builds a tree from the working directory and creates a git commit with an auto-generated message
 - `git` feature flag on `rdm-cli` (default-on) — enables `GitStore` for automatic git commits on all plan repo mutations
 - `Error::Git(String)` variant in rdm-core for git-specific errors

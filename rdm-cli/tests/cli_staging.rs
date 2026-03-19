@@ -279,3 +279,107 @@ fn config_enables_staging() {
     let commits_after = count_git_commits(dir.path());
     assert_eq!(commits_before, commits_after);
 }
+
+#[test]
+fn list_shows_uncommitted_hint_when_staged() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Stage a roadmap (creates uncommitted changes)
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--stage")
+        .arg("roadmap")
+        .arg("create")
+        .arg("hint-test")
+        .arg("--title")
+        .arg("Hint Test")
+        .arg("--no-edit")
+        .arg("--project")
+        .arg("test")
+        .assert()
+        .success();
+
+    // List roadmaps — should show the uncommitted hint
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--stage")
+        .arg("roadmap")
+        .arg("list")
+        .arg("--project")
+        .arg("test")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("uncommitted change"));
+}
+
+#[test]
+fn list_no_hint_without_staging() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Create a roadmap without --stage (auto-commits)
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("roadmap")
+        .arg("create")
+        .arg("no-hint-test")
+        .arg("--title")
+        .arg("No Hint Test")
+        .arg("--no-edit")
+        .arg("--project")
+        .arg("test")
+        .assert()
+        .success();
+
+    // List roadmaps — should NOT show the uncommitted hint
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("roadmap")
+        .arg("list")
+        .arg("--project")
+        .arg("test")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("uncommitted change").not());
+}
+
+#[test]
+fn show_shows_uncommitted_hint_when_staged() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Stage a roadmap
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--stage")
+        .arg("roadmap")
+        .arg("create")
+        .arg("show-hint")
+        .arg("--title")
+        .arg("Show Hint")
+        .arg("--no-edit")
+        .arg("--project")
+        .arg("test")
+        .assert()
+        .success();
+
+    // Show should include the uncommitted hint
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--stage")
+        .arg("roadmap")
+        .arg("show")
+        .arg("show-hint")
+        .arg("--project")
+        .arg("test")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("uncommitted change"));
+}
