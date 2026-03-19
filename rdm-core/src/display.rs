@@ -378,6 +378,182 @@ fn truncate_snippet(s: &str, max_len: usize) -> String {
     format!("{}...", &trimmed[..end])
 }
 
+/// Formats a roadmap summary as Markdown with heading, bullet metadata, phase table, and body.
+#[must_use]
+pub fn format_roadmap_summary_md(
+    doc: &Document<Roadmap>,
+    phases: &[(String, Document<Phase>)],
+) -> String {
+    let roadmap = &doc.frontmatter;
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", roadmap.title));
+    out.push_str(&format!("- **Project:** {}\n", roadmap.project));
+    out.push_str(&format!("- **Slug:** {}\n", roadmap.roadmap));
+
+    if phases.is_empty() {
+        out.push_str("\nNo phases yet.\n");
+    } else {
+        let done_count = phases
+            .iter()
+            .filter(|(_, d)| d.frontmatter.status == PhaseStatus::Done)
+            .count();
+        out.push_str(&format!(
+            "- **Progress:** {}/{} phases done\n",
+            done_count,
+            phases.len()
+        ));
+
+        out.push_str("\n| # | Phase | Status |\n");
+        out.push_str("|---:|-------|--------|\n");
+        for (_, d) in phases {
+            let fm = &d.frontmatter;
+            out.push_str(&format!(
+                "| {} | {} | {} |\n",
+                fm.phase, fm.title, fm.status
+            ));
+        }
+    }
+
+    if !doc.body.is_empty() {
+        out.push_str(&format!("\n{}", doc.body));
+    }
+    out
+}
+
+/// Formats a list of roadmaps as a Markdown table.
+#[must_use]
+pub fn format_roadmap_list_md(entries: &[RoadmapWithPhases]) -> String {
+    if entries.is_empty() {
+        return "No roadmaps found.\n".to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str("## Roadmaps\n\n");
+    out.push_str("| Slug | Title | Progress |\n");
+    out.push_str("|------|-------|----------|\n");
+    for (roadmap_doc, phases) in entries {
+        let rm = &roadmap_doc.frontmatter;
+        let done = phases
+            .iter()
+            .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
+            .count();
+        let total = phases.len();
+        let progress = if total > 0 {
+            format!("{done}/{total} done")
+        } else {
+            "no phases".to_string()
+        };
+        out.push_str(&format!(
+            "| {} | {} | {} |\n",
+            rm.roadmap, rm.title, progress
+        ));
+    }
+    out
+}
+
+/// Formats a single phase detail as Markdown with heading, bullet metadata, and body.
+#[must_use]
+pub fn format_phase_detail_md(stem: &str, doc: &Document<Phase>) -> String {
+    let fm = &doc.frontmatter;
+    let mut out = String::new();
+    out.push_str(&format!("# Phase {}: {}\n\n", fm.phase, fm.title));
+    out.push_str(&format!("- **Stem:** {stem}\n"));
+    out.push_str(&format!("- **Status:** {}\n", fm.status));
+    if let Some(date) = fm.completed {
+        out.push_str(&format!("- **Completed:** {date}\n"));
+    }
+    if !doc.body.is_empty() {
+        out.push_str(&format!("\n{}", doc.body));
+    }
+    out
+}
+
+/// Formats a list of phases as a Markdown table.
+#[must_use]
+pub fn format_phase_list_md(phases: &[(String, Document<Phase>)]) -> String {
+    if phases.is_empty() {
+        return "No phases yet.\n".to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str("## Phases\n\n");
+    out.push_str("| # | Phase | Status | Stem |\n");
+    out.push_str("|---:|-------|--------|------|\n");
+    for (stem, doc) in phases {
+        let fm = &doc.frontmatter;
+        out.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            fm.phase, fm.title, fm.status, stem
+        ));
+    }
+    out
+}
+
+/// Formats a single task detail as Markdown with heading, bullet metadata, and body.
+#[must_use]
+pub fn format_task_detail_md(slug: &str, doc: &Document<Task>) -> String {
+    let fm = &doc.frontmatter;
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", fm.title));
+    out.push_str(&format!("- **Slug:** {slug}\n"));
+    out.push_str(&format!("- **Status:** {}\n", fm.status));
+    out.push_str(&format!("- **Priority:** {}\n", fm.priority));
+    out.push_str(&format!("- **Created:** {}\n", fm.created));
+    if let Some(tags) = &fm.tags {
+        out.push_str(&format!("- **Tags:** {}\n", tags.join(", ")));
+    }
+    if !doc.body.is_empty() {
+        out.push_str(&format!("\n{}", doc.body));
+    }
+    out
+}
+
+/// Formats a list of tasks as a Markdown table.
+#[must_use]
+pub fn format_task_list_md(tasks: &[(String, Document<Task>)]) -> String {
+    if tasks.is_empty() {
+        return "No tasks found.\n".to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str("## Tasks\n\n");
+    out.push_str("| Slug | Title | Status | Priority |\n");
+    out.push_str("|------|-------|--------|----------|\n");
+    for (slug, doc) in tasks {
+        let fm = &doc.frontmatter;
+        out.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            slug, fm.title, fm.status, fm.priority
+        ));
+    }
+    out
+}
+
+/// Formats search results as a Markdown table.
+#[must_use]
+pub fn format_search_results_md(results: &[SearchResult]) -> String {
+    if results.is_empty() {
+        return "No results found.\n".to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str("## Search Results\n\n");
+    out.push_str("| # | Type | Title | Identifier | Snippet |\n");
+    out.push_str("|---:|------|-------|------------|---------|\n");
+    for (i, r) in results.iter().enumerate() {
+        let snippet = truncate_snippet(&r.snippet, 40);
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            i + 1,
+            r.kind,
+            r.title,
+            r.identifier,
+            snippet,
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,5 +968,227 @@ mod tests {
         let output = format_index(&projects);
         assert!(output.contains("No roadmaps."));
         assert!(output.contains("No tasks."));
+    }
+
+    // -- Markdown format tests --
+
+    #[test]
+    fn roadmap_summary_md_with_phases() {
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        let phases = vec![
+            (
+                "phase-1-core".to_string(),
+                make_phase_doc(1, "Core", PhaseStatus::Done),
+            ),
+            (
+                "phase-2-service".to_string(),
+                make_phase_doc(2, "Service", PhaseStatus::InProgress),
+            ),
+        ];
+        let output = format_roadmap_summary_md(&doc, &phases);
+        assert!(output.contains("# Two-Way Players"));
+        assert!(output.contains("- **Project:** fbm"));
+        assert!(output.contains("- **Slug:** two-way"));
+        assert!(output.contains("- **Progress:** 1/2 phases done"));
+        assert!(output.contains("|---:"));
+        assert!(output.contains("| 1 | Core | done |"));
+        assert!(output.contains("| 2 | Service | in-progress |"));
+    }
+
+    #[test]
+    fn roadmap_summary_md_no_phases() {
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        let output = format_roadmap_summary_md(&doc, &[]);
+        assert!(output.contains("No phases yet."));
+        assert!(!output.contains("- **Progress:**"));
+    }
+
+    #[test]
+    fn roadmap_summary_md_with_body() {
+        let mut doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        doc.body = "## Overview\n\nDetails here.\n".to_string();
+        let phases = vec![(
+            "phase-1-core".to_string(),
+            make_phase_doc(1, "Core", PhaseStatus::InProgress),
+        )];
+        let output = format_roadmap_summary_md(&doc, &phases);
+        assert!(output.contains("## Overview"));
+        assert!(output.contains("Details here."));
+    }
+
+    #[test]
+    fn roadmap_list_md_with_entries() {
+        let entries = vec![
+            (
+                Document {
+                    frontmatter: make_roadmap("fbm", "alpha", "Alpha"),
+                    body: String::new(),
+                },
+                vec![
+                    ("p1".to_string(), make_phase_doc(1, "P1", PhaseStatus::Done)),
+                    (
+                        "p2".to_string(),
+                        make_phase_doc(2, "P2", PhaseStatus::InProgress),
+                    ),
+                ],
+            ),
+            (
+                Document {
+                    frontmatter: make_roadmap("fbm", "beta", "Beta"),
+                    body: String::new(),
+                },
+                Vec::new(),
+            ),
+        ];
+        let output = format_roadmap_list_md(&entries);
+        assert!(output.contains("## Roadmaps"));
+        assert!(output.contains("| Slug |"));
+        assert!(output.contains("|---"));
+        assert!(output.contains("| alpha | Alpha | 1/2 done |"));
+        assert!(output.contains("| beta | Beta | no phases |"));
+    }
+
+    #[test]
+    fn roadmap_list_md_empty() {
+        let output = format_roadmap_list_md(&[]);
+        assert_eq!(output, "No roadmaps found.\n");
+    }
+
+    #[test]
+    fn phase_detail_md_with_completed() {
+        let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
+        let output = format_phase_detail_md("phase-1-core", &doc);
+        assert!(output.contains("# Phase 1: Core"));
+        assert!(output.contains("- **Stem:** phase-1-core"));
+        assert!(output.contains("- **Status:** done"));
+        assert!(output.contains("- **Completed:** 2026-03-14"));
+    }
+
+    #[test]
+    fn phase_detail_md_without_completed() {
+        let doc = make_phase_doc(2, "Service", PhaseStatus::NotStarted);
+        let output = format_phase_detail_md("phase-2-service", &doc);
+        assert!(output.contains("- **Status:** not-started"));
+        assert!(!output.contains("- **Completed:**"));
+    }
+
+    #[test]
+    fn phase_detail_md_with_body() {
+        let mut doc = make_phase_doc(1, "Core", PhaseStatus::InProgress);
+        doc.body = "Implementation details.\n".to_string();
+        let output = format_phase_detail_md("phase-1-core", &doc);
+        assert!(output.contains("Implementation details."));
+    }
+
+    #[test]
+    fn phase_list_md_with_entries() {
+        let phases = vec![
+            (
+                "phase-1-core".to_string(),
+                make_phase_doc(1, "Core", PhaseStatus::Done),
+            ),
+            (
+                "phase-2-service".to_string(),
+                make_phase_doc(2, "Service", PhaseStatus::InProgress),
+            ),
+        ];
+        let output = format_phase_list_md(&phases);
+        assert!(output.contains("## Phases"));
+        assert!(output.contains("|---:"));
+        assert!(output.contains("| 1 | Core | done | phase-1-core |"));
+        assert!(output.contains("| 2 | Service | in-progress | phase-2-service |"));
+    }
+
+    #[test]
+    fn phase_list_md_empty() {
+        let output = format_phase_list_md(&[]);
+        assert_eq!(output, "No phases yet.\n");
+    }
+
+    #[test]
+    fn task_detail_md_basic() {
+        let doc = make_task_doc("Fix the bug", TaskStatus::Open, Priority::High, None);
+        let output = format_task_detail_md("fix-bug", &doc);
+        assert!(output.contains("# Fix the bug"));
+        assert!(output.contains("- **Slug:** fix-bug"));
+        assert!(output.contains("- **Status:** open"));
+        assert!(output.contains("- **Priority:** high"));
+        assert!(output.contains("- **Created:** 2026-03-15"));
+        assert!(!output.contains("- **Tags:**"));
+    }
+
+    #[test]
+    fn task_detail_md_with_tags() {
+        let doc = make_task_doc(
+            "Fix",
+            TaskStatus::Open,
+            Priority::Low,
+            Some(vec!["bug".to_string(), "urgent".to_string()]),
+        );
+        let output = format_task_detail_md("fix", &doc);
+        assert!(output.contains("- **Tags:** bug, urgent"));
+    }
+
+    #[test]
+    fn task_detail_md_with_body() {
+        let mut doc = make_task_doc("Fix", TaskStatus::Open, Priority::Low, None);
+        doc.body = "Some details.\n".to_string();
+        let output = format_task_detail_md("fix", &doc);
+        assert!(output.contains("Some details."));
+    }
+
+    #[test]
+    fn task_list_md_with_entries() {
+        let tasks = vec![
+            (
+                "fix-bug".to_string(),
+                make_task_doc("Fix Bug", TaskStatus::Open, Priority::High, None),
+            ),
+            (
+                "add-feature".to_string(),
+                make_task_doc(
+                    "Add Feature",
+                    TaskStatus::InProgress,
+                    Priority::Medium,
+                    None,
+                ),
+            ),
+        ];
+        let output = format_task_list_md(&tasks);
+        assert!(output.contains("## Tasks"));
+        assert!(output.contains("| Slug | Title | Status | Priority |"));
+        assert!(output.contains("|---"));
+        assert!(output.contains("| fix-bug | Fix Bug | open | high |"));
+        assert!(output.contains("| add-feature | Add Feature | in-progress | medium |"));
+    }
+
+    #[test]
+    fn task_list_md_empty() {
+        let output = format_task_list_md(&[]);
+        assert_eq!(output, "No tasks found.\n");
+    }
+
+    #[test]
+    fn search_results_md_with_results() {
+        let results = vec![SearchResult {
+            kind: crate::search::ItemKind::Task,
+            identifier: "fix-bug".to_string(),
+            project: "acme".to_string(),
+            title: "Fix Bug".to_string(),
+            snippet: "Fix the login bug".to_string(),
+            score: 100,
+        }];
+        let output = format_search_results_md(&results);
+        assert!(output.contains("## Search Results"));
+        assert!(output.contains("|---:"));
+        assert!(output.contains("| 1 |"));
+        assert!(output.contains("Fix Bug"));
+        assert!(output.contains("fix-bug"));
+    }
+
+    #[test]
+    fn search_results_md_empty() {
+        let output = format_search_results_md(&[]);
+        assert_eq!(output, "No results found.\n");
     }
 }

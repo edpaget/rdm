@@ -333,6 +333,154 @@ fn format_table_on_phase_show_returns_error() {
         .stderr(predicate::str::contains("not supported"));
 }
 
+// -- Markdown format tests --
+
+#[test]
+fn format_markdown_on_roadmap_list() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "list",
+            "--project",
+            "acme",
+            "--format",
+            "markdown",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("| Slug |"))
+        .stdout(predicate::str::contains("Alpha Roadmap"));
+}
+
+#[test]
+fn format_markdown_on_phase_list() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "list",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "acme",
+            "--format",
+            "markdown",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Setup Phase"))
+        .stdout(predicate::str::contains("|---:"));
+}
+
+#[test]
+fn format_markdown_on_task_list() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "list", "--project", "acme", "--format", "markdown"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Fix Bug"))
+        .stdout(predicate::str::contains("## Tasks"));
+}
+
+#[test]
+fn format_markdown_on_search() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "Alpha", "--format", "markdown"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alpha Roadmap"));
+}
+
+#[test]
+fn format_markdown_on_roadmap_show() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "show",
+            "alpha",
+            "--project",
+            "acme",
+            "--format",
+            "markdown",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Alpha Roadmap"))
+        .stdout(predicate::str::contains("- **Slug:**"));
+}
+
+#[test]
+fn format_markdown_on_phase_show() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "1",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "acme",
+            "--format",
+            "markdown",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Phase"))
+        .stdout(predicate::str::contains("- **Status:**"));
+}
+
+#[test]
+fn format_markdown_on_task_show() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "show",
+            "fix-bug",
+            "--project",
+            "acme",
+            "--format",
+            "markdown",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Fix Bug"))
+        .stdout(predicate::str::contains("- **Status:**"));
+}
+
 #[test]
 fn format_table_on_task_show_returns_error() {
     let dir = TempDir::new().unwrap();

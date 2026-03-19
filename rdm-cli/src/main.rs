@@ -35,7 +35,7 @@ struct Cli {
     #[arg(long, global = true, env = "RDM_STAGE")]
     stage: bool,
 
-    /// Output format (human, json, or table).
+    /// Output format (human, json, table, or markdown).
     #[arg(long, global = true, default_value = "human")]
     format: OutputFormat,
 
@@ -426,6 +426,7 @@ enum OutputFormat {
     Human,
     Json,
     Table,
+    Markdown,
 }
 
 impl std::fmt::Display for OutputFormat {
@@ -434,6 +435,7 @@ impl std::fmt::Display for OutputFormat {
             Self::Human => write!(f, "human"),
             Self::Json => write!(f, "json"),
             Self::Table => write!(f, "table"),
+            Self::Markdown => write!(f, "markdown"),
         }
     }
 }
@@ -654,7 +656,7 @@ fn reject_non_human(format: OutputFormat, command_name: &str) -> Result<()> {
 fn reject_json(format: OutputFormat, command_name: &str) -> Result<()> {
     if format == OutputFormat::Json {
         bail!(
-            "--format json is not yet supported for '{command_name}'; use --format human or --format table"
+            "--format json is not yet supported for '{command_name}'; use --format human, --format table, or --format markdown"
         );
     }
     Ok(())
@@ -766,7 +768,6 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
-                    reject_non_human(format, "roadmap show")?;
                     let project = resolve_project(project, &repo)?;
                     let mut roadmap_doc = repo
                         .load_roadmap(&project, &slug)
@@ -777,7 +778,18 @@ fn run() -> Result<()> {
                     if no_body {
                         roadmap_doc.body = String::new();
                     }
-                    print!("{}", display::format_roadmap_summary(&roadmap_doc, &phases));
+                    match format {
+                        OutputFormat::Human => {
+                            print!("{}", display::format_roadmap_summary(&roadmap_doc, &phases))
+                        }
+                        OutputFormat::Markdown => print!(
+                            "{}",
+                            display::format_roadmap_summary_md(&roadmap_doc, &phases)
+                        ),
+                        _ => bail!(
+                            "--format {format} is not supported for 'roadmap show'; use --format human, --format markdown, or omit --format"
+                        ),
+                    }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 RoadmapCommand::List { project } => {
@@ -797,6 +809,9 @@ fn run() -> Result<()> {
                     match format {
                         OutputFormat::Human => print!("{}", display::format_roadmap_list(&entries)),
                         OutputFormat::Table => print!("{}", table::format_roadmap_table(&entries)),
+                        OutputFormat::Markdown => {
+                            print!("{}", display::format_roadmap_list_md(&entries))
+                        }
                         OutputFormat::Json => unreachable!(),
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
@@ -874,6 +889,9 @@ fn run() -> Result<()> {
                     match format {
                         OutputFormat::Human => print!("{}", display::format_phase_list(&phases)),
                         OutputFormat::Table => print!("{}", table::format_phase_table(&phases)),
+                        OutputFormat::Markdown => {
+                            print!("{}", display::format_phase_list_md(&phases))
+                        }
                         OutputFormat::Json => unreachable!(),
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
@@ -884,7 +902,6 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
-                    reject_non_human(format, "phase show")?;
                     let project = resolve_project(project, &repo)?;
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
@@ -895,7 +912,17 @@ fn run() -> Result<()> {
                     if no_body {
                         doc.body = String::new();
                     }
-                    print!("{}", display::format_phase_detail(&stem, &doc));
+                    match format {
+                        OutputFormat::Human => {
+                            print!("{}", display::format_phase_detail(&stem, &doc))
+                        }
+                        OutputFormat::Markdown => {
+                            print!("{}", display::format_phase_detail_md(&stem, &doc))
+                        }
+                        _ => bail!(
+                            "--format {format} is not supported for 'phase show'; use --format human, --format markdown, or omit --format"
+                        ),
+                    }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 PhaseCommand::Update {
@@ -959,7 +986,6 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
-                    reject_non_human(format, "task show")?;
                     let project = resolve_project(project, &repo)?;
                     let mut doc = repo
                         .load_task(&project, &slug)
@@ -967,7 +993,17 @@ fn run() -> Result<()> {
                     if no_body {
                         doc.body = String::new();
                     }
-                    print!("{}", display::format_task_detail(&slug, &doc));
+                    match format {
+                        OutputFormat::Human => {
+                            print!("{}", display::format_task_detail(&slug, &doc))
+                        }
+                        OutputFormat::Markdown => {
+                            print!("{}", display::format_task_detail_md(&slug, &doc))
+                        }
+                        _ => bail!(
+                            "--format {format} is not supported for 'task show'; use --format human, --format markdown, or omit --format"
+                        ),
+                    }
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 TaskCommand::Update {
@@ -1024,6 +1060,9 @@ fn run() -> Result<()> {
                     match format {
                         OutputFormat::Human => print!("{}", display::format_task_list(&filtered)),
                         OutputFormat::Table => print!("{}", table::format_task_table(&filtered)),
+                        OutputFormat::Markdown => {
+                            print!("{}", display::format_task_list_md(&filtered))
+                        }
                         OutputFormat::Json => unreachable!(),
                     }
                     maybe_print_uncommitted_hint(repo.store(), staging);
@@ -1134,6 +1173,13 @@ fn run() -> Result<()> {
                         println!("No results found for '{query}'.");
                     } else {
                         print!("{}", table::format_search_table(&results));
+                    }
+                }
+                OutputFormat::Markdown => {
+                    if results.is_empty() {
+                        println!("No results found for '{query}'.");
+                    } else {
+                        print!("{}", display::format_search_results_md(&results));
                     }
                 }
                 OutputFormat::Json => {
@@ -1279,6 +1325,9 @@ fn run() -> Result<()> {
                 match format {
                     OutputFormat::Human => print!("{}", display::format_roadmap_list(&entries)),
                     OutputFormat::Table => print!("{}", table::format_roadmap_table(&entries)),
+                    OutputFormat::Markdown => {
+                        print!("{}", display::format_roadmap_list_md(&entries))
+                    }
                     OutputFormat::Json => unreachable!(),
                 }
             }
