@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `--format markdown` option for clean Markdown output on list, show, and search commands
 - `--format table` option for pretty terminal tables on list and search commands (powered by `tabled` crate)
 - Global `--format` flag on all read commands (defaults to `human`; `text` accepted as alias for backward compatibility)
+- 6 mutation MCP tools: `rdm_roadmap_create`, `rdm_phase_create`, `rdm_phase_update`, `rdm_task_create`, `rdm_task_update`, `rdm_task_promote`
 - 8 read-only MCP tools: `rdm_project_list`, `rdm_roadmap_list`, `rdm_roadmap_show`, `rdm_phase_list`, `rdm_phase_show`, `rdm_task_list`, `rdm_task_show`, `rdm_search`
 - Dark mode support for the web UI with toggle button and system-preference detection
 - Theme preference persists to `localStorage` across sessions

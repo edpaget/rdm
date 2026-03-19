@@ -253,6 +253,7 @@ fn tools_list() {
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
 
     let expected = [
+        // Read-only tools
         "rdm_project_list",
         "rdm_roadmap_list",
         "rdm_roadmap_show",
@@ -261,6 +262,13 @@ fn tools_list() {
         "rdm_task_list",
         "rdm_task_show",
         "rdm_search",
+        // Mutation tools
+        "rdm_roadmap_create",
+        "rdm_phase_create",
+        "rdm_phase_update",
+        "rdm_task_create",
+        "rdm_task_update",
+        "rdm_task_promote",
     ];
 
     for name in &expected {
@@ -416,6 +424,263 @@ fn search() {
     assert!(
         text.contains("Authentication") || text.contains("auth"),
         "Expected search results for 'auth' in: {text}"
+    );
+}
+
+/// Helper to extract text from a successful MCP tool call response.
+fn result_text(response: &serde_json::Value) -> &str {
+    response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("expected text in result content")
+}
+
+#[test]
+fn tools_list_includes_mutation_tools() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.request("tools/list", serde_json::json!({}));
+    let tools = response["result"]["tools"].as_array().expect("tools array");
+
+    let mutation_tools = [
+        "rdm_roadmap_create",
+        "rdm_phase_create",
+        "rdm_phase_update",
+        "rdm_task_create",
+        "rdm_task_update",
+        "rdm_task_promote",
+    ];
+
+    let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    for name in &mutation_tools {
+        assert!(
+            tool_names.contains(name),
+            "Missing mutation tool: {name}. Found: {tool_names:?}"
+        );
+    }
+
+    // Verify read_only_hint annotations
+    for tool in tools {
+        let name = tool["name"].as_str().unwrap();
+        let read_only = tool["annotations"]["readOnlyHint"].as_bool();
+        if mutation_tools.contains(&name) {
+            assert_eq!(
+                read_only,
+                Some(false),
+                "Mutation tool {name} should have readOnlyHint=false"
+            );
+        } else {
+            assert_eq!(
+                read_only,
+                Some(true),
+                "Read-only tool {name} should have readOnlyHint=true"
+            );
+        }
+    }
+}
+
+#[test]
+fn roadmap_create() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "billing",
+            "title": "Billing System",
+            "body": "Implement billing and invoicing."
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Billing System"),
+        "Expected 'Billing System' in create response: {text}"
+    );
+
+    // Verify it persists via rdm_roadmap_show
+    let show = h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "billing"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("Billing System"),
+        "Expected 'Billing System' in show response: {show_text}"
+    );
+}
+
+#[test]
+fn phase_create() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_phase_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "slug": "testing",
+            "title": "Test Auth",
+            "number": 3,
+            "body": "Write integration tests for auth."
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Test Auth"),
+        "Expected 'Test Auth' in create response: {text}"
+    );
+
+    // Verify via phase_show
+    let show = h.call_tool(
+        "rdm_phase_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "auth", "phase": "3"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("Test Auth"),
+        "Expected 'Test Auth' in show response: {show_text}"
+    );
+}
+
+#[test]
+fn phase_update() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "1",
+            "status": "done"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("done"),
+        "Expected 'done' status in update response: {text}"
+    );
+
+    // Verify persisted
+    let show = h.call_tool(
+        "rdm_phase_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "auth", "phase": "1"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("done"),
+        "Expected 'done' in show response: {show_text}"
+    );
+}
+
+#[test]
+fn task_create() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_task_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "add-logging",
+            "title": "Add structured logging",
+            "priority": "high",
+            "tags": ["observability", "infra"],
+            "body": "Add structured JSON logging throughout the app."
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Add structured logging"),
+        "Expected title in create response: {text}"
+    );
+
+    // Verify via task_show
+    let show = h.call_tool(
+        "rdm_task_show",
+        serde_json::json!({"project": "test-proj", "task": "add-logging"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("Add structured logging"),
+        "Expected title in show response: {show_text}"
+    );
+    assert!(
+        show_text.contains("high"),
+        "Expected 'high' priority in show response: {show_text}"
+    );
+}
+
+#[test]
+fn task_update() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "status": "done"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("done"),
+        "Expected 'done' in update response: {text}"
+    );
+
+    // Verify persisted
+    let show = h.call_tool(
+        "rdm_task_show",
+        serde_json::json!({"project": "test-proj", "task": "fix-login-bug"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("done"),
+        "Expected 'done' in show response: {show_text}"
+    );
+}
+
+#[test]
+fn task_promote() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_task_promote",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "roadmap_slug": "login-fix"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Fix login bug") || text.contains("login-fix"),
+        "Expected roadmap info in promote response: {text}"
+    );
+
+    // Verify roadmap was created
+    let show = h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "login-fix"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("Fix login bug") || show_text.contains("login-fix"),
+        "Expected promoted roadmap in show response: {show_text}"
     );
 }
 
