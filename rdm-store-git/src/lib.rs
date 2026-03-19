@@ -45,6 +45,15 @@ pub struct FileStatus {
     pub change: FileChange,
 }
 
+/// Information about a configured git remote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteInfo {
+    /// The remote's name (e.g., `"origin"`).
+    pub name: String,
+    /// The remote's fetch URL.
+    pub url: String,
+}
+
 /// A [`Store`] backed by git, wrapping [`FsStore`] for filesystem operations.
 ///
 /// Every call to [`Store::commit`] flushes staged changes to disk via the inner
@@ -347,6 +356,126 @@ impl GitStore {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Lists all configured git remotes with their fetch URLs.
+    ///
+    /// Returns remotes sorted alphabetically by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if the repository configuration cannot be read.
+    pub fn git_remote_list(&self) -> Result<Vec<RemoteInfo>> {
+        let config_path = self.repo.git_dir().join("config");
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| Error::Git(format!("failed to read git config: {e}")))?;
+
+        let mut remotes = Vec::new();
+        let mut current_remote: Option<String> = None;
+        let mut current_url: Option<String> = None;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                if let Some(name) = current_remote.take() {
+                    remotes.push(RemoteInfo {
+                        name,
+                        url: current_url.take().unwrap_or_default(),
+                    });
+                }
+                if let Some(rest) = trimmed.strip_prefix("[remote \"")
+                    && let Some(name) = rest.strip_suffix("\"]")
+                {
+                    current_remote = Some(name.to_string());
+                    current_url = None;
+                }
+            } else if current_remote.is_some()
+                && let Some(url_val) = trimmed.strip_prefix("url = ")
+            {
+                current_url = Some(url_val.to_string());
+            }
+        }
+        if let Some(name) = current_remote.take() {
+            remotes.push(RemoteInfo {
+                name,
+                url: current_url.take().unwrap_or_default(),
+            });
+        }
+
+        remotes.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(remotes)
+    }
+
+    /// Adds a new git remote with the given name and URL.
+    ///
+    /// Configures the standard fetch refspec
+    /// `+refs/heads/*:refs/remotes/<name>/*`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::DuplicateRemote`] if a remote with the given name
+    /// already exists. Returns `Error::Git` if the configuration cannot be
+    /// written.
+    pub fn git_remote_add(&mut self, name: &str, url: &str) -> Result<()> {
+        let existing = self.git_remote_list()?;
+        if existing.iter().any(|r| r.name == name) {
+            return Err(Error::DuplicateRemote(name.to_string()));
+        }
+
+        let config_path = self.repo.git_dir().join("config");
+        let mut content = std::fs::read_to_string(&config_path)
+            .map_err(|e| Error::Git(format!("failed to read git config: {e}")))?;
+        content.push_str(&format!(
+            "[remote \"{}\"]\n\turl = {}\n\tfetch = +refs/heads/*:refs/remotes/{}/*\n",
+            name, url, name
+        ));
+        std::fs::write(&config_path, &content)
+            .map_err(|e| Error::Git(format!("failed to write git config: {e}")))?;
+
+        // Reopen to refresh cached config
+        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Removes a git remote by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RemoteNotFound`] if no remote with the given name
+    /// exists. Returns `Error::Git` if the configuration cannot be written.
+    pub fn git_remote_remove(&mut self, name: &str) -> Result<()> {
+        let existing = self.git_remote_list()?;
+        if !existing.iter().any(|r| r.name == name) {
+            return Err(Error::RemoteNotFound(name.to_string()));
+        }
+
+        let config_path = self.repo.git_dir().join("config");
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| Error::Git(format!("failed to read git config: {e}")))?;
+
+        let section_header = format!("[remote \"{name}\"]");
+        let mut output = String::new();
+        let mut in_target_section = false;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_target_section = trimmed == section_header;
+            }
+            if !in_target_section {
+                output.push_str(line);
+                output.push('\n');
+            }
+        }
+
+        std::fs::write(&config_path, &output)
+            .map_err(|e| Error::Git(format!("failed to write git config: {e}")))?;
+
+        // Reopen to refresh cached config
+        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
 
         Ok(())
     }
@@ -856,6 +985,89 @@ mod tests {
         // Status should be clean
         let status = store.git_status().unwrap();
         assert!(status.is_empty());
+    }
+
+    #[test]
+    fn git_remote_list_empty() {
+        let dir = TempDir::new().unwrap();
+        let store = GitStore::init(dir.path()).unwrap();
+        let remotes = store.git_remote_list().unwrap();
+        assert!(remotes.is_empty());
+    }
+
+    #[test]
+    fn git_remote_add_and_list() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .git_remote_add("origin", "https://example.com/repo.git")
+            .unwrap();
+
+        let remotes = store.git_remote_list().unwrap();
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(remotes[0].url, "https://example.com/repo.git");
+    }
+
+    #[test]
+    fn git_remote_add_duplicate_fails() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .git_remote_add("origin", "https://example.com/repo.git")
+            .unwrap();
+
+        let result = store.git_remote_add("origin", "https://other.com/repo.git");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "expected DuplicateRemote error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn git_remote_remove_and_list() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .git_remote_add("origin", "https://example.com/repo.git")
+            .unwrap();
+        store.git_remote_remove("origin").unwrap();
+
+        let remotes = store.git_remote_list().unwrap();
+        assert!(remotes.is_empty());
+    }
+
+    #[test]
+    fn git_remote_remove_nonexistent_fails() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+
+        let result = store.git_remote_remove("nope");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "expected RemoteNotFound error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn git_remote_list_multiple_sorted() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .git_remote_add("upstream", "https://upstream.com/repo.git")
+            .unwrap();
+        store
+            .git_remote_add("origin", "https://origin.com/repo.git")
+            .unwrap();
+
+        let remotes = store.git_remote_list().unwrap();
+        assert_eq!(remotes.len(), 2);
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(remotes[1].name, "upstream");
     }
 
     #[test]

@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+/// Configuration for the default git remote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RemoteConfig {
+    /// The default remote name used by `rdm push` and `rdm pull`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
 /// Configuration stored in `rdm.toml` at the plan repo root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -13,6 +21,10 @@ pub struct Config {
     /// When `true`, defers git commits until an explicit `rdm commit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<bool>,
+
+    /// Git remote configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteConfig>,
 }
 
 impl Config {
@@ -58,6 +70,7 @@ mod tests {
         let config = Config {
             default_project: Some("fbm".to_string()),
             stage: None,
+            remote: None,
         };
         let toml_str = config.to_toml().unwrap();
         let parsed = Config::from_toml(&toml_str).unwrap();
@@ -69,6 +82,7 @@ mod tests {
         let config = Config {
             default_project: Some("fbm".to_string()),
             stage: Some(true),
+            remote: None,
         };
         let toml_str = config.to_toml().unwrap();
         let parsed = Config::from_toml(&toml_str).unwrap();
@@ -82,5 +96,38 @@ mod tests {
         let toml_str = config.to_toml().unwrap();
         let parsed = Config::from_toml(&toml_str).unwrap();
         assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn config_with_remote_round_trip() {
+        let config = Config {
+            default_project: Some("fbm".to_string()),
+            stage: None,
+            remote: Some(RemoteConfig {
+                default: Some("origin".to_string()),
+            }),
+        };
+        let toml_str = config.to_toml().unwrap();
+        let parsed = Config::from_toml(&toml_str).unwrap();
+        assert_eq!(parsed, config);
+        assert_eq!(parsed.remote.unwrap().default, Some("origin".to_string()));
+    }
+
+    #[test]
+    fn config_without_remote_parses() {
+        let toml_str = r#"default_project = "fbm""#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert_eq!(config.remote, None);
+    }
+
+    #[test]
+    fn remote_config_omitted_when_none() {
+        let config = Config {
+            default_project: Some("fbm".to_string()),
+            stage: None,
+            remote: None,
+        };
+        let toml_str = config.to_toml().unwrap();
+        assert!(!toml_str.contains("[remote]"));
     }
 }

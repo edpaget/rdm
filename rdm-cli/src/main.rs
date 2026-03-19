@@ -135,6 +135,12 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Manage git remotes.
+    #[cfg(feature = "git")]
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommand,
+    },
     /// Start the MCP server on stdin/stdout.
     #[cfg(feature = "mcp")]
     Mcp,
@@ -447,6 +453,25 @@ enum TaskCommand {
         #[arg(long)]
         tag: Option<String>,
     },
+}
+
+#[cfg(feature = "git")]
+#[derive(Subcommand)]
+enum RemoteCommand {
+    /// Add a new remote.
+    Add {
+        /// Remote name (e.g., "origin").
+        name: String,
+        /// Remote URL.
+        url: String,
+    },
+    /// Remove a remote.
+    Remove {
+        /// Remote name to remove.
+        name: String,
+    },
+    /// List all remotes.
+    List,
 }
 
 /// Item type argument for `--type` flag.
@@ -1432,6 +1457,35 @@ fn run() -> Result<()> {
                         rdm_store_git::FileChange::Deleted => "  restored: ",
                     };
                     println!("{prefix}{}", fs.path);
+                }
+            }
+        }
+
+        #[cfg(feature = "git")]
+        Command::Remote { command } => {
+            let mut store = make_store(&root, staging)?;
+            match command {
+                RemoteCommand::Add { name, url } => {
+                    store
+                        .git_remote_add(&name, &url)
+                        .context("failed to add remote")?;
+                    println!("Added remote '{name}' ({url})");
+                }
+                RemoteCommand::Remove { name } => {
+                    store
+                        .git_remote_remove(&name)
+                        .context("failed to remove remote")?;
+                    println!("Removed remote '{name}'");
+                }
+                RemoteCommand::List => {
+                    let remotes = store.git_remote_list().context("failed to list remotes")?;
+                    if remotes.is_empty() {
+                        println!("No remotes configured.");
+                    } else {
+                        for r in &remotes {
+                            println!("{}\t{}", r.name, r.url);
+                        }
+                    }
                 }
             }
         }

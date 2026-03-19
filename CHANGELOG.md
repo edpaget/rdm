@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm remote add <name> <url>` command to register a git remote on the plan repo
+- `rdm remote remove <name>` command to remove a git remote
+- `rdm remote list` command to display all configured remotes with their URLs
+- `RemoteInfo` struct and `git_remote_add/remove/list` methods on `GitStore` for programmatic remote management
+- `RemoteConfig` struct in `rdm-core::config` with `[remote]` section support in `rdm.toml`
+- `RemoteNotFound` and `DuplicateRemote` error variants in rdm-core
 - `format_top_level_index` function in `rdm-core::display` for the new summary-style root index
 - Per-project `INDEX.md` files at `projects/<name>/INDEX.md` with relative links, generated alongside the root index
 - `format_project_index` function in `rdm-core::display` for standalone per-project index rendering

@@ -100,6 +100,20 @@ impl From<&Error> for ProblemDetail {
                 )),
                 instance: None,
             },
+            Error::RemoteNotFound(name) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Not Found".to_string(),
+                status: 404,
+                detail: Some(format!("remote not found: {name}")),
+                instance: None,
+            },
+            Error::DuplicateRemote(name) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(format!("remote '{name}' already exists")),
+                instance: None,
+            },
             // Internal errors: no detail leak
             Error::Io(_)
             | Error::FrontmatterParse(_)

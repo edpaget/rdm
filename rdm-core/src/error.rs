@@ -35,6 +35,10 @@ pub enum Error {
     InvalidPhaseSelection(String),
     /// The roadmap has incomplete phases and cannot be archived without force.
     RoadmapHasIncompletePhases(String),
+    /// The specified git remote was not found.
+    RemoteNotFound(String),
+    /// A git remote with the given name already exists.
+    DuplicateRemote(String),
     /// A git operation failed.
     Git(String),
 }
@@ -92,6 +96,15 @@ impl std::fmt::Display for Error {
                     f,
                     "roadmap '{slug}' has incomplete phases — pass --force to archive anyway"
                 )
+            }
+            Error::RemoteNotFound(name) => {
+                write!(
+                    f,
+                    "remote not found: {name} — use `rdm remote add` to create one"
+                )
+            }
+            Error::DuplicateRemote(name) => {
+                write!(f, "remote '{name}' already exists")
             }
             Error::Git(msg) => write!(f, "git error: {msg}"),
         }
