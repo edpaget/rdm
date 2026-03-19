@@ -6,8 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Dark mode support for the web UI with toggle button and system-preference detection
+- Theme preference persists to `localStorage` across sessions
+
 ### Changed
 
+- Refactored all inline CSS colors in `base.html` to use CSS custom properties
 - Bump `headers-accept` from 0.1 to 0.3
 - Bump `mediatype` from 0.19 to 0.21
 

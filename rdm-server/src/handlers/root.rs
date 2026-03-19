@@ -129,7 +129,7 @@ mod tests {
                 .unwrap()
                 .contains("text/html")
         );
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("#main-content"));

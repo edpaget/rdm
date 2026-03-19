@@ -277,7 +277,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["query"], "widget");
         let results = json["_embedded"]["results"].as_array().unwrap();
@@ -298,7 +298,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("widget"));
@@ -353,7 +353,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let results = json["_embedded"]["results"].as_array().unwrap();
         for r in results {
@@ -375,7 +375,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["total"], 0);
     }
@@ -394,7 +394,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         // Should contain search form
         assert!(html.contains("<form"));

@@ -168,7 +168,7 @@ mod tests {
             response.headers().get("content-type").unwrap(),
             "application/hal+json"
         );
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let projects = json["_embedded"]["projects"].as_array().unwrap();
         assert_eq!(projects.len(), 2);
@@ -199,7 +199,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["_links"]["self"]["href"], "/projects");
     }
@@ -227,7 +227,7 @@ mod tests {
                 .unwrap()
                 .contains("text/html")
         );
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Alpha Project"));
@@ -274,7 +274,7 @@ mod tests {
             response.headers().get("content-type").unwrap(),
             "application/hal+json"
         );
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["name"], "gamma");
         assert_eq!(json["title"], "Gamma Project");

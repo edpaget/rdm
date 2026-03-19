@@ -148,7 +148,7 @@ mod tests {
                 .unwrap()
                 .contains("text/html")
         );
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("404"));
@@ -163,7 +163,7 @@ mod tests {
             response.headers().get("content-type").unwrap(),
             "application/problem+json"
         );
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], 422);
         assert_eq!(json["title"], "Unprocessable Content");

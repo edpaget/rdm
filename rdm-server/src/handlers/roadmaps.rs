@@ -274,7 +274,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let roadmaps = json["_embedded"]["roadmaps"].as_array().unwrap();
         assert_eq!(roadmaps.len(), 1);
@@ -297,7 +297,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["slug"], "alpha");
         assert_eq!(json["title"], "Alpha Roadmap");
@@ -353,7 +353,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Alpha Roadmap"));
@@ -374,7 +374,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Alpha Roadmap"));
@@ -406,7 +406,7 @@ mod tests {
             response.headers().get("location").unwrap(),
             "/projects/demo/roadmaps/beta"
         );
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["slug"], "beta");
         assert_eq!(json["title"], "Beta Roadmap");

@@ -423,7 +423,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let tasks = json["_embedded"]["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 2);
@@ -443,7 +443,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let tasks = json["_embedded"]["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 1);
@@ -464,7 +464,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let tasks = json["_embedded"]["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 1);
@@ -485,7 +485,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 400);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["detail"].as_str().unwrap().contains("bogus"));
     }
@@ -520,7 +520,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["slug"], "bug-fix");
         assert_eq!(json["title"], "Fix the Bug");
@@ -574,7 +574,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Fix the Bug"));
@@ -596,7 +596,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Fix the Bug"));
@@ -620,7 +620,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 404);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Not Found"));
@@ -658,7 +658,7 @@ mod tests {
             response.headers().get("location").unwrap(),
             "/projects/demo/tasks/new-task"
         );
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["slug"], "new-task");
         assert_eq!(json["title"], "New Task");
@@ -677,7 +677,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 201);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["priority"], "medium");
     }
@@ -759,7 +759,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "done");
     }
@@ -776,7 +776,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["priority"], "critical");
     }
@@ -793,7 +793,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "done");
         assert_eq!(json["priority"], "low");
