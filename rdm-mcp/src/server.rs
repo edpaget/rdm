@@ -465,7 +465,7 @@ impl RdmMcpServer {
         if let Err(e) = repo.generate_index() {
             return core_err(e);
         }
-        let stem = format!("{:02}-{}", doc.frontmatter.phase, params.slug);
+        let stem = doc.frontmatter.stem(&params.slug);
         ok_text(display::format_phase_detail(&stem, &doc))
     }
 

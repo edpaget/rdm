@@ -469,7 +469,7 @@ impl<S: Store> PlanRepo<S> {
             }
         };
 
-        let stem = format!("phase-{number}-{slug}");
+        let stem = crate::model::phase_stem(number, slug);
         let path = self.phase_path(project, roadmap, &stem);
         if self.store.exists(&path) {
             return Err(Error::DuplicateSlug(stem));
@@ -742,7 +742,7 @@ impl<S: Store> PlanRepo<S> {
             return Err(Error::DuplicateSlug(roadmap_slug.to_string()));
         }
 
-        let phase_slug = format!("phase-1-{task_slug}");
+        let phase_slug = crate::model::phase_stem(1, task_slug);
 
         let mut roadmap_body = String::new();
         roadmap_body.push_str(&format!(

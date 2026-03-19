@@ -185,6 +185,18 @@ pub struct Phase {
     pub completed: Option<NaiveDate>,
 }
 
+impl Phase {
+    /// Build the file-stem for this phase (e.g. `phase-1-design`).
+    pub fn stem(&self, slug: &str) -> String {
+        phase_stem(self.phase, slug)
+    }
+}
+
+/// Build a phase file-stem from a number and slug (e.g. `phase-1-design`).
+pub fn phase_stem(number: u32, slug: &str) -> String {
+    format!("phase-{number}-{slug}")
+}
+
 /// Frontmatter for a standalone task file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {

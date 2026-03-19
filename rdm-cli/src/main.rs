@@ -879,7 +879,7 @@ fn run() -> Result<()> {
                     let doc = repo
                         .create_phase(&project, &roadmap, &slug, title, number, body.as_deref())
                         .context("failed to create phase")?;
-                    let stem = format!("phase-{}-{slug}", doc.frontmatter.phase);
+                    let stem = doc.frontmatter.stem(&slug);
                     println!("Created phase '{stem}' in roadmap '{roadmap}'");
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
