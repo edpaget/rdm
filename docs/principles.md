@@ -6,15 +6,15 @@ This document codifies the architectural principles that govern the rdm codebase
 
 ## 1. Core Is the Source of Truth
 
-All business logic, data models, parsing, file I/O, and domain rules live in `rdm-core`. CLI and server crates are thin layers that call core functions and format output.
+All business logic, data models, parsing, and domain rules live in `rdm-core`. The core crate performs **no filesystem or network I/O** — all storage is abstracted behind the `Store` trait, and I/O implementations live in separate crates (`rdm-store-fs`, `rdm-store-git`). CLI and server crates are thin layers that wire a concrete store to core and format output.
 
 - **New interfaces call core.** Whether it's a TUI, an MCP server, or a WASM module, new frontends import and call `rdm-core`. They do not duplicate logic.
-- **Core has no knowledge of its consumers.** `rdm-core` must never depend on `rdm-cli`, `rdm-server`, or any interaction-layer crate. Dependencies flow strictly downward.
+- **Core has no knowledge of its consumers or its storage backend.** `rdm-core` must never depend on `rdm-cli`, `rdm-server`, `rdm-store-fs`, or any interaction-layer crate. Dependencies flow strictly downward. Core operates on the `Store` trait, never on concrete I/O types.
 - **Formatting belongs in core when reusable.** Display logic that multiple interfaces need (e.g., `format_index()`, `format_search_results()`) lives in `rdm-core::display`. Interface-specific formatting (e.g., terminal colors, HTML templates) stays in the consuming crate.
 
 ### Why
 
-A single source of truth prevents logic drift between interfaces. When the rules for parsing a phase document or validating a status transition live in one place, every consumer gets the fix or feature automatically. Duplicated logic is a bug waiting to diverge.
+A single source of truth prevents logic drift between interfaces. When the rules for parsing a phase document or validating a status transition live in one place, every consumer gets the fix or feature automatically. Duplicated logic is a bug waiting to diverge. Keeping I/O out of core makes the library pure and testable — every core test runs in-memory with no filesystem setup or cleanup.
 
 ---
 
@@ -32,22 +32,38 @@ Thin adapters are easy to test, easy to replace, and impossible to accidentally 
 
 ---
 
-## 3. All Code Must Be Tested
+## 3. I/O Lives Behind the Store Trait
+
+All persistence in `rdm-core` goes through the `Store` trait. Core never touches `std::fs`, `std::io`, or any concrete I/O type. Storage implementations live in dedicated crates outside core.
+
+- **`Store` is the only I/O seam.** `PlanRepo<S: Store>` is generic over any `Store` implementation. Core reads, writes, and deletes through this trait — it has no other path to the outside world.
+- **Implementations are separate crates.** `rdm-store-fs` provides `FsStore` (filesystem with atomic writes via temp-file + rename). `rdm-store-git` provides `GitStore` (wraps `FsStore` and adds git commits). New backends (e.g., S3, SQLite) would be new crates implementing `Store`.
+- **Staging semantics are built in.** `Store::write()` and `Store::delete()` stage changes; `Store::commit()` flushes them atomically. Reads see staged changes before commit (read-your-own-writes). This lets core batch mutations without partial writes hitting disk.
+- **`MemoryStore` is a first-class implementation.** The in-memory store in core is not a test mock — it is a complete `Store` implementation with full staging semantics. Core tests use it directly.
+
+### Why
+
+Keeping I/O out of the library makes core a pure-logic crate: no filesystem assumptions, no cleanup, no platform-specific behavior. Tests run in microseconds against `MemoryStore`. The trait boundary also makes the storage backend a deployment decision — CLI users get git-backed storage, the server gets filesystem storage, and tests get in-memory storage, all without changing a line of business logic.
+
+---
+
+## 4. All Code Must Be Tested
 
 Every behavior must be covered by automated tests. There are no exceptions for glue code or simple wrappers.
 
 - **Follow TDD.** Write a failing test first, then the minimum code to make it pass, then refactor.
 - **Unit tests live next to the code.** Use `#[cfg(test)] mod tests` in the same file. Test internal logic through the module's public interface.
-- **Integration tests use real artifacts.** CLI integration tests spawn the compiled binary with `assert_cmd`, write to a `TempDir`, and assert on stdout/stderr with `predicates`. Server integration tests start a real TCP listener and make HTTP requests with `reqwest`. No mocking the filesystem or network when the real thing is fast and deterministic.
+- **Core tests use `MemoryStore`.** Since core is I/O-free, all core tests run against the in-memory `Store` implementation. This makes tests fast, deterministic, and free of filesystem setup/cleanup. No mocking — `MemoryStore` is a real `Store` implementation, not a mock.
+- **Integration tests use real artifacts.** CLI integration tests spawn the compiled binary with `assert_cmd`, write to a `TempDir`, and assert on stdout/stderr with `predicates`. Server integration tests start a real TCP listener and make HTTP requests with `reqwest`. These tests exercise the full stack including real filesystem I/O through `FsStore`/`GitStore`.
 - **Doctests are encouraged for public API.** Examples in `///` doc comments are compiled and run by `cargo test`. They serve as both documentation and regression tests.
 
 ### Why
 
-Tests are the primary defense against regressions. Testing against real filesystems and real HTTP catches integration bugs that mocks would hide. TDD keeps the design testable from the start rather than bolting tests on after the fact.
+Tests are the primary defense against regressions. Core's `Store` abstraction lets unit tests run entirely in-memory — fast and deterministic — while CLI and server integration tests exercise the real filesystem and HTTP stack to catch I/O bugs. TDD keeps the design testable from the start rather than bolting tests on after the fact.
 
 ---
 
-## 4. Matchable Error Enums in Core
+## 5. Matchable Error Enums in Core
 
 `rdm-core` uses hand-written error enums that implement `std::error::Error` and `Display`. Errors are matchable — no `anyhow`, no `Box<dyn Error>`, no type erasure in the library.
 
@@ -62,7 +78,7 @@ Matchable errors let each consumer handle failures appropriately. The CLI can pr
 
 ---
 
-## 5. Documents Are YAML Frontmatter + Markdown Body
+## 6. Documents Are YAML Frontmatter + Markdown Body
 
 Every persistent item — roadmaps, phases, tasks, projects — is stored as a markdown file with YAML frontmatter. The `Document<T>` generic wrapper enforces this structure.
 
@@ -77,7 +93,7 @@ Markdown with YAML frontmatter is human-readable, diff-friendly, and git-native.
 
 ---
 
-## 6. Status Enums Encode Valid Transitions
+## 7. Status Enums Encode Valid Transitions
 
 Status types (`PhaseStatus`, `TaskStatus`) are enums with `Display` and `FromStr` implementations. Valid transitions are enforced — terminal states cannot be exited.
 
@@ -91,7 +107,7 @@ Encoding status rules in the type system prevents invalid states from being repr
 
 ---
 
-## 7. Public API Is Fully Documented
+## 8. Public API Is Fully Documented
 
 `rdm-core` enforces `#![warn(missing_docs)]`. Every public type, function, method, and module has a doc comment.
 
@@ -107,7 +123,7 @@ Encoding status rules in the type system prevents invalid states from being repr
 
 ---
 
-## 8. Module Public API via Re-exports
+## 9. Module Public API via Re-exports
 
 `rdm-core`'s `lib.rs` re-exports the crate's public API. Consumers import from `rdm_core::` directly, without reaching into submodules.
 
@@ -121,7 +137,7 @@ Consolidated re-exports make the crate easier to use, reduce import churn when i
 
 ---
 
-## 9. No Unsafe Without Safety Comments
+## 10. No Unsafe Without Safety Comments
 
 `unsafe` blocks and functions require a `// SAFETY:` comment explaining the invariant that makes the usage sound. Prefer safe alternatives.
 
@@ -134,7 +150,7 @@ Consolidated re-exports make the crate easier to use, reduce import churn when i
 
 ---
 
-## 10. Content Negotiation at the HTTP Boundary
+## 11. Content Negotiation at the HTTP Boundary
 
 The server crate serves multiple representations of the same resource based on the `Accept` header. Clients get the format they need without separate endpoints.
 
@@ -148,7 +164,7 @@ Content negotiation lets one URL serve multiple consumers. A browser and a CLI t
 
 ---
 
-## 11. Workspace Dependency Management
+## 12. Workspace Dependency Management
 
 All crate dependencies are declared in the workspace root `Cargo.toml` under `[workspace.dependencies]`. Individual crates reference them with `dep.workspace = true`.
 
@@ -162,7 +178,7 @@ Centralized dependency management prevents the "works on my crate" problem where
 
 ---
 
-## 12. Conventional Commits and Changelogs
+## 13. Conventional Commits and Changelogs
 
 Every commit follows the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) format. Every user-facing change gets a changelog entry.
 
