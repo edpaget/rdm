@@ -248,6 +248,26 @@ enum RoadmapCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Split a roadmap by extracting phases into a new roadmap.
+    Split {
+        /// Source roadmap slug.
+        slug: String,
+        /// Phase stems or numbers to extract.
+        #[arg(long, required = true, num_args = 1..)]
+        phases: Vec<String>,
+        /// Slug for the new roadmap.
+        #[arg(long)]
+        into: String,
+        /// Title for the new roadmap.
+        #[arg(long)]
+        title: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Add a dependency from the new roadmap on the source.
+        #[arg(long)]
+        depends_on: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -859,6 +879,34 @@ fn run() -> Result<()> {
                     repo.delete_roadmap(&project, &slug)
                         .context("failed to delete roadmap")?;
                     println!("Deleted roadmap '{slug}' from project '{project}'");
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                }
+                RoadmapCommand::Split {
+                    slug,
+                    phases,
+                    into,
+                    title,
+                    project,
+                    depends_on,
+                } => {
+                    let project = resolve_project(project, &repo)?;
+                    // Resolve each phase identifier (number or stem)
+                    let resolved_stems: Vec<String> = phases
+                        .iter()
+                        .map(|p| repo.resolve_phase_stem(&project, &slug, p))
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .context("failed to resolve phase identifiers")?;
+                    let dep = if depends_on {
+                        Some(slug.as_str())
+                    } else {
+                        None
+                    };
+                    repo.split_roadmap(&project, &slug, &into, &title, &resolved_stems, dep)
+                        .context("failed to split roadmap")?;
+                    println!(
+                        "Split {} phase(s) from '{slug}' into new roadmap '{into}'",
+                        resolved_stems.len()
+                    );
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
             }

@@ -84,6 +84,13 @@ impl From<&Error> for ProblemDetail {
                 detail: Some("no project specified — use the project query parameter".to_string()),
                 instance: None,
             },
+            Error::InvalidPhaseSelection(msg) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(format!("invalid phase selection: {msg}")),
+                instance: None,
+            },
             // Internal errors: no detail leak
             Error::Io(_)
             | Error::FrontmatterParse(_)

@@ -974,6 +974,160 @@ impl<S: Store> PlanRepo<S> {
         Ok(())
     }
 
+    // -- Split roadmap --
+
+    /// Splits a roadmap by extracting selected phases into a new roadmap.
+    ///
+    /// The selected phases are moved to the target roadmap and renumbered
+    /// starting from 1. Remaining phases in the source roadmap are also
+    /// renumbered from 1. If `depends_on` is `Some`, a dependency from the
+    /// target roadmap on the specified slug is added.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RoadmapNotFound`] if the source roadmap doesn't exist,
+    /// [`Error::DuplicateSlug`] if the target roadmap already exists,
+    /// [`Error::InvalidPhaseSelection`] if any phase stem is not in the source
+    /// roadmap or if all phases would be extracted (leaving the source empty),
+    /// or [`Error::Io`] on file I/O failures.
+    pub fn split_roadmap(
+        &mut self,
+        project: &str,
+        source_slug: &str,
+        target_slug: &str,
+        target_title: &str,
+        phase_stems: &[String],
+        depends_on: Option<&str>,
+    ) -> Result<Document<Roadmap>> {
+        // Validate source exists
+        let source_doc = self.load_roadmap(project, source_slug)?;
+
+        // Validate target doesn't exist
+        let target_roadmap_path = self.roadmap_path(project, target_slug);
+        if self.store.exists(&target_roadmap_path) {
+            return Err(Error::DuplicateSlug(target_slug.to_string()));
+        }
+
+        let source_phases = &source_doc.frontmatter.phases;
+
+        // Validate all phase_stems exist in source
+        for stem in phase_stems {
+            if !source_phases.contains(stem) {
+                return Err(Error::InvalidPhaseSelection(format!(
+                    "phase '{stem}' is not in roadmap '{source_slug}'"
+                )));
+            }
+        }
+
+        // Cannot extract all phases
+        if phase_stems.len() == source_phases.len() {
+            return Err(Error::InvalidPhaseSelection(
+                "cannot extract all phases — source roadmap would be empty".to_string(),
+            ));
+        }
+
+        // Cannot extract zero phases
+        if phase_stems.is_empty() {
+            return Err(Error::InvalidPhaseSelection(
+                "no phases specified to extract".to_string(),
+            ));
+        }
+
+        // Partition source phases into extracted and remaining, preserving order
+        let mut extracted: Vec<String> = Vec::new();
+        let mut remaining: Vec<String> = Vec::new();
+        for stem in source_phases {
+            if phase_stems.contains(stem) {
+                extracted.push(stem.clone());
+            } else {
+                remaining.push(stem.clone());
+            }
+        }
+
+        // Build target roadmap phases: renumber from 1
+        let mut target_phase_stems = Vec::new();
+        for (i, old_stem) in extracted.iter().enumerate() {
+            let new_number = (i + 1) as u32;
+            let phase_doc = self.load_phase(project, source_slug, old_stem)?;
+
+            // Derive the slug suffix (everything after "phase-N-")
+            let slug_suffix = old_stem.splitn(3, '-').nth(2).unwrap_or(old_stem);
+            let new_stem = format!("phase-{new_number}-{slug_suffix}");
+
+            let new_phase_doc = Document {
+                frontmatter: Phase {
+                    phase: new_number,
+                    ..phase_doc.frontmatter
+                },
+                body: phase_doc.body,
+            };
+
+            self.write_phase(project, target_slug, &new_stem, &new_phase_doc)?;
+            // Delete from source
+            let old_path = self.phase_path(project, source_slug, old_stem);
+            self.store.delete(&old_path)?;
+
+            target_phase_stems.push(new_stem);
+        }
+
+        // Renumber remaining source phases from 1
+        let mut new_source_stems = Vec::new();
+        for (i, old_stem) in remaining.iter().enumerate() {
+            let new_number = (i + 1) as u32;
+            let phase_doc = self.load_phase(project, source_slug, old_stem)?;
+
+            let slug_suffix = old_stem.splitn(3, '-').nth(2).unwrap_or(old_stem);
+            let new_stem = format!("phase-{new_number}-{slug_suffix}");
+
+            let new_phase_doc = Document {
+                frontmatter: Phase {
+                    phase: new_number,
+                    ..phase_doc.frontmatter
+                },
+                body: phase_doc.body,
+            };
+
+            if new_stem != *old_stem {
+                self.write_phase(project, source_slug, &new_stem, &new_phase_doc)?;
+                let old_path = self.phase_path(project, source_slug, old_stem);
+                self.store.delete(&old_path)?;
+            } else {
+                // Same stem, just update the frontmatter number if needed
+                self.write_phase(project, source_slug, &new_stem, &new_phase_doc)?;
+            }
+
+            new_source_stems.push(new_stem);
+        }
+
+        // Update source roadmap phases list
+        let mut updated_source = source_doc;
+        updated_source.frontmatter.phases = new_source_stems;
+        self.write_roadmap(project, source_slug, &updated_source)?;
+
+        // Create target roadmap
+        let target_doc = Document {
+            frontmatter: Roadmap {
+                project: project.to_string(),
+                roadmap: target_slug.to_string(),
+                title: target_title.to_string(),
+                phases: target_phase_stems,
+                dependencies: None,
+            },
+            body: String::new(),
+        };
+        self.write_roadmap(project, target_slug, &target_doc)?;
+
+        self.store.commit()?;
+
+        // Add dependency if requested
+        if let Some(dep_slug) = depends_on {
+            self.add_dependency(project, target_slug, dep_slug)?;
+        }
+
+        // Reload to return the final state
+        self.load_roadmap(project, target_slug)
+    }
+
     // -- Index generation --
 
     /// Generates `INDEX.md` from the current repo state.
@@ -2105,6 +2259,205 @@ mod tests {
             .map(|r| r.frontmatter.roadmap.as_str())
             .collect();
         assert_eq!(slugs, vec!["beta"]);
+    }
+
+    // -- Split roadmap tests --
+
+    fn setup_with_four_phases() -> PlanRepo<MemoryStore> {
+        let mut repo = setup_with_project();
+        repo.create_roadmap("fbm", "big-rm", "Big Roadmap", None)
+            .unwrap();
+        repo.create_phase("fbm", "big-rm", "design", "Design", None, None)
+            .unwrap();
+        repo.create_phase("fbm", "big-rm", "impl", "Implementation", None, None)
+            .unwrap();
+        repo.create_phase("fbm", "big-rm", "test", "Testing", None, None)
+            .unwrap();
+        repo.create_phase("fbm", "big-rm", "deploy", "Deployment", None, None)
+            .unwrap();
+        repo
+    }
+
+    #[test]
+    fn split_roadmap_basic() {
+        let mut repo = setup_with_four_phases();
+
+        // Extract phases 3 and 4 (test + deploy) into a new roadmap
+        let target = repo
+            .split_roadmap(
+                "fbm",
+                "big-rm",
+                "big-rm-v2",
+                "Big Roadmap V2",
+                &["phase-3-test".to_string(), "phase-4-deploy".to_string()],
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(target.frontmatter.roadmap, "big-rm-v2");
+        assert_eq!(target.frontmatter.title, "Big Roadmap V2");
+        assert_eq!(
+            target.frontmatter.phases,
+            vec!["phase-1-test", "phase-2-deploy"]
+        );
+
+        // Source should have remaining 2 phases
+        let source = repo.load_roadmap("fbm", "big-rm").unwrap();
+        assert_eq!(
+            source.frontmatter.phases,
+            vec!["phase-1-design", "phase-2-impl"]
+        );
+    }
+
+    #[test]
+    fn split_roadmap_renumbers_source() {
+        let mut repo = setup_with_four_phases();
+
+        // Extract phase 1 (design), leaving phases 2,3,4 which should renumber to 1,2,3
+        repo.split_roadmap(
+            "fbm",
+            "big-rm",
+            "design-rm",
+            "Design Roadmap",
+            &["phase-1-design".to_string()],
+            None,
+        )
+        .unwrap();
+
+        let source = repo.load_roadmap("fbm", "big-rm").unwrap();
+        assert_eq!(
+            source.frontmatter.phases,
+            vec!["phase-1-impl", "phase-2-test", "phase-3-deploy"]
+        );
+
+        // Verify phase files have correct numbers
+        let p1 = repo.load_phase("fbm", "big-rm", "phase-1-impl").unwrap();
+        assert_eq!(p1.frontmatter.phase, 1);
+        assert_eq!(p1.frontmatter.title, "Implementation");
+
+        let p2 = repo.load_phase("fbm", "big-rm", "phase-2-test").unwrap();
+        assert_eq!(p2.frontmatter.phase, 2);
+
+        let p3 = repo.load_phase("fbm", "big-rm", "phase-3-deploy").unwrap();
+        assert_eq!(p3.frontmatter.phase, 3);
+    }
+
+    #[test]
+    fn split_roadmap_renumbers_target() {
+        let mut repo = setup_with_four_phases();
+
+        // Extract phases 2 and 4 — they should renumber to 1, 2
+        let target = repo
+            .split_roadmap(
+                "fbm",
+                "big-rm",
+                "new-rm",
+                "New Roadmap",
+                &["phase-2-impl".to_string(), "phase-4-deploy".to_string()],
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            target.frontmatter.phases,
+            vec!["phase-1-impl", "phase-2-deploy"]
+        );
+
+        let p1 = repo.load_phase("fbm", "new-rm", "phase-1-impl").unwrap();
+        assert_eq!(p1.frontmatter.phase, 1);
+        assert_eq!(p1.frontmatter.title, "Implementation");
+
+        let p2 = repo.load_phase("fbm", "new-rm", "phase-2-deploy").unwrap();
+        assert_eq!(p2.frontmatter.phase, 2);
+        assert_eq!(p2.frontmatter.title, "Deployment");
+    }
+
+    #[test]
+    fn split_roadmap_with_dependency() {
+        let mut repo = setup_with_four_phases();
+
+        let target = repo
+            .split_roadmap(
+                "fbm",
+                "big-rm",
+                "new-rm",
+                "New Roadmap",
+                &["phase-3-test".to_string()],
+                Some("big-rm"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            target.frontmatter.dependencies,
+            Some(vec!["big-rm".to_string()])
+        );
+    }
+
+    #[test]
+    fn split_roadmap_target_exists() {
+        let mut repo = setup_with_four_phases();
+        repo.create_roadmap("fbm", "existing", "Existing", None)
+            .unwrap();
+
+        let result = repo.split_roadmap(
+            "fbm",
+            "big-rm",
+            "existing",
+            "Existing",
+            &["phase-1-design".to_string()],
+            None,
+        );
+        assert!(matches!(result, Err(Error::DuplicateSlug(ref s)) if s == "existing"));
+    }
+
+    #[test]
+    fn split_roadmap_source_not_found() {
+        let mut repo = setup_with_project();
+
+        let result = repo.split_roadmap(
+            "fbm",
+            "nonexistent",
+            "new-rm",
+            "New",
+            &["phase-1-foo".to_string()],
+            None,
+        );
+        assert!(matches!(result, Err(Error::RoadmapNotFound(ref s)) if s == "nonexistent"));
+    }
+
+    #[test]
+    fn split_roadmap_invalid_phase() {
+        let mut repo = setup_with_four_phases();
+
+        let result = repo.split_roadmap(
+            "fbm",
+            "big-rm",
+            "new-rm",
+            "New",
+            &["phase-99-nope".to_string()],
+            None,
+        );
+        assert!(matches!(result, Err(Error::InvalidPhaseSelection(_))));
+    }
+
+    #[test]
+    fn split_roadmap_all_phases() {
+        let mut repo = setup_with_four_phases();
+
+        let result = repo.split_roadmap(
+            "fbm",
+            "big-rm",
+            "new-rm",
+            "New",
+            &[
+                "phase-1-design".to_string(),
+                "phase-2-impl".to_string(),
+                "phase-3-test".to_string(),
+                "phase-4-deploy".to_string(),
+            ],
+            None,
+        );
+        assert!(matches!(result, Err(Error::InvalidPhaseSelection(_))));
     }
 
     #[test]
