@@ -1,0 +1,6 @@
+[test-groups.server-integration]
+max-threads = 4
+
+[[profile.default.overrides]]
+filter = "package(rdm-server) & kind(test)"
+test-group = "server-integration"

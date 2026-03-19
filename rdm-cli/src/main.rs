@@ -33,6 +33,10 @@ struct Cli {
     #[arg(long, global = true, env = "RDM_STAGE")]
     stage: bool,
 
+    /// Output format (human or json).
+    #[arg(long, global = true, default_value = "human")]
+    format: OutputFormat,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -108,9 +112,6 @@ enum Command {
         /// Maximum number of results to return.
         #[arg(long, default_value = "20")]
         limit: usize,
-        /// Output format.
-        #[arg(long, default_value = "text")]
-        format: OutputFormat,
     },
     /// Show uncommitted changes in the plan repo.
     #[cfg(feature = "git")]
@@ -416,10 +417,11 @@ impl From<ItemKindArg> for ItemKind {
     }
 }
 
-/// Output format for search results.
-#[derive(Debug, Clone, Copy, ValueEnum)]
+/// Output format for command results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum OutputFormat {
-    Text,
+    #[value(alias = "text")]
+    Human,
     Json,
 }
 
@@ -627,6 +629,15 @@ async fn shutdown_signal() {
     eprintln!("\nShutting down gracefully...");
 }
 
+fn require_human_format(format: OutputFormat, command_name: &str) -> Result<()> {
+    match format {
+        OutputFormat::Human => Ok(()),
+        OutputFormat::Json => bail!(
+            "--format json is not yet supported for '{command_name}'; use --format human or omit --format"
+        ),
+    }
+}
+
 fn maybe_regenerate_index(
     repo: &mut PlanRepo<AppStore>,
     no_index: bool,
@@ -666,6 +677,7 @@ fn maybe_print_uncommitted_hint(_store: &AppStore, _staging: bool) {}
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    let format = cli.format;
     let root = cli
         .root
         .unwrap_or_else(|| std::env::current_dir().expect("cannot determine current directory"));
@@ -695,6 +707,7 @@ fn run() -> Result<()> {
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 ProjectCommand::List => {
+                    require_human_format(format, "project list")?;
                     let projects = repo.list_projects().context("failed to list projects")?;
                     if projects.is_empty() {
                         println!("No projects yet.");
@@ -731,6 +744,7 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
+                    require_human_format(format, "roadmap show")?;
                     let project = resolve_project(project, &repo)?;
                     let mut roadmap_doc = repo
                         .load_roadmap(&project, &slug)
@@ -745,6 +759,7 @@ fn run() -> Result<()> {
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 RoadmapCommand::List { project } => {
+                    require_human_format(format, "roadmap list")?;
                     let project = resolve_project(project, &repo)?;
                     let roadmaps = repo
                         .list_roadmaps(&project)
@@ -775,6 +790,7 @@ fn run() -> Result<()> {
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 RoadmapCommand::Deps { project } => {
+                    require_human_format(format, "roadmap deps")?;
                     let project = resolve_project(project, &repo)?;
                     let graph = repo
                         .dependency_graph(&project)
@@ -824,6 +840,7 @@ fn run() -> Result<()> {
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
                 PhaseCommand::List { roadmap, project } => {
+                    require_human_format(format, "phase list")?;
                     let project = resolve_project(project, &repo)?;
                     let phases = repo
                         .list_phases(&project, &roadmap)
@@ -837,6 +854,7 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
+                    require_human_format(format, "phase show")?;
                     let project = resolve_project(project, &repo)?;
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
@@ -911,6 +929,7 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
+                    require_human_format(format, "task show")?;
                     let project = resolve_project(project, &repo)?;
                     let mut doc = repo
                         .load_task(&project, &slug)
@@ -947,6 +966,7 @@ fn run() -> Result<()> {
                     priority,
                     tag,
                 } => {
+                    require_human_format(format, "task list")?;
                     let project = resolve_project(project, &repo)?;
                     let all_tasks = repo.list_tasks(&project).context("failed to list tasks")?;
 
@@ -1053,7 +1073,6 @@ fn run() -> Result<()> {
             status,
             project,
             limit,
-            format,
         } => {
             let repo = PlanRepo::new(make_store(&root, staging)?);
             let item_status = status
@@ -1069,7 +1088,7 @@ fn run() -> Result<()> {
             let results: Vec<_> = results.into_iter().take(limit).collect();
 
             match format {
-                OutputFormat::Text => {
+                OutputFormat::Human => {
                     if results.is_empty() {
                         println!("No results found for '{query}'.");
                     } else {
@@ -1192,6 +1211,7 @@ fn run() -> Result<()> {
         }
 
         Command::List { project, all } => {
+            require_human_format(format, "list")?;
             let repo = PlanRepo::new(make_store(&root, staging)?);
             let projects = if all {
                 repo.list_projects().context("failed to list projects")?
