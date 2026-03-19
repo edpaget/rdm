@@ -369,6 +369,119 @@ fn format_json_on_project_list() {
 }
 
 #[test]
+fn format_json_on_project_show() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "show", "acme", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["name"], "acme");
+    assert_eq!(parsed["title"], "acme");
+    assert!(parsed["body"].is_string());
+}
+
+#[test]
+fn format_human_on_project_show() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "show", "acme"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("acme"));
+}
+
+#[test]
+fn format_table_on_project_show_returns_error() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "show", "acme", "--format", "table"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not supported"));
+}
+
+#[test]
+fn format_json_on_roadmap_show_phases_are_summaries() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "show",
+            "alpha",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    let phases = parsed["phases"].as_array().expect("phases should be array");
+    assert!(!phases.is_empty());
+    // Phase summaries should have number, stem, title, status but NOT body
+    let phase = &phases[0];
+    assert!(phase["number"].is_number());
+    assert!(phase["stem"].is_string());
+    assert!(phase["title"].is_string());
+    assert!(phase["status"].is_string());
+    assert!(
+        phase.get("body").is_none(),
+        "phase summaries in roadmap show should not include body"
+    );
+}
+
+#[test]
+fn format_json_on_search_includes_score() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "Alpha", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    let arr = parsed.as_array().expect("should be an array");
+    assert!(!arr.is_empty());
+    // Search results should have kind, identifier, project, title, snippet, score
+    let first = &arr[0];
+    assert!(first["kind"].is_string());
+    assert!(first["identifier"].is_string());
+    assert!(first["title"].is_string());
+    assert!(first["score"].is_number());
+}
+
+#[test]
 fn format_table_on_roadmap_list() {
     let dir = TempDir::new().unwrap();
     setup_test_data(&dir);

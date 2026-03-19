@@ -180,6 +180,11 @@ enum ProjectCommand {
         #[arg(long)]
         title: Option<String>,
     },
+    /// Show project details.
+    Show {
+        /// Project slug.
+        name: String,
+    },
     /// List all projects.
     List,
 }
@@ -804,6 +809,39 @@ fn run() -> Result<()> {
                     println!("Created project '{}'", doc.frontmatter.name);
                     maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
                 }
+                ProjectCommand::Show { name } => {
+                    let doc = repo.load_project(&name).context("failed to load project")?;
+                    match format {
+                        OutputFormat::Json => {
+                            let j = json::project_to_json(&doc);
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&j)
+                                    .context("failed to serialize project")?
+                            );
+                        }
+                        OutputFormat::Markdown => {
+                            println!("# {}", doc.frontmatter.title);
+                            println!();
+                            println!("- **Name:** {}", doc.frontmatter.name);
+                            if !doc.body.is_empty() {
+                                println!();
+                                println!("{}", doc.body);
+                            }
+                        }
+                        OutputFormat::Table => bail!(
+                            "--format table is not supported for 'project show'; use --format human, --format json, --format markdown, or omit --format"
+                        ),
+                        OutputFormat::Human => {
+                            println!("{} ({})", doc.frontmatter.title, doc.frontmatter.name);
+                            if !doc.body.is_empty() {
+                                println!();
+                                println!("{}", doc.body);
+                            }
+                        }
+                    }
+                    maybe_print_uncommitted_hint(repo.store(), staging);
+                }
                 ProjectCommand::List => {
                     let projects = repo.list_projects().context("failed to list projects")?;
                     match format {
@@ -1404,9 +1442,11 @@ fn run() -> Result<()> {
                     }
                 }
                 OutputFormat::Json => {
+                    let json_results: Vec<_> =
+                        results.iter().map(json::search_result_to_json).collect();
                     println!(
                         "{}",
-                        serde_json::to_string_pretty(&results)
+                        serde_json::to_string_pretty(&json_results)
                             .context("failed to serialize results")?
                     );
                 }

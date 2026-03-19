@@ -7,7 +7,8 @@ use chrono::NaiveDate;
 use serde::Serialize;
 
 use crate::document::Document;
-use crate::model::{Phase, PhaseStatus, Priority, Roadmap, Task, TaskStatus};
+use crate::model::{Phase, PhaseStatus, Priority, Project, Roadmap, Task, TaskStatus};
+use crate::search::{ItemKind, SearchResult};
 
 // ---------------------------------------------------------------------------
 // Show types (single item with body)
@@ -22,8 +23,8 @@ pub struct RoadmapJson {
     pub slug: String,
     /// Human-readable title.
     pub title: String,
-    /// Phases in order.
-    pub phases: Vec<PhaseJson>,
+    /// Phase summaries in order (without body content — use `phase show` for full details).
+    pub phases: Vec<PhaseSummaryJson>,
     /// Roadmap slugs this depends on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dependencies: Option<Vec<String>>,
@@ -124,6 +125,42 @@ pub struct TaskSummaryJson {
 }
 
 // ---------------------------------------------------------------------------
+// Project types
+// ---------------------------------------------------------------------------
+
+/// Full project detail with body.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectJson {
+    /// Project slug.
+    pub name: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Markdown body content.
+    pub body: String,
+}
+
+// ---------------------------------------------------------------------------
+// Search types
+// ---------------------------------------------------------------------------
+
+/// A single search result in JSON format.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchResultJson {
+    /// The kind of item matched.
+    pub kind: ItemKind,
+    /// Identifier for the item.
+    pub identifier: String,
+    /// The project this item belongs to.
+    pub project: String,
+    /// The item's title.
+    pub title: String,
+    /// A short text snippet showing the match context.
+    pub snippet: String,
+    /// Match score (higher is better).
+    pub score: u32,
+}
+
+// ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
 
@@ -139,7 +176,7 @@ pub fn roadmap_to_json(
         title: rm.title.clone(),
         phases: phases
             .iter()
-            .map(|(stem, pd)| phase_to_json(stem, pd, &rm.roadmap))
+            .map(|(stem, pd)| phase_summary_to_json(stem, pd))
             .collect(),
         dependencies: rm.dependencies.clone(),
         body: doc.body.clone(),
@@ -223,6 +260,28 @@ pub fn task_summary_to_json(slug: &str, doc: &Document<Task>) -> TaskSummaryJson
         priority: fm.priority,
         created: fm.created,
         tags: fm.tags.clone(),
+    }
+}
+
+/// Build a [`ProjectJson`] from a project document.
+pub fn project_to_json(doc: &Document<Project>) -> ProjectJson {
+    let fm = &doc.frontmatter;
+    ProjectJson {
+        name: fm.name.clone(),
+        title: fm.title.clone(),
+        body: doc.body.clone(),
+    }
+}
+
+/// Build a [`SearchResultJson`] from a [`SearchResult`].
+pub fn search_result_to_json(result: &SearchResult) -> SearchResultJson {
+    SearchResultJson {
+        kind: result.kind,
+        identifier: result.identifier.clone(),
+        project: result.project.clone(),
+        title: result.title.clone(),
+        snippet: result.snippet.clone(),
+        score: result.score,
     }
 }
 
@@ -348,5 +407,53 @@ mod tests {
         let pj = phase_to_json("phase-1-x", &phase_doc, "rm");
         let serialized = serde_json::to_string(&pj).unwrap();
         assert!(!serialized.contains("completed"));
+    }
+
+    #[test]
+    fn project_to_json_fields() {
+        let doc = Document {
+            frontmatter: Project {
+                name: "acme".to_string(),
+                title: "Acme Corp".to_string(),
+            },
+            body: "Project description.".to_string(),
+        };
+        let json = project_to_json(&doc);
+        assert_eq!(json.name, "acme");
+        assert_eq!(json.title, "Acme Corp");
+        assert_eq!(json.body, "Project description.");
+    }
+
+    #[test]
+    fn search_result_to_json_fields() {
+        let result = SearchResult {
+            kind: ItemKind::Task,
+            identifier: "fix-bug".to_string(),
+            project: "acme".to_string(),
+            title: "Fix Bug".to_string(),
+            snippet: "...fix the bug...".to_string(),
+            score: 42,
+        };
+        let json = search_result_to_json(&result);
+        assert_eq!(json.kind, ItemKind::Task);
+        assert_eq!(json.identifier, "fix-bug");
+        assert_eq!(json.project, "acme");
+        assert_eq!(json.title, "Fix Bug");
+        assert_eq!(json.snippet, "...fix the bug...");
+    }
+
+    #[test]
+    fn roadmap_json_phases_are_summaries_without_body() {
+        let doc = make_roadmap_doc("acme", "alpha", "Alpha");
+        let mut phase_doc = make_phase_doc(1, "Setup", PhaseStatus::InProgress);
+        phase_doc.body = "Detailed phase body content.".to_string();
+        let phases = vec![("phase-1-setup".to_string(), phase_doc)];
+        let json = roadmap_to_json(&doc, &phases);
+        let serialized = serde_json::to_string(&json).unwrap();
+        // Phase summaries should not contain body content
+        assert!(!serialized.contains("Detailed phase body content"));
+        // But the roadmap's own body should be present
+        assert_eq!(json.phases[0].title, "Setup");
+        assert_eq!(json.phases[0].number, 1);
     }
 }

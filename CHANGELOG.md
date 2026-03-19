@@ -27,8 +27,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `format_project_index` function in `rdm-core::display` for standalone per-project index rendering
 - `PlanRepo::generate_project_index` method and `project_index_path` path builder in `rdm-core`
 - Web UI hides completed roadmaps by default; toggle link (`?show_completed=true`) reveals them
-- `--format json` support on all read commands: `roadmap list/show`, `phase list/show`, `task list/show`, `project list`, and top-level `list`
-- `rdm-core::json` module with serializable JSON output structs (`RoadmapJson`, `PhaseJson`, `TaskJson`, and summary variants) for stable machine-readable output
+- `project show` command with `--format human/json/markdown` support
+- `--format json` support on all read commands: `roadmap list/show`, `phase list/show`, `task list/show`, `project list/show`, `search`, and top-level `list`
+- `rdm-core::json` module with serializable JSON output structs (`RoadmapJson`, `PhaseJson`, `TaskJson`, `ProjectJson`, `SearchResultJson`, and summary variants) for stable machine-readable output
+
+### Changed
+
+- `roadmap show --format json` now nests phase summaries (without body) instead of full phase objects; use `phase show --format json` for full phase content
+- `search --format json` now outputs via `SearchResultJson` types from the `json` module for a consistent contract
 - `--mcp` flag on `rdm agent-config` to generate `.mcp.json` configuration for MCP-aware clients
 - `generate_mcp_config` function in `rdm-core::agent_config` for programmatic MCP config generation
 - End-to-end MCP workflow integration test covering the full agent lifecycle
