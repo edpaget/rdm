@@ -1,0 +1,21 @@
+[package]
+name = "rdm-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "MCP (Model Context Protocol) server for rdm"
+
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+rdm-core = { path = "../rdm-core" }
+rmcp = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -17,6 +17,7 @@ rdm-core = { path = "../rdm-core" }
 rdm-store-fs = { path = "../rdm-store-fs" }
 rdm-store-git = { path = "../rdm-store-git", optional = true }
 rdm-server = { path = "../rdm-server", optional = true }
+rdm-mcp = { path = "../rdm-mcp", optional = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 is-terminal = { workspace = true }
@@ -28,9 +29,10 @@ tokio = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 
 [features]
-default = ["server", "git"]
+default = ["server", "git", "mcp"]
 git = ["dep:rdm-store-git"]
 server = ["dep:rdm-server", "dep:tokio", "dep:axum"]
+mcp = ["dep:rdm-mcp", "dep:tokio"]
 
 [dev-dependencies]
 assert_cmd = "2"

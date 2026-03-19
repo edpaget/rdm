@@ -132,6 +132,9 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Start the MCP server on stdin/stdout.
+    #[cfg(feature = "mcp")]
+    Mcp,
     /// Start the rdm REST API server.
     #[cfg(feature = "server")]
     Serve {
@@ -1191,6 +1194,12 @@ fn run() -> Result<()> {
                 }
             }
             maybe_print_uncommitted_hint(repo.store(), staging);
+        }
+
+        #[cfg(feature = "mcp")]
+        Command::Mcp => {
+            let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+            rt.block_on(rdm_mcp::run(root))?;
         }
 
         #[cfg(feature = "server")]

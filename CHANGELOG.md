@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `Error::Git(String)` variant in rdm-core for git-specific errors
 - `rdm-store-fs` crate: filesystem-backed `Store` with in-memory staging — writes buffer in memory, `commit()` flushes to disk using write-to-temp + rename for best-effort atomicity, `discard()` drops the buffer
 - `PlanRepo` mutation methods now auto-commit staged changes, so callers don't need explicit `commit()` calls
+- `rdm mcp` subcommand: stdio MCP server (scaffold, no tools yet)
+- `mcp` feature flag in rdm-cli (default-enabled)
 
 ### Changed
 
