@@ -6,8 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Top-level `INDEX.md` now shows a lightweight summary table linking to each project's `INDEX.md` instead of inlining all project details
+
 ### Added
 
+- `format_top_level_index` function in `rdm-core::display` for the new summary-style root index
 - Per-project `INDEX.md` files at `projects/<name>/INDEX.md` with relative links, generated alongside the root index
 - `format_project_index` function in `rdm-core::display` for standalone per-project index rendering
 - `PlanRepo::generate_project_index` method and `project_index_path` path builder in `rdm-core`

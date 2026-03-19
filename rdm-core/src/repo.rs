@@ -1398,7 +1398,7 @@ impl<S: Store> PlanRepo<S> {
             project_indices.push(pi);
         }
 
-        let content = display::format_index(&project_indices);
+        let content = display::format_top_level_index(&project_indices);
         let index_path = self.index_path();
         self.store.write(&index_path, content)?;
         self.store.commit()?;
@@ -2705,9 +2705,11 @@ mod tests {
 
         let content = repo.store().read(&repo.index_path()).unwrap();
         assert!(content.contains("# Plan Index"));
-        assert!(content.contains("## Project: fbm"));
-        assert!(content.contains("alpha"));
+        // Top-level index links to project INDEX.md
+        assert!(content.contains("[fbm](projects/fbm/INDEX.md)"));
         assert!(content.contains("not started"));
+        // Details are NOT inlined — no project heading or task tables
+        assert!(!content.contains("## Project: fbm"));
     }
 
     #[test]
@@ -2730,7 +2732,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_index_task_priority_ordering() {
+    fn generate_index_task_priority_ordering_in_project_index() {
         let mut repo = setup_with_project();
         repo.create_task("fbm", "low-task", "Low", Priority::Low, None, None)
             .unwrap();
@@ -2747,12 +2749,17 @@ mod tests {
             .unwrap();
         repo.generate_index().unwrap();
 
-        let content = repo.store().read(&repo.index_path()).unwrap();
+        // Task ordering is in the per-project index, not the root index
+        let content = repo.store().read(&repo.project_index_path("fbm")).unwrap();
         let crit_pos = content.find("crit-task").unwrap();
         let high_pos = content.find("high-task").unwrap();
         let low_pos = content.find("low-task").unwrap();
         assert!(crit_pos < high_pos);
         assert!(high_pos < low_pos);
+
+        // Root index just shows task count
+        let root = repo.store().read(&repo.index_path()).unwrap();
+        assert!(root.contains("| 3 |")); // 3 tasks
     }
 
     // -- Per-project index tests --

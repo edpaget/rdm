@@ -61,9 +61,10 @@ fn index_generates_file() {
 
     let content = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
     assert!(content.contains("# Plan Index"));
-    assert!(content.contains("## Project: fbm"));
-    assert!(content.contains("alpha"));
+    assert!(content.contains("[fbm](projects/fbm/INDEX.md)"));
     assert!(content.contains("not started"));
+    // Details are in per-project index, not root
+    assert!(!content.contains("## Project: fbm"));
 }
 
 #[test]
@@ -131,8 +132,8 @@ fn index_deterministic_sorting() {
         .success();
 
     let content = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
-    let aaa_pos = content.find("## Project: aaa").unwrap();
-    let zzz_pos = content.find("## Project: zzz").unwrap();
+    let aaa_pos = content.find("[aaa]").unwrap();
+    let zzz_pos = content.find("[zzz]").unwrap();
     assert!(aaa_pos < zzz_pos);
 }
 
@@ -194,12 +195,18 @@ fn index_task_priority_sorting() {
         .assert()
         .success();
 
-    let content = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
-    let crit_pos = content.find("crit-task").unwrap();
-    let high_pos = content.find("high-task").unwrap();
-    let low_pos = content.find("low-task").unwrap();
+    // Task details are in per-project index, not root
+    let project_content =
+        std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
+    let crit_pos = project_content.find("crit-task").unwrap();
+    let high_pos = project_content.find("high-task").unwrap();
+    let low_pos = project_content.find("low-task").unwrap();
     assert!(crit_pos < high_pos, "critical should come before high");
     assert!(high_pos < low_pos, "high should come before low");
+
+    // Root index just shows task count
+    let root = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    assert!(root.contains("| 3 |"));
 }
 
 #[test]
@@ -232,9 +239,15 @@ fn index_dependency_graph() {
         .assert()
         .success();
 
-    let content = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
-    assert!(content.contains("Dependency Graph"));
-    assert!(content.contains("**beta** → alpha"));
+    // Dependency graph is in per-project index, not root
+    let project_content =
+        std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
+    assert!(project_content.contains("Dependency Graph"));
+    assert!(project_content.contains("**beta** → alpha"));
+
+    // Root index just links to project
+    let root = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    assert!(root.contains("[fbm](projects/fbm/INDEX.md)"));
 }
 
 #[test]
@@ -258,7 +271,7 @@ fn mutation_auto_generates_index() {
 
     let content = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
     assert!(content.contains("# Plan Index"));
-    assert!(content.contains("## Project: fbm"));
+    assert!(content.contains("[fbm](projects/fbm/INDEX.md)"));
 }
 
 #[test]
