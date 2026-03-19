@@ -54,6 +54,19 @@ pub struct RemoteInfo {
     pub url: String,
 }
 
+/// Sync status between the local branch and a remote tracking branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncStatus {
+    /// The remote name (e.g., `"origin"`).
+    pub remote: String,
+    /// The local branch name (e.g., `"main"`).
+    pub branch: String,
+    /// Number of commits ahead of the remote tracking branch.
+    pub ahead: usize,
+    /// Number of commits behind the remote tracking branch.
+    pub behind: usize,
+}
+
 /// A [`Store`] backed by git, wrapping [`FsStore`] for filesystem operations.
 ///
 /// Every call to [`Store::commit`] flushes staged changes to disk via the inner
@@ -478,6 +491,152 @@ impl GitStore {
         self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Fetches from a named git remote using the `git` CLI.
+    ///
+    /// Verifies the remote exists first, then shells out to `git fetch`.
+    /// After a successful fetch, the repository is reopened to refresh refs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RemoteNotFound`] if no remote with the given name exists.
+    /// Returns `Error::Git` if `git` is not found or the fetch fails.
+    pub fn git_fetch(&mut self, remote_name: &str) -> Result<()> {
+        let existing = self.git_remote_list()?;
+        if !existing.iter().any(|r| r.name == remote_name) {
+            return Err(Error::RemoteNotFound(remote_name.to_string()));
+        }
+
+        let output = match std::process::Command::new("git")
+            .args(["fetch", remote_name])
+            .current_dir(self.inner.root())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Error::Git(
+                    "git is not installed — install git to use remote features".to_string(),
+                ));
+            }
+            Err(e) => {
+                return Err(Error::Git(format!("failed to run git fetch: {e}")));
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Git(format!(
+                "git fetch {remote_name} failed: {stderr}"
+            )));
+        }
+
+        // Reopen repo to refresh refs
+        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Computes the ahead/behind status between the local branch and a remote
+    /// tracking branch.
+    ///
+    /// Returns `Ok(None)` if HEAD is detached, unborn, or no tracking ref
+    /// exists for the remote (e.g., before the first fetch).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RemoteNotFound`] if no remote with the given name exists.
+    /// Returns `Error::Git` if the repository state cannot be read.
+    pub fn git_sync_status(&self, remote_name: &str) -> Result<Option<SyncStatus>> {
+        let existing = self.git_remote_list()?;
+        if !existing.iter().any(|r| r.name == remote_name) {
+            return Err(Error::RemoteNotFound(remote_name.to_string()));
+        }
+
+        // Get local branch name
+        let head = match self.repo.head().ok() {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+        let referent = match head.referent_name() {
+            Some(name) => name.to_owned(),
+            None => return Ok(None), // detached HEAD
+        };
+        let branch = referent
+            .as_bstr()
+            .to_string()
+            .strip_prefix("refs/heads/")
+            .map(|s| s.to_string());
+        let branch = match branch {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        // Get local HEAD commit
+        let local_oid = match self
+            .repo
+            .head()
+            .ok()
+            .and_then(|mut h| h.peel_to_commit().ok())
+        {
+            Some(c) => c.id().detach(),
+            None => return Ok(None), // unborn branch
+        };
+
+        // Look up tracking ref
+        let tracking_ref = format!("refs/remotes/{remote_name}/{branch}");
+        let remote_ref = match self.repo.try_find_reference(&tracking_ref) {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(Error::Git(format!("failed to find reference: {e}"))),
+        };
+        let remote_oid = remote_ref.id().detach();
+
+        // If equal, both are zero
+        if local_oid == remote_oid {
+            return Ok(Some(SyncStatus {
+                remote: remote_name.to_string(),
+                branch,
+                ahead: 0,
+                behind: 0,
+            }));
+        }
+
+        // Find merge base
+        let merge_base = self
+            .repo
+            .merge_base(local_oid, remote_oid)
+            .map_err(|e| Error::Git(format!("failed to compute merge base: {e}")))?;
+
+        // Count ahead: commits reachable from local but not from merge_base
+        let ahead = self
+            .repo
+            .rev_walk([local_oid])
+            .all()
+            .map_err(|e| Error::Git(format!("failed to walk revisions: {e}")))?
+            .filter_map(|r| r.ok())
+            .take_while(|info| info.id != merge_base)
+            .count();
+
+        // Count behind: commits reachable from remote but not from merge_base
+        let behind = self
+            .repo
+            .rev_walk([remote_oid])
+            .all()
+            .map_err(|e| Error::Git(format!("failed to walk revisions: {e}")))?
+            .filter_map(|r| r.ok())
+            .take_while(|info| info.id != merge_base)
+            .count();
+
+        Ok(Some(SyncStatus {
+            remote: remote_name.to_string(),
+            branch,
+            ahead,
+            behind,
+        }))
     }
 
     /// Removes empty parent directories up to (but not including) `root`.
@@ -1089,5 +1248,349 @@ mod tests {
         let repo = gix::open(dir.path()).unwrap();
         let head_after = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
         assert_eq!(head_before, head_after);
+    }
+
+    /// Returns a git Command with GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE cleared.
+    fn git_cmd() -> std::process::Command {
+        let mut cmd = std::process::Command::new("git");
+        cmd.env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE");
+        cmd
+    }
+
+    /// Creates a bare repo clone of the given store's repo for use as a remote.
+    /// Returns the bare repo path and adds it as a remote to the store.
+    fn setup_bare_remote(store: &mut GitStore, remote_name: &str) -> TempDir {
+        let bare_dir = TempDir::new().unwrap();
+        // Clone the repo as bare using git CLI
+        git_cmd()
+            .args(["clone", "--bare"])
+            .arg(store.root())
+            .arg(bare_dir.path())
+            .output()
+            .unwrap();
+        // Add as remote
+        store
+            .git_remote_add(remote_name, bare_dir.path().to_str().unwrap())
+            .unwrap();
+        bare_dir
+    }
+
+    #[test]
+    fn git_fetch_updates_remote_refs() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+
+        // Push a new commit to the bare repo from a separate clone
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("extra.md"), "new content").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "add extra"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        // Before fetch, no remote tracking refs should exist
+        let repo_before = gix::open(dir.path()).unwrap();
+        let tracking_before = repo_before
+            .try_find_reference("refs/remotes/origin/main")
+            .unwrap();
+        // Depending on git version, might not have the ref
+        // Just verify fetch works and creates refs
+        store.git_fetch("origin").unwrap();
+
+        // After fetch, HEAD branch tracking ref should exist
+        // Get the local branch name
+        let head = store.repo.head().unwrap();
+        let branch = head
+            .referent_name()
+            .unwrap()
+            .as_bstr()
+            .to_string()
+            .strip_prefix("refs/heads/")
+            .unwrap()
+            .to_string();
+        let tracking_ref = format!("refs/remotes/origin/{branch}");
+        let remote_ref = store.repo.try_find_reference(&tracking_ref).unwrap();
+        assert!(
+            remote_ref.is_some(),
+            "expected tracking ref {tracking_ref} after fetch"
+        );
+        // Suppress warning about tracking_before being unused in some configurations
+        let _ = tracking_before;
+    }
+
+    #[test]
+    fn git_fetch_remote_not_found() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let result = store.git_fetch("nonexistent");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "expected RemoteNotFound error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn git_fetch_unreachable_remote() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store
+            .git_remote_add("bad", "/nonexistent/path/to/repo.git")
+            .unwrap();
+
+        let result = store.git_fetch("bad");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("git error"),
+            "expected Git error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn sync_status_up_to_date() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_fetch("origin").unwrap();
+
+        let status = store.git_sync_status("origin").unwrap();
+        assert!(status.is_some(), "expected sync status, got None");
+        let status = status.unwrap();
+        assert_eq!(status.ahead, 0);
+        assert_eq!(status.behind, 0);
+        assert_eq!(status.remote, "origin");
+        let _ = bare_dir; // keep alive
+    }
+
+    #[test]
+    fn sync_status_ahead() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_fetch("origin").unwrap();
+
+        // Make two local commits
+        store
+            .write(&RelPath::new("local1.md").unwrap(), "local1".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store
+            .write(&RelPath::new("local2.md").unwrap(), "local2".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let status = store.git_sync_status("origin").unwrap().unwrap();
+        assert_eq!(status.ahead, 2);
+        assert_eq!(status.behind, 0);
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn sync_status_behind() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+
+        // Push new commits to bare from a separate clone
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("remote1.md"), "remote1").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "remote commit 1"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("remote2.md"), "remote2").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "remote commit 2"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        // Fetch to update tracking refs
+        store.git_fetch("origin").unwrap();
+
+        let status = store.git_sync_status("origin").unwrap().unwrap();
+        assert_eq!(status.ahead, 0);
+        assert_eq!(status.behind, 2);
+    }
+
+    #[test]
+    fn sync_status_diverged() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_fetch("origin").unwrap();
+
+        // Make local commit
+        store
+            .write(&RelPath::new("local.md").unwrap(), "local".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        // Push a different commit to bare from a clone
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "remote commit"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        // Fetch to update tracking refs
+        store.git_fetch("origin").unwrap();
+
+        let status = store.git_sync_status("origin").unwrap().unwrap();
+        assert!(status.ahead > 0, "expected ahead > 0, got {}", status.ahead);
+        assert!(
+            status.behind > 0,
+            "expected behind > 0, got {}",
+            status.behind
+        );
+    }
+
+    #[test]
+    fn sync_status_no_tracking_ref() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        // Add remote but don't fetch
+        store
+            .git_remote_add("origin", "https://example.com/repo.git")
+            .unwrap();
+
+        let status = store.git_sync_status("origin").unwrap();
+        assert!(status.is_none(), "expected None without tracking ref");
+    }
+
+    #[test]
+    fn sync_status_detached_head() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        store
+            .git_remote_add("origin", "https://example.com/repo.git")
+            .unwrap();
+
+        // Detach HEAD using git CLI
+        let head_oid = store
+            .repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        git_cmd()
+            .args(["checkout", &head_oid])
+            .current_dir(dir.path())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .unwrap();
+
+        // Reopen the store to pick up detached state
+        let store = GitStore::new(dir.path()).unwrap();
+        let status = store.git_sync_status("origin").unwrap();
+        assert!(status.is_none(), "expected None for detached HEAD");
     }
 }

@@ -118,9 +118,13 @@ enum Command {
         #[arg(long, default_value = "20")]
         limit: usize,
     },
-    /// Show uncommitted changes in the plan repo.
+    /// Show uncommitted changes and sync status in the plan repo.
     #[cfg(feature = "git")]
-    Status,
+    Status {
+        /// Fetch from the default remote before checking sync status.
+        #[arg(long)]
+        fetch: bool,
+    },
     /// Commit staged changes to git.
     #[cfg(feature = "git")]
     Commit {
@@ -472,6 +476,11 @@ enum RemoteCommand {
     },
     /// List all remotes.
     List,
+    /// Fetch from a remote.
+    Fetch {
+        /// Remote name (defaults to the configured default remote).
+        name: Option<String>,
+    },
 }
 
 /// Item type argument for `--type` flag.
@@ -1380,8 +1389,8 @@ fn run() -> Result<()> {
         }
 
         #[cfg(feature = "git")]
-        Command::Status => {
-            let store = make_store(&root, staging)?;
+        Command::Status { fetch } => {
+            let mut store = make_store(&root, staging)?;
             let statuses = store.git_status().context("failed to get git status")?;
             if statuses.is_empty() {
                 println!("No uncommitted changes.");
@@ -1399,6 +1408,47 @@ fn run() -> Result<()> {
                     "\n{} file(s) changed. Run `rdm commit` to persist or `rdm discard --force` to reset.",
                     statuses.len()
                 );
+            }
+
+            // Show sync status if a default remote is configured
+            let config_path = root.join("rdm.toml");
+            let default_remote = std::fs::read_to_string(&config_path)
+                .ok()
+                .and_then(|s| rdm_core::config::Config::from_toml(&s).ok())
+                .and_then(|c| c.remote)
+                .and_then(|r| r.default);
+            if let Some(remote_name) = default_remote {
+                if fetch && let Err(e) = store.git_fetch(&remote_name) {
+                    eprintln!("warning: fetch failed: {e}");
+                }
+                match store.git_sync_status(&remote_name) {
+                    Ok(Some(sync)) => {
+                        println!();
+                        match (sync.ahead, sync.behind) {
+                            (0, 0) => {
+                                println!("Up to date with '{}/{}'.", sync.remote, sync.branch)
+                            }
+                            (a, 0) => println!(
+                                "Your branch is ahead of '{}/{}' by {} commit(s).",
+                                sync.remote, sync.branch, a
+                            ),
+                            (0, b) => println!(
+                                "Your branch is behind '{}/{}' by {} commit(s).",
+                                sync.remote, sync.branch, b
+                            ),
+                            (a, b) => println!(
+                                "Your branch and '{}/{}' have diverged ({} ahead, {} behind).",
+                                sync.remote, sync.branch, a, b
+                            ),
+                        }
+                    }
+                    Ok(None) => {
+                        // No tracking ref — silently skip
+                    }
+                    Err(e) => {
+                        eprintln!("warning: could not determine sync status: {e}");
+                    }
+                }
             }
         }
 
@@ -1486,6 +1536,29 @@ fn run() -> Result<()> {
                             println!("{}\t{}", r.name, r.url);
                         }
                     }
+                }
+                RemoteCommand::Fetch { name } => {
+                    let remote_name = match name {
+                        Some(n) => n,
+                        None => {
+                            let config_path = root.join("rdm.toml");
+                            let default = std::fs::read_to_string(&config_path)
+                                .ok()
+                                .and_then(|s| rdm_core::config::Config::from_toml(&s).ok())
+                                .and_then(|c| c.remote)
+                                .and_then(|r| r.default);
+                            match default {
+                                Some(d) => d,
+                                None => bail!(
+                                    "no remote specified — pass a remote name or set remote.default in rdm.toml"
+                                ),
+                            }
+                        }
+                    };
+                    store
+                        .git_fetch(&remote_name)
+                        .context("failed to fetch from remote")?;
+                    println!("Fetched from '{remote_name}'.");
                 }
             }
         }

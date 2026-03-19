@@ -16,6 +16,45 @@ fn init_repo(dir: &TempDir) {
         .success();
 }
 
+/// Runs a git command with GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE cleared
+/// to avoid inheriting env vars from parent git hooks.
+fn git_cmd() -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE");
+    cmd
+}
+
+/// Creates a bare clone of the repo and adds it as a remote.
+fn setup_bare_remote(dir: &TempDir, remote_name: &str) -> TempDir {
+    let bare_dir = TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone", "--bare"])
+        .arg(dir.path())
+        .arg(bare_dir.path())
+        .output()
+        .unwrap();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("add")
+        .arg(remote_name)
+        .arg(bare_dir.path().to_str().unwrap())
+        .assert()
+        .success();
+    bare_dir
+}
+
+/// Sets the default remote in rdm.toml.
+fn set_default_remote(dir: &TempDir, remote_name: &str) {
+    let config_path = dir.path().join("rdm.toml");
+    let mut content = std::fs::read_to_string(&config_path).unwrap_or_default();
+    content.push_str(&format!("\n[remote]\ndefault = \"{remote_name}\"\n"));
+    std::fs::write(&config_path, content).unwrap();
+}
+
 #[test]
 fn remote_list_empty() {
     let dir = TempDir::new().unwrap();
@@ -135,4 +174,134 @@ fn remote_remove_nonexistent_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn remote_fetch_success() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("fetch")
+        .arg("origin")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Fetched from 'origin'"));
+
+    let _ = bare_dir; // keep alive
+}
+
+#[test]
+fn remote_fetch_unknown_remote() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("fetch")
+        .arg("nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn status_no_remote_no_sync_info() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No uncommitted changes"))
+        // Should NOT contain any sync info
+        .stdout(predicate::str::contains("Up to date").not())
+        .stdout(predicate::str::contains("ahead").not())
+        .stdout(predicate::str::contains("behind").not());
+}
+
+#[test]
+fn status_shows_sync_info() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Set default remote in rdm.toml before cloning to bare
+    // so the bare has it and local matches after fetch.
+    set_default_remote(&dir, "origin");
+    // Commit the rdm.toml change so it's part of HEAD
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("commit")
+        .arg("-m")
+        .arg("set default remote")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed"));
+
+    // Now clone to bare and add as remote — bare has same commits
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    // Fetch to populate tracking refs
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("fetch")
+        .arg("origin")
+        .assert()
+        .success();
+
+    // Local and remote should be in sync — verify "Up to date" appears
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Up to date"));
+
+    let _ = bare_dir;
+}
+
+#[test]
+fn status_with_fetch_flag() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Set default remote before cloning
+    set_default_remote(&dir, "origin");
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("commit")
+        .arg("-m")
+        .arg("set default remote")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed"));
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    // status --fetch should fetch and show sync info
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("status")
+        .arg("--fetch")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Up to date"));
+
+    let _ = bare_dir;
 }

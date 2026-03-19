@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `rdm remote add <name> <url>` command to register a git remote on the plan repo
 - `rdm remote remove <name>` command to remove a git remote
 - `rdm remote list` command to display all configured remotes with their URLs
+- `rdm remote fetch [name]` command to fetch from a git remote (defaults to `remote.default` in `rdm.toml`)
+- `rdm status --fetch` flag to fetch from the default remote before showing sync status
+- Sync status display on `rdm status` showing ahead/behind commit counts relative to the default remote's tracking branch
+- `SyncStatus` struct and `git_fetch`/`git_sync_status` methods on `GitStore` for programmatic fetch and ahead/behind detection
 - `RemoteInfo` struct and `git_remote_add/remove/list` methods on `GitStore` for programmatic remote management
 - `RemoteConfig` struct in `rdm-core::config` with `[remote]` section support in `rdm.toml`
 - `RemoteNotFound` and `DuplicateRemote` error variants in rdm-core
