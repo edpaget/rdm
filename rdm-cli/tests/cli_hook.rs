@@ -27,6 +27,27 @@ fn init_repo(dir: &TempDir) {
         .success();
 }
 
+/// Create a separate git repo to act as the project (code) repo.
+fn init_project_repo(dir: &TempDir) {
+    git_cmd()
+        .args(["init"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    // Need an initial commit so HEAD exists.
+    fs::write(dir.path().join("README.md"), "# project").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "initial commit"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+}
+
 /// Set up a plan repo with a project, roadmap, and phase for hook testing.
 fn init_with_phase(dir: &TempDir) {
     init_repo(dir);
@@ -72,18 +93,17 @@ fn init_with_phase(dir: &TempDir) {
 
 #[test]
 fn hook_install_creates_post_merge() {
-    let dir = TempDir::new().unwrap();
-    init_repo(&dir);
+    let project_dir = TempDir::new().unwrap();
+    init_project_repo(&project_dir);
 
     rdm()
-        .arg("--root")
-        .arg(dir.path())
         .args(["hook", "install"])
+        .current_dir(project_dir.path())
         .assert()
         .success()
         .stdout(predicate::str::contains("Installed post-merge hook"));
 
-    let hook_path = dir.path().join(".git/hooks/post-merge");
+    let hook_path = project_dir.path().join(".git/hooks/post-merge");
     assert!(hook_path.exists());
     let contents = fs::read_to_string(&hook_path).unwrap();
     assert!(contents.contains("rdm hook post-merge"));
@@ -98,22 +118,20 @@ fn hook_install_creates_post_merge() {
 
 #[test]
 fn hook_install_fails_if_exists() {
-    let dir = TempDir::new().unwrap();
-    init_repo(&dir);
+    let project_dir = TempDir::new().unwrap();
+    init_project_repo(&project_dir);
 
     // First install succeeds.
     rdm()
-        .arg("--root")
-        .arg(dir.path())
         .args(["hook", "install"])
+        .current_dir(project_dir.path())
         .assert()
         .success();
 
     // Second install without --force fails.
     rdm()
-        .arg("--root")
-        .arg(dir.path())
         .args(["hook", "install"])
+        .current_dir(project_dir.path())
         .assert()
         .failure()
         .stderr(predicate::str::contains("already exists"));
@@ -121,21 +139,19 @@ fn hook_install_fails_if_exists() {
 
 #[test]
 fn hook_install_force_overwrites() {
-    let dir = TempDir::new().unwrap();
-    init_repo(&dir);
+    let project_dir = TempDir::new().unwrap();
+    init_project_repo(&project_dir);
 
     rdm()
-        .arg("--root")
-        .arg(dir.path())
         .args(["hook", "install"])
+        .current_dir(project_dir.path())
         .assert()
         .success();
 
     // Force install should succeed.
     rdm()
-        .arg("--root")
-        .arg(dir.path())
         .args(["hook", "install", "--force"])
+        .current_dir(project_dir.path())
         .assert()
         .success()
         .stdout(predicate::str::contains("Installed post-merge hook"));
@@ -145,42 +161,39 @@ fn hook_install_force_overwrites() {
 
 #[test]
 fn hook_uninstall_removes_hook() {
-    let dir = TempDir::new().unwrap();
-    init_repo(&dir);
+    let project_dir = TempDir::new().unwrap();
+    init_project_repo(&project_dir);
 
     rdm()
-        .arg("--root")
-        .arg(dir.path())
         .args(["hook", "install"])
+        .current_dir(project_dir.path())
         .assert()
         .success();
 
     rdm()
-        .arg("--root")
-        .arg(dir.path())
         .args(["hook", "uninstall"])
+        .current_dir(project_dir.path())
         .assert()
         .success()
         .stdout(predicate::str::contains("Removed post-merge hook"));
 
-    let hook_path = dir.path().join(".git/hooks/post-merge");
+    let hook_path = project_dir.path().join(".git/hooks/post-merge");
     assert!(!hook_path.exists());
 }
 
 #[test]
 fn hook_uninstall_refuses_foreign_hook() {
-    let dir = TempDir::new().unwrap();
-    init_repo(&dir);
+    let project_dir = TempDir::new().unwrap();
+    init_project_repo(&project_dir);
 
     // Write a foreign hook that doesn't contain "rdm hook post-merge".
-    let hooks_dir = dir.path().join(".git/hooks");
+    let hooks_dir = project_dir.path().join(".git/hooks");
     fs::create_dir_all(&hooks_dir).unwrap();
     fs::write(hooks_dir.join("post-merge"), "#!/bin/sh\necho custom\n").unwrap();
 
     rdm()
-        .arg("--root")
-        .arg(dir.path())
         .args(["hook", "uninstall"])
+        .current_dir(project_dir.path())
         .assert()
         .failure()
         .stderr(predicate::str::contains("not installed by rdm"));
@@ -190,15 +203,17 @@ fn hook_uninstall_refuses_foreign_hook() {
 
 #[test]
 fn hook_post_merge_marks_phase_done() {
-    let dir = TempDir::new().unwrap();
-    init_with_phase(&dir);
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
 
-    // Create a git commit with a Done: directive via raw git.
-    let dummy_path = dir.path().join("dummy.txt");
+    // Create a git commit in the project repo with a Done: directive.
+    let dummy_path = project_dir.path().join("dummy.txt");
     fs::write(&dummy_path, "trigger commit").unwrap();
     git_cmd()
         .args(["add", "dummy.txt"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
     git_cmd()
@@ -207,33 +222,34 @@ fn hook_post_merge_marks_phase_done() {
             "-m",
             "feat: merge stuff\n\nDone: my-roadmap/phase-1-my-phase",
         ])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
 
     // Get the commit SHA for verification.
     let sha_output = git_cmd()
         .args(["log", "-1", "--format=%H"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
     let sha = String::from_utf8_lossy(&sha_output.stdout)
         .trim()
         .to_string();
 
-    // Run the hook.
+    // Run the hook from the project dir, pointing --root at the plan repo.
     rdm()
         .arg("--root")
-        .arg(dir.path())
+        .arg(plan_dir.path())
         .env("RDM_PROJECT", "test-proj")
         .args(["hook", "post-merge"])
+        .current_dir(project_dir.path())
         .assert()
         .success();
 
-    // Verify the phase is now done.
+    // Verify the phase is now done in the plan repo.
     rdm()
         .arg("--root")
-        .arg(dir.path())
+        .arg(plan_dir.path())
         .args([
             "phase",
             "show",
@@ -251,43 +267,48 @@ fn hook_post_merge_marks_phase_done() {
 
 #[test]
 fn hook_post_merge_silent_on_no_directives() {
-    let dir = TempDir::new().unwrap();
-    init_with_phase(&dir);
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
 
     // Normal commit without Done: directives.
-    let dummy_path = dir.path().join("dummy.txt");
+    let dummy_path = project_dir.path().join("dummy.txt");
     fs::write(&dummy_path, "no directives here").unwrap();
     git_cmd()
         .args(["add", "dummy.txt"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
     git_cmd()
         .args(["commit", "-m", "chore: just a regular commit"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
 
     rdm()
         .arg("--root")
-        .arg(dir.path())
+        .arg(plan_dir.path())
         .env("RDM_PROJECT", "test-proj")
         .args(["hook", "post-merge"])
+        .current_dir(project_dir.path())
         .assert()
         .success();
 }
 
 #[test]
 fn hook_post_merge_silent_on_missing_phase() {
-    let dir = TempDir::new().unwrap();
-    init_with_phase(&dir);
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
 
     // Commit with Done: referencing a nonexistent roadmap/phase.
-    let dummy_path = dir.path().join("dummy.txt");
+    let dummy_path = project_dir.path().join("dummy.txt");
     fs::write(&dummy_path, "bad directive").unwrap();
     git_cmd()
         .args(["add", "dummy.txt"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
     git_cmd()
@@ -296,16 +317,17 @@ fn hook_post_merge_silent_on_missing_phase() {
             "-m",
             "feat: merge\n\nDone: nonexistent-roadmap/nonexistent-phase",
         ])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
 
     // Should exit 0 even though the phase doesn't exist.
     rdm()
         .arg("--root")
-        .arg(dir.path())
+        .arg(plan_dir.path())
         .env("RDM_PROJECT", "test-proj")
         .args(["hook", "post-merge"])
+        .current_dir(project_dir.path())
         .assert()
         .success();
 }
@@ -357,13 +379,15 @@ fn init_with_phases(dir: &TempDir, phases: &[&str]) {
 
 #[test]
 fn hook_post_merge_scans_multiple_commits() {
-    let dir = TempDir::new().unwrap();
-    init_with_phases(&dir, &["alpha", "beta", "gamma"]);
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phases(&plan_dir, &["alpha", "beta", "gamma"]);
+    init_project_repo(&project_dir);
 
     // Tag the current HEAD as our anchor before adding Done: commits.
     git_cmd()
         .args(["tag", "before-merge"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
 
@@ -373,10 +397,10 @@ fn hook_post_merge_scans_multiple_commits() {
         .enumerate()
     {
         let filename = format!("file{i}.txt");
-        fs::write(dir.path().join(&filename), format!("content {i}")).unwrap();
+        fs::write(project_dir.path().join(&filename), format!("content {i}")).unwrap();
         git_cmd()
             .args(["add", &filename])
-            .current_dir(dir.path())
+            .current_dir(project_dir.path())
             .output()
             .unwrap();
         git_cmd()
@@ -385,7 +409,7 @@ fn hook_post_merge_scans_multiple_commits() {
                 "-m",
                 &format!("feat: implement {phase}\n\nDone: my-roadmap/{phase}"),
             ])
-            .current_dir(dir.path())
+            .current_dir(project_dir.path())
             .output()
             .unwrap();
     }
@@ -393,9 +417,10 @@ fn hook_post_merge_scans_multiple_commits() {
     // Run hook with --since to scan all commits since the anchor.
     rdm()
         .arg("--root")
-        .arg(dir.path())
+        .arg(plan_dir.path())
         .env("RDM_PROJECT", "test-proj")
         .args(["hook", "post-merge", "--since", "before-merge"])
+        .current_dir(project_dir.path())
         .assert()
         .success();
 
@@ -403,7 +428,7 @@ fn hook_post_merge_scans_multiple_commits() {
     for phase in ["phase-1-alpha", "phase-2-beta", "phase-3-gamma"] {
         rdm()
             .arg("--root")
-            .arg(dir.path())
+            .arg(plan_dir.path())
             .args([
                 "phase",
                 "show",
@@ -421,14 +446,16 @@ fn hook_post_merge_scans_multiple_commits() {
 
 #[test]
 fn hook_post_merge_since_flag_limits_range() {
-    let dir = TempDir::new().unwrap();
-    init_with_phases(&dir, &["alpha", "beta"]);
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phases(&plan_dir, &["alpha", "beta"]);
+    init_project_repo(&project_dir);
 
     // Create a commit with Done: for alpha.
-    fs::write(dir.path().join("file1.txt"), "content 1").unwrap();
+    fs::write(project_dir.path().join("file1.txt"), "content 1").unwrap();
     git_cmd()
         .args(["add", "file1.txt"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
     git_cmd()
@@ -437,22 +464,22 @@ fn hook_post_merge_since_flag_limits_range() {
             "-m",
             "feat: alpha\n\nDone: my-roadmap/phase-1-alpha",
         ])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
 
     // Tag after alpha — only commits after this should be scanned.
     git_cmd()
         .args(["tag", "after-alpha"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
 
     // Create a commit with Done: for beta.
-    fs::write(dir.path().join("file2.txt"), "content 2").unwrap();
+    fs::write(project_dir.path().join("file2.txt"), "content 2").unwrap();
     git_cmd()
         .args(["add", "file2.txt"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
     git_cmd()
@@ -461,23 +488,24 @@ fn hook_post_merge_since_flag_limits_range() {
             "-m",
             "feat: beta\n\nDone: my-roadmap/phase-2-beta",
         ])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
 
     // Run hook with --since after-alpha: should only pick up beta.
     rdm()
         .arg("--root")
-        .arg(dir.path())
+        .arg(plan_dir.path())
         .env("RDM_PROJECT", "test-proj")
         .args(["hook", "post-merge", "--since", "after-alpha"])
+        .current_dir(project_dir.path())
         .assert()
         .success();
 
     // Alpha should still be not-started.
     rdm()
         .arg("--root")
-        .arg(dir.path())
+        .arg(plan_dir.path())
         .args([
             "phase",
             "show",
@@ -494,7 +522,7 @@ fn hook_post_merge_since_flag_limits_range() {
     // Beta should be done.
     rdm()
         .arg("--root")
-        .arg(dir.path())
+        .arg(plan_dir.path())
         .args([
             "phase",
             "show",
@@ -511,22 +539,24 @@ fn hook_post_merge_since_flag_limits_range() {
 
 #[test]
 fn hook_post_merge_deduplicates_same_phase_across_commits() {
-    let dir = TempDir::new().unwrap();
-    init_with_phases(&dir, &["alpha"]);
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phases(&plan_dir, &["alpha"]);
+    init_project_repo(&project_dir);
 
     git_cmd()
         .args(["tag", "anchor"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
 
     // Two commits both reference the same phase.
     for i in 0..2 {
         let filename = format!("dup{i}.txt");
-        fs::write(dir.path().join(&filename), format!("dup {i}")).unwrap();
+        fs::write(project_dir.path().join(&filename), format!("dup {i}")).unwrap();
         git_cmd()
             .args(["add", &filename])
-            .current_dir(dir.path())
+            .current_dir(project_dir.path())
             .output()
             .unwrap();
         git_cmd()
@@ -535,7 +565,7 @@ fn hook_post_merge_deduplicates_same_phase_across_commits() {
                 "-m",
                 "feat: work\n\nDone: my-roadmap/phase-1-alpha",
             ])
-            .current_dir(dir.path())
+            .current_dir(project_dir.path())
             .output()
             .unwrap();
     }
@@ -543,7 +573,7 @@ fn hook_post_merge_deduplicates_same_phase_across_commits() {
     // Get the SHA of the latest commit (should be used for the phase).
     let sha_output = git_cmd()
         .args(["log", "-1", "--format=%H"])
-        .current_dir(dir.path())
+        .current_dir(project_dir.path())
         .output()
         .unwrap();
     let latest_sha = String::from_utf8_lossy(&sha_output.stdout)
@@ -552,16 +582,17 @@ fn hook_post_merge_deduplicates_same_phase_across_commits() {
 
     rdm()
         .arg("--root")
-        .arg(dir.path())
+        .arg(plan_dir.path())
         .env("RDM_PROJECT", "test-proj")
         .args(["hook", "post-merge", "--since", "anchor"])
+        .current_dir(project_dir.path())
         .assert()
         .success();
 
     // Phase should be done with the latest commit's SHA.
     rdm()
         .arg("--root")
-        .arg(dir.path())
+        .arg(plan_dir.path())
         .args([
             "phase",
             "show",

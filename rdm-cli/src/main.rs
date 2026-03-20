@@ -535,7 +535,7 @@ enum RemoteCommand {
 #[cfg(feature = "git")]
 #[derive(Subcommand)]
 enum HookCommand {
-    /// Install the post-merge git hook in the plan repo.
+    /// Install the post-merge git hook in the current directory's git repo.
     Install {
         /// Overwrite an existing post-merge hook.
         #[arg(long)]
@@ -909,8 +909,8 @@ fn expand_root(path: PathBuf) -> Result<PathBuf> {
 /// block a git merge.
 #[cfg(feature = "git")]
 fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Result<()> {
-    let store = make_store(root, staging)?;
-    let commits = store.commit_messages_since(since)?;
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let commits = rdm_store_git::commit_messages_since_at(&cwd, since)?;
     if commits.is_empty() {
         return Ok(());
     }
@@ -932,6 +932,7 @@ fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Resul
         return Ok(());
     }
 
+    let store = make_store(root, staging)?;
     let mut repo = PlanRepo::new(store);
     let project = resolve_project(None, &repo)?;
     for (directive, sha) in &directives_with_sha {
@@ -2062,8 +2063,11 @@ fn run() -> Result<()> {
             // never block the user's git workflow.
             match command {
                 HookCommand::Install { force } => {
-                    let store = make_store(&root, staging)?;
-                    let hooks_dir = store.git_dir().join("hooks");
+                    let cwd =
+                        std::env::current_dir().context("cannot determine current directory")?;
+                    let hooks_dir = rdm_store_git::discover_git_dir(&cwd)
+                        .context("current directory is not inside a git repository")?
+                        .join("hooks");
                     std::fs::create_dir_all(&hooks_dir)
                         .context("failed to create hooks directory")?;
                     let hook_path = hooks_dir.join("post-merge");
@@ -2087,8 +2091,12 @@ fn run() -> Result<()> {
                     println!("Installed post-merge hook at {}", hook_path.display());
                 }
                 HookCommand::Uninstall => {
-                    let store = make_store(&root, staging)?;
-                    let hook_path = store.git_dir().join("hooks").join("post-merge");
+                    let cwd =
+                        std::env::current_dir().context("cannot determine current directory")?;
+                    let hook_path = rdm_store_git::discover_git_dir(&cwd)
+                        .context("current directory is not inside a git repository")?
+                        .join("hooks")
+                        .join("post-merge");
                     if !hook_path.exists() {
                         bail!("no post-merge hook found at {}", hook_path.display());
                     }

@@ -1329,6 +1329,101 @@ impl Store for GitStore {
     }
 }
 
+/// Discover the git directory for the repository containing `path`.
+///
+/// Uses `gix::discover` to walk up from `path` until a `.git` directory is
+/// found.
+///
+/// # Errors
+///
+/// Returns `Error::Git` if no git repository is found at or above `path`.
+pub fn discover_git_dir(path: &Path) -> Result<PathBuf> {
+    let repo = gix::discover(path).map_err(|e| Error::Git(e.to_string()))?;
+    Ok(repo.git_dir().to_owned())
+}
+
+/// Read HEAD commit info from the repository containing `path`.
+///
+/// Uses `gix::discover` to find the repo, then reads the HEAD commit.
+/// Returns `Ok(None)` if the repository has no commits (unborn HEAD).
+///
+/// # Errors
+///
+/// Returns `Error::Git` if no git repository is found at or above `path`.
+pub fn head_commit_info_at(path: &Path) -> Result<Option<HeadCommitInfo>> {
+    let repo = gix::discover(path).map_err(|e| Error::Git(e.to_string()))?;
+    let commit = match repo.head().ok().and_then(|mut h| h.peel_to_commit().ok()) {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    let sha = commit.id().to_string();
+    let message = commit.message_raw_sloppy().to_string();
+    Ok(Some(HeadCommitInfo { sha, message }))
+}
+
+/// Return commit messages from the repository at `path` in the range
+/// `since_ref..HEAD`.
+///
+/// When `since_ref` is `None`, uses `HEAD@{1}` (the reflog anchor from
+/// before the most recent merge). Commits are returned newest-first.
+///
+/// Returns an empty `Vec` if the anchor ref does not exist (e.g. shallow
+/// clone or missing reflog entry) rather than failing.
+///
+/// # Errors
+///
+/// Returns `Error::Git` if `path` is not inside a git repository or git is
+/// not installed.
+pub fn commit_messages_since_at(
+    path: &Path,
+    since_ref: Option<&str>,
+) -> Result<Vec<HeadCommitInfo>> {
+    let anchor = since_ref.unwrap_or("HEAD@{1}");
+    let output = run_git_at(path, &["log", "--format=%H%n%B%n<END>", "HEAD", "--not", anchor])?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut commits = Vec::new();
+    for block in stdout.split("<END>") {
+        let block = block.trim();
+        if block.is_empty() {
+            continue;
+        }
+        if let Some((sha, message)) = block.split_once('\n') {
+            commits.push(HeadCommitInfo {
+                sha: sha.trim().to_string(),
+                message: message.trim().to_string(),
+            });
+        }
+    }
+    Ok(commits)
+}
+
+/// Run a git command in the working directory of the repository containing
+/// `path`.
+fn run_git_at(path: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let repo = gix::discover(path).map_err(|e| Error::Git(e.to_string()))?;
+    let work_dir = repo
+        .workdir()
+        .unwrap_or_else(|| repo.git_dir())
+        .to_owned();
+    match std::process::Command::new("git")
+        .args(args)
+        .current_dir(&work_dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+    {
+        Ok(o) => Ok(o),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Git(
+            "git is not installed — install git to use remote features".to_string(),
+        )),
+        Err(e) => Err(Error::Git(format!("failed to run git: {e}"))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2580,5 +2675,94 @@ mod tests {
 
         let unmerged = store.git_list_unmerged().unwrap();
         assert!(unmerged.is_empty());
+    }
+
+    #[test]
+    fn discover_git_dir_finds_repo() {
+        let dir = TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let git_dir = discover_git_dir(dir.path()).unwrap();
+        assert!(git_dir.ends_with(".git"));
+    }
+
+    #[test]
+    fn discover_git_dir_from_subdir() {
+        let dir = TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let sub = dir.path().join("a/b");
+        std::fs::create_dir_all(&sub).unwrap();
+        let git_dir = discover_git_dir(&sub).unwrap();
+        assert!(git_dir.ends_with(".git"));
+    }
+
+    #[test]
+    fn discover_git_dir_errors_for_non_repo() {
+        let dir = TempDir::new().unwrap();
+        assert!(discover_git_dir(dir.path()).is_err());
+    }
+
+    #[test]
+    fn head_commit_info_at_returns_none_for_empty_repo() {
+        let dir = TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let info = head_commit_info_at(dir.path()).unwrap();
+        assert!(info.is_none());
+    }
+
+    #[test]
+    fn head_commit_info_at_reads_commit() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("file.md").unwrap(), "content".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let info = head_commit_info_at(dir.path()).unwrap().unwrap();
+        assert!(!info.sha.is_empty());
+        assert!(!info.message.is_empty());
+    }
+
+    #[test]
+    fn commit_messages_since_at_returns_commits() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        git_cmd()
+            .args(["tag", "anchor"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        store
+            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store
+            .write(&RelPath::new("b.md").unwrap(), "b".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let commits = commit_messages_since_at(dir.path(), Some("anchor")).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert!(commits[0].message.contains("b.md"));
+        assert!(commits[1].message.contains("a.md"));
+    }
+
+    #[test]
+    fn commit_messages_since_at_empty_range() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let commits = commit_messages_since_at(dir.path(), Some("HEAD")).unwrap();
+        assert!(commits.is_empty());
     }
 }
