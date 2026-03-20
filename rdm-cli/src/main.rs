@@ -881,6 +881,22 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Init => {
             PlanRepo::init(make_init_store(&root)?).context("failed to initialize plan repo")?;
+            let b = "\x1b[38;2;74;144;217m";
+            let r = "\x1b[0m";
+            println!(
+                "\n\
+                 {b}██████▄    ██████▄    ██▄    ▄██{r}\n\
+                 \n\
+                 {b}██   ██    ██   ██    ████  ████{r}\n\
+                 \n\
+                 {b}██████▀    ██    ██   ██ ████ ██{r}\n\
+                 \n\
+                 {b}██▀▀█      ██    ██   ██  ██  ██{r}\n\
+                 \n\
+                 {b}██  ▀█     ██   ██    ██      ██{r}\n\
+                 \n\
+                 {b}██   █▄    ██████▀    ██      ██{r}\n"
+            );
             println!("Initialized plan repo at {}", root.display());
         }
 
