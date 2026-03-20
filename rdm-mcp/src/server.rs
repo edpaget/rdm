@@ -577,6 +577,7 @@ impl RdmMcpServer {
             priority,
             params.tags,
             params.body.as_deref(),
+            None,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),

@@ -216,6 +216,12 @@ pub struct Task {
     /// Optional tags for categorization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// Date the task was completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed: Option<NaiveDate>,
+    /// Git commit SHA that completed this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 /// Frontmatter for a roadmap file.

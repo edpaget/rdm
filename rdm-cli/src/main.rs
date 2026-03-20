@@ -475,6 +475,9 @@ enum TaskCommand {
         /// Body content for the task.
         #[arg(long)]
         body: Option<String>,
+        /// Git commit SHA to associate with this task.
+        #[arg(long)]
+        commit: Option<String>,
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,
@@ -831,13 +834,12 @@ fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Resul
     }
 
     // Collect directives from all commits. Commits are newest-first, so the
-    // first occurrence of a roadmap/phase pair wins (latest SHA).
+    // first occurrence of a directive wins (latest SHA).
     let mut seen = std::collections::HashSet::new();
     let mut directives_with_sha = Vec::new();
     for commit in &commits {
         for directive in rdm_core::hook::parse_done_directives(&commit.message) {
-            let key = (directive.roadmap.clone(), directive.phase.clone());
-            if seen.insert(key) {
+            if seen.insert(directive.clone()) {
                 directives_with_sha.push((directive, commit.sha.clone()));
             }
         }
@@ -853,18 +855,33 @@ fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Resul
     let hook_repo_config = paths::load_repo_config(root).with_global_defaults(&hook_global_config);
     let project = paths::resolve_project(None, &hook_repo_config)?;
     for (directive, sha) in &directives_with_sha {
-        let stem = match repo.resolve_phase_stem(&project, &directive.roadmap, &directive.phase) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let _ = repo.update_phase(
-            &project,
-            &directive.roadmap,
-            &stem,
-            Some(rdm_core::model::PhaseStatus::Done),
-            None,
-            Some(sha.clone()),
-        );
+        match directive {
+            rdm_core::hook::DoneDirective::Phase { roadmap, phase } => {
+                let stem = match repo.resolve_phase_stem(&project, roadmap, phase) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let _ = repo.update_phase(
+                    &project,
+                    roadmap,
+                    &stem,
+                    Some(rdm_core::model::PhaseStatus::Done),
+                    None,
+                    Some(sha.clone()),
+                );
+            }
+            rdm_core::hook::DoneDirective::Task { slug } => {
+                let _ = repo.update_task(
+                    &project,
+                    slug,
+                    Some(rdm_core::model::TaskStatus::Done),
+                    None,
+                    None,
+                    None,
+                    Some(sha.clone()),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -1379,12 +1396,21 @@ fn run() -> Result<()> {
                     priority,
                     tags,
                     body,
+                    commit,
                     no_edit,
                 } => {
                     let project = paths::resolve_project(project, &repo_config)?;
                     let body = resolve_body(body, no_edit)?;
                     let doc = repo
-                        .update_task(&project, &slug, status, priority, tags, body.as_deref())
+                        .update_task(
+                            &project,
+                            &slug,
+                            status,
+                            priority,
+                            tags,
+                            body.as_deref(),
+                            commit,
+                        )
                         .context("failed to update task")?;
                     println!(
                         "Updated task '{slug}' → status: {}, priority: {}",

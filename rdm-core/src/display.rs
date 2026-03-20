@@ -483,6 +483,12 @@ pub fn format_task_detail(slug: &str, doc: &Document<Task>) -> String {
     d.paragraph(&format!("Status: {}", fm.status));
     d.paragraph(&format!("Priority: {}", fm.priority));
     d.paragraph(&format!("Created: {}", fm.created));
+    if let Some(completed) = &fm.completed {
+        d.paragraph(&format!("Completed: {completed}"));
+    }
+    if let Some(commit) = &fm.commit {
+        d.paragraph(&format!("Commit: {commit}"));
+    }
     if let Some(tags) = &fm.tags {
         d.paragraph(&format!("Tags: {}", tags.join(", ")));
     }
@@ -731,6 +737,12 @@ pub fn format_task_detail_md(slug: &str, doc: &Document<Task>) -> String {
     out.push_str(&format!("- **Status:** {}\n", fm.status));
     out.push_str(&format!("- **Priority:** {}\n", fm.priority));
     out.push_str(&format!("- **Created:** {}\n", fm.created));
+    if let Some(completed) = &fm.completed {
+        out.push_str(&format!("- **Completed:** {completed}\n"));
+    }
+    if let Some(commit) = &fm.commit {
+        out.push_str(&format!("- **Commit:** {commit}\n"));
+    }
     if let Some(tags) = &fm.tags {
         out.push_str(&format!("- **Tags:** {}\n", tags.join(", ")));
     }
@@ -975,6 +987,8 @@ mod tests {
                 priority,
                 created: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
                 tags,
+                completed: None,
+                commit: None,
             },
             body: String::new(),
         }

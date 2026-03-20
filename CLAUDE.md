@@ -120,9 +120,10 @@ When a PR merges, `rdm hook post-merge` parses the commit message for lines matc
 
 ```
 Done: <roadmap>/<phase>
+Done: task/<slug>
 ```
 
-For each match it calls `rdm phase update <phase> --status done --commit <sha> --no-edit --roadmap <roadmap>`. This is idempotent — running the hook multiple times or re-marking a done phase with a new commit SHA is safe (the SHA updates, the completed date is preserved).
+For phase directives, it calls `rdm phase update <phase> --status done --commit <sha> --no-edit --roadmap <roadmap>`. For task directives, it calls `rdm task update <slug> --status done --commit <sha> --no-edit`. Both are idempotent — running the hook multiple times or re-marking a done item with a new commit SHA is safe (the SHA updates, the completed date is preserved). Note: `task` is a reserved prefix and cannot be used as a roadmap slug.
 
 Project resolution follows the standard chain: `--project` flag > `RDM_PROJECT` env var > `default_project` in `rdm.toml`.
 
@@ -132,7 +133,7 @@ Project resolution follows the standard chain: `--project` flag > `RDM_PROJECT` 
 feat(core): implement search indexing
 
 Done: search-feature/phase-2-indexing
-Done: perf-improvements/phase-1-baseline
+Done: task/fix-search-edge-case
 ```
 
 ## CI Expectations

@@ -665,6 +665,8 @@ impl<S: Store> PlanRepo<S> {
                 priority,
                 created: Local::now().date_naive(),
                 tags,
+                completed: None,
+                commit: None,
             },
             body: body.unwrap_or_default().to_string(),
         };
@@ -716,6 +718,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::Io`] if reading or writing fails, or
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// existing task file has invalid frontmatter.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_task(
         &mut self,
         project: &str,
@@ -724,6 +727,7 @@ impl<S: Store> PlanRepo<S> {
         priority: Option<Priority>,
         tags: Option<Vec<String>>,
         body: Option<&str>,
+        commit: Option<String>,
     ) -> Result<Document<Task>> {
         let path = self.task_path(project, slug);
         if !self.store.exists(&path) {
@@ -731,8 +735,22 @@ impl<S: Store> PlanRepo<S> {
         }
 
         let mut doc = self.load_task(project, slug)?;
-        if let Some(s) = status {
-            doc.frontmatter.status = s;
+        if let Some(status) = status {
+            if status == TaskStatus::Done && doc.frontmatter.status == TaskStatus::Done {
+                // Already done: only update commit if a new one is provided
+                if let Some(sha) = commit.clone() {
+                    doc.frontmatter.commit = Some(sha);
+                }
+            } else {
+                doc.frontmatter.status = status;
+                if status == TaskStatus::Done {
+                    doc.frontmatter.completed = Some(Local::now().date_naive());
+                    doc.frontmatter.commit = commit.clone();
+                } else {
+                    doc.frontmatter.completed = None;
+                    doc.frontmatter.commit = None;
+                }
+            }
         }
         if let Some(p) = priority {
             doc.frontmatter.priority = p;
@@ -1591,6 +1609,8 @@ mod tests {
                 priority: Priority::High,
                 created: NaiveDate::from_ymd_opt(2026, 3, 14).unwrap(),
                 tags: Some(vec!["data".to_string()]),
+                completed: None,
+                commit: None,
             },
             body: "Details.\n".to_string(),
         };
@@ -2257,7 +2277,15 @@ mod tests {
         repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
             .unwrap();
         let updated = repo
-            .update_task("fbm", "fix-bug", Some(TaskStatus::Done), None, None, None)
+            .update_task(
+                "fbm",
+                "fix-bug",
+                Some(TaskStatus::Done),
+                None,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(updated.frontmatter.status, TaskStatus::Done);
 
@@ -2271,7 +2299,15 @@ mod tests {
         repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
             .unwrap();
         let updated = repo
-            .update_task("fbm", "fix-bug", None, Some(Priority::Critical), None, None)
+            .update_task(
+                "fbm",
+                "fix-bug",
+                None,
+                Some(Priority::Critical),
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(updated.frontmatter.priority, Priority::Critical);
     }
@@ -2288,6 +2324,7 @@ mod tests {
                 None,
                 None,
                 Some(vec!["new-tag".to_string()]),
+                None,
                 None,
             )
             .unwrap();
@@ -2307,7 +2344,15 @@ mod tests {
         )
         .unwrap();
         let updated = repo
-            .update_task("fbm", "fix-bug", None, None, None, Some("Replaced.\n"))
+            .update_task(
+                "fbm",
+                "fix-bug",
+                None,
+                None,
+                None,
+                Some("Replaced.\n"),
+                None,
+            )
             .unwrap();
         assert_eq!(updated.body, "Replaced.\n");
 
@@ -2328,7 +2373,15 @@ mod tests {
         )
         .unwrap();
         let updated = repo
-            .update_task("fbm", "fix-bug", Some(TaskStatus::Done), None, None, None)
+            .update_task(
+                "fbm",
+                "fix-bug",
+                Some(TaskStatus::Done),
+                None,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(updated.body, "Keep this.\n");
     }
@@ -2336,8 +2389,132 @@ mod tests {
     #[test]
     fn update_task_not_found() {
         let mut repo = setup_with_project();
-        let result = repo.update_task("fbm", "nope", Some(TaskStatus::Done), None, None, None);
+        let result = repo.update_task(
+            "fbm",
+            "nope",
+            Some(TaskStatus::Done),
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(matches!(result, Err(Error::TaskNotFound(_))));
+    }
+
+    #[test]
+    fn update_task_done_sets_completed_and_commit() {
+        let mut repo = setup_with_project();
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
+            .unwrap();
+        let updated = repo
+            .update_task(
+                "fbm",
+                "fix-bug",
+                Some(TaskStatus::Done),
+                None,
+                None,
+                None,
+                Some("abc123".to_string()),
+            )
+            .unwrap();
+        assert_eq!(updated.frontmatter.status, TaskStatus::Done);
+        assert!(updated.frontmatter.completed.is_some());
+        assert_eq!(updated.frontmatter.commit, Some("abc123".to_string()));
+
+        // Verify persisted
+        let loaded = repo.load_task("fbm", "fix-bug").unwrap();
+        assert_eq!(loaded.frontmatter.commit, Some("abc123".to_string()));
+        assert!(loaded.frontmatter.completed.is_some());
+    }
+
+    #[test]
+    fn update_task_done_sets_completed_without_commit() {
+        let mut repo = setup_with_project();
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
+            .unwrap();
+        let updated = repo
+            .update_task(
+                "fbm",
+                "fix-bug",
+                Some(TaskStatus::Done),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(updated.frontmatter.status, TaskStatus::Done);
+        assert!(updated.frontmatter.completed.is_some());
+        assert_eq!(updated.frontmatter.commit, None);
+    }
+
+    #[test]
+    fn update_task_idempotent_done_updates_commit() {
+        let mut repo = setup_with_project();
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
+            .unwrap();
+        let first = repo
+            .update_task(
+                "fbm",
+                "fix-bug",
+                Some(TaskStatus::Done),
+                None,
+                None,
+                None,
+                Some("sha1".to_string()),
+            )
+            .unwrap();
+        let first_completed = first.frontmatter.completed;
+
+        // Re-mark as done with a new commit
+        let second = repo
+            .update_task(
+                "fbm",
+                "fix-bug",
+                Some(TaskStatus::Done),
+                None,
+                None,
+                None,
+                Some("sha2".to_string()),
+            )
+            .unwrap();
+        assert_eq!(second.frontmatter.status, TaskStatus::Done);
+        assert_eq!(second.frontmatter.commit, Some("sha2".to_string()));
+        // completed date preserved
+        assert_eq!(second.frontmatter.completed, first_completed);
+    }
+
+    #[test]
+    fn update_task_reopen_clears_completed_and_commit() {
+        let mut repo = setup_with_project();
+        repo.create_task("fbm", "fix-bug", "Fix", Priority::Low, None, None)
+            .unwrap();
+        repo.update_task(
+            "fbm",
+            "fix-bug",
+            Some(TaskStatus::Done),
+            None,
+            None,
+            None,
+            Some("abc123".to_string()),
+        )
+        .unwrap();
+
+        // Reopen the task
+        let reopened = repo
+            .update_task(
+                "fbm",
+                "fix-bug",
+                Some(TaskStatus::InProgress),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(reopened.frontmatter.status, TaskStatus::InProgress);
+        assert_eq!(reopened.frontmatter.completed, None);
+        assert_eq!(reopened.frontmatter.commit, None);
     }
 
     #[test]
@@ -2351,6 +2528,8 @@ mod tests {
                 priority: Priority::High,
                 created: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
                 tags: Some(vec!["infra".to_string()]),
+                completed: None,
+                commit: None,
             },
             body: "Task body content.\n".to_string(),
         };

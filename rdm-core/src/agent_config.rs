@@ -227,6 +227,11 @@ Run `rdm roadmap list {proj_flag}` to see all roadmaps and their progress. Check
    ```
 6. Check the next phase: `rdm phase list --roadmap <slug> {proj_flag}`
 
+### Completing a task
+
+1. Implement the work described in the task
+2. Include a `Done: task/<slug>` line in the git commit message so the post-merge hook marks the task done and records the commit SHA
+
 ### Discovering bugs or side-work
 
 If you encounter a bug or unrelated improvement while working on a phase, do not fix it inline. Create a task instead:
@@ -456,12 +461,8 @@ Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
 8. **Execute the plan**: implement each step, following the plan.
 9. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
 10. **Finalize**: on user acceptance:
-    - Commit the implementation changes
-    - Mark the task done: `rdm task update <slug> --status done --no-edit {proj_flag}`
-11. **If the task is part of a roadmap phase**, include a `Done:` line in the commit message so the post-merge hook records the commit SHA:
-    ```
-    Done: <roadmap-slug>/<phase-stem>
-    ```
+    - Commit the implementation changes with a `Done: task/<slug>` line in the commit message so the post-merge hook records the commit SHA and marks the task done automatically
+    - If the task is also part of a roadmap phase, include a `Done: <roadmap-slug>/<phase-stem>` line as well
 "#
         ),
     }

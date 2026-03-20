@@ -31,9 +31,5 @@ Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
 9. **Execute the plan**: implement each step, following the plan.
 10. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
 11. **Finalize**: on user acceptance:
-    - Commit the implementation changes
-    - Mark the task done: `./target/debug/rdm task update <slug> --status done --no-edit --project rdm`
-12. **If the task is part of a roadmap phase**, include a `Done:` line in the commit message so the post-merge hook records the commit SHA:
-    ```
-    Done: <roadmap-slug>/<phase-stem>
-    ```
+    - Commit the implementation changes with a `Done: task/<slug>` line in the commit message so the post-merge hook records the commit SHA and marks the task done automatically
+    - If the task is also part of a roadmap phase, include a `Done: <roadmap-slug>/<phase-stem>` line as well

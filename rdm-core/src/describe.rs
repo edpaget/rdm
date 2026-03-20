@@ -201,6 +201,20 @@ impl Describe for crate::model::Task {
                     enum_values: &[],
                     description: "Optional tags for categorization.",
                 },
+                FieldInfo {
+                    name: "completed",
+                    type_name: "date (YYYY-MM-DD)",
+                    required: false,
+                    enum_values: &[],
+                    description: "Date the task was completed.",
+                },
+                FieldInfo {
+                    name: "commit",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Git commit SHA that completed this task.",
+                },
             ],
         }
     }
@@ -356,6 +370,8 @@ mod tests {
             priority: crate::model::Priority::High,
             created: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             tags: Some(vec!["tag1".to_string()]),
+            completed: Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()),
+            commit: Some("abc123".to_string()),
         };
         assert_fields_match(&sample);
     }

@@ -79,6 +79,12 @@ pub struct TaskJson {
     /// Tags for categorization.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// Date the task was completed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed: Option<NaiveDate>,
+    /// Git commit SHA that completed this task.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
     /// Markdown body content.
     pub body: String,
 }
@@ -228,6 +234,8 @@ pub fn task_to_json(slug: &str, doc: &Document<Task>) -> TaskJson {
         priority: fm.priority,
         created: fm.created,
         tags: fm.tags.clone(),
+        completed: fm.completed,
+        commit: fm.commit.clone(),
         body: doc.body.clone(),
     }
 }
@@ -350,6 +358,8 @@ mod tests {
                 priority: Priority::Medium,
                 created: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
                 tags: None,
+                completed: None,
+                commit: None,
             },
             body: String::new(),
         }

@@ -322,6 +322,7 @@ pub async fn update_task(
             priority,
             req.tags,
             req.body.as_deref(),
+            None,
         )
         .map_err(|e| error_response(e, format))?;
     repo.generate_index()
@@ -971,6 +972,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         repo.create_task(
@@ -986,6 +988,7 @@ mod tests {
             "demo",
             "wontfix-task",
             Some(TaskStatus::WontFix),
+            None,
             None,
             None,
             None,
