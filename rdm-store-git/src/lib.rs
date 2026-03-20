@@ -995,19 +995,12 @@ impl GitStore {
 
     /// Returns the current branch name, or `None` if HEAD is detached or unborn.
     pub fn current_branch_name(&self) -> Result<Option<String>> {
-        let head = match self.repo.head().ok() {
-            Some(h) => h,
-            None => return Ok(None),
-        };
-        let referent = match head.referent_name() {
-            Some(name) => name.to_owned(),
-            None => return Ok(None),
-        };
-        Ok(referent
-            .as_bstr()
-            .to_string()
-            .strip_prefix("refs/heads/")
-            .map(|s| s.to_string()))
+        let output = self.run_git(&["symbolic-ref", "--quiet", "HEAD"])?;
+        if !output.status.success() {
+            return Ok(None); // detached or unborn
+        }
+        let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(full_ref.strip_prefix("refs/heads/").map(|s| s.to_string()))
     }
 
     /// Computes the ahead/behind status between the local branch and a remote
@@ -1027,79 +1020,38 @@ impl GitStore {
         }
 
         // Get local branch name
-        let head = match self.repo.head().ok() {
-            Some(h) => h,
-            None => return Ok(None),
-        };
-        let referent = match head.referent_name() {
-            Some(name) => name.to_owned(),
-            None => return Ok(None), // detached HEAD
-        };
-        let branch = referent
-            .as_bstr()
-            .to_string()
-            .strip_prefix("refs/heads/")
-            .map(|s| s.to_string());
-        let branch = match branch {
+        let branch = match self.current_branch_name()? {
             Some(b) => b,
             None => return Ok(None),
         };
 
-        // Get local HEAD commit
-        let local_oid = match self
-            .repo
-            .head()
-            .ok()
-            .and_then(|mut h| h.peel_to_commit().ok())
-        {
-            Some(c) => c.id().detach(),
-            None => return Ok(None), // unborn branch
-        };
-
-        // Look up tracking ref
+        // Check tracking ref exists
         let tracking_ref = format!("refs/remotes/{remote_name}/{branch}");
-        let remote_ref = match self.repo.try_find_reference(&tracking_ref) {
-            Ok(Some(r)) => r,
-            Ok(None) => return Ok(None),
-            Err(e) => return Err(Error::Git(format!("failed to find reference: {e}"))),
-        };
-        let remote_oid = remote_ref.id().detach();
-
-        // If equal, both are zero
-        if local_oid == remote_oid {
-            return Ok(Some(SyncStatus {
-                remote: remote_name.to_string(),
-                branch,
-                ahead: 0,
-                behind: 0,
-            }));
+        let output = self.run_git(&["rev-parse", "--verify", "--quiet", &tracking_ref])?;
+        if !output.status.success() {
+            return Ok(None); // no tracking ref
         }
 
-        // Find merge base
-        let merge_base = self
-            .repo
-            .merge_base(local_oid, remote_oid)
-            .map_err(|e| Error::Git(format!("failed to compute merge base: {e}")))?;
+        // Compute ahead/behind in one shot
+        let range = format!("HEAD...{tracking_ref}");
+        let output = self.run_git(&["rev-list", "--left-right", "--count", &range])?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Git(format!(
+                "failed to compute ahead/behind: {stderr}"
+            )));
+        }
 
-        // Count ahead: commits reachable from local but not from merge_base
-        let ahead = self
-            .repo
-            .rev_walk([local_oid])
-            .all()
-            .map_err(|e| Error::Git(format!("failed to walk revisions: {e}")))?
-            .filter_map(|r| r.ok())
-            .take_while(|info| info.id != merge_base)
-            .count();
-
-        // Count behind: commits reachable from remote but not from merge_base
-        let behind = self
-            .repo
-            .rev_walk([remote_oid])
-            .all()
-            .map_err(|e| Error::Git(format!("failed to walk revisions: {e}")))?
-            .filter_map(|r| r.ok())
-            .take_while(|info| info.id != merge_base)
-            .count();
+        let counts = String::from_utf8_lossy(&output.stdout);
+        let parts: Vec<&str> = counts.trim().split('\t').collect();
+        let (ahead, behind) = if parts.len() == 2 {
+            (
+                parts[0].parse::<usize>().unwrap_or(0),
+                parts[1].parse::<usize>().unwrap_or(0),
+            )
+        } else {
+            (0, 0)
+        };
 
         Ok(Some(SyncStatus {
             remote: remote_name.to_string(),
@@ -1878,34 +1830,21 @@ mod tests {
             .output()
             .unwrap();
 
-        // Before fetch, no remote tracking refs should exist
-        let repo_before = gix::open(dir.path()).unwrap();
-        let tracking_before = repo_before
-            .try_find_reference("refs/remotes/origin/main")
-            .unwrap();
-        // Depending on git version, might not have the ref
-        // Just verify fetch works and creates refs
+        // Before fetch, verify fetch works and creates refs
         store.git_fetch("origin").unwrap();
 
         // After fetch, HEAD branch tracking ref should exist
-        // Get the local branch name
-        let head = store.repo.head().unwrap();
-        let branch = head
-            .referent_name()
-            .unwrap()
-            .as_bstr()
-            .to_string()
-            .strip_prefix("refs/heads/")
-            .unwrap()
-            .to_string();
+        let branch = store.current_branch_name().unwrap().unwrap();
         let tracking_ref = format!("refs/remotes/origin/{branch}");
-        let remote_ref = store.repo.try_find_reference(&tracking_ref).unwrap();
+        let check = git_cmd()
+            .args(["rev-parse", "--verify", "--quiet", &tracking_ref])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
         assert!(
-            remote_ref.is_some(),
+            check.status.success(),
             "expected tracking ref {tracking_ref} after fetch"
         );
-        // Suppress warning about tracking_before being unused in some configurations
-        let _ = tracking_before;
     }
 
     #[test]
@@ -2138,13 +2077,13 @@ mod tests {
             .unwrap();
 
         // Detach HEAD using git CLI
-        let head_oid = store
-            .repo
-            .head()
-            .unwrap()
-            .peel_to_commit()
-            .unwrap()
-            .id()
+        let head_output = git_cmd()
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let head_oid = String::from_utf8_lossy(&head_output.stdout)
+            .trim()
             .to_string();
         git_cmd()
             .args(["checkout", &head_oid])
