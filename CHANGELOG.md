@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `rdm-review` skill for independent post-implementation review with parallel AC compliance and code quality agents
 - `skill_review()` generator function in `rdm-core::agent_config` for generating the review skill via `rdm agent-config --skills`
+- `--commit <sha>` flag on `rdm phase update` to associate a git commit SHA with phase completion (requires `--status done`)
+- `commit` field in phase frontmatter, phase detail display, and JSON output
+
+### Added
+
 - Merge conflict detection during `rdm remote pull` with rdm-aware item context (roadmap, phase, task classification)
 - `rdm conflicts` command to list unresolved merge conflicts with item context
 - `rdm resolve <file>` command to mark conflicts resolved and auto-complete merge with INDEX.md regeneration

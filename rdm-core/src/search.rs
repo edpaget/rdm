@@ -290,6 +290,7 @@ mod tests {
             "phase-1-design",
             Some(PhaseStatus::Done),
             None,
+            None,
         )
         .unwrap();
 

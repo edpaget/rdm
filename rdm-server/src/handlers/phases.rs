@@ -188,7 +188,7 @@ pub async fn update_phase(
         .resolve_phase_stem(&project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
     let doc = repo
-        .update_phase(&project, &roadmap, &stem, status, req.body.as_deref())
+        .update_phase(&project, &roadmap, &stem, status, req.body.as_deref(), None)
         .map_err(|e| error_response(e, format))?;
     repo.generate_index()
         .map_err(|e| error_response(e, format))?;

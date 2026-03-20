@@ -183,6 +183,9 @@ pub struct Phase {
     /// Date the phase was completed, if applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed: Option<NaiveDate>,
+    /// Git commit SHA associated with phase completion, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 impl Phase {
@@ -369,6 +372,7 @@ phase: 1
 title: Core valuation layer
 status: done
 completed: 2026-03-13
+commit: abc123def456
 "#;
         let phase: Phase = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(phase.phase, 1);
@@ -378,6 +382,7 @@ completed: 2026-03-13
             phase.completed,
             Some(NaiveDate::from_ymd_opt(2026, 3, 13).unwrap())
         );
+        assert_eq!(phase.commit, Some("abc123def456".to_string()));
     }
 
     #[test]
@@ -391,6 +396,7 @@ status: not-started
         assert_eq!(phase.phase, 2);
         assert_eq!(phase.status, PhaseStatus::NotStarted);
         assert_eq!(phase.completed, None);
+        assert_eq!(phase.commit, None);
     }
 
     #[test]

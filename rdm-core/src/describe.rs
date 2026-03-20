@@ -141,6 +141,13 @@ impl Describe for crate::model::Phase {
                     enum_values: &[],
                     description: "Date the phase was completed, if applicable.",
                 },
+                FieldInfo {
+                    name: "commit",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Git commit SHA associated with phase completion, if any.",
+                },
             ],
         }
     }
@@ -335,6 +342,7 @@ mod tests {
             title: "Test Phase".to_string(),
             status: crate::model::PhaseStatus::Done,
             completed: Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()),
+            commit: Some("abc123".to_string()),
         };
         assert_fields_match(&sample);
     }

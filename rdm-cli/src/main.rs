@@ -393,6 +393,9 @@ enum PhaseCommand {
         /// Body content for the phase.
         #[arg(long)]
         body: Option<String>,
+        /// Git commit SHA to associate with phase completion.
+        #[arg(long)]
+        commit: Option<String>,
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,
@@ -1285,15 +1288,19 @@ fn run() -> Result<()> {
                     roadmap,
                     project,
                     body,
+                    commit,
                     no_edit,
                 } => {
+                    if commit.is_some() && status != Some(PhaseStatus::Done) {
+                        anyhow::bail!("--commit can only be used with --status done");
+                    }
                     let project = resolve_project(project, &repo)?;
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
                         .context("failed to resolve phase")?;
                     let body = resolve_body(body, no_edit)?;
                     let doc = repo
-                        .update_phase(&project, &roadmap, &stem, status, body.as_deref())
+                        .update_phase(&project, &roadmap, &stem, status, body.as_deref(), commit)
                         .context("failed to update phase")?;
                     println!("Updated '{stem}' → {}", doc.frontmatter.status);
                     maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;

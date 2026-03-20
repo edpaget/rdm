@@ -391,6 +391,9 @@ pub fn format_phase_detail(
     if let Some(date) = fm.completed {
         d.paragraph(&format!("Completed: {date}"));
     }
+    if let Some(ref sha) = fm.commit {
+        d.paragraph(&format!("Commit: {sha}"));
+    }
     if !doc.body.is_empty() {
         d.push(ast::Block::BlankLine);
         d.raw(&doc.body);
@@ -673,6 +676,9 @@ pub fn format_phase_detail_md(
     if let Some(date) = fm.completed {
         out.push_str(&format!("- **Completed:** {date}\n"));
     }
+    if let Some(ref sha) = fm.commit {
+        out.push_str(&format!("- **Commit:** {sha}\n"));
+    }
     if !doc.body.is_empty() {
         out.push_str(&format!("\n{}", doc.body));
     }
@@ -797,6 +803,7 @@ mod tests {
                 } else {
                     None
                 },
+                commit: None,
             },
             body: String::new(),
         }

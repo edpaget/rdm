@@ -356,6 +356,7 @@ mod tests {
             "phase-1-first",
             Some(PhaseStatus::Done),
             None,
+            None,
         )
         .unwrap();
         let state = AppState {
@@ -377,6 +378,7 @@ mod tests {
             "beta",
             "phase-1-only",
             Some(PhaseStatus::Done),
+            None,
             None,
         )
         .unwrap();

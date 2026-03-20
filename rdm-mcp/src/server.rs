@@ -498,6 +498,7 @@ impl RdmMcpServer {
             &stem,
             status,
             params.body.as_deref(),
+            None,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),

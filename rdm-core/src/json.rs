@@ -46,6 +46,9 @@ pub struct PhaseJson {
     /// Completion date, if done.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed: Option<NaiveDate>,
+    /// Git commit SHA associated with phase completion, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
     /// Parent roadmap slug.
     pub roadmap: String,
     /// Stem of the previous phase, if any.
@@ -206,6 +209,7 @@ pub fn phase_to_json(
         title: fm.title.clone(),
         status: fm.status,
         completed: fm.completed,
+        commit: fm.commit.clone(),
         roadmap: roadmap.to_string(),
         prev_phase: prev.map(String::from),
         next_phase: next.map(String::from),
@@ -318,6 +322,7 @@ mod tests {
                 } else {
                     None
                 },
+                commit: None,
             },
             body: String::new(),
         }

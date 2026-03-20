@@ -504,6 +504,7 @@ impl<S: Store> PlanRepo<S> {
                 title: title.to_string(),
                 status: PhaseStatus::NotStarted,
                 completed: None,
+                commit: None,
             },
             body: body.unwrap_or_default().to_string(),
         };
@@ -518,11 +519,12 @@ impl<S: Store> PlanRepo<S> {
         Ok(doc)
     }
 
-    /// Updates a phase's status and/or body.
+    /// Updates a phase's status, body, and/or commit SHA.
     ///
-    /// When `status` is `Some(Done)`, auto-sets `completed` to today.
-    /// When `status` is `Some` but not `Done`, clears `completed`.
-    /// When `status` is `None`, the existing status is preserved.
+    /// When `status` is `Some(Done)`, auto-sets `completed` to today and stores
+    /// the optional `commit` SHA. When `status` is `Some` but not `Done`,
+    /// clears both `completed` and `commit`. When `status` is `None`, the
+    /// existing status, `completed`, and `commit` are preserved.
     /// When `body` is `Some`, replaces the existing body; `None` preserves it.
     ///
     /// # Errors
@@ -538,6 +540,7 @@ impl<S: Store> PlanRepo<S> {
         phase_stem: &str,
         status: Option<PhaseStatus>,
         body: Option<&str>,
+        commit: Option<String>,
     ) -> Result<Document<Phase>> {
         let path = self.phase_path(project, roadmap, phase_stem);
         if !self.store.exists(&path) {
@@ -547,10 +550,12 @@ impl<S: Store> PlanRepo<S> {
         let mut doc = self.load_phase(project, roadmap, phase_stem)?;
         if let Some(status) = status {
             doc.frontmatter.status = status;
-            doc.frontmatter.completed = if status == PhaseStatus::Done {
-                Some(Local::now().date_naive())
+            if status == PhaseStatus::Done {
+                doc.frontmatter.completed = Some(Local::now().date_naive());
+                doc.frontmatter.commit = commit;
             } else {
-                None
+                doc.frontmatter.completed = None;
+                doc.frontmatter.commit = None;
             };
         }
         if let Some(b) = body {
@@ -795,6 +800,7 @@ impl<S: Store> PlanRepo<S> {
                 title: task_doc.frontmatter.title,
                 status: PhaseStatus::NotStarted,
                 completed: None,
+                commit: None,
             },
             body: task_doc.body,
         };
@@ -1554,6 +1560,7 @@ mod tests {
                 title: "Core valuation layer".to_string(),
                 status: PhaseStatus::Done,
                 completed: Some(NaiveDate::from_ymd_opt(2026, 3, 13).unwrap()),
+                commit: None,
             },
             body: "## Steps\n\n1. Do things.\n".to_string(),
         };
@@ -1882,10 +1889,36 @@ mod tests {
                 "phase-1-core",
                 Some(PhaseStatus::Done),
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
         assert!(updated.frontmatter.completed.is_some());
+        assert_eq!(updated.frontmatter.commit, None);
+    }
+
+    #[test]
+    fn update_phase_to_done_with_commit_stores_sha() {
+        let mut repo = setup_with_roadmap();
+        repo.create_phase("fbm", "two-way", "core", "Core", None, None)
+            .unwrap();
+        let updated = repo
+            .update_phase(
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                None,
+                Some("abc123".to_string()),
+            )
+            .unwrap();
+        assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
+        assert!(updated.frontmatter.completed.is_some());
+        assert_eq!(updated.frontmatter.commit, Some("abc123".to_string()));
+
+        // Verify persistence
+        let loaded = repo.load_phase("fbm", "two-way", "phase-1-core").unwrap();
+        assert_eq!(loaded.frontmatter.commit, Some("abc123".to_string()));
     }
 
     #[test]
@@ -1899,6 +1932,7 @@ mod tests {
             "phase-1-core",
             Some(PhaseStatus::Done),
             None,
+            Some("abc123".to_string()),
         )
         .unwrap();
         let updated = repo
@@ -1908,10 +1942,12 @@ mod tests {
                 "phase-1-core",
                 Some(PhaseStatus::InProgress),
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(updated.frontmatter.status, PhaseStatus::InProgress);
         assert_eq!(updated.frontmatter.completed, None);
+        assert_eq!(updated.frontmatter.commit, None);
     }
 
     #[test]
@@ -1933,6 +1969,7 @@ mod tests {
                 "phase-1-core",
                 Some(PhaseStatus::InProgress),
                 Some("Replaced body.\n"),
+                None,
             )
             .unwrap();
         assert_eq!(updated.body, "Replaced body.\n");
@@ -1960,6 +1997,7 @@ mod tests {
                 "phase-1-core",
                 Some(PhaseStatus::InProgress),
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(updated.body, "Keep this body.\n");
@@ -1973,6 +2011,7 @@ mod tests {
             "two-way",
             "phase-99-nope",
             Some(PhaseStatus::Done),
+            None,
             None,
         );
         assert!(matches!(result, Err(Error::PhaseNotFound(_))));
@@ -2872,6 +2911,7 @@ mod tests {
             "phase-1-core",
             Some(PhaseStatus::Done),
             None,
+            None,
         )
         .unwrap();
 
@@ -2933,6 +2973,7 @@ mod tests {
             "alpha",
             "phase-1-core",
             Some(PhaseStatus::Done),
+            None,
             None,
         )
         .unwrap();

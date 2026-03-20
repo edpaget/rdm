@@ -88,6 +88,7 @@ mod tests {
                 title: "Core valuation".to_string(),
                 status: PhaseStatus::Done,
                 completed: Some(NaiveDate::from_ymd_opt(2026, 3, 13).unwrap()),
+                commit: None,
             },
             body: "## Context\n\nDetails.\n".to_string(),
         };
@@ -106,6 +107,7 @@ mod tests {
                 title: "Keeper service".to_string(),
                 status: PhaseStatus::NotStarted,
                 completed: None,
+                commit: None,
             },
             body: "Body text.\n".to_string(),
         };
