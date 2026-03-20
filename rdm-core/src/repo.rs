@@ -1473,22 +1473,38 @@ impl<S: Store> PlanRepo<S> {
 
     // -- Init --
 
-    /// Initializes a new plan repo with the given store.
+    /// Initializes a new plan repo with the given store and default config.
     ///
-    /// Creates `rdm.toml` and `INDEX.md`.
+    /// Creates `rdm.toml` (with default values) and `INDEX.md`.
+    /// Equivalent to `init_with_config(store, Config::default())`.
     ///
     /// # Errors
     ///
     /// Returns [`Error::AlreadyInitialized`] if `rdm.toml` already exists, or
     /// [`Error::Io`] if file creation fails.
     pub fn init(store: S) -> Result<Self> {
+        Self::init_with_config(store, Config::default())
+    }
+
+    /// Initializes a new plan repo with the given store and config.
+    ///
+    /// Creates `rdm.toml` (populated from `config`) and `INDEX.md`.
+    /// The config is validated before any files are written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::AlreadyInitialized`] if `rdm.toml` already exists,
+    /// [`Error::InvalidConfigValue`] if the config fails validation, or
+    /// [`Error::Io`] if file creation fails.
+    pub fn init_with_config(store: S, config: Config) -> Result<Self> {
+        config.validate()?;
+
         let mut repo = PlanRepo { store };
 
         if repo.store.exists(&repo.config_path()) {
             return Err(Error::AlreadyInitialized);
         }
 
-        let config = Config::default();
         let toml_str = config.to_toml()?;
         let config_path = repo.config_path();
         repo.store.write(&config_path, toml_str)?;
@@ -3014,6 +3030,46 @@ mod tests {
         let repo = PlanRepo::init(MemoryStore::new()).unwrap();
         let result = PlanRepo::init(repo.store.clone());
         assert!(matches!(result, Err(Error::AlreadyInitialized)));
+    }
+
+    #[test]
+    fn init_with_config_writes_custom_config() {
+        let config = Config {
+            default_project: Some("myproj".to_string()),
+            stage: Some(true),
+            ..Default::default()
+        };
+        let repo = PlanRepo::init_with_config(MemoryStore::new(), config).unwrap();
+        let loaded = repo.load_config().unwrap();
+        assert_eq!(loaded.default_project, Some("myproj".to_string()));
+        assert_eq!(loaded.stage, Some(true));
+    }
+
+    #[test]
+    fn init_with_config_validates_format() {
+        let config = Config {
+            default_format: Some("xml".to_string()),
+            ..Default::default()
+        };
+        let result = PlanRepo::init_with_config(MemoryStore::new(), config);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("xml"));
+    }
+
+    #[test]
+    fn init_delegates_to_init_with_config() {
+        let repo_plain = PlanRepo::init(MemoryStore::new()).unwrap();
+        let repo_config =
+            PlanRepo::init_with_config(MemoryStore::new(), Config::default()).unwrap();
+
+        let config_plain = repo_plain.load_config().unwrap();
+        let config_via = repo_config.load_config().unwrap();
+        assert_eq!(config_plain, config_via);
+
+        // Both create INDEX.md
+        assert!(repo_plain.store().exists(&repo_plain.index_path()));
+        assert!(repo_config.store().exists(&repo_config.index_path()));
     }
 
     // -- Index generation tests --

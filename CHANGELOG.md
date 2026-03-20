@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm init --default-project <name>` flag to set `default_project` in repo config and create the project directory
+- `rdm init --default-format <fmt>` flag to set `default_format` in global config
+- `rdm init` with `--stage` persists `stage = true` to repo config
+- `rdm init` now creates parent directories recursively, creates the global config file, and prints a summary with paths, settings, and next steps
+- `PlanRepo::init_with_config()` in rdm-core for initializing with a custom `Config`
+
 - `rdm config get <key>` command to view a config value with its source (CLI flag, env var, repo config, global config, or default)
 - `rdm config set <key> <value> [--global]` command to set config values in repo or global config with validation
 - `rdm config list` command to display all known config keys with resolved values and sources

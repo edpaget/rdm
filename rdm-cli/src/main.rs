@@ -49,7 +49,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Initialize a new plan repo.
-    Init,
+    Init {
+        /// Set the default project in repo config and create its directory.
+        #[arg(long)]
+        default_project: Option<String>,
+        /// Set the default output format in global config.
+        #[arg(long)]
+        default_format: Option<String>,
+    },
     /// View or modify configuration.
     Config {
         #[command(subcommand)]
@@ -1034,8 +1041,57 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Config { .. } => unreachable!("handled above"),
-        Command::Init => {
-            PlanRepo::init(make_init_store(&root)?).context("failed to initialize plan repo")?;
+        Command::Init {
+            default_project,
+            default_format,
+        } => {
+            // Validate --default-format before any side effects.
+            if let Some(ref fmt) = default_format {
+                use rdm_core::config::VALID_FORMATS;
+                if !VALID_FORMATS.contains(&fmt.as_str()) {
+                    bail!(
+                        "invalid default_format '{}' — valid values: {}",
+                        fmt,
+                        VALID_FORMATS.join(", ")
+                    );
+                }
+            }
+
+            // Create root directory recursively.
+            std::fs::create_dir_all(&root)
+                .with_context(|| format!("failed to create {}", root.display()))?;
+
+            // Build repo config from flags.
+            let init_config = rdm_core::config::Config {
+                default_project: default_project.clone(),
+                stage: if cli.stage { Some(true) } else { None },
+                ..Default::default()
+            };
+
+            let mut repo = PlanRepo::init_with_config(make_init_store(&root)?, init_config)
+                .context("failed to initialize plan repo")?;
+
+            // Create project directory if --default-project was given.
+            if let Some(ref proj) = default_project {
+                repo.create_project(proj, proj)
+                    .with_context(|| format!("failed to create project '{proj}'"))?;
+            }
+
+            // Ensure global config exists; required if --default-format was given,
+            // best-effort otherwise.
+            let mut global = global_config.clone();
+            if let Some(ref fmt) = default_format {
+                global.default_format = Some(fmt.clone());
+            }
+            let global_saved = match paths::save_global_config(&global) {
+                Ok(()) => true,
+                Err(e) if default_format.is_some() => {
+                    return Err(e).context("failed to save global config");
+                }
+                Err(_) => false, // Best-effort: global config path may not be writable.
+            };
+
+            // Print banner and summary.
             let b = "\x1b[38;2;74;144;217m";
             let r = "\x1b[0m";
             println!(
@@ -1053,6 +1109,26 @@ fn run() -> Result<()> {
                  {b}██   █▄    ██████▀    ██      ██{r}\n"
             );
             println!("Initialized plan repo at {}", root.display());
+            println!("  repo config: {}/rdm.toml", root.display());
+            if global_saved && let Some(gp) = paths::global_config_path() {
+                println!("  global config: {}", gp.display());
+            }
+            if let Some(ref proj) = default_project {
+                println!("  default project: {proj}");
+            }
+            if let Some(ref fmt) = default_format {
+                println!("  default format: {fmt}");
+            }
+            if cli.stage {
+                println!("  staging mode: enabled");
+            }
+            println!();
+            println!("Next steps:");
+            if default_project.is_none() {
+                println!("  rdm project create <name>  # create a project");
+            }
+            println!("  rdm roadmap create <slug>  # create a roadmap");
+            println!("  rdm task create <slug>     # create a task");
         }
 
         Command::Index => {
