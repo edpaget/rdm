@@ -32,8 +32,11 @@ Implement a phase from an rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [p
 10. **Execute the plan**: implement each step, following the plan and the phase's acceptance criteria.
 11. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
 12. **Finalize**: on user acceptance:
-    - Commit the implementation changes
     - Mark the phase done: `./target/debug/rdm phase update <phase> --status done --no-edit --roadmap <slug> --project rdm`
+    - Commit the implementation changes with a `Done:` line in the commit message so the post-merge hook records the commit SHA:
+      ```
+      Done: <roadmap-slug>/<phase-stem>
+      ```
 13. **Handle side-work**: if you discover bugs or unrelated improvements, create tasks instead of fixing them inline:
     ```bash
     ./target/debug/rdm task create <slug> --title "Description" --body "Details." --no-edit --project rdm

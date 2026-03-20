@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `rdm-review` skill for independent post-implementation review with parallel AC compliance and code quality agents
 - `skill_review()` generator function in `rdm-core::agent_config` for generating the review skill via `rdm agent-config --skills`
+- `rdm-document` Claude Code skill for generating user documentation from completed roadmaps using phase descriptions and commit SHAs
+- `rdm agent-config --skills` now generates the `rdm-document` skill alongside the existing three
+- `Done:` commit message convention documented in generated agent configs, `rdm-implement` and `rdm-tasks` skills
 - `rdm hook install` / `rdm hook uninstall` to manage the post-merge git hook in the plan repo
 - `rdm hook post-merge` subcommand: parses `Done: roadmap/phase` directives from the HEAD commit and marks matching phases done with the commit SHA
 - `update_phase` is now idempotent for Done→Done transitions: re-marking a done phase with a new commit SHA updates the SHA while preserving the completed date; omitting `--commit` is a safe no-op

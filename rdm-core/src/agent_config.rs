@@ -221,7 +221,11 @@ Run `rdm roadmap list {proj_flag}` to see all roadmaps and their progress. Check
 2. Plan your approach and get approval before starting
 3. Implement the work described in the phase
 4. Mark it done: `rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> {proj_flag}`
-5. Check the next phase: `rdm phase list --roadmap <slug> {proj_flag}`
+5. Include a `Done:` line in the git commit message so the post-merge hook can record the commit SHA:
+   ```
+   Done: <roadmap-slug>/<phase-stem>
+   ```
+6. Check the next phase: `rdm phase list --roadmap <slug> {proj_flag}`
 
 ### Discovering bugs or side-work
 
@@ -295,7 +299,7 @@ pub struct SkillOptions {
 ///     project: Some("myproj".to_string()),
 ///     principles_file: None,
 /// });
-/// assert_eq!(skills.len(), 4);
+/// assert_eq!(skills.len(), 5);
 /// assert!(skills[0].content.contains("--project myproj"));
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
@@ -306,6 +310,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
         skill_implement(&proj_flag, principles_note.as_deref()),
         skill_tasks(&proj_flag, principles_note.as_deref()),
         skill_review(&proj_flag, principles_note.as_deref()),
+        skill_document(&proj_flag, principles_note.as_deref()),
     ]
 }
 
@@ -402,8 +407,11 @@ Implement a phase from an rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [p
 9. **Execute the plan**: implement each step, following the plan and the phase's acceptance criteria.
 10. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
 11. **Finalize**: on user acceptance:
-    - Commit the implementation changes
     - Mark the phase done: `rdm phase update <phase> --status done --no-edit --roadmap <slug> {proj_flag}`
+    - Commit the implementation changes with a `Done:` line in the commit message so the post-merge hook records the commit SHA:
+      ```
+      Done: <roadmap-slug>/<phase-stem>
+      ```
 12. **Handle side-work**: if you discover bugs or unrelated improvements, create tasks instead of fixing them inline:
     ```bash
     rdm task create <slug> --title "Description" --body "Details." --no-edit {proj_flag}
@@ -450,6 +458,61 @@ Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
 10. **Finalize**: on user acceptance:
     - Commit the implementation changes
     - Mark the task done: `rdm task update <slug> --status done --no-edit {proj_flag}`
+11. **If the task is part of a roadmap phase**, include a `Done:` line in the commit message so the post-merge hook records the commit SHA:
+    ```
+    Done: <roadmap-slug>/<phase-stem>
+    ```
+"#
+        ),
+    }
+}
+
+fn skill_document(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    let principles = principles_note.unwrap_or("");
+    SkillFile {
+        relative_path: "rdm-document/SKILL.md",
+        content: format!(
+            r#"---
+name: rdm-document
+description: Generate user documentation from a completed rdm roadmap
+allowed-tools:
+  - Read
+  - Bash
+  - Glob
+  - Grep
+  - Write
+  - Edit
+---
+
+Generate user-facing documentation from a completed rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [--out <path>]`.
+{principles}
+## Steps
+
+1. **Parse arguments**: extract the roadmap slug and optional `--out <path>` from `$ARGUMENTS`. Default output path is `docs/<slug>.md`.
+2. **Read the roadmap**: `rdm roadmap show <slug> {proj_flag}` to get the overview and phase list.
+3. **Validate completion**: all phases must be `done`. If any phase is not done, abort with a clear message listing incomplete phases.
+4. **Read each phase**: `rdm phase show <stem> --roadmap <slug> {proj_flag} --format json` for each phase. Collect titles, bodies, and commit SHAs.
+5. **Gather code changes** from commit SHAs (the `commit` field in phase JSON):
+   - If SHAs are available: `git log --oneline <first_sha>~1..<last_sha>` and `git diff --stat <first_sha>~1..<last_sha>` in the source repo
+   - Single commit: `git show --stat <sha>`
+   - Missing SHAs: warn and fall back to phase descriptions only — do not abort
+6. **Cross-reference** phase descriptions with actual code changes to ensure accuracy.
+7. **Draft documentation** structured as:
+   - **Overview** — what the feature is
+   - **Motivation** — why it was built
+   - **Usage** — concrete examples (CLI commands, config options)
+   - **How it works** (optional) — architecture/internals for complex features
+   - **Limitations** (optional) — known gaps
+8. **Write** the documentation to the output path.
+9. **Present the draft** to the user for review before considering done.
+
+## Guidelines
+
+- Write for users, not developers — focus on what they can do
+- The Usage section is the most important — include real, working examples
+- Internal/refactoring phases: mention in "How it works" if relevant, omit from Usage
+- Derive content from both phase descriptions (intent) and code diffs (what shipped)
+- If phases lack commit SHAs, note which ones and rely on descriptions alone
 "#
         ),
     }
@@ -792,12 +855,12 @@ mod tests {
     // --- Skill generation tests ---
 
     #[test]
-    fn generate_skills_returns_four_files() {
+    fn generate_skills_returns_five_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
         });
-        assert_eq!(skills.len(), 4);
+        assert_eq!(skills.len(), 5);
     }
 
     #[test]
@@ -810,6 +873,7 @@ mod tests {
         assert_eq!(skills[1].relative_path, "rdm-implement/SKILL.md");
         assert_eq!(skills[2].relative_path, "rdm-tasks/SKILL.md");
         assert_eq!(skills[3].relative_path, "rdm-review/SKILL.md");
+        assert_eq!(skills[4].relative_path, "rdm-document/SKILL.md");
     }
 
     #[test]
@@ -847,6 +911,7 @@ mod tests {
         assert!(skills[1].content.contains("name: rdm-implement"));
         assert!(skills[2].content.contains("name: rdm-tasks"));
         assert!(skills[3].content.contains("name: rdm-review"));
+        assert!(skills[4].content.contains("name: rdm-document"));
     }
 
     #[test]
@@ -1081,6 +1146,79 @@ mod tests {
             principles_file: None,
         });
         assert!(skills[3].content.contains("$ARGUMENTS"));
+    }
+
+    #[test]
+    fn skill_document_contains_rdm_commands() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[4].content;
+        assert!(content.contains("rdm roadmap show"));
+        assert!(content.contains("rdm phase show"));
+        assert!(content.contains("--format json"));
+        assert!(content.contains("git log"));
+        assert!(content.contains("git diff"));
+    }
+
+    #[test]
+    fn skill_document_has_write_edit_tools() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[4].content;
+        assert!(content.contains("Write"));
+        assert!(content.contains("Edit"));
+    }
+
+    #[test]
+    fn skill_document_no_plan_mode_tools() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let frontmatter = skills[4]
+            .content
+            .split("---")
+            .nth(1)
+            .expect("missing frontmatter");
+        assert!(!frontmatter.contains("EnterPlanMode"));
+        assert!(!frontmatter.contains("ExitPlanMode"));
+    }
+
+    #[test]
+    fn skill_implement_includes_done_convention() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("Done:"));
+        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
+    }
+
+    #[test]
+    fn skill_tasks_includes_done_convention() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("Done:"));
+        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
+    }
+
+    #[test]
+    fn planning_workflow_includes_done_convention() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: None,
+            principles_file: None,
+        });
+        assert!(content.contains("Done:"));
+        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
     }
 
     // --- MCP config generation tests ---

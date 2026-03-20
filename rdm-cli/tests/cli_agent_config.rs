@@ -205,12 +205,13 @@ fn agent_config_skills_generates_four_files() {
         .arg(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(4));
+        .stdout(predicate::str::contains("Wrote").count(5));
 
     assert!(dir.path().join("rdm-roadmap/SKILL.md").exists());
     assert!(dir.path().join("rdm-implement/SKILL.md").exists());
     assert!(dir.path().join("rdm-tasks/SKILL.md").exists());
     assert!(dir.path().join("rdm-review/SKILL.md").exists());
+    assert!(dir.path().join("rdm-document/SKILL.md").exists());
 }
 
 #[test]
@@ -225,7 +226,7 @@ fn agent_config_skills_have_valid_frontmatter() {
         .assert()
         .success();
 
-    for name in &["rdm-roadmap", "rdm-implement", "rdm-tasks"] {
+    for name in &["rdm-roadmap", "rdm-implement", "rdm-tasks", "rdm-review", "rdm-document"] {
         let path = dir.path().join(format!("{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -254,7 +255,7 @@ fn agent_config_skills_embed_project_flag() {
         .assert()
         .success();
 
-    for name in &["rdm-roadmap", "rdm-implement", "rdm-tasks"] {
+    for name in &["rdm-roadmap", "rdm-implement", "rdm-tasks", "rdm-review", "rdm-document"] {
         let path = dir.path().join(format!("{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
