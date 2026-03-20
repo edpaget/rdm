@@ -1766,11 +1766,16 @@ mod tests {
     }
 
     /// Returns a git Command with GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE cleared.
+    /// Sets author/committer identity so commits work on CI without global gitconfig.
     fn git_cmd() -> std::process::Command {
         let mut cmd = std::process::Command::new("git");
         cmd.env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE");
+            .env_remove("GIT_INDEX_FILE")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com");
         cmd
     }
 

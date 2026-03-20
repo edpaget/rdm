@@ -4,7 +4,10 @@ use std::fs;
 use tempfile::TempDir;
 
 fn rdm() -> Command {
-    Command::cargo_bin("rdm").unwrap()
+    let mut cmd = Command::cargo_bin("rdm").unwrap();
+    // Isolate from host global config (e.g. default_format = "json").
+    cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent");
+    cmd
 }
 
 fn init_with_project(dir: &TempDir) {

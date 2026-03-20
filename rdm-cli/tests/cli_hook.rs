@@ -4,16 +4,24 @@ use std::fs;
 use tempfile::TempDir;
 
 fn rdm() -> Command {
-    Command::cargo_bin("rdm").unwrap()
+    let mut cmd = Command::cargo_bin("rdm").unwrap();
+    // Isolate from host global config (e.g. default_format = "json").
+    cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent");
+    cmd
 }
 
 /// Runs a git command with GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE cleared
-/// to avoid inheriting env vars from parent git hooks.
+/// to avoid inheriting env vars from parent git hooks. Sets author/committer
+/// identity so commits work on CI without global gitconfig.
 fn git_cmd() -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE");
+        .env_remove("GIT_INDEX_FILE")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com");
     cmd
 }
 
@@ -35,17 +43,6 @@ fn init_project_repo(dir: &TempDir) {
         .output()
         .unwrap();
     assert!(out.status.success(), "git init failed");
-    // Configure user identity so commits work on CI (no global gitconfig).
-    for args in [
-        &["config", "user.name", "test"][..],
-        &["config", "user.email", "test@test.com"],
-    ] {
-        git_cmd()
-            .args(args)
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-    }
     // Need an initial commit so HEAD exists.
     fs::write(dir.path().join("README.md"), "# project").unwrap();
     let out = git_cmd()
