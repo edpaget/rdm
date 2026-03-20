@@ -1331,7 +1331,10 @@ pub fn commit_messages_since_at(
     since_ref: Option<&str>,
 ) -> Result<Vec<HeadCommitInfo>> {
     let anchor = since_ref.unwrap_or("HEAD@{1}");
-    let output = run_git_at(path, &["log", "--format=%H%n%B%n<END>", "HEAD", "--not", anchor])?;
+    let output = run_git_at(
+        path,
+        &["log", "--format=%H%n%B%n<END>", "HEAD", "--not", anchor],
+    )?;
     if !output.status.success() {
         return Ok(Vec::new());
     }
@@ -1356,10 +1359,7 @@ pub fn commit_messages_since_at(
 /// `path`.
 fn run_git_at(path: &Path, args: &[&str]) -> Result<std::process::Output> {
     let repo = gix::discover(path).map_err(|e| Error::Git(e.to_string()))?;
-    let work_dir = repo
-        .workdir()
-        .unwrap_or_else(|| repo.git_dir())
-        .to_owned();
+    let work_dir = repo.workdir().unwrap_or_else(|| repo.git_dir()).to_owned();
     match std::process::Command::new("git")
         .args(args)
         .current_dir(&work_dir)
