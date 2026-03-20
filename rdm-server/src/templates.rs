@@ -190,6 +190,8 @@ pub struct TaskListPage {
     pub project: String,
     /// Filtered tasks.
     pub tasks: Vec<TaskRow>,
+    /// Whether completed tasks are currently shown.
+    pub show_completed: bool,
 }
 
 /// Task detail page with rendered markdown body.

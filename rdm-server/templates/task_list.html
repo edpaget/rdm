@@ -18,6 +18,13 @@
 
 {% block content %}
 <h1>Tasks for {{ project }}</h1>
+<p>
+{% if show_completed %}
+  <a href="/projects/{{ project }}/tasks">Hide completed tasks</a>
+{% else %}
+  <a href="/projects/{{ project }}/tasks?show_completed=true">Show completed tasks</a>
+{% endif %}
+</p>
 {% if tasks.is_empty() %}
 <p>No tasks found.</p>
 {% else %}

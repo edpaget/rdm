@@ -26,6 +26,8 @@ pub struct TaskFilters {
     pub priority: Option<String>,
     /// Filter by tag.
     pub tag: Option<String>,
+    /// When true, include completed (done/wont-fix) tasks in the list.
+    pub show_completed: Option<bool>,
 }
 
 /// Empty data for the tasks collection wrapper.
@@ -91,7 +93,7 @@ pub async fn list_tasks(
         .map_err(|e| error_response(e, format))?;
 
     // Filter tasks.
-    let filtered: Vec<_> = tasks
+    let mut filtered: Vec<_> = tasks
         .iter()
         .filter(|(_, doc)| {
             if let Some(ref sf) = status_filter
@@ -117,6 +119,14 @@ pub async fn list_tasks(
             true
         })
         .collect();
+
+    let show_completed = filters.show_completed.unwrap_or(false);
+    if !show_completed {
+        filtered.retain(|(_, doc)| {
+            doc.frontmatter.status != TaskStatus::Done
+                && doc.frontmatter.status != TaskStatus::WontFix
+        });
+    }
 
     match format {
         ResponseFormat::HalJson => {
@@ -152,6 +162,7 @@ pub async fn list_tasks(
             let page = TaskListPage {
                 project,
                 tasks: rows,
+                show_completed,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -382,7 +393,7 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
-    use rdm_core::model::Priority;
+    use rdm_core::model::{Priority, TaskStatus};
     use rdm_core::repo::PlanRepo;
 
     use crate::router::build_router;
@@ -928,5 +939,146 @@ mod tests {
             response.headers().get("location").unwrap(),
             "/projects/demo/roadmaps/bug-fix-rm"
         );
+    }
+
+    /// Helper to set up a project with tasks in various statuses (open, done, wont-fix).
+    fn setup_with_completed() -> (TempDir, AppState) {
+        let dir = TempDir::new().unwrap();
+        let mut repo = PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
+        repo.create_project("demo", "Demo").unwrap();
+        repo.create_task(
+            "demo",
+            "open-task",
+            "Open Task",
+            Priority::Medium,
+            None,
+            None,
+        )
+        .unwrap();
+        repo.create_task(
+            "demo",
+            "done-task",
+            "Done Task",
+            Priority::Medium,
+            None,
+            None,
+        )
+        .unwrap();
+        repo.update_task(
+            "demo",
+            "done-task",
+            Some(TaskStatus::Done),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        repo.create_task(
+            "demo",
+            "wontfix-task",
+            "Wont Fix Task",
+            Priority::Low,
+            None,
+            None,
+        )
+        .unwrap();
+        repo.update_task(
+            "demo",
+            "wontfix-task",
+            Some(TaskStatus::WontFix),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let state = AppState {
+            plan_root: dir.path().to_path_buf(),
+        };
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn list_tasks_hides_completed_by_default_html() {
+        let (_dir, state) = setup_with_completed();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/tasks")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("Open Task"));
+        assert!(!html.contains("Done Task"));
+        assert!(!html.contains("Wont Fix Task"));
+        assert!(html.contains("Show completed tasks"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_shows_completed_when_requested_html() {
+        let (_dir, state) = setup_with_completed();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/tasks?show_completed=true")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("Open Task"));
+        assert!(html.contains("Done Task"));
+        assert!(html.contains("Wont Fix Task"));
+        assert!(html.contains("Hide completed tasks"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_hides_completed_by_default_hal() {
+        let (_dir, state) = setup_with_completed();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/tasks")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let tasks = json["_embedded"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["title"], "Open Task");
+    }
+
+    #[tokio::test]
+    async fn list_tasks_shows_completed_when_requested_hal() {
+        let (_dir, state) = setup_with_completed();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/tasks?show_completed=true")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let tasks = json["_embedded"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3);
     }
 }
