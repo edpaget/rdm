@@ -29,23 +29,41 @@ fn init_repo(dir: &TempDir) {
 
 /// Create a separate git repo to act as the project (code) repo.
 fn init_project_repo(dir: &TempDir) {
-    git_cmd()
+    let out = git_cmd()
         .args(["init"])
         .current_dir(dir.path())
         .output()
         .unwrap();
+    assert!(out.status.success(), "git init failed");
+    // Configure user identity so commits work on CI (no global gitconfig).
+    for args in [
+        &["config", "user.name", "test"][..],
+        &["config", "user.email", "test@test.com"],
+    ] {
+        git_cmd()
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+    }
     // Need an initial commit so HEAD exists.
     fs::write(dir.path().join("README.md"), "# project").unwrap();
-    git_cmd()
+    let out = git_cmd()
         .args(["add", "."])
         .current_dir(dir.path())
         .output()
         .unwrap();
-    git_cmd()
+    assert!(out.status.success(), "git add failed");
+    let out = git_cmd()
         .args(["commit", "-m", "initial commit"])
         .current_dir(dir.path())
         .output()
         .unwrap();
+    assert!(
+        out.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Set up a plan repo with a project, roadmap, and phase for hook testing.
