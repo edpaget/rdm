@@ -167,6 +167,12 @@ enum Command {
         #[command(subcommand)]
         command: RemoteCommand,
     },
+    /// Manage the post-merge git hook.
+    #[cfg(feature = "git")]
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
     /// Start the MCP server on stdin/stdout.
     #[cfg(feature = "mcp")]
     Mcp,
@@ -526,6 +532,21 @@ enum RemoteCommand {
     },
 }
 
+#[cfg(feature = "git")]
+#[derive(Subcommand)]
+enum HookCommand {
+    /// Install the post-merge git hook in the plan repo.
+    Install {
+        /// Overwrite an existing post-merge hook.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove the rdm post-merge git hook.
+    Uninstall,
+    /// Run post-merge logic: parse Done: directives and mark phases done.
+    PostMerge,
+}
+
 /// Item type argument for `--type` flag.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ItemKindArg {
@@ -870,6 +891,38 @@ fn expand_root(path: PathBuf) -> Result<PathBuf> {
         }
     }
     Ok(normalized)
+}
+
+/// Runs the post-merge hook logic: parse `Done:` directives from HEAD and
+/// mark matching phases done.
+///
+/// All errors are intentionally swallowed by the caller — this must never
+/// block a git merge.
+#[cfg(feature = "git")]
+fn run_post_merge_hook(root: &Path, staging: bool) -> Result<()> {
+    let store = make_store(root, staging)?;
+    let info = store.head_commit_info()?.context("no HEAD commit found")?;
+    let directives = rdm_core::hook::parse_done_directives(&info.message);
+    if directives.is_empty() {
+        return Ok(());
+    }
+    let mut repo = PlanRepo::new(store);
+    let project = resolve_project(None, &repo)?;
+    for directive in &directives {
+        let stem = match repo.resolve_phase_stem(&project, &directive.roadmap, &directive.phase) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let _ = repo.update_phase(
+            &project,
+            &directive.roadmap,
+            &stem,
+            Some(rdm_core::model::PhaseStatus::Done),
+            None,
+            Some(info.sha.clone()),
+        );
+    }
+    Ok(())
 }
 
 fn run() -> Result<()> {
@@ -1973,6 +2026,60 @@ fn run() -> Result<()> {
                             process::exit(1);
                         }
                     }
+                }
+            }
+        }
+
+        #[cfg(feature = "git")]
+        Command::Hook { command } => {
+            // All errors in hook handlers are silently swallowed — hooks must
+            // never block the user's git workflow.
+            match command {
+                HookCommand::Install { force } => {
+                    let store = make_store(&root, staging)?;
+                    let hooks_dir = store.git_dir().join("hooks");
+                    std::fs::create_dir_all(&hooks_dir)
+                        .context("failed to create hooks directory")?;
+                    let hook_path = hooks_dir.join("post-merge");
+                    if hook_path.exists() && !force {
+                        bail!(
+                            "post-merge hook already exists at {}; use --force to overwrite",
+                            hook_path.display()
+                        );
+                    }
+                    let shim = "#!/usr/bin/env bash\nrdm hook post-merge 2>/dev/null || true\n";
+                    std::fs::write(&hook_path, shim).context("failed to write post-merge hook")?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(
+                            &hook_path,
+                            std::fs::Permissions::from_mode(0o755),
+                        )
+                        .context("failed to set hook permissions")?;
+                    }
+                    println!("Installed post-merge hook at {}", hook_path.display());
+                }
+                HookCommand::Uninstall => {
+                    let store = make_store(&root, staging)?;
+                    let hook_path = store.git_dir().join("hooks").join("post-merge");
+                    if !hook_path.exists() {
+                        bail!("no post-merge hook found at {}", hook_path.display());
+                    }
+                    let contents = std::fs::read_to_string(&hook_path)
+                        .context("failed to read post-merge hook")?;
+                    if !contents.contains("rdm hook post-merge") {
+                        bail!(
+                            "post-merge hook at {} was not installed by rdm; refusing to remove",
+                            hook_path.display()
+                        );
+                    }
+                    std::fs::remove_file(&hook_path).context("failed to remove post-merge hook")?;
+                    println!("Removed post-merge hook at {}", hook_path.display());
+                }
+                HookCommand::PostMerge => {
+                    // Silently swallow all errors — hook must never fail.
+                    let _ = run_post_merge_hook(&root, staging);
                 }
             }
         }

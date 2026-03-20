@@ -93,15 +93,46 @@ Rust version and dev tools are managed via [mise](https://mise.jdx.dev/) (see `.
 
 Use `cargo deny` for license and advisory checks. Run it in CI.
 
-## Pre-commit Hooks
+## Git Hooks
 
-Hooks live in `.githooks/` and are shared via the repo. New clones need to configure the hooks path:
+### Pre-commit
+
+The pre-commit hook lives in `.githooks/` and is shared via the repo. New clones need to configure the hooks path:
 
 ```bash
 git config core.hooksPath .githooks
 ```
 
-The pre-commit hook runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo nextest run`.
+Runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo nextest run`.
+
+### Post-merge: `Done:` convention
+
+Install the post-merge hook in your plan repo with:
+
+```bash
+rdm hook install          # writes a shim to .git/hooks/post-merge
+rdm hook install --force  # overwrite an existing hook
+rdm hook uninstall        # remove the hook (only if installed by rdm)
+```
+
+When a PR merges, `rdm hook post-merge` parses the commit message for lines matching:
+
+```
+Done: <roadmap>/<phase>
+```
+
+For each match it calls `rdm phase update <phase> --status done --commit <sha> --no-edit --roadmap <roadmap>`. This is idempotent — running the hook multiple times or re-marking a done phase with a new commit SHA is safe (the SHA updates, the completed date is preserved).
+
+Project resolution follows the standard chain: `--project` flag > `RDM_PROJECT` env var > `default_project` in `rdm.toml`.
+
+**Example commit message:**
+
+```
+feat(core): implement search indexing
+
+Done: search-feature/phase-2-indexing
+Done: perf-improvements/phase-1-baseline
+```
 
 ## CI Expectations
 

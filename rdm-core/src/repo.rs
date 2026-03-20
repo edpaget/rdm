@@ -549,14 +549,21 @@ impl<S: Store> PlanRepo<S> {
 
         let mut doc = self.load_phase(project, roadmap, phase_stem)?;
         if let Some(status) = status {
-            doc.frontmatter.status = status;
-            if status == PhaseStatus::Done {
-                doc.frontmatter.completed = Some(Local::now().date_naive());
-                doc.frontmatter.commit = commit;
+            if status == PhaseStatus::Done && doc.frontmatter.status == PhaseStatus::Done {
+                // Already done: only update commit if a new one is provided
+                if let Some(sha) = commit {
+                    doc.frontmatter.commit = Some(sha);
+                }
             } else {
-                doc.frontmatter.completed = None;
-                doc.frontmatter.commit = None;
-            };
+                doc.frontmatter.status = status;
+                if status == PhaseStatus::Done {
+                    doc.frontmatter.completed = Some(Local::now().date_naive());
+                    doc.frontmatter.commit = commit;
+                } else {
+                    doc.frontmatter.completed = None;
+                    doc.frontmatter.commit = None;
+                }
+            }
         }
         if let Some(b) = body {
             doc.body = b.to_string();
@@ -2015,6 +2022,70 @@ mod tests {
             None,
         );
         assert!(matches!(result, Err(Error::PhaseNotFound(_))));
+    }
+
+    #[test]
+    fn update_phase_done_to_done_with_new_commit_updates_sha() {
+        let mut repo = setup_with_roadmap();
+        repo.create_phase("fbm", "two-way", "core", "Core", None, None)
+            .unwrap();
+        let first = repo
+            .update_phase(
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                None,
+                Some("abc123".to_string()),
+            )
+            .unwrap();
+        let first_completed = first.frontmatter.completed;
+
+        let updated = repo
+            .update_phase(
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                None,
+                Some("def456".to_string()),
+            )
+            .unwrap();
+        assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
+        assert_eq!(updated.frontmatter.commit, Some("def456".to_string()));
+        assert_eq!(updated.frontmatter.completed, first_completed);
+    }
+
+    #[test]
+    fn update_phase_done_to_done_without_commit_is_noop() {
+        let mut repo = setup_with_roadmap();
+        repo.create_phase("fbm", "two-way", "core", "Core", None, None)
+            .unwrap();
+        let first = repo
+            .update_phase(
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                None,
+                Some("abc123".to_string()),
+            )
+            .unwrap();
+        let first_completed = first.frontmatter.completed;
+
+        let updated = repo
+            .update_phase(
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
+        assert_eq!(updated.frontmatter.commit, Some("abc123".to_string()));
+        assert_eq!(updated.frontmatter.completed, first_completed);
     }
 
     #[test]

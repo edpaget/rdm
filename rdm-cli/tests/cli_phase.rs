@@ -877,6 +877,136 @@ fn phase_show_first_phase_no_prev() {
 }
 
 #[test]
+fn phase_update_done_to_done_updates_commit() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    // Mark done with --commit abc
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "1",
+            "--status",
+            "done",
+            "--commit",
+            "abc123",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // Mark done again with --commit def
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "1",
+            "--status",
+            "done",
+            "--commit",
+            "def456",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // Verify show output has def456
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "1",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("def456"));
+}
+
+#[test]
+fn phase_update_done_to_done_no_commit_preserves() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    // Mark done with --commit abc
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "1",
+            "--status",
+            "done",
+            "--commit",
+            "abc123",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // Mark done again without --commit
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "1",
+            "--status",
+            "done",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // Verify abc123 is preserved
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "1",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("abc123"));
+}
+
+#[test]
 fn phase_show_last_phase_no_next() {
     let dir = TempDir::new().unwrap();
     init_with_roadmap(&dir);

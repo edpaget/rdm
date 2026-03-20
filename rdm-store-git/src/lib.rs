@@ -46,6 +46,15 @@ pub struct FileStatus {
     pub change: FileChange,
 }
 
+/// Information about the HEAD commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadCommitInfo {
+    /// The full commit SHA.
+    pub sha: String,
+    /// The raw commit message.
+    pub message: String,
+}
+
 /// Information about a configured git remote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteInfo {
@@ -191,6 +200,50 @@ impl GitStore {
     /// Returns the root path of this store.
     pub fn root(&self) -> &Path {
         self.inner.root()
+    }
+
+    /// Returns the path to the `.git` directory (or the git dir for worktrees).
+    pub fn git_dir(&self) -> &Path {
+        self.repo.git_dir()
+    }
+
+    /// Information about the HEAD commit: SHA and full message.
+    ///
+    /// Returns `Ok(None)` if the repository has no commits (unborn HEAD).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if the repository state cannot be read.
+    pub fn head_commit_info(&self) -> Result<Option<HeadCommitInfo>> {
+        let commit = match self
+            .repo
+            .head()
+            .ok()
+            .and_then(|mut h| h.peel_to_commit().ok())
+        {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        let sha = commit.id().to_string();
+        let message = commit.message_raw_sloppy().to_string();
+        Ok(Some(HeadCommitInfo { sha, message }))
+    }
+
+    /// Returns the name of the remote's default branch.
+    ///
+    /// Tries `git symbolic-ref refs/remotes/origin/HEAD`, strips the prefix,
+    /// and falls back to `"main"` if that fails.
+    pub fn default_branch_name(&self) -> Result<String> {
+        let output = self.run_git(&["symbolic-ref", "refs/remotes/origin/HEAD"]);
+        if let Ok(ref o) = output
+            && o.status.success()
+        {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if let Some(branch) = s.strip_prefix("refs/remotes/origin/") {
+                return Ok(branch.to_string());
+            }
+        }
+        Ok("main".to_string())
     }
 
     /// Generates a commit message from the set of touched paths.
@@ -900,7 +953,7 @@ impl GitStore {
     }
 
     /// Returns the current branch name, or `None` if HEAD is detached or unborn.
-    fn current_branch_name(&self) -> Result<Option<String>> {
+    pub fn current_branch_name(&self) -> Result<Option<String>> {
         let head = match self.repo.head().ok() {
             Some(h) => h,
             None => return Ok(None),

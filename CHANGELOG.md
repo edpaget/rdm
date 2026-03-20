@@ -14,6 +14,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `rdm-review` skill for independent post-implementation review with parallel AC compliance and code quality agents
 - `skill_review()` generator function in `rdm-core::agent_config` for generating the review skill via `rdm agent-config --skills`
+- `rdm hook install` / `rdm hook uninstall` to manage the post-merge git hook in the plan repo
+- `rdm hook post-merge` subcommand: parses `Done: roadmap/phase` directives from the HEAD commit and marks matching phases done with the commit SHA
+- `update_phase` is now idempotent for Done→Done transitions: re-marking a done phase with a new commit SHA updates the SHA while preserving the completed date; omitting `--commit` is a safe no-op
+- `HeadCommitInfo`, `head_commit_info()`, `git_dir()`, and `default_branch_name()` on `GitStore`
+- `rdm_core::hook` module with `DoneDirective` and `parse_done_directives()` for parsing `Done:` directives from commit messages
+
+### Removed
+
+- `.githooks/post-merge` bash script (replaced by `rdm hook` subcommands)
 - `--commit <sha>` flag on `rdm phase update` to associate a git commit SHA with phase completion (requires `--status done`)
 - `commit` field in phase frontmatter, phase detail display, and JSON output
 

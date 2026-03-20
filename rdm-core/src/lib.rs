@@ -19,6 +19,8 @@ pub mod document;
 pub mod error;
 /// HAL (Hypertext Application Language) response types.
 pub mod hal;
+/// Git hook helpers for parsing `Done:` directives from commit messages.
+pub mod hook;
 /// Serializable JSON output types for CLI and API consumers.
 pub mod json;
 
