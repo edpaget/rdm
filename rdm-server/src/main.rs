@@ -1,7 +1,31 @@
 use std::path::PathBuf;
 
+use anyhow::{Context, Result};
 use rdm_server::router::build_router;
 use rdm_server::state::AppState;
+
+/// Expand a path by resolving `~` to `$HOME` and normalizing `.`/`..` segments.
+fn expand_root(path: PathBuf) -> Result<PathBuf> {
+    let path = if let Ok(rest) = path.strip_prefix("~") {
+        let home = std::env::var("HOME").context("~ used in path but $HOME is not set")?;
+        PathBuf::from(home).join(rest)
+    } else {
+        path
+    };
+    let abs = std::path::absolute(&path)
+        .with_context(|| format!("failed to resolve path: {}", path.display()))?;
+    let mut normalized = PathBuf::new();
+    for component in abs.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => normalized.push(c),
+        }
+    }
+    Ok(normalized)
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -11,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("RDM_ROOT not set — using current directory");
             PathBuf::from(".")
         });
+    let plan_root = expand_root(plan_root)?;
 
     let state = AppState { plan_root };
     let app = build_router(state);

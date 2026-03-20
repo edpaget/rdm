@@ -837,12 +837,45 @@ fn maybe_print_uncommitted_hint(store: &AppStore, staging: bool) {
 #[cfg(not(feature = "git"))]
 fn maybe_print_uncommitted_hint(_store: &AppStore, _staging: bool) {}
 
+/// Expand a path by resolving `~` to `$HOME` and normalizing `.`/`..` segments.
+///
+/// This is needed because `RDM_ROOT` set via config files (e.g. `.mise.toml`)
+/// doesn't go through shell expansion, so `~` remains literal.
+///
+/// # Errors
+///
+/// Returns an error if `~` is used but `$HOME` is not set, or if
+/// `std::path::absolute` fails.
+fn expand_root(path: PathBuf) -> Result<PathBuf> {
+    let path = if let Ok(rest) = path.strip_prefix("~") {
+        let home = std::env::var("HOME").context("~ used in path but $HOME is not set")?;
+        PathBuf::from(home).join(rest)
+    } else {
+        path
+    };
+    let abs = std::path::absolute(&path)
+        .with_context(|| format!("failed to resolve path: {}", path.display()))?;
+    // std::path::absolute doesn't resolve `.` and `..`, so normalize manually.
+    let mut normalized = PathBuf::new();
+    for component in abs.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => normalized.push(c),
+        }
+    }
+    Ok(normalized)
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let format = cli.format;
     let root = cli
         .root
         .unwrap_or_else(|| std::env::current_dir().expect("cannot determine current directory"));
+    let root = expand_root(root)?;
     let staging = resolve_staging(cli.stage, &root);
 
     match cli.command {
@@ -1973,4 +2006,45 @@ fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[test]
+    fn expand_root_tilde_expands_to_home() {
+        let home = env::var("HOME").unwrap();
+        let result = expand_root(PathBuf::from("~")).unwrap();
+        assert_eq!(result, PathBuf::from(&home));
+    }
+
+    #[test]
+    fn expand_root_tilde_slash_expands_to_home_subpath() {
+        let home = env::var("HOME").unwrap();
+        let result = expand_root(PathBuf::from("~/foo/bar")).unwrap();
+        assert_eq!(result, PathBuf::from(format!("{home}/foo/bar")));
+    }
+
+    #[test]
+    fn expand_root_dot_resolves_to_cwd() {
+        let cwd = env::current_dir().unwrap();
+        let result = expand_root(PathBuf::from(".")).unwrap();
+        assert_eq!(result, cwd);
+    }
+
+    #[test]
+    fn expand_root_dotdot_resolves_relative_to_cwd() {
+        let cwd = env::current_dir().unwrap();
+        let result = expand_root(PathBuf::from("../foo")).unwrap();
+        let expected = cwd.parent().unwrap().join("foo");
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn expand_root_absolute_path_unchanged() {
+        let result = expand_root(PathBuf::from("/tmp/plans")).unwrap();
+        assert_eq!(result, PathBuf::from("/tmp/plans"));
+    }
 }
