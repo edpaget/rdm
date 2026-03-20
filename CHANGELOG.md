@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- XDG-compliant default paths: `rdm` now works out of the box without `RDM_ROOT` by resolving a plan repo root from `~/.config/rdm/config.toml` (global config) or `$XDG_DATA_HOME/rdm` (default data dir)
+- `GlobalConfig` struct in rdm-core for parsing global config files with `root`, `default_project`, `stage`, and `remote` fields
+- Config merging: CLI flags > env vars > repo config (`rdm.toml`) > global config (`~/.config/rdm/config.toml`) for project, staging, and remote resolution
 - `rdm-review` skill for independent post-implementation review with parallel AC compliance and code quality agents
 - `skill_review()` generator function in `rdm-core::agent_config` for generating the review skill via `rdm agent-config --skills`
 - `rdm-document` Claude Code skill for generating user documentation from completed roadmaps using phase descriptions and commit SHAs

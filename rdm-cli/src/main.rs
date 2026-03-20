@@ -15,6 +15,7 @@ use rdm_core::tree;
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
 
+mod paths;
 mod table;
 
 #[cfg(feature = "git")]
@@ -620,24 +621,6 @@ fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatus> {
     }
 }
 
-/// Resolves whether staging mode is active.
-///
-/// Priority: `--stage` flag / `RDM_STAGE` env > `stage` in `rdm.toml` > false.
-fn resolve_staging(flag: bool, root: &Path) -> bool {
-    if flag {
-        return true;
-    }
-    // Check rdm.toml for stage setting
-    let config_path = root.join("rdm.toml");
-    if let Ok(contents) = std::fs::read_to_string(&config_path)
-        && let Ok(config) = rdm_core::config::Config::from_toml(&contents)
-        && config.stage == Some(true)
-    {
-        return true;
-    }
-    false
-}
-
 /// Opens a store for an existing plan repo.
 fn make_store(root: &Path, staging: bool) -> Result<AppStore> {
     #[cfg(feature = "git")]
@@ -669,42 +652,6 @@ fn main() {
     if let Err(err) = run() {
         eprintln!("error: {err:#}");
         process::exit(1);
-    }
-}
-
-/// Resolves project: --project flag > `RDM_PROJECT` env var > config default_project > error.
-fn resolve_project(flag: Option<String>, repo: &PlanRepo<AppStore>) -> Result<String> {
-    if let Some(p) = flag {
-        return Ok(p);
-    }
-    if let Ok(p) = std::env::var("RDM_PROJECT") {
-        return Ok(p);
-    }
-    if let Ok(config) = repo.load_config()
-        && let Some(p) = config.default_project
-    {
-        return Ok(p);
-    }
-    bail!(
-        "no project specified — use --project, set RDM_PROJECT, or set default_project in rdm.toml"
-    )
-}
-
-/// Resolve a remote name from an explicit argument or `remote.default` in `rdm.toml`.
-#[cfg(feature = "git")]
-fn resolve_remote_name(name: Option<String>, root: &Path) -> Result<String> {
-    if let Some(n) = name {
-        return Ok(n);
-    }
-    let config_path = root.join("rdm.toml");
-    let default = std::fs::read_to_string(&config_path)
-        .ok()
-        .and_then(|s| rdm_core::config::Config::from_toml(&s).ok())
-        .and_then(|c| c.remote)
-        .and_then(|r| r.default);
-    match default {
-        Some(d) => Ok(d),
-        None => bail!("no remote specified — pass a remote name or set remote.default in rdm.toml"),
     }
 }
 
@@ -866,38 +813,6 @@ fn maybe_print_uncommitted_hint(store: &AppStore, staging: bool) {
 #[cfg(not(feature = "git"))]
 fn maybe_print_uncommitted_hint(_store: &AppStore, _staging: bool) {}
 
-/// Expand a path by resolving `~` to `$HOME` and normalizing `.`/`..` segments.
-///
-/// This is needed because `RDM_ROOT` set via config files (e.g. `.mise.toml`)
-/// doesn't go through shell expansion, so `~` remains literal.
-///
-/// # Errors
-///
-/// Returns an error if `~` is used but `$HOME` is not set, or if
-/// `std::path::absolute` fails.
-fn expand_root(path: PathBuf) -> Result<PathBuf> {
-    let path = if let Ok(rest) = path.strip_prefix("~") {
-        let home = std::env::var("HOME").context("~ used in path but $HOME is not set")?;
-        PathBuf::from(home).join(rest)
-    } else {
-        path
-    };
-    let abs = std::path::absolute(&path)
-        .with_context(|| format!("failed to resolve path: {}", path.display()))?;
-    // std::path::absolute doesn't resolve `.` and `..`, so normalize manually.
-    let mut normalized = PathBuf::new();
-    for component in abs.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                normalized.pop();
-            }
-            std::path::Component::CurDir => {}
-            c => normalized.push(c),
-        }
-    }
-    Ok(normalized)
-}
-
 /// Runs the post-merge hook logic: parse `Done:` directives from commits
 /// and mark matching phases done.
 ///
@@ -934,7 +849,9 @@ fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Resul
 
     let store = make_store(root, staging)?;
     let mut repo = PlanRepo::new(store);
-    let project = resolve_project(None, &repo)?;
+    let hook_global_config = paths::load_global_config();
+    let hook_repo_config = paths::load_repo_config(root).with_global_defaults(&hook_global_config);
+    let project = paths::resolve_project(None, &hook_repo_config)?;
     for (directive, sha) in &directives_with_sha {
         let stem = match repo.resolve_phase_stem(&project, &directive.roadmap, &directive.phase) {
             Ok(s) => s,
@@ -955,11 +872,11 @@ fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Resul
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let format = cli.format;
-    let root = cli
-        .root
-        .unwrap_or_else(|| std::env::current_dir().expect("cannot determine current directory"));
-    let root = expand_root(root)?;
-    let staging = resolve_staging(cli.stage, &root);
+    let global_config = paths::load_global_config();
+    let root = paths::resolve_root(cli.root, &global_config)?;
+    let root = paths::expand_root(root)?;
+    let repo_config = paths::load_repo_config(&root).with_global_defaults(&global_config);
+    let staging = paths::resolve_staging(cli.stage, &repo_config);
 
     match cli.command {
         Command::Init => {
@@ -1069,7 +986,7 @@ fn run() -> Result<()> {
                     body,
                     no_edit,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let title = title.as_deref().unwrap_or(&slug);
                     let body = resolve_body(body, no_edit)?;
                     repo.create_roadmap(&project, &slug, title, body.as_deref())
@@ -1082,7 +999,7 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let mut roadmap_doc = repo
                         .load_roadmap(&project, &slug)
                         .context("failed to load roadmap")?;
@@ -1115,7 +1032,7 @@ fn run() -> Result<()> {
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 RoadmapCommand::List { project, archived } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let entries = if archived {
                         let roadmaps = repo
                             .list_archived_roadmaps(&project)
@@ -1165,14 +1082,14 @@ fn run() -> Result<()> {
                     maybe_print_uncommitted_hint(repo.store(), staging);
                 }
                 RoadmapCommand::Depend { slug, on, project } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     repo.add_dependency(&project, &slug, &on)
                         .context("failed to add dependency")?;
                     println!("Added dependency: {slug} → {on}");
                     maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 RoadmapCommand::Undepend { slug, on, project } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     repo.remove_dependency(&project, &slug, &on)
                         .context("failed to remove dependency")?;
                     println!("Removed dependency: {slug} → {on}");
@@ -1180,7 +1097,7 @@ fn run() -> Result<()> {
                 }
                 RoadmapCommand::Deps { project } => {
                     reject_non_human(format, "roadmap deps")?;
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let graph = repo
                         .dependency_graph(&project)
                         .context("failed to get dependency graph")?;
@@ -1197,7 +1114,7 @@ fn run() -> Result<()> {
                             "deleting a roadmap is irreversible — pass --force to confirm deletion of '{slug}'"
                         );
                     }
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     repo.delete_roadmap(&project, &slug)
                         .context("failed to delete roadmap")?;
                     println!("Deleted roadmap '{slug}' from project '{project}'");
@@ -1211,7 +1128,7 @@ fn run() -> Result<()> {
                     project,
                     depends_on,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     // Resolve each phase identifier (number or stem)
                     let resolved_stems: Vec<String> = phases
                         .iter()
@@ -1236,14 +1153,14 @@ fn run() -> Result<()> {
                     project,
                     force,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     repo.archive_roadmap(&project, &slug, force)
                         .context("failed to archive roadmap")?;
                     println!("Archived roadmap '{slug}' from project '{project}'");
                     maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 RoadmapCommand::Unarchive { slug, project } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     repo.unarchive_roadmap(&project, &slug)
                         .context("failed to unarchive roadmap")?;
                     println!("Restored roadmap '{slug}' to project '{project}'");
@@ -1264,7 +1181,7 @@ fn run() -> Result<()> {
                     body,
                     no_edit,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let title = title.as_deref().unwrap_or(&slug);
                     let body = resolve_body(body, no_edit)?;
                     let doc = repo
@@ -1275,7 +1192,7 @@ fn run() -> Result<()> {
                     maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 PhaseCommand::List { roadmap, project } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let phases = repo
                         .list_phases(&project, &roadmap)
                         .context("failed to list phases")?;
@@ -1305,7 +1222,7 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
                         .context("failed to resolve phase")?;
@@ -1374,7 +1291,7 @@ fn run() -> Result<()> {
                     if commit.is_some() && status != Some(PhaseStatus::Done) {
                         anyhow::bail!("--commit can only be used with --status done");
                     }
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
                         .context("failed to resolve phase")?;
@@ -1390,7 +1307,7 @@ fn run() -> Result<()> {
                     roadmap,
                     project,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let stem = repo
                         .resolve_phase_stem(&project, &roadmap, &stem)
                         .context("failed to resolve phase")?;
@@ -1414,7 +1331,7 @@ fn run() -> Result<()> {
                     body,
                     no_edit,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let title = title.as_deref().unwrap_or(&slug);
                     let body = resolve_body(body, no_edit)?;
                     repo.create_task(&project, &slug, title, priority, tags, body.as_deref())
@@ -1427,7 +1344,7 @@ fn run() -> Result<()> {
                     project,
                     no_body,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let mut doc = repo
                         .load_task(&project, &slug)
                         .context("failed to load task")?;
@@ -1464,7 +1381,7 @@ fn run() -> Result<()> {
                     body,
                     no_edit,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let body = resolve_body(body, no_edit)?;
                     let doc = repo
                         .update_task(&project, &slug, status, priority, tags, body.as_deref())
@@ -1481,7 +1398,7 @@ fn run() -> Result<()> {
                     priority,
                     tag,
                 } => {
-                    let project = resolve_project(project, &repo)?;
+                    let project = paths::resolve_project(project, &repo_config)?;
                     let all_tasks = repo.list_tasks(&project).context("failed to list tasks")?;
 
                     let filtered: Vec<(String, _)> = all_tasks
@@ -1534,7 +1451,7 @@ fn run() -> Result<()> {
             project,
         } => {
             let mut repo = PlanRepo::new(make_store(&root, staging)?);
-            let project = resolve_project(project, &repo)?;
+            let project = paths::resolve_project(project, &repo_config)?;
             let doc = repo
                 .promote_task(&project, &task_slug, &roadmap_slug)
                 .context("failed to promote task")?;
@@ -1547,7 +1464,7 @@ fn run() -> Result<()> {
 
         Command::Tree { project } => {
             let repo = PlanRepo::new(make_store(&root, staging)?);
-            let project = resolve_project(project, &repo)?;
+            let project = paths::resolve_project(project, &repo_config)?;
             let node = tree::build_tree(&repo, &project).context("failed to build tree")?;
             match format {
                 OutputFormat::Human => print!("{}", tree::format_tree(&node)),
@@ -1997,14 +1914,14 @@ fn run() -> Result<()> {
                     }
                 }
                 RemoteCommand::Fetch { name } => {
-                    let remote_name = resolve_remote_name(name, &root)?;
+                    let remote_name = paths::resolve_remote_name(name, &repo_config)?;
                     store
                         .git_fetch(&remote_name)
                         .context("failed to fetch from remote")?;
                     println!("Fetched from '{remote_name}'.");
                 }
                 RemoteCommand::Push { name, force } => {
-                    let remote_name = resolve_remote_name(name, &root)?;
+                    let remote_name = paths::resolve_remote_name(name, &repo_config)?;
                     let result = store.git_push(&remote_name, force)?;
                     if result.commits_pushed == 0 {
                         println!("Already up to date.");
@@ -2016,7 +1933,7 @@ fn run() -> Result<()> {
                     }
                 }
                 RemoteCommand::Pull { name } => {
-                    let remote_name = resolve_remote_name(name, &root)?;
+                    let remote_name = paths::resolve_remote_name(name, &repo_config)?;
                     let outcome = store.git_pull(&remote_name)?;
                     match outcome {
                         rdm_store_git::PullOutcome::Success(result) => {
@@ -2123,7 +2040,7 @@ fn run() -> Result<()> {
             let projects = if all {
                 repo.list_projects().context("failed to list projects")?
             } else {
-                let p = resolve_project(project, &repo)?;
+                let p = paths::resolve_project(project, &repo_config)?;
                 vec![p]
             };
 
@@ -2180,35 +2097,35 @@ mod tests {
     #[test]
     fn expand_root_tilde_expands_to_home() {
         let home = env::var("HOME").unwrap();
-        let result = expand_root(PathBuf::from("~")).unwrap();
+        let result = paths::expand_root(PathBuf::from("~")).unwrap();
         assert_eq!(result, PathBuf::from(&home));
     }
 
     #[test]
     fn expand_root_tilde_slash_expands_to_home_subpath() {
         let home = env::var("HOME").unwrap();
-        let result = expand_root(PathBuf::from("~/foo/bar")).unwrap();
+        let result = paths::expand_root(PathBuf::from("~/foo/bar")).unwrap();
         assert_eq!(result, PathBuf::from(format!("{home}/foo/bar")));
     }
 
     #[test]
     fn expand_root_dot_resolves_to_cwd() {
         let cwd = env::current_dir().unwrap();
-        let result = expand_root(PathBuf::from(".")).unwrap();
+        let result = paths::expand_root(PathBuf::from(".")).unwrap();
         assert_eq!(result, cwd);
     }
 
     #[test]
     fn expand_root_dotdot_resolves_relative_to_cwd() {
         let cwd = env::current_dir().unwrap();
-        let result = expand_root(PathBuf::from("../foo")).unwrap();
+        let result = paths::expand_root(PathBuf::from("../foo")).unwrap();
         let expected = cwd.parent().unwrap().join("foo");
         assert_eq!(result, expected);
     }
 
     #[test]
     fn expand_root_absolute_path_unchanged() {
-        let result = expand_root(PathBuf::from("/tmp/plans")).unwrap();
+        let result = paths::expand_root(PathBuf::from("/tmp/plans")).unwrap();
         assert_eq!(result, PathBuf::from("/tmp/plans"));
     }
 }
