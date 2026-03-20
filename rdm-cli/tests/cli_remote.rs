@@ -429,7 +429,7 @@ fn remote_pull_success() {
 }
 
 #[test]
-fn remote_pull_diverged() {
+fn pull_non_conflicting_concurrent_edits() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
 
@@ -445,7 +445,7 @@ fn remote_pull_diverged() {
         .assert()
         .success();
 
-    // Push a commit to bare from a separate clone
+    // Push a commit to bare from a separate clone (different file)
     let clone_dir = tempfile::TempDir::new().unwrap();
     git_cmd()
         .args(["clone"])
@@ -470,8 +470,7 @@ fn remote_pull_diverged() {
         .output()
         .unwrap();
 
-    // Make a local commit
-    // Create a local commit by writing a file and committing via git
+    // Make a local commit (different file from remote)
     std::fs::write(dir.path().join("local-change.md"), "content").unwrap();
     git_cmd()
         .args(["add", "."])
@@ -484,7 +483,93 @@ fn remote_pull_diverged() {
         .output()
         .unwrap();
 
-    // Pull should fail with diverged
+    // Pull should succeed with a clean merge (different files)
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("pull")
+        .arg("origin")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pulled"));
+
+    // Both files should exist
+    assert!(dir.path().join("local-change.md").exists());
+    assert!(dir.path().join("remote.md").exists());
+
+    let _ = bare_dir;
+}
+
+#[test]
+fn pull_conflicting_shows_items() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Create initial file and commit it
+    std::fs::write(dir.path().join("shared.md"), "original").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "add shared file"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    // Fetch to establish tracking refs
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("fetch")
+        .arg("origin")
+        .assert()
+        .success();
+
+    // Push a conflicting change from a clone
+    let clone_dir = tempfile::TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone"])
+        .arg(bare_dir.path())
+        .arg(clone_dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(clone_dir.path().join("shared.md"), "remote change").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "remote conflict"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["push"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+
+    // Make a local conflicting change
+    std::fs::write(dir.path().join("shared.md"), "local change").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "local conflict"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Pull should fail with conflict info
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -493,9 +578,213 @@ fn remote_pull_diverged() {
         .arg("origin")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("diverged"));
+        .stderr(predicate::str::contains("conflict"))
+        .stderr(predicate::str::contains("shared.md"));
 
     let _ = bare_dir;
+}
+
+#[test]
+fn conflicts_command_lists_unresolved() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Create initial file
+    std::fs::write(dir.path().join("shared.md"), "original").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "add shared file"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("fetch")
+        .arg("origin")
+        .assert()
+        .success();
+
+    // Create conflicting changes
+    let clone_dir = tempfile::TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone"])
+        .arg(bare_dir.path())
+        .arg(clone_dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(clone_dir.path().join("shared.md"), "remote change").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "remote conflict"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["push"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+
+    std::fs::write(dir.path().join("shared.md"), "local change").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "local conflict"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Pull to create conflict
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("pull")
+        .arg("origin")
+        .assert()
+        .failure();
+
+    // rdm conflicts should list the conflict
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("conflicts")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("conflict"))
+        .stdout(predicate::str::contains("shared.md"));
+
+    let _ = bare_dir;
+}
+
+#[test]
+fn resolve_completes_merge() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Create initial file
+    std::fs::write(dir.path().join("shared.md"), "original").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "add shared file"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("fetch")
+        .arg("origin")
+        .assert()
+        .success();
+
+    // Create conflicting changes
+    let clone_dir = tempfile::TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone"])
+        .arg(bare_dir.path())
+        .arg(clone_dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(clone_dir.path().join("shared.md"), "remote change").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "remote conflict"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["push"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+
+    std::fs::write(dir.path().join("shared.md"), "local change").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "local conflict"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Pull to create conflict
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("pull")
+        .arg("origin")
+        .assert()
+        .failure();
+
+    // Resolve the conflict
+    std::fs::write(dir.path().join("shared.md"), "resolved content").unwrap();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("resolve")
+        .arg("shared.md")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Resolved"))
+        .stdout(predicate::str::contains("merge complete"));
+
+    // Conflicts should show no merge
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("conflicts")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No merge in progress"));
+
+    let _ = bare_dir;
+}
+
+#[test]
+fn conflicts_no_merge_in_progress() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("conflicts")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No merge in progress"));
 }
 
 #[test]

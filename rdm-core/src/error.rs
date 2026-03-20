@@ -43,6 +43,12 @@ pub enum Error {
     PushRejected(String),
     /// Local and remote branches have diverged.
     BranchesDiverged(String),
+    /// A merge conflict occurred during pull.
+    MergeConflict(String),
+    /// No merge is in progress.
+    NoMergeInProgress,
+    /// A file is not in the unmerged list.
+    NotConflicted(String),
     /// A git operation failed.
     Git(String),
 }
@@ -121,6 +127,18 @@ impl std::fmt::Display for Error {
                     f,
                     "branches have diverged: {msg} — resolve manually with `git rebase` or `git merge`"
                 )
+            }
+            Error::MergeConflict(msg) => {
+                write!(
+                    f,
+                    "merge conflict: {msg} — run `rdm conflicts` to see details, then `rdm resolve <file>`"
+                )
+            }
+            Error::NoMergeInProgress => {
+                write!(f, "no merge in progress — nothing to resolve")
+            }
+            Error::NotConflicted(path) => {
+                write!(f, "file '{path}' is not in the unmerged list")
             }
             Error::Git(msg) => write!(f, "git error: {msg}"),
         }

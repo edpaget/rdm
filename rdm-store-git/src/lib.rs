@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use gix::object::tree::EntryKind;
 use gix::objs::tree::EntryMode;
+use rdm_core::conflict::{self, ConflictItem};
 use rdm_core::error::{Error, Result};
 use rdm_core::store::{DirEntry, RelPath, Store};
 use rdm_store_fs::FsStore;
@@ -89,6 +90,37 @@ pub struct SyncStatus {
     pub ahead: usize,
     /// Number of commits behind the remote tracking branch.
     pub behind: usize,
+}
+
+/// Result of a merge conflict during pull.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeConflictResult {
+    /// The remote that was pulled from.
+    pub remote: String,
+    /// The branch that was merged.
+    pub branch: String,
+    /// Files with merge conflicts, classified by rdm item type.
+    pub conflicted_files: Vec<ConflictItem>,
+}
+
+/// Outcome of a `git_pull` operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullOutcome {
+    /// The pull succeeded (fast-forward or clean merge).
+    Success(PullResult),
+    /// The merge produced conflicts that need manual resolution.
+    Conflict(MergeConflictResult),
+}
+
+/// Result of resolving a single conflict file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolveResult {
+    /// The file that was resolved.
+    pub path: String,
+    /// Number of unmerged files remaining.
+    pub remaining: usize,
+    /// Whether the merge was auto-completed (all conflicts resolved).
+    pub merge_completed: bool,
 }
 
 /// A [`Store`] backed by git, wrapping [`FsStore`] for filesystem operations.
@@ -532,24 +564,7 @@ impl GitStore {
             return Err(Error::RemoteNotFound(remote_name.to_string()));
         }
 
-        let output = match std::process::Command::new("git")
-            .args(["fetch", remote_name])
-            .current_dir(self.inner.root())
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(Error::Git(
-                    "git is not installed — install git to use remote features".to_string(),
-                ));
-            }
-            Err(e) => {
-                return Err(Error::Git(format!("failed to run git fetch: {e}")));
-            }
-        };
+        let output = self.run_git(&["fetch", remote_name])?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -594,24 +609,8 @@ impl GitStore {
             args.push("--force");
         }
 
-        let output = match std::process::Command::new("git")
-            .args(&args)
-            .current_dir(self.inner.root())
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(Error::Git(
-                    "git is not installed — install git to use remote features".to_string(),
-                ));
-            }
-            Err(e) => {
-                return Err(Error::Git(format!("failed to run git push: {e}")));
-            }
-        };
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
+        let output = self.run_git(&args_refs)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -659,10 +658,9 @@ impl GitStore {
     /// # Errors
     ///
     /// Returns [`Error::RemoteNotFound`] if no remote with the given name exists.
-    /// Returns [`Error::BranchesDiverged`] if local and remote have diverged.
     /// Returns `Error::Git` if HEAD is detached, `git` is not found, or the
-    /// merge fails.
-    pub fn git_pull(&mut self, remote_name: &str) -> Result<PullResult> {
+    /// merge fails for a non-conflict reason.
+    pub fn git_pull(&mut self, remote_name: &str) -> Result<PullOutcome> {
         let existing = self.git_remote_list()?;
         if !existing.iter().any(|r| r.name == remote_name) {
             return Err(Error::RemoteNotFound(remote_name.to_string()));
@@ -680,50 +678,75 @@ impl GitStore {
         let (ahead, behind) = match &status {
             Some(s) => (s.ahead, s.behind),
             None => {
-                return Ok(PullResult {
+                return Ok(PullOutcome::Success(PullResult {
                     remote: remote_name.to_string(),
                     branch,
                     commits_merged: 0,
                     changed: false,
-                });
+                }));
             }
         };
 
-        if ahead > 0 && behind > 0 {
-            return Err(Error::BranchesDiverged(format!(
-                "{branch} is {ahead} ahead and {behind} behind {remote_name}/{branch}"
-            )));
-        }
-
         if behind == 0 {
-            return Ok(PullResult {
+            return Ok(PullOutcome::Success(PullResult {
                 remote: remote_name.to_string(),
                 branch,
                 commits_merged: 0,
                 changed: false,
-            });
+            }));
         }
 
-        // Fast-forward merge
         let tracking_ref = format!("{remote_name}/{branch}");
-        let output = match std::process::Command::new("git")
-            .args(["merge", "--ff-only", &tracking_ref])
-            .current_dir(self.inner.root())
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+
+        if ahead > 0 {
+            // Diverged — attempt a real merge
+            // Check working tree is clean first
+            let statuses = self.git_status()?;
+            if !statuses.is_empty() {
                 return Err(Error::Git(
-                    "git is not installed — install git to use remote features".to_string(),
+                    "cannot pull with uncommitted changes — commit or discard first".to_string(),
                 ));
             }
-            Err(e) => {
-                return Err(Error::Git(format!("failed to run git merge: {e}")));
+
+            // Sync the git index with HEAD (GitStore commits bypass the index)
+            self.sync_index_to_head()?;
+
+            let output = self.run_git(&["merge", &tracking_ref])?;
+
+            if !output.status.success() {
+                // Check if this is a merge conflict
+                let unmerged = self.git_list_unmerged()?;
+                if !unmerged.is_empty() {
+                    let conflicted_files = unmerged
+                        .iter()
+                        .map(|p| conflict::classify_path(p))
+                        .collect();
+                    return Ok(PullOutcome::Conflict(MergeConflictResult {
+                        remote: remote_name.to_string(),
+                        branch,
+                        conflicted_files,
+                    }));
+                }
+                // Not a conflict — some other merge failure
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(Error::Git(format!("git merge failed: {stderr}")));
             }
-        };
+
+            // Clean merge succeeded
+            self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+            return Ok(PullOutcome::Success(PullResult {
+                remote: remote_name.to_string(),
+                branch,
+                commits_merged: behind,
+                changed: true,
+            }));
+        }
+
+        // Sync the git index with HEAD before fast-forward
+        self.sync_index_to_head()?;
+
+        // Fast-forward merge (behind only)
+        let output = self.run_git(&["merge", "--ff-only", &tracking_ref])?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -733,12 +756,147 @@ impl GitStore {
         // Reopen repo to refresh state
         self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
 
-        Ok(PullResult {
+        Ok(PullOutcome::Success(PullResult {
             remote: remote_name.to_string(),
             branch,
             commits_merged: behind,
             changed: true,
+        }))
+    }
+
+    /// Lists files with unresolved merge conflicts.
+    ///
+    /// Returns an empty list if no merge is in progress or all conflicts
+    /// have been resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if `git` is not found or the command fails.
+    pub fn git_list_unmerged(&self) -> Result<Vec<String>> {
+        let output = self.run_git(&["diff", "--name-only", "--diff-filter=U"])?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Git(format!(
+                "git diff --diff-filter=U failed: {stderr}"
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect())
+    }
+
+    /// Returns `true` if a merge is currently in progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if the repository state cannot be determined.
+    pub fn git_is_merge_in_progress(&self) -> Result<bool> {
+        let merge_head = self.repo.git_dir().join("MERGE_HEAD");
+        Ok(merge_head.exists())
+    }
+
+    /// Aborts an in-progress merge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoMergeInProgress`] if no merge is active.
+    /// Returns `Error::Git` if `git merge --abort` fails.
+    pub fn git_merge_abort(&mut self) -> Result<()> {
+        if !self.git_is_merge_in_progress()? {
+            return Err(Error::NoMergeInProgress);
+        }
+        let output = self.run_git(&["merge", "--abort"])?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Git(format!("git merge --abort failed: {stderr}")));
+        }
+        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Marks a conflicted file as resolved and optionally completes the merge.
+    ///
+    /// If this was the last unmerged file, the merge is automatically
+    /// completed with `git commit --no-edit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoMergeInProgress`] if no merge is active.
+    /// Returns [`Error::NotConflicted`] if the file is not in the unmerged list.
+    /// Returns `Error::Git` if `git add` or `git commit` fails.
+    pub fn git_resolve_conflict(&mut self, path: &str) -> Result<ResolveResult> {
+        if !self.git_is_merge_in_progress()? {
+            return Err(Error::NoMergeInProgress);
+        }
+
+        let unmerged = self.git_list_unmerged()?;
+        if !unmerged.iter().any(|p| p == path) {
+            return Err(Error::NotConflicted(path.to_string()));
+        }
+
+        // Stage the resolved file
+        let output = self.run_git(&["add", path])?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Git(format!("git add failed: {stderr}")));
+        }
+
+        // Check remaining unmerged files
+        let remaining = self.git_list_unmerged()?;
+        let remaining_count = remaining.len();
+
+        let mut merge_completed = false;
+        if remaining_count == 0 {
+            // All conflicts resolved — complete the merge
+            let output = self.run_git(&["commit", "--no-edit"])?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(Error::Git(format!("git commit --no-edit failed: {stderr}")));
+            }
+            self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+            merge_completed = true;
+        }
+
+        Ok(ResolveResult {
+            path: path.to_string(),
+            remaining: remaining_count,
+            merge_completed,
         })
+    }
+
+    /// Syncs the git index with HEAD.
+    ///
+    /// `GitStore` creates commits by building tree objects directly, bypassing
+    /// the git index. This means the index can become stale. Before operations
+    /// that consult the index (like `git merge`), we reset it to match HEAD.
+    fn sync_index_to_head(&self) -> Result<()> {
+        let output = self.run_git(&["reset"])?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Git(format!("git reset failed: {stderr}")));
+        }
+        Ok(())
+    }
+
+    /// Runs a git command in the store's working directory.
+    fn run_git(&self, args: &[&str]) -> Result<std::process::Output> {
+        match std::process::Command::new("git")
+            .args(args)
+            .current_dir(self.inner.root())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+        {
+            Ok(o) => Ok(o),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Git(
+                "git is not installed — install git to use remote features".to_string(),
+            )),
+            Err(e) => Err(Error::Git(format!("failed to run git: {e}"))),
+        }
     }
 
     /// Returns the current branch name, or `None` if HEAD is detached or unborn.
@@ -1988,10 +2146,15 @@ mod tests {
             .output()
             .unwrap();
 
-        let result = store.git_pull("origin").unwrap();
-        assert_eq!(result.remote, "origin");
-        assert_eq!(result.commits_merged, 1);
-        assert!(result.changed);
+        let outcome = store.git_pull("origin").unwrap();
+        match outcome {
+            PullOutcome::Success(result) => {
+                assert_eq!(result.remote, "origin");
+                assert_eq!(result.commits_merged, 1);
+                assert!(result.changed);
+            }
+            PullOutcome::Conflict(_) => panic!("expected success, got conflict"),
+        }
 
         // File should now exist locally
         assert!(dir.path().join("pulled.md").exists());
@@ -2010,15 +2173,20 @@ mod tests {
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
 
-        let result = store.git_pull("origin").unwrap();
-        assert_eq!(result.commits_merged, 0);
-        assert!(!result.changed);
+        let outcome = store.git_pull("origin").unwrap();
+        match outcome {
+            PullOutcome::Success(result) => {
+                assert_eq!(result.commits_merged, 0);
+                assert!(!result.changed);
+            }
+            PullOutcome::Conflict(_) => panic!("expected success, got conflict"),
+        }
 
         let _ = bare_dir;
     }
 
     #[test]
-    fn git_pull_diverged_rejects() {
+    fn pull_diverged_non_conflicting_merges_cleanly() {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
         store
@@ -2029,13 +2197,13 @@ mod tests {
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_fetch("origin").unwrap();
 
-        // Make a local commit
+        // Make a local commit (different file from remote)
         store
             .write(&RelPath::new("local.md").unwrap(), "local".to_string())
             .unwrap();
         store.commit().unwrap();
 
-        // Push a different commit to bare from a clone
+        // Push a different file to bare from a clone
         let clone_dir = TempDir::new().unwrap();
         git_cmd()
             .args(["clone"])
@@ -2060,15 +2228,183 @@ mod tests {
             .output()
             .unwrap();
 
-        // Pull should fail with diverged error
-        let result = store.git_pull("origin");
+        // Pull should succeed with a clean merge (different files)
+        let outcome = store.git_pull("origin").unwrap();
+        match outcome {
+            PullOutcome::Success(result) => {
+                assert!(result.changed);
+                assert!(result.commits_merged > 0);
+            }
+            PullOutcome::Conflict(_) => panic!("expected clean merge, got conflict"),
+        }
+
+        // Both files should exist
+        assert!(dir.path().join("local.md").exists());
+        assert!(dir.path().join("remote.md").exists());
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn pull_diverged_conflicting_detects_conflicts() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("shared.md").unwrap(), "original".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_fetch("origin").unwrap();
+
+        // Make a local change to shared.md
+        store
+            .write(
+                &RelPath::new("shared.md").unwrap(),
+                "local change".to_string(),
+            )
+            .unwrap();
+        store.commit().unwrap();
+
+        // Push a conflicting change to shared.md from a clone
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("shared.md"), "remote change").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "conflicting remote commit"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        // Pull should detect conflict
+        let outcome = store.git_pull("origin").unwrap();
+        match outcome {
+            PullOutcome::Conflict(conflict) => {
+                assert_eq!(conflict.remote, "origin");
+                assert!(!conflict.conflicted_files.is_empty());
+                assert!(
+                    conflict
+                        .conflicted_files
+                        .iter()
+                        .any(|f| f.path == "shared.md")
+                );
+            }
+            PullOutcome::Success(_) => panic!("expected conflict, got success"),
+        }
+
+        // Merge should be in progress
+        assert!(store.git_is_merge_in_progress().unwrap());
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn resolve_conflict_completes_merge() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("shared.md").unwrap(), "original".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_fetch("origin").unwrap();
+
+        // Local change
+        store
+            .write(
+                &RelPath::new("shared.md").unwrap(),
+                "local change".to_string(),
+            )
+            .unwrap();
+        store.commit().unwrap();
+
+        // Remote conflicting change
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("shared.md"), "remote change").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "conflicting commit"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        // Pull to get conflict
+        let outcome = store.git_pull("origin").unwrap();
+        assert!(matches!(outcome, PullOutcome::Conflict(_)));
+
+        // Resolve the conflict by writing resolved content
+        std::fs::write(dir.path().join("shared.md"), "resolved content").unwrap();
+
+        let result = store.git_resolve_conflict("shared.md").unwrap();
+        assert_eq!(result.path, "shared.md");
+        assert_eq!(result.remaining, 0);
+        assert!(result.merge_completed);
+
+        // Merge should no longer be in progress
+        assert!(!store.git_is_merge_in_progress().unwrap());
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn resolve_when_no_merge_errors() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let result = store.git_resolve_conflict("init.md");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("diverged"),
-            "expected diverged error, got: {err}"
+            err.to_string().contains("no merge in progress"),
+            "expected NoMergeInProgress, got: {err}"
         );
+    }
 
-        let _ = bare_dir;
+    #[test]
+    fn list_unmerged_empty_when_clean() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let unmerged = store.git_list_unmerged().unwrap();
+        assert!(unmerged.is_empty());
     }
 }

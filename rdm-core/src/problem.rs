@@ -114,6 +114,27 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("remote '{name}' already exists")),
                 instance: None,
             },
+            Error::MergeConflict(msg) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(format!("merge conflict: {msg}")),
+                instance: None,
+            },
+            Error::NoMergeInProgress => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some("no merge in progress".to_string()),
+                instance: None,
+            },
+            Error::NotConflicted(path) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(format!("file '{path}' is not in the unmerged list")),
+                instance: None,
+            },
             // Internal errors: no detail leak
             Error::Io(_)
             | Error::FrontmatterParse(_)

@@ -152,6 +152,15 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// List unresolved merge conflicts with rdm item context.
+    #[cfg(feature = "git")]
+    Conflicts,
+    /// Mark a conflicted file as resolved and auto-complete the merge when all are resolved.
+    #[cfg(feature = "git")]
+    Resolve {
+        /// Path of the file to mark as resolved.
+        file: String,
+    },
     /// Manage git remotes.
     #[cfg(feature = "git")]
     Remote {
@@ -1613,6 +1622,28 @@ fn run() -> Result<()> {
         #[cfg(feature = "git")]
         Command::Status { fetch } => {
             let mut store = make_store(&root, staging)?;
+
+            // Check for merge in progress
+            if store
+                .git_is_merge_in_progress()
+                .context("failed to check merge state")?
+            {
+                let unmerged = store
+                    .git_list_unmerged()
+                    .context("failed to list unmerged files")?;
+                let count = unmerged.len();
+                if count > 0 {
+                    println!(
+                        "Merge in progress — {count} conflict(s) remaining. Run `rdm conflicts` for details."
+                    );
+                } else {
+                    println!(
+                        "Merge in progress — all conflicts resolved. Run `rdm resolve <file>` or `git commit --no-edit` to complete."
+                    );
+                }
+                println!();
+            }
+
             let statuses = store.git_status().context("failed to get git status")?;
             if statuses.is_empty() {
                 println!("No uncommitted changes.");
@@ -1715,7 +1746,15 @@ fn run() -> Result<()> {
             if !force {
                 bail!("discarding changes is irreversible — pass --force to confirm");
             }
-            let store = make_store(&root, staging)?;
+            let mut store = make_store(&root, staging)?;
+            // Abort merge if one is in progress
+            if store
+                .git_is_merge_in_progress()
+                .context("failed to check merge state")?
+            {
+                store.git_merge_abort().context("failed to abort merge")?;
+                println!("Aborted in-progress merge.");
+            }
             let statuses = store.git_status().context("failed to get git status")?;
             if statuses.is_empty() {
                 println!("Nothing to discard.");
@@ -1730,6 +1769,61 @@ fn run() -> Result<()> {
                     };
                     println!("{prefix}{}", fs.path);
                 }
+            }
+        }
+
+        #[cfg(feature = "git")]
+        Command::Conflicts => {
+            let store = make_store(&root, staging)?;
+            if !store
+                .git_is_merge_in_progress()
+                .context("failed to check merge state")?
+            {
+                println!("No merge in progress.");
+            } else {
+                let unmerged = store
+                    .git_list_unmerged()
+                    .context("failed to list unmerged files")?;
+                if unmerged.is_empty() {
+                    println!("Merge in progress but all conflicts are resolved.");
+                    println!(
+                        "Run `rdm resolve <file>` on any remaining file to complete the merge,"
+                    );
+                    println!("or commit manually with `git commit --no-edit`.");
+                } else {
+                    println!(
+                        "Merge in progress — {} conflict(s) remaining:\n",
+                        unmerged.len()
+                    );
+                    for path in &unmerged {
+                        let item = rdm_core::conflict::classify_path(path);
+                        println!("  {path} — {item}");
+                    }
+                    println!();
+                    println!("Edit each file to resolve conflicts, then run `rdm resolve <file>`.");
+                    println!("Run `rdm discard --force` to abort the merge.");
+                }
+            }
+        }
+
+        #[cfg(feature = "git")]
+        Command::Resolve { file } => {
+            let mut store = make_store(&root, staging)?;
+            let result = store
+                .git_resolve_conflict(&file)
+                .context("failed to resolve conflict")?;
+            println!("Resolved: {}", result.path);
+            if result.merge_completed {
+                println!("All conflicts resolved — merge complete.");
+                // Regenerate INDEX.md after merge completion
+                let mut repo = PlanRepo::new(store);
+                repo.generate_index()
+                    .context("failed to regenerate INDEX.md after merge")?;
+            } else {
+                println!(
+                    "{} conflict(s) remaining. Run `rdm conflicts` to see them.",
+                    result.remaining
+                );
             }
         }
 
@@ -1780,18 +1874,41 @@ fn run() -> Result<()> {
                 }
                 RemoteCommand::Pull { name } => {
                     let remote_name = resolve_remote_name(name, &root)?;
-                    let result = store.git_pull(&remote_name)?;
-                    if !result.changed {
-                        println!("Already up to date.");
-                    } else {
-                        println!(
-                            "Pulled {} commit(s) from {}/{}.",
-                            result.commits_merged, result.remote, result.branch
-                        );
-                        // Regenerate INDEX.md after pulling new content
-                        let mut repo = PlanRepo::new(store);
-                        repo.generate_index()
-                            .context("failed to regenerate INDEX.md after pull")?;
+                    let outcome = store.git_pull(&remote_name)?;
+                    match outcome {
+                        rdm_store_git::PullOutcome::Success(result) => {
+                            if !result.changed {
+                                println!("Already up to date.");
+                            } else {
+                                println!(
+                                    "Pulled {} commit(s) from {}/{}.",
+                                    result.commits_merged, result.remote, result.branch
+                                );
+                                // Regenerate INDEX.md after pulling new content
+                                let mut repo = PlanRepo::new(store);
+                                repo.generate_index()
+                                    .context("failed to regenerate INDEX.md after pull")?;
+                            }
+                        }
+                        rdm_store_git::PullOutcome::Conflict(conflict) => {
+                            eprintln!(
+                                "Merge conflict: {} file(s) need resolution.",
+                                conflict.conflicted_files.len()
+                            );
+                            eprintln!();
+                            for item in &conflict.conflicted_files {
+                                eprintln!("  conflict: {} — {item}", item.path);
+                            }
+                            eprintln!();
+                            eprintln!(
+                                "Edit the conflicted files, then run `rdm resolve <file>` for each."
+                            );
+                            eprintln!("Run `rdm conflicts` to see the full list.");
+                            eprintln!(
+                                "Run `rdm discard --force` to abort the merge and discard changes."
+                            );
+                            process::exit(1);
+                        }
                     }
                 }
             }

@@ -6,7 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Merge conflict detection during `rdm remote pull` with rdm-aware item context (roadmap, phase, task classification)
+- `rdm conflicts` command to list unresolved merge conflicts with item context
+- `rdm resolve <file>` command to mark conflicts resolved and auto-complete merge with INDEX.md regeneration
+- `rdm discard --force` now aborts an in-progress merge before discarding changes
+- `rdm status` shows merge-in-progress state with conflict count
+- `MergeConflictResult`, `PullOutcome`, `ResolveResult` structs and `git_list_unmerged`, `git_is_merge_in_progress`, `git_merge_abort`, `git_resolve_conflict` methods on `GitStore`
+- `MergeConflict`, `NoMergeInProgress`, `NotConflicted` error variants in rdm-core
+- `classify_path` function and `ConflictItem`/`ConflictItemKind` types in new `rdm-core::conflict` module
+
 ### Changed
+
+- `rdm remote pull` now attempts a real merge when branches have diverged instead of rejecting with `BranchesDiverged`; non-conflicting concurrent edits merge cleanly
 
 - Top-level `INDEX.md` now shows a lightweight summary table linking to each project's `INDEX.md` instead of inlining all project details
 

@@ -7,6 +7,8 @@ pub mod agent_config;
 pub mod ast;
 /// Plan repo configuration (`rdm.toml`).
 pub mod config;
+/// Conflict classification for merge conflict paths.
+pub mod conflict;
 /// Model introspection: discover what rdm tracks and the shape of each entity.
 pub mod describe;
 /// Display formatting functions for roadmaps, phases, and projects.
