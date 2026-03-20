@@ -174,6 +174,25 @@ impl GitStore {
             Ok(repo) => repo,
             Err(_) => gix::open(&root).map_err(|e| Error::Git(e.to_string()))?,
         };
+
+        // Ensure the repo has a local user identity so that CLI git operations
+        // (e.g. `git merge`) work even without a global gitconfig.
+        // Only sets if not already configured.
+        if repo.committer().is_none() {
+            let config_path = root.join(".git").join("config");
+            if let Ok(contents) = std::fs::read_to_string(&config_path)
+                && !contents.contains("[user]")
+            {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&config_path)
+                    .map_err(|e| Error::Git(format!("failed to write git config: {e}")))?;
+                use std::io::Write;
+                writeln!(file, "\n[user]\n\tname = rdm\n\temail = rdm@localhost")
+                    .map_err(|e| Error::Git(format!("failed to write git config: {e}")))?;
+            }
+        }
+
         Ok(Self {
             inner: FsStore::new(&root),
             repo,
