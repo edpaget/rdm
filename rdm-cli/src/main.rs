@@ -39,8 +39,8 @@ struct Cli {
     stage: bool,
 
     /// Output format (human, json, table, or markdown).
-    #[arg(long, global = true, default_value = "human")]
-    format: OutputFormat,
+    #[arg(long, global = true)]
+    format: Option<OutputFormat>,
 
     #[command(subcommand)]
     command: Command,
@@ -50,6 +50,11 @@ struct Cli {
 enum Command {
     /// Initialize a new plan repo.
     Init,
+    /// View or modify configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Manage projects.
     Project {
         #[command(subcommand)]
@@ -556,6 +561,27 @@ enum HookCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Get the resolved value of a config key.
+    Get {
+        /// Config key (e.g. default_project, default_format, stage, remote.default, root).
+        key: String,
+    },
+    /// Set a config key.
+    Set {
+        /// Config key to set.
+        key: String,
+        /// Value to set.
+        value: String,
+        /// Write to global config instead of repo config.
+        #[arg(long)]
+        global: bool,
+    },
+    /// List all config keys with their resolved values and sources.
+    List,
+}
+
 /// Item type argument for `--type` flag.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ItemKindArg {
@@ -582,6 +608,20 @@ enum OutputFormat {
     Json,
     Table,
     Markdown,
+}
+
+impl std::str::FromStr for OutputFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "human" | "text" => Ok(Self::Human),
+            "json" => Ok(Self::Json),
+            "table" => Ok(Self::Table),
+            "markdown" => Ok(Self::Markdown),
+            _ => Err(format!("unknown format: {s}")),
+        }
+    }
 }
 
 impl std::fmt::Display for OutputFormat {
@@ -886,16 +926,114 @@ fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Resul
     Ok(())
 }
 
+fn run_config_command(
+    command: ConfigCommand,
+    cli_root: &Option<PathBuf>,
+    global_config: &rdm_core::config::GlobalConfig,
+) -> Result<()> {
+    match command {
+        ConfigCommand::Get { key } => {
+            paths::validate_key(&key)?;
+
+            // Check env var first
+            let env_key = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
+            if let Ok(v) = std::env::var(&env_key) {
+                println!("{v}  (source: environment variable)");
+                return Ok(());
+            }
+
+            // Try repo + global config
+            let root = paths::resolve_root(cli_root.clone(), global_config);
+            let repo_config = if let Ok(ref root) = root {
+                paths::load_repo_config(root)
+            } else {
+                rdm_core::config::Config::default()
+            };
+
+            if let Some(resolved) = paths::resolve_config_value(&key, &repo_config, global_config) {
+                println!("{}  (source: {})", resolved.value, resolved.source);
+            } else {
+                println!("(not set)");
+            }
+        }
+        ConfigCommand::Set { key, value, global } => {
+            paths::validate_key(&key)?;
+
+            if global {
+                let mut config = global_config.clone();
+                paths::set_global_config_field(&mut config, &key, &value)?;
+                paths::save_global_config(&config)?;
+                println!("Set {key} = {value} in global config");
+            } else {
+                if paths::is_global_only(&key) {
+                    bail!("'{key}' can only be set in global config — use --global");
+                }
+                let root = paths::resolve_root(cli_root.clone(), global_config)?;
+                let root = paths::expand_root(root)?;
+                let mut config = paths::load_repo_config(&root);
+                paths::set_config_field(&mut config, &key, &value)?;
+                paths::save_repo_config(&root, &config)?;
+                println!("Set {key} = {value} in repo config");
+            }
+        }
+        ConfigCommand::List => {
+            let root = paths::resolve_root(cli_root.clone(), global_config);
+            let repo_config = if let Ok(ref root) = root {
+                paths::load_repo_config(root)
+            } else {
+                rdm_core::config::Config::default()
+            };
+
+            let max_key_len = rdm_core::config::KNOWN_KEYS
+                .iter()
+                .map(|k| k.len())
+                .max()
+                .unwrap_or(0);
+
+            for key in rdm_core::config::KNOWN_KEYS {
+                // Check env var
+                let env_key = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
+                if let Ok(v) = std::env::var(&env_key) {
+                    println!("{key:<max_key_len$}  {v}  (source: environment variable)");
+                    continue;
+                }
+
+                if let Some(resolved) =
+                    paths::resolve_config_value(key, &repo_config, global_config)
+                {
+                    println!(
+                        "{key:<max_key_len$}  {}  (source: {})",
+                        resolved.value, resolved.source
+                    );
+                } else {
+                    println!("{key:<max_key_len$}  (not set)");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    let format = cli.format;
     let global_config = paths::load_global_config();
+
+    // Handle config commands early — some don't need a repo.
+    if let Command::Config { command } = cli.command {
+        return run_config_command(command, &cli.root, &global_config);
+    }
+
     let root = paths::resolve_root(cli.root, &global_config)?;
     let root = paths::expand_root(root)?;
     let repo_config = paths::load_repo_config(&root).with_global_defaults(&global_config);
     let staging = paths::resolve_staging(cli.stage, &repo_config);
+    let format_str = paths::resolve_format(cli.format.map(|f| f.to_string()), &repo_config);
+    let format: OutputFormat = format_str
+        .parse::<OutputFormat>()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     match cli.command {
+        Command::Config { .. } => unreachable!("handled above"),
         Command::Init => {
             PlanRepo::init(make_init_store(&root)?).context("failed to initialize plan repo")?;
             let b = "\x1b[38;2;74;144;217m";

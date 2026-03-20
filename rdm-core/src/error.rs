@@ -49,6 +49,15 @@ pub enum Error {
     NoMergeInProgress,
     /// A file is not in the unmerged list.
     NotConflicted(String),
+    /// A config value is not valid for the given key.
+    InvalidConfigValue {
+        /// The configuration key.
+        key: String,
+        /// The invalid value that was provided.
+        value: String,
+        /// A description of the valid values.
+        valid: String,
+    },
     /// A git operation failed.
     Git(String),
 }
@@ -139,6 +148,12 @@ impl std::fmt::Display for Error {
             }
             Error::NotConflicted(path) => {
                 write!(f, "file '{path}' is not in the unmerged list")
+            }
+            Error::InvalidConfigValue { key, value, valid } => {
+                write!(
+                    f,
+                    "invalid value '{value}' for '{key}' — valid values: {valid}"
+                )
             }
             Error::Git(msg) => write!(f, "git error: {msg}"),
         }

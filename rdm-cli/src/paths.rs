@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use rdm_core::config::GlobalConfig;
+use rdm_core::config::{ConfigSource, GLOBAL_ONLY_KEYS, GlobalConfig, KNOWN_KEYS, ResolvedValue};
 
 /// Returns the path to the global config file.
 ///
@@ -146,6 +146,200 @@ pub fn load_repo_config(root: &Path) -> rdm_core::config::Config {
         .unwrap_or_default()
 }
 
+/// Resolves the output format from the CLI flag, `RDM_FORMAT` env var, and config.
+///
+/// Priority: flag → env → config `default_format` → Human (as string `"human"`).
+pub fn resolve_format(flag: Option<String>, config: &rdm_core::config::Config) -> String {
+    resolve_format_inner(flag, std::env::var("RDM_FORMAT").ok(), config)
+}
+
+fn resolve_format_inner(
+    flag: Option<String>,
+    env_format: Option<String>,
+    config: &rdm_core::config::Config,
+) -> String {
+    if let Some(f) = flag {
+        return f;
+    }
+    if let Some(f) = env_format {
+        return f;
+    }
+    if let Some(f) = &config.default_format {
+        return f.clone();
+    }
+    "human".to_string()
+}
+
+/// Resolves a config value by key across repo and global config.
+///
+/// Returns `None` if the key is not set in either config.
+pub fn resolve_config_value(
+    key: &str,
+    repo: &rdm_core::config::Config,
+    global: &GlobalConfig,
+) -> Option<ResolvedValue<String>> {
+    if let Some(v) = get_config_field(repo, key) {
+        return Some(ResolvedValue {
+            value: v,
+            source: ConfigSource::Repo,
+        });
+    }
+    if let Some(v) = get_global_config_field(global, key) {
+        return Some(ResolvedValue {
+            value: v,
+            source: ConfigSource::Global,
+        });
+    }
+    None
+}
+
+/// Saves a repo config to `<root>/rdm.toml`.
+///
+/// # Errors
+///
+/// Returns an error if serialization or file I/O fails.
+pub fn save_repo_config(root: &Path, config: &rdm_core::config::Config) -> Result<()> {
+    let toml_str = config
+        .to_toml()
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("failed to serialize repo config")?;
+    std::fs::write(root.join("rdm.toml"), toml_str).context("failed to write rdm.toml")?;
+    Ok(())
+}
+
+/// Saves the global config to the XDG config path.
+///
+/// Creates the parent directory if it does not exist.
+///
+/// # Errors
+///
+/// Returns an error if the global config path cannot be determined, or if
+/// serialization or file I/O fails.
+pub fn save_global_config(config: &GlobalConfig) -> Result<()> {
+    let path = global_config_path()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine global config path — is $HOME set?"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let toml_str = config
+        .to_toml()
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("failed to serialize global config")?;
+    std::fs::write(&path, toml_str)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+/// Extracts a field value from a repo config by key name.
+pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<String> {
+    match key {
+        "default_project" => config.default_project.clone(),
+        "default_format" => config.default_format.clone(),
+        "stage" => config.stage.map(|b| b.to_string()),
+        "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
+        _ => None,
+    }
+}
+
+/// Extracts a field value from a global config by key name.
+pub fn get_global_config_field(config: &GlobalConfig, key: &str) -> Option<String> {
+    match key {
+        "root" => config.root.as_ref().map(|p| p.display().to_string()),
+        "default_project" => config.default_project.clone(),
+        "default_format" => config.default_format.clone(),
+        "stage" => config.stage.map(|b| b.to_string()),
+        "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
+        _ => None,
+    }
+}
+
+/// Sets a field on a repo config by key name, with validation.
+///
+/// # Errors
+///
+/// Returns an error if the key is unknown or the value is invalid.
+pub fn set_config_field(
+    config: &mut rdm_core::config::Config,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    match key {
+        "default_project" => config.default_project = Some(value.to_string()),
+        "default_format" => {
+            config.default_format = Some(value.to_string());
+            config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        "stage" => {
+            config.stage = Some(parse_bool(value)?);
+        }
+        "remote.default" => {
+            config.remote.get_or_insert_with(Default::default).default = Some(value.to_string());
+        }
+        "root" => bail!("'root' can only be set in global config — use --global"),
+        _ => bail!(
+            "unknown config key: {key} — valid keys: {}",
+            KNOWN_KEYS.join(", ")
+        ),
+    }
+    Ok(())
+}
+
+/// Sets a field on a global config by key name, with validation.
+///
+/// # Errors
+///
+/// Returns an error if the key is unknown or the value is invalid.
+pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str) -> Result<()> {
+    match key {
+        "root" => config.root = Some(PathBuf::from(value)),
+        "default_project" => config.default_project = Some(value.to_string()),
+        "default_format" => {
+            config.default_format = Some(value.to_string());
+            config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        "stage" => {
+            config.stage = Some(parse_bool(value)?);
+        }
+        "remote.default" => {
+            config.remote.get_or_insert_with(Default::default).default = Some(value.to_string());
+        }
+        _ => bail!(
+            "unknown config key: {key} — valid keys: {}",
+            KNOWN_KEYS.join(", ")
+        ),
+    }
+    Ok(())
+}
+
+/// Validates that a key is in `KNOWN_KEYS`.
+///
+/// # Errors
+///
+/// Returns an error with a helpful message if the key is unknown.
+pub fn validate_key(key: &str) -> Result<()> {
+    if !KNOWN_KEYS.contains(&key) {
+        bail!(
+            "unknown config key: {key} — valid keys: {}",
+            KNOWN_KEYS.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Checks if a key is global-only.
+pub fn is_global_only(key: &str) -> bool {
+    GLOBAL_ONLY_KEYS.contains(&key)
+}
+
+fn parse_bool(s: &str) -> Result<bool> {
+    match s {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => bail!("invalid boolean value: {s} — use 'true' or 'false'"),
+    }
+}
+
 /// Expands `~` and resolves `.`/`..` in a path.
 ///
 /// # Errors
@@ -286,6 +480,82 @@ mod tests {
         };
         let result = resolve_remote_name(None, &config).unwrap();
         assert_eq!(result, "my-remote");
+    }
+
+    #[test]
+    fn resolve_format_flag_wins() {
+        let config = rdm_core::config::Config {
+            default_format: Some("json".to_string()),
+            ..Default::default()
+        };
+        let result = resolve_format_inner(
+            Some("table".to_string()),
+            Some("markdown".to_string()),
+            &config,
+        );
+        assert_eq!(result, "table");
+    }
+
+    #[test]
+    fn resolve_format_env_wins_over_config() {
+        let config = rdm_core::config::Config {
+            default_format: Some("json".to_string()),
+            ..Default::default()
+        };
+        let result = resolve_format_inner(None, Some("markdown".to_string()), &config);
+        assert_eq!(result, "markdown");
+    }
+
+    #[test]
+    fn resolve_format_config_fallback() {
+        let config = rdm_core::config::Config {
+            default_format: Some("json".to_string()),
+            ..Default::default()
+        };
+        let result = resolve_format_inner(None, None, &config);
+        assert_eq!(result, "json");
+    }
+
+    #[test]
+    fn resolve_format_default_human() {
+        let config = rdm_core::config::Config::default();
+        let result = resolve_format_inner(None, None, &config);
+        assert_eq!(result, "human");
+    }
+
+    #[test]
+    fn resolve_config_value_repo_wins() {
+        let repo = rdm_core::config::Config {
+            default_project: Some("repo-proj".to_string()),
+            ..Default::default()
+        };
+        let global = GlobalConfig {
+            default_project: Some("global-proj".to_string()),
+            ..Default::default()
+        };
+        let resolved = resolve_config_value("default_project", &repo, &global).unwrap();
+        assert_eq!(resolved.value, "repo-proj");
+        assert_eq!(resolved.source, rdm_core::config::ConfigSource::Repo);
+    }
+
+    #[test]
+    fn resolve_config_value_global_fallback() {
+        let repo = rdm_core::config::Config::default();
+        let global = GlobalConfig {
+            default_project: Some("global-proj".to_string()),
+            ..Default::default()
+        };
+        let resolved = resolve_config_value("default_project", &repo, &global).unwrap();
+        assert_eq!(resolved.value, "global-proj");
+        assert_eq!(resolved.source, rdm_core::config::ConfigSource::Global);
+    }
+
+    #[test]
+    fn resolve_config_value_not_set() {
+        let repo = rdm_core::config::Config::default();
+        let global = GlobalConfig::default();
+        let resolved = resolve_config_value("default_project", &repo, &global);
+        assert!(resolved.is_none());
     }
 
     #[test]

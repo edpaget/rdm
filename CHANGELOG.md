@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `rdm config get <key>` command to view a config value with its source (CLI flag, env var, repo config, global config, or default)
+- `rdm config set <key> <value> [--global]` command to set config values in repo or global config with validation
+- `rdm config list` command to display all known config keys with resolved values and sources
+- `default_format` config key in both repo (`rdm.toml`) and global config — sets the default output format (human, json, table, markdown)
+- Format resolution chain: `--format` flag > `RDM_FORMAT` env var > `default_format` in config > `human`
+- `InvalidConfigValue` error variant in rdm-core with actionable error messages
+- `ConfigSource` and `ResolvedValue<T>` types in rdm-core for tracking where config values come from
+- Config validation: invalid `default_format` values are rejected at parse time with clear error messages
+
+### Changed
+
+- `--format` flag no longer defaults to `human` at the clap level; the default is now resolved through the config hierarchy, allowing `default_format` in config files to take effect
+
 ### Fixed
 
 - `--root` and `RDM_ROOT` now expand `~` to the home directory and resolve `.`/`..` segments, fixing silent failures when paths are set in config files like `.mise.toml` where the shell doesn't perform tilde expansion

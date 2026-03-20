@@ -1,9 +1,61 @@
 /// Plan repo configuration (`rdm.toml`) and global configuration.
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
+
+/// Valid values for the `default_format` config key.
+pub const VALID_FORMATS: &[&str] = &["human", "json", "table", "markdown"];
+
+/// All known configuration keys.
+pub const KNOWN_KEYS: &[&str] = &[
+    "default_project",
+    "default_format",
+    "stage",
+    "remote.default",
+    "root",
+];
+
+/// Keys that may only be set in the global config (not in a repo `rdm.toml`).
+pub const GLOBAL_ONLY_KEYS: &[&str] = &["root"];
+
+/// Where a configuration value was resolved from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSource {
+    /// Provided via a CLI flag.
+    Flag,
+    /// Provided via an environment variable.
+    Env,
+    /// Read from the repo-level `rdm.toml`.
+    Repo,
+    /// Read from the global config file.
+    Global,
+    /// A built-in default.
+    Default,
+}
+
+impl fmt::Display for ConfigSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigSource::Flag => write!(f, "CLI flag"),
+            ConfigSource::Env => write!(f, "environment variable"),
+            ConfigSource::Repo => write!(f, "repo config"),
+            ConfigSource::Global => write!(f, "global config"),
+            ConfigSource::Default => write!(f, "default"),
+        }
+    }
+}
+
+/// A resolved configuration value together with its source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedValue<T> {
+    /// The resolved value.
+    pub value: T,
+    /// Where the value came from.
+    pub source: ConfigSource,
+}
 
 /// Configuration for the default git remote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -26,6 +78,10 @@ pub struct GlobalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_project: Option<String>,
 
+    /// Default output format (human, json, table, markdown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_format: Option<String>,
+
     /// When `true`, defers git commits until an explicit `rdm commit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<bool>,
@@ -41,9 +97,12 @@ impl GlobalConfig {
     /// # Errors
     ///
     /// Returns [`Error::ConfigParse`] if the string is not valid TOML or does
-    /// not match the expected config schema.
+    /// not match the expected config schema. Returns [`Error::InvalidConfigValue`]
+    /// if a field value fails validation.
     pub fn from_toml(s: &str) -> Result<Self> {
-        Ok(toml::from_str(s)?)
+        let config: Self = toml::from_str(s)?;
+        config.validate()?;
+        Ok(config)
     }
 
     /// Serializes the global config to a TOML string.
@@ -54,6 +113,16 @@ impl GlobalConfig {
     pub fn to_toml(&self) -> Result<String> {
         Ok(toml::to_string_pretty(self)?)
     }
+
+    /// Validates the global config values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidConfigValue`] if `default_format` is set to an
+    /// unrecognized value.
+    pub fn validate(&self) -> Result<()> {
+        validate_format(&self.default_format)
+    }
 }
 
 /// Configuration stored in `rdm.toml` at the plan repo root.
@@ -62,6 +131,10 @@ pub struct Config {
     /// The default project to use when `--project` is not specified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_project: Option<String>,
+
+    /// Default output format (human, json, table, markdown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_format: Option<String>,
 
     /// When `true`, defers git commits until an explicit `rdm commit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,9 +151,12 @@ impl Config {
     /// # Errors
     ///
     /// Returns [`Error::ConfigParse`] if the string is not valid TOML or does
-    /// not match the expected config schema.
+    /// not match the expected config schema. Returns [`Error::InvalidConfigValue`]
+    /// if a field value fails validation.
     pub fn from_toml(s: &str) -> Result<Self> {
-        Ok(toml::from_str(s)?)
+        let config: Self = toml::from_str(s)?;
+        config.validate()?;
+        Ok(config)
     }
 
     /// Serializes the config to a TOML string.
@@ -90,6 +166,16 @@ impl Config {
     /// Returns [`Error::ConfigSerialize`] if serialization fails.
     pub fn to_toml(&self) -> Result<String> {
         Ok(toml::to_string_pretty(self)?)
+    }
+
+    /// Validates the config values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidConfigValue`] if `default_format` is set to an
+    /// unrecognized value.
+    pub fn validate(&self) -> Result<()> {
+        validate_format(&self.default_format)
     }
 
     /// Returns a new `Config` where `None` fields are filled from the
@@ -102,10 +188,28 @@ impl Config {
                 .default_project
                 .clone()
                 .or_else(|| global.default_project.clone()),
+            default_format: self
+                .default_format
+                .clone()
+                .or_else(|| global.default_format.clone()),
             stage: self.stage.or(global.stage),
             remote: self.remote.clone().or_else(|| global.remote.clone()),
         }
     }
+}
+
+/// Validates that a `default_format` value (if present) is one of the known formats.
+fn validate_format(format: &Option<String>) -> Result<()> {
+    if let Some(f) = format
+        && !VALID_FORMATS.contains(&f.as_str())
+    {
+        return Err(Error::InvalidConfigValue {
+            key: "default_format".to_string(),
+            value: f.clone(),
+            valid: VALID_FORMATS.join(", "),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -129,8 +233,7 @@ mod tests {
     fn config_round_trip() {
         let config = Config {
             default_project: Some("fbm".to_string()),
-            stage: None,
-            remote: None,
+            ..Default::default()
         };
         let toml_str = config.to_toml().unwrap();
         let parsed = Config::from_toml(&toml_str).unwrap();
@@ -142,7 +245,7 @@ mod tests {
         let config = Config {
             default_project: Some("fbm".to_string()),
             stage: Some(true),
-            remote: None,
+            ..Default::default()
         };
         let toml_str = config.to_toml().unwrap();
         let parsed = Config::from_toml(&toml_str).unwrap();
@@ -162,10 +265,10 @@ mod tests {
     fn config_with_remote_round_trip() {
         let config = Config {
             default_project: Some("fbm".to_string()),
-            stage: None,
             remote: Some(RemoteConfig {
                 default: Some("origin".to_string()),
             }),
+            ..Default::default()
         };
         let toml_str = config.to_toml().unwrap();
         let parsed = Config::from_toml(&toml_str).unwrap();
@@ -220,6 +323,7 @@ default = "upstream"
             remote: Some(RemoteConfig {
                 default: Some("origin".to_string()),
             }),
+            ..Default::default()
         };
         let toml_str = config.to_toml().unwrap();
         let parsed = GlobalConfig::from_toml(&toml_str).unwrap();
@@ -230,8 +334,7 @@ default = "upstream"
     fn config_with_global_defaults() {
         let repo_config = Config {
             default_project: Some("repo-proj".to_string()),
-            stage: None,
-            remote: None,
+            ..Default::default()
         };
         let global = GlobalConfig {
             root: Some(PathBuf::from("/global")),
@@ -240,6 +343,7 @@ default = "upstream"
             remote: Some(RemoteConfig {
                 default: Some("upstream".to_string()),
             }),
+            ..Default::default()
         };
         let merged = repo_config.with_global_defaults(&global);
         // repo config wins for default_project
@@ -259,10 +363,95 @@ default = "upstream"
     fn remote_config_omitted_when_none() {
         let config = Config {
             default_project: Some("fbm".to_string()),
-            stage: None,
-            remote: None,
+            ..Default::default()
         };
         let toml_str = config.to_toml().unwrap();
         assert!(!toml_str.contains("[remote]"));
+    }
+
+    // --- default_format tests ---
+
+    #[test]
+    fn parse_config_with_default_format() {
+        let toml_str = r#"default_format = "json""#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert_eq!(config.default_format, Some("json".to_string()));
+    }
+
+    #[test]
+    fn config_default_format_round_trip() {
+        let config = Config {
+            default_format: Some("table".to_string()),
+            ..Default::default()
+        };
+        let toml_str = config.to_toml().unwrap();
+        let parsed = Config::from_toml(&toml_str).unwrap();
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn global_config_with_default_format() {
+        let toml_str = r#"default_format = "markdown""#;
+        let config = GlobalConfig::from_toml(toml_str).unwrap();
+        assert_eq!(config.default_format, Some("markdown".to_string()));
+    }
+
+    #[test]
+    fn validate_config_invalid_format() {
+        let toml_str = r#"default_format = "xml""#;
+        let err = Config::from_toml(toml_str).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("xml"),
+            "error should mention the invalid value"
+        );
+        assert!(
+            msg.contains("default_format"),
+            "error should mention the key"
+        );
+    }
+
+    #[test]
+    fn validate_config_valid_formats() {
+        for fmt in VALID_FORMATS {
+            let toml_str = format!("default_format = \"{fmt}\"");
+            Config::from_toml(&toml_str).unwrap_or_else(|e| panic!("'{fmt}' should be valid: {e}"));
+        }
+    }
+
+    #[test]
+    fn with_global_defaults_includes_format() {
+        let repo_config = Config::default();
+        let global = GlobalConfig {
+            default_format: Some("json".to_string()),
+            ..Default::default()
+        };
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(merged.default_format, Some("json".to_string()));
+    }
+
+    #[test]
+    fn with_global_defaults_repo_format_wins() {
+        let repo_config = Config {
+            default_format: Some("table".to_string()),
+            ..Default::default()
+        };
+        let global = GlobalConfig {
+            default_format: Some("json".to_string()),
+            ..Default::default()
+        };
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(merged.default_format, Some("table".to_string()));
+    }
+
+    // --- ConfigSource display tests ---
+
+    #[test]
+    fn config_source_display() {
+        assert_eq!(ConfigSource::Flag.to_string(), "CLI flag");
+        assert_eq!(ConfigSource::Env.to_string(), "environment variable");
+        assert_eq!(ConfigSource::Repo.to_string(), "repo config");
+        assert_eq!(ConfigSource::Global.to_string(), "global config");
+        assert_eq!(ConfigSource::Default.to_string(), "default");
     }
 }

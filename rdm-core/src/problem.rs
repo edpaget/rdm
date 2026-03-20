@@ -145,6 +145,7 @@ impl From<&Error> for ProblemDetail {
             | Error::InvalidPath(_)
             | Error::PushRejected(_)
             | Error::BranchesDiverged(_)
+            | Error::InvalidConfigValue { .. }
             | Error::Git(_) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Internal Server Error".to_string(),
