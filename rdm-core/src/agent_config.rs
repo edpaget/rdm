@@ -295,7 +295,7 @@ pub struct SkillOptions {
 ///     project: Some("myproj".to_string()),
 ///     principles_file: None,
 /// });
-/// assert_eq!(skills.len(), 3);
+/// assert_eq!(skills.len(), 4);
 /// assert!(skills[0].content.contains("--project myproj"));
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
@@ -305,6 +305,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
         skill_roadmap(&proj_flag, principles_note.as_deref()),
         skill_implement(&proj_flag, principles_note.as_deref()),
         skill_tasks(&proj_flag, principles_note.as_deref()),
+        skill_review(&proj_flag, principles_note.as_deref()),
     ]
 }
 
@@ -449,6 +450,75 @@ Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
 10. **Finalize**: on user acceptance:
     - Commit the implementation changes
     - Mark the task done: `rdm task update <slug> --status done --no-edit {proj_flag}`
+"#
+        ),
+    }
+}
+
+fn skill_review(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    let principles = principles_note.unwrap_or("");
+    SkillFile {
+        relative_path: "rdm-review/SKILL.md",
+        content: format!(
+            r#"---
+name: rdm-review
+description: Review implementation of an rdm phase or task
+allowed-tools:
+  - Read
+  - Bash
+  - Glob
+  - Grep
+  - Agent
+---
+
+Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task.
+{principles}
+## Steps
+
+1. **Parse arguments**: determine whether this is a phase review or task review from `$ARGUMENTS`.
+   - If the first argument is `--task`, the next argument is a task slug.
+   - Otherwise, the first argument is a roadmap slug and the second is a phase number.
+
+2. **Read the acceptance criteria**:
+   - For a phase: `rdm phase show <phase-number> --roadmap <slug> {proj_flag}`
+   - For a task: `rdm task show <slug> {proj_flag}`
+   Extract the acceptance criteria, steps, and any other requirements from the body.
+
+3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task.
+
+4. **Dispatch parallel review agents** using the `Agent` tool. Launch at least two agents concurrently:
+
+   **Agent 1 — AC Compliance Reviewer**:
+   - For each acceptance criterion, evaluate whether it is met
+   - Provide evidence: file paths, line numbers, test names
+   - Rate each criterion: PASS, FAIL, or PARTIAL
+   - Note any criteria that are ambiguous or untestable
+
+   **Agent 2 — Code Quality Reviewer**:
+   - Check adherence to CLAUDE.md conventions (error handling, doc comments, test coverage, unsafe policy)
+   - Review architecture: does the implementation follow the core/cli/server separation?
+   - Check for common issues: missing error context, untested edge cases, public API without docs
+   - Verify tests exist and cover the key behaviors
+
+5. **Collect and consolidate results** from both agents into a single report:
+   - List each acceptance criterion with its status (PASS / FAIL / PARTIAL) and evidence
+   - List code quality findings grouped by severity (blocking, concern, suggestion)
+   - Provide an overall verdict: **PASS**, **PASS WITH CONCERNS**, or **FAIL**
+
+6. **Present the report** to the user in a clear, structured format.
+
+7. **Offer to create rdm tasks** for any actionable issues found:
+   ```bash
+   rdm task create <slug> --title "Review finding: description" --body "Details." --no-edit {proj_flag}
+   ```
+
+## Guidelines
+
+- Be objective — evaluate against the stated AC, not personal preferences
+- Provide specific evidence (file paths, line numbers) for every finding
+- Distinguish between blocking issues (FAIL) and minor concerns (PASS WITH CONCERNS)
+- Do not re-implement or fix code — only review and report
+- If AC are missing or vague, note this as a finding rather than guessing intent
 "#
         ),
     }
@@ -722,12 +792,12 @@ mod tests {
     // --- Skill generation tests ---
 
     #[test]
-    fn generate_skills_returns_three_files() {
+    fn generate_skills_returns_four_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
         });
-        assert_eq!(skills.len(), 3);
+        assert_eq!(skills.len(), 4);
     }
 
     #[test]
@@ -739,6 +809,7 @@ mod tests {
         assert_eq!(skills[0].relative_path, "rdm-roadmap/SKILL.md");
         assert_eq!(skills[1].relative_path, "rdm-implement/SKILL.md");
         assert_eq!(skills[2].relative_path, "rdm-tasks/SKILL.md");
+        assert_eq!(skills[3].relative_path, "rdm-review/SKILL.md");
     }
 
     #[test]
@@ -775,6 +846,7 @@ mod tests {
         assert!(skills[0].content.contains("name: rdm-roadmap"));
         assert!(skills[1].content.contains("name: rdm-implement"));
         assert!(skills[2].content.contains("name: rdm-tasks"));
+        assert!(skills[3].content.contains("name: rdm-review"));
     }
 
     #[test]
@@ -970,6 +1042,45 @@ mod tests {
             .expect("missing frontmatter");
         assert!(!frontmatter.contains("Write"));
         assert!(!frontmatter.contains("Edit"));
+    }
+
+    #[test]
+    fn skill_review_contains_rdm_commands() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[3].content;
+        assert!(content.contains("rdm phase show"));
+        assert!(content.contains("rdm task show"));
+    }
+
+    #[test]
+    fn skill_review_has_correct_name() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        assert!(skills[3].content.contains("name: rdm-review"));
+    }
+
+    #[test]
+    fn skill_review_has_agent_tool() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[3].content;
+        assert!(content.contains("Agent"));
+    }
+
+    #[test]
+    fn skill_review_contains_arguments_variable() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        assert!(skills[3].content.contains("$ARGUMENTS"));
     }
 
     // --- MCP config generation tests ---

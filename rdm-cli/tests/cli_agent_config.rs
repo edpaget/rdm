@@ -195,7 +195,7 @@ fn agent_config_skills_requires_out() {
 }
 
 #[test]
-fn agent_config_skills_generates_three_files() {
+fn agent_config_skills_generates_four_files() {
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("agent-config")
@@ -205,11 +205,12 @@ fn agent_config_skills_generates_three_files() {
         .arg(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(3));
+        .stdout(predicate::str::contains("Wrote").count(4));
 
     assert!(dir.path().join("rdm-roadmap/SKILL.md").exists());
     assert!(dir.path().join("rdm-implement/SKILL.md").exists());
     assert!(dir.path().join("rdm-tasks/SKILL.md").exists());
+    assert!(dir.path().join("rdm-review/SKILL.md").exists());
 }
 
 #[test]
