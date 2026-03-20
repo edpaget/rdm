@@ -122,6 +122,8 @@ impl From<&Error> for ProblemDetail {
             | Error::ConfigNotFound
             | Error::ConfigSerialize(_)
             | Error::InvalidPath(_)
+            | Error::PushRejected(_)
+            | Error::BranchesDiverged(_)
             | Error::Git(_) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Internal Server Error".to_string(),

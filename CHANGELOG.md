@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm remote push [name]` command to push local commits to a remote (supports `--force`)
+- `rdm remote pull [name]` command to fetch and fast-forward merge from a remote, with automatic INDEX.md regeneration
+- `PushResult`, `PullResult` structs and `git_push`/`git_pull` methods on `GitStore`
+- `PushRejected` and `BranchesDiverged` error variants with actionable messages
 - `rdm remote add <name> <url>` command to register a git remote on the plan repo
 - `rdm remote remove <name>` command to remove a git remote
 - `rdm remote list` command to display all configured remotes with their URLs

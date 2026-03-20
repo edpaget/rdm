@@ -54,6 +54,30 @@ pub struct RemoteInfo {
     pub url: String,
 }
 
+/// Result of a successful `git push` operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushResult {
+    /// The remote that was pushed to.
+    pub remote: String,
+    /// The branch that was pushed.
+    pub branch: String,
+    /// Number of commits pushed.
+    pub commits_pushed: usize,
+}
+
+/// Result of a successful `git pull` (fetch + fast-forward merge) operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullResult {
+    /// The remote that was pulled from.
+    pub remote: String,
+    /// The branch that was pulled.
+    pub branch: String,
+    /// Number of commits merged.
+    pub commits_merged: usize,
+    /// Whether any file content changed.
+    pub changed: bool,
+}
+
 /// Sync status between the local branch and a remote tracking branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncStatus {
@@ -538,6 +562,200 @@ impl GitStore {
         self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Pushes the current branch to a named git remote.
+    ///
+    /// Verifies the remote exists, determines the current branch, then shells
+    /// out to `git push`. If `force` is true, `--force` is added.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RemoteNotFound`] if no remote with the given name exists.
+    /// Returns [`Error::PushRejected`] if the push is rejected (non-fast-forward).
+    /// Returns `Error::Git` if HEAD is detached, `git` is not found, or the
+    /// push fails for another reason.
+    pub fn git_push(&mut self, remote_name: &str, force: bool) -> Result<PushResult> {
+        let existing = self.git_remote_list()?;
+        if !existing.iter().any(|r| r.name == remote_name) {
+            return Err(Error::RemoteNotFound(remote_name.to_string()));
+        }
+
+        let branch = self
+            .current_branch_name()?
+            .ok_or_else(|| Error::Git("cannot push: HEAD is detached".to_string()))?;
+
+        // Get pre-push sync status to count commits
+        let pre_status = self.git_sync_status(remote_name)?;
+        let ahead_count = pre_status.as_ref().map_or(0, |s| s.ahead);
+
+        let mut args = vec!["push", remote_name, &branch];
+        if force {
+            args.push("--force");
+        }
+
+        let output = match std::process::Command::new("git")
+            .args(&args)
+            .current_dir(self.inner.root())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Error::Git(
+                    "git is not installed — install git to use remote features".to_string(),
+                ));
+            }
+            Err(e) => {
+                return Err(Error::Git(format!("failed to run git push: {e}")));
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("non-fast-forward")
+                || stderr.contains("rejected")
+                || stderr.contains("fetch first")
+            {
+                return Err(Error::PushRejected(format!(
+                    "remote has commits you don't have locally ({remote_name}/{branch})"
+                )));
+            }
+            return Err(Error::Git(format!(
+                "git push {remote_name} failed: {stderr}"
+            )));
+        }
+
+        // Determine how many commits were pushed: use ahead_count if we had
+        // tracking refs, otherwise check git's stderr for "Everything up-to-date"
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let commits_pushed = if ahead_count > 0 {
+            ahead_count
+        } else if stderr.contains("Everything up-to-date") {
+            0
+        } else {
+            // First push or no tracking ref — something was pushed but we
+            // can't count precisely without parsing, so report at least 1
+            1
+        };
+
+        // Reopen repo to refresh refs
+        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+
+        Ok(PushResult {
+            remote: remote_name.to_string(),
+            branch,
+            commits_pushed,
+        })
+    }
+
+    /// Pulls from a named git remote (fetch + fast-forward merge).
+    ///
+    /// Fetches from the remote, checks sync status, and if behind,
+    /// performs a `git merge --ff-only` to incorporate remote changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RemoteNotFound`] if no remote with the given name exists.
+    /// Returns [`Error::BranchesDiverged`] if local and remote have diverged.
+    /// Returns `Error::Git` if HEAD is detached, `git` is not found, or the
+    /// merge fails.
+    pub fn git_pull(&mut self, remote_name: &str) -> Result<PullResult> {
+        let existing = self.git_remote_list()?;
+        if !existing.iter().any(|r| r.name == remote_name) {
+            return Err(Error::RemoteNotFound(remote_name.to_string()));
+        }
+
+        let branch = self
+            .current_branch_name()?
+            .ok_or_else(|| Error::Git("cannot pull: HEAD is detached".to_string()))?;
+
+        // Fetch first
+        self.git_fetch(remote_name)?;
+
+        // Check sync status
+        let status = self.git_sync_status(remote_name)?;
+        let (ahead, behind) = match &status {
+            Some(s) => (s.ahead, s.behind),
+            None => {
+                return Ok(PullResult {
+                    remote: remote_name.to_string(),
+                    branch,
+                    commits_merged: 0,
+                    changed: false,
+                });
+            }
+        };
+
+        if ahead > 0 && behind > 0 {
+            return Err(Error::BranchesDiverged(format!(
+                "{branch} is {ahead} ahead and {behind} behind {remote_name}/{branch}"
+            )));
+        }
+
+        if behind == 0 {
+            return Ok(PullResult {
+                remote: remote_name.to_string(),
+                branch,
+                commits_merged: 0,
+                changed: false,
+            });
+        }
+
+        // Fast-forward merge
+        let tracking_ref = format!("{remote_name}/{branch}");
+        let output = match std::process::Command::new("git")
+            .args(["merge", "--ff-only", &tracking_ref])
+            .current_dir(self.inner.root())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Error::Git(
+                    "git is not installed — install git to use remote features".to_string(),
+                ));
+            }
+            Err(e) => {
+                return Err(Error::Git(format!("failed to run git merge: {e}")));
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Git(format!("git merge --ff-only failed: {stderr}")));
+        }
+
+        // Reopen repo to refresh state
+        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+
+        Ok(PullResult {
+            remote: remote_name.to_string(),
+            branch,
+            commits_merged: behind,
+            changed: true,
+        })
+    }
+
+    /// Returns the current branch name, or `None` if HEAD is detached or unborn.
+    fn current_branch_name(&self) -> Result<Option<String>> {
+        let head = match self.repo.head().ok() {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+        let referent = match head.referent_name() {
+            Some(name) => name.to_owned(),
+            None => return Ok(None),
+        };
+        Ok(referent
+            .as_bstr()
+            .to_string()
+            .strip_prefix("refs/heads/")
+            .map(|s| s.to_string()))
     }
 
     /// Computes the ahead/behind status between the local branch and a remote
@@ -1592,5 +1810,265 @@ mod tests {
         let store = GitStore::new(dir.path()).unwrap();
         let status = store.git_sync_status("origin").unwrap();
         assert!(status.is_none(), "expected None for detached HEAD");
+    }
+
+    #[test]
+    fn git_push_clean() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_fetch("origin").unwrap();
+
+        // Make two local commits
+        store
+            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store
+            .write(&RelPath::new("b.md").unwrap(), "b".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let result = store.git_push("origin", false).unwrap();
+        assert_eq!(result.remote, "origin");
+        assert_eq!(result.commits_pushed, 2);
+
+        // After push, sync status should be up to date
+        let status = store.git_sync_status("origin").unwrap().unwrap();
+        assert_eq!(status.ahead, 0);
+        assert_eq!(status.behind, 0);
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn git_push_rejected_behind() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_fetch("origin").unwrap();
+
+        // Push a commit to bare from a separate clone
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "remote commit"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        // Make a local commit
+        store
+            .write(&RelPath::new("local.md").unwrap(), "local".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        // Push should fail — diverged histories
+        let result = store.git_push("origin", false);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("push rejected")
+                || err.to_string().contains("non-fast-forward"),
+            "expected push rejection, got: {err}"
+        );
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn git_push_force() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_fetch("origin").unwrap();
+
+        // Push a commit to bare from a separate clone
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "remote commit"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        // Make a local commit
+        store
+            .write(&RelPath::new("local.md").unwrap(), "local".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        // Force push should succeed
+        let result = store.git_push("origin", true).unwrap();
+        assert_eq!(result.remote, "origin");
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn git_pull_clean() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+
+        // Push new commits to bare from a separate clone
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("pulled.md"), "pulled content").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "add pulled file"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        let result = store.git_pull("origin").unwrap();
+        assert_eq!(result.remote, "origin");
+        assert_eq!(result.commits_merged, 1);
+        assert!(result.changed);
+
+        // File should now exist locally
+        assert!(dir.path().join("pulled.md").exists());
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn git_pull_already_up_to_date() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+
+        let result = store.git_pull("origin").unwrap();
+        assert_eq!(result.commits_merged, 0);
+        assert!(!result.changed);
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn git_pull_diverged_rejects() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_fetch("origin").unwrap();
+
+        // Make a local commit
+        store
+            .write(&RelPath::new("local.md").unwrap(), "local".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        // Push a different commit to bare from a clone
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "remote commit"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        // Pull should fail with diverged error
+        let result = store.git_pull("origin");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("diverged"),
+            "expected diverged error, got: {err}"
+        );
+
+        let _ = bare_dir;
     }
 }

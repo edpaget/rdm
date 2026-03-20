@@ -39,6 +39,10 @@ pub enum Error {
     RemoteNotFound(String),
     /// A git remote with the given name already exists.
     DuplicateRemote(String),
+    /// A git push was rejected (non-fast-forward).
+    PushRejected(String),
+    /// Local and remote branches have diverged.
+    BranchesDiverged(String),
     /// A git operation failed.
     Git(String),
 }
@@ -105,6 +109,18 @@ impl std::fmt::Display for Error {
             }
             Error::DuplicateRemote(name) => {
                 write!(f, "remote '{name}' already exists")
+            }
+            Error::PushRejected(msg) => {
+                write!(
+                    f,
+                    "push rejected: {msg} — pull first with `rdm remote pull`, then push again"
+                )
+            }
+            Error::BranchesDiverged(msg) => {
+                write!(
+                    f,
+                    "branches have diverged: {msg} — resolve manually with `git rebase` or `git merge`"
+                )
             }
             Error::Git(msg) => write!(f, "git error: {msg}"),
         }

@@ -499,6 +499,19 @@ enum RemoteCommand {
         /// Remote name (defaults to the configured default remote).
         name: Option<String>,
     },
+    /// Push local commits to a remote.
+    Push {
+        /// Remote name (defaults to the configured default remote).
+        name: Option<String>,
+        /// Force push (overwrite remote history).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Pull (fetch + fast-forward merge) from a remote.
+    Pull {
+        /// Remote name (defaults to the configured default remote).
+        name: Option<String>,
+    },
 }
 
 /// Item type argument for `--type` flag.
@@ -637,6 +650,24 @@ fn resolve_project(flag: Option<String>, repo: &PlanRepo<AppStore>) -> Result<St
     bail!(
         "no project specified — use --project, set RDM_PROJECT, or set default_project in rdm.toml"
     )
+}
+
+/// Resolve a remote name from an explicit argument or `remote.default` in `rdm.toml`.
+#[cfg(feature = "git")]
+fn resolve_remote_name(name: Option<String>, root: &Path) -> Result<String> {
+    if let Some(n) = name {
+        return Ok(n);
+    }
+    let config_path = root.join("rdm.toml");
+    let default = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|s| rdm_core::config::Config::from_toml(&s).ok())
+        .and_then(|c| c.remote)
+        .and_then(|r| r.default);
+    match default {
+        Some(d) => Ok(d),
+        None => bail!("no remote specified — pass a remote name or set remote.default in rdm.toml"),
+    }
 }
 
 /// Resolve body content from `--body` flag, piped stdin, or interactive editor.
@@ -1729,27 +1760,39 @@ fn run() -> Result<()> {
                     }
                 }
                 RemoteCommand::Fetch { name } => {
-                    let remote_name = match name {
-                        Some(n) => n,
-                        None => {
-                            let config_path = root.join("rdm.toml");
-                            let default = std::fs::read_to_string(&config_path)
-                                .ok()
-                                .and_then(|s| rdm_core::config::Config::from_toml(&s).ok())
-                                .and_then(|c| c.remote)
-                                .and_then(|r| r.default);
-                            match default {
-                                Some(d) => d,
-                                None => bail!(
-                                    "no remote specified — pass a remote name or set remote.default in rdm.toml"
-                                ),
-                            }
-                        }
-                    };
+                    let remote_name = resolve_remote_name(name, &root)?;
                     store
                         .git_fetch(&remote_name)
                         .context("failed to fetch from remote")?;
                     println!("Fetched from '{remote_name}'.");
+                }
+                RemoteCommand::Push { name, force } => {
+                    let remote_name = resolve_remote_name(name, &root)?;
+                    let result = store.git_push(&remote_name, force)?;
+                    if result.commits_pushed == 0 {
+                        println!("Already up to date.");
+                    } else {
+                        println!(
+                            "Pushed {} commit(s) to {}/{}.",
+                            result.commits_pushed, result.remote, result.branch
+                        );
+                    }
+                }
+                RemoteCommand::Pull { name } => {
+                    let remote_name = resolve_remote_name(name, &root)?;
+                    let result = store.git_pull(&remote_name)?;
+                    if !result.changed {
+                        println!("Already up to date.");
+                    } else {
+                        println!(
+                            "Pulled {} commit(s) from {}/{}.",
+                            result.commits_merged, result.remote, result.branch
+                        );
+                        // Regenerate INDEX.md after pulling new content
+                        let mut repo = PlanRepo::new(store);
+                        repo.generate_index()
+                            .context("failed to regenerate INDEX.md after pull")?;
+                    }
                 }
             }
         }

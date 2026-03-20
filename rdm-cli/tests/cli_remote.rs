@@ -275,6 +275,285 @@ fn status_shows_sync_info() {
 }
 
 #[test]
+fn remote_push_success() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    // Create a task to generate a local commit
+    // Create a local commit by writing a file and committing via git
+    std::fs::write(dir.path().join("local-change.md"), "content").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "local change"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("push")
+        .arg("origin")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pushed"))
+        .stdout(predicate::str::contains("origin"));
+
+    let _ = bare_dir;
+}
+
+#[test]
+fn remote_push_rejected() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    // Fetch to establish tracking refs
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("fetch")
+        .arg("origin")
+        .assert()
+        .success();
+
+    // Push a commit to bare from a separate clone
+    let clone_dir = tempfile::TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone"])
+        .arg(bare_dir.path())
+        .arg(clone_dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "remote commit"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["push"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+
+    // Make a local commit
+    // Create a local commit by writing a file and committing via git
+    std::fs::write(dir.path().join("local-change.md"), "content").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "local change"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Push should be rejected
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("push")
+        .arg("origin")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("push rejected").or(predicate::str::contains("rejected")));
+
+    let _ = bare_dir;
+}
+
+#[test]
+fn remote_pull_success() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    // Push a commit to bare from a separate clone
+    let clone_dir = tempfile::TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone"])
+        .arg(bare_dir.path())
+        .arg(clone_dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(clone_dir.path().join("new-file.md"), "content").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "add new file"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["push"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("pull")
+        .arg("origin")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pulled"))
+        .stdout(predicate::str::contains("origin"));
+
+    // File should now exist locally
+    assert!(dir.path().join("new-file.md").exists());
+
+    let _ = bare_dir;
+}
+
+#[test]
+fn remote_pull_diverged() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    // Fetch to establish tracking refs
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("fetch")
+        .arg("origin")
+        .assert()
+        .success();
+
+    // Push a commit to bare from a separate clone
+    let clone_dir = tempfile::TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone"])
+        .arg(bare_dir.path())
+        .arg(clone_dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "remote commit"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["push"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+
+    // Make a local commit
+    // Create a local commit by writing a file and committing via git
+    std::fs::write(dir.path().join("local-change.md"), "content").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "local change"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Pull should fail with diverged
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("pull")
+        .arg("origin")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("diverged"));
+
+    let _ = bare_dir;
+}
+
+#[test]
+fn remote_pull_regenerates_index() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    // Push a new file from a separate clone
+    let clone_dir = tempfile::TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone"])
+        .arg(bare_dir.path())
+        .arg(clone_dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(clone_dir.path().join("extra.md"), "extra content").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "add extra file"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["push"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("pull")
+        .arg("origin")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pulled"));
+
+    // The pulled file should exist
+    assert!(
+        dir.path().join("extra.md").exists(),
+        "extra.md should exist after pull"
+    );
+
+    // INDEX.md should exist (regenerated after pull)
+    let index_path = dir.path().join("INDEX.md");
+    assert!(index_path.exists(), "INDEX.md should exist after pull");
+
+    let _ = bare_dir;
+}
+
+#[test]
 fn status_with_fetch_flag() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
