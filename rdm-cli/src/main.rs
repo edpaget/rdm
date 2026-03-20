@@ -797,10 +797,17 @@ fn maybe_regenerate_index(
     repo: &mut PlanRepo<AppStore>,
     no_index: bool,
     staging: bool,
+    project: Option<&str>,
 ) -> Result<()> {
     if !no_index {
-        repo.generate_index()
-            .context("failed to regenerate INDEX.md")?;
+        match project {
+            Some(p) => repo
+                .generate_index_for_project(p)
+                .context("failed to regenerate INDEX.md")?,
+            None => repo
+                .generate_index()
+                .context("failed to regenerate INDEX.md")?,
+        }
     }
     if staging {
         println!("  (staged — run `rdm commit` to persist)");
@@ -859,7 +866,7 @@ fn run() -> Result<()> {
                         .create_project(&name, title)
                         .context("failed to create project")?;
                     println!("Created project '{}'", doc.frontmatter.name);
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&name))?;
                 }
                 ProjectCommand::Show { name } => {
                     let doc = repo.load_project(&name).context("failed to load project")?;
@@ -936,7 +943,7 @@ fn run() -> Result<()> {
                     repo.create_roadmap(&project, &slug, title, body.as_deref())
                         .context("failed to create roadmap")?;
                     println!("Created roadmap '{slug}' in project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 RoadmapCommand::Show {
                     slug,
@@ -1030,14 +1037,14 @@ fn run() -> Result<()> {
                     repo.add_dependency(&project, &slug, &on)
                         .context("failed to add dependency")?;
                     println!("Added dependency: {slug} → {on}");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 RoadmapCommand::Undepend { slug, on, project } => {
                     let project = resolve_project(project, &repo)?;
                     repo.remove_dependency(&project, &slug, &on)
                         .context("failed to remove dependency")?;
                     println!("Removed dependency: {slug} → {on}");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 RoadmapCommand::Deps { project } => {
                     reject_non_human(format, "roadmap deps")?;
@@ -1062,7 +1069,7 @@ fn run() -> Result<()> {
                     repo.delete_roadmap(&project, &slug)
                         .context("failed to delete roadmap")?;
                     println!("Deleted roadmap '{slug}' from project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 RoadmapCommand::Split {
                     slug,
@@ -1090,7 +1097,7 @@ fn run() -> Result<()> {
                         "Split {} phase(s) from '{slug}' into new roadmap '{into}'",
                         resolved_stems.len()
                     );
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 RoadmapCommand::Archive {
                     slug,
@@ -1101,14 +1108,14 @@ fn run() -> Result<()> {
                     repo.archive_roadmap(&project, &slug, force)
                         .context("failed to archive roadmap")?;
                     println!("Archived roadmap '{slug}' from project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 RoadmapCommand::Unarchive { slug, project } => {
                     let project = resolve_project(project, &repo)?;
                     repo.unarchive_roadmap(&project, &slug)
                         .context("failed to unarchive roadmap")?;
                     println!("Restored roadmap '{slug}' to project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
             }
         }
@@ -1133,7 +1140,7 @@ fn run() -> Result<()> {
                         .context("failed to create phase")?;
                     let stem = doc.frontmatter.stem(&slug);
                     println!("Created phase '{stem}' in roadmap '{roadmap}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 PhaseCommand::List { roadmap, project } => {
                     let project = resolve_project(project, &repo)?;
@@ -1240,7 +1247,7 @@ fn run() -> Result<()> {
                         .update_phase(&project, &roadmap, &stem, status, body.as_deref())
                         .context("failed to update phase")?;
                     println!("Updated '{stem}' → {}", doc.frontmatter.status);
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 PhaseCommand::Remove {
                     stem,
@@ -1254,7 +1261,7 @@ fn run() -> Result<()> {
                     repo.remove_phase(&project, &roadmap, &stem)
                         .context("failed to remove phase")?;
                     println!("Removed phase '{stem}' from roadmap '{roadmap}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
             }
         }
@@ -1277,7 +1284,7 @@ fn run() -> Result<()> {
                     repo.create_task(&project, &slug, title, priority, tags, body.as_deref())
                         .context("failed to create task")?;
                     println!("Created task '{slug}' in project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 TaskCommand::Show {
                     slug,
@@ -1330,7 +1337,7 @@ fn run() -> Result<()> {
                         "Updated task '{slug}' → status: {}, priority: {}",
                         doc.frontmatter.status, doc.frontmatter.priority
                     );
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
                 }
                 TaskCommand::List {
                     project,
@@ -1399,7 +1406,7 @@ fn run() -> Result<()> {
                 "Promoted task '{task_slug}' → roadmap '{}'",
                 doc.frontmatter.roadmap
             );
-            maybe_regenerate_index(&mut repo, cli.no_index, staging)?;
+            maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
         }
 
         Command::Tree { project } => {

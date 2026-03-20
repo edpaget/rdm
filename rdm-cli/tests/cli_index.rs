@@ -365,3 +365,74 @@ fn index_after_phase_update() {
         "index should reflect phase status change"
     );
 }
+
+#[test]
+fn mutation_only_rewrites_targeted_project_index() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--no-index")
+        .arg("init")
+        .assert()
+        .success();
+
+    // Create two projects with roadmaps
+    for (proj, roadmap) in &[("proj-a", "alpha"), ("proj-b", "beta")] {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--no-index")
+            .args(["project", "create", proj])
+            .assert()
+            .success();
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--no-index")
+            .args(["roadmap", "create", roadmap, "--project", proj])
+            .assert()
+            .success();
+    }
+
+    // Generate full index so both project INDEX.md files exist
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
+        .assert()
+        .success();
+
+    let proj_b_index_before =
+        std::fs::read_to_string(dir.path().join("projects/proj-b/INDEX.md")).unwrap();
+
+    // Mutate proj-a (auto-regenerates index for proj-a only)
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "proj-a",
+        ])
+        .assert()
+        .success();
+
+    // proj-b's INDEX.md should be unchanged
+    let proj_b_index_after =
+        std::fs::read_to_string(dir.path().join("projects/proj-b/INDEX.md")).unwrap();
+    assert_eq!(
+        proj_b_index_before, proj_b_index_after,
+        "proj-b INDEX.md should not be rewritten when proj-a is mutated"
+    );
+
+    // Top-level INDEX.md should reflect the mutation (proj-a now has a phase)
+    let root = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    assert!(root.contains("[proj-a]"));
+    assert!(root.contains("[proj-b]"));
+    assert!(root.contains("not started")); // proj-a's phase is not-started
+}
