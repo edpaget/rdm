@@ -229,6 +229,47 @@ impl GitStore {
         Ok(Some(HeadCommitInfo { sha, message }))
     }
 
+    /// Returns commit info for all commits in a range.
+    ///
+    /// When `since_ref` is `None`, uses `HEAD@{1}` (the reflog entry before the
+    /// current HEAD) as the exclusion anchor — this covers the commits introduced
+    /// by the most recent merge or pull.
+    ///
+    /// When `since_ref` is `Some(ref_str)`, uses that ref as the exclusion
+    /// anchor — useful for backfilling or scanning a specific range.
+    ///
+    /// Returns commits newest-first. Returns an empty vec if the range is empty
+    /// or the anchor ref is invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if the git command cannot be executed.
+    pub fn commit_messages_since(&self, since_ref: Option<&str>) -> Result<Vec<HeadCommitInfo>> {
+        let anchor = since_ref.unwrap_or("HEAD@{1}");
+        let output = self.run_git(&["log", "--format=%H%n%B%n<END>", "HEAD", "--not", anchor])?;
+        if !output.status.success() {
+            // Anchor ref may not exist (e.g. shallow clone, no reflog).
+            // Return empty rather than failing.
+            return Ok(Vec::new());
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut commits = Vec::new();
+        for block in stdout.split("<END>") {
+            let block = block.trim();
+            if block.is_empty() {
+                continue;
+            }
+            // First line is the SHA, rest is the message.
+            if let Some((sha, message)) = block.split_once('\n') {
+                commits.push(HeadCommitInfo {
+                    sha: sha.trim().to_string(),
+                    message: message.trim().to_string(),
+                });
+            }
+        }
+        Ok(commits)
+    }
+
     /// Returns the name of the remote's default branch.
     ///
     /// Tries `git symbolic-ref refs/remotes/origin/HEAD`, strips the prefix,
@@ -2446,6 +2487,86 @@ mod tests {
             err.to_string().contains("no merge in progress"),
             "expected NoMergeInProgress, got: {err}"
         );
+    }
+
+    #[test]
+    fn commit_messages_since_returns_multiple_commits() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+
+        // Create initial commit
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        // Tag the initial commit as our anchor
+        git_cmd()
+            .args(["tag", "anchor"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Create three more commits
+        store
+            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store
+            .write(&RelPath::new("b.md").unwrap(), "b".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store
+            .write(&RelPath::new("c.md").unwrap(), "c".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let commits = store.commit_messages_since(Some("anchor")).unwrap();
+        assert_eq!(
+            commits.len(),
+            3,
+            "expected 3 commits, got {}",
+            commits.len()
+        );
+
+        // Commits should be newest-first
+        assert!(commits[0].message.contains("c.md"));
+        assert!(commits[1].message.contains("b.md"));
+        assert!(commits[2].message.contains("a.md"));
+
+        // Each should have a valid SHA
+        for c in &commits {
+            assert_eq!(c.sha.len(), 40, "expected 40-char SHA, got {}", c.sha);
+        }
+    }
+
+    #[test]
+    fn commit_messages_since_empty_range() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        // HEAD..HEAD should be empty
+        let commits = store.commit_messages_since(Some("HEAD")).unwrap();
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn commit_messages_since_invalid_ref_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let commits = store
+            .commit_messages_since(Some("nonexistent-ref-abc123"))
+            .unwrap();
+        assert!(commits.is_empty());
     }
 
     #[test]

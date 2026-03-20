@@ -226,7 +226,13 @@ fn agent_config_skills_have_valid_frontmatter() {
         .assert()
         .success();
 
-    for name in &["rdm-roadmap", "rdm-implement", "rdm-tasks", "rdm-review", "rdm-document"] {
+    for name in &[
+        "rdm-roadmap",
+        "rdm-implement",
+        "rdm-tasks",
+        "rdm-review",
+        "rdm-document",
+    ] {
         let path = dir.path().join(format!("{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -255,7 +261,13 @@ fn agent_config_skills_embed_project_flag() {
         .assert()
         .success();
 
-    for name in &["rdm-roadmap", "rdm-implement", "rdm-tasks", "rdm-review", "rdm-document"] {
+    for name in &[
+        "rdm-roadmap",
+        "rdm-implement",
+        "rdm-tasks",
+        "rdm-review",
+        "rdm-document",
+    ] {
         let path = dir.path().join(format!("{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(

@@ -544,7 +544,12 @@ enum HookCommand {
     /// Remove the rdm post-merge git hook.
     Uninstall,
     /// Run post-merge logic: parse Done: directives and mark phases done.
-    PostMerge,
+    PostMerge {
+        /// Scan commits since this ref (tag, SHA, branch) instead of the
+        /// default reflog anchor `HEAD@{1}`.
+        #[arg(long)]
+        since: Option<String>,
+    },
 }
 
 /// Item type argument for `--type` flag.
@@ -893,22 +898,43 @@ fn expand_root(path: PathBuf) -> Result<PathBuf> {
     Ok(normalized)
 }
 
-/// Runs the post-merge hook logic: parse `Done:` directives from HEAD and
-/// mark matching phases done.
+/// Runs the post-merge hook logic: parse `Done:` directives from commits
+/// and mark matching phases done.
+///
+/// When `since` is `None`, scans commits introduced by the most recent merge
+/// (using the reflog anchor `HEAD@{1}`). When `since` is `Some(ref)`, scans
+/// all commits reachable from HEAD but not from the given ref.
 ///
 /// All errors are intentionally swallowed by the caller — this must never
 /// block a git merge.
 #[cfg(feature = "git")]
-fn run_post_merge_hook(root: &Path, staging: bool) -> Result<()> {
+fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Result<()> {
     let store = make_store(root, staging)?;
-    let info = store.head_commit_info()?.context("no HEAD commit found")?;
-    let directives = rdm_core::hook::parse_done_directives(&info.message);
-    if directives.is_empty() {
+    let commits = store.commit_messages_since(since)?;
+    if commits.is_empty() {
         return Ok(());
     }
+
+    // Collect directives from all commits. Commits are newest-first, so the
+    // first occurrence of a roadmap/phase pair wins (latest SHA).
+    let mut seen = std::collections::HashSet::new();
+    let mut directives_with_sha = Vec::new();
+    for commit in &commits {
+        for directive in rdm_core::hook::parse_done_directives(&commit.message) {
+            let key = (directive.roadmap.clone(), directive.phase.clone());
+            if seen.insert(key) {
+                directives_with_sha.push((directive, commit.sha.clone()));
+            }
+        }
+    }
+
+    if directives_with_sha.is_empty() {
+        return Ok(());
+    }
+
     let mut repo = PlanRepo::new(store);
     let project = resolve_project(None, &repo)?;
-    for directive in &directives {
+    for (directive, sha) in &directives_with_sha {
         let stem = match repo.resolve_phase_stem(&project, &directive.roadmap, &directive.phase) {
             Ok(s) => s,
             Err(_) => continue,
@@ -919,7 +945,7 @@ fn run_post_merge_hook(root: &Path, staging: bool) -> Result<()> {
             &stem,
             Some(rdm_core::model::PhaseStatus::Done),
             None,
-            Some(info.sha.clone()),
+            Some(sha.clone()),
         );
     }
     Ok(())
@@ -2077,9 +2103,9 @@ fn run() -> Result<()> {
                     std::fs::remove_file(&hook_path).context("failed to remove post-merge hook")?;
                     println!("Removed post-merge hook at {}", hook_path.display());
                 }
-                HookCommand::PostMerge => {
+                HookCommand::PostMerge { since } => {
                     // Silently swallow all errors — hook must never fail.
-                    let _ = run_post_merge_hook(&root, staging);
+                    let _ = run_post_merge_hook(&root, staging, since.as_deref());
                 }
             }
         }

@@ -309,3 +309,270 @@ fn hook_post_merge_silent_on_missing_phase() {
         .assert()
         .success();
 }
+
+// -- hook post-merge multi-commit scanning tests --
+
+/// Helper: create a project with a roadmap and multiple phases.
+fn init_with_phases(dir: &TempDir, phases: &[&str]) {
+    init_repo(dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "create", "test-proj"])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "my-roadmap",
+            "--title",
+            "My Roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success();
+    for phase in phases {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args([
+                "phase",
+                "create",
+                phase,
+                "--title",
+                phase,
+                "--roadmap",
+                "my-roadmap",
+                "--project",
+                "test-proj",
+            ])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn hook_post_merge_scans_multiple_commits() {
+    let dir = TempDir::new().unwrap();
+    init_with_phases(&dir, &["alpha", "beta", "gamma"]);
+
+    // Tag the current HEAD as our anchor before adding Done: commits.
+    git_cmd()
+        .args(["tag", "before-merge"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Create three separate commits, each with a Done: directive.
+    for (i, phase) in ["phase-1-alpha", "phase-2-beta", "phase-3-gamma"]
+        .iter()
+        .enumerate()
+    {
+        let filename = format!("file{i}.txt");
+        fs::write(dir.path().join(&filename), format!("content {i}")).unwrap();
+        git_cmd()
+            .args(["add", &filename])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args([
+                "commit",
+                "-m",
+                &format!("feat: implement {phase}\n\nDone: my-roadmap/{phase}"),
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+    }
+
+    // Run hook with --since to scan all commits since the anchor.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-merge", "--since", "before-merge"])
+        .assert()
+        .success();
+
+    // Verify all three phases are now done.
+    for phase in ["phase-1-alpha", "phase-2-beta", "phase-3-gamma"] {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args([
+                "phase",
+                "show",
+                phase,
+                "--roadmap",
+                "my-roadmap",
+                "--project",
+                "test-proj",
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Status: done"));
+    }
+}
+
+#[test]
+fn hook_post_merge_since_flag_limits_range() {
+    let dir = TempDir::new().unwrap();
+    init_with_phases(&dir, &["alpha", "beta"]);
+
+    // Create a commit with Done: for alpha.
+    fs::write(dir.path().join("file1.txt"), "content 1").unwrap();
+    git_cmd()
+        .args(["add", "file1.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: alpha\n\nDone: my-roadmap/phase-1-alpha",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Tag after alpha — only commits after this should be scanned.
+    git_cmd()
+        .args(["tag", "after-alpha"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Create a commit with Done: for beta.
+    fs::write(dir.path().join("file2.txt"), "content 2").unwrap();
+    git_cmd()
+        .args(["add", "file2.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: beta\n\nDone: my-roadmap/phase-2-beta",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Run hook with --since after-alpha: should only pick up beta.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-merge", "--since", "after-alpha"])
+        .assert()
+        .success();
+
+    // Alpha should still be not-started.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-alpha",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: not-started"));
+
+    // Beta should be done.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-2-beta",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"));
+}
+
+#[test]
+fn hook_post_merge_deduplicates_same_phase_across_commits() {
+    let dir = TempDir::new().unwrap();
+    init_with_phases(&dir, &["alpha"]);
+
+    git_cmd()
+        .args(["tag", "anchor"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Two commits both reference the same phase.
+    for i in 0..2 {
+        let filename = format!("dup{i}.txt");
+        fs::write(dir.path().join(&filename), format!("dup {i}")).unwrap();
+        git_cmd()
+            .args(["add", &filename])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args([
+                "commit",
+                "-m",
+                "feat: work\n\nDone: my-roadmap/phase-1-alpha",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+    }
+
+    // Get the SHA of the latest commit (should be used for the phase).
+    let sha_output = git_cmd()
+        .args(["log", "-1", "--format=%H"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let latest_sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-merge", "--since", "anchor"])
+        .assert()
+        .success();
+
+    // Phase should be done with the latest commit's SHA.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-alpha",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"))
+        .stdout(predicate::str::contains(&latest_sha));
+}
