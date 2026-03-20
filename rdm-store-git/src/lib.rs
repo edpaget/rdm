@@ -1358,11 +1358,9 @@ pub fn commit_messages_since_at(
 /// Run a git command in the working directory of the repository containing
 /// `path`.
 fn run_git_at(path: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let repo = gix::discover(path).map_err(|e| Error::Git(e.to_string()))?;
-    let work_dir = repo.workdir().unwrap_or_else(|| repo.git_dir()).to_owned();
     match std::process::Command::new("git")
         .args(args)
-        .current_dir(&work_dir)
+        .current_dir(path)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
