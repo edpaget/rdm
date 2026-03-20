@@ -87,6 +87,7 @@ fn index_idempotent() {
         .assert()
         .success();
     let first = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    let first_project = std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
 
     rdm()
         .arg("--root")
@@ -95,8 +96,13 @@ fn index_idempotent() {
         .assert()
         .success();
     let second = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    let second_project = std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
 
-    assert_eq!(first, second);
+    assert_eq!(first, second, "top-level INDEX.md should be idempotent");
+    assert_eq!(
+        first_project, second_project,
+        "project-level INDEX.md should be idempotent"
+    );
 }
 
 #[test]
@@ -277,29 +283,55 @@ fn mutation_auto_generates_index() {
 #[test]
 fn no_index_flag_suppresses() {
     let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    // Create a roadmap so project-level index has content
     rdm()
         .arg("--root")
         .arg(dir.path())
         .arg("--no-index")
-        .arg("init")
+        .args(["roadmap", "create", "alpha", "--project", "fbm"])
         .assert()
         .success();
 
-    // Read the init-generated INDEX.md
-    let before = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    // Generate full index so both levels exist
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
+        .assert()
+        .success();
 
+    let root_before = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    let project_before = std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
+
+    // Mutate with --no-index: create a phase
     rdm()
         .arg("--root")
         .arg(dir.path())
         .arg("--no-index")
-        .args(["project", "create", "fbm"])
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "fbm",
+        ])
         .assert()
         .success();
 
-    let after = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    let root_after = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    let project_after = std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
+
     assert_eq!(
-        before, after,
-        "--no-index should prevent INDEX.md regeneration"
+        root_before, root_after,
+        "--no-index should prevent top-level INDEX.md regeneration"
+    );
+    assert_eq!(
+        project_before, project_after,
+        "--no-index should prevent project-level INDEX.md regeneration"
     );
 }
 
@@ -435,4 +467,79 @@ fn mutation_only_rewrites_targeted_project_index() {
     assert!(root.contains("[proj-a]"));
     assert!(root.contains("[proj-b]"));
     assert!(root.contains("not started")); // proj-a's phase is not-started
+
+    // proj-a's INDEX.md should reflect the new phase (phase count goes from 0 to 1)
+    let proj_a_index =
+        std::fs::read_to_string(dir.path().join("projects/proj-a/INDEX.md")).unwrap();
+    assert!(
+        proj_a_index.contains("alpha"),
+        "proj-a INDEX.md should reference its roadmap"
+    );
+    assert!(
+        proj_a_index.contains("not started"),
+        "proj-a INDEX.md should show progress for the roadmap with a phase"
+    );
+}
+
+#[test]
+fn index_after_promote() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    // Create a task
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--no-index")
+        .args(["task", "create", "big-feature", "--project", "fbm"])
+        .assert()
+        .success();
+
+    // Generate index before promote
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
+        .assert()
+        .success();
+
+    let root_before = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    let project_before = std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
+    assert!(
+        project_before.contains("big-feature"),
+        "task should appear in project index before promote"
+    );
+
+    // Promote task to roadmap (auto-generates index)
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "promote",
+            "big-feature",
+            "--roadmap-slug",
+            "big-feature-roadmap",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    // Both index levels should reflect the promotion
+    let root_after = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    let project_after = std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
+
+    assert!(
+        root_after.contains("[fbm]"),
+        "top-level should still list the project"
+    );
+    assert!(
+        project_after.contains("big-feature-roadmap"),
+        "project index should contain the new roadmap after promote"
+    );
+    // The promoted task should no longer appear as a standalone task
+    assert_ne!(
+        root_before, root_after,
+        "top-level index should change after promote"
+    );
 }
