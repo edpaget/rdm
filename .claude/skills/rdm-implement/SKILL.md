@@ -26,14 +26,13 @@ Implement a phase from an rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [p
 6. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
 7. **Create an implementation plan** using the planning tool. The plan should:
    - Break the phase into concrete implementation steps based on the phase description and acceptance criteria
-   - Include a final step: "Review changes with user, commit, and mark phase done"
+   - Include a final step: "Review changes with user and commit"
 8. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
 9. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
 10. **Execute the plan**: implement each step, following the plan and the phase's acceptance criteria.
 11. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
-12. **Finalize**: on user acceptance:
-    - Mark the phase done: `./target/debug/rdm phase update <phase> --status done --no-edit --roadmap <slug> --project rdm`
-    - Commit the implementation changes with a `Done:` line in the commit message so the post-merge hook records the commit SHA:
+12. **Finalize**: on user acceptance, commit the implementation changes with a `Done:` line in the commit message — the post-merge hook will mark the phase done and record the commit SHA.
+    **Use the exact roadmap slug and phase stem from the rdm commands you ran earlier — do NOT invent or paraphrase them:**
       ```
       Done: <roadmap-slug>/<phase-stem>
       ```

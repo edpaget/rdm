@@ -242,12 +242,12 @@ Run `./target/debug/rdm roadmap list --project rdm` to see all roadmaps and thei
 1. Read the phase: `./target/debug/rdm phase show <stem-or-number> --roadmap <slug> --project rdm`
 2. Plan your approach and get approval before starting
 3. Implement the work described in the phase
-4. Mark it done: `./target/debug/rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> --project rdm`
-5. Include a `Done:` line in the git commit message so the post-merge hook records the commit SHA:
+4. Include a `Done:` line in the git commit message — the post-merge hook will mark the phase done and record the commit SHA.
+   **Use the exact roadmap slug and phase stem from the rdm commands above — do NOT invent or paraphrase them:**
    ```
    Done: <roadmap-slug>/<phase-stem>
    ```
-6. Check the next phase: `./target/debug/rdm phase list --roadmap <slug> --project rdm`
+5. Check the next phase: `./target/debug/rdm phase list --roadmap <slug> --project rdm`
 
 #### Discovering bugs or side-work
 

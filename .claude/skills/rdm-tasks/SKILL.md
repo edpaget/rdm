@@ -25,11 +25,12 @@ Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
 5. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
 6. **Create an implementation plan** using the planning tool. The plan should:
    - Break the task into concrete implementation steps based on the task description
-   - Include a final step: "Review changes with user, commit, and mark task done"
+   - Include a final step: "Review changes with user and commit"
 7. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
 8. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
 9. **Execute the plan**: implement each step, following the plan.
 10. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
 11. **Finalize**: on user acceptance:
-    - Commit the implementation changes with a `Done: task/<slug>` line in the commit message so the post-merge hook records the commit SHA and marks the task done automatically
-    - If the task is also part of a roadmap phase, include a `Done: <roadmap-slug>/<phase-stem>` line as well
+    - Commit the implementation changes with a `Done: task/<slug>` line in the commit message so the post-merge hook records the commit SHA and marks the task done automatically.
+      **Use the exact task slug from the rdm commands you ran earlier — do NOT invent or paraphrase it.**
+    - If the task is also part of a roadmap phase, include a `Done: <roadmap-slug>/<phase-stem>` line as well (using exact slugs/stems from rdm)

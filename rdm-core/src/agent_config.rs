@@ -220,17 +220,18 @@ Run `rdm roadmap list {proj_flag}` to see all roadmaps and their progress. Check
 1. Read the phase: `rdm phase show <stem-or-number> --roadmap <slug> {proj_flag}`
 2. Plan your approach and get approval before starting
 3. Implement the work described in the phase
-4. Mark it done: `rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> {proj_flag}`
-5. Include a `Done:` line in the git commit message so the post-merge hook can record the commit SHA:
+4. Include a `Done:` line in the git commit message — the post-merge hook will mark the phase done and record the commit SHA.
+   **Use the exact roadmap slug and phase stem from the rdm commands above — do NOT invent or paraphrase them:**
    ```
    Done: <roadmap-slug>/<phase-stem>
    ```
-6. Check the next phase: `rdm phase list --roadmap <slug> {proj_flag}`
+5. Check the next phase: `rdm phase list --roadmap <slug> {proj_flag}`
 
 ### Completing a task
 
 1. Implement the work described in the task
-2. Include a `Done: task/<slug>` line in the git commit message so the post-merge hook marks the task done and records the commit SHA
+2. Include a `Done: task/<slug>` line in the git commit message — the post-merge hook will mark the task done and record the commit SHA.
+   **Use the exact task slug from the rdm commands above — do NOT invent or paraphrase it.**
 
 ### Discovering bugs or side-work
 
@@ -406,14 +407,13 @@ Implement a phase from an rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [p
 5. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
 6. **Create an implementation plan** using the planning tool. The plan should:
    - Break the phase into concrete implementation steps based on the phase description and acceptance criteria
-   - Include a final step: "Review changes with user, commit, and mark phase done"
+   - Include a final step: "Review changes with user and commit"
 7. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
 8. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
 9. **Execute the plan**: implement each step, following the plan and the phase's acceptance criteria.
 10. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
-11. **Finalize**: on user acceptance:
-    - Mark the phase done: `rdm phase update <phase> --status done --no-edit --roadmap <slug> {proj_flag}`
-    - Commit the implementation changes with a `Done:` line in the commit message so the post-merge hook records the commit SHA:
+11. **Finalize**: on user acceptance, commit the implementation changes with a `Done:` line in the commit message — the post-merge hook will mark the phase done and record the commit SHA.
+    **Use the exact roadmap slug and phase stem from the rdm commands you ran earlier — do NOT invent or paraphrase them:**
       ```
       Done: <roadmap-slug>/<phase-stem>
       ```
@@ -455,14 +455,14 @@ Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
 4. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
 5. **Create an implementation plan** using the planning tool. The plan should:
    - Break the task into concrete implementation steps based on the task description
-   - Include a final step: "Review changes with user, commit, and mark task done"
+   - Include a final step: "Review changes with user and commit"
 6. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
 7. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
 8. **Execute the plan**: implement each step, following the plan.
 9. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
-10. **Finalize**: on user acceptance:
-    - Commit the implementation changes with a `Done: task/<slug>` line in the commit message so the post-merge hook records the commit SHA and marks the task done automatically
-    - If the task is also part of a roadmap phase, include a `Done: <roadmap-slug>/<phase-stem>` line as well
+10. **Finalize**: on user acceptance, commit the implementation changes with a `Done: task/<slug>` line in the commit message — the post-merge hook will mark the task done and record the commit SHA.
+    **Use the exact task slug from the rdm commands you ran earlier — do NOT invent or paraphrase it.**
+    If the task is also part of a roadmap phase, include a `Done: <roadmap-slug>/<phase-stem>` line as well (using exact slugs/stems from rdm).
 "#
         ),
     }
