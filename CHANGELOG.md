@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-20
+
 ### Added
 
 - `rdm config get <key>` command to view a config value with its source (CLI flag, env var, repo config, global config, or default)
