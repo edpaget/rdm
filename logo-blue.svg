@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" width="400" height="120">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@700&amp;display=swap');
+    </style>
+    <clipPath id="text-clip">
+      <text x="200" y="97" font-family="'IBM Plex Mono', monospace" font-weight="700" font-size="110" text-anchor="middle" letter-spacing="8">RDM</text>
+    </clipPath>
+  </defs>
+
+  <!-- 6 stripes fitted to cap height (~y=20 to y=100), stripe:gap ratio ~3:1 -->
+  <g clip-path="url(#text-clip)">
+    <rect x="0" y="20"   width="400" height="10.4" fill="#4A90D9"/>
+    <rect x="0" y="33.9" width="400" height="10.4" fill="#4A90D9"/>
+    <rect x="0" y="47.8" width="400" height="10.4" fill="#4A90D9"/>
+    <rect x="0" y="61.7" width="400" height="10.4" fill="#4A90D9"/>
+    <rect x="0" y="75.6" width="400" height="10.4" fill="#4A90D9"/>
+    <rect x="0" y="89.5" width="400" height="10.4" fill="#4A90D9"/>
+  </g>
+</svg>
