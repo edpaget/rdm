@@ -38,7 +38,7 @@ fn init_repo(dir: &TempDir) {
 /// Create a separate git repo to act as the project (code) repo.
 fn init_project_repo(dir: &TempDir) {
     let out = git_cmd()
-        .args(["init"])
+        .args(["init", "-b", "main"])
         .current_dir(dir.path())
         .output()
         .unwrap();
