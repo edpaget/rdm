@@ -30,7 +30,7 @@ axum = { workspace = true, optional = true }
 
 [features]
 default = ["server", "git", "mcp"]
-git = ["dep:rdm-store-git"]
+git = ["dep:rdm-store-git", "rdm-mcp?/git"]
 server = ["dep:rdm-server", "dep:tokio", "dep:axum"]
 mcp = ["dep:rdm-mcp", "dep:tokio"]
 

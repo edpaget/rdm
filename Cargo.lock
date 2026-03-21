@@ -2229,6 +2229,7 @@ dependencies = [
  "anyhow",
  "rdm-core",
  "rdm-store-fs",
+ "rdm-store-git",
  "rmcp",
  "serde",
  "serde_json",

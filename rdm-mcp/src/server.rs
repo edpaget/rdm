@@ -8,7 +8,23 @@ use rdm_core::repo::PlanRepo;
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
 use rdm_store_fs::FsStore;
 use rmcp::handler::server::router::tool::ToolRouter;
+
 use rmcp::handler::server::wrapper::Parameters;
+
+/// Store backend selected by feature flags.
+///
+/// With the `git` feature enabled, operations go through [`rdm_store_git::GitStore`]
+/// which auto-commits changes. Without it, plain filesystem I/O via [`FsStore`].
+///
+/// Currently unused — the server still constructs `FsStore` directly. This alias
+/// will be wired into `RdmMcpServer` once the `Send` constraint on `GitStore` is resolved.
+#[cfg(feature = "git")]
+#[allow(dead_code)]
+type AppStore = rdm_store_git::GitStore;
+/// See the `git`-feature variant for documentation.
+#[cfg(not(feature = "git"))]
+#[allow(dead_code)]
+type AppStore = FsStore;
 use rmcp::model::Content;
 use rmcp::{
     ErrorData, ServerHandler, ServiceExt,
