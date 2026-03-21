@@ -89,6 +89,10 @@ pub struct GlobalConfig {
     /// Git remote configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteConfig>,
+
+    /// The default branch name for post-commit hook filtering (e.g. `"main"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
 }
 
 impl GlobalConfig {
@@ -143,6 +147,10 @@ pub struct Config {
     /// Git remote configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteConfig>,
+
+    /// The default branch name for post-commit hook filtering (e.g. `"main"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
 }
 
 impl Config {
@@ -194,6 +202,10 @@ impl Config {
                 .or_else(|| global.default_format.clone()),
             stage: self.stage.or(global.stage),
             remote: self.remote.clone().or_else(|| global.remote.clone()),
+            default_branch: self
+                .default_branch
+                .clone()
+                .or_else(|| global.default_branch.clone()),
         }
     }
 }

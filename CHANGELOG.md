@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `rdm hook post-commit` subcommand: parses `Done:` directives from HEAD on the default branch, enabling automatic phase/task completion for fast-forward merges
+- `rdm hook install` now installs both `post-merge` and `post-commit` hooks
+- `rdm hook uninstall` now removes both hooks
+- `default_branch` config key in both repo (`rdm.toml`) and global config — sets the branch name used by the post-commit hook (defaults to `main`)
+- `current_branch_at()` public function in `rdm-store-git` for querying the current branch name
+
 ## [0.2.0] - 2026-03-20
 
 ### Added

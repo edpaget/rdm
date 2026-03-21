@@ -1421,6 +1421,22 @@ pub fn commit_messages_since_at(
     Ok(commits)
 }
 
+/// Returns the current branch name for the repository containing `path`,
+/// or `None` if HEAD is detached or unborn.
+///
+/// # Errors
+///
+/// Returns `Error::Git` if `path` is not inside a git repository or git is
+/// not installed.
+pub fn current_branch_at(path: &Path) -> Result<Option<String>> {
+    let output = run_git_at(path, &["symbolic-ref", "--quiet", "HEAD"])?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(full_ref.strip_prefix("refs/heads/").map(|s| s.to_string()))
+}
+
 /// Run a git command without a working directory (e.g. for `git clone`).
 fn run_git(args: &[&str]) -> Result<std::process::Output> {
     match std::process::Command::new("git")

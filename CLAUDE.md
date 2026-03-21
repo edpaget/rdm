@@ -106,14 +106,14 @@ git config core.hooksPath .githooks
 
 Runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo nextest run`.
 
-### Post-merge: `Done:` convention
+### Post-merge & post-commit: `Done:` convention
 
-Install the post-merge hook in your plan repo with:
+Install the hooks in your plan repo with:
 
 ```bash
-rdm hook install          # writes a shim to .git/hooks/post-merge
-rdm hook install --force  # overwrite an existing hook
-rdm hook uninstall        # remove the hook (only if installed by rdm)
+rdm hook install          # writes shims to .git/hooks/post-merge and .git/hooks/post-commit
+rdm hook install --force  # overwrite existing hooks
+rdm hook uninstall        # remove hooks (only if installed by rdm)
 ```
 
 When a PR merges, `rdm hook post-merge` parses the commit message for lines matching:
@@ -122,6 +122,8 @@ When a PR merges, `rdm hook post-merge` parses the commit message for lines matc
 Done: <roadmap>/<phase>
 Done: task/<slug>
 ```
+
+`rdm hook post-commit` does the same but only on the default branch (configured via `default_branch` in `rdm.toml`, defaults to `main`). This covers fast-forward merges (`git merge --ff-only`) which don't trigger `post-merge` hooks.
 
 For phase directives, it calls `rdm phase update <phase> --status done --commit <sha> --no-edit --roadmap <roadmap>`. For task directives, it calls `rdm task update <slug> --status done --commit <sha> --no-edit`. Both are idempotent — running the hook multiple times or re-marking a done item with a new commit SHA is safe (the SHA updates, the completed date is preserved). Note: `task` is a reserved prefix and cannot be used as a roadmap slug.
 

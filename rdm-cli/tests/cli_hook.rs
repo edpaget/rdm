@@ -107,7 +107,7 @@ fn init_with_phase(dir: &TempDir) {
 // -- hook install tests --
 
 #[test]
-fn hook_install_creates_post_merge() {
+fn hook_install_creates_post_merge_and_post_commit() {
     let project_dir = TempDir::new().unwrap();
     init_project_repo(&project_dir);
 
@@ -116,18 +116,27 @@ fn hook_install_creates_post_merge() {
         .current_dir(project_dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Installed post-merge hook"));
+        .stdout(predicate::str::contains("Installed post-merge hook"))
+        .stdout(predicate::str::contains("Installed post-commit hook"));
 
-    let hook_path = project_dir.path().join(".git/hooks/post-merge");
-    assert!(hook_path.exists());
-    let contents = fs::read_to_string(&hook_path).unwrap();
-    assert!(contents.contains("rdm hook post-merge"));
+    for (name, marker) in &[
+        ("post-merge", "rdm hook post-merge"),
+        ("post-commit", "rdm hook post-commit"),
+    ] {
+        let hook_path = project_dir.path().join(format!(".git/hooks/{name}"));
+        assert!(hook_path.exists(), "{name} hook should exist");
+        let contents = fs::read_to_string(&hook_path).unwrap();
+        assert!(
+            contents.contains(marker),
+            "{name} hook should contain {marker}"
+        );
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(&hook_path).unwrap().permissions().mode();
-        assert!(mode & 0o111 != 0, "hook should be executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&hook_path).unwrap().permissions().mode();
+            assert!(mode & 0o111 != 0, "{name} hook should be executable");
+        }
     }
 }
 
@@ -169,13 +178,14 @@ fn hook_install_force_overwrites() {
         .current_dir(project_dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Installed post-merge hook"));
+        .stdout(predicate::str::contains("Installed post-merge hook"))
+        .stdout(predicate::str::contains("Installed post-commit hook"));
 }
 
 // -- hook uninstall tests --
 
 #[test]
-fn hook_uninstall_removes_hook() {
+fn hook_uninstall_removes_hooks() {
     let project_dir = TempDir::new().unwrap();
     init_project_repo(&project_dir);
 
@@ -190,10 +200,11 @@ fn hook_uninstall_removes_hook() {
         .current_dir(project_dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Removed post-merge hook"));
+        .stdout(predicate::str::contains("Removed post-merge hook"))
+        .stdout(predicate::str::contains("Removed post-commit hook"));
 
-    let hook_path = project_dir.path().join(".git/hooks/post-merge");
-    assert!(!hook_path.exists());
+    assert!(!project_dir.path().join(".git/hooks/post-merge").exists());
+    assert!(!project_dir.path().join(".git/hooks/post-commit").exists());
 }
 
 #[test]
@@ -201,7 +212,7 @@ fn hook_uninstall_refuses_foreign_hook() {
     let project_dir = TempDir::new().unwrap();
     init_project_repo(&project_dir);
 
-    // Write a foreign hook that doesn't contain "rdm hook post-merge".
+    // Write a foreign post-merge hook that doesn't contain "rdm hook post-merge".
     let hooks_dir = project_dir.path().join(".git/hooks");
     fs::create_dir_all(&hooks_dir).unwrap();
     fs::write(hooks_dir.join("post-merge"), "#!/bin/sh\necho custom\n").unwrap();
@@ -621,4 +632,348 @@ fn hook_post_merge_deduplicates_same_phase_across_commits() {
         .success()
         .stdout(predicate::str::contains("Status: done"))
         .stdout(predicate::str::contains(&latest_sha));
+}
+
+// -- hook post-commit tests --
+
+#[test]
+fn hook_post_commit_marks_phase_done_on_default_branch() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    // We're on `main` (the default branch). Create a commit with Done: directive.
+    let dummy_path = project_dir.path().join("dummy.txt");
+    fs::write(&dummy_path, "trigger commit").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: land it\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    let sha_output = git_cmd()
+        .args(["log", "-1", "--format=%H"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"))
+        .stdout(predicate::str::contains(&sha));
+}
+
+#[test]
+fn hook_post_commit_skips_feature_branch() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    // Create and switch to a feature branch.
+    git_cmd()
+        .args(["checkout", "-b", "feature-x"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    let dummy_path = project_dir.path().join("dummy.txt");
+    fs::write(&dummy_path, "feature work").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: feature work\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    // Post-commit should be a no-op on a feature branch.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    // Phase should still be not-started.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: not-started"));
+}
+
+#[test]
+fn hook_post_commit_silent_on_no_directives() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    let dummy_path = project_dir.path().join("dummy.txt");
+    fs::write(&dummy_path, "no directives").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "chore: regular commit"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn hook_post_commit_respects_custom_default_branch() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    // Configure default_branch = "develop" in the plan repo's rdm.toml.
+    let config_path = plan_dir.path().join("rdm.toml");
+    let existing = fs::read_to_string(&config_path).unwrap_or_default();
+    fs::write(
+        &config_path,
+        format!("{existing}\ndefault_branch = \"develop\"\n"),
+    )
+    .unwrap();
+
+    // We're on `main`, but default_branch is `develop` — should skip.
+    let dummy_path = project_dir.path().join("dummy.txt");
+    fs::write(&dummy_path, "on main").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: on main\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    // Phase should still be not-started because we're on main, not develop.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: not-started"));
+
+    // Now switch to `develop` and commit there.
+    git_cmd()
+        .args(["checkout", "-b", "develop"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    let dummy2 = project_dir.path().join("dummy2.txt");
+    fs::write(&dummy2, "on develop").unwrap();
+    git_cmd()
+        .args(["add", "dummy2.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: on develop\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    let sha_output = git_cmd()
+        .args(["log", "-1", "--format=%H"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    // Now it should be done — we're on develop, which matches default_branch.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"))
+        .stdout(predicate::str::contains(&sha));
+}
+
+#[test]
+fn hook_post_commit_idempotent_with_post_merge() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    let dummy_path = project_dir.path().join("dummy.txt");
+    fs::write(&dummy_path, "trigger").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: done\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    let sha_output = git_cmd()
+        .args(["log", "-1", "--format=%H"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+
+    // Run post-commit first.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    // Run post-merge second — should be a no-op (already done).
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-merge"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    // Phase should still be done with correct SHA.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"))
+        .stdout(predicate::str::contains(&sha));
 }

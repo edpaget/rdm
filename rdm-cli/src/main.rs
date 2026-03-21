@@ -184,7 +184,7 @@ enum Command {
         #[command(subcommand)]
         command: RemoteCommand,
     },
-    /// Manage the post-merge git hook.
+    /// Manage the post-merge and post-commit git hooks.
     #[cfg(feature = "git")]
     Hook {
         #[command(subcommand)]
@@ -555,21 +555,25 @@ enum RemoteCommand {
 #[cfg(feature = "git")]
 #[derive(Subcommand)]
 enum HookCommand {
-    /// Install the post-merge git hook in the current directory's git repo.
+    /// Install the post-merge and post-commit git hooks in the current
+    /// directory's git repo.
     Install {
-        /// Overwrite an existing post-merge hook.
+        /// Overwrite existing hooks.
         #[arg(long)]
         force: bool,
     },
-    /// Remove the rdm post-merge git hook.
+    /// Remove the rdm git hooks (post-merge and post-commit).
     Uninstall,
-    /// Run post-merge logic: parse Done: directives and mark phases done.
+    /// Run post-merge logic: parse Done: directives and mark phases/tasks done.
     PostMerge {
         /// Scan commits since this ref (tag, SHA, branch) instead of the
         /// default reflog anchor `HEAD@{1}`.
         #[arg(long)]
         since: Option<String>,
     },
+    /// Run post-commit logic: on the default branch, parse Done: directives
+    /// from HEAD and mark phases/tasks done.
+    PostCommit,
 }
 
 #[derive(Subcommand)]
@@ -867,35 +871,16 @@ fn maybe_print_uncommitted_hint(store: &AppStore, staging: bool) {
 #[cfg(not(feature = "git"))]
 fn maybe_print_uncommitted_hint(_store: &AppStore, _staging: bool) {}
 
-/// Runs the post-merge hook logic: parse `Done:` directives from commits
-/// and mark matching phases done.
+/// Applies a list of `Done:` directives, marking matching phases/tasks as done
+/// with the associated commit SHA.
 ///
-/// When `since` is `None`, scans commits introduced by the most recent merge
-/// (using the reflog anchor `HEAD@{1}`). When `since` is `Some(ref)`, scans
-/// all commits reachable from HEAD but not from the given ref.
-///
-/// All errors are intentionally swallowed by the caller — this must never
-/// block a git merge.
+/// Silently skips directives whose phase or task cannot be found.
 #[cfg(feature = "git")]
-fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Result<()> {
-    let cwd = std::env::current_dir().context("cannot determine current directory")?;
-    let commits = rdm_store_git::commit_messages_since_at(&cwd, since)?;
-    if commits.is_empty() {
-        return Ok(());
-    }
-
-    // Collect directives from all commits. Commits are newest-first, so the
-    // first occurrence of a directive wins (latest SHA).
-    let mut seen = std::collections::HashSet::new();
-    let mut directives_with_sha = Vec::new();
-    for commit in &commits {
-        for directive in rdm_core::hook::parse_done_directives(&commit.message) {
-            if seen.insert(directive.clone()) {
-                directives_with_sha.push((directive, commit.sha.clone()));
-            }
-        }
-    }
-
+fn apply_done_directives(
+    root: &Path,
+    staging: bool,
+    directives_with_sha: &[(rdm_core::hook::DoneDirective, String)],
+) -> Result<()> {
     if directives_with_sha.is_empty() {
         return Ok(());
     }
@@ -905,7 +890,7 @@ fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Resul
     let hook_global_config = paths::load_global_config();
     let hook_repo_config = paths::load_repo_config(root).with_global_defaults(&hook_global_config);
     let project = paths::resolve_project(None, &hook_repo_config)?;
-    for (directive, sha) in &directives_with_sha {
+    for (directive, sha) in directives_with_sha {
         match directive {
             rdm_core::hook::DoneDirective::Phase { roadmap, phase } => {
                 let stem = match repo.resolve_phase_stem(&project, roadmap, phase) {
@@ -935,6 +920,74 @@ fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Resul
         }
     }
     Ok(())
+}
+
+/// Runs the post-merge hook logic: parse `Done:` directives from commits
+/// and mark matching phases done.
+///
+/// When `since` is `None`, scans commits introduced by the most recent merge
+/// (using the reflog anchor `HEAD@{1}`). When `since` is `Some(ref)`, scans
+/// all commits reachable from HEAD but not from the given ref.
+///
+/// All errors are intentionally swallowed by the caller — this must never
+/// block a git merge.
+#[cfg(feature = "git")]
+fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Result<()> {
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let commits = rdm_store_git::commit_messages_since_at(&cwd, since)?;
+    if commits.is_empty() {
+        return Ok(());
+    }
+
+    // Collect directives from all commits. Commits are newest-first, so the
+    // first occurrence of a directive wins (latest SHA).
+    let mut seen = std::collections::HashSet::new();
+    let mut directives_with_sha = Vec::new();
+    for commit in &commits {
+        for directive in rdm_core::hook::parse_done_directives(&commit.message) {
+            if seen.insert(directive.clone()) {
+                directives_with_sha.push((directive, commit.sha.clone()));
+            }
+        }
+    }
+
+    apply_done_directives(root, staging, &directives_with_sha)
+}
+
+/// Runs the post-commit hook logic: on the default branch, parse `Done:`
+/// directives from HEAD and mark matching phases/tasks done.
+///
+/// Skips processing if the current branch is not the default branch
+/// (configured via `default_branch` in config, falling back to `"main"`).
+///
+/// All errors are intentionally swallowed by the caller — this must never
+/// block a git commit.
+#[cfg(feature = "git")]
+fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+
+    // Only run on the default branch.
+    let current_branch = rdm_store_git::current_branch_at(&cwd)?;
+    let hook_global_config = paths::load_global_config();
+    let hook_repo_config = paths::load_repo_config(root).with_global_defaults(&hook_global_config);
+    let default_branch = hook_repo_config.default_branch.as_deref().unwrap_or("main");
+    match current_branch.as_deref() {
+        Some(branch) if branch == default_branch => {}
+        _ => return Ok(()),
+    }
+
+    let commit = rdm_store_git::head_commit_info_at(&cwd)?;
+    let commit = match commit {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+
+    let directives: Vec<_> = rdm_core::hook::parse_done_directives(&commit.message)
+        .into_iter()
+        .map(|d| (d, commit.sha.clone()))
+        .collect();
+
+    apply_done_directives(root, staging, &directives)
 }
 
 fn run_config_command(
@@ -2311,50 +2364,77 @@ fn run() -> Result<()> {
                         .join("hooks");
                     std::fs::create_dir_all(&hooks_dir)
                         .context("failed to create hooks directory")?;
-                    let hook_path = hooks_dir.join("post-merge");
-                    if hook_path.exists() && !force {
-                        bail!(
-                            "post-merge hook already exists at {}; use --force to overwrite",
-                            hook_path.display()
-                        );
+
+                    let hooks: &[(&str, &str)] = &[
+                        (
+                            "post-merge",
+                            "#!/usr/bin/env bash\nrdm hook post-merge 2>/dev/null || true\n",
+                        ),
+                        (
+                            "post-commit",
+                            "#!/usr/bin/env bash\nrdm hook post-commit 2>/dev/null || true\n",
+                        ),
+                    ];
+                    for (name, shim) in hooks {
+                        let hook_path = hooks_dir.join(name);
+                        if hook_path.exists() && !force {
+                            bail!(
+                                "{name} hook already exists at {}; use --force to overwrite",
+                                hook_path.display()
+                            );
+                        }
+                        std::fs::write(&hook_path, shim)
+                            .with_context(|| format!("failed to write {name} hook"))?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            std::fs::set_permissions(
+                                &hook_path,
+                                std::fs::Permissions::from_mode(0o755),
+                            )
+                            .with_context(|| format!("failed to set {name} hook permissions"))?;
+                        }
+                        println!("Installed {name} hook at {}", hook_path.display());
                     }
-                    let shim = "#!/usr/bin/env bash\nrdm hook post-merge 2>/dev/null || true\n";
-                    std::fs::write(&hook_path, shim).context("failed to write post-merge hook")?;
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        std::fs::set_permissions(
-                            &hook_path,
-                            std::fs::Permissions::from_mode(0o755),
-                        )
-                        .context("failed to set hook permissions")?;
-                    }
-                    println!("Installed post-merge hook at {}", hook_path.display());
                 }
                 HookCommand::Uninstall => {
                     let cwd =
                         std::env::current_dir().context("cannot determine current directory")?;
-                    let hook_path = rdm_store_git::discover_git_dir(&cwd)
+                    let hooks_dir = rdm_store_git::discover_git_dir(&cwd)
                         .context("current directory is not inside a git repository")?
-                        .join("hooks")
-                        .join("post-merge");
-                    if !hook_path.exists() {
-                        bail!("no post-merge hook found at {}", hook_path.display());
+                        .join("hooks");
+
+                    let mut removed_any = false;
+                    for name in &["post-merge", "post-commit"] {
+                        let hook_path = hooks_dir.join(name);
+                        if !hook_path.exists() {
+                            continue;
+                        }
+                        let contents = std::fs::read_to_string(&hook_path)
+                            .with_context(|| format!("failed to read {name} hook"))?;
+                        let marker = format!("rdm hook {name}");
+                        if !contents.contains(&marker) {
+                            bail!(
+                                "{name} hook at {} was not installed by rdm; refusing to remove",
+                                hook_path.display()
+                            );
+                        }
+                        std::fs::remove_file(&hook_path)
+                            .with_context(|| format!("failed to remove {name} hook"))?;
+                        println!("Removed {name} hook at {}", hook_path.display());
+                        removed_any = true;
                     }
-                    let contents = std::fs::read_to_string(&hook_path)
-                        .context("failed to read post-merge hook")?;
-                    if !contents.contains("rdm hook post-merge") {
-                        bail!(
-                            "post-merge hook at {} was not installed by rdm; refusing to remove",
-                            hook_path.display()
-                        );
+                    if !removed_any {
+                        bail!("no rdm hooks found in {}", hooks_dir.display());
                     }
-                    std::fs::remove_file(&hook_path).context("failed to remove post-merge hook")?;
-                    println!("Removed post-merge hook at {}", hook_path.display());
                 }
                 HookCommand::PostMerge { since } => {
                     // Silently swallow all errors — hook must never fail.
                     let _ = run_post_merge_hook(&root, staging, since.as_deref());
+                }
+                HookCommand::PostCommit => {
+                    // Silently swallow all errors — hook must never fail.
+                    let _ = run_post_commit_hook(&root, staging);
                 }
             }
         }
