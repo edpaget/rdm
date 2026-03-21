@@ -4,19 +4,30 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-A zero-dependency CLI for managing project roadmaps, phases, and tasks across multiple projects from a central plan repository.
+A zero-dependency CLI for managing project roadmaps, phases, and tasks as git-tracked markdown files.
 
-`rdm` separates the **tool** (this repo — a Rust binary) from the **plan repo** (a git-managed directory of markdown files). The plan repo is where your roadmaps and tasks live; `rdm` is how you read and write them.
+`rdm` separates the **tool** (a compiled Rust binary) from the **plan repo** (a git-managed directory of markdown files). Your roadmaps and tasks live in the plan repo; `rdm` is how you read and write them. First-class AI agent integration means coding agents can drive the same workflows through the CLI, MCP, or REST API.
+
+## Installation
+
+```bash
+# Homebrew (macOS)
+brew install edpaget/rdm/rdm-cli
+
+# From source
+cargo install --path rdm-cli
+```
+
+Then initialize your plan repo:
+
+```bash
+export RDM_ROOT=~/Projects/my-plans
+rdm init
+```
 
 ## Quick Start
 
 ```bash
-# Point rdm at your plan repo
-export RDM_ROOT=~/Projects/my-plans
-
-# Initialize the plan repo
-rdm init
-
 # Create a project
 rdm project create fbm --title "Fantasy Baseball Manager"
 
@@ -32,123 +43,112 @@ rdm roadmap show two-way-players --project fbm
 # One-off work items
 rdm task create fix-barrel-nulls --project fbm --title "Fix barrel column NULL for 2024" --priority high
 rdm task update fix-barrel-nulls --project fbm --status done
-
-# Regenerate the index (also runs automatically after mutations)
-rdm index
-
-# See everything at a glance
-rdm list --project fbm
-rdm list --all
 ```
 
-## Plan Repo Structure
+## Core Workflow: Plan, Implement, Done
 
-`rdm init` creates a git-managed directory of markdown files — roadmaps, phases, tasks, and auto-generated indexes. See [docs/file-formats.md](docs/file-formats.md) for the full directory layout, file format reference, and field descriptions.
+rdm is built around a three-step cycle for shipping work incrementally.
 
-## Agent Integration
+### Plan
 
-`rdm` is designed to be used by AI coding agents. Instead of granting the agent filesystem access to your plan repo, you allowlist the `rdm` binary and the agent reads/writes roadmaps through the CLI.
+Break work into roadmaps, each containing ordered phases. Phase bodies typically include context, implementation steps, and acceptance criteria — everything someone (or an AI agent) needs to start working.
+
+```bash
+rdm roadmap create search-feature --project fbm --title "Full-Text Search"
+rdm phase create search-feature/indexing --project fbm --title "Build search index"
+rdm phase create search-feature/query-api --project fbm --title "Query API endpoint"
+```
+
+For one-off work that doesn't warrant a full roadmap, create a task:
+
+```bash
+rdm task create fix-edge-case --project fbm --title "Handle empty query gracefully"
+```
+
+### Implement
+
+Work through phases in order. Read the spec, mark it in-progress, and build:
+
+```bash
+rdm phase show search-feature/indexing --project fbm
+rdm phase update search-feature/indexing --project fbm --status in-progress
+```
+
+If you discover bugs or side-work during implementation, capture them as tasks rather than fixing inline:
+
+```bash
+rdm task create unicode-tokenizer --project fbm --title "Tokenizer breaks on CJK characters"
+```
+
+### Done
+
+When you commit the implementation, include a `Done:` line in the commit message:
+
+```
+feat(search): build inverted index for full-text search
+
+Done: search-feature/indexing
+```
+
+Install the git hooks in your plan repo and they will automatically mark the phase done and record the commit SHA:
+
+```bash
+rdm hook install
+```
+
+The hooks parse `Done:` directives for both phases (`Done: <roadmap>/<phase>`) and tasks (`Done: task/<slug>`). This creates a traceable link from every completed item back to the commit that shipped it.
+
+> **rdm is built with rdm.** This project's own development — roadmaps, phases, and tasks — is tracked in a separate plan repo using these same workflows.
+
+## AI Agent Integration
+
+rdm is designed to work with AI coding agents. Instead of granting filesystem access to your plan repo, you allowlist the `rdm` binary and the agent reads and writes roadmaps through the CLI.
+
+### CLI Agent Config
+
+Generate instructions and skill definitions for your agent:
 
 ```bash
 # Generate CLAUDE.md instructions for a target project
 rdm agent-config claude --project fbm > ~/Projects/fbm/.claude/rdm.md
 
-# Generate skill definitions
+# Generate Claude Code skill definitions
 rdm agent-config claude --skills --project fbm --out ~/Projects/fbm/.claude/skills/
 ```
 
-For agents that support MCP, see the [MCP Server](#mcp-server) section for a more direct integration.
+rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), implementation (`rdm-implement`), task management (`rdm-tasks`), review (`rdm-review`), and documentation generation (`rdm-document`).
 
-The generated agent config tells the agent:
-- How to read roadmaps and tasks via `rdm show`, `rdm list`
-- How to update phase status via `rdm phase update`
-- How to create tasks for discovered bugs via `rdm task create`
-- The workflow for implementing roadmap phases
+### MCP Server
 
-## MCP Server
-
-rdm includes a [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes plan repo operations as MCP tools, enabling direct integration with AI agents that support MCP.
+For agents that support [Model Context Protocol](https://modelcontextprotocol.io/), rdm exposes all operations as MCP tools — projects, roadmaps, phases, tasks, and search:
 
 ```bash
 # Start the MCP server (stdio transport)
 rdm mcp
 
-# With an explicit plan repo root
-rdm --root ~/Projects/my-plans mcp
-```
-
-### Configuration
-
-Generate a `.mcp.json` configuration file for MCP-aware clients:
-
-```bash
-# Print config to stdout
-rdm agent-config --mcp
-
-# Write to a directory
+# Generate .mcp.json config for MCP-aware clients
 rdm agent-config --mcp --out ~/Projects/my-app
-# → writes ~/Projects/my-app/.mcp.json
 ```
-
-### Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `rdm_project_list` | List all projects |
-| `rdm_roadmap_list` | List roadmaps with progress |
-| `rdm_roadmap_show` | Show roadmap details with phases |
-| `rdm_roadmap_create` | Create a new roadmap |
-| `rdm_phase_list` | List phases in a roadmap |
-| `rdm_phase_show` | Show phase details |
-| `rdm_phase_create` | Create a new phase |
-| `rdm_phase_update` | Update phase status or content |
-| `rdm_task_list` | List tasks with optional filters |
-| `rdm_task_show` | Show task details |
-| `rdm_task_create` | Create a new task |
-| `rdm_task_update` | Update task status or fields |
-| `rdm_task_promote` | Promote a task to a roadmap |
-| `rdm_search` | Fuzzy search across all items |
 
 ## REST API
 
-For integrations beyond the CLI:
+For programmatic integrations beyond the CLI, `rdm serve` starts a REST API that mirrors the CLI commands. See [docs/rest-api.md](docs/rest-api.md) for endpoints, content negotiation, and error format.
 
 ```bash
-# Start the API server
 rdm serve --port 8400
-
-# Endpoints mirror the CLI
-GET  /projects
-GET  /projects/:project/roadmaps
-GET  /projects/:project/roadmaps/:roadmap
-PATCH /projects/:project/roadmaps/:roadmap/phases/:phase
-GET  /projects/:project/tasks
-POST /projects/:project/tasks
-PATCH /projects/:project/tasks/:task
-GET  /index
 ```
 
-## Architecture
+## Documentation
 
-```
-rdm (this repo)
-├── rdm-core/       # library: data model, parsing, file I/O, index generation
-├── rdm-cli/        # binary: CLI porcelain over rdm-core
-├── rdm-mcp/        # library: MCP server over rdm-core (stdio transport)
-└── rdm-server/     # binary: REST API over rdm-core
-```
+- [File Formats](docs/file-formats.md) — plan repo structure, YAML frontmatter reference, and field descriptions
+- [Architecture](docs/architecture.md) — crate layout, Store trait, and design overview
+- [Architectural Principles](docs/principles.md) — the full set of design principles governing the codebase
+- [REST API](docs/rest-api.md) — endpoint reference, content negotiation, and error format
+- [Bootstrap & Init](docs/bootstrap-init.md) — detailed guide to initializing and configuring a plan repo
 
-The core library is the source of truth. CLI and server are thin layers that parse arguments/requests, call core, and format output. This makes it straightforward to add new interfaces (TUI, MCP server, etc.) without duplicating logic.
+## Contributing
 
-## Installation
-
-```bash
-# Homebrew (macOS)
-brew install edpaget/rdm/rdm
-
-# From source
-cargo install --path rdm-cli
-```
+rdm uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), TDD, and `cargo nextest run` for testing. See [CLAUDE.md](CLAUDE.md) for development practices and build instructions.
 
 ## License
 
