@@ -1,5 +1,19 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::Once;
+
+static BUILD_ONCE: Once = Once::new();
+
+/// Build `rdm-cli` exactly once per test process, even when tests run in parallel.
+fn build_once() {
+    BUILD_ONCE.call_once(|| {
+        let status = Command::new("cargo")
+            .args(["build", "-p", "rdm-cli"])
+            .status()
+            .expect("failed to run cargo build");
+        assert!(status.success(), "cargo build failed");
+    });
+}
 
 /// Test helper that manages an rdm mcp subprocess.
 struct McpTestHarness {
@@ -12,11 +26,7 @@ struct McpTestHarness {
 impl McpTestHarness {
     /// Build the rdm binary and spawn `rdm mcp --root <dir>`.
     fn spawn(root: &std::path::Path) -> Self {
-        let status = Command::new("cargo")
-            .args(["build", "-p", "rdm-cli"])
-            .status()
-            .expect("failed to run cargo build");
-        assert!(status.success(), "cargo build failed");
+        build_once();
 
         let binary = env!("CARGO_MANIFEST_DIR").replace("rdm-mcp", "target/debug/rdm");
 
@@ -132,6 +142,7 @@ impl Drop for McpTestHarness {
 
 /// Set up a plan repo with sample data for testing.
 fn setup_plan_repo(root: &std::path::Path) {
+    build_once();
     let binary = env!("CARGO_MANIFEST_DIR").replace("rdm-mcp", "target/debug/rdm");
 
     let run = |args: &[&str]| {
