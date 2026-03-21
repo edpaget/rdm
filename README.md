@@ -131,8 +131,11 @@ For agents that support [Model Context Protocol](https://modelcontextprotocol.io
 # Start the MCP server (stdio transport)
 rdm mcp
 
-# Generate .mcp.json config for MCP-aware clients
-rdm agent-config --mcp --out ~/Projects/my-app
+# Generate MCP-oriented agent instructions (references MCP tool names instead of CLI commands)
+rdm agent-config --mcp --project fbm --out ~/Projects/fbm
+
+# Generate MCP-aware Claude Code skills + .mcp.json
+rdm agent-config claude --mcp --skills --project fbm --out ~/Projects/fbm/.claude/skills/
 ```
 
 ## REST API

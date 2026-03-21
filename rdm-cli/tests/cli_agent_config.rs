@@ -337,46 +337,43 @@ fn agent_config_principles_with_project_and_out() {
 }
 
 #[test]
-fn agent_config_mcp_stdout() {
-    let output = rdm()
+fn agent_config_mcp_produces_instructions() {
+    rdm()
         .arg("agent-config")
         .arg("--mcp")
         .assert()
         .success()
-        .get_output()
-        .stdout
-        .clone();
-    let parsed: Value = serde_json::from_slice(&output).expect("should be valid JSON");
-    assert!(parsed["mcpServers"]["rdm"]["command"].as_str().is_some());
-    assert!(parsed["mcpServers"]["rdm"]["args"].is_array());
+        .stdout(predicate::str::contains("# rdm"))
+        .stdout(predicate::str::contains("rdm_roadmap_list"))
+        .stdout(predicate::str::contains("rdm_task_list"))
+        .stdout(predicate::str::contains("MCP tools"));
 }
 
 #[test]
-fn agent_config_mcp_with_root() {
-    let dir = TempDir::new().unwrap();
-    let output = rdm()
-        .arg("--root")
-        .arg(dir.path())
+fn agent_config_mcp_no_bash_blocks() {
+    rdm()
         .arg("agent-config")
         .arg("--mcp")
         .assert()
         .success()
-        .get_output()
-        .stdout
-        .clone();
-    let parsed: Value = serde_json::from_slice(&output).expect("should be valid JSON");
-    let args = parsed["mcpServers"]["rdm"]["args"]
-        .as_array()
-        .expect("args should be array");
-    assert!(args.contains(&Value::String("--root".to_string())));
-    assert!(args.contains(&Value::String("mcp".to_string())));
-    // The root path should be in the args
-    let root_str = dir.path().to_string_lossy().to_string();
-    assert!(args.contains(&Value::String(root_str)));
+        .stdout(predicate::str::contains("```bash").not());
 }
 
 #[test]
-fn agent_config_mcp_out_writes_file() {
+fn agent_config_mcp_with_project() {
+    rdm()
+        .arg("agent-config")
+        .arg("--mcp")
+        .arg("--project")
+        .arg("myproj")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"myproj\""))
+        .stdout(predicate::str::contains("<PROJECT>").not());
+}
+
+#[test]
+fn agent_config_mcp_out_writes_instructions_and_mcp_json() {
     let out = TempDir::new().unwrap();
     rdm()
         .arg("agent-config")
@@ -385,13 +382,43 @@ fn agent_config_mcp_out_writes_file() {
         .arg(out.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote"));
+        .stdout(predicate::str::contains("Wrote").count(2));
 
-    let path = out.path().join(".mcp.json");
-    assert!(path.exists());
-    let content = std::fs::read_to_string(path).unwrap();
-    let parsed: Value = serde_json::from_str(&content).expect("should be valid JSON");
+    // Should write the agent instructions file
+    let instructions_path = out.path().join("AGENTS.md");
+    assert!(instructions_path.exists());
+    let instructions = std::fs::read_to_string(&instructions_path).unwrap();
+    assert!(instructions.contains("rdm_roadmap_list"));
+
+    // Should also write .mcp.json
+    let mcp_path = out.path().join(".mcp.json");
+    assert!(mcp_path.exists());
+    let mcp_content = std::fs::read_to_string(mcp_path).unwrap();
+    let parsed: Value = serde_json::from_str(&mcp_content).expect("should be valid JSON");
     assert!(parsed["mcpServers"]["rdm"]["command"].as_str().is_some());
+}
+
+#[test]
+fn agent_config_mcp_skills_writes_skills_and_mcp_json() {
+    let out = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--mcp")
+        .arg("--skills")
+        .arg("--out")
+        .arg(out.path())
+        .assert()
+        .success();
+
+    // Should write skill files with MCP tool references
+    let skill_content = std::fs::read_to_string(out.path().join("rdm-roadmap/SKILL.md")).unwrap();
+    assert!(skill_content.contains("mcp__rdm__"));
+    assert!(!skill_content.contains("  - Bash"));
+
+    // Should also write .mcp.json
+    let mcp_path = out.path().join(".mcp.json");
+    assert!(mcp_path.exists());
 }
 
 #[test]

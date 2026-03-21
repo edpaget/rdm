@@ -66,6 +66,8 @@ pub struct AgentConfigOptions {
     pub project: Option<String>,
     /// Optional path to a principles file to reference in generated output.
     pub principles_file: Option<String>,
+    /// When `true`, generate instructions referencing MCP tool calls instead of CLI commands.
+    pub mcp: bool,
 }
 
 /// Generates agent configuration content for the given options.
@@ -82,11 +84,16 @@ pub struct AgentConfigOptions {
 ///     platform: Platform::AgentsMd,
 ///     project: Some("myproj".to_string()),
 ///     principles_file: None,
+///     mcp: false,
 /// });
 /// assert!(content.contains("--project myproj"));
 /// ```
 pub fn generate_agent_config(opts: &AgentConfigOptions) -> String {
-    let instructions = agent_instructions(opts.project.as_deref(), opts.principles_file.as_deref());
+    let instructions = if opts.mcp {
+        agent_instructions_mcp(opts.project.as_deref(), opts.principles_file.as_deref())
+    } else {
+        agent_instructions(opts.project.as_deref(), opts.principles_file.as_deref())
+    };
 
     match opts.platform {
         Platform::Cursor => {
@@ -288,6 +295,8 @@ pub struct SkillOptions {
     pub project: Option<String>,
     /// Optional path to a principles file to reference.
     pub principles_file: Option<String>,
+    /// When `true`, generate skills referencing MCP tool calls instead of CLI commands.
+    pub mcp: bool,
 }
 
 /// Generates Claude Code skill definition files.
@@ -304,20 +313,32 @@ pub struct SkillOptions {
 /// let skills = generate_skills(&SkillOptions {
 ///     project: Some("myproj".to_string()),
 ///     principles_file: None,
+///     mcp: false,
 /// });
 /// assert_eq!(skills.len(), 5);
 /// assert!(skills[0].content.contains("--project myproj"));
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
-    let proj_flag = proj_flag_str(opts.project.as_deref());
     let principles_note = opts.principles_file.as_deref().map(skill_principles_note);
-    vec![
-        skill_roadmap(&proj_flag, principles_note.as_deref()),
-        skill_implement(&proj_flag, principles_note.as_deref()),
-        skill_tasks(&proj_flag, principles_note.as_deref()),
-        skill_review(&proj_flag, principles_note.as_deref()),
-        skill_document(&proj_flag, principles_note.as_deref()),
-    ]
+    if opts.mcp {
+        let proj = proj_param_str(opts.project.as_deref());
+        vec![
+            skill_roadmap_mcp(&proj, principles_note.as_deref()),
+            skill_implement_mcp(&proj, principles_note.as_deref()),
+            skill_tasks_mcp(&proj, principles_note.as_deref()),
+            skill_review_mcp(&proj, principles_note.as_deref()),
+            skill_document_mcp(&proj, principles_note.as_deref()),
+        ]
+    } else {
+        let proj_flag = proj_flag_str(opts.project.as_deref());
+        vec![
+            skill_roadmap(&proj_flag, principles_note.as_deref()),
+            skill_implement(&proj_flag, principles_note.as_deref()),
+            skill_tasks(&proj_flag, principles_note.as_deref()),
+            skill_review(&proj_flag, principles_note.as_deref()),
+            skill_document(&proj_flag, principles_note.as_deref()),
+        ]
+    }
 }
 
 fn skill_principles_note(path: &str) -> String {
@@ -629,6 +650,435 @@ pub fn generate_mcp_config(opts: &McpConfigOptions) -> String {
     serde_json::to_string_pretty(&config).expect("JSON serialization cannot fail")
 }
 
+/// Returns a quoted project name for use in MCP tool call examples.
+fn proj_param_str(project: Option<&str>) -> String {
+    match project {
+        Some(name) => format!("\"{name}\""),
+        None => "\"<PROJECT>\"".to_string(),
+    }
+}
+
+/// Generates MCP-oriented instruction content referencing MCP tool calls.
+fn agent_instructions_mcp(project: Option<&str>, principles_file: Option<&str>) -> String {
+    let proj = proj_param_str(project);
+    let mut sections = vec![
+        mcp_section_header(),
+        mcp_section_setup(&proj),
+        mcp_section_discovering_work(&proj),
+        mcp_section_reading_details(&proj),
+        mcp_section_searching(&proj),
+        mcp_section_updating_status(&proj),
+        mcp_section_creating_items(&proj),
+        mcp_section_planning_workflow(&proj),
+        mcp_section_status_transitions(),
+    ];
+    if let Some(path) = principles_file {
+        sections.push(section_principles(path));
+    }
+    sections.join("\n\n")
+}
+
+fn mcp_section_header() -> String {
+    "# rdm\n\nrdm is a tool for managing project roadmaps, phases, and tasks. Use the rdm MCP tools described below to interact with plan data. All tool calls return structured text results.".to_string()
+}
+
+fn mcp_section_setup(proj: &str) -> String {
+    format!(
+        "## Setup\n\nThe rdm MCP server is connected and provides tools for plan repo operations. Most tools require a `project` parameter — use {proj} for the current project."
+    )
+}
+
+fn mcp_section_discovering_work(proj: &str) -> String {
+    format!(
+        r#"## Discovering work
+
+- `rdm_roadmap_list` with `project: {proj}` — list all roadmaps with progress
+- `rdm_task_list` with `project: {proj}` — list open/in-progress tasks
+- `rdm_task_list` with `project: {proj}, status: "all"` — list all tasks including done"#
+    )
+}
+
+fn mcp_section_reading_details(proj: &str) -> String {
+    format!(
+        r#"## Reading details
+
+- `rdm_roadmap_show` with `project: {proj}, roadmap: "<slug>"` — show roadmap with phases and body
+- `rdm_phase_list` with `project: {proj}, roadmap: "<slug>"` — list phases with numbers and statuses
+- `rdm_phase_show` with `project: {proj}, roadmap: "<slug>", phase: "<stem-or-number>"` — show phase details
+- `rdm_task_show` with `project: {proj}, task: "<slug>"` — show task details"#
+    )
+}
+
+fn mcp_section_searching(proj: &str) -> String {
+    format!(
+        r#"## Searching
+
+Use `rdm_search` for fuzzy matching against titles and body content:
+
+- `rdm_search` with `query: "auth", project: {proj}` — find items mentioning "auth"
+- `rdm_search` with `query: "index", kind: "task", project: {proj}` — find only tasks
+- `rdm_search` with `query: "auth", status: "in-progress", project: {proj}` — filter by status"#
+    )
+}
+
+fn mcp_section_updating_status(proj: &str) -> String {
+    format!(
+        r#"## Updating status
+
+- `rdm_phase_update` with `project: {proj}, roadmap: "<slug>", phase: "<stem-or-number>", status: "done"`
+- `rdm_task_update` with `project: {proj}, task: "<slug>", status: "done"`"#
+    )
+}
+
+fn mcp_section_creating_items(proj: &str) -> String {
+    format!(
+        r#"## Creating items
+
+- `rdm_roadmap_create` with `project: {proj}, slug: "<slug>", title: "Title", body: "Summary."`
+- `rdm_phase_create` with `project: {proj}, roadmap: "<slug>", slug: "<slug>", title: "Title", number: <n>, body: "Details."`
+- `rdm_task_create` with `project: {proj}, slug: "<slug>", title: "Title", body: "Description."`
+
+The `body` parameter accepts full Markdown including multiline content."#
+    )
+}
+
+fn mcp_section_planning_workflow(proj: &str) -> String {
+    format!(
+        r#"## Planning workflow
+
+### Before starting work
+
+Use `rdm_roadmap_list` with `project: {proj}` to see all roadmaps and their progress. Check `rdm_task_list` with `project: {proj}` for open tasks. Identify what is in-progress and what comes next before writing any code.
+
+### Implementing a roadmap phase
+
+1. Read the phase: `rdm_phase_show` with `project: {proj}, roadmap: "<slug>", phase: "<stem-or-number>"`
+2. Plan your approach and get approval before starting
+3. Implement the work described in the phase
+4. Include a `Done:` line in the git commit message — the post-merge hook will mark the phase done and record the commit SHA.
+   **Use the exact roadmap slug and phase stem from the rdm tools above — do NOT invent or paraphrase them:**
+   ```
+   Done: <roadmap-slug>/<phase-stem>
+   ```
+5. Check the next phase: `rdm_phase_list` with `project: {proj}, roadmap: "<slug>"`
+
+### Completing a task
+
+1. Implement the work described in the task
+2. Include a `Done: task/<slug>` line in the git commit message — the post-merge hook will mark the task done and record the commit SHA.
+   **Use the exact task slug from the rdm tools above — do NOT invent or paraphrase it.**
+
+### Discovering bugs or side-work
+
+If you encounter a bug or unrelated improvement while working on a phase, do not fix it inline. Create a task instead:
+
+`rdm_task_create` with `project: {proj}, slug: "<slug>", title: "Description of the issue", body: "Details."`
+
+This keeps the current phase focused and ensures nothing is forgotten.
+
+### When a task grows too complex
+
+If a task becomes large enough to warrant multiple phases, promote it to a roadmap:
+
+`rdm_task_promote` with `project: {proj}, task: "<task-slug>", roadmap_slug: "<new-roadmap-slug>"`"#
+    )
+}
+
+fn mcp_section_status_transitions() -> String {
+    // Same content as CLI — status transitions are conceptual, not tool-specific.
+    section_status_transitions()
+}
+
+// ---------- MCP skill generators ----------
+
+fn mcp_tool_name(tool: &str) -> String {
+    format!("mcp__rdm__{tool}")
+}
+
+fn skill_roadmap_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+    let principles = principles_note.unwrap_or("");
+    let t_roadmap_create = mcp_tool_name("rdm_roadmap_create");
+    let t_phase_create = mcp_tool_name("rdm_phase_create");
+    let t_roadmap_show = mcp_tool_name("rdm_roadmap_show");
+    SkillFile {
+        relative_path: "rdm-roadmap/SKILL.md",
+        content: format!(
+            r#"---
+name: rdm-roadmap
+description: Create an rdm roadmap with phases for a topic
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - {t_roadmap_create}
+  - {t_phase_create}
+  - {t_roadmap_show}
+---
+
+Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
+{principles}
+## Steps
+
+1. **Explore the codebase** to understand the current state relevant to `$ARGUMENTS`. Read key files, search for related code, and build context.
+2. **Design phases** that break the work into independently deliverable increments. Each phase should produce a working, testable result.
+3. **Create the roadmap**: use `rdm_roadmap_create` with `project: {proj}, slug: "<slug>", title: "Title", body: "Summary."`
+4. **Create each phase** with context, steps, and acceptance criteria in the body:
+   Use `rdm_phase_create` with `project: {proj}, roadmap: "<roadmap-slug>", slug: "<slug>", title: "Phase title", number: <n>, body: "<markdown body>"`
+
+   The body should include:
+   ```
+   ## Context
+   Why this phase exists and what it builds on.
+
+   ## Steps
+   1. First step
+   2. Second step
+
+   ## Acceptance Criteria
+   - [ ] Criterion one
+   - [ ] Criterion two
+   ```
+5. **Verify** the roadmap looks correct: use `rdm_roadmap_show` with `project: {proj}, roadmap: "<slug>"`
+
+## Guidelines
+
+- Aim for 2–6 phases per roadmap
+- Each phase should be independently deliverable and testable
+- Include Context, Steps, and Acceptance Criteria in every phase body
+- Order phases so each builds on the previous one
+- Use clear, descriptive slugs (e.g., `add-caching`, `migrate-auth`)
+"#
+        ),
+    }
+}
+
+fn skill_implement_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+    let principles = principles_note.unwrap_or("");
+    let t_phase_list = mcp_tool_name("rdm_phase_list");
+    let t_phase_show = mcp_tool_name("rdm_phase_show");
+    let t_phase_update = mcp_tool_name("rdm_phase_update");
+    let t_task_create = mcp_tool_name("rdm_task_create");
+    SkillFile {
+        relative_path: "rdm-implement/SKILL.md",
+        content: format!(
+            r#"---
+name: rdm-implement
+description: Implement the next phase of an rdm roadmap
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Write
+  - Edit
+  - EnterPlanMode
+  - ExitPlanMode
+  - {t_phase_list}
+  - {t_phase_show}
+  - {t_phase_update}
+  - {t_task_create}
+---
+
+Implement a phase from an rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [phase-number]`.
+{principles}
+## Steps
+
+1. **Parse arguments**: extract the roadmap slug and optional phase number from `$ARGUMENTS`.
+2. **Find the phase**: if no phase number was given, use `rdm_phase_list` with `project: {proj}, roadmap: "<slug>"` and pick the first `not-started` or `in-progress` phase.
+3. **Read the phase**: use `rdm_phase_show` with `project: {proj}, roadmap: "<slug>", phase: "<phase>"` to get full context, steps, and acceptance criteria.
+4. **Mark in-progress**: use `rdm_phase_update` with `project: {proj}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`
+5. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
+6. **Create an implementation plan** using the planning tool. The plan should:
+   - Break the phase into concrete implementation steps based on the phase description and acceptance criteria
+   - Include a final step: "Review changes with user and commit"
+7. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
+8. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
+9. **Execute the plan**: implement each step, following the plan and the phase's acceptance criteria.
+10. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
+11. **Finalize**: on user acceptance, commit the implementation changes with a `Done:` line in the commit message — the post-merge hook will mark the phase done and record the commit SHA.
+    **Use the exact roadmap slug and phase stem from the rdm tools you used earlier — do NOT invent or paraphrase them:**
+      ```
+      Done: <roadmap-slug>/<phase-stem>
+      ```
+12. **Handle side-work**: if you discover bugs or unrelated improvements, create tasks instead of fixing them inline:
+    Use `rdm_task_create` with `project: {proj}, slug: "<slug>", title: "Description", body: "Details."`
+"#
+        ),
+    }
+}
+
+fn skill_tasks_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+    let principles = principles_note.unwrap_or("");
+    let t_task_list = mcp_tool_name("rdm_task_list");
+    let t_task_show = mcp_tool_name("rdm_task_show");
+    let t_task_update = mcp_tool_name("rdm_task_update");
+    SkillFile {
+        relative_path: "rdm-tasks/SKILL.md",
+        content: format!(
+            r#"---
+name: rdm-tasks
+description: Work on rdm tasks
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Write
+  - Edit
+  - EnterPlanMode
+  - ExitPlanMode
+  - {t_task_list}
+  - {t_task_show}
+  - {t_task_update}
+---
+
+Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
+{principles}
+## Steps
+
+1. **List tasks**: use `rdm_task_list` with `project: {proj}` to see open and in-progress tasks.
+2. **Show details**: if a task slug was provided in `$ARGUMENTS`, use `rdm_task_show` with `project: {proj}, task: "<slug>"`. Otherwise, present the task list and ask the user which task to work on.
+3. **Mark in-progress**: use `rdm_task_update` with `project: {proj}, task: "<slug>", status: "in-progress"`
+4. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
+5. **Create an implementation plan** using the planning tool. The plan should:
+   - Break the task into concrete implementation steps based on the task description
+   - Include a final step: "Review changes with user and commit"
+6. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
+7. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
+8. **Execute the plan**: implement each step, following the plan.
+9. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
+10. **Finalize**: on user acceptance, commit the implementation changes with a `Done: task/<slug>` line in the commit message — the post-merge hook will mark the task done and record the commit SHA.
+    **Use the exact task slug from the rdm tools you used earlier — do NOT invent or paraphrase it.**
+    If the task is also part of a roadmap phase, include a `Done: <roadmap-slug>/<phase-stem>` line as well (using exact slugs/stems from rdm).
+"#
+        ),
+    }
+}
+
+fn skill_document_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+    let principles = principles_note.unwrap_or("");
+    let t_roadmap_show = mcp_tool_name("rdm_roadmap_show");
+    let t_phase_show = mcp_tool_name("rdm_phase_show");
+    SkillFile {
+        relative_path: "rdm-document/SKILL.md",
+        content: format!(
+            r#"---
+name: rdm-document
+description: Generate user documentation from a completed rdm roadmap
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Write
+  - Edit
+  - {t_roadmap_show}
+  - {t_phase_show}
+---
+
+Generate user-facing documentation from a completed rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [--out <path>]`.
+{principles}
+## Steps
+
+1. **Parse arguments**: extract the roadmap slug and optional `--out <path>` from `$ARGUMENTS`. Default output path is `docs/<slug>.md`.
+2. **Read the roadmap**: use `rdm_roadmap_show` with `project: {proj}, roadmap: "<slug>"` to get the overview and phase list.
+3. **Validate completion**: all phases must be `done`. If any phase is not done, abort with a clear message listing incomplete phases.
+4. **Read each phase**: use `rdm_phase_show` with `project: {proj}, roadmap: "<slug>", phase: "<stem>"` for each phase. Collect titles, bodies, and commit SHAs.
+5. **Gather code changes** from commit SHAs (the `commit` field in phase output):
+   - If SHAs are available: `git log --oneline <first_sha>~1..<last_sha>` and `git diff --stat <first_sha>~1..<last_sha>` in the source repo
+   - Single commit: `git show --stat <sha>`
+   - Missing SHAs: warn and fall back to phase descriptions only — do not abort
+6. **Cross-reference** phase descriptions with actual code changes to ensure accuracy.
+7. **Draft documentation** structured as:
+   - **Overview** — what the feature is
+   - **Motivation** — why it was built
+   - **Usage** — concrete examples (CLI commands, config options)
+   - **How it works** (optional) — architecture/internals for complex features
+   - **Limitations** (optional) — known gaps
+8. **Write** the documentation to the output path.
+9. **Present the draft** to the user for review before considering done.
+
+## Guidelines
+
+- Write for users, not developers — focus on what they can do
+- The Usage section is the most important — include real, working examples
+- Internal/refactoring phases: mention in "How it works" if relevant, omit from Usage
+- Derive content from both phase descriptions (intent) and code diffs (what shipped)
+- If phases lack commit SHAs, note which ones and rely on descriptions alone
+"#
+        ),
+    }
+}
+
+fn skill_review_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+    let principles = principles_note.unwrap_or("");
+    let t_phase_show = mcp_tool_name("rdm_phase_show");
+    let t_task_show = mcp_tool_name("rdm_task_show");
+    let t_task_create = mcp_tool_name("rdm_task_create");
+    SkillFile {
+        relative_path: "rdm-review/SKILL.md",
+        content: format!(
+            r#"---
+name: rdm-review
+description: Review implementation of an rdm phase or task
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Agent
+  - {t_phase_show}
+  - {t_task_show}
+  - {t_task_create}
+---
+
+Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task.
+{principles}
+## Steps
+
+1. **Parse arguments**: determine whether this is a phase review or task review from `$ARGUMENTS`.
+   - If the first argument is `--task`, the next argument is a task slug.
+   - Otherwise, the first argument is a roadmap slug and the second is a phase number.
+
+2. **Read the acceptance criteria**:
+   - For a phase: use `rdm_phase_show` with `project: {proj}, roadmap: "<slug>", phase: "<phase-number>"`
+   - For a task: use `rdm_task_show` with `project: {proj}, task: "<slug>"`
+   Extract the acceptance criteria, steps, and any other requirements from the body.
+
+3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task.
+
+4. **Dispatch parallel review agents** using the `Agent` tool. Launch at least two agents concurrently:
+
+   **Agent 1 — AC Compliance Reviewer**:
+   - For each acceptance criterion, evaluate whether it is met
+   - Provide evidence: file paths, line numbers, test names
+   - Rate each criterion: PASS, FAIL, or PARTIAL
+   - Note any criteria that are ambiguous or untestable
+
+   **Agent 2 — Code Quality Reviewer**:
+   - Check adherence to CLAUDE.md conventions (error handling, doc comments, test coverage, unsafe policy)
+   - Review architecture: does the implementation follow the core/cli/server separation?
+   - Check for common issues: missing error context, untested edge cases, public API without docs
+   - Verify tests exist and cover the key behaviors
+
+5. **Collect and consolidate results** from both agents into a single report:
+   - List each acceptance criterion with its status (PASS / FAIL / PARTIAL) and evidence
+   - List code quality findings grouped by severity (blocking, concern, suggestion)
+   - Provide an overall verdict: **PASS**, **PASS WITH CONCERNS**, or **FAIL**
+
+6. **Present the report** to the user in a clear, structured format.
+
+7. **Offer to create rdm tasks** for any actionable issues found:
+   Use `rdm_task_create` with `project: {proj}, slug: "<slug>", title: "Review finding: description", body: "Details."`
+
+## Guidelines
+
+- Be objective — evaluate against the stated AC, not personal preferences
+- Provide specific evidence (file paths, line numbers) for every finding
+- Distinguish between blocking issues (FAIL) and minor concerns (PASS WITH CONCERNS)
+- Do not re-implement or fix code — only review and report
+- If AC are missing or vague, note this as a finding rather than guessing intent
+"#
+        ),
+    }
+}
+
 fn section_principles(path: &str) -> String {
     format!(
         r#"## Principles
@@ -690,6 +1140,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: Some("myproj".to_string()),
             principles_file: None,
+            mcp: false,
         });
         assert!(content.contains("--project myproj"));
         assert!(!content.contains("<PROJECT>"));
@@ -701,6 +1152,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(content.contains("--project <PROJECT>"));
     }
@@ -711,6 +1163,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(content.contains("# rdm"));
         assert!(content.contains("## Setup"));
@@ -729,6 +1182,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(content.contains("rdm roadmap list"));
         assert!(content.contains("rdm task list"));
@@ -750,6 +1204,7 @@ mod tests {
             platform: Platform::Cursor,
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(content.starts_with("---\n"));
         assert!(content.contains("description:"));
@@ -764,6 +1219,7 @@ mod tests {
             platform: Platform::Claude,
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(!content.starts_with("---"));
     }
@@ -774,6 +1230,7 @@ mod tests {
             platform: Platform::Copilot,
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(!content.starts_with("---"));
     }
@@ -784,6 +1241,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: Some("myproj".to_string()),
             principles_file: None,
+            mcp: false,
         });
         assert!(content.contains("### Before starting work"));
         assert!(content.contains("### Implementing a roadmap phase"));
@@ -798,6 +1256,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: Some("myproj".to_string()),
             principles_file: None,
+            mcp: false,
         });
         // Workflow section should embed the project flag
         assert!(content.contains("rdm roadmap list --project myproj"));
@@ -810,6 +1269,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(content.contains("### Phase statuses"));
         assert!(content.contains("`not-started` → `in-progress`"));
@@ -824,6 +1284,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(content.contains("### Task statuses"));
         assert!(content.contains("`open` → `in-progress`"));
@@ -838,6 +1299,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: Some("docs/principles.md".to_string()),
+            mcp: false,
         });
         assert!(content.contains("## Principles"));
         assert!(content.contains("docs/principles.md"));
@@ -849,6 +1311,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(!content.contains("## Principles"));
     }
@@ -860,6 +1323,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert_eq!(skills.len(), 5);
     }
@@ -869,6 +1333,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert_eq!(skills[0].relative_path, "rdm-roadmap/SKILL.md");
         assert_eq!(skills[1].relative_path, "rdm-implement/SKILL.md");
@@ -882,6 +1347,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -907,6 +1373,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(skills[0].content.contains("name: rdm-roadmap"));
         assert!(skills[1].content.contains("name: rdm-implement"));
@@ -920,6 +1387,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: Some("myproj".to_string()),
             principles_file: None,
+            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -940,6 +1408,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -955,6 +1424,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -970,6 +1440,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[0].content;
         assert!(content.contains("rdm roadmap create"));
@@ -982,6 +1453,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[1].content;
         assert!(content.contains("rdm phase list"));
@@ -995,6 +1467,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[2].content;
         assert!(content.contains("rdm task list"));
@@ -1007,6 +1480,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: Some("docs/principles.md".to_string()),
+            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -1027,6 +1501,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -1042,6 +1517,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[1].content;
         assert!(content.contains("Write"));
@@ -1053,6 +1529,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[1].content;
         assert!(content.contains("EnterPlanMode"));
@@ -1064,6 +1541,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[2].content;
         assert!(content.contains("EnterPlanMode"));
@@ -1075,6 +1553,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[1].content;
         assert!(content.contains("Enter plan mode"));
@@ -1087,6 +1566,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[2].content;
         assert!(content.contains("Enter plan mode"));
@@ -1099,6 +1579,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         // Roadmap skill should only have Read, Bash, Glob, Grep
         let frontmatter = skills[0]
@@ -1115,6 +1596,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[3].content;
         assert!(content.contains("rdm phase show"));
@@ -1126,6 +1608,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(skills[3].content.contains("name: rdm-review"));
     }
@@ -1135,6 +1618,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[3].content;
         assert!(content.contains("Agent"));
@@ -1145,6 +1629,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(skills[3].content.contains("$ARGUMENTS"));
     }
@@ -1154,6 +1639,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[4].content;
         assert!(content.contains("rdm roadmap show"));
@@ -1168,6 +1654,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[4].content;
         assert!(content.contains("Write"));
@@ -1179,6 +1666,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let frontmatter = skills[4]
             .content
@@ -1194,6 +1682,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[1].content;
         assert!(content.contains("Done:"));
@@ -1205,6 +1694,7 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
+            mcp: false,
         });
         let content = &skills[2].content;
         assert!(content.contains("Done:"));
@@ -1217,6 +1707,7 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
+            mcp: false,
         });
         assert!(content.contains("Done:"));
         assert!(content.contains("<roadmap-slug>/<phase-stem>"));
@@ -1263,5 +1754,296 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["mcpServers"]["rdm"]["command"], "rdm");
         assert!(parsed["mcpServers"]["rdm"]["args"].is_array());
+    }
+
+    // --- MCP agent instructions tests ---
+
+    #[test]
+    fn mcp_agent_config_references_mcp_tools() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(content.contains("rdm_roadmap_list"));
+        assert!(content.contains("rdm_task_list"));
+        assert!(content.contains("rdm_roadmap_show"));
+        assert!(content.contains("rdm_phase_show"));
+        assert!(content.contains("rdm_task_show"));
+        assert!(content.contains("rdm_phase_update"));
+        assert!(content.contains("rdm_task_update"));
+        assert!(content.contains("rdm_roadmap_create"));
+        assert!(content.contains("rdm_phase_create"));
+        assert!(content.contains("rdm_task_create"));
+        assert!(content.contains("rdm_search"));
+    }
+
+    #[test]
+    fn mcp_agent_config_no_bash_blocks() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(
+            !content.contains("```bash"),
+            "MCP instructions should not contain bash code blocks"
+        );
+    }
+
+    #[test]
+    fn mcp_agent_config_has_key_sections() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(content.contains("# rdm"));
+        assert!(content.contains("## Setup"));
+        assert!(content.contains("## Discovering work"));
+        assert!(content.contains("## Reading details"));
+        assert!(content.contains("## Searching"));
+        assert!(content.contains("## Updating status"));
+        assert!(content.contains("## Creating items"));
+        assert!(content.contains("## Planning workflow"));
+        assert!(content.contains("## Status transitions"));
+    }
+
+    #[test]
+    fn mcp_agent_config_with_project() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: Some("myproj".to_string()),
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(content.contains("\"myproj\""));
+        assert!(!content.contains("<PROJECT>"));
+    }
+
+    #[test]
+    fn mcp_agent_config_without_project() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(content.contains("\"<PROJECT>\""));
+    }
+
+    #[test]
+    fn mcp_agent_config_no_no_edit() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(
+            !content.contains("--no-edit"),
+            "MCP instructions should not mention --no-edit"
+        );
+    }
+
+    #[test]
+    fn mcp_agent_config_includes_done_convention() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(content.contains("Done:"));
+        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
+    }
+
+    #[test]
+    fn mcp_agent_config_includes_promote() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(content.contains("rdm_task_promote"));
+    }
+
+    #[test]
+    fn mcp_agent_config_cursor_has_frontmatter() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::Cursor,
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(content.starts_with("---\n"));
+        assert!(content.contains("rdm_roadmap_list"));
+    }
+
+    #[test]
+    fn mcp_agent_config_principles_included() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: None,
+            principles_file: Some("docs/principles.md".to_string()),
+            mcp: true,
+        });
+        assert!(content.contains("## Principles"));
+        assert!(content.contains("docs/principles.md"));
+    }
+
+    // --- MCP skill generation tests ---
+
+    #[test]
+    fn mcp_skills_returns_five_files() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert_eq!(skills.len(), 5);
+    }
+
+    #[test]
+    fn mcp_skills_correct_paths() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert_eq!(skills[0].relative_path, "rdm-roadmap/SKILL.md");
+        assert_eq!(skills[1].relative_path, "rdm-implement/SKILL.md");
+        assert_eq!(skills[2].relative_path, "rdm-tasks/SKILL.md");
+        assert_eq!(skills[3].relative_path, "rdm-review/SKILL.md");
+        assert_eq!(skills[4].relative_path, "rdm-document/SKILL.md");
+    }
+
+    #[test]
+    fn mcp_skills_no_bash_in_allowed_tools() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        for skill in &skills {
+            // Extract frontmatter (between first and second ---)
+            let parts: Vec<&str> = skill.content.splitn(3, "---").collect();
+            let frontmatter = parts[1];
+            assert!(
+                !frontmatter.contains("  - Bash"),
+                "MCP skill {} should not list Bash in allowed-tools",
+                skill.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_skills_have_mcp_tools_in_allowed_tools() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        for skill in &skills {
+            assert!(
+                skill.content.contains("mcp__rdm__"),
+                "MCP skill {} should list mcp__rdm__ tools in allowed-tools",
+                skill.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_skills_reference_mcp_tool_calls() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        // Roadmap skill should reference MCP create tools
+        assert!(skills[0].content.contains("rdm_roadmap_create"));
+        assert!(skills[0].content.contains("rdm_phase_create"));
+        // Implement skill should reference MCP phase tools
+        assert!(skills[1].content.contains("rdm_phase_list"));
+        assert!(skills[1].content.contains("rdm_phase_show"));
+        assert!(skills[1].content.contains("rdm_phase_update"));
+        // Tasks skill should reference MCP task tools
+        assert!(skills[2].content.contains("rdm_task_list"));
+        assert!(skills[2].content.contains("rdm_task_show"));
+        assert!(skills[2].content.contains("rdm_task_update"));
+    }
+
+    #[test]
+    fn mcp_skills_have_correct_names() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(skills[0].content.contains("name: rdm-roadmap"));
+        assert!(skills[1].content.contains("name: rdm-implement"));
+        assert!(skills[2].content.contains("name: rdm-tasks"));
+        assert!(skills[3].content.contains("name: rdm-review"));
+        assert!(skills[4].content.contains("name: rdm-document"));
+    }
+
+    #[test]
+    fn mcp_skills_use_project_param() {
+        let skills = generate_skills(&SkillOptions {
+            project: Some("myproj".to_string()),
+            principles_file: None,
+            mcp: true,
+        });
+        for skill in &skills {
+            assert!(
+                skill.content.contains("\"myproj\""),
+                "MCP skill {} should use project param",
+                skill.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_skills_contain_arguments_variable() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        for skill in &skills {
+            assert!(
+                skill.content.contains("$ARGUMENTS"),
+                "MCP skill {} missing $ARGUMENTS",
+                skill.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_skill_implement_includes_done_convention() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("Done:"));
+        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
+    }
+
+    #[test]
+    fn mcp_skill_tasks_includes_done_convention() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("Done:"));
+        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
     }
 }

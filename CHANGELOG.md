@@ -6,8 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `rdm agent-config --mcp` now generates MCP-oriented agent instructions referencing MCP tool names instead of CLI commands
+- `rdm agent-config --mcp --skills` generates MCP-aware Claude Code skills that use `mcp__rdm__*` tools in `allowed-tools`
+- When `--mcp --out` is used, `.mcp.json` is written alongside the instructions or skills
+- MCP agent instructions include a Searching section with `rdm_search` tool
+
 ### Changed
 
+- `--mcp` flag is no longer mutually exclusive with `--skills`; it is now a modifier that switches output to MCP tool references
 - Restructured README to lead with installation and quick start, added "Core Workflow: Plan, Implement, Done" section showcasing the plan-implement-done cycle, and moved reference material (architecture, REST API endpoints) to dedicated docs
 
 ## [0.3.0] - 2026-03-21

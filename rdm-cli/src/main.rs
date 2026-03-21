@@ -113,10 +113,11 @@ enum Command {
         #[arg(long)]
         principles_file: Option<String>,
         /// Generate Claude Code skill files instead of an instruction file.
-        #[arg(long, conflicts_with = "mcp")]
+        #[arg(long)]
         skills: bool,
-        /// Generate .mcp.json configuration for MCP server.
-        #[arg(long, conflicts_with = "skills")]
+        /// Generate MCP-oriented instructions (referencing MCP tool names instead of CLI commands).
+        /// When combined with --out, also writes .mcp.json alongside.
+        #[arg(long)]
         mcp: bool,
     },
     /// Describe the rdm data model (entities and their fields).
@@ -1000,27 +1001,6 @@ fn run() -> Result<()> {
             skills,
             mcp,
         } => {
-            if mcp {
-                let root_str = root.to_string_lossy().to_string();
-                let content = agent_config::generate_mcp_config(&McpConfigOptions {
-                    root: Some(root_str),
-                });
-                if let Some(dir) = out {
-                    let path = dir.join(".mcp.json");
-                    if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent).with_context(|| {
-                            format!("failed to create directory {}", parent.display())
-                        })?;
-                    }
-                    std::fs::write(&path, &content)
-                        .with_context(|| format!("failed to write {}", path.display()))?;
-                    println!("Wrote {}", path.display());
-                } else {
-                    print!("{content}");
-                }
-                return Ok(());
-            }
-
             let platform: Platform = platform.parse().map_err(|e: String| anyhow::anyhow!(e))?;
 
             if skills {
@@ -1033,6 +1013,7 @@ fn run() -> Result<()> {
                 let skill_files = agent_config::generate_skills(&SkillOptions {
                     project,
                     principles_file,
+                    mcp,
                 });
                 for skill in &skill_files {
                     let path = dir.join(skill.relative_path);
@@ -1045,11 +1026,23 @@ fn run() -> Result<()> {
                         .with_context(|| format!("failed to write {}", path.display()))?;
                     println!("Wrote {}", path.display());
                 }
+                // When --mcp --out, also write .mcp.json alongside skills
+                if mcp {
+                    let root_str = root.to_string_lossy().to_string();
+                    let mcp_content = agent_config::generate_mcp_config(&McpConfigOptions {
+                        root: Some(root_str),
+                    });
+                    let mcp_path = dir.join(".mcp.json");
+                    std::fs::write(&mcp_path, &mcp_content)
+                        .with_context(|| format!("failed to write {}", mcp_path.display()))?;
+                    println!("Wrote {}", mcp_path.display());
+                }
             } else {
                 let content = agent_config::generate_agent_config(&AgentConfigOptions {
                     platform,
                     project,
                     principles_file,
+                    mcp,
                 });
                 if let Some(dir) = out {
                     let path = dir.join(platform.conventional_path());
@@ -1061,6 +1054,17 @@ fn run() -> Result<()> {
                     std::fs::write(&path, &content)
                         .with_context(|| format!("failed to write {}", path.display()))?;
                     println!("Wrote {}", path.display());
+                    // When --mcp --out, also write .mcp.json alongside instructions
+                    if mcp {
+                        let root_str = root.to_string_lossy().to_string();
+                        let mcp_content = agent_config::generate_mcp_config(&McpConfigOptions {
+                            root: Some(root_str),
+                        });
+                        let mcp_path = dir.join(".mcp.json");
+                        std::fs::write(&mcp_path, &mcp_content)
+                            .with_context(|| format!("failed to write {}", mcp_path.display()))?;
+                        println!("Wrote {}", mcp_path.display());
+                    }
                 } else {
                     print!("{content}");
                 }
