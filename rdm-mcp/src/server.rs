@@ -19,8 +19,15 @@ use rmcp::{
 use serde::Deserialize;
 
 /// Converts an `rdm_core::error::Error` into an MCP `CallToolResult` with `is_error` set.
+///
+/// Detects `ConfigNotFound` and returns a message mentioning the `rdm_init` tool.
 fn core_err(e: rdm_core::error::Error) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
+    let msg = if matches!(e, rdm_core::error::Error::ConfigNotFound) {
+        "Plan repo is not initialized. Call the rdm_init tool to set up your plan repo.".to_string()
+    } else {
+        e.to_string()
+    };
+    Ok(CallToolResult::error(vec![Content::text(msg)]))
 }
 
 /// Returns a successful `CallToolResult` containing text.
@@ -179,25 +186,106 @@ struct TaskPromoteParams {
     roadmap_slug: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct InitParams {
+    /// Optional default project to create during initialization.
+    default_project: Option<String>,
+}
+
 // ---------- Server ----------
 
 /// MCP server backed by an rdm plan repo.
 struct RdmMcpServer {
     repo: Mutex<PlanRepo<FsStore>>,
+    plan_root: PathBuf,
+    auto_init: bool,
     tool_router: ToolRouter<Self>,
 }
 
 impl RdmMcpServer {
-    fn new(plan_root: PathBuf) -> Self {
+    fn new(plan_root: PathBuf, auto_init: bool) -> Self {
         Self {
-            repo: Mutex::new(PlanRepo::new(FsStore::new(plan_root))),
+            repo: Mutex::new(PlanRepo::new(FsStore::new(plan_root.clone()))),
+            plan_root,
+            auto_init,
             tool_router: Self::tool_router(),
+        }
+    }
+
+    /// If `auto_init` is enabled and the repo is not yet initialized, initialize it with defaults.
+    fn maybe_auto_init(&self) {
+        if !self.auto_init {
+            return;
+        }
+        let repo = self.repo.lock().unwrap();
+        if repo.load_config().is_ok() {
+            return;
+        }
+        drop(repo);
+
+        // Create the directory if needed
+        let _ = std::fs::create_dir_all(&self.plan_root);
+
+        let store = FsStore::new(self.plan_root.clone());
+        match PlanRepo::init_with_config(store, rdm_core::config::Config::default()) {
+            Ok(new_repo) => {
+                *self.repo.lock().unwrap() = new_repo;
+            }
+            Err(rdm_core::error::Error::AlreadyInitialized) => {
+                // Race condition or stale check — fine, just reload
+            }
+            Err(_) => {
+                // Silently ignore init failures in auto-init
+            }
         }
     }
 }
 
 #[rmcp::tool_router]
 impl RdmMcpServer {
+    // ==================== Init tool ====================
+
+    /// Initialize the plan repo.
+    #[rmcp::tool(
+        description = "Initialize the plan repo. Call this before using any other tools if the repo is not yet set up.",
+        annotations(read_only_hint = false)
+    )]
+    async fn rdm_init(
+        &self,
+        Parameters(params): Parameters<InitParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let _ = std::fs::create_dir_all(&self.plan_root);
+
+        let store = FsStore::new(self.plan_root.clone());
+        let config = if let Some(ref proj) = params.default_project {
+            rdm_core::config::Config {
+                default_project: Some(proj.clone()),
+                ..Default::default()
+            }
+        } else {
+            rdm_core::config::Config::default()
+        };
+
+        let new_repo = match PlanRepo::init_with_config(store, config) {
+            Ok(r) => r,
+            Err(e) => return core_err(e),
+        };
+        *self.repo.lock().unwrap() = new_repo;
+
+        if let Some(ref proj) = params.default_project {
+            let mut repo = self.repo.lock().unwrap();
+            if let Err(e) = repo.create_project(proj, proj) {
+                return core_err(e);
+            }
+        }
+
+        let mut summary = format!("Plan repo initialized at {}", self.plan_root.display());
+        if let Some(ref proj) = params.default_project {
+            summary.push_str(&format!("\nDefault project: {proj}"));
+        }
+        ok_text(summary)
+    }
+
     // ==================== Read-only tools ====================
 
     /// List all projects in the plan repo.
@@ -206,6 +294,7 @@ impl RdmMcpServer {
         annotations(read_only_hint = true)
     )]
     async fn rdm_project_list(&self) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let repo = self.repo.lock().unwrap();
         match repo.list_projects() {
             Ok(projects) => ok_text(projects.join("\n")),
@@ -222,6 +311,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<ProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let repo = self.repo.lock().unwrap();
         let roadmaps = match repo.list_roadmaps(&params.project) {
             Ok(r) => r,
@@ -250,6 +340,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<RoadmapParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let repo = self.repo.lock().unwrap();
         let doc = match repo.load_roadmap(&params.project, &params.roadmap) {
             Ok(d) => d,
@@ -272,6 +363,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<RoadmapParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let repo = self.repo.lock().unwrap();
         match repo.list_phases(&params.project, &params.roadmap) {
             Ok(phases) => ok_text(display::format_phase_list(&phases)),
@@ -288,6 +380,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<PhaseParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let repo = self.repo.lock().unwrap();
         let stem = match repo.resolve_phase_stem(&params.project, &params.roadmap, &params.phase) {
             Ok(s) => s,
@@ -310,6 +403,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<TaskListParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let repo = self.repo.lock().unwrap();
         let all_tasks = match repo.list_tasks(&params.project) {
             Ok(t) => t,
@@ -355,6 +449,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<TaskShowParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let repo = self.repo.lock().unwrap();
         match repo.load_task(&params.project, &params.task) {
             Ok(doc) => ok_text(display::format_task_detail(&params.task, &doc)),
@@ -371,6 +466,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let repo = self.repo.lock().unwrap();
         let kind = match &params.kind {
             Some(k) => match k.as_str() {
@@ -421,6 +517,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<RoadmapCreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let mut repo = self.repo.lock().unwrap();
         let doc = match repo.create_roadmap(
             &params.project,
@@ -450,6 +547,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<PhaseCreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let mut repo = self.repo.lock().unwrap();
         let doc = match repo.create_phase(
             &params.project,
@@ -478,6 +576,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<PhaseUpdateParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let mut repo = self.repo.lock().unwrap();
         let stem = match repo.resolve_phase_stem(&params.project, &params.roadmap, &params.phase) {
             Ok(s) => s,
@@ -518,6 +617,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<TaskCreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let priority = match &params.priority {
             Some(p) => match Priority::from_str(p) {
                 Ok(pr) => pr,
@@ -553,6 +653,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<TaskUpdateParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let status = match &params.status {
             Some(s) => match TaskStatus::from_str(s) {
                 Ok(st) => Some(st),
@@ -597,6 +698,7 @@ impl RdmMcpServer {
         &self,
         Parameters(params): Parameters<TaskPromoteParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
         let mut repo = self.repo.lock().unwrap();
         let doc = match repo.promote_task(&params.project, &params.task, &params.roadmap_slug) {
             Ok(d) => d,
@@ -648,8 +750,8 @@ impl ServerHandler for RdmMcpServer {
 ///
 /// Returns an error if the transport fails to initialize or the server
 /// encounters a fatal I/O error.
-pub async fn run(plan_root: PathBuf) -> anyhow::Result<()> {
-    let server = RdmMcpServer::new(plan_root);
+pub async fn run(plan_root: PathBuf, auto_init: bool) -> anyhow::Result<()> {
+    let server = RdmMcpServer::new(plan_root, auto_init);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())

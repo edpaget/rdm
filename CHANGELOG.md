@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `rdm hook uninstall` now removes both hooks
 - `default_branch` config key in both repo (`rdm.toml`) and global config — sets the branch name used by the post-commit hook (defaults to `main`)
 - `current_branch_at()` public function in `rdm-store-git` for querying the current branch name
+- `rdm_init` MCP tool to initialize a plan repo from within an MCP client (e.g. Cursor); accepts an optional `default_project` parameter to create a project during init
+- `auto_init` global config option — when `true`, the MCP server automatically initializes the plan repo on first tool call if not already set up
+- Improved MCP error messages for uninitialized repos: errors now mention the `rdm_init` tool instead of the CLI `rdm init` command
 
 ## [0.2.0] - 2026-03-20
 

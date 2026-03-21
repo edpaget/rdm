@@ -2030,8 +2030,9 @@ fn run() -> Result<()> {
 
         #[cfg(feature = "mcp")]
         Command::Mcp => {
+            let auto_init = global_config.auto_init.unwrap_or(false);
             let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
-            rt.block_on(rdm_mcp::run(root))?;
+            rt.block_on(rdm_mcp::run(root, auto_init))?;
         }
 
         #[cfg(feature = "server")]

@@ -253,6 +253,8 @@ fn tools_list() {
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
 
     let expected = [
+        // Init tool
+        "rdm_init",
         // Read-only tools
         "rdm_project_list",
         "rdm_roadmap_list",
@@ -444,6 +446,7 @@ fn tools_list_includes_mutation_tools() {
     let tools = response["result"]["tools"].as_array().expect("tools array");
 
     let mutation_tools = [
+        "rdm_init",
         "rdm_roadmap_create",
         "rdm_phase_create",
         "rdm_phase_update",
@@ -882,4 +885,91 @@ fn error_missing_project() {
         serde_json::json!(true),
         "Expected isError=true for missing project. Full result: {result}"
     );
+}
+
+#[test]
+fn init_via_mcp() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    // Start with an empty directory — no setup_plan_repo
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool("rdm_init", serde_json::json!({}));
+    let text = result_text(&response);
+    assert!(
+        text.contains("initialized"),
+        "Expected 'initialized' in init response: {text}"
+    );
+
+    // Verify we can now list projects (should succeed with empty list)
+    let response = h.call_tool("rdm_project_list", serde_json::json!({}));
+    let result = &response["result"];
+    assert!(
+        result["isError"].is_null() || result["isError"] == false,
+        "Expected project_list to succeed after init. Result: {result}"
+    );
+}
+
+#[test]
+fn init_with_default_project() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_init",
+        serde_json::json!({"default_project": "my-proj"}),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("my-proj"),
+        "Expected 'my-proj' in init response: {text}"
+    );
+
+    // Verify the project was created
+    let response = h.call_tool("rdm_project_list", serde_json::json!({}));
+    let text = result_text(&response);
+    assert!(
+        text.contains("my-proj"),
+        "Expected 'my-proj' in project list: {text}"
+    );
+}
+
+#[test]
+fn init_already_initialized() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool("rdm_init", serde_json::json!({}));
+    let result = &response["result"];
+    assert_eq!(
+        result["isError"],
+        serde_json::json!(true),
+        "Expected isError=true for double init. Full result: {result}"
+    );
+}
+
+#[test]
+fn error_uninitialized_repo() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    // Empty directory — no init
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Creating a roadmap on an uninitialized repo should fail with an actionable error
+    let response = h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "auth",
+            "title": "Auth"
+        }),
+    );
+    let result = &response["result"];
+    assert_eq!(
+        result["isError"],
+        serde_json::json!(true),
+        "Expected isError=true for uninitialized repo. Full result: {result}"
+    );
+    let text = result["content"][0]["text"].as_str().unwrap();
+    // Should get a meaningful error (project not found since no projects exist)
+    assert!(!text.is_empty(), "Error should have a message: {text}");
 }

@@ -16,10 +16,11 @@ pub const KNOWN_KEYS: &[&str] = &[
     "stage",
     "remote.default",
     "root",
+    "auto_init",
 ];
 
 /// Keys that may only be set in the global config (not in a repo `rdm.toml`).
-pub const GLOBAL_ONLY_KEYS: &[&str] = &["root"];
+pub const GLOBAL_ONLY_KEYS: &[&str] = &["root", "auto_init"];
 
 /// Where a configuration value was resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +94,10 @@ pub struct GlobalConfig {
     /// The default branch name for post-commit hook filtering (e.g. `"main"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_branch: Option<String>,
+
+    /// When `true`, the MCP server auto-initializes the plan repo if uninitialized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_init: Option<bool>,
 }
 
 impl GlobalConfig {
