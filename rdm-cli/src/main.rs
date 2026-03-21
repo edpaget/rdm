@@ -1,27 +1,26 @@
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use is_terminal::IsTerminal;
 use rdm_core::agent_config::{self, AgentConfigOptions, McpConfigOptions, Platform, SkillOptions};
 use rdm_core::display;
 use rdm_core::json;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
 use rdm_core::repo::PlanRepo;
-use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
+use rdm_core::search::{self, ItemKind, SearchFilter};
 use rdm_core::tree;
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
 
+mod commands;
 mod paths;
 mod table;
 
 #[cfg(feature = "git")]
-type AppStore = rdm_store_git::GitStore;
+pub(crate) type AppStore = rdm_store_git::GitStore;
 #[cfg(not(feature = "git"))]
-type AppStore = FsStore;
+pub(crate) type AppStore = FsStore;
 
 #[derive(Parser)]
 #[command(name = "rdm", about = "Manage project roadmaps, phases, and tasks")]
@@ -215,7 +214,7 @@ enum Command {
 }
 
 #[derive(Subcommand)]
-enum ProjectCommand {
+pub(crate) enum ProjectCommand {
     /// Create a new project.
     Create {
         /// Project slug (used in directory names).
@@ -234,7 +233,7 @@ enum ProjectCommand {
 }
 
 #[derive(Subcommand)]
-enum RoadmapCommand {
+pub(crate) enum RoadmapCommand {
     /// Create a new roadmap.
     Create {
         /// Roadmap slug.
@@ -353,7 +352,7 @@ enum RoadmapCommand {
 }
 
 #[derive(Subcommand)]
-enum PhaseCommand {
+pub(crate) enum PhaseCommand {
     /// Create a new phase in a roadmap.
     Create {
         /// Phase slug (appended to phase-N-).
@@ -437,7 +436,7 @@ enum PhaseCommand {
 }
 
 #[derive(Subcommand)]
-enum TaskCommand {
+pub(crate) enum TaskCommand {
     /// Create a new task.
     Create {
         /// Task slug.
@@ -517,7 +516,7 @@ enum TaskCommand {
 
 #[cfg(feature = "git")]
 #[derive(Subcommand)]
-enum RemoteCommand {
+pub(crate) enum RemoteCommand {
     /// Add a new remote.
     Add {
         /// Remote name (e.g., "origin").
@@ -554,7 +553,7 @@ enum RemoteCommand {
 
 #[cfg(feature = "git")]
 #[derive(Subcommand)]
-enum HookCommand {
+pub(crate) enum HookCommand {
     /// Install the post-merge and post-commit git hooks in the current
     /// directory's git repo.
     Install {
@@ -577,7 +576,7 @@ enum HookCommand {
 }
 
 #[derive(Subcommand)]
-enum ConfigCommand {
+pub(crate) enum ConfigCommand {
     /// Get the resolved value of a config key.
     Get {
         /// Config key (e.g. default_project, default_format, stage, remote.default, root).
@@ -599,7 +598,7 @@ enum ConfigCommand {
 
 /// Item type argument for `--type` flag.
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum ItemKindArg {
+pub(crate) enum ItemKindArg {
     Roadmap,
     Phase,
     Task,
@@ -617,7 +616,7 @@ impl From<ItemKindArg> for ItemKind {
 
 /// Output format for command results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum OutputFormat {
+pub(crate) enum OutputFormat {
     #[value(alias = "text")]
     Human,
     Json,
@@ -650,149 +649,10 @@ impl std::fmt::Display for OutputFormat {
     }
 }
 
-/// Parses a status string into an `ItemStatus`, using the `--type` hint if available.
-fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatus> {
-    match kind {
-        Some(ItemKindArg::Phase) => {
-            let s: PhaseStatus = status.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
-            Ok(ItemStatus::Phase(s))
-        }
-        Some(ItemKindArg::Task) => {
-            let s: TaskStatus = status.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
-            Ok(ItemStatus::Task(s))
-        }
-        Some(ItemKindArg::Roadmap) => {
-            bail!("roadmaps do not have a status — remove --status or change --type")
-        }
-        None => {
-            // Try both; phase first then task
-            if let Ok(s) = status.parse::<PhaseStatus>() {
-                Ok(ItemStatus::Phase(s))
-            } else if let Ok(s) = status.parse::<TaskStatus>() {
-                Ok(ItemStatus::Task(s))
-            } else {
-                bail!(
-                    "invalid status '{status}' — use a phase status (not-started, in-progress, done, blocked) or task status (open, in-progress, done, wont-fix)"
-                )
-            }
-        }
-    }
-}
-
-/// Opens a store for an existing plan repo.
-fn make_store(root: &Path, staging: bool) -> Result<AppStore> {
-    #[cfg(feature = "git")]
-    {
-        Ok(rdm_store_git::GitStore::new(root)
-            .context("failed to open git repository")?
-            .with_staging_mode(staging))
-    }
-    #[cfg(not(feature = "git"))]
-    {
-        let _ = staging;
-        Ok(FsStore::new(root))
-    }
-}
-
-/// Creates a store for initializing a new plan repo.
-fn make_init_store(root: &Path) -> Result<AppStore> {
-    #[cfg(feature = "git")]
-    {
-        rdm_store_git::GitStore::init(root).context("failed to initialize git repository")
-    }
-    #[cfg(not(feature = "git"))]
-    {
-        Ok(FsStore::new(root))
-    }
-}
-
 fn main() {
     if let Err(err) = run() {
         eprintln!("error: {err:#}");
         process::exit(1);
-    }
-}
-
-/// Resolve body content from `--body` flag, piped stdin, or interactive editor.
-/// Returns an error if both `--body` and stdin are provided.
-fn resolve_body(body_flag: Option<String>, no_edit: bool) -> Result<Option<String>> {
-    let is_tty = io::stdin().is_terminal();
-
-    let stdin_body = if !is_tty {
-        let mut buf = String::new();
-        io::stdin().read_to_string(&mut buf)?;
-        let trimmed = buf.trim_end_matches('\n');
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    } else {
-        None
-    };
-
-    match (body_flag, stdin_body) {
-        (Some(_), Some(_)) => bail!("cannot use --body and piped stdin together; pick one"),
-        (Some(b), None) => Ok(Some(b)),
-        (None, Some(s)) => Ok(Some(s)),
-        (None, None) => {
-            if no_edit || !is_tty {
-                Ok(None)
-            } else {
-                open_editor()
-            }
-        }
-    }
-}
-
-/// Launch `$VISUAL` / `$EDITOR` / `vi` to interactively edit body content.
-/// Returns `None` if the user saves an empty file.
-fn open_editor() -> Result<Option<String>> {
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_string());
-
-    let mut tmp = tempfile::Builder::new()
-        .suffix(".md")
-        .tempfile()
-        .context("failed to create temp file for editor")?;
-
-    writeln!(
-        tmp,
-        "<!-- Enter body content below. This comment will be removed. -->"
-    )?;
-    tmp.flush()?;
-
-    let path = tmp.path().to_owned();
-
-    let status = std::process::Command::new(&editor)
-        .arg(&path)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .with_context(|| format!("failed to launch editor '{editor}'"))?;
-
-    if !status.success() {
-        bail!("editor exited with non-zero status");
-    }
-
-    let content = std::fs::read_to_string(&path).context("failed to read editor temp file")?;
-
-    let body: String = content
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            !(trimmed.starts_with("<!--") && trimmed.ends_with("-->"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = body.trim().to_string();
-
-    if body.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(body))
     }
 }
 
@@ -818,273 +678,13 @@ async fn shutdown_signal() {
     eprintln!("\nShutting down gracefully...");
 }
 
-fn reject_non_human(format: OutputFormat, command_name: &str) -> Result<()> {
-    if format != OutputFormat::Human {
-        bail!(
-            "--format {format} is not supported for '{command_name}'; use --format human or omit --format"
-        );
-    }
-    Ok(())
-}
-
-fn maybe_regenerate_index(
-    repo: &mut PlanRepo<AppStore>,
-    no_index: bool,
-    staging: bool,
-    project: Option<&str>,
-) -> Result<()> {
-    if !no_index {
-        match project {
-            Some(p) => repo
-                .generate_index_for_project(p)
-                .context("failed to regenerate INDEX.md")?,
-            None => repo
-                .generate_index()
-                .context("failed to regenerate INDEX.md")?,
-        }
-    }
-    if staging {
-        println!("  (staged — run `rdm commit` to persist)");
-    }
-    Ok(())
-}
-
-/// Prints a hint about uncommitted changes when staging mode is active.
-///
-/// Called after read-only commands (list, show, search) so the user is aware
-/// that the data they see includes uncommitted staged mutations.
-#[cfg(feature = "git")]
-fn maybe_print_uncommitted_hint(store: &AppStore, staging: bool) {
-    if !staging {
-        return;
-    }
-    if let Ok(statuses) = store.git_status()
-        && !statuses.is_empty()
-    {
-        println!(
-            "\n  ({} uncommitted change(s) — run `rdm status` for details)",
-            statuses.len()
-        );
-    }
-}
-
-#[cfg(not(feature = "git"))]
-fn maybe_print_uncommitted_hint(_store: &AppStore, _staging: bool) {}
-
-/// Applies a list of `Done:` directives, marking matching phases/tasks as done
-/// with the associated commit SHA.
-///
-/// Silently skips directives whose phase or task cannot be found.
-#[cfg(feature = "git")]
-fn apply_done_directives(
-    root: &Path,
-    staging: bool,
-    directives_with_sha: &[(rdm_core::hook::DoneDirective, String)],
-) -> Result<()> {
-    if directives_with_sha.is_empty() {
-        return Ok(());
-    }
-
-    let store = make_store(root, staging)?;
-    let mut repo = PlanRepo::new(store);
-    let hook_global_config = paths::load_global_config();
-    let hook_repo_config = paths::load_repo_config(root).with_global_defaults(&hook_global_config);
-    let project = paths::resolve_project(None, &hook_repo_config)?;
-    for (directive, sha) in directives_with_sha {
-        match directive {
-            rdm_core::hook::DoneDirective::Phase { roadmap, phase } => {
-                let stem = match repo.resolve_phase_stem(&project, roadmap, phase) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                let _ = repo.update_phase(
-                    &project,
-                    roadmap,
-                    &stem,
-                    Some(rdm_core::model::PhaseStatus::Done),
-                    None,
-                    Some(sha.clone()),
-                );
-            }
-            rdm_core::hook::DoneDirective::Task { slug } => {
-                let _ = repo.update_task(
-                    &project,
-                    slug,
-                    Some(rdm_core::model::TaskStatus::Done),
-                    None,
-                    None,
-                    None,
-                    Some(sha.clone()),
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Runs the post-merge hook logic: parse `Done:` directives from commits
-/// and mark matching phases done.
-///
-/// When `since` is `None`, scans commits introduced by the most recent merge
-/// (using the reflog anchor `HEAD@{1}`). When `since` is `Some(ref)`, scans
-/// all commits reachable from HEAD but not from the given ref.
-///
-/// All errors are intentionally swallowed by the caller — this must never
-/// block a git merge.
-#[cfg(feature = "git")]
-fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Result<()> {
-    let cwd = std::env::current_dir().context("cannot determine current directory")?;
-    let commits = rdm_store_git::commit_messages_since_at(&cwd, since)?;
-    if commits.is_empty() {
-        return Ok(());
-    }
-
-    // Collect directives from all commits. Commits are newest-first, so the
-    // first occurrence of a directive wins (latest SHA).
-    let mut seen = std::collections::HashSet::new();
-    let mut directives_with_sha = Vec::new();
-    for commit in &commits {
-        for directive in rdm_core::hook::parse_done_directives(&commit.message) {
-            if seen.insert(directive.clone()) {
-                directives_with_sha.push((directive, commit.sha.clone()));
-            }
-        }
-    }
-
-    apply_done_directives(root, staging, &directives_with_sha)
-}
-
-/// Runs the post-commit hook logic: on the default branch, parse `Done:`
-/// directives from HEAD and mark matching phases/tasks done.
-///
-/// Skips processing if the current branch is not the default branch
-/// (configured via `default_branch` in config, falling back to `"main"`).
-///
-/// All errors are intentionally swallowed by the caller — this must never
-/// block a git commit.
-#[cfg(feature = "git")]
-fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
-    let cwd = std::env::current_dir().context("cannot determine current directory")?;
-
-    // Only run on the default branch.
-    let current_branch = rdm_store_git::current_branch_at(&cwd)?;
-    let hook_global_config = paths::load_global_config();
-    let hook_repo_config = paths::load_repo_config(root).with_global_defaults(&hook_global_config);
-    let default_branch = hook_repo_config.default_branch.as_deref().unwrap_or("main");
-    match current_branch.as_deref() {
-        Some(branch) if branch == default_branch => {}
-        _ => return Ok(()),
-    }
-
-    let commit = rdm_store_git::head_commit_info_at(&cwd)?;
-    let commit = match commit {
-        Some(c) => c,
-        None => return Ok(()),
-    };
-
-    let directives: Vec<_> = rdm_core::hook::parse_done_directives(&commit.message)
-        .into_iter()
-        .map(|d| (d, commit.sha.clone()))
-        .collect();
-
-    apply_done_directives(root, staging, &directives)
-}
-
-fn run_config_command(
-    command: ConfigCommand,
-    cli_root: &Option<PathBuf>,
-    global_config: &rdm_core::config::GlobalConfig,
-) -> Result<()> {
-    match command {
-        ConfigCommand::Get { key } => {
-            paths::validate_key(&key)?;
-
-            // Check env var first
-            let env_key = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
-            if let Ok(v) = std::env::var(&env_key) {
-                println!("{v}  (source: environment variable)");
-                return Ok(());
-            }
-
-            // Try repo + global config
-            let root = paths::resolve_root(cli_root.clone(), global_config);
-            let repo_config = if let Ok(ref root) = root {
-                paths::load_repo_config(root)
-            } else {
-                rdm_core::config::Config::default()
-            };
-
-            if let Some(resolved) = paths::resolve_config_value(&key, &repo_config, global_config) {
-                println!("{}  (source: {})", resolved.value, resolved.source);
-            } else {
-                println!("(not set)");
-            }
-        }
-        ConfigCommand::Set { key, value, global } => {
-            paths::validate_key(&key)?;
-
-            if global {
-                let mut config = global_config.clone();
-                paths::set_global_config_field(&mut config, &key, &value)?;
-                paths::save_global_config(&config)?;
-                println!("Set {key} = {value} in global config");
-            } else {
-                if paths::is_global_only(&key) {
-                    bail!("'{key}' can only be set in global config — use --global");
-                }
-                let root = paths::resolve_root(cli_root.clone(), global_config)?;
-                let root = paths::expand_root(root)?;
-                let mut config = paths::load_repo_config(&root);
-                paths::set_config_field(&mut config, &key, &value)?;
-                paths::save_repo_config(&root, &config)?;
-                println!("Set {key} = {value} in repo config");
-            }
-        }
-        ConfigCommand::List => {
-            let root = paths::resolve_root(cli_root.clone(), global_config);
-            let repo_config = if let Ok(ref root) = root {
-                paths::load_repo_config(root)
-            } else {
-                rdm_core::config::Config::default()
-            };
-
-            let max_key_len = rdm_core::config::KNOWN_KEYS
-                .iter()
-                .map(|k| k.len())
-                .max()
-                .unwrap_or(0);
-
-            for key in rdm_core::config::KNOWN_KEYS {
-                // Check env var
-                let env_key = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
-                if let Ok(v) = std::env::var(&env_key) {
-                    println!("{key:<max_key_len$}  {v}  (source: environment variable)");
-                    continue;
-                }
-
-                if let Some(resolved) =
-                    paths::resolve_config_value(key, &repo_config, global_config)
-                {
-                    println!(
-                        "{key:<max_key_len$}  {}  (source: {})",
-                        resolved.value, resolved.source
-                    );
-                } else {
-                    println!("{key:<max_key_len$}  (not set)");
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let global_config = paths::load_global_config();
 
     // Handle config commands early — some don't need a repo.
     if let Command::Config { command } = cli.command {
-        return run_config_command(command, &cli.root, &global_config);
+        return commands::config::run(command, &cli.root, &global_config);
     }
 
     let root = paths::resolve_root(cli.root, &global_config)?;
@@ -1205,8 +805,9 @@ fn run() -> Result<()> {
                 ..Default::default()
             };
 
-            let mut repo = PlanRepo::init_with_config(make_init_store(&root)?, init_config)
-                .context("failed to initialize plan repo")?;
+            let mut repo =
+                PlanRepo::init_with_config(commands::make_init_store(&root)?, init_config)
+                    .context("failed to initialize plan repo")?;
 
             // Create project directory if --default-project was given.
             if let Some(ref proj) = default_project {
@@ -1269,557 +870,50 @@ fn run() -> Result<()> {
         }
 
         Command::Index => {
-            let mut repo = PlanRepo::new(make_store(&root, staging)?);
+            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
             repo.generate_index().context("failed to generate index")?;
             println!("Generated INDEX.md");
         }
 
         Command::Project { command } => {
-            let mut repo = PlanRepo::new(make_store(&root, staging)?);
-            match command {
-                ProjectCommand::Create { name, title } => {
-                    let title = title.as_deref().unwrap_or(&name);
-                    let doc = repo
-                        .create_project(&name, title)
-                        .context("failed to create project")?;
-                    println!("Created project '{}'", doc.frontmatter.name);
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&name))?;
-                }
-                ProjectCommand::Show { name } => {
-                    let doc = repo.load_project(&name).context("failed to load project")?;
-                    match format {
-                        OutputFormat::Json => {
-                            let j = json::project_to_json(&doc);
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&j)
-                                    .context("failed to serialize project")?
-                            );
-                        }
-                        OutputFormat::Markdown => {
-                            println!("# {}", doc.frontmatter.title);
-                            println!();
-                            println!("- **Name:** {}", doc.frontmatter.name);
-                            if !doc.body.is_empty() {
-                                println!();
-                                println!("{}", doc.body);
-                            }
-                        }
-                        OutputFormat::Table => bail!(
-                            "--format table is not supported for 'project show'; use --format human, --format json, --format markdown, or omit --format"
-                        ),
-                        OutputFormat::Human => {
-                            println!("{} ({})", doc.frontmatter.title, doc.frontmatter.name);
-                            if !doc.body.is_empty() {
-                                println!();
-                                println!("{}", doc.body);
-                            }
-                        }
-                    }
-                    maybe_print_uncommitted_hint(repo.store(), staging);
-                }
-                ProjectCommand::List => {
-                    let projects = repo.list_projects().context("failed to list projects")?;
-                    match format {
-                        OutputFormat::Json => {
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&projects)
-                                    .context("failed to serialize projects")?
-                            );
-                        }
-                        _ => {
-                            reject_non_human(format, "project list")?;
-                            if projects.is_empty() {
-                                println!("No projects yet.");
-                            } else {
-                                for p in &projects {
-                                    println!("{p}");
-                                }
-                            }
-                        }
-                    }
-                    maybe_print_uncommitted_hint(repo.store(), staging);
-                }
-            }
+            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            commands::project::run(command, &mut repo, format, cli.no_index, staging)?;
         }
 
         Command::Roadmap { command } => {
-            let mut repo = PlanRepo::new(make_store(&root, staging)?);
-            match command {
-                RoadmapCommand::Create {
-                    slug,
-                    title,
-                    project,
-                    body,
-                    no_edit,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let title = title.as_deref().unwrap_or(&slug);
-                    let body = resolve_body(body, no_edit)?;
-                    repo.create_roadmap(&project, &slug, title, body.as_deref())
-                        .context("failed to create roadmap")?;
-                    println!("Created roadmap '{slug}' in project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-                RoadmapCommand::Show {
-                    slug,
-                    project,
-                    no_body,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let mut roadmap_doc = repo
-                        .load_roadmap(&project, &slug)
-                        .context("failed to load roadmap")?;
-                    let phases = repo
-                        .list_phases(&project, &slug)
-                        .context("failed to list phases")?;
-                    if no_body {
-                        roadmap_doc.body = String::new();
-                    }
-                    match format {
-                        OutputFormat::Human => {
-                            print!("{}", display::format_roadmap_summary(&roadmap_doc, &phases))
-                        }
-                        OutputFormat::Markdown => print!(
-                            "{}",
-                            display::format_roadmap_summary_md(&roadmap_doc, &phases)
-                        ),
-                        OutputFormat::Json => {
-                            let j = json::roadmap_to_json(&roadmap_doc, &phases);
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&j)
-                                    .context("failed to serialize roadmap")?
-                            );
-                        }
-                        OutputFormat::Table => bail!(
-                            "--format table is not supported for 'roadmap show'; use --format human, --format json, --format markdown, or omit --format"
-                        ),
-                    }
-                    maybe_print_uncommitted_hint(repo.store(), staging);
-                }
-                RoadmapCommand::List { project, archived } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let entries = if archived {
-                        let roadmaps = repo
-                            .list_archived_roadmaps(&project)
-                            .context("failed to list archived roadmaps")?;
-                        let mut entries = Vec::new();
-                        for roadmap_doc in roadmaps {
-                            let slug = &roadmap_doc.frontmatter.roadmap;
-                            let phases =
-                                repo.list_archived_phases(&project, slug).with_context(|| {
-                                    format!("failed to list phases for archived roadmap '{slug}'")
-                                })?;
-                            entries.push((roadmap_doc, phases));
-                        }
-                        entries
-                    } else {
-                        let roadmaps = repo
-                            .list_roadmaps(&project)
-                            .context("failed to list roadmaps")?;
-                        let mut entries = Vec::new();
-                        for roadmap_doc in roadmaps {
-                            let slug = &roadmap_doc.frontmatter.roadmap;
-                            let phases = repo.list_phases(&project, slug).with_context(|| {
-                                format!("failed to list phases for roadmap '{slug}'")
-                            })?;
-                            entries.push((roadmap_doc, phases));
-                        }
-                        entries
-                    };
-                    match format {
-                        OutputFormat::Human => print!("{}", display::format_roadmap_list(&entries)),
-                        OutputFormat::Table => print!("{}", table::format_roadmap_table(&entries)),
-                        OutputFormat::Markdown => {
-                            print!("{}", display::format_roadmap_list_md(&entries))
-                        }
-                        OutputFormat::Json => {
-                            let summaries: Vec<_> = entries
-                                .iter()
-                                .map(|(doc, phases)| json::roadmap_summary_to_json(doc, phases))
-                                .collect();
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&summaries)
-                                    .context("failed to serialize roadmaps")?
-                            );
-                        }
-                    }
-                    maybe_print_uncommitted_hint(repo.store(), staging);
-                }
-                RoadmapCommand::Depend { slug, on, project } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    repo.add_dependency(&project, &slug, &on)
-                        .context("failed to add dependency")?;
-                    println!("Added dependency: {slug} → {on}");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-                RoadmapCommand::Undepend { slug, on, project } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    repo.remove_dependency(&project, &slug, &on)
-                        .context("failed to remove dependency")?;
-                    println!("Removed dependency: {slug} → {on}");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-                RoadmapCommand::Deps { project } => {
-                    reject_non_human(format, "roadmap deps")?;
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let graph = repo
-                        .dependency_graph(&project)
-                        .context("failed to get dependency graph")?;
-                    print!("{}", display::format_dependency_graph(&graph));
-                    maybe_print_uncommitted_hint(repo.store(), staging);
-                }
-                RoadmapCommand::Delete {
-                    slug,
-                    project,
-                    force,
-                } => {
-                    if !force {
-                        bail!(
-                            "deleting a roadmap is irreversible — pass --force to confirm deletion of '{slug}'"
-                        );
-                    }
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    repo.delete_roadmap(&project, &slug)
-                        .context("failed to delete roadmap")?;
-                    println!("Deleted roadmap '{slug}' from project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-                RoadmapCommand::Split {
-                    slug,
-                    phases,
-                    into,
-                    title,
-                    project,
-                    depends_on,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    // Resolve each phase identifier (number or stem)
-                    let resolved_stems: Vec<String> = phases
-                        .iter()
-                        .map(|p| repo.resolve_phase_stem(&project, &slug, p))
-                        .collect::<std::result::Result<Vec<_>, _>>()
-                        .context("failed to resolve phase identifiers")?;
-                    let dep = if depends_on {
-                        Some(slug.as_str())
-                    } else {
-                        None
-                    };
-                    repo.split_roadmap(&project, &slug, &into, &title, &resolved_stems, dep)
-                        .context("failed to split roadmap")?;
-                    println!(
-                        "Split {} phase(s) from '{slug}' into new roadmap '{into}'",
-                        resolved_stems.len()
-                    );
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-                RoadmapCommand::Archive {
-                    slug,
-                    project,
-                    force,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    repo.archive_roadmap(&project, &slug, force)
-                        .context("failed to archive roadmap")?;
-                    println!("Archived roadmap '{slug}' from project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-                RoadmapCommand::Unarchive { slug, project } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    repo.unarchive_roadmap(&project, &slug)
-                        .context("failed to unarchive roadmap")?;
-                    println!("Restored roadmap '{slug}' to project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-            }
+            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            commands::roadmap::run(
+                command,
+                &mut repo,
+                &repo_config,
+                format,
+                cli.no_index,
+                staging,
+            )?;
         }
 
         Command::Phase { command } => {
-            let mut repo = PlanRepo::new(make_store(&root, staging)?);
-            match command {
-                PhaseCommand::Create {
-                    slug,
-                    title,
-                    roadmap,
-                    project,
-                    number,
-                    body,
-                    no_edit,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let title = title.as_deref().unwrap_or(&slug);
-                    let body = resolve_body(body, no_edit)?;
-                    let doc = repo
-                        .create_phase(&project, &roadmap, &slug, title, number, body.as_deref())
-                        .context("failed to create phase")?;
-                    let stem = doc.frontmatter.stem(&slug);
-                    println!("Created phase '{stem}' in roadmap '{roadmap}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-                PhaseCommand::List { roadmap, project } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let phases = repo
-                        .list_phases(&project, &roadmap)
-                        .context("failed to list phases")?;
-                    match format {
-                        OutputFormat::Human => print!("{}", display::format_phase_list(&phases)),
-                        OutputFormat::Table => print!("{}", table::format_phase_table(&phases)),
-                        OutputFormat::Markdown => {
-                            print!("{}", display::format_phase_list_md(&phases))
-                        }
-                        OutputFormat::Json => {
-                            let summaries: Vec<_> = phases
-                                .iter()
-                                .map(|(stem, doc)| json::phase_summary_to_json(stem, doc))
-                                .collect();
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&summaries)
-                                    .context("failed to serialize phases")?
-                            );
-                        }
-                    }
-                    maybe_print_uncommitted_hint(repo.store(), staging);
-                }
-                PhaseCommand::Show {
-                    stem,
-                    roadmap,
-                    project,
-                    no_body,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let stem = repo
-                        .resolve_phase_stem(&project, &roadmap, &stem)
-                        .context("failed to resolve phase")?;
-                    let mut doc = repo
-                        .load_phase(&project, &roadmap, &stem)
-                        .context("failed to load phase")?;
-                    if no_body {
-                        doc.body = String::new();
-                    }
-
-                    // Compute prev/next phase stems for navigation
-                    let phases = repo
-                        .list_phases(&project, &roadmap)
-                        .context("failed to list phases")?;
-                    let pos = phases.iter().position(|(s, _)| s == &stem);
-                    let prev_stem = pos.and_then(|i| {
-                        if i > 0 {
-                            Some(phases[i - 1].0.as_str())
-                        } else {
-                            None
-                        }
-                    });
-                    let next_stem = pos.and_then(|i| phases.get(i + 1).map(|(s, _)| s.as_str()));
-
-                    let nav = display::PhaseNav {
-                        prev: prev_stem,
-                        next: next_stem,
-                        roadmap: &roadmap,
-                        project: &project,
-                    };
-
-                    match format {
-                        OutputFormat::Human => {
-                            print!("{}", display::format_phase_detail(&stem, &doc, Some(&nav)))
-                        }
-                        OutputFormat::Markdown => {
-                            print!(
-                                "{}",
-                                display::format_phase_detail_md(&stem, &doc, Some(&nav))
-                            )
-                        }
-                        OutputFormat::Json => {
-                            let j =
-                                json::phase_to_json(&stem, &doc, &roadmap, prev_stem, next_stem);
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&j)
-                                    .context("failed to serialize phase")?
-                            );
-                        }
-                        OutputFormat::Table => bail!(
-                            "--format table is not supported for 'phase show'; use --format human, --format json, --format markdown, or omit --format"
-                        ),
-                    }
-                    maybe_print_uncommitted_hint(repo.store(), staging);
-                }
-                PhaseCommand::Update {
-                    stem,
-                    status,
-                    roadmap,
-                    project,
-                    body,
-                    commit,
-                    no_edit,
-                } => {
-                    if commit.is_some() && status != Some(PhaseStatus::Done) {
-                        anyhow::bail!("--commit can only be used with --status done");
-                    }
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let stem = repo
-                        .resolve_phase_stem(&project, &roadmap, &stem)
-                        .context("failed to resolve phase")?;
-                    let body = resolve_body(body, no_edit)?;
-                    let doc = repo
-                        .update_phase(&project, &roadmap, &stem, status, body.as_deref(), commit)
-                        .context("failed to update phase")?;
-                    println!("Updated '{stem}' → {}", doc.frontmatter.status);
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-                PhaseCommand::Remove {
-                    stem,
-                    roadmap,
-                    project,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let stem = repo
-                        .resolve_phase_stem(&project, &roadmap, &stem)
-                        .context("failed to resolve phase")?;
-                    repo.remove_phase(&project, &roadmap, &stem)
-                        .context("failed to remove phase")?;
-                    println!("Removed phase '{stem}' from roadmap '{roadmap}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-            }
+            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            commands::phase::run(
+                command,
+                &mut repo,
+                &repo_config,
+                format,
+                cli.no_index,
+                staging,
+            )?;
         }
 
         Command::Task { command } => {
-            let mut repo = PlanRepo::new(make_store(&root, staging)?);
-            match command {
-                TaskCommand::Create {
-                    slug,
-                    title,
-                    project,
-                    priority,
-                    tags,
-                    body,
-                    no_edit,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let title = title.as_deref().unwrap_or(&slug);
-                    let body = resolve_body(body, no_edit)?;
-                    repo.create_task(&project, &slug, title, priority, tags, body.as_deref())
-                        .context("failed to create task")?;
-                    println!("Created task '{slug}' in project '{project}'");
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-                TaskCommand::Show {
-                    slug,
-                    project,
-                    no_body,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let mut doc = repo
-                        .load_task(&project, &slug)
-                        .context("failed to load task")?;
-                    if no_body {
-                        doc.body = String::new();
-                    }
-                    match format {
-                        OutputFormat::Human => {
-                            print!("{}", display::format_task_detail(&slug, &doc))
-                        }
-                        OutputFormat::Markdown => {
-                            print!("{}", display::format_task_detail_md(&slug, &doc))
-                        }
-                        OutputFormat::Json => {
-                            let j = json::task_to_json(&slug, &doc);
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&j)
-                                    .context("failed to serialize task")?
-                            );
-                        }
-                        OutputFormat::Table => bail!(
-                            "--format table is not supported for 'task show'; use --format human, --format json, --format markdown, or omit --format"
-                        ),
-                    }
-                    maybe_print_uncommitted_hint(repo.store(), staging);
-                }
-                TaskCommand::Update {
-                    slug,
-                    project,
-                    status,
-                    priority,
-                    tags,
-                    body,
-                    commit,
-                    no_edit,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let body = resolve_body(body, no_edit)?;
-                    let doc = repo
-                        .update_task(
-                            &project,
-                            &slug,
-                            status,
-                            priority,
-                            tags,
-                            body.as_deref(),
-                            commit,
-                        )
-                        .context("failed to update task")?;
-                    println!(
-                        "Updated task '{slug}' → status: {}, priority: {}",
-                        doc.frontmatter.status, doc.frontmatter.priority
-                    );
-                    maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
-                }
-                TaskCommand::List {
-                    project,
-                    status,
-                    priority,
-                    tag,
-                } => {
-                    let project = paths::resolve_project(project, &repo_config)?;
-                    let all_tasks = repo.list_tasks(&project).context("failed to list tasks")?;
-
-                    let filtered: Vec<(String, _)> = all_tasks
-                        .into_iter()
-                        .filter(|(_, doc)| match status {
-                            Some(TaskStatusFilter::All) => true,
-                            Some(TaskStatusFilter::Status(s)) => doc.frontmatter.status == s,
-                            None => {
-                                doc.frontmatter.status == TaskStatus::Open
-                                    || doc.frontmatter.status == TaskStatus::InProgress
-                            }
-                        })
-                        .filter(|(_, doc)| priority.is_none_or(|p| doc.frontmatter.priority == p))
-                        .filter(|(_, doc)| {
-                            tag.as_ref().is_none_or(|t| {
-                                doc.frontmatter
-                                    .tags
-                                    .as_ref()
-                                    .is_some_and(|tags| tags.contains(t))
-                            })
-                        })
-                        .collect();
-
-                    match format {
-                        OutputFormat::Human => print!("{}", display::format_task_list(&filtered)),
-                        OutputFormat::Table => print!("{}", table::format_task_table(&filtered)),
-                        OutputFormat::Markdown => {
-                            print!("{}", display::format_task_list_md(&filtered))
-                        }
-                        OutputFormat::Json => {
-                            let summaries: Vec<_> = filtered
-                                .iter()
-                                .map(|(slug, doc)| json::task_summary_to_json(slug, doc))
-                                .collect();
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&summaries)
-                                    .context("failed to serialize tasks")?
-                            );
-                        }
-                    }
-                    maybe_print_uncommitted_hint(repo.store(), staging);
-                }
-            }
+            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            commands::task::run(
+                command,
+                &mut repo,
+                &repo_config,
+                format,
+                cli.no_index,
+                staging,
+            )?;
         }
 
         Command::Promote {
@@ -1827,7 +921,7 @@ fn run() -> Result<()> {
             roadmap_slug,
             project,
         } => {
-            let mut repo = PlanRepo::new(make_store(&root, staging)?);
+            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
             let project = paths::resolve_project(project, &repo_config)?;
             let doc = repo
                 .promote_task(&project, &task_slug, &roadmap_slug)
@@ -1836,11 +930,11 @@ fn run() -> Result<()> {
                 "Promoted task '{task_slug}' → roadmap '{}'",
                 doc.frontmatter.roadmap
             );
-            maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
+            commands::maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
         }
 
         Command::Tree { project } => {
-            let repo = PlanRepo::new(make_store(&root, staging)?);
+            let repo = PlanRepo::new(commands::make_store(&root, staging)?);
             let project = paths::resolve_project(project, &repo_config)?;
             let node = tree::build_tree(&repo, &project).context("failed to build tree")?;
             match format {
@@ -1856,7 +950,7 @@ fn run() -> Result<()> {
                     "--format table is not supported for 'tree'; use --format human, --format json, --format markdown, or omit --format"
                 ),
             }
-            maybe_print_uncommitted_hint(repo.store(), staging);
+            commands::maybe_print_uncommitted_hint(repo.store(), staging);
         }
 
         Command::Describe { entity } => {
@@ -1980,10 +1074,10 @@ fn run() -> Result<()> {
             project,
             limit,
         } => {
-            let repo = PlanRepo::new(make_store(&root, staging)?);
+            let repo = PlanRepo::new(commands::make_store(&root, staging)?);
             let item_status = status
                 .as_deref()
-                .map(|s| parse_status(s, kind))
+                .map(|s| commands::parse_status(s, kind))
                 .transpose()?;
             let filter = SearchFilter {
                 kind: kind.map(ItemKind::from),
@@ -2025,7 +1119,7 @@ fn run() -> Result<()> {
                     );
                 }
             }
-            maybe_print_uncommitted_hint(repo.store(), staging);
+            commands::maybe_print_uncommitted_hint(repo.store(), staging);
         }
 
         #[cfg(feature = "mcp")]
@@ -2059,7 +1153,7 @@ fn run() -> Result<()> {
 
         #[cfg(feature = "git")]
         Command::Status { fetch } => {
-            let mut store = make_store(&root, staging)?;
+            let mut store = commands::make_store(&root, staging)?;
 
             // Check for merge in progress
             if store
@@ -2145,7 +1239,7 @@ fn run() -> Result<()> {
 
         #[cfg(feature = "git")]
         Command::Commit { message } => {
-            let store = make_store(&root, staging)?;
+            let store = commands::make_store(&root, staging)?;
             let statuses = store.git_status().context("failed to get git status")?;
             if statuses.is_empty() {
                 println!("Nothing to commit.");
@@ -2184,7 +1278,7 @@ fn run() -> Result<()> {
             if !force {
                 bail!("discarding changes is irreversible — pass --force to confirm");
             }
-            let mut store = make_store(&root, staging)?;
+            let mut store = commands::make_store(&root, staging)?;
             // Abort merge if one is in progress
             if store
                 .git_is_merge_in_progress()
@@ -2212,7 +1306,7 @@ fn run() -> Result<()> {
 
         #[cfg(feature = "git")]
         Command::Conflicts => {
-            let store = make_store(&root, staging)?;
+            let store = commands::make_store(&root, staging)?;
             if !store
                 .git_is_merge_in_progress()
                 .context("failed to check merge state")?
@@ -2246,7 +1340,7 @@ fn run() -> Result<()> {
 
         #[cfg(feature = "git")]
         Command::Resolve { file } => {
-            let mut store = make_store(&root, staging)?;
+            let mut store = commands::make_store(&root, staging)?;
             let result = store
                 .git_resolve_conflict(&file)
                 .context("failed to resolve conflict")?;
@@ -2267,179 +1361,17 @@ fn run() -> Result<()> {
 
         #[cfg(feature = "git")]
         Command::Remote { command } => {
-            let mut store = make_store(&root, staging)?;
-            match command {
-                RemoteCommand::Add { name, url } => {
-                    store
-                        .git_remote_add(&name, &url)
-                        .context("failed to add remote")?;
-                    println!("Added remote '{name}' ({url})");
-                }
-                RemoteCommand::Remove { name } => {
-                    store
-                        .git_remote_remove(&name)
-                        .context("failed to remove remote")?;
-                    println!("Removed remote '{name}'");
-                }
-                RemoteCommand::List => {
-                    let remotes = store.git_remote_list().context("failed to list remotes")?;
-                    if remotes.is_empty() {
-                        println!("No remotes configured.");
-                    } else {
-                        for r in &remotes {
-                            println!("{}\t{}", r.name, r.url);
-                        }
-                    }
-                }
-                RemoteCommand::Fetch { name } => {
-                    let remote_name = paths::resolve_remote_name(name, &repo_config)?;
-                    store
-                        .git_fetch(&remote_name)
-                        .context("failed to fetch from remote")?;
-                    println!("Fetched from '{remote_name}'.");
-                }
-                RemoteCommand::Push { name, force } => {
-                    let remote_name = paths::resolve_remote_name(name, &repo_config)?;
-                    let result = store.git_push(&remote_name, force)?;
-                    if result.commits_pushed == 0 {
-                        println!("Already up to date.");
-                    } else {
-                        println!(
-                            "Pushed {} commit(s) to {}/{}.",
-                            result.commits_pushed, result.remote, result.branch
-                        );
-                    }
-                }
-                RemoteCommand::Pull { name } => {
-                    let remote_name = paths::resolve_remote_name(name, &repo_config)?;
-                    let outcome = store.git_pull(&remote_name)?;
-                    match outcome {
-                        rdm_store_git::PullOutcome::Success(result) => {
-                            if !result.changed {
-                                println!("Already up to date.");
-                            } else {
-                                println!(
-                                    "Pulled {} commit(s) from {}/{}.",
-                                    result.commits_merged, result.remote, result.branch
-                                );
-                                // Regenerate INDEX.md after pulling new content
-                                let mut repo = PlanRepo::new(store);
-                                repo.generate_index()
-                                    .context("failed to regenerate INDEX.md after pull")?;
-                            }
-                        }
-                        rdm_store_git::PullOutcome::Conflict(conflict) => {
-                            eprintln!(
-                                "Merge conflict: {} file(s) need resolution.",
-                                conflict.conflicted_files.len()
-                            );
-                            eprintln!();
-                            for item in &conflict.conflicted_files {
-                                eprintln!("  conflict: {} — {item}", item.path);
-                            }
-                            eprintln!();
-                            eprintln!(
-                                "Edit the conflicted files, then run `rdm resolve <file>` for each."
-                            );
-                            eprintln!("Run `rdm conflicts` to see the full list.");
-                            eprintln!(
-                                "Run `rdm discard --force` to abort the merge and discard changes."
-                            );
-                            process::exit(1);
-                        }
-                    }
-                }
-            }
+            let mut store = commands::make_store(&root, staging)?;
+            commands::remote::run(command, &mut store, &root, &repo_config, staging)?;
         }
 
         #[cfg(feature = "git")]
         Command::Hook { command } => {
-            // All errors in hook handlers are silently swallowed — hooks must
-            // never block the user's git workflow.
-            match command {
-                HookCommand::Install { force } => {
-                    let cwd =
-                        std::env::current_dir().context("cannot determine current directory")?;
-                    let hooks_dir = rdm_store_git::discover_hooks_dir(&cwd)
-                        .context("current directory is not inside a git repository")?;
-                    std::fs::create_dir_all(&hooks_dir)
-                        .context("failed to create hooks directory")?;
-
-                    let hooks: &[(&str, &str)] = &[
-                        (
-                            "post-merge",
-                            "#!/usr/bin/env bash\nrdm hook post-merge 2>/dev/null || true\n",
-                        ),
-                        (
-                            "post-commit",
-                            "#!/usr/bin/env bash\nrdm hook post-commit 2>/dev/null || true\n",
-                        ),
-                    ];
-                    for (name, shim) in hooks {
-                        let hook_path = hooks_dir.join(name);
-                        if hook_path.exists() && !force {
-                            bail!(
-                                "{name} hook already exists at {}; use --force to overwrite",
-                                hook_path.display()
-                            );
-                        }
-                        std::fs::write(&hook_path, shim)
-                            .with_context(|| format!("failed to write {name} hook"))?;
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            std::fs::set_permissions(
-                                &hook_path,
-                                std::fs::Permissions::from_mode(0o755),
-                            )
-                            .with_context(|| format!("failed to set {name} hook permissions"))?;
-                        }
-                        println!("Installed {name} hook at {}", hook_path.display());
-                    }
-                }
-                HookCommand::Uninstall => {
-                    let cwd =
-                        std::env::current_dir().context("cannot determine current directory")?;
-                    let hooks_dir = rdm_store_git::discover_hooks_dir(&cwd)
-                        .context("current directory is not inside a git repository")?;
-
-                    let mut removed_any = false;
-                    for name in &["post-merge", "post-commit"] {
-                        let hook_path = hooks_dir.join(name);
-                        if !hook_path.exists() {
-                            continue;
-                        }
-                        let contents = std::fs::read_to_string(&hook_path)
-                            .with_context(|| format!("failed to read {name} hook"))?;
-                        let marker = format!("rdm hook {name}");
-                        if !contents.contains(&marker) {
-                            bail!(
-                                "{name} hook at {} was not installed by rdm; refusing to remove",
-                                hook_path.display()
-                            );
-                        }
-                        std::fs::remove_file(&hook_path)
-                            .with_context(|| format!("failed to remove {name} hook"))?;
-                        println!("Removed {name} hook at {}", hook_path.display());
-                        removed_any = true;
-                    }
-                    if !removed_any {
-                        bail!("no rdm hooks found in {}", hooks_dir.display());
-                    }
-                }
-                HookCommand::PostMerge { since } => {
-                    // Silently swallow all errors — hook must never fail.
-                    let _ = run_post_merge_hook(&root, staging, since.as_deref());
-                }
-                HookCommand::PostCommit => {
-                    // Silently swallow all errors — hook must never fail.
-                    let _ = run_post_commit_hook(&root, staging);
-                }
-            }
+            commands::hook::run(command, &root, staging)?;
         }
 
         Command::List { project, all } => {
-            let repo = PlanRepo::new(make_store(&root, staging)?);
+            let repo = PlanRepo::new(commands::make_store(&root, staging)?);
             let projects = if all {
                 repo.list_projects().context("failed to list projects")?
             } else {
@@ -2485,7 +1417,7 @@ fn run() -> Result<()> {
                         .context("failed to serialize roadmaps")?
                 );
             }
-            maybe_print_uncommitted_hint(repo.store(), staging);
+            commands::maybe_print_uncommitted_hint(repo.store(), staging);
         }
     }
 
