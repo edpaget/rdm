@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm init --remote <url>` to clone an existing shared plan repo instead of creating an empty one; sets `remote.default = "origin"` and validates the cloned repo has `rdm.toml`
+- `GitStore::clone_remote(url, root)` static constructor for cloning remote git repositories
 - `rdm init --default-project <name>` flag to set `default_project` in repo config and create the project directory
 - `rdm init --default-format <fmt>` flag to set `default_format` in global config
 - `rdm init` with `--stage` persists `stage = true` to repo config

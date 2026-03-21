@@ -201,6 +201,53 @@ impl GitStore {
         })
     }
 
+    /// Clones a remote git repository and opens a `GitStore` for it.
+    ///
+    /// This is the remote counterpart to [`GitStore::init`]. It shells out to
+    /// `git clone` to fetch the remote repository into `root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Git`] if:
+    /// - The target directory exists and is not empty
+    /// - `git clone` fails (bad URL, network error, etc.)
+    /// - The cloned repository cannot be opened
+    ///
+    /// Returns [`Error::Io`] if parent directory creation or directory reading
+    /// fails.
+    pub fn clone_remote(url: &str, root: impl Into<PathBuf>) -> Result<Self> {
+        let root = root.into();
+        // Reject non-empty target
+        if root.exists() {
+            let has_entries = std::fs::read_dir(&root)?.next().is_some();
+            if has_entries {
+                return Err(Error::Git(format!(
+                    "target directory is not empty: {}",
+                    root.display()
+                )));
+            }
+        }
+        // Ensure parent exists
+        if let Some(parent) = root.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Clone
+        let output = run_git(&["clone", url, &root.display().to_string()])?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Git(format!("git clone failed: {}", stderr.trim())));
+        }
+        // Open the cloned repo
+        let repo =
+            gix::open(&root).map_err(|e| Error::Git(format!("failed to open cloned repo: {e}")))?;
+        Ok(Self {
+            inner: FsStore::new(&root),
+            repo,
+            touched: BTreeMap::new(),
+            staging_mode: false,
+        })
+    }
+
     /// Enables or disables staging mode.
     ///
     /// When staging mode is enabled, [`Store::commit`] flushes files to disk
@@ -1372,6 +1419,23 @@ pub fn commit_messages_since_at(
         }
     }
     Ok(commits)
+}
+
+/// Run a git command without a working directory (e.g. for `git clone`).
+fn run_git(args: &[&str]) -> Result<std::process::Output> {
+    match std::process::Command::new("git")
+        .args(args)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+    {
+        Ok(o) => Ok(o),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Git(
+            "git is not installed — install git to use remote features".to_string(),
+        )),
+        Err(e) => Err(Error::Git(format!("failed to run git: {e}"))),
+    }
 }
 
 /// Run a git command in the working directory of the repository containing
@@ -2725,5 +2789,80 @@ mod tests {
 
         let commits = commit_messages_since_at(dir.path(), Some("HEAD")).unwrap();
         assert!(commits.is_empty());
+    }
+
+    // -- clone_remote tests --
+
+    /// Helper: creates a bare clone of a plan-repo-like git repo.
+    fn make_bare_plan_repo() -> (TempDir, TempDir) {
+        let source = TempDir::new().unwrap();
+        let mut store = GitStore::init(source.path()).unwrap();
+        // Write rdm.toml and INDEX.md to simulate a plan repo
+        store
+            .write(
+                &RelPath::new("rdm.toml").unwrap(),
+                "default_project = \"demo\"\n".to_string(),
+            )
+            .unwrap();
+        store
+            .write(&RelPath::new("INDEX.md").unwrap(), "# Index\n".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare = TempDir::new().unwrap();
+        std::process::Command::new("git")
+            .args(["clone", "--bare"])
+            .arg(source.path())
+            .arg(bare.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+
+        (source, bare)
+    }
+
+    #[test]
+    fn clone_remote_creates_working_store() {
+        let (_source, bare) = make_bare_plan_repo();
+        let target = TempDir::new().unwrap();
+        let target_path = target.path().join("cloned");
+
+        let store = GitStore::clone_remote(bare.path().to_str().unwrap(), &target_path).unwrap();
+
+        assert!(target_path.join(".git").exists());
+        assert!(target_path.join("rdm.toml").exists());
+        assert!(target_path.join("INDEX.md").exists());
+
+        // Should have "origin" remote
+        let remotes = store.git_remote_list().unwrap();
+        assert!(remotes.iter().any(|r| r.name == "origin"));
+    }
+
+    #[test]
+    fn clone_remote_fails_nonempty_dir() {
+        let (_source, bare) = make_bare_plan_repo();
+        let target = TempDir::new().unwrap();
+        // Pre-populate target
+        std::fs::write(target.path().join("blocker.txt"), "hi").unwrap();
+
+        let result = GitStore::clone_remote(bare.path().to_str().unwrap(), target.path());
+        match result {
+            Err(e) => assert!(e.to_string().contains("not empty"), "got: {e}"),
+            Ok(_) => panic!("expected error for non-empty dir"),
+        }
+    }
+
+    #[test]
+    fn clone_remote_fails_bad_url() {
+        let target = TempDir::new().unwrap();
+        let target_path = target.path().join("cloned");
+
+        let result = GitStore::clone_remote("file:///nonexistent/repo.git", &target_path);
+        match result {
+            Err(e) => assert!(e.to_string().contains("git clone failed"), "got: {e}"),
+            Ok(_) => panic!("expected error for bad URL"),
+        }
     }
 }

@@ -250,3 +250,248 @@ fn no_subcommand_shows_usage() {
         .failure()
         .stderr(predicate::str::contains("Usage"));
 }
+
+// -- init --remote tests --
+
+/// Runs a git command with env vars cleared for test isolation.
+fn git_cmd() -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com");
+    cmd
+}
+
+/// Creates a valid rdm plan repo with a project, then bare-clones it.
+/// Returns (source_dir, bare_dir).
+fn setup_remote_source(xdg: &TempDir) -> (TempDir, TempDir) {
+    let source = TempDir::new().unwrap();
+    rdm(xdg)
+        .arg("--root")
+        .arg(source.path())
+        .arg("init")
+        .arg("--default-project")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let bare = TempDir::new().unwrap();
+    // bare clone deletes the dir and recreates it, so use a subpath
+    let bare_path = bare.path().join("repo.git");
+    git_cmd()
+        .args(["clone", "--bare"])
+        .arg(source.path())
+        .arg(&bare_path)
+        .output()
+        .unwrap();
+
+    // Return the bare dir (we use bare_path inside)
+    (source, bare)
+}
+
+#[test]
+fn init_remote_clones_repo() {
+    let xdg = TempDir::new().unwrap();
+    let (_source, bare) = setup_remote_source(&xdg);
+    let bare_path = bare.path().join("repo.git");
+    let target = TempDir::new().unwrap();
+    let target_path = target.path().join("cloned");
+
+    rdm(&xdg)
+        .arg("--root")
+        .arg(&target_path)
+        .arg("init")
+        .arg("--remote")
+        .arg(bare_path.to_str().unwrap())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Cloned plan repo from"));
+
+    assert!(target_path.join("rdm.toml").exists());
+    assert!(target_path.join("INDEX.md").exists());
+}
+
+#[test]
+fn init_remote_with_default_format() {
+    let xdg = TempDir::new().unwrap();
+    let (_source, bare) = setup_remote_source(&xdg);
+    let bare_path = bare.path().join("repo.git");
+    let target = TempDir::new().unwrap();
+    let target_path = target.path().join("cloned");
+
+    rdm(&xdg)
+        .arg("--root")
+        .arg(&target_path)
+        .arg("init")
+        .arg("--remote")
+        .arg(bare_path.to_str().unwrap())
+        .arg("--default-format")
+        .arg("json")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default format: json"));
+
+    let global_path = xdg.path().join("rdm/config.toml");
+    let global_str = std::fs::read_to_string(global_path).unwrap();
+    assert!(global_str.contains("json"));
+}
+
+#[test]
+fn init_remote_rejects_default_project() {
+    let xdg = TempDir::new().unwrap();
+
+    rdm(&xdg)
+        .arg("--root")
+        .arg("/tmp/does-not-matter")
+        .arg("init")
+        .arg("--remote")
+        .arg("https://example.com/repo.git")
+        .arg("--default-project")
+        .arg("myproj")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn init_remote_nonempty_target_fails() {
+    let xdg = TempDir::new().unwrap();
+    let (_source, bare) = setup_remote_source(&xdg);
+    let bare_path = bare.path().join("repo.git");
+    let target = TempDir::new().unwrap();
+    std::fs::write(target.path().join("blocker.txt"), "hi").unwrap();
+
+    rdm(&xdg)
+        .arg("--root")
+        .arg(target.path())
+        .arg("init")
+        .arg("--remote")
+        .arg(bare_path.to_str().unwrap())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not empty"));
+}
+
+#[test]
+fn init_remote_invalid_rdm_repo() {
+    let xdg = TempDir::new().unwrap();
+    // Create a plain git repo (no rdm.toml)
+    let source = TempDir::new().unwrap();
+    git_cmd()
+        .args(["init"])
+        .arg(source.path())
+        .output()
+        .unwrap();
+    std::fs::write(source.path().join("README.md"), "# Hello").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(source.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "init"])
+        .current_dir(source.path())
+        .output()
+        .unwrap();
+
+    let bare = TempDir::new().unwrap();
+    let bare_path = bare.path().join("repo.git");
+    git_cmd()
+        .args(["clone", "--bare"])
+        .arg(source.path())
+        .arg(&bare_path)
+        .output()
+        .unwrap();
+
+    let target = TempDir::new().unwrap();
+    let target_path = target.path().join("cloned");
+
+    rdm(&xdg)
+        .arg("--root")
+        .arg(&target_path)
+        .arg("init")
+        .arg("--remote")
+        .arg(bare_path.to_str().unwrap())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a valid rdm plan repo"));
+}
+
+#[test]
+fn init_remote_sets_default_remote() {
+    let xdg = TempDir::new().unwrap();
+    let (_source, bare) = setup_remote_source(&xdg);
+    let bare_path = bare.path().join("repo.git");
+    let target = TempDir::new().unwrap();
+    let target_path = target.path().join("cloned");
+
+    rdm(&xdg)
+        .arg("--root")
+        .arg(&target_path)
+        .arg("init")
+        .arg("--remote")
+        .arg(bare_path.to_str().unwrap())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default remote: origin"));
+
+    let toml_str = std::fs::read_to_string(target_path.join("rdm.toml")).unwrap();
+    assert!(toml_str.contains("[remote]"));
+    assert!(toml_str.contains("origin"));
+}
+
+#[test]
+fn init_remote_repo_is_usable() {
+    let xdg = TempDir::new().unwrap();
+    let (_source, bare) = setup_remote_source(&xdg);
+    let bare_path = bare.path().join("repo.git");
+    let target = TempDir::new().unwrap();
+    let target_path = target.path().join("cloned");
+
+    rdm(&xdg)
+        .arg("--root")
+        .arg(&target_path)
+        .arg("init")
+        .arg("--remote")
+        .arg(bare_path.to_str().unwrap())
+        .assert()
+        .success();
+
+    // Should be able to list roadmaps in the cloned repo
+    rdm(&xdg)
+        .arg("--root")
+        .arg(&target_path)
+        .arg("roadmap")
+        .arg("list")
+        .arg("--project")
+        .arg("demo")
+        .assert()
+        .success();
+}
+
+#[test]
+fn init_remote_with_stage() {
+    let xdg = TempDir::new().unwrap();
+    let (_source, bare) = setup_remote_source(&xdg);
+    let bare_path = bare.path().join("repo.git");
+    let target = TempDir::new().unwrap();
+    let target_path = target.path().join("cloned");
+
+    rdm(&xdg)
+        .arg("--root")
+        .arg(&target_path)
+        .arg("--stage")
+        .arg("init")
+        .arg("--remote")
+        .arg(bare_path.to_str().unwrap())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("staging mode: enabled"));
+
+    let toml_str = std::fs::read_to_string(target_path.join("rdm.toml")).unwrap();
+    assert!(toml_str.contains("stage = true"));
+}

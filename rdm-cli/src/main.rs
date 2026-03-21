@@ -56,6 +56,10 @@ enum Command {
         /// Set the default output format in global config.
         #[arg(long)]
         default_format: Option<String>,
+        /// Clone a remote plan repo instead of creating an empty one.
+        #[cfg(feature = "git")]
+        #[arg(long, conflicts_with = "default_project")]
+        remote: Option<String>,
     },
     /// View or modify configuration.
     Config {
@@ -1044,6 +1048,8 @@ fn run() -> Result<()> {
         Command::Init {
             default_project,
             default_format,
+            #[cfg(feature = "git")]
+            remote,
         } => {
             // Validate --default-format before any side effects.
             if let Some(ref fmt) = default_format {
@@ -1055,6 +1061,84 @@ fn run() -> Result<()> {
                         VALID_FORMATS.join(", ")
                     );
                 }
+            }
+
+            #[cfg(feature = "git")]
+            if let Some(ref url) = remote {
+                // Clone path: fetch remote repo into root.
+                let store = rdm_store_git::GitStore::clone_remote(url, &root)
+                    .context("failed to clone remote plan repo")?;
+
+                // Validate and load config: must be a valid rdm plan repo (has rdm.toml).
+                let repo = PlanRepo::new(store);
+                let mut config = repo
+                    .load_config()
+                    .context("not a valid rdm plan repo — cloned repository has no rdm.toml")?;
+                config.remote = Some(rdm_core::config::RemoteConfig {
+                    default: Some("origin".to_string()),
+                });
+                if cli.stage {
+                    config.stage = Some(true);
+                }
+                paths::save_repo_config(&root, &config).context("failed to update repo config")?;
+
+                // Commit the config update.
+                let store =
+                    rdm_store_git::GitStore::new(&root).context("failed to open cloned repo")?;
+                store
+                    .git_commit("rdm: configure remote.default = origin")
+                    .context("failed to commit remote config")?;
+
+                // Save global config (best-effort, required if --default-format).
+                let mut global = global_config.clone();
+                if let Some(ref fmt) = default_format {
+                    global.default_format = Some(fmt.clone());
+                }
+                let global_saved = match paths::save_global_config(&global) {
+                    Ok(()) => true,
+                    Err(e) if default_format.is_some() => {
+                        return Err(e).context("failed to save global config");
+                    }
+                    Err(_) => false,
+                };
+
+                // Print banner and summary.
+                let b = "\x1b[38;2;74;144;217m";
+                let r = "\x1b[0m";
+                println!(
+                    "\n\
+                     {b}██████▄    ██████▄    ██▄    ▄██{r}\n\
+                     \n\
+                     {b}██   ██    ██   ██    ████  ████{r}\n\
+                     \n\
+                     {b}██████▀    ██    ██   ██ ████ ██{r}\n\
+                     \n\
+                     {b}██▀▀█      ██    ██   ██  ██  ██{r}\n\
+                     \n\
+                     {b}██  ▀█     ██   ██    ██      ██{r}\n\
+                     \n\
+                     {b}██   █▄    ██████▀    ██      ██{r}\n"
+                );
+                println!("Cloned plan repo from {url}");
+                println!("  location: {}", root.display());
+                println!("  repo config: {}/rdm.toml", root.display());
+                if global_saved && let Some(gp) = paths::global_config_path() {
+                    println!("  global config: {}", gp.display());
+                }
+                println!("  default remote: origin");
+                if let Some(ref fmt) = default_format {
+                    println!("  default format: {fmt}");
+                }
+                if cli.stage {
+                    println!("  staging mode: enabled");
+                }
+                println!();
+                println!("Next steps:");
+                println!("  rdm roadmap list   # see available roadmaps");
+                println!("  rdm task list      # see open tasks");
+                println!("  rdm pull           # fetch latest changes");
+
+                return Ok(());
             }
 
             // Create root directory recursively.
