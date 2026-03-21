@@ -4,9 +4,11 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-A zero-dependency CLI for managing project roadmaps, phases, and tasks as git-tracked markdown files.
+A tool for managing project roadmaps, phases, and tasks as git-tracked markdown files — designed to be driven by your LLM coding assistant.
 
-`rdm` separates the **tool** (a compiled Rust binary) from the **plan repo** (a git-managed directory of markdown files). Your roadmaps and tasks live in the plan repo; `rdm` is how you read and write them. First-class AI agent integration means coding agents can drive the same workflows through the CLI, MCP, or REST API.
+Work with your assistant to plan and implement large changes in a structured, repeatable way. You only need to allowlist a single CLI tool or MCP server. Plans are stored in a separate repo to keep your codebase free of planning artifacts.
+
+`rdm` offers CLI, MCP, and REST interfaces.
 
 ## Installation
 
@@ -18,7 +20,11 @@ brew install edpaget/rdm/rdm-cli
 cargo install --path rdm-cli
 ```
 
-Then initialize your plan repo:
+Open your coding assistant and ask it to run `rdm --help` and initialize the tool. Tell it whether you want to use the CLI or MCP server so it installs the correct prompts and configuration.
+
+### Manual Initialization
+
+Initialize your plan repo:
 
 ```bash
 rdm init
@@ -31,6 +37,8 @@ rdm --root ~/Projects/my-plans init
 ```
 
 ## Quick Start
+
+If you initialized using your coding assistant, it should have prompted you to create a project. The examples below show what happens under the hood — you typically won't need to run these manually.
 
 ```bash
 # Create a project
@@ -48,6 +56,39 @@ rdm roadmap show two-way-players --project fbm
 # One-off work items
 rdm task create fix-barrel-nulls --project fbm --title "Fix barrel column NULL for 2024" --priority high
 rdm task update fix-barrel-nulls --project fbm --status done
+```
+
+## AI Agent Integration
+
+rdm is designed to work with AI coding agents. Instead of granting filesystem access to your plan repo, you allowlist the `rdm` binary or MCP server and the agent reads and writes roadmaps through the CLI.
+
+### CLI Agent Config
+
+Generate instructions and skill definitions for your agent:
+
+```bash
+# Generate CLAUDE.md instructions for a target project
+rdm agent-config claude --project fbm > ~/Projects/fbm/.claude/rdm.md
+
+# Generate Claude Code skill definitions
+rdm agent-config claude --skills --project fbm --out ~/Projects/fbm/.claude/skills/
+```
+
+rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), implementation (`rdm-implement`), task management (`rdm-tasks`), review (`rdm-review`), and documentation generation (`rdm-document`).
+
+### MCP Server
+
+For agents that support [Model Context Protocol](https://modelcontextprotocol.io/), rdm exposes all operations as MCP tools — projects, roadmaps, phases, tasks, and search:
+
+```bash
+# Start the MCP server (stdio transport)
+rdm mcp
+
+# Generate MCP-oriented agent instructions (references MCP tool names instead of CLI commands)
+rdm agent-config --mcp --project fbm --out ~/Projects/fbm
+
+# Generate MCP-aware Claude Code skills + .mcp.json
+rdm agent-config claude --mcp --skills --project fbm --out ~/Projects/fbm/.claude/skills/
 ```
 
 ## Core Workflow: Plan, Implement, Done
@@ -103,40 +144,6 @@ rdm hook install
 
 The hooks parse `Done:` directives for both phases (`Done: <roadmap>/<phase>`) and tasks (`Done: task/<slug>`). This creates a traceable link from every completed item back to the commit that shipped it.
 
-> **rdm is built with rdm.** This project's own development — roadmaps, phases, and tasks — is tracked in a separate plan repo using these same workflows.
-
-## AI Agent Integration
-
-rdm is designed to work with AI coding agents. Instead of granting filesystem access to your plan repo, you allowlist the `rdm` binary and the agent reads and writes roadmaps through the CLI.
-
-### CLI Agent Config
-
-Generate instructions and skill definitions for your agent:
-
-```bash
-# Generate CLAUDE.md instructions for a target project
-rdm agent-config claude --project fbm > ~/Projects/fbm/.claude/rdm.md
-
-# Generate Claude Code skill definitions
-rdm agent-config claude --skills --project fbm --out ~/Projects/fbm/.claude/skills/
-```
-
-rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), implementation (`rdm-implement`), task management (`rdm-tasks`), review (`rdm-review`), and documentation generation (`rdm-document`).
-
-### MCP Server
-
-For agents that support [Model Context Protocol](https://modelcontextprotocol.io/), rdm exposes all operations as MCP tools — projects, roadmaps, phases, tasks, and search:
-
-```bash
-# Start the MCP server (stdio transport)
-rdm mcp
-
-# Generate MCP-oriented agent instructions (references MCP tool names instead of CLI commands)
-rdm agent-config --mcp --project fbm --out ~/Projects/fbm
-
-# Generate MCP-aware Claude Code skills + .mcp.json
-rdm agent-config claude --mcp --skills --project fbm --out ~/Projects/fbm/.claude/skills/
-```
 
 ## REST API
 
