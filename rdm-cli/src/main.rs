@@ -2360,9 +2360,8 @@ fn run() -> Result<()> {
                 HookCommand::Install { force } => {
                     let cwd =
                         std::env::current_dir().context("cannot determine current directory")?;
-                    let hooks_dir = rdm_store_git::discover_git_dir(&cwd)
-                        .context("current directory is not inside a git repository")?
-                        .join("hooks");
+                    let hooks_dir = rdm_store_git::discover_hooks_dir(&cwd)
+                        .context("current directory is not inside a git repository")?;
                     std::fs::create_dir_all(&hooks_dir)
                         .context("failed to create hooks directory")?;
 
@@ -2401,9 +2400,8 @@ fn run() -> Result<()> {
                 HookCommand::Uninstall => {
                     let cwd =
                         std::env::current_dir().context("cannot determine current directory")?;
-                    let hooks_dir = rdm_store_git::discover_git_dir(&cwd)
-                        .context("current directory is not inside a git repository")?
-                        .join("hooks");
+                    let hooks_dir = rdm_store_git::discover_hooks_dir(&cwd)
+                        .context("current directory is not inside a git repository")?;
 
                     let mut removed_any = false;
                     for name in &["post-merge", "post-commit"] {

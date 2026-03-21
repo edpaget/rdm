@@ -182,6 +182,78 @@ fn hook_install_force_overwrites() {
         .stdout(predicate::str::contains("Installed post-commit hook"));
 }
 
+#[test]
+fn hook_install_respects_hooks_path() {
+    let project_dir = TempDir::new().unwrap();
+    init_project_repo(&project_dir);
+
+    // Set core.hooksPath to a custom directory.
+    let out = git_cmd()
+        .args(["config", "core.hooksPath", ".githooks"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git config failed");
+
+    rdm()
+        .args(["hook", "install"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Installed post-merge hook"))
+        .stdout(predicate::str::contains("Installed post-commit hook"));
+
+    // Hooks should be in .githooks/, not .git/hooks/.
+    let custom_dir = project_dir.path().join(".githooks");
+    for name in &["post-merge", "post-commit"] {
+        let hook_path = custom_dir.join(name);
+        assert!(hook_path.exists(), "{name} hook should exist in .githooks/");
+        let contents = fs::read_to_string(&hook_path).unwrap();
+        let marker = format!("rdm hook {name}");
+        assert!(
+            contents.contains(&marker),
+            "{name} hook should contain {marker}"
+        );
+    }
+
+    // .git/hooks/ should NOT have the hooks.
+    assert!(!project_dir.path().join(".git/hooks/post-merge").exists());
+    assert!(!project_dir.path().join(".git/hooks/post-commit").exists());
+}
+
+#[test]
+fn hook_uninstall_respects_hooks_path() {
+    let project_dir = TempDir::new().unwrap();
+    init_project_repo(&project_dir);
+
+    // Set core.hooksPath and install hooks there.
+    let out = git_cmd()
+        .args(["config", "core.hooksPath", ".githooks"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git config failed");
+
+    rdm()
+        .args(["hook", "install"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    // Uninstall should remove from .githooks/.
+    rdm()
+        .args(["hook", "uninstall"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed post-merge hook"))
+        .stdout(predicate::str::contains("Removed post-commit hook"));
+
+    let custom_dir = project_dir.path().join(".githooks");
+    assert!(!custom_dir.join("post-merge").exists());
+    assert!(!custom_dir.join("post-commit").exists());
+}
+
 // -- hook uninstall tests --
 
 #[test]

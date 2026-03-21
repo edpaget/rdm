@@ -1360,6 +1360,31 @@ pub fn discover_git_dir(path: &Path) -> Result<PathBuf> {
     Ok(repo.git_dir().to_owned())
 }
 
+/// Discover the effective hooks directory for the repository containing `path`.
+///
+/// Checks `core.hooksPath` in the merged git config first. If set, returns
+/// that path (resolved against the working tree root when relative). Falls
+/// back to `<git_dir>/hooks` when unset.
+///
+/// # Errors
+///
+/// Returns `Error::Git` if no git repository is found at or above `path`.
+pub fn discover_hooks_dir(path: &Path) -> Result<PathBuf> {
+    let repo = gix::discover(path).map_err(|e| Error::Git(e.to_string()))?;
+    let config = repo.config_snapshot();
+    if let Some(hooks_path) = config.string("core.hooksPath") {
+        let p = PathBuf::from(hooks_path.to_string());
+        if p.is_absolute() {
+            return Ok(p);
+        }
+        // Relative paths are resolved against the working tree root.
+        if let Some(work_dir) = repo.workdir() {
+            return Ok(work_dir.join(p));
+        }
+    }
+    Ok(repo.git_dir().join("hooks"))
+}
+
 /// Read HEAD commit info from the repository containing `path`.
 ///
 /// Uses `gix::discover` to find the repo, then reads the HEAD commit.
