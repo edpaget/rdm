@@ -21,8 +21,13 @@ cargo install --path rdm-cli
 Then initialize your plan repo:
 
 ```bash
-export RDM_ROOT=~/Projects/my-plans
 rdm init
+```
+
+By default, rdm stores data in `~/.local/share/rdm` (the XDG data directory). To use a custom location, pass `--root`:
+
+```bash
+rdm --root ~/Projects/my-plans init
 ```
 
 ## Quick Start
