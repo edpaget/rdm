@@ -115,170 +115,12 @@ fn proj_flag_str(project: Option<&str>) -> String {
 /// Generates the core instruction content shared across all platforms.
 fn agent_instructions(project: Option<&str>, principles_file: Option<&str>) -> String {
     let proj_flag = proj_flag_str(project);
-    let mut sections = vec![
-        section_header(),
-        section_setup(&proj_flag),
-        section_discovering_work(&proj_flag),
-        section_reading_details(&proj_flag),
-        section_updating_status(&proj_flag),
-        section_creating_items(&proj_flag),
-        section_body_content(&proj_flag),
-        section_planning_workflow(&proj_flag),
-        section_status_transitions(),
-    ];
-    if let Some(path) = principles_file {
-        sections.push(section_principles(path));
-    }
-    sections.join("\n\n")
-}
-
-fn section_header() -> String {
-    "# rdm\n\nrdm is a CLI for managing project roadmaps, phases, and tasks. Use these instructions to interact with plan data exclusively through the rdm CLI.".to_string()
-}
-
-fn section_setup(proj_flag: &str) -> String {
-    format!(
-        "## Setup\n\nThe plan repo location is set via `RDM_ROOT` environment variable or `--root` flag. The project is specified with `{proj_flag}` (or set `RDM_PROJECT` env var, or configure `default_project` in `rdm.toml`)."
-    )
-}
-
-fn section_discovering_work(proj_flag: &str) -> String {
-    format!(
-        r#"## Discovering work
-
-```bash
-rdm roadmap list {proj_flag}       # list all roadmaps with progress
-rdm task list {proj_flag}           # list open/in-progress tasks
-rdm task list {proj_flag} --status all  # list all tasks including done
-```"#
-    )
-}
-
-fn section_reading_details(proj_flag: &str) -> String {
-    format!(
-        r#"## Reading details
-
-```bash
-rdm roadmap show <slug> {proj_flag}          # show roadmap with phases and body
-rdm phase list --roadmap <slug> {proj_flag}  # list phases with numbers and statuses
-rdm phase show <stem-or-number> --roadmap <slug> {proj_flag}  # show phase details
-rdm task show <slug> {proj_flag}             # show task details
-```
-
-Add `--no-body` to any `show` command to suppress body content when you only need metadata."#
-    )
-}
-
-fn section_updating_status(proj_flag: &str) -> String {
-    format!(
-        r#"## Updating status
-
-Always pass `--no-edit` to prevent the CLI from opening an interactive editor.
-
-```bash
-rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> {proj_flag}
-rdm task update <slug> --status done --no-edit {proj_flag}
-```"#
-    )
-}
-
-fn section_creating_items(proj_flag: &str) -> String {
-    format!(
-        r#"## Creating items
-
-Always pass `--no-edit` to suppress the interactive editor.
-
-```bash
-rdm roadmap create <slug> --title "Title" --body "Summary." --no-edit {proj_flag}
-rdm phase create <slug> --title "Title" --number <n> --body "Details." --no-edit --roadmap <slug> {proj_flag}
-rdm task create <slug> --title "Title" --body "Description." --no-edit {proj_flag}
-```"#
-    )
-}
-
-fn section_body_content(proj_flag: &str) -> String {
-    format!(
-        r#"## Body content
-
-Use `--body` for short inline content. For multiline content, pipe via stdin:
-
-```bash
-rdm task create <slug> --title "Title" --no-edit {proj_flag} <<'EOF'
-Multi-line body content goes here.
-
-It supports full Markdown.
-EOF
-```
-
-Do **not** use `--body` and stdin together — the CLI will error."#
-    )
-}
-
-fn section_planning_workflow(proj_flag: &str) -> String {
-    format!(
-        r#"## Planning workflow
-
-### Before starting work
-
-Run `rdm roadmap list {proj_flag}` to see all roadmaps and their progress. Check `rdm task list {proj_flag}` for open tasks. Identify what is in-progress and what comes next before writing any code.
-
-### Implementing a roadmap phase
-
-1. Read the phase: `rdm phase show <stem-or-number> --roadmap <slug> {proj_flag}`
-2. Plan your approach and get approval before starting
-3. Implement the work described in the phase
-4. Include a `Done:` line in the git commit message — the post-merge hook will mark the phase done and record the commit SHA.
-   **Use the exact roadmap slug and phase stem from the rdm commands above — do NOT invent or paraphrase them:**
-   ```
-   Done: <roadmap-slug>/<phase-stem>
-   ```
-5. Check the next phase: `rdm phase list --roadmap <slug> {proj_flag}`
-
-### Completing a task
-
-1. Implement the work described in the task
-2. Include a `Done: task/<slug>` line in the git commit message — the post-merge hook will mark the task done and record the commit SHA.
-   **Use the exact task slug from the rdm commands above — do NOT invent or paraphrase it.**
-
-### Discovering bugs or side-work
-
-If you encounter a bug or unrelated improvement while working on a phase, do not fix it inline. Create a task instead:
-
-```bash
-rdm task create <slug> --title "Description of the issue" --body "Details." --no-edit {proj_flag}
-```
-
-This keeps the current phase focused and ensures nothing is forgotten.
-
-### When a task grows too complex
-
-If a task becomes large enough to warrant multiple phases, promote it to a roadmap:
-
-```bash
-rdm promote <task-slug> --roadmap-slug <new-roadmap-slug> {proj_flag}
-```"#
-    )
-}
-
-fn section_status_transitions() -> String {
-    r#"## Status transitions
-
-### Phase statuses
-
-- `not-started` → `in-progress` — work begins
-- `in-progress` → `done` — work is complete
-- `in-progress` → `blocked` — waiting on an external dependency
-- `blocked` → `in-progress` — blocker resolved
-- `done` is terminal (can be manually reverted if needed)
-
-### Task statuses
-
-- `open` → `in-progress` — work begins
-- `in-progress` → `done` — work is complete
-- `in-progress` → `wont-fix` — decided not to do
-- `open` → `wont-fix` — decided not to do before starting
-- `done` and `wont-fix` are terminal"#
-        .to_string()
+    let principles = principles_file
+        .map(|p| format!("\n\n{}", section_principles(p)))
+        .unwrap_or_default();
+    include_str!("templates/instructions-cli.md")
+        .replace("{proj_flag}", &proj_flag)
+        .replace("\n{principles}", &principles)
 }
 
 /// A generated skill file with its relative path and content.
@@ -347,264 +189,74 @@ fn skill_principles_note(path: &str) -> String {
     )
 }
 
-fn skill_roadmap(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+fn render_skill(
+    template: &str,
+    proj_placeholder: &str,
+    proj_value: &str,
+    principles_note: Option<&str>,
+) -> String {
     let principles = principles_note.unwrap_or("");
+    template
+        .replace(proj_placeholder, proj_value)
+        .replace("{principles}", principles)
+}
+
+fn skill_roadmap(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
     SkillFile {
         relative_path: "rdm-roadmap/SKILL.md",
-        content: format!(
-            r#"---
-name: rdm-roadmap
-description: Create an rdm roadmap with phases for a topic
-allowed-tools:
-  - Read
-  - Bash
-  - Glob
-  - Grep
----
-
-Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
-{principles}
-## Steps
-
-1. **Explore the codebase** to understand the current state relevant to `$ARGUMENTS`. Read key files, search for related code, and build context.
-2. **Design phases** that break the work into independently deliverable increments. Each phase should produce a working, testable result.
-3. **Create the roadmap**: `rdm roadmap create <slug> --title "Title" --body "Summary." --no-edit {proj_flag}`
-4. **Create each phase** with context, steps, and acceptance criteria in the body:
-   ```bash
-   rdm phase create <slug> --title "Phase title" --number <n> --no-edit --roadmap <roadmap-slug> {proj_flag} <<'EOF'
-   ## Context
-   Why this phase exists and what it builds on.
-
-   ## Steps
-   1. First step
-   2. Second step
-
-   ## Acceptance Criteria
-   - [ ] Criterion one
-   - [ ] Criterion two
-   EOF
-   ```
-5. **Verify** the roadmap looks correct: `rdm roadmap show <slug> {proj_flag}`
-
-## Guidelines
-
-- Aim for 2–6 phases per roadmap
-- Each phase should be independently deliverable and testable
-- Include Context, Steps, and Acceptance Criteria in every phase body
-- Order phases so each builds on the previous one
-- Use clear, descriptive slugs (e.g., `add-caching`, `migrate-auth`)
-"#
+        content: render_skill(
+            include_str!("templates/skill-roadmap-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
         ),
     }
 }
 
 fn skill_implement(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
-    let principles = principles_note.unwrap_or("");
     SkillFile {
         relative_path: "rdm-implement/SKILL.md",
-        content: format!(
-            r#"---
-name: rdm-implement
-description: Implement the next phase of an rdm roadmap
-allowed-tools:
-  - Read
-  - Bash
-  - Glob
-  - Grep
-  - Write
-  - Edit
-  - EnterPlanMode
-  - ExitPlanMode
----
-
-Implement a phase from an rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [phase-number]`.
-{principles}
-## Steps
-
-1. **Parse arguments**: extract the roadmap slug and optional phase number from `$ARGUMENTS`.
-2. **Find the phase**: if no phase number was given, run `rdm phase list --roadmap <slug> {proj_flag}` and pick the first `not-started` or `in-progress` phase.
-3. **Read the phase**: `rdm phase show <phase> --roadmap <slug> {proj_flag}` to get full context, steps, and acceptance criteria.
-4. **Mark in-progress**: `rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> {proj_flag}`
-5. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
-6. **Create an implementation plan** using the planning tool. The plan should:
-   - Break the phase into concrete implementation steps based on the phase description and acceptance criteria
-   - Include a final step: "Review changes with user and commit"
-7. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
-8. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
-9. **Execute the plan**: implement each step, following the plan and the phase's acceptance criteria.
-10. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
-11. **Finalize**: on user acceptance, commit the implementation changes with a `Done:` line in the commit message — the post-merge hook will mark the phase done and record the commit SHA.
-    **Use the exact roadmap slug and phase stem from the rdm commands you ran earlier — do NOT invent or paraphrase them:**
-      ```
-      Done: <roadmap-slug>/<phase-stem>
-      ```
-12. **Handle side-work**: if you discover bugs or unrelated improvements, create tasks instead of fixing them inline:
-    ```bash
-    rdm task create <slug> --title "Description" --body "Details." --no-edit {proj_flag}
-    ```
-"#
+        content: render_skill(
+            include_str!("templates/skill-implement-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
         ),
     }
 }
 
 fn skill_tasks(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
-    let principles = principles_note.unwrap_or("");
     SkillFile {
         relative_path: "rdm-tasks/SKILL.md",
-        content: format!(
-            r#"---
-name: rdm-tasks
-description: Work on rdm tasks
-allowed-tools:
-  - Read
-  - Bash
-  - Glob
-  - Grep
-  - Write
-  - Edit
-  - EnterPlanMode
-  - ExitPlanMode
----
-
-Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
-{principles}
-## Steps
-
-1. **List tasks**: `rdm task list {proj_flag}` to see open and in-progress tasks.
-2. **Show details**: if a task slug was provided in `$ARGUMENTS`, run `rdm task show <slug> {proj_flag}`. Otherwise, present the task list and ask the user which task to work on.
-3. **Mark in-progress**: `rdm task update <slug> --status in-progress --no-edit {proj_flag}`
-4. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
-5. **Create an implementation plan** using the planning tool. The plan should:
-   - Break the task into concrete implementation steps based on the task description
-   - Include a final step: "Review changes with user and commit"
-6. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
-7. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
-8. **Execute the plan**: implement each step, following the plan.
-9. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
-10. **Finalize**: on user acceptance, commit the implementation changes with a `Done: task/<slug>` line in the commit message — the post-merge hook will mark the task done and record the commit SHA.
-    **Use the exact task slug from the rdm commands you ran earlier — do NOT invent or paraphrase it.**
-    If the task is also part of a roadmap phase, include a `Done: <roadmap-slug>/<phase-stem>` line as well (using exact slugs/stems from rdm).
-"#
+        content: render_skill(
+            include_str!("templates/skill-tasks-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
         ),
     }
 }
 
 fn skill_document(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
-    let principles = principles_note.unwrap_or("");
     SkillFile {
         relative_path: "rdm-document/SKILL.md",
-        content: format!(
-            r#"---
-name: rdm-document
-description: Generate user documentation from a completed rdm roadmap
-allowed-tools:
-  - Read
-  - Bash
-  - Glob
-  - Grep
-  - Write
-  - Edit
----
-
-Generate user-facing documentation from a completed rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [--out <path>]`.
-{principles}
-## Steps
-
-1. **Parse arguments**: extract the roadmap slug and optional `--out <path>` from `$ARGUMENTS`. Default output path is `docs/<slug>.md`.
-2. **Read the roadmap**: `rdm roadmap show <slug> {proj_flag}` to get the overview and phase list.
-3. **Validate completion**: all phases must be `done`. If any phase is not done, abort with a clear message listing incomplete phases.
-4. **Read each phase**: `rdm phase show <stem> --roadmap <slug> {proj_flag} --format json` for each phase. Collect titles, bodies, and commit SHAs.
-5. **Gather code changes** from commit SHAs (the `commit` field in phase JSON):
-   - If SHAs are available: `git log --oneline <first_sha>~1..<last_sha>` and `git diff --stat <first_sha>~1..<last_sha>` in the source repo
-   - Single commit: `git show --stat <sha>`
-   - Missing SHAs: warn and fall back to phase descriptions only — do not abort
-6. **Cross-reference** phase descriptions with actual code changes to ensure accuracy.
-7. **Draft documentation** structured as:
-   - **Overview** — what the feature is
-   - **Motivation** — why it was built
-   - **Usage** — concrete examples (CLI commands, config options)
-   - **How it works** (optional) — architecture/internals for complex features
-   - **Limitations** (optional) — known gaps
-8. **Write** the documentation to the output path.
-9. **Present the draft** to the user for review before considering done.
-
-## Guidelines
-
-- Write for users, not developers — focus on what they can do
-- The Usage section is the most important — include real, working examples
-- Internal/refactoring phases: mention in "How it works" if relevant, omit from Usage
-- Derive content from both phase descriptions (intent) and code diffs (what shipped)
-- If phases lack commit SHAs, note which ones and rely on descriptions alone
-"#
+        content: render_skill(
+            include_str!("templates/skill-document-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
         ),
     }
 }
 
 fn skill_review(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
-    let principles = principles_note.unwrap_or("");
     SkillFile {
         relative_path: "rdm-review/SKILL.md",
-        content: format!(
-            r#"---
-name: rdm-review
-description: Review implementation of an rdm phase or task
-allowed-tools:
-  - Read
-  - Bash
-  - Glob
-  - Grep
-  - Agent
----
-
-Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task.
-{principles}
-## Steps
-
-1. **Parse arguments**: determine whether this is a phase review or task review from `$ARGUMENTS`.
-   - If the first argument is `--task`, the next argument is a task slug.
-   - Otherwise, the first argument is a roadmap slug and the second is a phase number.
-
-2. **Read the acceptance criteria**:
-   - For a phase: `rdm phase show <phase-number> --roadmap <slug> {proj_flag}`
-   - For a task: `rdm task show <slug> {proj_flag}`
-   Extract the acceptance criteria, steps, and any other requirements from the body.
-
-3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task.
-
-4. **Dispatch parallel review agents** using the `Agent` tool. Launch at least two agents concurrently:
-
-   **Agent 1 — AC Compliance Reviewer**:
-   - For each acceptance criterion, evaluate whether it is met
-   - Provide evidence: file paths, line numbers, test names
-   - Rate each criterion: PASS, FAIL, or PARTIAL
-   - Note any criteria that are ambiguous or untestable
-
-   **Agent 2 — Code Quality Reviewer**:
-   - Check adherence to CLAUDE.md conventions (error handling, doc comments, test coverage, unsafe policy)
-   - Review architecture: does the implementation follow the core/cli/server separation?
-   - Check for common issues: missing error context, untested edge cases, public API without docs
-   - Verify tests exist and cover the key behaviors
-
-5. **Collect and consolidate results** from both agents into a single report:
-   - List each acceptance criterion with its status (PASS / FAIL / PARTIAL) and evidence
-   - List code quality findings grouped by severity (blocking, concern, suggestion)
-   - Provide an overall verdict: **PASS**, **PASS WITH CONCERNS**, or **FAIL**
-
-6. **Present the report** to the user in a clear, structured format.
-
-7. **Offer to create rdm tasks** for any actionable issues found:
-   ```bash
-   rdm task create <slug> --title "Review finding: description" --body "Details." --no-edit {proj_flag}
-   ```
-
-## Guidelines
-
-- Be objective — evaluate against the stated AC, not personal preferences
-- Provide specific evidence (file paths, line numbers) for every finding
-- Distinguish between blocking issues (FAIL) and minor concerns (PASS WITH CONCERNS)
-- Do not re-implement or fix code — only review and report
-- If AC are missing or vague, note this as a finding rather than guessing intent
-"#
+        content: render_skill(
+            include_str!("templates/skill-review-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
         ),
     }
 }
@@ -660,133 +312,13 @@ fn proj_param_str(project: Option<&str>) -> String {
 
 /// Generates MCP-oriented instruction content referencing MCP tool calls.
 fn agent_instructions_mcp(project: Option<&str>, principles_file: Option<&str>) -> String {
-    let proj = proj_param_str(project);
-    let mut sections = vec![
-        mcp_section_header(),
-        mcp_section_setup(&proj),
-        mcp_section_discovering_work(&proj),
-        mcp_section_reading_details(&proj),
-        mcp_section_searching(&proj),
-        mcp_section_updating_status(&proj),
-        mcp_section_creating_items(&proj),
-        mcp_section_planning_workflow(&proj),
-        mcp_section_status_transitions(),
-    ];
-    if let Some(path) = principles_file {
-        sections.push(section_principles(path));
-    }
-    sections.join("\n\n")
-}
-
-fn mcp_section_header() -> String {
-    "# rdm\n\nrdm is a tool for managing project roadmaps, phases, and tasks. Use the rdm MCP tools described below to interact with plan data. All tool calls return structured text results.".to_string()
-}
-
-fn mcp_section_setup(proj: &str) -> String {
-    format!(
-        "## Setup\n\nThe rdm MCP server is connected and provides tools for plan repo operations. Most tools require a `project` parameter — use {proj} for the current project."
-    )
-}
-
-fn mcp_section_discovering_work(proj: &str) -> String {
-    format!(
-        r#"## Discovering work
-
-- `rdm_roadmap_list` with `project: {proj}` — list all roadmaps with progress
-- `rdm_task_list` with `project: {proj}` — list open/in-progress tasks
-- `rdm_task_list` with `project: {proj}, status: "all"` — list all tasks including done"#
-    )
-}
-
-fn mcp_section_reading_details(proj: &str) -> String {
-    format!(
-        r#"## Reading details
-
-- `rdm_roadmap_show` with `project: {proj}, roadmap: "<slug>"` — show roadmap with phases and body
-- `rdm_phase_list` with `project: {proj}, roadmap: "<slug>"` — list phases with numbers and statuses
-- `rdm_phase_show` with `project: {proj}, roadmap: "<slug>", phase: "<stem-or-number>"` — show phase details
-- `rdm_task_show` with `project: {proj}, task: "<slug>"` — show task details"#
-    )
-}
-
-fn mcp_section_searching(proj: &str) -> String {
-    format!(
-        r#"## Searching
-
-Use `rdm_search` for fuzzy matching against titles and body content:
-
-- `rdm_search` with `query: "auth", project: {proj}` — find items mentioning "auth"
-- `rdm_search` with `query: "index", kind: "task", project: {proj}` — find only tasks
-- `rdm_search` with `query: "auth", status: "in-progress", project: {proj}` — filter by status"#
-    )
-}
-
-fn mcp_section_updating_status(proj: &str) -> String {
-    format!(
-        r#"## Updating status
-
-- `rdm_phase_update` with `project: {proj}, roadmap: "<slug>", phase: "<stem-or-number>", status: "done"`
-- `rdm_task_update` with `project: {proj}, task: "<slug>", status: "done"`"#
-    )
-}
-
-fn mcp_section_creating_items(proj: &str) -> String {
-    format!(
-        r#"## Creating items
-
-- `rdm_roadmap_create` with `project: {proj}, slug: "<slug>", title: "Title", body: "Summary."`
-- `rdm_phase_create` with `project: {proj}, roadmap: "<slug>", slug: "<slug>", title: "Title", number: <n>, body: "Details."`
-- `rdm_task_create` with `project: {proj}, slug: "<slug>", title: "Title", body: "Description."`
-
-The `body` parameter accepts full Markdown including multiline content."#
-    )
-}
-
-fn mcp_section_planning_workflow(proj: &str) -> String {
-    format!(
-        r#"## Planning workflow
-
-### Before starting work
-
-Use `rdm_roadmap_list` with `project: {proj}` to see all roadmaps and their progress. Check `rdm_task_list` with `project: {proj}` for open tasks. Identify what is in-progress and what comes next before writing any code.
-
-### Implementing a roadmap phase
-
-1. Read the phase: `rdm_phase_show` with `project: {proj}, roadmap: "<slug>", phase: "<stem-or-number>"`
-2. Plan your approach and get approval before starting
-3. Implement the work described in the phase
-4. Include a `Done:` line in the git commit message — the post-merge hook will mark the phase done and record the commit SHA.
-   **Use the exact roadmap slug and phase stem from the rdm tools above — do NOT invent or paraphrase them:**
-   ```
-   Done: <roadmap-slug>/<phase-stem>
-   ```
-5. Check the next phase: `rdm_phase_list` with `project: {proj}, roadmap: "<slug>"`
-
-### Completing a task
-
-1. Implement the work described in the task
-2. Include a `Done: task/<slug>` line in the git commit message — the post-merge hook will mark the task done and record the commit SHA.
-   **Use the exact task slug from the rdm tools above — do NOT invent or paraphrase it.**
-
-### Discovering bugs or side-work
-
-If you encounter a bug or unrelated improvement while working on a phase, do not fix it inline. Create a task instead:
-
-`rdm_task_create` with `project: {proj}, slug: "<slug>", title: "Description of the issue", body: "Details."`
-
-This keeps the current phase focused and ensures nothing is forgotten.
-
-### When a task grows too complex
-
-If a task becomes large enough to warrant multiple phases, promote it to a roadmap:
-
-`rdm_task_promote` with `project: {proj}, task: "<task-slug>", roadmap_slug: "<new-roadmap-slug>"`"#
-    )
-}
-
-fn mcp_section_status_transitions() -> String {
-    // Same content as CLI — status transitions are conceptual, not tool-specific.
-    section_status_transitions()
+    let proj_param = proj_param_str(project);
+    let principles = principles_file
+        .map(|p| format!("\n\n{}", section_principles(p)))
+        .unwrap_or_default();
+    include_str!("templates/instructions-mcp.md")
+        .replace("{proj_param}", &proj_param)
+        .replace("\n{principles}", &principles)
 }
 
 // ---------- MCP skill generators ----------
@@ -796,287 +328,99 @@ fn mcp_tool_name(tool: &str) -> String {
 }
 
 fn skill_roadmap_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    let principles = principles_note.unwrap_or("");
-    let t_roadmap_create = mcp_tool_name("rdm_roadmap_create");
-    let t_phase_create = mcp_tool_name("rdm_phase_create");
-    let t_roadmap_show = mcp_tool_name("rdm_roadmap_show");
     SkillFile {
         relative_path: "rdm-roadmap/SKILL.md",
-        content: format!(
-            r#"---
-name: rdm-roadmap
-description: Create an rdm roadmap with phases for a topic
-allowed-tools:
-  - Read
-  - Glob
-  - Grep
-  - {t_roadmap_create}
-  - {t_phase_create}
-  - {t_roadmap_show}
----
-
-Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
-{principles}
-## Steps
-
-1. **Explore the codebase** to understand the current state relevant to `$ARGUMENTS`. Read key files, search for related code, and build context.
-2. **Design phases** that break the work into independently deliverable increments. Each phase should produce a working, testable result.
-3. **Create the roadmap**: use `rdm_roadmap_create` with `project: {proj}, slug: "<slug>", title: "Title", body: "Summary."`
-4. **Create each phase** with context, steps, and acceptance criteria in the body:
-   Use `rdm_phase_create` with `project: {proj}, roadmap: "<roadmap-slug>", slug: "<slug>", title: "Phase title", number: <n>, body: "<markdown body>"`
-
-   The body should include:
-   ```
-   ## Context
-   Why this phase exists and what it builds on.
-
-   ## Steps
-   1. First step
-   2. Second step
-
-   ## Acceptance Criteria
-   - [ ] Criterion one
-   - [ ] Criterion two
-   ```
-5. **Verify** the roadmap looks correct: use `rdm_roadmap_show` with `project: {proj}, roadmap: "<slug>"`
-
-## Guidelines
-
-- Aim for 2–6 phases per roadmap
-- Each phase should be independently deliverable and testable
-- Include Context, Steps, and Acceptance Criteria in every phase body
-- Order phases so each builds on the previous one
-- Use clear, descriptive slugs (e.g., `add-caching`, `migrate-auth`)
-"#
+        content: render_mcp_skill(
+            include_str!("templates/skill-roadmap-mcp.md"),
+            proj,
+            principles_note,
+            &[
+                ("t_roadmap_create", "rdm_roadmap_create"),
+                ("t_phase_create", "rdm_phase_create"),
+                ("t_roadmap_show", "rdm_roadmap_show"),
+            ],
         ),
     }
 }
 
 fn skill_implement_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    let principles = principles_note.unwrap_or("");
-    let t_phase_list = mcp_tool_name("rdm_phase_list");
-    let t_phase_show = mcp_tool_name("rdm_phase_show");
-    let t_phase_update = mcp_tool_name("rdm_phase_update");
-    let t_task_create = mcp_tool_name("rdm_task_create");
     SkillFile {
         relative_path: "rdm-implement/SKILL.md",
-        content: format!(
-            r#"---
-name: rdm-implement
-description: Implement the next phase of an rdm roadmap
-allowed-tools:
-  - Read
-  - Glob
-  - Grep
-  - Write
-  - Edit
-  - EnterPlanMode
-  - ExitPlanMode
-  - {t_phase_list}
-  - {t_phase_show}
-  - {t_phase_update}
-  - {t_task_create}
----
-
-Implement a phase from an rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [phase-number]`.
-{principles}
-## Steps
-
-1. **Parse arguments**: extract the roadmap slug and optional phase number from `$ARGUMENTS`.
-2. **Find the phase**: if no phase number was given, use `rdm_phase_list` with `project: {proj}, roadmap: "<slug>"` and pick the first `not-started` or `in-progress` phase.
-3. **Read the phase**: use `rdm_phase_show` with `project: {proj}, roadmap: "<slug>", phase: "<phase>"` to get full context, steps, and acceptance criteria.
-4. **Mark in-progress**: use `rdm_phase_update` with `project: {proj}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`
-5. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
-6. **Create an implementation plan** using the planning tool. The plan should:
-   - Break the phase into concrete implementation steps based on the phase description and acceptance criteria
-   - Include a final step: "Review changes with user and commit"
-7. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
-8. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
-9. **Execute the plan**: implement each step, following the plan and the phase's acceptance criteria.
-10. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
-11. **Finalize**: on user acceptance, commit the implementation changes with a `Done:` line in the commit message — the post-merge hook will mark the phase done and record the commit SHA.
-    **Use the exact roadmap slug and phase stem from the rdm tools you used earlier — do NOT invent or paraphrase them:**
-      ```
-      Done: <roadmap-slug>/<phase-stem>
-      ```
-12. **Handle side-work**: if you discover bugs or unrelated improvements, create tasks instead of fixing them inline:
-    Use `rdm_task_create` with `project: {proj}, slug: "<slug>", title: "Description", body: "Details."`
-"#
+        content: render_mcp_skill(
+            include_str!("templates/skill-implement-mcp.md"),
+            proj,
+            principles_note,
+            &[
+                ("t_phase_list", "rdm_phase_list"),
+                ("t_phase_show", "rdm_phase_show"),
+                ("t_phase_update", "rdm_phase_update"),
+                ("t_task_create", "rdm_task_create"),
+            ],
         ),
     }
 }
 
 fn skill_tasks_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    let principles = principles_note.unwrap_or("");
-    let t_task_list = mcp_tool_name("rdm_task_list");
-    let t_task_show = mcp_tool_name("rdm_task_show");
-    let t_task_update = mcp_tool_name("rdm_task_update");
     SkillFile {
         relative_path: "rdm-tasks/SKILL.md",
-        content: format!(
-            r#"---
-name: rdm-tasks
-description: Work on rdm tasks
-allowed-tools:
-  - Read
-  - Glob
-  - Grep
-  - Write
-  - Edit
-  - EnterPlanMode
-  - ExitPlanMode
-  - {t_task_list}
-  - {t_task_show}
-  - {t_task_update}
----
-
-Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
-{principles}
-## Steps
-
-1. **List tasks**: use `rdm_task_list` with `project: {proj}` to see open and in-progress tasks.
-2. **Show details**: if a task slug was provided in `$ARGUMENTS`, use `rdm_task_show` with `project: {proj}, task: "<slug>"`. Otherwise, present the task list and ask the user which task to work on.
-3. **Mark in-progress**: use `rdm_task_update` with `project: {proj}, task: "<slug>", status: "in-progress"`
-4. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
-5. **Create an implementation plan** using the planning tool. The plan should:
-   - Break the task into concrete implementation steps based on the task description
-   - Include a final step: "Review changes with user and commit"
-6. **Wait for user approval**: the user will review the plan and either accept or request changes. Do not proceed until the plan is accepted.
-7. **Exit plan mode**: use the `ExitPlanMode` tool to switch back to execution mode.
-8. **Execute the plan**: implement each step, following the plan.
-9. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
-10. **Finalize**: on user acceptance, commit the implementation changes with a `Done: task/<slug>` line in the commit message — the post-merge hook will mark the task done and record the commit SHA.
-    **Use the exact task slug from the rdm tools you used earlier — do NOT invent or paraphrase it.**
-    If the task is also part of a roadmap phase, include a `Done: <roadmap-slug>/<phase-stem>` line as well (using exact slugs/stems from rdm).
-"#
+        content: render_mcp_skill(
+            include_str!("templates/skill-tasks-mcp.md"),
+            proj,
+            principles_note,
+            &[
+                ("t_task_list", "rdm_task_list"),
+                ("t_task_show", "rdm_task_show"),
+                ("t_task_update", "rdm_task_update"),
+            ],
         ),
     }
 }
 
 fn skill_document_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    let principles = principles_note.unwrap_or("");
-    let t_roadmap_show = mcp_tool_name("rdm_roadmap_show");
-    let t_phase_show = mcp_tool_name("rdm_phase_show");
     SkillFile {
         relative_path: "rdm-document/SKILL.md",
-        content: format!(
-            r#"---
-name: rdm-document
-description: Generate user documentation from a completed rdm roadmap
-allowed-tools:
-  - Read
-  - Glob
-  - Grep
-  - Write
-  - Edit
-  - {t_roadmap_show}
-  - {t_phase_show}
----
-
-Generate user-facing documentation from a completed rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [--out <path>]`.
-{principles}
-## Steps
-
-1. **Parse arguments**: extract the roadmap slug and optional `--out <path>` from `$ARGUMENTS`. Default output path is `docs/<slug>.md`.
-2. **Read the roadmap**: use `rdm_roadmap_show` with `project: {proj}, roadmap: "<slug>"` to get the overview and phase list.
-3. **Validate completion**: all phases must be `done`. If any phase is not done, abort with a clear message listing incomplete phases.
-4. **Read each phase**: use `rdm_phase_show` with `project: {proj}, roadmap: "<slug>", phase: "<stem>"` for each phase. Collect titles, bodies, and commit SHAs.
-5. **Gather code changes** from commit SHAs (the `commit` field in phase output):
-   - If SHAs are available: `git log --oneline <first_sha>~1..<last_sha>` and `git diff --stat <first_sha>~1..<last_sha>` in the source repo
-   - Single commit: `git show --stat <sha>`
-   - Missing SHAs: warn and fall back to phase descriptions only — do not abort
-6. **Cross-reference** phase descriptions with actual code changes to ensure accuracy.
-7. **Draft documentation** structured as:
-   - **Overview** — what the feature is
-   - **Motivation** — why it was built
-   - **Usage** — concrete examples (CLI commands, config options)
-   - **How it works** (optional) — architecture/internals for complex features
-   - **Limitations** (optional) — known gaps
-8. **Write** the documentation to the output path.
-9. **Present the draft** to the user for review before considering done.
-
-## Guidelines
-
-- Write for users, not developers — focus on what they can do
-- The Usage section is the most important — include real, working examples
-- Internal/refactoring phases: mention in "How it works" if relevant, omit from Usage
-- Derive content from both phase descriptions (intent) and code diffs (what shipped)
-- If phases lack commit SHAs, note which ones and rely on descriptions alone
-"#
+        content: render_mcp_skill(
+            include_str!("templates/skill-document-mcp.md"),
+            proj,
+            principles_note,
+            &[
+                ("t_roadmap_show", "rdm_roadmap_show"),
+                ("t_phase_show", "rdm_phase_show"),
+            ],
         ),
     }
 }
 
 fn skill_review_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    let principles = principles_note.unwrap_or("");
-    let t_phase_show = mcp_tool_name("rdm_phase_show");
-    let t_task_show = mcp_tool_name("rdm_task_show");
-    let t_task_create = mcp_tool_name("rdm_task_create");
     SkillFile {
         relative_path: "rdm-review/SKILL.md",
-        content: format!(
-            r#"---
-name: rdm-review
-description: Review implementation of an rdm phase or task
-allowed-tools:
-  - Read
-  - Glob
-  - Grep
-  - Agent
-  - {t_phase_show}
-  - {t_task_show}
-  - {t_task_create}
----
-
-Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task.
-{principles}
-## Steps
-
-1. **Parse arguments**: determine whether this is a phase review or task review from `$ARGUMENTS`.
-   - If the first argument is `--task`, the next argument is a task slug.
-   - Otherwise, the first argument is a roadmap slug and the second is a phase number.
-
-2. **Read the acceptance criteria**:
-   - For a phase: use `rdm_phase_show` with `project: {proj}, roadmap: "<slug>", phase: "<phase-number>"`
-   - For a task: use `rdm_task_show` with `project: {proj}, task: "<slug>"`
-   Extract the acceptance criteria, steps, and any other requirements from the body.
-
-3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task.
-
-4. **Dispatch parallel review agents** using the `Agent` tool. Launch at least two agents concurrently:
-
-   **Agent 1 — AC Compliance Reviewer**:
-   - For each acceptance criterion, evaluate whether it is met
-   - Provide evidence: file paths, line numbers, test names
-   - Rate each criterion: PASS, FAIL, or PARTIAL
-   - Note any criteria that are ambiguous or untestable
-
-   **Agent 2 — Code Quality Reviewer**:
-   - Check adherence to CLAUDE.md conventions (error handling, doc comments, test coverage, unsafe policy)
-   - Review architecture: does the implementation follow the core/cli/server separation?
-   - Check for common issues: missing error context, untested edge cases, public API without docs
-   - Verify tests exist and cover the key behaviors
-
-5. **Collect and consolidate results** from both agents into a single report:
-   - List each acceptance criterion with its status (PASS / FAIL / PARTIAL) and evidence
-   - List code quality findings grouped by severity (blocking, concern, suggestion)
-   - Provide an overall verdict: **PASS**, **PASS WITH CONCERNS**, or **FAIL**
-
-6. **Present the report** to the user in a clear, structured format.
-
-7. **Offer to create rdm tasks** for any actionable issues found:
-   Use `rdm_task_create` with `project: {proj}, slug: "<slug>", title: "Review finding: description", body: "Details."`
-
-## Guidelines
-
-- Be objective — evaluate against the stated AC, not personal preferences
-- Provide specific evidence (file paths, line numbers) for every finding
-- Distinguish between blocking issues (FAIL) and minor concerns (PASS WITH CONCERNS)
-- Do not re-implement or fix code — only review and report
-- If AC are missing or vague, note this as a finding rather than guessing intent
-"#
+        content: render_mcp_skill(
+            include_str!("templates/skill-review-mcp.md"),
+            proj,
+            principles_note,
+            &[
+                ("t_phase_show", "rdm_phase_show"),
+                ("t_task_show", "rdm_task_show"),
+                ("t_task_create", "rdm_task_create"),
+            ],
         ),
     }
+}
+
+fn render_mcp_skill(
+    template: &str,
+    proj: &str,
+    principles_note: Option<&str>,
+    tools: &[(&str, &str)],
+) -> String {
+    let principles = principles_note.unwrap_or("");
+    let mut result = template
+        .replace("{proj_param}", proj)
+        .replace("{principles}", principles);
+    for (placeholder, tool) in tools {
+        result = result.replace(&format!("{{{placeholder}}}"), &mcp_tool_name(tool));
+    }
+    result
 }
 
 fn section_principles(path: &str) -> String {
