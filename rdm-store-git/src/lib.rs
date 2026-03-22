@@ -139,7 +139,7 @@ pub struct ResolveResult {
 /// summarizing which files were touched.
 pub struct GitStore {
     inner: FsStore,
-    repo: gix::Repository,
+    repo: gix::ThreadSafeRepository,
     touched: BTreeMap<String, ChangeKind>,
     staging_mode: bool,
 }
@@ -152,7 +152,9 @@ impl GitStore {
     /// Returns `Error::Git` if the path is not inside a git repository.
     pub fn new(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        let repo = gix::open(&root).map_err(|e| Error::Git(e.to_string()))?;
+        let repo = gix::open(&root)
+            .map_err(|e| Error::Git(e.to_string()))?
+            .into_sync();
         Ok(Self {
             inner: FsStore::new(&root),
             repo,
@@ -195,7 +197,7 @@ impl GitStore {
 
         Ok(Self {
             inner: FsStore::new(&root),
-            repo,
+            repo: repo.into_sync(),
             touched: BTreeMap::new(),
             staging_mode: false,
         })
@@ -238,8 +240,9 @@ impl GitStore {
             return Err(Error::Git(format!("git clone failed: {}", stderr.trim())));
         }
         // Open the cloned repo
-        let repo =
-            gix::open(&root).map_err(|e| Error::Git(format!("failed to open cloned repo: {e}")))?;
+        let repo = gix::open(&root)
+            .map_err(|e| Error::Git(format!("failed to open cloned repo: {e}")))?
+            .into_sync();
         Ok(Self {
             inner: FsStore::new(&root),
             repo,
@@ -281,12 +284,8 @@ impl GitStore {
     ///
     /// Returns `Error::Git` if the repository state cannot be read.
     pub fn head_commit_info(&self) -> Result<Option<HeadCommitInfo>> {
-        let commit = match self
-            .repo
-            .head()
-            .ok()
-            .and_then(|mut h| h.peel_to_commit().ok())
-        {
+        let repo = self.repo.to_thread_local();
+        let commit = match repo.head().ok().and_then(|mut h| h.peel_to_commit().ok()) {
             Some(c) => c,
             None => return Ok(None),
         };
@@ -384,7 +383,7 @@ impl GitStore {
     ///
     /// Skips the `.git` directory. Writes blob objects for files and
     /// recursively creates subtree objects for directories.
-    fn build_tree_from_dir(&self, dir: &Path) -> Result<gix::ObjectId> {
+    fn build_tree_from_dir(&self, repo: &gix::Repository, dir: &Path) -> Result<gix::ObjectId> {
         let mut entries: Vec<gix::objs::tree::Entry> = Vec::new();
 
         let read_dir = std::fs::read_dir(dir)
@@ -406,7 +405,7 @@ impl GitStore {
                 .map_err(|e| Error::Git(format!("failed to get file type for {name}: {e}")))?;
 
             if ft.is_dir() {
-                let subtree_id = self.build_tree_from_dir(&entry.path())?;
+                let subtree_id = self.build_tree_from_dir(repo, &entry.path())?;
                 entries.push(gix::objs::tree::Entry {
                     mode: EntryMode::from(EntryKind::Tree),
                     filename: name.into(),
@@ -416,8 +415,7 @@ impl GitStore {
                 let content = std::fs::read(entry.path()).map_err(|e| {
                     Error::Git(format!("failed to read {}: {e}", entry.path().display()))
                 })?;
-                let blob_id = self
-                    .repo
+                let blob_id = repo
                     .write_blob(&content)
                     .map_err(|e| Error::Git(format!("failed to write blob for {name}: {e}")))?
                     .detach();
@@ -433,8 +431,7 @@ impl GitStore {
         entries.sort_by(|a, b| a.filename.cmp(&b.filename));
 
         let tree = gix::objs::Tree { entries };
-        let tree_id = self
-            .repo
+        let tree_id = repo
             .write_object(&tree)
             .map_err(|e| Error::Git(format!("failed to write tree: {e}")))?
             .detach();
@@ -444,23 +441,23 @@ impl GitStore {
 
     /// Builds a tree and creates a git commit with the given message.
     fn create_git_commit(&self, message: &str) -> Result<()> {
+        let repo = self.repo.to_thread_local();
         let root = self.inner.root().to_owned();
-        let tree_id = self.build_tree_from_dir(&root)?;
+        let tree_id = self.build_tree_from_dir(&repo, &root)?;
 
         let default_sig = || gix::actor::Signature {
             name: "rdm".into(),
             email: "rdm@localhost".into(),
             time: gix::date::Time::now_local_or_utc(),
         };
-        let sig = match self.repo.committer() {
+        let sig = match repo.committer() {
             Some(Ok(s)) => s.to_owned().unwrap_or_else(|_| default_sig()),
             _ => default_sig(),
         };
         let mut time_buf = gix::date::parse::TimeBuf::default();
         let sig_ref = sig.to_ref(&mut time_buf);
 
-        let parents: Vec<gix::ObjectId> = self
-            .repo
+        let parents: Vec<gix::ObjectId> = repo
             .head()
             .ok()
             .and_then(|mut h| h.peel_to_commit().ok())
@@ -468,8 +465,7 @@ impl GitStore {
             .into_iter()
             .collect();
 
-        self.repo
-            .commit_as(sig_ref, sig_ref, "HEAD", message, tree_id, parents)
+        repo.commit_as(sig_ref, sig_ref, "HEAD", message, tree_id, parents)
             .map_err(|e| Error::Git(format!("failed to create commit: {e}")))?;
 
         Ok(())
@@ -503,8 +499,9 @@ impl GitStore {
     ///
     /// Returns `Error::Git` if the repository state cannot be read.
     pub fn git_status(&self) -> Result<Vec<FileStatus>> {
+        let repo = self.repo.to_thread_local();
         let head_files = self.collect_head_tree()?;
-        let work_files = self.collect_working_tree(self.inner.root(), "")?;
+        let work_files = self.collect_working_tree(&repo, self.inner.root(), "")?;
 
         let mut statuses = Vec::new();
 
@@ -664,7 +661,9 @@ impl GitStore {
             .map_err(|e| Error::Git(format!("failed to write git config: {e}")))?;
 
         // Reopen to refresh cached config
-        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+        self.repo = gix::open(self.inner.root())
+            .map_err(|e| Error::Git(e.to_string()))?
+            .into_sync();
 
         Ok(())
     }
@@ -704,7 +703,9 @@ impl GitStore {
             .map_err(|e| Error::Git(format!("failed to write git config: {e}")))?;
 
         // Reopen to refresh cached config
-        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+        self.repo = gix::open(self.inner.root())
+            .map_err(|e| Error::Git(e.to_string()))?
+            .into_sync();
 
         Ok(())
     }
@@ -734,7 +735,9 @@ impl GitStore {
         }
 
         // Reopen repo to refresh refs
-        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+        self.repo = gix::open(self.inner.root())
+            .map_err(|e| Error::Git(e.to_string()))?
+            .into_sync();
 
         Ok(())
     }
@@ -801,7 +804,9 @@ impl GitStore {
         };
 
         // Reopen repo to refresh refs
-        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+        self.repo = gix::open(self.inner.root())
+            .map_err(|e| Error::Git(e.to_string()))?
+            .into_sync();
 
         Ok(PushResult {
             remote: remote_name.to_string(),
@@ -893,7 +898,9 @@ impl GitStore {
             }
 
             // Clean merge succeeded
-            self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+            self.repo = gix::open(self.inner.root())
+                .map_err(|e| Error::Git(e.to_string()))?
+                .into_sync();
             return Ok(PullOutcome::Success(PullResult {
                 remote: remote_name.to_string(),
                 branch,
@@ -914,7 +921,9 @@ impl GitStore {
         }
 
         // Reopen repo to refresh state
-        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+        self.repo = gix::open(self.inner.root())
+            .map_err(|e| Error::Git(e.to_string()))?
+            .into_sync();
 
         Ok(PullOutcome::Success(PullResult {
             remote: remote_name.to_string(),
@@ -973,7 +982,9 @@ impl GitStore {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(Error::Git(format!("git merge --abort failed: {stderr}")));
         }
-        self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+        self.repo = gix::open(self.inner.root())
+            .map_err(|e| Error::Git(e.to_string()))?
+            .into_sync();
         Ok(())
     }
 
@@ -1016,7 +1027,9 @@ impl GitStore {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(Error::Git(format!("git commit --no-edit failed: {stderr}")));
             }
-            self.repo = gix::open(self.inner.root()).map_err(|e| Error::Git(e.to_string()))?;
+            self.repo = gix::open(self.inner.root())
+                .map_err(|e| Error::Git(e.to_string()))?
+                .into_sync();
             merge_completed = true;
         }
 
@@ -1145,45 +1158,38 @@ impl GitStore {
 
     /// Collects all files from the HEAD tree as `path -> blob_oid`.
     fn collect_head_tree(&self) -> Result<BTreeMap<String, gix::ObjectId>> {
+        let repo = self.repo.to_thread_local();
         let mut files = BTreeMap::new();
-        let head = match self
-            .repo
-            .head()
-            .ok()
-            .and_then(|mut h| h.peel_to_commit().ok())
-        {
+        let head = match repo.head().ok().and_then(|mut h| h.peel_to_commit().ok()) {
             Some(commit) => commit,
             None => return Ok(files), // No commits yet
         };
         let tree = head
             .tree()
             .map_err(|e| Error::Git(format!("failed to get HEAD tree: {e}")))?;
-        self.walk_tree(&tree, "", &mut files)?;
+        self.walk_tree(&repo, &tree, "", &mut files)?;
         Ok(files)
     }
 
     /// Collects all file contents from the HEAD tree as `path -> bytes`.
     fn collect_head_blobs(&self) -> Result<BTreeMap<String, Vec<u8>>> {
+        let repo = self.repo.to_thread_local();
         let mut files = BTreeMap::new();
-        let head = match self
-            .repo
-            .head()
-            .ok()
-            .and_then(|mut h| h.peel_to_commit().ok())
-        {
+        let head = match repo.head().ok().and_then(|mut h| h.peel_to_commit().ok()) {
             Some(commit) => commit,
             None => return Ok(files),
         };
         let tree = head
             .tree()
             .map_err(|e| Error::Git(format!("failed to get HEAD tree: {e}")))?;
-        self.walk_tree_blobs(&tree, "", &mut files)?;
+        self.walk_tree_blobs(&repo, &tree, "", &mut files)?;
         Ok(files)
     }
 
     /// Recursively walks a git tree, collecting `path -> blob_oid`.
     fn walk_tree(
         &self,
+        repo: &gix::Repository,
         tree: &gix::Tree<'_>,
         prefix: &str,
         files: &mut BTreeMap<String, gix::ObjectId>,
@@ -1199,14 +1205,13 @@ impl GitStore {
             };
             let mode = entry.mode();
             if mode.is_tree() {
-                let subtree_obj = self
-                    .repo
+                let subtree_obj = repo
                     .find_object(entry.oid())
                     .map_err(|e| Error::Git(format!("failed to find object: {e}")))?;
                 let subtree = subtree_obj
                     .try_into_tree()
                     .map_err(|e| Error::Git(format!("failed to convert to tree: {e}")))?;
-                self.walk_tree(&subtree, &path, files)?;
+                self.walk_tree(repo, &subtree, &path, files)?;
             } else if mode.is_blob() {
                 files.insert(path, entry.oid().to_owned());
             }
@@ -1217,6 +1222,7 @@ impl GitStore {
     /// Recursively walks a git tree, collecting `path -> blob content`.
     fn walk_tree_blobs(
         &self,
+        repo: &gix::Repository,
         tree: &gix::Tree<'_>,
         prefix: &str,
         files: &mut BTreeMap<String, Vec<u8>>,
@@ -1232,17 +1238,15 @@ impl GitStore {
             };
             let mode = entry.mode();
             if mode.is_tree() {
-                let subtree_obj = self
-                    .repo
+                let subtree_obj = repo
                     .find_object(entry.oid())
                     .map_err(|e| Error::Git(format!("failed to find object: {e}")))?;
                 let subtree = subtree_obj
                     .try_into_tree()
                     .map_err(|e| Error::Git(format!("failed to convert to tree: {e}")))?;
-                self.walk_tree_blobs(&subtree, &path, files)?;
+                self.walk_tree_blobs(repo, &subtree, &path, files)?;
             } else if mode.is_blob() {
-                let blob = self
-                    .repo
+                let blob = repo
                     .find_object(entry.oid())
                     .map_err(|e| Error::Git(format!("failed to find blob: {e}")))?;
                 files.insert(path, blob.data.to_vec());
@@ -1254,6 +1258,7 @@ impl GitStore {
     /// Collects all files from the working directory as `path -> blob_oid`.
     fn collect_working_tree(
         &self,
+        repo: &gix::Repository,
         dir: &Path,
         prefix: &str,
     ) -> Result<BTreeMap<String, gix::ObjectId>> {
@@ -1280,13 +1285,12 @@ impl GitStore {
                 .file_type()
                 .map_err(|e| Error::Git(format!("failed to get file type: {e}")))?;
             if ft.is_dir() {
-                let sub = self.collect_working_tree(&entry.path(), &path)?;
+                let sub = self.collect_working_tree(repo, &entry.path(), &path)?;
                 files.extend(sub);
             } else {
                 let content = std::fs::read(entry.path())
                     .map_err(|e| Error::Git(format!("failed to read {path}: {e}")))?;
-                let blob_id = self
-                    .repo
+                let blob_id = repo
                     .write_blob(&content)
                     .map_err(|e| Error::Git(format!("failed to write blob: {e}")))?
                     .detach();
