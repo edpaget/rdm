@@ -51,7 +51,7 @@ impl<S: Store> PlanRepo<S> {
             },
             body: body.unwrap_or_default().to_string(),
         };
-        self.write_task(project, slug, &doc)?;
+        crate::io::write_task(&mut self.store, project, slug, &doc)?;
         self.store.commit()?;
         Ok(doc)
     }
@@ -82,7 +82,7 @@ impl<S: Store> PlanRepo<S> {
                 continue;
             }
             let slug = entry.name.trim_end_matches(".md").to_string();
-            let doc = self.load_task(project, &slug)?;
+            let doc = crate::io::load_task(&self.store, project, &slug)?;
             tasks.push((slug, doc));
         }
         tasks.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -115,7 +115,7 @@ impl<S: Store> PlanRepo<S> {
             return Err(Error::TaskNotFound(slug.to_string()));
         }
 
-        let mut doc = self.load_task(project, slug)?;
+        let mut doc = crate::io::load_task(&self.store, project, slug)?;
         if let Some(status) = status {
             if status == TaskStatus::Done && doc.frontmatter.status == TaskStatus::Done {
                 // Already done: only update commit if a new one is provided
@@ -142,7 +142,7 @@ impl<S: Store> PlanRepo<S> {
         if let Some(b) = body {
             doc.body = b.to_string();
         }
-        self.write_task(project, slug, &doc)?;
+        crate::io::write_task(&mut self.store, project, slug, &doc)?;
         self.store.commit()?;
         Ok(doc)
     }
@@ -169,7 +169,7 @@ impl<S: Store> PlanRepo<S> {
             return Err(Error::TaskNotFound(task_slug.to_string()));
         }
 
-        let task_doc = self.load_task(project, task_slug)?;
+        let task_doc = crate::io::load_task(&self.store, project, task_slug)?;
 
         let roadmap_file = crate::paths::roadmap_path(project, roadmap_slug);
         if self.store.exists(&roadmap_file) {
@@ -198,7 +198,7 @@ impl<S: Store> PlanRepo<S> {
             },
             body: roadmap_body,
         };
-        self.write_roadmap(project, roadmap_slug, &roadmap_doc)?;
+        crate::io::write_roadmap(&mut self.store, project, roadmap_slug, &roadmap_doc)?;
 
         let phase_doc = Document {
             frontmatter: Phase {
@@ -210,7 +210,13 @@ impl<S: Store> PlanRepo<S> {
             },
             body: task_doc.body,
         };
-        self.write_phase(project, roadmap_slug, &phase_slug, &phase_doc)?;
+        crate::io::write_phase(
+            &mut self.store,
+            project,
+            roadmap_slug,
+            &phase_slug,
+            &phase_doc,
+        )?;
 
         self.store.delete(&task_path)?;
         self.store.commit()?;

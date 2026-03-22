@@ -44,7 +44,7 @@ impl<S: Store> PlanRepo<S> {
             },
             body: body.unwrap_or_default().to_string(),
         };
-        self.write_roadmap(project, slug, &doc)?;
+        crate::io::write_roadmap(&mut self.store, project, slug, &doc)?;
         self.store.commit()?;
         Ok(doc)
     }
@@ -70,11 +70,11 @@ impl<S: Store> PlanRepo<S> {
             return Err(Error::RoadmapNotFound(slug.to_string()));
         }
 
-        let mut doc = self.load_roadmap(project, slug)?;
+        let mut doc = crate::io::load_roadmap(&self.store, project, slug)?;
         if let Some(b) = body {
             doc.body = b.to_string();
         }
-        self.write_roadmap(project, slug, &doc)?;
+        crate::io::write_roadmap(&mut self.store, project, slug, &doc)?;
         self.store.commit()?;
         Ok(doc)
     }
@@ -109,7 +109,7 @@ impl<S: Store> PlanRepo<S> {
             {
                 continue;
             }
-            let doc = self.load_roadmap(project, &slug)?;
+            let doc = crate::io::load_roadmap(&self.store, project, &slug)?;
             roadmaps.push(doc);
         }
         Ok(roadmaps)
@@ -137,8 +137,8 @@ impl<S: Store> PlanRepo<S> {
         depends_on: &str,
     ) -> Result<Document<Roadmap>> {
         // Verify both roadmaps exist
-        let mut doc = self.load_roadmap(project, slug)?;
-        let _target = self.load_roadmap(project, depends_on)?;
+        let mut doc = crate::io::load_roadmap(&self.store, project, slug)?;
+        let _target = crate::io::load_roadmap(&self.store, project, depends_on)?;
 
         // Check for self-dependency
         if slug == depends_on {
@@ -174,7 +174,7 @@ impl<S: Store> PlanRepo<S> {
         }
 
         deps.push(depends_on.to_string());
-        self.write_roadmap(project, slug, &doc)?;
+        crate::io::write_roadmap(&mut self.store, project, slug, &doc)?;
         self.store.commit()?;
         Ok(doc)
     }
@@ -195,7 +195,7 @@ impl<S: Store> PlanRepo<S> {
         slug: &str,
         depends_on: &str,
     ) -> Result<Document<Roadmap>> {
-        let mut doc = self.load_roadmap(project, slug)?;
+        let mut doc = crate::io::load_roadmap(&self.store, project, slug)?;
 
         if let Some(ref mut deps) = doc.frontmatter.dependencies {
             deps.retain(|d| d != depends_on);
@@ -204,7 +204,7 @@ impl<S: Store> PlanRepo<S> {
             }
         }
 
-        self.write_roadmap(project, slug, &doc)?;
+        crate::io::write_roadmap(&mut self.store, project, slug, &doc)?;
         self.store.commit()?;
         Ok(doc)
     }
@@ -498,7 +498,7 @@ impl<S: Store> PlanRepo<S> {
         depends_on: Option<&str>,
     ) -> Result<Document<Roadmap>> {
         // Validate source exists
-        let source_doc = self.load_roadmap(project, source_slug)?;
+        let source_doc = crate::io::load_roadmap(&self.store, project, source_slug)?;
 
         // Validate target doesn't exist
         let target_roadmap_path = crate::paths::roadmap_path(project, target_slug);
@@ -546,7 +546,7 @@ impl<S: Store> PlanRepo<S> {
         let mut target_phase_stems = Vec::new();
         for (i, old_stem) in extracted.iter().enumerate() {
             let new_number = (i + 1) as u32;
-            let phase_doc = self.load_phase(project, source_slug, old_stem)?;
+            let phase_doc = crate::io::load_phase(&self.store, project, source_slug, old_stem)?;
 
             // Derive the slug suffix (everything after "phase-N-")
             let slug_suffix = old_stem.splitn(3, '-').nth(2).unwrap_or(old_stem);
@@ -560,7 +560,13 @@ impl<S: Store> PlanRepo<S> {
                 body: phase_doc.body,
             };
 
-            self.write_phase(project, target_slug, &new_stem, &new_phase_doc)?;
+            crate::io::write_phase(
+                &mut self.store,
+                project,
+                target_slug,
+                &new_stem,
+                &new_phase_doc,
+            )?;
             // Delete from source
             let old_path = crate::paths::phase_path(project, source_slug, old_stem);
             self.store.delete(&old_path)?;
@@ -572,7 +578,7 @@ impl<S: Store> PlanRepo<S> {
         let mut new_source_stems = Vec::new();
         for (i, old_stem) in remaining.iter().enumerate() {
             let new_number = (i + 1) as u32;
-            let phase_doc = self.load_phase(project, source_slug, old_stem)?;
+            let phase_doc = crate::io::load_phase(&self.store, project, source_slug, old_stem)?;
 
             let slug_suffix = old_stem.splitn(3, '-').nth(2).unwrap_or(old_stem);
             let new_stem = format!("phase-{new_number}-{slug_suffix}");
@@ -586,12 +592,24 @@ impl<S: Store> PlanRepo<S> {
             };
 
             if new_stem != *old_stem {
-                self.write_phase(project, source_slug, &new_stem, &new_phase_doc)?;
+                crate::io::write_phase(
+                    &mut self.store,
+                    project,
+                    source_slug,
+                    &new_stem,
+                    &new_phase_doc,
+                )?;
                 let old_path = crate::paths::phase_path(project, source_slug, old_stem);
                 self.store.delete(&old_path)?;
             } else {
                 // Same stem, just update the frontmatter number if needed
-                self.write_phase(project, source_slug, &new_stem, &new_phase_doc)?;
+                crate::io::write_phase(
+                    &mut self.store,
+                    project,
+                    source_slug,
+                    &new_stem,
+                    &new_phase_doc,
+                )?;
             }
 
             new_source_stems.push(new_stem);
@@ -600,7 +618,7 @@ impl<S: Store> PlanRepo<S> {
         // Update source roadmap phases list
         let mut updated_source = source_doc;
         updated_source.frontmatter.phases = new_source_stems;
-        self.write_roadmap(project, source_slug, &updated_source)?;
+        crate::io::write_roadmap(&mut self.store, project, source_slug, &updated_source)?;
 
         // Create target roadmap
         let target_doc = Document {
@@ -613,7 +631,7 @@ impl<S: Store> PlanRepo<S> {
             },
             body: String::new(),
         };
-        self.write_roadmap(project, target_slug, &target_doc)?;
+        crate::io::write_roadmap(&mut self.store, project, target_slug, &target_doc)?;
 
         self.store.commit()?;
 
@@ -623,6 +641,6 @@ impl<S: Store> PlanRepo<S> {
         }
 
         // Reload to return the final state
-        self.load_roadmap(project, target_slug)
+        crate::io::load_roadmap(&self.store, project, target_slug)
     }
 }

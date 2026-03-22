@@ -42,7 +42,7 @@ impl<S: Store> PlanRepo<S> {
                 continue;
             }
             let stem = entry.name.trim_end_matches(".md").to_string();
-            let doc = self.load_phase(project, roadmap, &stem)?;
+            let doc = crate::io::load_phase(&self.store, project, roadmap, &stem)?;
             phases.push((stem, doc));
         }
         phases.sort_by_key(|(_, doc)| doc.frontmatter.phase);
@@ -102,12 +102,12 @@ impl<S: Store> PlanRepo<S> {
             },
             body: body.unwrap_or_default().to_string(),
         };
-        self.write_phase(project, roadmap, &stem, &doc)?;
+        crate::io::write_phase(&mut self.store, project, roadmap, &stem, &doc)?;
 
         // Update roadmap's phases list
-        let mut roadmap_doc = self.load_roadmap(project, roadmap)?;
+        let mut roadmap_doc = crate::io::load_roadmap(&self.store, project, roadmap)?;
         roadmap_doc.frontmatter.phases.push(stem);
-        self.write_roadmap(project, roadmap, &roadmap_doc)?;
+        crate::io::write_roadmap(&mut self.store, project, roadmap, &roadmap_doc)?;
         self.store.commit()?;
 
         Ok(doc)
@@ -141,7 +141,7 @@ impl<S: Store> PlanRepo<S> {
             return Err(Error::PhaseNotFound(phase_stem.to_string()));
         }
 
-        let mut doc = self.load_phase(project, roadmap, phase_stem)?;
+        let mut doc = crate::io::load_phase(&self.store, project, roadmap, phase_stem)?;
         if let Some(status) = status {
             if status == PhaseStatus::Done && doc.frontmatter.status == PhaseStatus::Done {
                 // Already done: only update commit if a new one is provided
@@ -162,7 +162,7 @@ impl<S: Store> PlanRepo<S> {
         if let Some(b) = body {
             doc.body = b.to_string();
         }
-        self.write_phase(project, roadmap, phase_stem, &doc)?;
+        crate::io::write_phase(&mut self.store, project, roadmap, phase_stem, &doc)?;
         self.store.commit()?;
         Ok(doc)
     }
@@ -186,9 +186,9 @@ impl<S: Store> PlanRepo<S> {
         self.store.delete(&path)?;
 
         // Remove stem from roadmap's phases list
-        let mut roadmap_doc = self.load_roadmap(project, roadmap)?;
+        let mut roadmap_doc = crate::io::load_roadmap(&self.store, project, roadmap)?;
         roadmap_doc.frontmatter.phases.retain(|s| s != phase_stem);
-        self.write_roadmap(project, roadmap, &roadmap_doc)?;
+        crate::io::write_roadmap(&mut self.store, project, roadmap, &roadmap_doc)?;
         self.store.commit()?;
         Ok(())
     }

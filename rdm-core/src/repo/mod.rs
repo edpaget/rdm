@@ -43,7 +43,7 @@ impl<S: Store> PlanRepo<S> {
         self.store.commit()
     }
 
-    // -- Load operations --
+    // -- Load operations (delegates to crate::io) --
 
     /// Loads and parses `rdm.toml` from the plan repo root.
     ///
@@ -53,12 +53,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::Io`] on read failure, or [`Error::ConfigParse`] if the file
     /// is not valid TOML.
     pub fn load_config(&self) -> Result<Config> {
-        let path = crate::paths::config_path();
-        if !self.store.exists(&path) {
-            return Err(Error::ConfigNotFound);
-        }
-        let content = self.store.read(&path)?;
-        Config::from_toml(&content)
+        crate::io::load_config(&self.store)
     }
 
     /// Loads and parses a project document from the store.
@@ -70,12 +65,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// YAML is invalid.
     pub fn load_project(&self, name: &str) -> Result<Document<Project>> {
-        let path = crate::paths::project_md_path(name);
-        if !self.store.exists(&path) {
-            return Err(Error::ProjectNotFound(name.to_string()));
-        }
-        let content = self.store.read(&path)?;
-        Document::parse(&content)
+        crate::io::load_project(&self.store, name)
     }
 
     /// Loads and parses a roadmap document from the store.
@@ -87,12 +77,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// YAML is invalid.
     pub fn load_roadmap(&self, project: &str, roadmap: &str) -> Result<Document<Roadmap>> {
-        let path = crate::paths::roadmap_path(project, roadmap);
-        if !self.store.exists(&path) {
-            return Err(Error::RoadmapNotFound(roadmap.to_string()));
-        }
-        let content = self.store.read(&path)?;
-        Document::parse(&content)
+        crate::io::load_roadmap(&self.store, project, roadmap)
     }
 
     /// Loads and parses a phase document from the store.
@@ -108,10 +93,7 @@ impl<S: Store> PlanRepo<S> {
         roadmap: &str,
         phase_stem: &str,
     ) -> Result<Document<Phase>> {
-        let content = self
-            .store
-            .read(&crate::paths::phase_path(project, roadmap, phase_stem))?;
-        Document::parse(&content)
+        crate::io::load_phase(&self.store, project, roadmap, phase_stem)
     }
 
     /// Loads and parses a task document from the store.
@@ -123,15 +105,10 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// YAML is invalid.
     pub fn load_task(&self, project: &str, task_slug: &str) -> Result<Document<Task>> {
-        let path = crate::paths::task_path(project, task_slug);
-        if !self.store.exists(&path) {
-            return Err(Error::TaskNotFound(task_slug.to_string()));
-        }
-        let content = self.store.read(&path)?;
-        Document::parse(&content)
+        crate::io::load_task(&self.store, project, task_slug)
     }
 
-    // -- Write operations --
+    // -- Write operations (delegates to crate::io) --
 
     /// Writes a roadmap document to the store.
     ///
@@ -145,10 +122,7 @@ impl<S: Store> PlanRepo<S> {
         roadmap: &str,
         doc: &Document<Roadmap>,
     ) -> Result<()> {
-        let path = crate::paths::roadmap_path(project, roadmap);
-        let content = doc.render()?;
-        self.store.write(&path, content)?;
-        Ok(())
+        crate::io::write_roadmap(&mut self.store, project, roadmap, doc)
     }
 
     /// Writes a phase document to the store.
@@ -164,10 +138,7 @@ impl<S: Store> PlanRepo<S> {
         phase_stem: &str,
         doc: &Document<Phase>,
     ) -> Result<()> {
-        let path = crate::paths::phase_path(project, roadmap, phase_stem);
-        let content = doc.render()?;
-        self.store.write(&path, content)?;
-        Ok(())
+        crate::io::write_phase(&mut self.store, project, roadmap, phase_stem, doc)
     }
 
     /// Writes a task document to the store.
@@ -182,10 +153,7 @@ impl<S: Store> PlanRepo<S> {
         task_slug: &str,
         doc: &Document<Task>,
     ) -> Result<()> {
-        let path = crate::paths::task_path(project, task_slug);
-        let content = doc.render()?;
-        self.store.write(&path, content)?;
-        Ok(())
+        crate::io::write_task(&mut self.store, project, task_slug, doc)
     }
 
     // -- Project operations --

@@ -21,6 +21,8 @@ pub mod error;
 pub mod hal;
 /// Git hook helpers for parsing `Done:` directives from commit messages.
 pub mod hook;
+/// Document I/O primitives for plan repo data.
+pub mod io;
 /// Serializable JSON output types for CLI and API consumers.
 pub mod json;
 
