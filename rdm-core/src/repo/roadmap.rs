@@ -26,10 +26,10 @@ impl<S: Store> PlanRepo<S> {
         title: &str,
         body: Option<&str>,
     ) -> Result<Document<Roadmap>> {
-        if !self.store.exists(&self.project_md_path(project)) {
+        if !self.store.exists(&crate::paths::project_md_path(project)) {
             return Err(Error::ProjectNotFound(project.to_string()));
         }
-        let roadmap_file = self.roadmap_path(project, slug);
+        let roadmap_file = crate::paths::roadmap_path(project, slug);
         if self.store.exists(&roadmap_file) {
             return Err(Error::DuplicateSlug(slug.to_string()));
         }
@@ -65,7 +65,7 @@ impl<S: Store> PlanRepo<S> {
         slug: &str,
         body: Option<&str>,
     ) -> Result<Document<Roadmap>> {
-        let path = self.roadmap_path(project, slug);
+        let path = crate::paths::roadmap_path(project, slug);
         if !self.store.exists(&path) {
             return Err(Error::RoadmapNotFound(slug.to_string()));
         }
@@ -88,10 +88,10 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
     /// roadmap file has invalid frontmatter.
     pub fn list_roadmaps(&self, project: &str) -> Result<Vec<Document<Roadmap>>> {
-        if !self.store.exists(&self.project_md_path(project)) {
+        if !self.store.exists(&crate::paths::project_md_path(project)) {
             return Err(Error::ProjectNotFound(project.to_string()));
         }
-        let roadmaps_dir = self.roadmaps_dir(project);
+        let roadmaps_dir = crate::paths::roadmaps_dir(project);
         let entries = self.store.list(&roadmaps_dir)?;
         let mut slugs: Vec<String> = entries
             .into_iter()
@@ -103,7 +103,10 @@ impl<S: Store> PlanRepo<S> {
         let mut roadmaps = Vec::new();
         for slug in slugs {
             // Skip directories without a roadmap.md (e.g., leftover empty dirs)
-            if !self.store.exists(&self.roadmap_path(project, &slug)) {
+            if !self
+                .store
+                .exists(&crate::paths::roadmap_path(project, &slug))
+            {
                 continue;
             }
             let doc = self.load_roadmap(project, &slug)?;
@@ -299,7 +302,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::Io`] if file removal or writes fail, or
     /// frontmatter errors if any roadmap file is malformed.
     pub fn delete_roadmap(&mut self, project: &str, slug: &str) -> Result<()> {
-        let roadmap_file = self.roadmap_path(project, slug);
+        let roadmap_file = crate::paths::roadmap_path(project, slug);
         if !self.store.exists(&roadmap_file) {
             return Err(Error::RoadmapNotFound(slug.to_string()));
         }
@@ -318,7 +321,7 @@ impl<S: Store> PlanRepo<S> {
         }
 
         // Remove all files in the roadmap directory
-        let dir = self.roadmap_dir(project, slug);
+        let dir = crate::paths::roadmap_dir(project, slug);
         self.delete_tree(&dir)?;
         self.store.commit()?;
         Ok(())
@@ -337,7 +340,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::RoadmapHasIncompletePhases`] if any phase is not done and
     /// `force` is false, or [`Error::Io`] on file I/O failures.
     pub fn archive_roadmap(&mut self, project: &str, slug: &str, force: bool) -> Result<()> {
-        let roadmap_file = self.roadmap_path(project, slug);
+        let roadmap_file = crate::paths::roadmap_path(project, slug);
         if !self.store.exists(&roadmap_file) {
             return Err(Error::RoadmapNotFound(slug.to_string()));
         }
@@ -365,8 +368,8 @@ impl<S: Store> PlanRepo<S> {
             }
         }
 
-        let src = self.roadmap_dir(project, slug);
-        let dst = self.archived_roadmap_dir(project, slug);
+        let src = crate::paths::roadmap_dir(project, slug);
+        let dst = crate::paths::archived_roadmap_dir(project, slug);
         self.copy_tree(&src, &dst)?;
         self.delete_tree(&src)?;
         self.store.commit()?;
@@ -382,7 +385,7 @@ impl<S: Store> PlanRepo<S> {
     /// Returns [`Error::Io`] on read failure, or frontmatter errors
     /// if any archived roadmap file is malformed.
     pub fn list_archived_roadmaps(&self, project: &str) -> Result<Vec<Document<Roadmap>>> {
-        let archive_dir = self.archived_roadmaps_dir(project);
+        let archive_dir = crate::paths::archived_roadmaps_dir(project);
         let entries = self.store.list(&archive_dir)?;
         let mut slugs: Vec<String> = entries
             .into_iter()
@@ -393,7 +396,7 @@ impl<S: Store> PlanRepo<S> {
 
         let mut roadmaps = Vec::new();
         for slug in slugs {
-            let path = self.archived_roadmap_path(project, &slug);
+            let path = crate::paths::archived_roadmap_path(project, &slug);
             if !self.store.exists(&path) {
                 continue;
             }
@@ -415,12 +418,12 @@ impl<S: Store> PlanRepo<S> {
         project: &str,
         roadmap: &str,
     ) -> Result<Vec<(String, Document<Phase>)>> {
-        let roadmap_file = self.archived_roadmap_path(project, roadmap);
+        let roadmap_file = crate::paths::archived_roadmap_path(project, roadmap);
         if !self.store.exists(&roadmap_file) {
             return Err(Error::RoadmapNotFound(roadmap.to_string()));
         }
 
-        let dir = self.archived_roadmap_dir(project, roadmap);
+        let dir = crate::paths::archived_roadmap_dir(project, roadmap);
         let entries = self.store.list(&dir)?;
 
         let mut phases: Vec<(String, Document<Phase>)> = Vec::new();
@@ -451,18 +454,18 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::DuplicateSlug`] if an active roadmap with the same slug exists,
     /// or [`Error::Io`] on file I/O failures.
     pub fn unarchive_roadmap(&mut self, project: &str, slug: &str) -> Result<()> {
-        let archived_file = self.archived_roadmap_path(project, slug);
+        let archived_file = crate::paths::archived_roadmap_path(project, slug);
         if !self.store.exists(&archived_file) {
             return Err(Error::RoadmapNotFound(slug.to_string()));
         }
 
-        let active_file = self.roadmap_path(project, slug);
+        let active_file = crate::paths::roadmap_path(project, slug);
         if self.store.exists(&active_file) {
             return Err(Error::DuplicateSlug(slug.to_string()));
         }
 
-        let src = self.archived_roadmap_dir(project, slug);
-        let dst = self.roadmap_dir(project, slug);
+        let src = crate::paths::archived_roadmap_dir(project, slug);
+        let dst = crate::paths::roadmap_dir(project, slug);
         self.copy_tree(&src, &dst)?;
         self.delete_tree(&src)?;
         self.store.commit()?;
@@ -498,7 +501,7 @@ impl<S: Store> PlanRepo<S> {
         let source_doc = self.load_roadmap(project, source_slug)?;
 
         // Validate target doesn't exist
-        let target_roadmap_path = self.roadmap_path(project, target_slug);
+        let target_roadmap_path = crate::paths::roadmap_path(project, target_slug);
         if self.store.exists(&target_roadmap_path) {
             return Err(Error::DuplicateSlug(target_slug.to_string()));
         }
@@ -559,7 +562,7 @@ impl<S: Store> PlanRepo<S> {
 
             self.write_phase(project, target_slug, &new_stem, &new_phase_doc)?;
             // Delete from source
-            let old_path = self.phase_path(project, source_slug, old_stem);
+            let old_path = crate::paths::phase_path(project, source_slug, old_stem);
             self.store.delete(&old_path)?;
 
             target_phase_stems.push(new_stem);
@@ -584,7 +587,7 @@ impl<S: Store> PlanRepo<S> {
 
             if new_stem != *old_stem {
                 self.write_phase(project, source_slug, &new_stem, &new_phase_doc)?;
-                let old_path = self.phase_path(project, source_slug, old_stem);
+                let old_path = crate::paths::phase_path(project, source_slug, old_stem);
                 self.store.delete(&old_path)?;
             } else {
                 // Same stem, just update the frontmatter number if needed

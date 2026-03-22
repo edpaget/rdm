@@ -48,7 +48,8 @@ fn last_changed_date(
 
     // Check roadmap.md itself
     let root = repo.store().root();
-    if let Ok(meta) = std::fs::metadata(root.join(repo.roadmap_path(project, roadmap).as_str()))
+    if let Ok(meta) =
+        std::fs::metadata(root.join(rdm_core::paths::roadmap_path(project, roadmap).as_str()))
         && let Ok(modified) = meta.modified()
     {
         latest = Some(modified);
@@ -56,9 +57,9 @@ fn last_changed_date(
 
     // Check each phase file
     for (stem, _) in phases {
-        if let Ok(meta) =
-            std::fs::metadata(root.join(repo.phase_path(project, roadmap, stem).as_str()))
-            && let Ok(modified) = meta.modified()
+        if let Ok(meta) = std::fs::metadata(
+            root.join(rdm_core::paths::phase_path(project, roadmap, stem).as_str()),
+        ) && let Ok(modified) = meta.modified()
         {
             latest = Some(match latest {
                 Some(prev) if prev >= modified => prev,

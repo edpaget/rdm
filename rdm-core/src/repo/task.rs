@@ -30,10 +30,10 @@ impl<S: Store> PlanRepo<S> {
         tags: Option<Vec<String>>,
         body: Option<&str>,
     ) -> Result<Document<Task>> {
-        if !self.store.exists(&self.project_md_path(project)) {
+        if !self.store.exists(&crate::paths::project_md_path(project)) {
             return Err(Error::ProjectNotFound(project.to_string()));
         }
-        let path = self.task_path(project, slug);
+        let path = crate::paths::task_path(project, slug);
         if self.store.exists(&path) {
             return Err(Error::DuplicateSlug(slug.to_string()));
         }
@@ -67,10 +67,10 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
     /// task file has invalid frontmatter.
     pub fn list_tasks(&self, project: &str) -> Result<Vec<(String, Document<Task>)>> {
-        if !self.store.exists(&self.project_md_path(project)) {
+        if !self.store.exists(&crate::paths::project_md_path(project)) {
             return Err(Error::ProjectNotFound(project.to_string()));
         }
-        let dir = self.tasks_dir(project);
+        let dir = crate::paths::tasks_dir(project);
         let entries = self.store.list(&dir)?;
 
         let mut tasks: Vec<(String, Document<Task>)> = Vec::new();
@@ -110,7 +110,7 @@ impl<S: Store> PlanRepo<S> {
         body: Option<&str>,
         commit: Option<String>,
     ) -> Result<Document<Task>> {
-        let path = self.task_path(project, slug);
+        let path = crate::paths::task_path(project, slug);
         if !self.store.exists(&path) {
             return Err(Error::TaskNotFound(slug.to_string()));
         }
@@ -164,14 +164,14 @@ impl<S: Store> PlanRepo<S> {
         task_slug: &str,
         roadmap_slug: &str,
     ) -> Result<Document<Roadmap>> {
-        let task_path = self.task_path(project, task_slug);
+        let task_path = crate::paths::task_path(project, task_slug);
         if !self.store.exists(&task_path) {
             return Err(Error::TaskNotFound(task_slug.to_string()));
         }
 
         let task_doc = self.load_task(project, task_slug)?;
 
-        let roadmap_file = self.roadmap_path(project, roadmap_slug);
+        let roadmap_file = crate::paths::roadmap_path(project, roadmap_slug);
         if self.store.exists(&roadmap_file) {
             return Err(Error::DuplicateSlug(roadmap_slug.to_string()));
         }

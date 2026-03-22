@@ -8,7 +8,6 @@ use crate::store::{DirEntryKind, RelPath, Store};
 
 mod index;
 mod init;
-mod paths;
 mod phase;
 mod roadmap;
 mod task;
@@ -54,7 +53,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::Io`] on read failure, or [`Error::ConfigParse`] if the file
     /// is not valid TOML.
     pub fn load_config(&self) -> Result<Config> {
-        let path = self.config_path();
+        let path = crate::paths::config_path();
         if !self.store.exists(&path) {
             return Err(Error::ConfigNotFound);
         }
@@ -71,7 +70,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// YAML is invalid.
     pub fn load_project(&self, name: &str) -> Result<Document<Project>> {
-        let path = self.project_md_path(name);
+        let path = crate::paths::project_md_path(name);
         if !self.store.exists(&path) {
             return Err(Error::ProjectNotFound(name.to_string()));
         }
@@ -88,7 +87,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// YAML is invalid.
     pub fn load_roadmap(&self, project: &str, roadmap: &str) -> Result<Document<Roadmap>> {
-        let path = self.roadmap_path(project, roadmap);
+        let path = crate::paths::roadmap_path(project, roadmap);
         if !self.store.exists(&path) {
             return Err(Error::RoadmapNotFound(roadmap.to_string()));
         }
@@ -111,7 +110,7 @@ impl<S: Store> PlanRepo<S> {
     ) -> Result<Document<Phase>> {
         let content = self
             .store
-            .read(&self.phase_path(project, roadmap, phase_stem))?;
+            .read(&crate::paths::phase_path(project, roadmap, phase_stem))?;
         Document::parse(&content)
     }
 
@@ -124,7 +123,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
     /// YAML is invalid.
     pub fn load_task(&self, project: &str, task_slug: &str) -> Result<Document<Task>> {
-        let path = self.task_path(project, task_slug);
+        let path = crate::paths::task_path(project, task_slug);
         if !self.store.exists(&path) {
             return Err(Error::TaskNotFound(task_slug.to_string()));
         }
@@ -146,7 +145,7 @@ impl<S: Store> PlanRepo<S> {
         roadmap: &str,
         doc: &Document<Roadmap>,
     ) -> Result<()> {
-        let path = self.roadmap_path(project, roadmap);
+        let path = crate::paths::roadmap_path(project, roadmap);
         let content = doc.render()?;
         self.store.write(&path, content)?;
         Ok(())
@@ -165,7 +164,7 @@ impl<S: Store> PlanRepo<S> {
         phase_stem: &str,
         doc: &Document<Phase>,
     ) -> Result<()> {
-        let path = self.phase_path(project, roadmap, phase_stem);
+        let path = crate::paths::phase_path(project, roadmap, phase_stem);
         let content = doc.render()?;
         self.store.write(&path, content)?;
         Ok(())
@@ -183,7 +182,7 @@ impl<S: Store> PlanRepo<S> {
         task_slug: &str,
         doc: &Document<Task>,
     ) -> Result<()> {
-        let path = self.task_path(project, task_slug);
+        let path = crate::paths::task_path(project, task_slug);
         let content = doc.render()?;
         self.store.write(&path, content)?;
         Ok(())
@@ -199,7 +198,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::Io`] if file creation fails, or
     /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
     pub fn create_project(&mut self, name: &str, title: &str) -> Result<Document<Project>> {
-        let md_path = self.project_md_path(name);
+        let md_path = crate::paths::project_md_path(name);
         if self.store.exists(&md_path) {
             return Err(Error::DuplicateSlug(name.to_string()));
         }

@@ -7,42 +7,6 @@ fn make_repo() -> PlanRepo<MemoryStore> {
     PlanRepo::new(MemoryStore::new())
 }
 
-// -- Path builder tests --
-
-#[test]
-fn roadmap_path_is_correct() {
-    let repo = make_repo();
-    let path = repo.roadmap_path("fbm", "two-way-players");
-    assert_eq!(
-        path.as_str(),
-        "projects/fbm/roadmaps/two-way-players/roadmap.md"
-    );
-}
-
-#[test]
-fn project_index_path_is_correct() {
-    let repo = make_repo();
-    let path = repo.project_index_path("fbm");
-    assert_eq!(path.as_str(), "projects/fbm/INDEX.md");
-}
-
-#[test]
-fn phase_path_is_correct() {
-    let repo = make_repo();
-    let path = repo.phase_path("fbm", "two-way-players", "phase-1-core-valuation");
-    assert_eq!(
-        path.as_str(),
-        "projects/fbm/roadmaps/two-way-players/phase-1-core-valuation.md"
-    );
-}
-
-#[test]
-fn task_path_is_correct() {
-    let repo = make_repo();
-    let path = repo.task_path("fbm", "fix-barrel-nulls");
-    assert_eq!(path.as_str(), "projects/fbm/tasks/fix-barrel-nulls.md");
-}
-
 // -- Write + Load round-trip tests --
 
 #[test]
@@ -148,11 +112,11 @@ fn load_task_not_found() {
 fn init_creates_structure() {
     let repo = PlanRepo::init(MemoryStore::new()).unwrap();
 
-    assert!(repo.store().exists(&repo.config_path()));
-    assert!(repo.store().exists(&repo.index_path()));
+    assert!(repo.store().exists(&crate::paths::config_path()));
+    assert!(repo.store().exists(&crate::paths::index_path()));
 
     // Config should be parseable
-    let toml_str = repo.store().read(&repo.config_path()).unwrap();
+    let toml_str = repo.store().read(&crate::paths::config_path()).unwrap();
     Config::from_toml(&toml_str).unwrap();
 }
 
@@ -178,7 +142,7 @@ fn create_project_success() {
     repo.create_project("fbm", "Fantasy Baseball Manager")
         .unwrap();
 
-    assert!(repo.store().exists(&repo.project_md_path("fbm")));
+    assert!(repo.store().exists(&crate::paths::project_md_path("fbm")));
 }
 
 #[test]
@@ -635,7 +599,7 @@ fn remove_phase_deletes_file() {
     let mut repo = setup_with_roadmap();
     repo.create_phase("fbm", "two-way", "core", "Core", None, None)
         .unwrap();
-    let path = repo.phase_path("fbm", "two-way", "phase-1-core");
+    let path = crate::paths::phase_path("fbm", "two-way", "phase-1-core");
     assert!(repo.store().exists(&path));
 
     repo.remove_phase("fbm", "two-way", "phase-1-core").unwrap();
@@ -1034,7 +998,11 @@ fn promote_task_to_roadmap() {
     assert_eq!(roadmap_doc.frontmatter.phases, vec!["phase-1-big-feature"]);
 
     // Task file should be removed
-    assert!(!repo.store().exists(&repo.task_path("fbm", "big-feature")));
+    assert!(
+        !repo
+            .store()
+            .exists(&crate::paths::task_path("fbm", "big-feature"))
+    );
 
     // Roadmap should preserve task metadata in body
     let loaded_rm = repo.load_roadmap("fbm", "big-feature-rm").unwrap();
@@ -1246,7 +1214,7 @@ fn delete_roadmap_removes_files() {
     repo.create_phase("fbm", "alpha", "core", "Core", None, None)
         .unwrap();
 
-    let roadmap_file = repo.roadmap_path("fbm", "alpha");
+    let roadmap_file = crate::paths::roadmap_path("fbm", "alpha");
     assert!(repo.store().exists(&roadmap_file));
 
     repo.delete_roadmap("fbm", "alpha").unwrap();
@@ -1542,8 +1510,8 @@ fn init_delegates_to_init_with_config() {
     assert_eq!(config_plain, config_via);
 
     // Both create INDEX.md
-    assert!(repo_plain.store().exists(&repo_plain.index_path()));
-    assert!(repo_config.store().exists(&repo_config.index_path()));
+    assert!(repo_plain.store().exists(&crate::paths::index_path()));
+    assert!(repo_config.store().exists(&crate::paths::index_path()));
 }
 
 // -- Index generation tests --
@@ -1557,7 +1525,7 @@ fn generate_index_creates_file() {
         .unwrap();
     repo.generate_index().unwrap();
 
-    let content = repo.store().read(&repo.index_path()).unwrap();
+    let content = repo.store().read(&crate::paths::index_path()).unwrap();
     assert!(content.contains("# Plan Index"));
     // Top-level index links to project INDEX.md
     assert!(content.contains("[fbm](projects/fbm/INDEX.md)"));
@@ -1571,9 +1539,9 @@ fn generate_index_idempotent() {
     let mut repo = setup_with_project();
     repo.create_roadmap("fbm", "alpha", "Alpha", None).unwrap();
     repo.generate_index().unwrap();
-    let first = repo.store().read(&repo.index_path()).unwrap();
+    let first = repo.store().read(&crate::paths::index_path()).unwrap();
     repo.generate_index().unwrap();
-    let second = repo.store().read(&repo.index_path()).unwrap();
+    let second = repo.store().read(&crate::paths::index_path()).unwrap();
     assert_eq!(first, second);
 }
 
@@ -1581,7 +1549,7 @@ fn generate_index_idempotent() {
 fn generate_index_empty_repo() {
     let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
     repo.generate_index().unwrap();
-    let content = repo.store().read(&repo.index_path()).unwrap();
+    let content = repo.store().read(&crate::paths::index_path()).unwrap();
     assert!(content.contains("# Plan Index"));
 }
 
@@ -1604,7 +1572,10 @@ fn generate_index_task_priority_ordering_in_project_index() {
     repo.generate_index().unwrap();
 
     // Task ordering is in the per-project index, not the root index
-    let content = repo.store().read(&repo.project_index_path("fbm")).unwrap();
+    let content = repo
+        .store()
+        .read(&crate::paths::project_index_path("fbm"))
+        .unwrap();
     let crit_pos = content.find("crit-task").unwrap();
     let high_pos = content.find("high-task").unwrap();
     let low_pos = content.find("low-task").unwrap();
@@ -1612,7 +1583,7 @@ fn generate_index_task_priority_ordering_in_project_index() {
     assert!(high_pos < low_pos);
 
     // Root index just shows task count
-    let root = repo.store().read(&repo.index_path()).unwrap();
+    let root = repo.store().read(&crate::paths::index_path()).unwrap();
     assert!(root.contains("| 3 |")); // 3 tasks
 }
 
@@ -1627,7 +1598,10 @@ fn generate_project_index_creates_file() {
         .unwrap();
     repo.generate_project_index("fbm").unwrap();
 
-    let content = repo.store().read(&repo.project_index_path("fbm")).unwrap();
+    let content = repo
+        .store()
+        .read(&crate::paths::project_index_path("fbm"))
+        .unwrap();
     assert!(content.contains("# Project: fbm"));
     assert!(content.contains("auto-generated by rdm"));
     assert!(content.contains("roadmaps/alpha/roadmap.md"));
@@ -1645,18 +1619,23 @@ fn generate_index_for_project_only_writes_targeted_project() {
     repo.generate_index_for_project("fbm").unwrap();
 
     // fbm's per-project INDEX.md should be written
-    let fbm_index = repo.store().read(&repo.project_index_path("fbm")).unwrap();
+    let fbm_index = repo
+        .store()
+        .read(&crate::paths::project_index_path("fbm"))
+        .unwrap();
     assert!(fbm_index.contains("# Project: fbm"));
     assert!(fbm_index.contains("roadmaps/alpha/roadmap.md"));
 
     // acme's per-project INDEX.md should NOT be written
     assert!(
-        !repo.store().exists(&repo.project_index_path("acme")),
+        !repo
+            .store()
+            .exists(&crate::paths::project_index_path("acme")),
         "acme INDEX.md should not be written by generate_index_for_project(\"fbm\")"
     );
 
     // Top-level INDEX.md should contain both projects
-    let root = repo.store().read(&repo.index_path()).unwrap();
+    let root = repo.store().read(&crate::paths::index_path()).unwrap();
     assert!(root.contains("[fbm]"));
     assert!(root.contains("[acme]"));
 }
@@ -1668,11 +1647,14 @@ fn generate_index_writes_project_index() {
     repo.generate_index().unwrap();
 
     // Root index should exist
-    let root = repo.store().read(&repo.index_path()).unwrap();
+    let root = repo.store().read(&crate::paths::index_path()).unwrap();
     assert!(root.contains("# Plan Index"));
 
     // Per-project index should also exist
-    let project = repo.store().read(&repo.project_index_path("fbm")).unwrap();
+    let project = repo
+        .store()
+        .read(&crate::paths::project_index_path("fbm"))
+        .unwrap();
     assert!(project.contains("# Project: fbm"));
     assert!(project.contains("roadmaps/alpha/roadmap.md"));
 }
@@ -1698,11 +1680,15 @@ fn archive_roadmap_moves_files() {
     repo.archive_roadmap("fbm", "alpha", false).unwrap();
 
     // Gone from active
-    assert!(!repo.store().exists(&repo.roadmap_path("fbm", "alpha")));
+    assert!(
+        !repo
+            .store()
+            .exists(&crate::paths::roadmap_path("fbm", "alpha"))
+    );
     // Present in archive
     assert!(
         repo.store()
-            .exists(&repo.archived_roadmap_path("fbm", "alpha"))
+            .exists(&crate::paths::archived_roadmap_path("fbm", "alpha"))
     );
 }
 
@@ -1738,7 +1724,7 @@ fn archive_roadmap_force_overrides_check() {
     repo.archive_roadmap("fbm", "alpha", true).unwrap();
     assert!(
         repo.store()
-            .exists(&repo.archived_roadmap_path("fbm", "alpha"))
+            .exists(&crate::paths::archived_roadmap_path("fbm", "alpha"))
     );
 }
 
@@ -1762,7 +1748,7 @@ fn archive_roadmap_all_done_no_force_needed() {
     repo.archive_roadmap("fbm", "alpha", false).unwrap();
     assert!(
         repo.store()
-            .exists(&repo.archived_roadmap_path("fbm", "alpha"))
+            .exists(&crate::paths::archived_roadmap_path("fbm", "alpha"))
     );
 }
 
@@ -1834,14 +1820,21 @@ fn unarchive_roadmap_restores_files() {
         .unwrap();
 
     repo.archive_roadmap("fbm", "alpha", true).unwrap();
-    assert!(!repo.store().exists(&repo.roadmap_path("fbm", "alpha")));
-
-    repo.unarchive_roadmap("fbm", "alpha").unwrap();
-    assert!(repo.store().exists(&repo.roadmap_path("fbm", "alpha")));
     assert!(
         !repo
             .store()
-            .exists(&repo.archived_roadmap_path("fbm", "alpha"))
+            .exists(&crate::paths::roadmap_path("fbm", "alpha"))
+    );
+
+    repo.unarchive_roadmap("fbm", "alpha").unwrap();
+    assert!(
+        repo.store()
+            .exists(&crate::paths::roadmap_path("fbm", "alpha"))
+    );
+    assert!(
+        !repo
+            .store()
+            .exists(&crate::paths::archived_roadmap_path("fbm", "alpha"))
     );
 }
 

@@ -28,6 +28,8 @@ pub mod json;
 pub mod markdown;
 /// Data model types for roadmaps, phases, and tasks.
 pub mod model;
+/// Path builders for plan repo layout.
+pub mod paths;
 /// RFC 9457 Problem Details for HTTP APIs.
 pub mod problem;
 /// Plan repo operations: path resolution, file I/O, and initialization.

@@ -61,7 +61,7 @@ impl<S: Store> PlanRepo<S> {
     pub fn generate_project_index(&mut self, project: &str) -> Result<()> {
         let pi = self.build_project_index(project)?;
         let content = display::format_project_index(&pi);
-        let path = self.project_index_path(project);
+        let path = crate::paths::project_index_path(project);
         self.store.write(&path, content)?;
         self.store.commit()?;
         Ok(())
@@ -88,7 +88,7 @@ impl<S: Store> PlanRepo<S> {
             // Only write per-project INDEX.md for the targeted project
             if project_name == project {
                 let project_content = display::format_project_index(&pi);
-                let project_index_path = self.project_index_path(project_name);
+                let project_index_path = crate::paths::project_index_path(project_name);
                 self.store.write(&project_index_path, project_content)?;
             }
 
@@ -96,7 +96,7 @@ impl<S: Store> PlanRepo<S> {
         }
 
         let content = display::format_top_level_index(&project_indices);
-        let index_path = self.index_path();
+        let index_path = crate::paths::index_path();
         self.store.write(&index_path, content)?;
         self.store.commit()?;
         Ok(())
@@ -120,14 +120,14 @@ impl<S: Store> PlanRepo<S> {
 
             // Write per-project INDEX.md
             let project_content = display::format_project_index(&pi);
-            let project_index_path = self.project_index_path(project_name);
+            let project_index_path = crate::paths::project_index_path(project_name);
             self.store.write(&project_index_path, project_content)?;
 
             project_indices.push(pi);
         }
 
         let content = display::format_top_level_index(&project_indices);
-        let index_path = self.index_path();
+        let index_path = crate::paths::index_path();
         self.store.write(&index_path, content)?;
         self.store.commit()?;
         Ok(())

@@ -25,12 +25,12 @@ impl<S: Store> PlanRepo<S> {
         project: &str,
         roadmap: &str,
     ) -> Result<Vec<(String, Document<Phase>)>> {
-        let roadmap_file = self.roadmap_path(project, roadmap);
+        let roadmap_file = crate::paths::roadmap_path(project, roadmap);
         if !self.store.exists(&roadmap_file) {
             return Err(Error::RoadmapNotFound(roadmap.to_string()));
         }
 
-        let dir = self.roadmap_dir(project, roadmap);
+        let dir = crate::paths::roadmap_dir(project, roadmap);
         let entries = self.store.list(&dir)?;
 
         let mut phases: Vec<(String, Document<Phase>)> = Vec::new();
@@ -70,7 +70,7 @@ impl<S: Store> PlanRepo<S> {
         phase_number: Option<u32>,
         body: Option<&str>,
     ) -> Result<Document<Phase>> {
-        let roadmap_file = self.roadmap_path(project, roadmap);
+        let roadmap_file = crate::paths::roadmap_path(project, roadmap);
         if !self.store.exists(&roadmap_file) {
             return Err(Error::RoadmapNotFound(roadmap.to_string()));
         }
@@ -87,7 +87,7 @@ impl<S: Store> PlanRepo<S> {
         };
 
         let stem = crate::model::phase_stem(number, slug);
-        let path = self.phase_path(project, roadmap, &stem);
+        let path = crate::paths::phase_path(project, roadmap, &stem);
         if self.store.exists(&path) {
             return Err(Error::DuplicateSlug(stem));
         }
@@ -136,7 +136,7 @@ impl<S: Store> PlanRepo<S> {
         body: Option<&str>,
         commit: Option<String>,
     ) -> Result<Document<Phase>> {
-        let path = self.phase_path(project, roadmap, phase_stem);
+        let path = crate::paths::phase_path(project, roadmap, phase_stem);
         if !self.store.exists(&path) {
             return Err(Error::PhaseNotFound(phase_stem.to_string()));
         }
@@ -179,7 +179,7 @@ impl<S: Store> PlanRepo<S> {
     /// updated, or [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`]
     /// if the roadmap file has invalid frontmatter.
     pub fn remove_phase(&mut self, project: &str, roadmap: &str, phase_stem: &str) -> Result<()> {
-        let path = self.phase_path(project, roadmap, phase_stem);
+        let path = crate::paths::phase_path(project, roadmap, phase_stem);
         if !self.store.exists(&path) {
             return Err(Error::PhaseNotFound(phase_stem.to_string()));
         }
