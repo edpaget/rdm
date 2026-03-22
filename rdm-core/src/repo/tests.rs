@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::Error;
 use crate::model::*;
 use crate::store::MemoryStore;
 use chrono::NaiveDate;

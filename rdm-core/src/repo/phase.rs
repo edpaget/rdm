@@ -1,14 +1,12 @@
-use chrono::Local;
-
 use crate::document::Document;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::{Phase, PhaseStatus};
-use crate::store::{DirEntryKind, Store};
+use crate::store::Store;
 
 use super::PlanRepo;
 
 impl<S: Store> PlanRepo<S> {
-    // -- Phase operations --
+    // -- Phase operations (delegates to crate::ops::phase) --
 
     /// Lists all phases in a roadmap, sorted by phase number.
     ///
@@ -25,28 +23,7 @@ impl<S: Store> PlanRepo<S> {
         project: &str,
         roadmap: &str,
     ) -> Result<Vec<(String, Document<Phase>)>> {
-        let roadmap_file = crate::paths::roadmap_path(project, roadmap);
-        if !self.store.exists(&roadmap_file) {
-            return Err(Error::RoadmapNotFound(roadmap.to_string()));
-        }
-
-        let dir = crate::paths::roadmap_dir(project, roadmap);
-        let entries = self.store.list(&dir)?;
-
-        let mut phases: Vec<(String, Document<Phase>)> = Vec::new();
-        for entry in entries {
-            if entry.kind != DirEntryKind::File {
-                continue;
-            }
-            if entry.name == "roadmap.md" || !entry.name.ends_with(".md") {
-                continue;
-            }
-            let stem = entry.name.trim_end_matches(".md").to_string();
-            let doc = crate::io::load_phase(&self.store, project, roadmap, &stem)?;
-            phases.push((stem, doc));
-        }
-        phases.sort_by_key(|(_, doc)| doc.frontmatter.phase);
-        Ok(phases)
+        crate::ops::phase::list_phases(&self.store, project, roadmap)
     }
 
     /// Creates a new phase within a roadmap.
@@ -70,47 +47,15 @@ impl<S: Store> PlanRepo<S> {
         phase_number: Option<u32>,
         body: Option<&str>,
     ) -> Result<Document<Phase>> {
-        let roadmap_file = crate::paths::roadmap_path(project, roadmap);
-        if !self.store.exists(&roadmap_file) {
-            return Err(Error::RoadmapNotFound(roadmap.to_string()));
-        }
-
-        let number = match phase_number {
-            Some(n) => n,
-            None => {
-                let existing = self.list_phases(project, roadmap)?;
-                existing
-                    .last()
-                    .map(|(_, doc)| doc.frontmatter.phase + 1)
-                    .unwrap_or(1)
-            }
-        };
-
-        let stem = crate::model::phase_stem(number, slug);
-        let path = crate::paths::phase_path(project, roadmap, &stem);
-        if self.store.exists(&path) {
-            return Err(Error::DuplicateSlug(stem));
-        }
-
-        let doc = Document {
-            frontmatter: Phase {
-                phase: number,
-                title: title.to_string(),
-                status: PhaseStatus::NotStarted,
-                completed: None,
-                commit: None,
-            },
-            body: body.unwrap_or_default().to_string(),
-        };
-        crate::io::write_phase(&mut self.store, project, roadmap, &stem, &doc)?;
-
-        // Update roadmap's phases list
-        let mut roadmap_doc = crate::io::load_roadmap(&self.store, project, roadmap)?;
-        roadmap_doc.frontmatter.phases.push(stem);
-        crate::io::write_roadmap(&mut self.store, project, roadmap, &roadmap_doc)?;
-        self.store.commit()?;
-
-        Ok(doc)
+        crate::ops::phase::create_phase(
+            &mut self.store,
+            project,
+            roadmap,
+            slug,
+            title,
+            phase_number,
+            body,
+        )
     }
 
     /// Updates a phase's status, body, and/or commit SHA.
@@ -136,35 +81,15 @@ impl<S: Store> PlanRepo<S> {
         body: Option<&str>,
         commit: Option<String>,
     ) -> Result<Document<Phase>> {
-        let path = crate::paths::phase_path(project, roadmap, phase_stem);
-        if !self.store.exists(&path) {
-            return Err(Error::PhaseNotFound(phase_stem.to_string()));
-        }
-
-        let mut doc = crate::io::load_phase(&self.store, project, roadmap, phase_stem)?;
-        if let Some(status) = status {
-            if status == PhaseStatus::Done && doc.frontmatter.status == PhaseStatus::Done {
-                // Already done: only update commit if a new one is provided
-                if let Some(sha) = commit {
-                    doc.frontmatter.commit = Some(sha);
-                }
-            } else {
-                doc.frontmatter.status = status;
-                if status == PhaseStatus::Done {
-                    doc.frontmatter.completed = Some(Local::now().date_naive());
-                    doc.frontmatter.commit = commit;
-                } else {
-                    doc.frontmatter.completed = None;
-                    doc.frontmatter.commit = None;
-                }
-            }
-        }
-        if let Some(b) = body {
-            doc.body = b.to_string();
-        }
-        crate::io::write_phase(&mut self.store, project, roadmap, phase_stem, &doc)?;
-        self.store.commit()?;
-        Ok(doc)
+        crate::ops::phase::update_phase(
+            &mut self.store,
+            project,
+            roadmap,
+            phase_stem,
+            status,
+            body,
+            commit,
+        )
     }
 
     /// Removes a phase from a roadmap.
@@ -179,18 +104,7 @@ impl<S: Store> PlanRepo<S> {
     /// updated, or [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`]
     /// if the roadmap file has invalid frontmatter.
     pub fn remove_phase(&mut self, project: &str, roadmap: &str, phase_stem: &str) -> Result<()> {
-        let path = crate::paths::phase_path(project, roadmap, phase_stem);
-        if !self.store.exists(&path) {
-            return Err(Error::PhaseNotFound(phase_stem.to_string()));
-        }
-        self.store.delete(&path)?;
-
-        // Remove stem from roadmap's phases list
-        let mut roadmap_doc = crate::io::load_roadmap(&self.store, project, roadmap)?;
-        roadmap_doc.frontmatter.phases.retain(|s| s != phase_stem);
-        crate::io::write_roadmap(&mut self.store, project, roadmap, &roadmap_doc)?;
-        self.store.commit()?;
-        Ok(())
+        crate::ops::phase::remove_phase(&mut self.store, project, roadmap, phase_stem)
     }
 
     /// Resolves a phase identifier to a file stem.
@@ -209,15 +123,6 @@ impl<S: Store> PlanRepo<S> {
         roadmap: &str,
         identifier: &str,
     ) -> Result<String> {
-        if let Ok(num) = identifier.parse::<u32>() {
-            let phases = self.list_phases(project, roadmap)?;
-            for (stem, doc) in phases {
-                if doc.frontmatter.phase == num {
-                    return Ok(stem);
-                }
-            }
-            return Err(Error::PhaseNotFound(identifier.to_string()));
-        }
-        Ok(identifier.to_string())
+        crate::ops::phase::resolve_phase_stem(&self.store, project, roadmap, identifier)
     }
 }

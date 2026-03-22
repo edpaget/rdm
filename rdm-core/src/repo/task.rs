@@ -1,14 +1,12 @@
-use chrono::Local;
-
 use crate::document::Document;
-use crate::error::{Error, Result};
-use crate::model::{Phase, PhaseStatus, Priority, Roadmap, Task, TaskStatus};
-use crate::store::{DirEntryKind, Store};
+use crate::error::Result;
+use crate::model::{Priority, Roadmap, Task, TaskStatus};
+use crate::store::Store;
 
 use super::PlanRepo;
 
 impl<S: Store> PlanRepo<S> {
-    // -- Task operations --
+    // -- Task operations (delegates to crate::ops::task) --
 
     /// Creates a new task within a project.
     ///
@@ -30,30 +28,7 @@ impl<S: Store> PlanRepo<S> {
         tags: Option<Vec<String>>,
         body: Option<&str>,
     ) -> Result<Document<Task>> {
-        if !self.store.exists(&crate::paths::project_md_path(project)) {
-            return Err(Error::ProjectNotFound(project.to_string()));
-        }
-        let path = crate::paths::task_path(project, slug);
-        if self.store.exists(&path) {
-            return Err(Error::DuplicateSlug(slug.to_string()));
-        }
-
-        let doc = Document {
-            frontmatter: Task {
-                project: project.to_string(),
-                title: title.to_string(),
-                status: TaskStatus::Open,
-                priority,
-                created: Local::now().date_naive(),
-                tags,
-                completed: None,
-                commit: None,
-            },
-            body: body.unwrap_or_default().to_string(),
-        };
-        crate::io::write_task(&mut self.store, project, slug, &doc)?;
-        self.store.commit()?;
-        Ok(doc)
+        crate::ops::task::create_task(&mut self.store, project, slug, title, priority, tags, body)
     }
 
     /// Lists all tasks for a project, sorted by slug.
@@ -67,26 +42,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
     /// task file has invalid frontmatter.
     pub fn list_tasks(&self, project: &str) -> Result<Vec<(String, Document<Task>)>> {
-        if !self.store.exists(&crate::paths::project_md_path(project)) {
-            return Err(Error::ProjectNotFound(project.to_string()));
-        }
-        let dir = crate::paths::tasks_dir(project);
-        let entries = self.store.list(&dir)?;
-
-        let mut tasks: Vec<(String, Document<Task>)> = Vec::new();
-        for entry in entries {
-            if entry.kind != DirEntryKind::File {
-                continue;
-            }
-            if !entry.name.ends_with(".md") {
-                continue;
-            }
-            let slug = entry.name.trim_end_matches(".md").to_string();
-            let doc = crate::io::load_task(&self.store, project, &slug)?;
-            tasks.push((slug, doc));
-        }
-        tasks.sort_by(|(a, _), (b, _)| a.cmp(b));
-        Ok(tasks)
+        crate::ops::task::list_tasks(&self.store, project)
     }
 
     /// Updates a task's status, priority, tags, and/or body.
@@ -110,41 +66,16 @@ impl<S: Store> PlanRepo<S> {
         body: Option<&str>,
         commit: Option<String>,
     ) -> Result<Document<Task>> {
-        let path = crate::paths::task_path(project, slug);
-        if !self.store.exists(&path) {
-            return Err(Error::TaskNotFound(slug.to_string()));
-        }
-
-        let mut doc = crate::io::load_task(&self.store, project, slug)?;
-        if let Some(status) = status {
-            if status == TaskStatus::Done && doc.frontmatter.status == TaskStatus::Done {
-                // Already done: only update commit if a new one is provided
-                if let Some(sha) = commit {
-                    doc.frontmatter.commit = Some(sha);
-                }
-            } else {
-                doc.frontmatter.status = status;
-                if status == TaskStatus::Done {
-                    doc.frontmatter.completed = Some(Local::now().date_naive());
-                    doc.frontmatter.commit = commit;
-                } else {
-                    doc.frontmatter.completed = None;
-                    doc.frontmatter.commit = None;
-                }
-            }
-        }
-        if let Some(p) = priority {
-            doc.frontmatter.priority = p;
-        }
-        if let Some(t) = tags {
-            doc.frontmatter.tags = if t.is_empty() { None } else { Some(t) };
-        }
-        if let Some(b) = body {
-            doc.body = b.to_string();
-        }
-        crate::io::write_task(&mut self.store, project, slug, &doc)?;
-        self.store.commit()?;
-        Ok(doc)
+        crate::ops::task::update_task(
+            &mut self.store,
+            project,
+            slug,
+            status,
+            priority,
+            tags,
+            body,
+            commit,
+        )
     }
 
     /// Promotes a task to a roadmap.
@@ -164,63 +95,6 @@ impl<S: Store> PlanRepo<S> {
         task_slug: &str,
         roadmap_slug: &str,
     ) -> Result<Document<Roadmap>> {
-        let task_path = crate::paths::task_path(project, task_slug);
-        if !self.store.exists(&task_path) {
-            return Err(Error::TaskNotFound(task_slug.to_string()));
-        }
-
-        let task_doc = crate::io::load_task(&self.store, project, task_slug)?;
-
-        let roadmap_file = crate::paths::roadmap_path(project, roadmap_slug);
-        if self.store.exists(&roadmap_file) {
-            return Err(Error::DuplicateSlug(roadmap_slug.to_string()));
-        }
-
-        let phase_slug = crate::model::phase_stem(1, task_slug);
-
-        let mut roadmap_body = String::new();
-        roadmap_body.push_str(&format!(
-            "Promoted from task `{task_slug}` (priority: {}, created: {})",
-            task_doc.frontmatter.priority, task_doc.frontmatter.created
-        ));
-        if let Some(ref tags) = task_doc.frontmatter.tags {
-            roadmap_body.push_str(&format!(", tags: {}", tags.join(", ")));
-        }
-        roadmap_body.push('\n');
-
-        let roadmap_doc = Document {
-            frontmatter: Roadmap {
-                project: project.to_string(),
-                roadmap: roadmap_slug.to_string(),
-                title: task_doc.frontmatter.title.clone(),
-                phases: vec![phase_slug.clone()],
-                dependencies: None,
-            },
-            body: roadmap_body,
-        };
-        crate::io::write_roadmap(&mut self.store, project, roadmap_slug, &roadmap_doc)?;
-
-        let phase_doc = Document {
-            frontmatter: Phase {
-                phase: 1,
-                title: task_doc.frontmatter.title,
-                status: PhaseStatus::NotStarted,
-                completed: None,
-                commit: None,
-            },
-            body: task_doc.body,
-        };
-        crate::io::write_phase(
-            &mut self.store,
-            project,
-            roadmap_slug,
-            &phase_slug,
-            &phase_doc,
-        )?;
-
-        self.store.delete(&task_path)?;
-        self.store.commit()?;
-
-        Ok(roadmap_doc)
+        crate::ops::task::promote_task(&mut self.store, project, task_slug, roadmap_slug)
     }
 }

@@ -2,9 +2,9 @@
 
 use crate::config::Config;
 use crate::document::Document;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::{Phase, Project, Roadmap, Task};
-use crate::store::{DirEntryKind, RelPath, Store};
+use crate::store::Store;
 
 mod index;
 mod init;
@@ -156,7 +156,7 @@ impl<S: Store> PlanRepo<S> {
         crate::io::write_task(&mut self.store, project, task_slug, doc)
     }
 
-    // -- Project operations --
+    // -- Project operations (delegates to crate::ops::project) --
 
     /// Creates a new project with `roadmaps/` and `tasks/` subdirectories.
     ///
@@ -166,22 +166,7 @@ impl<S: Store> PlanRepo<S> {
     /// [`Error::Io`] if file creation fails, or
     /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
     pub fn create_project(&mut self, name: &str, title: &str) -> Result<Document<Project>> {
-        let md_path = crate::paths::project_md_path(name);
-        if self.store.exists(&md_path) {
-            return Err(Error::DuplicateSlug(name.to_string()));
-        }
-
-        let doc = Document {
-            frontmatter: Project {
-                name: name.to_string(),
-                title: title.to_string(),
-            },
-            body: String::new(),
-        };
-        let content = doc.render()?;
-        self.store.write(&md_path, content)?;
-        self.store.commit()?;
-        Ok(doc)
+        crate::ops::project::create_project(&mut self.store, name, title)
     }
 
     /// Lists all projects in the plan repo, sorted alphabetically.
@@ -190,15 +175,7 @@ impl<S: Store> PlanRepo<S> {
     ///
     /// Returns [`Error::Io`] if the projects directory cannot be read.
     pub fn list_projects(&self) -> Result<Vec<String>> {
-        let projects_dir = RelPath::new("projects").expect("valid path");
-        let entries = self.store.list(&projects_dir)?;
-        let mut names: Vec<String> = entries
-            .into_iter()
-            .filter(|e| e.kind == DirEntryKind::Dir)
-            .map(|e| e.name)
-            .collect();
-        names.sort();
-        Ok(names)
+        crate::ops::project::list_projects(&self.store)
     }
 }
 
