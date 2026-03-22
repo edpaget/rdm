@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
 
@@ -6,6 +6,7 @@ use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus};
 use rdm_core::repo::PlanRepo;
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
+#[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
 use rmcp::handler::server::router::tool::ToolRouter;
 
@@ -15,15 +16,10 @@ use rmcp::handler::server::wrapper::Parameters;
 ///
 /// With the `git` feature enabled, operations go through [`rdm_store_git::GitStore`]
 /// which auto-commits changes. Without it, plain filesystem I/O via [`FsStore`].
-///
-/// Currently unused — the server still constructs `FsStore` directly. This alias
-/// will be wired into `RdmMcpServer` once the `Send` constraint on `GitStore` is resolved.
 #[cfg(feature = "git")]
-#[allow(dead_code)]
 type AppStore = rdm_store_git::GitStore;
 /// See the `git`-feature variant for documentation.
 #[cfg(not(feature = "git"))]
-#[allow(dead_code)]
 type AppStore = FsStore;
 use rmcp::model::Content;
 use rmcp::{
@@ -208,24 +204,65 @@ struct InitParams {
     default_project: Option<String>,
 }
 
+// ---------- Store helpers ----------
+
+/// Creates an [`AppStore`] for an existing plan repo.
+fn make_store(root: &Path, staging: bool) -> anyhow::Result<AppStore> {
+    #[cfg(feature = "git")]
+    {
+        Ok(rdm_store_git::GitStore::new(root)
+            .map_err(|e| anyhow::anyhow!("failed to open git repository: {e}"))?
+            .with_staging_mode(staging))
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = staging;
+        Ok(FsStore::new(root))
+    }
+}
+
+/// Creates an [`AppStore`] for initializing a new plan repo.
+fn make_init_store(root: &Path) -> anyhow::Result<AppStore> {
+    #[cfg(feature = "git")]
+    {
+        rdm_store_git::GitStore::init(root)
+            .map_err(|e| anyhow::anyhow!("failed to initialize git repository: {e}"))
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        Ok(FsStore::new(root))
+    }
+}
+
 // ---------- Server ----------
 
 /// MCP server backed by an rdm plan repo.
 struct RdmMcpServer {
-    repo: Mutex<PlanRepo<FsStore>>,
+    repo: Mutex<PlanRepo<AppStore>>,
     plan_root: PathBuf,
     auto_init: bool,
     tool_router: ToolRouter<Self>,
 }
 
 impl RdmMcpServer {
-    fn new(plan_root: PathBuf, auto_init: bool) -> Self {
-        Self {
-            repo: Mutex::new(PlanRepo::new(FsStore::new(plan_root.clone()))),
+    fn new(plan_root: PathBuf, auto_init: bool, staging: bool) -> anyhow::Result<Self> {
+        // Try opening an existing repo. If it doesn't exist yet (common when the
+        // MCP server starts before `rdm_init`), create the git repo so the server
+        // can start — the plan-level initialisation happens later via the rdm_init
+        // tool or maybe_auto_init.
+        let store = match make_store(&plan_root, staging) {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = std::fs::create_dir_all(&plan_root);
+                make_init_store(&plan_root)?
+            }
+        };
+        Ok(Self {
+            repo: Mutex::new(PlanRepo::new(store)),
             plan_root,
             auto_init,
             tool_router: Self::tool_router(),
-        }
+        })
     }
 
     /// If `auto_init` is enabled and the repo is not yet initialized, initialize it with defaults.
@@ -242,7 +279,10 @@ impl RdmMcpServer {
         // Create the directory if needed
         let _ = std::fs::create_dir_all(&self.plan_root);
 
-        let store = FsStore::new(self.plan_root.clone());
+        let store = match make_init_store(&self.plan_root) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
         match PlanRepo::init_with_config(store, rdm_core::config::Config::default()) {
             Ok(new_repo) => {
                 *self.repo.lock().unwrap() = new_repo;
@@ -272,7 +312,10 @@ impl RdmMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let _ = std::fs::create_dir_all(&self.plan_root);
 
-        let store = FsStore::new(self.plan_root.clone());
+        let store = match make_init_store(&self.plan_root) {
+            Ok(s) => s,
+            Err(e) => return err_text(format!("{e}")),
+        };
         let config = if let Some(ref proj) = params.default_project {
             rdm_core::config::Config {
                 default_project: Some(proj.clone()),
@@ -766,8 +809,8 @@ impl ServerHandler for RdmMcpServer {
 ///
 /// Returns an error if the transport fails to initialize or the server
 /// encounters a fatal I/O error.
-pub async fn run(plan_root: PathBuf, auto_init: bool) -> anyhow::Result<()> {
-    let server = RdmMcpServer::new(plan_root, auto_init);
+pub async fn run(plan_root: PathBuf, auto_init: bool, staging: bool) -> anyhow::Result<()> {
+    let server = RdmMcpServer::new(plan_root, auto_init, staging)?;
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())

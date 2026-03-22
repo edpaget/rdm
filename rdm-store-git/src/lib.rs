@@ -500,7 +500,7 @@ impl GitStore {
     /// Returns `Error::Git` if the repository state cannot be read.
     pub fn git_status(&self) -> Result<Vec<FileStatus>> {
         let repo = self.repo.to_thread_local();
-        let head_files = self.collect_head_tree()?;
+        let head_files = self.collect_head_tree(&repo)?;
         let work_files = self.collect_working_tree(&repo, self.inner.root(), "")?;
 
         let mut statuses = Vec::new();
@@ -552,7 +552,8 @@ impl GitStore {
             return Ok(());
         }
 
-        let head_files = self.collect_head_blobs()?;
+        let repo = self.repo.to_thread_local();
+        let head_files = self.collect_head_blobs(&repo)?;
         let root = self.inner.root();
 
         for fs in &status {
@@ -1157,8 +1158,7 @@ impl GitStore {
     }
 
     /// Collects all files from the HEAD tree as `path -> blob_oid`.
-    fn collect_head_tree(&self) -> Result<BTreeMap<String, gix::ObjectId>> {
-        let repo = self.repo.to_thread_local();
+    fn collect_head_tree(&self, repo: &gix::Repository) -> Result<BTreeMap<String, gix::ObjectId>> {
         let mut files = BTreeMap::new();
         let head = match repo.head().ok().and_then(|mut h| h.peel_to_commit().ok()) {
             Some(commit) => commit,
@@ -1167,13 +1167,12 @@ impl GitStore {
         let tree = head
             .tree()
             .map_err(|e| Error::Git(format!("failed to get HEAD tree: {e}")))?;
-        self.walk_tree(&repo, &tree, "", &mut files)?;
+        self.walk_tree(repo, &tree, "", &mut files)?;
         Ok(files)
     }
 
     /// Collects all file contents from the HEAD tree as `path -> bytes`.
-    fn collect_head_blobs(&self) -> Result<BTreeMap<String, Vec<u8>>> {
-        let repo = self.repo.to_thread_local();
+    fn collect_head_blobs(&self, repo: &gix::Repository) -> Result<BTreeMap<String, Vec<u8>>> {
         let mut files = BTreeMap::new();
         let head = match repo.head().ok().and_then(|mut h| h.peel_to_commit().ok()) {
             Some(commit) => commit,
@@ -1182,7 +1181,7 @@ impl GitStore {
         let tree = head
             .tree()
             .map_err(|e| Error::Git(format!("failed to get HEAD tree: {e}")))?;
-        self.walk_tree_blobs(&repo, &tree, "", &mut files)?;
+        self.walk_tree_blobs(repo, &tree, "", &mut files)?;
         Ok(files)
     }
 
@@ -1506,6 +1505,15 @@ fn run_git_at(path: &Path, args: &[&str]) -> Result<std::process::Output> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // GitStore must be Send + Sync so it can be wrapped in Mutex for the
+    // async MCP server. These assertions catch regressions at the store
+    // crate level rather than downstream in rdm-mcp.
+    #[test]
+    fn gitstore_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<GitStore>();
+    }
 
     #[test]
     fn init_creates_git_repo() {
