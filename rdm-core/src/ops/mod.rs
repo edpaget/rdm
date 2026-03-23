@@ -4,6 +4,10 @@
 //! All functions take `&impl Store` or `&mut impl Store` and are
 //! usable without a [`PlanRepo`](crate::repo::PlanRepo).
 
+/// Index generation operations.
+pub mod index;
+/// Plan repo initialization.
+pub mod init;
 /// Phase operations: list, create, update, remove, resolve.
 pub mod phase;
 /// Project operations: create, list.
