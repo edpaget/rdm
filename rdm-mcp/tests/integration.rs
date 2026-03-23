@@ -5,8 +5,15 @@ use std::sync::Once;
 static BUILD_ONCE: Once = Once::new();
 
 /// Build `rdm-cli` exactly once per test process, even when tests run in parallel.
+///
+/// Skips the build if the binary already exists on disk (e.g. when running
+/// inside a pre-commit hook that already compiled everything).
 fn build_once() {
     BUILD_ONCE.call_once(|| {
+        let binary = env!("CARGO_MANIFEST_DIR").replace("rdm-mcp", "target/debug/rdm");
+        if std::path::Path::new(&binary).exists() {
+            return;
+        }
         let status = Command::new("cargo")
             .args(["build", "-p", "rdm-cli"])
             .status()
@@ -26,17 +33,25 @@ struct McpTestHarness {
 impl McpTestHarness {
     /// Build the rdm binary and spawn `rdm mcp --root <dir>`.
     fn spawn(root: &std::path::Path) -> Self {
+        Self::spawn_with_env(root, &[])
+    }
+
+    /// Spawn with additional environment variables set on the child process.
+    fn spawn_with_env(root: &std::path::Path, env: &[(&str, &str)]) -> Self {
         build_once();
 
         let binary = env!("CARGO_MANIFEST_DIR").replace("rdm-mcp", "target/debug/rdm");
 
-        let mut child = Command::new(&binary)
-            .args(["--root", root.to_str().unwrap(), "mcp"])
+        let mut cmd = Command::new(&binary);
+        cmd.args(["--root", root.to_str().unwrap(), "mcp"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("failed to spawn rdm mcp");
+            .stderr(Stdio::null());
+        for &(k, v) in env {
+            cmd.env(k, v);
+        }
+
+        let mut child = cmd.spawn().expect("failed to spawn rdm mcp");
 
         let stdin = child.stdin.take().expect("no stdin");
         let stdout = child.stdout.take().expect("no stdout");
@@ -983,4 +998,137 @@ fn error_uninitialized_repo() {
     let text = result["content"][0]["text"].as_str().unwrap();
     // Should get a meaningful error (project not found since no projects exist)
     assert!(!text.is_empty(), "Error should have a message: {text}");
+}
+
+// ==================== GitStore integration tests ====================
+
+/// Run a git command in `root`, clearing `GIT_DIR` / `GIT_WORK_TREE` so the
+/// command targets the temp-dir repo rather than a parent repo leaked via
+/// environment variables (e.g. inside pre-commit hooks).
+fn git_cmd(root: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .output()
+        .expect("failed to run git command")
+}
+
+/// Get the HEAD commit SHA in a repo, or empty string if no commits.
+fn git_head_sha(root: &std::path::Path) -> String {
+    let output = git_cmd(root, &["rev-parse", "HEAD"]);
+    if !output.status.success() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// Get git log output (one line per commit) from a repo.
+fn git_log(root: &std::path::Path) -> String {
+    let output = git_cmd(root, &["log", "--oneline"]);
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+#[test]
+fn git_mutation_creates_commit() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    let before = git_head_sha(tmp.path());
+
+    let mut h = McpTestHarness::spawn(tmp.path());
+    let response = h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "billing",
+            "title": "Billing System"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Billing System"),
+        "Expected creation to succeed: {text}"
+    );
+    drop(h);
+
+    let after = git_head_sha(tmp.path());
+    assert_ne!(before, after, "Expected HEAD to advance after mutation");
+
+    let log = git_log(tmp.path());
+    assert!(
+        log.contains("rdm:"),
+        "Expected auto-commit message with 'rdm:' prefix in log:\n{log}"
+    );
+}
+
+#[test]
+fn git_staging_mode_defers_commit() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    let before = git_head_sha(tmp.path());
+
+    let mut h = McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_STAGE", "true")]);
+    let response = h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "billing",
+            "title": "Billing System"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Billing System"),
+        "Expected creation to succeed in staging mode: {text}"
+    );
+
+    // Verify the roadmap is readable (data was written to disk)
+    let show = h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "billing"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("Billing System"),
+        "Expected roadmap to be readable in staging mode: {show_text}"
+    );
+    drop(h);
+
+    let after = git_head_sha(tmp.path());
+    assert_eq!(
+        before, after,
+        "Expected NO new git commits in staging mode (before={before}, after={after})"
+    );
+}
+
+#[test]
+fn git_read_tools_no_commit() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    let before = git_head_sha(tmp.path());
+
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Run several read-only tools
+    h.call_tool("rdm_project_list", serde_json::json!({}));
+    h.call_tool(
+        "rdm_roadmap_list",
+        serde_json::json!({"project": "test-proj"}),
+    );
+    h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "auth"}),
+    );
+    h.call_tool("rdm_task_list", serde_json::json!({"project": "test-proj"}));
+    drop(h);
+
+    let after = git_head_sha(tmp.path());
+    assert_eq!(
+        before, after,
+        "Expected no git commits from read-only tools (before={before}, after={after})"
+    );
 }
