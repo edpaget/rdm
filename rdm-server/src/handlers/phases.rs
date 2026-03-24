@@ -30,17 +30,14 @@ pub async fn get_phase(
     State(state): State<AppState>,
     Path((project, roadmap, phase_id)): Path<(String, String, String)>,
 ) -> Result<Response, Response> {
-    let repo = state.plan_repo();
-    let stem = repo
-        .resolve_phase_stem(&project, &roadmap, &phase_id)
+    let store = state.store();
+    let stem = rdm_core::ops::phase::resolve_phase_stem(&store, &project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
-    let doc = repo
-        .load_phase(&project, &roadmap, &stem)
+    let doc = rdm_core::io::load_phase(&store, &project, &roadmap, &stem)
         .map_err(|e| error_response(e, format))?;
 
     // Load all phases to compute sibling links.
-    let all_phases = repo
-        .list_phases(&project, &roadmap)
+    let all_phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
         .map_err(|e| error_response(e, format))?;
 
     let idx = all_phases.iter().position(|(s, _)| *s == stem);
@@ -118,19 +115,18 @@ pub async fn create_phase(
     payload: Result<axum::Json<CreatePhaseRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let mut repo = state.plan_repo();
-    let doc = repo
-        .create_phase(
-            &project,
-            &roadmap,
-            &req.slug,
-            &req.title,
-            req.number,
-            req.body.as_deref(),
-        )
-        .map_err(|e| error_response(e, format))?;
-    repo.generate_index()
-        .map_err(|e| error_response(e, format))?;
+    let mut store = state.store();
+    let doc = rdm_core::ops::phase::create_phase(
+        &mut store,
+        &project,
+        &roadmap,
+        &req.slug,
+        &req.title,
+        req.number,
+        req.body.as_deref(),
+    )
+    .map_err(|e| error_response(e, format))?;
+    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let stem = format!("phase-{}-{}", doc.frontmatter.phase, req.slug);
     let location = format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}");
@@ -183,15 +179,20 @@ pub async fn update_phase(
         )
         .transpose()?;
 
-    let mut repo = state.plan_repo();
-    let stem = repo
-        .resolve_phase_stem(&project, &roadmap, &phase_id)
+    let mut store = state.store();
+    let stem = rdm_core::ops::phase::resolve_phase_stem(&store, &project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
-    let doc = repo
-        .update_phase(&project, &roadmap, &stem, status, req.body.as_deref(), None)
-        .map_err(|e| error_response(e, format))?;
-    repo.generate_index()
-        .map_err(|e| error_response(e, format))?;
+    let doc = rdm_core::ops::phase::update_phase(
+        &mut store,
+        &project,
+        &roadmap,
+        &stem,
+        status,
+        req.body.as_deref(),
+        None,
+    )
+    .map_err(|e| error_response(e, format))?;
+    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let self_href = format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}");
     match format {
@@ -221,19 +222,27 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
-    use rdm_core::repo::PlanRepo;
-
     use crate::router::build_router;
     use crate::state::AppState;
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let mut repo = PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
-        repo.create_project("demo", "Demo").unwrap();
-        repo.create_roadmap("demo", "alpha", "Alpha", None).unwrap();
-        repo.create_phase("demo", "alpha", "first", "First", Some(1), None)
-            .unwrap();
-        repo.create_phase(
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
+        rdm_core::ops::roadmap::create_roadmap(&mut store, "demo", "alpha", "Alpha", None).unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "alpha",
+            "first",
+            "First",
+            Some(1),
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
             "demo",
             "alpha",
             "second",
@@ -242,8 +251,16 @@ mod tests {
             Some("## Details\n\nSome **bold** text.\n"),
         )
         .unwrap();
-        repo.create_phase("demo", "alpha", "third", "Third", Some(3), None)
-            .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "alpha",
+            "third",
+            "Third",
+            Some(3),
+            None,
+        )
+        .unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };

@@ -9,7 +9,6 @@ use serde::Serialize;
 
 use crate::error::Result;
 use crate::model::{PhaseStatus, TaskStatus};
-use crate::repo::PlanRepo;
 use crate::store::Store;
 
 /// The kind of plan item.
@@ -80,11 +79,7 @@ pub struct SearchResult {
 ///
 /// Returns an error if the plan repo cannot be read (e.g., missing projects
 /// directory, unreadable files, or invalid frontmatter).
-pub fn search<S: Store>(
-    repo: &PlanRepo<S>,
-    query: &str,
-    filter: &SearchFilter,
-) -> Result<Vec<SearchResult>> {
+pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<Vec<SearchResult>> {
     let mut results = Vec::new();
     let mut matcher = Matcher::new(Config::DEFAULT);
     let pattern = Pattern::new(
@@ -95,7 +90,7 @@ pub fn search<S: Store>(
     );
     let mut buf = Vec::new();
 
-    let projects = repo.list_projects()?;
+    let projects = crate::ops::project::list_projects(store)?;
 
     for project in &projects {
         if let Some(ref fp) = filter.project
@@ -107,7 +102,7 @@ pub fn search<S: Store>(
         // Search roadmaps (roadmaps have no status; skip when a status filter is active)
         if (filter.kind.is_none() || filter.kind == Some(ItemKind::Roadmap))
             && filter.status.is_none()
-            && let Ok(roadmaps) = repo.list_roadmaps(project)
+            && let Ok(roadmaps) = crate::ops::roadmap::list_roadmaps(store, project)
         {
             for doc in &roadmaps {
                 let rm = &doc.frontmatter;
@@ -128,11 +123,11 @@ pub fn search<S: Store>(
 
         // Search phases
         if (filter.kind.is_none() || filter.kind == Some(ItemKind::Phase))
-            && let Ok(roadmaps) = repo.list_roadmaps(project)
+            && let Ok(roadmaps) = crate::ops::roadmap::list_roadmaps(store, project)
         {
             for roadmap_doc in &roadmaps {
                 let roadmap_slug = &roadmap_doc.frontmatter.roadmap;
-                if let Ok(phases) = repo.list_phases(project, roadmap_slug) {
+                if let Ok(phases) = crate::ops::phase::list_phases(store, project, roadmap_slug) {
                     for (stem, phase_doc) in &phases {
                         if let Some(ref fs) = filter.status
                             && *fs != ItemStatus::Phase(phase_doc.frontmatter.status)
@@ -159,7 +154,7 @@ pub fn search<S: Store>(
 
         // Search tasks
         if (filter.kind.is_none() || filter.kind == Some(ItemKind::Task))
-            && let Ok(tasks) = repo.list_tasks(project)
+            && let Ok(tasks) = crate::ops::task::list_tasks(store, project)
         {
             for (slug, task_doc) in &tasks {
                 if let Some(ref fs) = filter.status
@@ -244,18 +239,19 @@ fn extract_snippet(body: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
     use crate::model::{PhaseStatus, Priority, TaskStatus};
-    use crate::repo::PlanRepo;
     use crate::store::MemoryStore;
 
-    /// Sets up a plan repo with sample data for testing.
-    fn setup_test_repo() -> PlanRepo<MemoryStore> {
-        let mut repo = PlanRepo::init(MemoryStore::new()).unwrap();
+    /// Sets up a store with sample data for testing.
+    fn setup_test_store() -> MemoryStore {
+        let mut store = MemoryStore::new();
+        crate::ops::init::init(&mut store).unwrap();
 
         // Create a project
-        repo.create_project("acme", "Acme Corp").unwrap();
+        crate::ops::project::create_project(&mut store, "acme", "Acme Corp").unwrap();
 
         // Create a roadmap with body
-        repo.create_roadmap(
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
             "acme",
             "widget-launch",
             "Widget Launch",
@@ -264,7 +260,8 @@ mod tests {
         .unwrap();
 
         // Create phases
-        repo.create_phase(
+        crate::ops::phase::create_phase(
+            &mut store,
             "acme",
             "widget-launch",
             "design",
@@ -273,7 +270,8 @@ mod tests {
             Some("Create mockups and wireframes for the widget."),
         )
         .unwrap();
-        repo.create_phase(
+        crate::ops::phase::create_phase(
+            &mut store,
             "acme",
             "widget-launch",
             "implementation",
@@ -284,7 +282,8 @@ mod tests {
         .unwrap();
 
         // Mark phase 1 as done
-        repo.update_phase(
+        crate::ops::phase::update_phase(
+            &mut store,
             "acme",
             "widget-launch",
             "phase-1-design",
@@ -295,7 +294,8 @@ mod tests {
         .unwrap();
 
         // Create tasks
-        repo.create_task(
+        crate::ops::task::create_task(
+            &mut store,
             "acme",
             "fix-login-bug",
             "Fix Login Bug",
@@ -304,7 +304,8 @@ mod tests {
             Some("Users cannot log in when password contains special characters."),
         )
         .unwrap();
-        repo.create_task(
+        crate::ops::task::create_task(
+            &mut store,
             "acme",
             "add-search",
             "Add Search Feature",
@@ -315,7 +316,8 @@ mod tests {
         .unwrap();
 
         // Mark one task as done
-        repo.update_task(
+        crate::ops::task::update_task(
+            &mut store,
             "acme",
             "fix-login-bug",
             Some(TaskStatus::Done),
@@ -326,23 +328,23 @@ mod tests {
         )
         .unwrap();
 
-        repo
+        store
     }
 
     #[test]
     fn exact_title_match() {
-        let repo = setup_test_repo();
+        let store = setup_test_store();
         let filter = SearchFilter::default();
-        let results = search(&repo, "Fix Login Bug", &filter).unwrap();
+        let results = search(&store, "Fix Login Bug", &filter).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "Fix Login Bug");
     }
 
     #[test]
     fn fuzzy_title_match() {
-        let repo = setup_test_repo();
+        let store = setup_test_store();
         let filter = SearchFilter::default();
-        let results = search(&repo, "fx logn bg", &filter).unwrap();
+        let results = search(&store, "fx logn bg", &filter).unwrap();
         assert!(
             results.iter().any(|r| r.title == "Fix Login Bug"),
             "Expected fuzzy match for 'Fix Login Bug', got: {results:?}"
@@ -351,9 +353,9 @@ mod tests {
 
     #[test]
     fn body_content_match() {
-        let repo = setup_test_repo();
+        let store = setup_test_store();
         let filter = SearchFilter::default();
-        let results = search(&repo, "special characters", &filter).unwrap();
+        let results = search(&store, "special characters", &filter).unwrap();
         assert!(
             results.iter().any(|r| r.identifier == "fix-login-bug"),
             "Expected body match for task with 'special characters', got: {results:?}"
@@ -362,20 +364,20 @@ mod tests {
 
     #[test]
     fn no_results() {
-        let repo = setup_test_repo();
+        let store = setup_test_store();
         let filter = SearchFilter::default();
-        let results = search(&repo, "xyzzy-nonexistent-qqq", &filter).unwrap();
+        let results = search(&store, "xyzzy-nonexistent-qqq", &filter).unwrap();
         assert!(results.is_empty(), "Expected no results, got: {results:?}");
     }
 
     #[test]
     fn filter_by_kind_task() {
-        let repo = setup_test_repo();
+        let store = setup_test_store();
         let filter = SearchFilter {
             kind: Some(ItemKind::Task),
             ..Default::default()
         };
-        let results = search(&repo, "widget", &filter).unwrap();
+        let results = search(&store, "widget", &filter).unwrap();
         for r in &results {
             assert_eq!(r.kind, ItemKind::Task, "Expected only tasks, got: {r:?}");
         }
@@ -383,12 +385,12 @@ mod tests {
 
     #[test]
     fn filter_by_kind_phase() {
-        let repo = setup_test_repo();
+        let store = setup_test_store();
         let filter = SearchFilter {
             kind: Some(ItemKind::Phase),
             ..Default::default()
         };
-        let results = search(&repo, "widget", &filter).unwrap();
+        let results = search(&store, "widget", &filter).unwrap();
         assert!(!results.is_empty(), "Expected phase results for 'widget'");
         for r in &results {
             assert_eq!(r.kind, ItemKind::Phase, "Expected only phases, got: {r:?}");
@@ -397,12 +399,12 @@ mod tests {
 
     #[test]
     fn filter_by_status() {
-        let repo = setup_test_repo();
+        let store = setup_test_store();
         let filter = SearchFilter {
             status: Some(ItemStatus::Task(TaskStatus::Done)),
             ..Default::default()
         };
-        let results = search(&repo, "bug", &filter).unwrap();
+        let results = search(&store, "bug", &filter).unwrap();
         assert!(
             results.iter().any(|r| r.identifier == "fix-login-bug"),
             "Expected done task 'fix-login-bug', got: {results:?}"
@@ -416,11 +418,12 @@ mod tests {
 
     #[test]
     fn filter_by_project() {
-        let mut repo = setup_test_repo();
+        let mut store = setup_test_store();
 
         // Create a second project
-        repo.create_project("other", "Other Project").unwrap();
-        repo.create_task(
+        crate::ops::project::create_project(&mut store, "other", "Other Project").unwrap();
+        crate::ops::task::create_task(
+            &mut store,
             "other",
             "other-task",
             "Other Task",
@@ -434,7 +437,7 @@ mod tests {
             project: Some("acme".to_string()),
             ..Default::default()
         };
-        let results = search(&repo, "task", &filter).unwrap();
+        let results = search(&store, "task", &filter).unwrap();
         for r in &results {
             assert_eq!(r.project, "acme", "Expected only acme results, got: {r:?}");
         }
@@ -442,11 +445,11 @@ mod tests {
 
     #[test]
     fn results_ranked_by_score() {
-        let repo = setup_test_repo();
+        let store = setup_test_store();
         let filter = SearchFilter::default();
         // "search" appears in the title of "Add Search Feature" and in the body
         // The title match should score higher.
-        let results = search(&repo, "search", &filter).unwrap();
+        let results = search(&store, "search", &filter).unwrap();
         assert!(results.len() >= 1, "Expected at least one result");
 
         // Verify descending score order
@@ -462,9 +465,9 @@ mod tests {
 
     #[test]
     fn searches_roadmaps() {
-        let repo = setup_test_repo();
+        let store = setup_test_store();
         let filter = SearchFilter::default();
-        let results = search(&repo, "Widget Launch", &filter).unwrap();
+        let results = search(&store, "Widget Launch", &filter).unwrap();
         assert!(
             results
                 .iter()
@@ -475,12 +478,12 @@ mod tests {
 
     #[test]
     fn phase_identifier_includes_roadmap() {
-        let repo = setup_test_repo();
+        let store = setup_test_store();
         let filter = SearchFilter {
             kind: Some(ItemKind::Phase),
             ..Default::default()
         };
-        let results = search(&repo, "Design", &filter).unwrap();
+        let results = search(&store, "Design", &filter).unwrap();
         assert!(!results.is_empty(), "Expected phase results for 'Design'");
         let phase_result = &results[0];
         assert!(

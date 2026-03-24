@@ -140,14 +140,14 @@ pub async fn search_items(
 
     let limit = params.limit.unwrap_or(20);
 
-    let repo = state.plan_repo();
+    let store = state.store();
     let filter = SearchFilter {
         kind: kind_filter,
         project: Some(project.clone()),
         status: status_filter,
     };
 
-    let results = search(&repo, &query, &filter).map_err(|e| error_response(e, format))?;
+    let results = search(&store, &query, &filter).map_err(|e| error_response(e, format))?;
     let truncated: Vec<_> = results.into_iter().take(limit).collect();
 
     match format {
@@ -214,23 +214,25 @@ mod tests {
     use tower::ServiceExt;
 
     use rdm_core::model::Priority;
-    use rdm_core::repo::PlanRepo;
 
     use crate::router::build_router;
     use crate::state::AppState;
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let mut repo = PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
-        repo.create_project("demo", "Demo").unwrap();
-        repo.create_roadmap(
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
             "demo",
             "widget-launch",
             "Widget Launch",
             Some("Launch widgets."),
         )
         .unwrap();
-        repo.create_phase(
+        rdm_core::ops::phase::create_phase(
+            &mut store,
             "demo",
             "widget-launch",
             "design",
@@ -239,7 +241,8 @@ mod tests {
             Some("Create mockups and wireframes."),
         )
         .unwrap();
-        repo.create_task(
+        rdm_core::ops::task::create_task(
+            &mut store,
             "demo",
             "fix-login",
             "Fix Login Bug",
@@ -248,7 +251,8 @@ mod tests {
             Some("Users cannot log in with special characters."),
         )
         .unwrap();
-        repo.create_task(
+        rdm_core::ops::task::create_task(
+            &mut store,
             "demo",
             "add-search",
             "Add Search Feature",

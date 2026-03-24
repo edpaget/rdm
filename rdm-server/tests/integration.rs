@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 
 use rdm_core::model::{PhaseStatus, Priority};
-use rdm_core::repo::PlanRepo;
 use rdm_store_fs::FsStore;
 use reqwest::Client;
 use tempfile::TempDir;
@@ -10,13 +9,21 @@ use tempfile::TempDir;
 /// the bound address, and a reqwest client.
 async fn spawn_server() -> (TempDir, SocketAddr, Client) {
     let dir = TempDir::new().unwrap();
-    let mut repo = PlanRepo::init(FsStore::new(dir.path())).unwrap();
+    let mut store = FsStore::new(dir.path());
+    rdm_core::ops::init::init(&mut store).unwrap();
 
     // Seed data
-    repo.create_project("demo", "Demo Project").unwrap();
-    repo.create_roadmap("demo", "api", "API Roadmap", Some("API roadmap body."))
-        .unwrap();
-    repo.create_phase(
+    rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        "demo",
+        "api",
+        "API Roadmap",
+        Some("API roadmap body."),
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
         "demo",
         "api",
         "design",
@@ -25,9 +32,18 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         Some("Design details."),
     )
     .unwrap();
-    repo.create_phase("demo", "api", "build", "Build Phase", Some(2), None)
-        .unwrap();
-    repo.update_phase(
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        "demo",
+        "api",
+        "build",
+        "Build Phase",
+        Some(2),
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
         "demo",
         "api",
         "phase-1-design",
@@ -36,7 +52,8 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         None,
     )
     .unwrap();
-    repo.create_task(
+    rdm_core::ops::task::create_task(
+        &mut store,
         "demo",
         "bug-1",
         "Fix Bug One",
@@ -45,7 +62,8 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         Some("Bug details."),
     )
     .unwrap();
-    repo.create_task(
+    rdm_core::ops::task::create_task(
+        &mut store,
         "demo",
         "feature-1",
         "Add Feature One",
@@ -370,8 +388,8 @@ async fn create_project_returns_201_and_exists_on_disk() {
     assert!(resp.headers().get("location").is_some());
 
     // Verify on disk
-    let repo = PlanRepo::new(FsStore::new(dir.path()));
-    let doc = repo.load_project("new-proj").unwrap();
+    let store = FsStore::new(dir.path());
+    let doc = rdm_core::io::load_project(&store, "new-proj").unwrap();
     assert_eq!(doc.frontmatter.title, "New Project");
 }
 
@@ -388,8 +406,8 @@ async fn create_roadmap_returns_201_and_exists_on_disk() {
     assert_eq!(resp.status(), 201);
     assert!(resp.headers().get("location").is_some());
 
-    let repo = PlanRepo::new(FsStore::new(dir.path()));
-    let doc = repo.load_roadmap("demo", "new-rm").unwrap();
+    let store = FsStore::new(dir.path());
+    let doc = rdm_core::io::load_roadmap(&store, "demo", "new-rm").unwrap();
     assert_eq!(doc.frontmatter.title, "New Roadmap");
 }
 
@@ -406,8 +424,8 @@ async fn create_phase_returns_201_and_exists_on_disk() {
     assert_eq!(resp.status(), 201);
     assert!(resp.headers().get("location").is_some());
 
-    let repo = PlanRepo::new(FsStore::new(dir.path()));
-    let doc = repo.load_phase("demo", "api", "phase-3-test-ph").unwrap();
+    let store = FsStore::new(dir.path());
+    let doc = rdm_core::io::load_phase(&store, "demo", "api", "phase-3-test-ph").unwrap();
     assert_eq!(doc.frontmatter.title, "Test Phase");
 }
 
@@ -425,8 +443,8 @@ async fn create_task_returns_201_and_exists_on_disk() {
     let location = resp.headers().get("location").unwrap().to_str().unwrap();
     assert_eq!(location, "/projects/demo/tasks/new-task");
 
-    let repo = PlanRepo::new(FsStore::new(dir.path()));
-    let doc = repo.load_task("demo", "new-task").unwrap();
+    let store = FsStore::new(dir.path());
+    let doc = rdm_core::io::load_task(&store, "demo", "new-task").unwrap();
     assert_eq!(doc.frontmatter.title, "New Task");
 }
 
@@ -460,8 +478,8 @@ async fn update_task_status_via_patch() {
     assert_eq!(json["status"], "done");
 
     // Verify on disk
-    let repo = PlanRepo::new(FsStore::new(dir.path()));
-    let doc = repo.load_task("demo", "bug-1").unwrap();
+    let store = FsStore::new(dir.path());
+    let doc = rdm_core::io::load_task(&store, "demo", "bug-1").unwrap();
     assert_eq!(doc.frontmatter.status.to_string(), "done");
 }
 
@@ -482,8 +500,8 @@ async fn update_phase_via_patch() {
     let json: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(json["status"], "in-progress");
 
-    let repo = PlanRepo::new(FsStore::new(dir.path()));
-    let doc = repo.load_phase("demo", "api", "phase-2-build").unwrap();
+    let store = FsStore::new(dir.path());
+    let doc = rdm_core::io::load_phase(&store, "demo", "api", "phase-2-build").unwrap();
     assert_eq!(doc.frontmatter.status, PhaseStatus::InProgress);
 }
 
@@ -502,10 +520,10 @@ async fn promote_task_returns_201_and_removes_task() {
     assert_eq!(location, "/projects/demo/roadmaps/bug-1-roadmap");
 
     // Old task should be gone
-    let repo = PlanRepo::new(FsStore::new(dir.path()));
-    assert!(repo.load_task("demo", "bug-1").is_err());
+    let store = FsStore::new(dir.path());
+    assert!(rdm_core::io::load_task(&store, "demo", "bug-1").is_err());
     // New roadmap should exist
-    assert!(repo.load_roadmap("demo", "bug-1-roadmap").is_ok());
+    assert!(rdm_core::io::load_roadmap(&store, "demo", "bug-1-roadmap").is_ok());
 }
 
 #[tokio::test]

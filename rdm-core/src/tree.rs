@@ -6,7 +6,6 @@ use serde::Serialize;
 
 use crate::document::Document;
 use crate::model::{Phase, Roadmap, Task};
-use crate::repo::PlanRepo;
 use crate::store::Store;
 
 /// A node in the plan hierarchy tree.
@@ -42,17 +41,17 @@ pub enum TreeNodeKind {
 /// # Errors
 ///
 /// Returns an error if any repo operations fail (loading roadmaps, phases, or tasks).
-pub fn build_tree<S: Store>(repo: &PlanRepo<S>, project: &str) -> crate::error::Result<TreeNode> {
+pub fn build_tree(store: &impl Store, project: &str) -> crate::error::Result<TreeNode> {
     let mut children = Vec::new();
 
-    let roadmaps = repo.list_roadmaps(project)?;
+    let roadmaps = crate::ops::roadmap::list_roadmaps(store, project)?;
     for roadmap_doc in &roadmaps {
         let slug = &roadmap_doc.frontmatter.roadmap;
-        let phases = repo.list_phases(project, slug)?;
+        let phases = crate::ops::phase::list_phases(store, project, slug)?;
         children.push(build_roadmap_node(roadmap_doc, &phases));
     }
 
-    let tasks = repo.list_tasks(project)?;
+    let tasks = crate::ops::task::list_tasks(store, project)?;
     for (slug, task_doc) in &tasks {
         children.push(build_task_node(slug, task_doc));
     }

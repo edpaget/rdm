@@ -3,7 +3,6 @@ use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
 use rdm_core::model::PhaseStatus;
-use rdm_core::repo::PlanRepo;
 
 use super::{maybe_print_uncommitted_hint, maybe_regenerate_index, resolve_body};
 use crate::paths;
@@ -12,7 +11,7 @@ use crate::{AppStore, OutputFormat, PhaseCommand};
 
 pub fn run(
     command: PhaseCommand,
-    repo: &mut PlanRepo<AppStore>,
+    store: &mut AppStore,
     repo_config: &Config,
     format: OutputFormat,
     no_index: bool,
@@ -31,17 +30,23 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            let doc = repo
-                .create_phase(&project, &roadmap, &slug, title, number, body.as_deref())
-                .context("failed to create phase")?;
+            let doc = rdm_core::ops::phase::create_phase(
+                store,
+                &project,
+                &roadmap,
+                &slug,
+                title,
+                number,
+                body.as_deref(),
+            )
+            .context("failed to create phase")?;
             let stem = doc.frontmatter.stem(&slug);
             println!("Created phase '{stem}' in roadmap '{roadmap}'");
-            maybe_regenerate_index(repo, no_index, staging, Some(&project))?;
+            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         PhaseCommand::List { roadmap, project } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let phases = repo
-                .list_phases(&project, &roadmap)
+            let phases = rdm_core::ops::phase::list_phases(store, &project, &roadmap)
                 .context("failed to list phases")?;
             match format {
                 OutputFormat::Human => print!("{}", display::format_phase_list(&phases)),
@@ -61,7 +66,7 @@ pub fn run(
                     );
                 }
             }
-            maybe_print_uncommitted_hint(repo.store(), staging);
+            maybe_print_uncommitted_hint(store, staging);
         }
         PhaseCommand::Show {
             stem,
@@ -70,19 +75,16 @@ pub fn run(
             no_body,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let stem = repo
-                .resolve_phase_stem(&project, &roadmap, &stem)
+            let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
                 .context("failed to resolve phase")?;
-            let mut doc = repo
-                .load_phase(&project, &roadmap, &stem)
+            let mut doc = rdm_core::io::load_phase(store, &project, &roadmap, &stem)
                 .context("failed to load phase")?;
             if no_body {
                 doc.body = String::new();
             }
 
             // Compute prev/next phase stems for navigation
-            let phases = repo
-                .list_phases(&project, &roadmap)
+            let phases = rdm_core::ops::phase::list_phases(store, &project, &roadmap)
                 .context("failed to list phases")?;
             let pos = phases.iter().position(|(s, _)| s == &stem);
             let prev_stem = pos.and_then(|i| {
@@ -122,7 +124,7 @@ pub fn run(
                     "--format table is not supported for 'phase show'; use --format human, --format json, --format markdown, or omit --format"
                 ),
             }
-            maybe_print_uncommitted_hint(repo.store(), staging);
+            maybe_print_uncommitted_hint(store, staging);
         }
         PhaseCommand::Update {
             stem,
@@ -137,15 +139,21 @@ pub fn run(
                 anyhow::bail!("--commit can only be used with --status done");
             }
             let project = paths::resolve_project(project, repo_config)?;
-            let stem = repo
-                .resolve_phase_stem(&project, &roadmap, &stem)
+            let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
                 .context("failed to resolve phase")?;
             let body = resolve_body(body, no_edit)?;
-            let doc = repo
-                .update_phase(&project, &roadmap, &stem, status, body.as_deref(), commit)
-                .context("failed to update phase")?;
+            let doc = rdm_core::ops::phase::update_phase(
+                store,
+                &project,
+                &roadmap,
+                &stem,
+                status,
+                body.as_deref(),
+                commit,
+            )
+            .context("failed to update phase")?;
             println!("Updated '{stem}' → {}", doc.frontmatter.status);
-            maybe_regenerate_index(repo, no_index, staging, Some(&project))?;
+            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         PhaseCommand::Remove {
             stem,
@@ -153,13 +161,12 @@ pub fn run(
             project,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let stem = repo
-                .resolve_phase_stem(&project, &roadmap, &stem)
+            let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
                 .context("failed to resolve phase")?;
-            repo.remove_phase(&project, &roadmap, &stem)
+            rdm_core::ops::phase::remove_phase(store, &project, &roadmap, &stem)
                 .context("failed to remove phase")?;
             println!("Removed phase '{stem}' from roadmap '{roadmap}'");
-            maybe_regenerate_index(repo, no_index, staging, Some(&project))?;
+            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
     }
     Ok(())

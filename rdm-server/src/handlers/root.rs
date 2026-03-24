@@ -20,10 +20,9 @@ pub async fn index(
     format: ResponseFormat,
     State(state): State<AppState>,
 ) -> Result<Response, Response> {
-    let repo = state.plan_repo();
-    let names = repo
-        .list_projects()
-        .map_err(|e| error_response(e, format))?;
+    let store = state.store();
+    let names =
+        rdm_core::ops::project::list_projects(&store).map_err(|e| error_response(e, format))?;
 
     match format {
         ResponseFormat::HalJson => {
@@ -40,7 +39,7 @@ pub async fn index(
         ResponseFormat::Html => {
             let mut projects = Vec::new();
             for name in &names {
-                if let Ok(doc) = repo.load_project(name) {
+                if let Ok(doc) = rdm_core::io::load_project(&store, name) {
                     projects.push(ProjectView {
                         name: doc.frontmatter.name,
                         title: doc.frontmatter.title,
@@ -64,16 +63,15 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
-    use rdm_core::repo::PlanRepo;
-
     use crate::router::build_router;
     use crate::state::AppState;
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let mut repo = PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
-        repo.create_project("alpha", "Alpha").unwrap();
-        repo.create_project("beta", "Beta").unwrap();
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "alpha", "Alpha").unwrap();
+        rdm_core::ops::project::create_project(&mut store, "beta", "Beta").unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };

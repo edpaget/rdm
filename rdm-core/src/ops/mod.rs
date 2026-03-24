@@ -2,7 +2,7 @@
 //!
 //! Each sub-module groups the CRUD operations for one entity type.
 //! All functions take `&impl Store` or `&mut impl Store` and are
-//! usable without a [`PlanRepo`](crate::repo::PlanRepo).
+//! usable with any [`Store`](crate::store::Store) implementation.
 
 /// Index generation operations.
 pub mod index;

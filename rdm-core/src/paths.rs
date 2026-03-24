@@ -2,7 +2,7 @@
 //!
 //! These are pure functions that produce [`RelPath`] values for the
 //! well-known locations inside a plan repo.  They have no dependency on
-//! the store and can be used without a [`PlanRepo`](crate::repo::PlanRepo).
+//! the store and can be used with any [`Store`] implementation.
 
 use crate::store::RelPath;
 

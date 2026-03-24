@@ -2,7 +2,7 @@
 //!
 //! These functions read and write plan repo documents (configs, roadmaps,
 //! phases, tasks) through a [`Store`].  They have no dependency on
-//! [`PlanRepo`](crate::repo::PlanRepo) and can be used standalone.
+//! a [`Store`] and can be used standalone.
 
 use crate::config::Config;
 use crate::document::Document;

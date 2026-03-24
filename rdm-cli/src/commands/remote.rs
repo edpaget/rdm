@@ -3,7 +3,6 @@ use std::process;
 
 use anyhow::{Context, Result};
 use rdm_core::config::Config;
-use rdm_core::repo::PlanRepo;
 
 use super::make_store;
 use crate::paths;
@@ -71,9 +70,8 @@ pub fn run(
                             result.commits_merged, result.remote, result.branch
                         );
                         // Regenerate INDEX.md after pulling new content
-                        let new_store = make_store(root, staging)?;
-                        let mut repo = PlanRepo::new(new_store);
-                        repo.generate_index()
+                        let mut new_store = make_store(root, staging)?;
+                        rdm_core::ops::index::generate_index(&mut new_store)
                             .context("failed to regenerate INDEX.md after pull")?;
                     }
                 }

@@ -3,7 +3,6 @@ use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
 use rdm_core::model::{TaskStatus, TaskStatusFilter};
-use rdm_core::repo::PlanRepo;
 
 use super::{maybe_print_uncommitted_hint, maybe_regenerate_index, resolve_body};
 use crate::paths;
@@ -12,7 +11,7 @@ use crate::{AppStore, OutputFormat, TaskCommand};
 
 pub fn run(
     command: TaskCommand,
-    repo: &mut PlanRepo<AppStore>,
+    store: &mut AppStore,
     repo_config: &Config,
     format: OutputFormat,
     no_index: bool,
@@ -31,10 +30,18 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            repo.create_task(&project, &slug, title, priority, tags, body.as_deref())
-                .context("failed to create task")?;
+            rdm_core::ops::task::create_task(
+                store,
+                &project,
+                &slug,
+                title,
+                priority,
+                tags,
+                body.as_deref(),
+            )
+            .context("failed to create task")?;
             println!("Created task '{slug}' in project '{project}'");
-            maybe_regenerate_index(repo, no_index, staging, Some(&project))?;
+            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         TaskCommand::Show {
             slug,
@@ -42,9 +49,8 @@ pub fn run(
             no_body,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let mut doc = repo
-                .load_task(&project, &slug)
-                .context("failed to load task")?;
+            let mut doc =
+                rdm_core::io::load_task(store, &project, &slug).context("failed to load task")?;
             if no_body {
                 doc.body = String::new();
             }
@@ -66,7 +72,7 @@ pub fn run(
                     "--format table is not supported for 'task show'; use --format human, --format json, --format markdown, or omit --format"
                 ),
             }
-            maybe_print_uncommitted_hint(repo.store(), staging);
+            maybe_print_uncommitted_hint(store, staging);
         }
         TaskCommand::Update {
             slug,
@@ -80,22 +86,22 @@ pub fn run(
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let body = resolve_body(body, no_edit)?;
-            let doc = repo
-                .update_task(
-                    &project,
-                    &slug,
-                    status,
-                    priority,
-                    tags,
-                    body.as_deref(),
-                    commit,
-                )
-                .context("failed to update task")?;
+            let doc = rdm_core::ops::task::update_task(
+                store,
+                &project,
+                &slug,
+                status,
+                priority,
+                tags,
+                body.as_deref(),
+                commit,
+            )
+            .context("failed to update task")?;
             println!(
                 "Updated task '{slug}' → status: {}, priority: {}",
                 doc.frontmatter.status, doc.frontmatter.priority
             );
-            maybe_regenerate_index(repo, no_index, staging, Some(&project))?;
+            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         TaskCommand::List {
             project,
@@ -104,7 +110,8 @@ pub fn run(
             tag,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let all_tasks = repo.list_tasks(&project).context("failed to list tasks")?;
+            let all_tasks =
+                rdm_core::ops::task::list_tasks(store, &project).context("failed to list tasks")?;
 
             let filtered: Vec<(String, _)> = all_tasks
                 .into_iter()
@@ -145,7 +152,7 @@ pub fn run(
                     );
                 }
             }
-            maybe_print_uncommitted_hint(repo.store(), staging);
+            maybe_print_uncommitted_hint(store, staging);
         }
     }
     Ok(())

@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use rdm_core::repo::PlanRepo;
 use rdm_store_fs::FsStore;
 
 /// Shared application state for the rdm server.
@@ -11,8 +10,8 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Opens a [`PlanRepo`] backed by an [`FsStore`] at the configured root path.
-    pub fn plan_repo(&self) -> PlanRepo<FsStore> {
-        PlanRepo::new(FsStore::new(&self.plan_root))
+    /// Opens an [`FsStore`] at the configured root path.
+    pub fn store(&self) -> FsStore {
+        FsStore::new(&self.plan_root)
     }
 }

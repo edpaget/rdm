@@ -28,16 +28,15 @@ pub async fn list_projects(
     format: ResponseFormat,
     State(state): State<AppState>,
 ) -> Result<Response, Response> {
-    let repo = state.plan_repo();
-    let names = repo
-        .list_projects()
-        .map_err(|e| error_response(e, format))?;
+    let store = state.store();
+    let names =
+        rdm_core::ops::project::list_projects(&store).map_err(|e| error_response(e, format))?;
 
     match format {
         ResponseFormat::HalJson => {
             let mut embedded = Vec::new();
             for name in &names {
-                if let Ok(doc) = repo.load_project(name) {
+                if let Ok(doc) = rdm_core::io::load_project(&store, name) {
                     let project_resource = HalResource::new(
                         ProjectData {
                             name: doc.frontmatter.name.clone(),
@@ -65,7 +64,7 @@ pub async fn list_projects(
         ResponseFormat::Html => {
             let mut projects = Vec::new();
             for name in &names {
-                if let Ok(doc) = repo.load_project(name) {
+                if let Ok(doc) = rdm_core::io::load_project(&store, name) {
                     projects.push(ProjectView {
                         name: doc.frontmatter.name,
                         title: doc.frontmatter.title,
@@ -96,12 +95,10 @@ pub async fn create_project(
     payload: Result<axum::Json<CreateProjectRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let mut repo = state.plan_repo();
-    let doc = repo
-        .create_project(&req.name, &req.title)
+    let mut store = state.store();
+    let doc = rdm_core::ops::project::create_project(&mut store, &req.name, &req.title)
         .map_err(|e| error_response(e, format))?;
-    repo.generate_index()
-        .map_err(|e| error_response(e, format))?;
+    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let location = format!("/projects/{}/roadmaps", doc.frontmatter.name);
     match format {
@@ -134,16 +131,15 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
-    use rdm_core::repo::PlanRepo;
-
     use crate::router::build_router;
     use crate::state::AppState;
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let mut repo = PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
-        repo.create_project("alpha", "Alpha Project").unwrap();
-        repo.create_project("beta", "Beta Project").unwrap();
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "alpha", "Alpha Project").unwrap();
+        rdm_core::ops::project::create_project(&mut store, "beta", "Beta Project").unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };
@@ -184,7 +180,8 @@ mod tests {
     #[tokio::test]
     async fn list_projects_empty() {
         let dir = TempDir::new().unwrap();
-        PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };
@@ -253,7 +250,8 @@ mod tests {
     #[tokio::test]
     async fn create_project_returns_201() {
         let dir = TempDir::new().unwrap();
-        PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };
@@ -308,7 +306,8 @@ mod tests {
     #[tokio::test]
     async fn create_project_html_returns_303() {
         let dir = TempDir::new().unwrap();
-        PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };

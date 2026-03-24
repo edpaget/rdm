@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 
 use rdm_core::model::{PhaseStatus, Priority};
-use rdm_core::repo::PlanRepo;
 use rdm_store_fs::FsStore;
 use reqwest::Client;
 use tempfile::TempDir;
@@ -9,12 +8,13 @@ use tempfile::TempDir;
 /// Spawn a real TCP server with seeded data for a11y tests.
 async fn spawn_server() -> (TempDir, SocketAddr, Client) {
     let dir = TempDir::new().unwrap();
-    let mut repo = PlanRepo::init(FsStore::new(dir.path())).unwrap();
+    let mut store = FsStore::new(dir.path());
+    rdm_core::ops::init::init(&mut store).unwrap();
 
-    repo.create_project("demo", "Demo Project").unwrap();
-    repo.create_roadmap("demo", "api", "API Roadmap", None)
-        .unwrap();
-    repo.create_phase(
+    rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
+    rdm_core::ops::roadmap::create_roadmap(&mut store, "demo", "api", "API Roadmap", None).unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
         "demo",
         "api",
         "design",
@@ -23,9 +23,18 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         Some("Details."),
     )
     .unwrap();
-    repo.create_phase("demo", "api", "build", "Build Phase", Some(2), None)
-        .unwrap();
-    repo.update_phase(
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        "demo",
+        "api",
+        "build",
+        "Build Phase",
+        Some(2),
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
         "demo",
         "api",
         "phase-1-design",
@@ -34,7 +43,8 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         None,
     )
     .unwrap();
-    repo.create_task(
+    rdm_core::ops::task::create_task(
+        &mut store,
         "demo",
         "bug-1",
         "Fix Bug One",

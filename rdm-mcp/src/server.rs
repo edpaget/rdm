@@ -4,7 +4,6 @@ use std::sync::Mutex;
 
 use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus};
-use rdm_core::repo::PlanRepo;
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
@@ -238,7 +237,7 @@ fn make_init_store(root: &Path) -> anyhow::Result<AppStore> {
 
 /// MCP server backed by an rdm plan repo.
 struct RdmMcpServer {
-    repo: Mutex<PlanRepo<AppStore>>,
+    store: Mutex<AppStore>,
     plan_root: PathBuf,
     auto_init: bool,
     tool_router: ToolRouter<Self>,
@@ -258,7 +257,7 @@ impl RdmMcpServer {
             }
         };
         Ok(Self {
-            repo: Mutex::new(PlanRepo::new(store)),
+            store: Mutex::new(store),
             plan_root,
             auto_init,
             tool_router: Self::tool_router(),
@@ -270,23 +269,26 @@ impl RdmMcpServer {
         if !self.auto_init {
             return;
         }
-        let repo = self.repo.lock().unwrap();
-        if repo.load_config().is_ok() {
+        let store = self.store.lock().unwrap();
+        if rdm_core::io::load_config(&*store).is_ok() {
             return;
         }
-        drop(repo);
+        drop(store);
 
         // Create the directory if needed
         let _ = std::fs::create_dir_all(&self.plan_root);
 
-        let store = match make_init_store(&self.plan_root) {
+        let new_store = match make_init_store(&self.plan_root) {
             Ok(s) => s,
             Err(_) => return,
         };
-        match PlanRepo::init_with_config(store, rdm_core::config::Config::default()) {
-            Ok(new_repo) => {
-                *self.repo.lock().unwrap() = new_repo;
-            }
+        *self.store.lock().unwrap() = new_store;
+        let mut store = self.store.lock().unwrap();
+        match rdm_core::ops::init::init_with_config(
+            &mut *store,
+            rdm_core::config::Config::default(),
+        ) {
+            Ok(()) => {}
             Err(rdm_core::error::Error::AlreadyInitialized) => {
                 // Race condition or stale check — fine, just reload
             }
@@ -312,10 +314,11 @@ impl RdmMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let _ = std::fs::create_dir_all(&self.plan_root);
 
-        let store = match make_init_store(&self.plan_root) {
+        let new_store = match make_init_store(&self.plan_root) {
             Ok(s) => s,
             Err(e) => return err_text(format!("{e}")),
         };
+        *self.store.lock().unwrap() = new_store;
         let config = if let Some(ref proj) = params.default_project {
             rdm_core::config::Config {
                 default_project: Some(proj.clone()),
@@ -325,17 +328,15 @@ impl RdmMcpServer {
             rdm_core::config::Config::default()
         };
 
-        let new_repo = match PlanRepo::init_with_config(store, config) {
-            Ok(r) => r,
-            Err(e) => return core_err(e),
-        };
-        *self.repo.lock().unwrap() = new_repo;
+        let mut store = self.store.lock().unwrap();
+        if let Err(e) = rdm_core::ops::init::init_with_config(&mut *store, config) {
+            return core_err(e);
+        }
 
-        if let Some(ref proj) = params.default_project {
-            let mut repo = self.repo.lock().unwrap();
-            if let Err(e) = repo.create_project(proj, proj) {
-                return core_err(e);
-            }
+        if let Some(ref proj) = params.default_project
+            && let Err(e) = rdm_core::ops::project::create_project(&mut *store, proj, proj)
+        {
+            return core_err(e);
         }
 
         let mut summary = format!("Plan repo initialized at {}", self.plan_root.display());
@@ -354,8 +355,8 @@ impl RdmMcpServer {
     )]
     async fn rdm_project_list(&self) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let repo = self.repo.lock().unwrap();
-        match repo.list_projects() {
+        let store = self.store.lock().unwrap();
+        match rdm_core::ops::project::list_projects(&*store) {
             Ok(projects) => ok_text(projects.join("\n")),
             Err(e) => core_err(e),
         }
@@ -371,8 +372,8 @@ impl RdmMcpServer {
         Parameters(params): Parameters<ProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let repo = self.repo.lock().unwrap();
-        let roadmaps = match repo.list_roadmaps(&params.project) {
+        let store = self.store.lock().unwrap();
+        let roadmaps = match rdm_core::ops::roadmap::list_roadmaps(&*store, &params.project) {
             Ok(r) => r,
             Err(e) => return core_err(e),
         };
@@ -380,7 +381,7 @@ impl RdmMcpServer {
         let mut entries = Vec::new();
         for roadmap_doc in roadmaps {
             let slug = &roadmap_doc.frontmatter.roadmap;
-            let phases = match repo.list_phases(&params.project, slug) {
+            let phases = match rdm_core::ops::phase::list_phases(&*store, &params.project, slug) {
                 Ok(p) => p,
                 Err(e) => return core_err(e),
             };
@@ -400,15 +401,16 @@ impl RdmMcpServer {
         Parameters(params): Parameters<RoadmapParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let repo = self.repo.lock().unwrap();
-        let doc = match repo.load_roadmap(&params.project, &params.roadmap) {
+        let store = self.store.lock().unwrap();
+        let doc = match rdm_core::io::load_roadmap(&*store, &params.project, &params.roadmap) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        let phases = match repo.list_phases(&params.project, &params.roadmap) {
-            Ok(p) => p,
-            Err(e) => return core_err(e),
-        };
+        let phases =
+            match rdm_core::ops::phase::list_phases(&*store, &params.project, &params.roadmap) {
+                Ok(p) => p,
+                Err(e) => return core_err(e),
+            };
 
         ok_text(display::format_roadmap_summary(&doc, &phases))
     }
@@ -423,8 +425,8 @@ impl RdmMcpServer {
         Parameters(params): Parameters<RoadmapParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let repo = self.repo.lock().unwrap();
-        match repo.list_phases(&params.project, &params.roadmap) {
+        let store = self.store.lock().unwrap();
+        match rdm_core::ops::phase::list_phases(&*store, &params.project, &params.roadmap) {
             Ok(phases) => ok_text(display::format_phase_list(&phases)),
             Err(e) => core_err(e),
         }
@@ -440,12 +442,17 @@ impl RdmMcpServer {
         Parameters(params): Parameters<PhaseParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let repo = self.repo.lock().unwrap();
-        let stem = match repo.resolve_phase_stem(&params.project, &params.roadmap, &params.phase) {
+        let store = self.store.lock().unwrap();
+        let stem = match rdm_core::ops::phase::resolve_phase_stem(
+            &*store,
+            &params.project,
+            &params.roadmap,
+            &params.phase,
+        ) {
             Ok(s) => s,
             Err(e) => return core_err(e),
         };
-        let doc = match repo.load_phase(&params.project, &params.roadmap, &stem) {
+        let doc = match rdm_core::io::load_phase(&*store, &params.project, &params.roadmap, &stem) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
@@ -463,8 +470,8 @@ impl RdmMcpServer {
         Parameters(params): Parameters<TaskListParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let repo = self.repo.lock().unwrap();
-        let all_tasks = match repo.list_tasks(&params.project) {
+        let store = self.store.lock().unwrap();
+        let all_tasks = match rdm_core::ops::task::list_tasks(&*store, &params.project) {
             Ok(t) => t,
             Err(e) => return core_err(e),
         };
@@ -509,8 +516,8 @@ impl RdmMcpServer {
         Parameters(params): Parameters<TaskShowParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let repo = self.repo.lock().unwrap();
-        match repo.load_task(&params.project, &params.task) {
+        let store = self.store.lock().unwrap();
+        match rdm_core::io::load_task(&*store, &params.project, &params.task) {
             Ok(doc) => ok_text(display::format_task_detail(&params.task, &doc)),
             Err(e) => core_err(e),
         }
@@ -526,7 +533,7 @@ impl RdmMcpServer {
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let repo = self.repo.lock().unwrap();
+        let store = self.store.lock().unwrap();
         let kind = match &params.kind {
             Some(k) => match k.as_str() {
                 "roadmap" => Some(ItemKind::Roadmap),
@@ -555,7 +562,7 @@ impl RdmMcpServer {
             status,
         };
 
-        match search::search(&repo, &params.query, &filter) {
+        match search::search(&*store, &params.query, &filter) {
             Ok(mut results) => {
                 let limit = params.limit.unwrap_or(20);
                 results.truncate(limit);
@@ -577,8 +584,9 @@ impl RdmMcpServer {
         Parameters(params): Parameters<RoadmapCreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let mut repo = self.repo.lock().unwrap();
-        let doc = match repo.create_roadmap(
+        let mut store = self.store.lock().unwrap();
+        let doc = match rdm_core::ops::roadmap::create_roadmap(
+            &mut *store,
             &params.project,
             &params.slug,
             &params.title,
@@ -587,10 +595,11 @@ impl RdmMcpServer {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = repo.generate_index() {
+        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
             return core_err(e);
         }
-        let phases = match repo.list_phases(&params.project, &params.slug) {
+        let phases = match rdm_core::ops::phase::list_phases(&*store, &params.project, &params.slug)
+        {
             Ok(p) => p,
             Err(e) => return core_err(e),
         };
@@ -607,8 +616,9 @@ impl RdmMcpServer {
         Parameters(params): Parameters<PhaseCreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let mut repo = self.repo.lock().unwrap();
-        let doc = match repo.create_phase(
+        let mut store = self.store.lock().unwrap();
+        let doc = match rdm_core::ops::phase::create_phase(
+            &mut *store,
             &params.project,
             &params.roadmap,
             &params.slug,
@@ -619,7 +629,7 @@ impl RdmMcpServer {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = repo.generate_index() {
+        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
             return core_err(e);
         }
         let stem = doc.frontmatter.stem(&params.slug);
@@ -636,8 +646,13 @@ impl RdmMcpServer {
         Parameters(params): Parameters<PhaseUpdateParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let mut repo = self.repo.lock().unwrap();
-        let stem = match repo.resolve_phase_stem(&params.project, &params.roadmap, &params.phase) {
+        let mut store = self.store.lock().unwrap();
+        let stem = match rdm_core::ops::phase::resolve_phase_stem(
+            &*store,
+            &params.project,
+            &params.roadmap,
+            &params.phase,
+        ) {
             Ok(s) => s,
             Err(e) => return core_err(e),
         };
@@ -650,7 +665,8 @@ impl RdmMcpServer {
             None => None,
         };
 
-        let doc = match repo.update_phase(
+        let doc = match rdm_core::ops::phase::update_phase(
+            &mut *store,
             &params.project,
             &params.roadmap,
             &stem,
@@ -661,7 +677,7 @@ impl RdmMcpServer {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = repo.generate_index() {
+        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
             return core_err(e);
         }
         ok_text(display::format_phase_detail(&stem, &doc, None))
@@ -685,8 +701,9 @@ impl RdmMcpServer {
             None => Priority::Medium,
         };
 
-        let mut repo = self.repo.lock().unwrap();
-        let doc = match repo.create_task(
+        let mut store = self.store.lock().unwrap();
+        let doc = match rdm_core::ops::task::create_task(
+            &mut *store,
             &params.project,
             &params.slug,
             &params.title,
@@ -697,7 +714,7 @@ impl RdmMcpServer {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = repo.generate_index() {
+        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
             return core_err(e);
         }
         ok_text(display::format_task_detail(&params.slug, &doc))
@@ -729,8 +746,9 @@ impl RdmMcpServer {
             None => None,
         };
 
-        let mut repo = self.repo.lock().unwrap();
-        let doc = match repo.update_task(
+        let mut store = self.store.lock().unwrap();
+        let doc = match rdm_core::ops::task::update_task(
+            &mut *store,
             &params.project,
             &params.task,
             status,
@@ -742,7 +760,7 @@ impl RdmMcpServer {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = repo.generate_index() {
+        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
             return core_err(e);
         }
         ok_text(display::format_task_detail(&params.task, &doc))
@@ -758,18 +776,25 @@ impl RdmMcpServer {
         Parameters(params): Parameters<TaskPromoteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        let mut repo = self.repo.lock().unwrap();
-        let doc = match repo.promote_task(&params.project, &params.task, &params.roadmap_slug) {
+        let mut store = self.store.lock().unwrap();
+        let doc = match rdm_core::ops::task::promote_task(
+            &mut *store,
+            &params.project,
+            &params.task,
+            &params.roadmap_slug,
+        ) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = repo.generate_index() {
+        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
             return core_err(e);
         }
-        let phases = match repo.list_phases(&params.project, &params.roadmap_slug) {
-            Ok(p) => p,
-            Err(e) => return core_err(e),
-        };
+        let phases =
+            match rdm_core::ops::phase::list_phases(&*store, &params.project, &params.roadmap_slug)
+            {
+                Ok(p) => p,
+                Err(e) => return core_err(e),
+            };
         ok_text(display::format_roadmap_summary(&doc, &phases))
     }
 }

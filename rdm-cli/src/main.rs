@@ -7,7 +7,6 @@ use rdm_core::agent_config::{self, AgentConfigOptions, McpConfigOptions, Platfor
 use rdm_core::display;
 use rdm_core::json;
 use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
-use rdm_core::repo::PlanRepo;
 use rdm_core::search::{self, ItemKind, SearchFilter};
 use rdm_core::tree;
 #[cfg(not(feature = "git"))]
@@ -724,9 +723,7 @@ fn run() -> Result<()> {
                     .context("failed to clone remote plan repo")?;
 
                 // Validate and load config: must be a valid rdm plan repo (has rdm.toml).
-                let repo = PlanRepo::new(store);
-                let mut config = repo
-                    .load_config()
+                let mut config = rdm_core::io::load_config(&store)
                     .context("not a valid rdm plan repo — cloned repository has no rdm.toml")?;
                 config.remote = Some(rdm_core::config::RemoteConfig {
                     default: Some("origin".to_string()),
@@ -806,13 +803,13 @@ fn run() -> Result<()> {
                 ..Default::default()
             };
 
-            let mut repo =
-                PlanRepo::init_with_config(commands::make_init_store(&root)?, init_config)
-                    .context("failed to initialize plan repo")?;
+            let mut store = commands::make_init_store(&root)?;
+            rdm_core::ops::init::init_with_config(&mut store, init_config)
+                .context("failed to initialize plan repo")?;
 
             // Create project directory if --default-project was given.
             if let Some(ref proj) = default_project {
-                repo.create_project(proj, proj)
+                rdm_core::ops::project::create_project(&mut store, proj, proj)
                     .with_context(|| format!("failed to create project '{proj}'"))?;
             }
 
@@ -871,21 +868,21 @@ fn run() -> Result<()> {
         }
 
         Command::Index => {
-            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
-            repo.generate_index().context("failed to generate index")?;
+            let mut store = commands::make_store(&root, staging)?;
+            rdm_core::ops::index::generate_index(&mut store).context("failed to generate index")?;
             println!("Generated INDEX.md");
         }
 
         Command::Project { command } => {
-            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
-            commands::project::run(command, &mut repo, format, cli.no_index, staging)?;
+            let mut store = commands::make_store(&root, staging)?;
+            commands::project::run(command, &mut store, format, cli.no_index, staging)?;
         }
 
         Command::Roadmap { command } => {
-            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            let mut store = commands::make_store(&root, staging)?;
             commands::roadmap::run(
                 command,
-                &mut repo,
+                &mut store,
                 &repo_config,
                 format,
                 cli.no_index,
@@ -894,10 +891,10 @@ fn run() -> Result<()> {
         }
 
         Command::Phase { command } => {
-            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            let mut store = commands::make_store(&root, staging)?;
             commands::phase::run(
                 command,
-                &mut repo,
+                &mut store,
                 &repo_config,
                 format,
                 cli.no_index,
@@ -906,10 +903,10 @@ fn run() -> Result<()> {
         }
 
         Command::Task { command } => {
-            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            let mut store = commands::make_store(&root, staging)?;
             commands::task::run(
                 command,
-                &mut repo,
+                &mut store,
                 &repo_config,
                 format,
                 cli.no_index,
@@ -922,22 +919,22 @@ fn run() -> Result<()> {
             roadmap_slug,
             project,
         } => {
-            let mut repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            let mut store = commands::make_store(&root, staging)?;
             let project = paths::resolve_project(project, &repo_config)?;
-            let doc = repo
-                .promote_task(&project, &task_slug, &roadmap_slug)
-                .context("failed to promote task")?;
+            let doc =
+                rdm_core::ops::task::promote_task(&mut store, &project, &task_slug, &roadmap_slug)
+                    .context("failed to promote task")?;
             println!(
                 "Promoted task '{task_slug}' → roadmap '{}'",
                 doc.frontmatter.roadmap
             );
-            commands::maybe_regenerate_index(&mut repo, cli.no_index, staging, Some(&project))?;
+            commands::maybe_regenerate_index(&mut store, cli.no_index, staging, Some(&project))?;
         }
 
         Command::Tree { project } => {
-            let repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            let store = commands::make_store(&root, staging)?;
             let project = paths::resolve_project(project, &repo_config)?;
-            let node = tree::build_tree(&repo, &project).context("failed to build tree")?;
+            let node = tree::build_tree(&store, &project).context("failed to build tree")?;
             match format {
                 OutputFormat::Human => print!("{}", tree::format_tree(&node)),
                 OutputFormat::Markdown => print!("{}", tree::format_tree_md(&node)),
@@ -951,7 +948,7 @@ fn run() -> Result<()> {
                     "--format table is not supported for 'tree'; use --format human, --format json, --format markdown, or omit --format"
                 ),
             }
-            commands::maybe_print_uncommitted_hint(repo.store(), staging);
+            commands::maybe_print_uncommitted_hint(&store, staging);
         }
 
         Command::Describe { entity } => {
@@ -1078,7 +1075,7 @@ fn run() -> Result<()> {
             project,
             limit,
         } => {
-            let repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            let store = commands::make_store(&root, staging)?;
             let item_status = status
                 .as_deref()
                 .map(|s| commands::parse_status(s, kind))
@@ -1088,7 +1085,7 @@ fn run() -> Result<()> {
                 project,
                 status: item_status,
             };
-            let results = search::search(&repo, &query, &filter).context("search failed")?;
+            let results = search::search(&store, &query, &filter).context("search failed")?;
             let results: Vec<_> = results.into_iter().take(limit).collect();
 
             match format {
@@ -1123,7 +1120,7 @@ fn run() -> Result<()> {
                     );
                 }
             }
-            commands::maybe_print_uncommitted_hint(repo.store(), staging);
+            commands::maybe_print_uncommitted_hint(&store, staging);
         }
 
         #[cfg(feature = "mcp")]
@@ -1352,8 +1349,7 @@ fn run() -> Result<()> {
             if result.merge_completed {
                 println!("All conflicts resolved — merge complete.");
                 // Regenerate INDEX.md after merge completion
-                let mut repo = PlanRepo::new(store);
-                repo.generate_index()
+                rdm_core::ops::index::generate_index(&mut store)
                     .context("failed to regenerate INDEX.md after merge")?;
             } else {
                 println!(
@@ -1375,9 +1371,9 @@ fn run() -> Result<()> {
         }
 
         Command::List { project, all } => {
-            let repo = PlanRepo::new(commands::make_store(&root, staging)?);
+            let store = commands::make_store(&root, staging)?;
             let projects = if all {
-                repo.list_projects().context("failed to list projects")?
+                rdm_core::ops::project::list_projects(&store).context("failed to list projects")?
             } else {
                 let p = paths::resolve_project(project, &repo_config)?;
                 vec![p]
@@ -1390,14 +1386,12 @@ fn run() -> Result<()> {
                 if all && format != OutputFormat::Json {
                     println!("Project: {project}");
                 }
-                let roadmaps = repo
-                    .list_roadmaps(project)
+                let roadmaps = rdm_core::ops::roadmap::list_roadmaps(&store, project)
                     .context("failed to list roadmaps")?;
                 let mut entries = Vec::new();
                 for roadmap_doc in roadmaps {
                     let slug = &roadmap_doc.frontmatter.roadmap;
-                    let phases = repo
-                        .list_phases(project, slug)
+                    let phases = rdm_core::ops::phase::list_phases(&store, project, slug)
                         .with_context(|| format!("failed to list phases for roadmap '{slug}'"))?;
                     entries.push((roadmap_doc, phases));
                 }
@@ -1421,7 +1415,7 @@ fn run() -> Result<()> {
                         .context("failed to serialize roadmaps")?
                 );
             }
-            commands::maybe_print_uncommitted_hint(repo.store(), staging);
+            commands::maybe_print_uncommitted_hint(&store, staging);
         }
     }
 

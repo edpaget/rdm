@@ -87,10 +87,9 @@ pub async fn list_tasks(
         None => None,
     };
 
-    let repo = state.plan_repo();
-    let tasks = repo
-        .list_tasks(&project)
-        .map_err(|e| error_response(e, format))?;
+    let store = state.store();
+    let tasks =
+        rdm_core::ops::task::list_tasks(&store, &project).map_err(|e| error_response(e, format))?;
 
     // Filter tasks.
     let mut filtered: Vec<_> = tasks
@@ -179,9 +178,8 @@ pub async fn get_task(
     State(state): State<AppState>,
     Path((project, task_slug)): Path<(String, String)>,
 ) -> Result<Response, Response> {
-    let repo = state.plan_repo();
-    let doc = repo
-        .load_task(&project, &task_slug)
+    let store = state.store();
+    let doc = rdm_core::io::load_task(&store, &project, &task_slug)
         .map_err(|e| error_response(e, format))?;
 
     match format {
@@ -245,19 +243,18 @@ pub async fn create_task(
     payload: Result<axum::Json<CreateTaskRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let mut repo = state.plan_repo();
-    let doc = repo
-        .create_task(
-            &project,
-            &req.slug,
-            &req.title,
-            req.priority,
-            req.tags,
-            req.body.as_deref(),
-        )
-        .map_err(|e| error_response(e, format))?;
-    repo.generate_index()
-        .map_err(|e| error_response(e, format))?;
+    let mut store = state.store();
+    let doc = rdm_core::ops::task::create_task(
+        &mut store,
+        &project,
+        &req.slug,
+        &req.title,
+        req.priority,
+        req.tags,
+        req.body.as_deref(),
+    )
+    .map_err(|e| error_response(e, format))?;
+    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let location = format!("/projects/{project}/tasks/{}", req.slug);
     match format {
@@ -313,20 +310,19 @@ pub async fn update_task(
         None => None,
     };
 
-    let mut repo = state.plan_repo();
-    let doc = repo
-        .update_task(
-            &project,
-            &task_slug,
-            status,
-            priority,
-            req.tags,
-            req.body.as_deref(),
-            None,
-        )
-        .map_err(|e| error_response(e, format))?;
-    repo.generate_index()
-        .map_err(|e| error_response(e, format))?;
+    let mut store = state.store();
+    let doc = rdm_core::ops::task::update_task(
+        &mut store,
+        &project,
+        &task_slug,
+        status,
+        priority,
+        req.tags,
+        req.body.as_deref(),
+        None,
+    )
+    .map_err(|e| error_response(e, format))?;
+    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let self_href = format!("/projects/{project}/tasks/{task_slug}");
     match format {
@@ -360,18 +356,16 @@ pub async fn promote_task(
     payload: Result<axum::Json<PromoteTaskRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let mut repo = state.plan_repo();
-    repo.promote_task(&project, &task_slug, &req.roadmap_slug)
+    let mut store = state.store();
+    rdm_core::ops::task::promote_task(&mut store, &project, &task_slug, &req.roadmap_slug)
         .map_err(|e| error_response(e, format))?;
-    repo.generate_index()
-        .map_err(|e| error_response(e, format))?;
+    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let location = format!("/projects/{project}/roadmaps/{}", req.roadmap_slug);
     match format {
         ResponseFormat::HalJson => {
             // Load the newly created roadmap for the response body
-            let roadmap_doc = repo
-                .load_roadmap(&project, &req.roadmap_slug)
+            let roadmap_doc = rdm_core::io::load_roadmap(&store, &project, &req.roadmap_slug)
                 .map_err(|e| error_response(e, format))?;
             let resource = HalResource::new(
                 serde_json::json!({
@@ -395,16 +389,17 @@ mod tests {
     use tower::ServiceExt;
 
     use rdm_core::model::{Priority, TaskStatus};
-    use rdm_core::repo::PlanRepo;
 
     use crate::router::build_router;
     use crate::state::AppState;
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let mut repo = PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
-        repo.create_project("demo", "Demo").unwrap();
-        repo.create_task(
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
+        rdm_core::ops::task::create_task(
+            &mut store,
             "demo",
             "bug-fix",
             "Fix the Bug",
@@ -413,8 +408,16 @@ mod tests {
             Some("Bug details.\n"),
         )
         .unwrap();
-        repo.create_task("demo", "feature", "New Feature", Priority::Low, None, None)
-            .unwrap();
+        rdm_core::ops::task::create_task(
+            &mut store,
+            "demo",
+            "feature",
+            "New Feature",
+            Priority::Low,
+            None,
+            None,
+        )
+        .unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
         };
@@ -945,9 +948,11 @@ mod tests {
     /// Helper to set up a project with tasks in various statuses (open, done, wont-fix).
     fn setup_with_completed() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let mut repo = PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
-        repo.create_project("demo", "Demo").unwrap();
-        repo.create_task(
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
+        rdm_core::ops::task::create_task(
+            &mut store,
             "demo",
             "open-task",
             "Open Task",
@@ -956,7 +961,8 @@ mod tests {
             None,
         )
         .unwrap();
-        repo.create_task(
+        rdm_core::ops::task::create_task(
+            &mut store,
             "demo",
             "done-task",
             "Done Task",
@@ -965,7 +971,8 @@ mod tests {
             None,
         )
         .unwrap();
-        repo.update_task(
+        rdm_core::ops::task::update_task(
+            &mut store,
             "demo",
             "done-task",
             Some(TaskStatus::Done),
@@ -975,7 +982,8 @@ mod tests {
             None,
         )
         .unwrap();
-        repo.create_task(
+        rdm_core::ops::task::create_task(
+            &mut store,
             "demo",
             "wontfix-task",
             "Wont Fix Task",
@@ -984,7 +992,8 @@ mod tests {
             None,
         )
         .unwrap();
-        repo.update_task(
+        rdm_core::ops::task::update_task(
+            &mut store,
             "demo",
             "wontfix-task",
             Some(TaskStatus::WontFix),

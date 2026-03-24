@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use rdm_core::document::Document;
 use rdm_core::hal::{HalLink, HalResource};
 use rdm_core::model::{Phase, PhaseStatus};
-use rdm_core::repo::PlanRepo;
-use rdm_store_fs::FsStore;
 
 use axum::extract::Query;
 
@@ -39,7 +37,7 @@ fn format_system_time(t: SystemTime) -> String {
 
 /// Compute the most recent modification date across the roadmap and phase files.
 fn last_changed_date(
-    repo: &PlanRepo<FsStore>,
+    store: &rdm_store_fs::FsStore,
     project: &str,
     roadmap: &str,
     phases: &[(String, Document<Phase>)],
@@ -47,7 +45,7 @@ fn last_changed_date(
     let mut latest: Option<SystemTime> = None;
 
     // Check roadmap.md itself
-    let root = repo.store().root();
+    let root = store.root();
     if let Ok(meta) =
         std::fs::metadata(root.join(rdm_core::paths::roadmap_path(project, roadmap).as_str()))
         && let Ok(modified) = meta.modified()
@@ -106,16 +104,14 @@ pub async fn list_roadmaps(
     Path(project): Path<String>,
     Query(filters): Query<RoadmapFilters>,
 ) -> Result<Response, Response> {
-    let repo = state.plan_repo();
-    let roadmaps = repo
-        .list_roadmaps(&project)
+    let store = state.store();
+    let roadmaps = rdm_core::ops::roadmap::list_roadmaps(&store, &project)
         .map_err(|e| error_response(e, format))?;
 
     let mut summaries = Vec::new();
     for roadmap_doc in &roadmaps {
         let slug = &roadmap_doc.frontmatter.roadmap;
-        let phases = repo
-            .list_phases(&project, slug)
+        let phases = rdm_core::ops::phase::list_phases(&store, &project, slug)
             .map_err(|e| error_response(e, format))?;
         let done_count = phases
             .iter()
@@ -128,7 +124,7 @@ pub async fn list_roadmaps(
             .collect();
         let (status_text, status_cls) = computed_roadmap_status(&phase_statuses);
 
-        let last_changed = last_changed_date(&repo, &project, slug, &phases);
+        let last_changed = last_changed_date(&store, &project, slug, &phases);
 
         summaries.push((
             slug.clone(),
@@ -209,12 +205,10 @@ pub async fn get_roadmap(
     State(state): State<AppState>,
     Path((project, roadmap)): Path<(String, String)>,
 ) -> Result<Response, Response> {
-    let repo = state.plan_repo();
-    let roadmap_doc = repo
-        .load_roadmap(&project, &roadmap)
+    let store = state.store();
+    let roadmap_doc = rdm_core::io::load_roadmap(&store, &project, &roadmap)
         .map_err(|e| error_response(e, format))?;
-    let phases = repo
-        .list_phases(&project, &roadmap)
+    let phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
         .map_err(|e| error_response(e, format))?;
 
     let phase_statuses: Vec<PhaseStatus> = phases
@@ -222,7 +216,7 @@ pub async fn get_roadmap(
         .map(|(_, doc)| doc.frontmatter.status)
         .collect();
     let (status_text, status_cls) = computed_roadmap_status(&phase_statuses);
-    let last_changed = last_changed_date(&repo, &project, &roadmap, &phases);
+    let last_changed = last_changed_date(&store, &project, &roadmap, &phases);
 
     match format {
         ResponseFormat::HalJson => {
@@ -301,12 +295,16 @@ pub async fn create_roadmap(
     payload: Result<axum::Json<CreateRoadmapRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
-    let mut repo = state.plan_repo();
-    let doc = repo
-        .create_roadmap(&project, &req.slug, &req.title, req.body.as_deref())
-        .map_err(|e| error_response(e, format))?;
-    repo.generate_index()
-        .map_err(|e| error_response(e, format))?;
+    let mut store = state.store();
+    let doc = rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        &project,
+        &req.slug,
+        &req.title,
+        req.body.as_deref(),
+    )
+    .map_err(|e| error_response(e, format))?;
+    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let location = format!("/projects/{project}/roadmaps/{}", doc.frontmatter.roadmap);
     match format {
@@ -336,22 +334,39 @@ mod tests {
     use tower::ServiceExt;
 
     use rdm_core::model::PhaseStatus;
-    use rdm_core::repo::PlanRepo;
 
     use crate::router::build_router;
     use crate::state::AppState;
 
     fn setup() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
-        let mut repo = PlanRepo::init(rdm_store_fs::FsStore::new(dir.path())).unwrap();
-        repo.create_project("demo", "Demo Project").unwrap();
-        repo.create_roadmap("demo", "alpha", "Alpha Roadmap", None)
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
+        rdm_core::ops::roadmap::create_roadmap(&mut store, "demo", "alpha", "Alpha Roadmap", None)
             .unwrap();
-        repo.create_phase("demo", "alpha", "first", "First Phase", Some(1), None)
-            .unwrap();
-        repo.create_phase("demo", "alpha", "second", "Second Phase", Some(2), None)
-            .unwrap();
-        repo.update_phase(
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "alpha",
+            "first",
+            "First Phase",
+            Some(1),
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "alpha",
+            "second",
+            "Second Phase",
+            Some(2),
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::update_phase(
+            &mut store,
             "demo",
             "alpha",
             "phase-1-first",
@@ -369,12 +384,21 @@ mod tests {
     /// Create a setup with an additional completed roadmap ("beta") for filter tests.
     fn setup_with_completed() -> (TempDir, AppState) {
         let (dir, state) = setup();
-        let mut repo = PlanRepo::new(rdm_store_fs::FsStore::new(dir.path()));
-        repo.create_roadmap("demo", "beta", "Beta Roadmap", None)
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::roadmap::create_roadmap(&mut store, "demo", "beta", "Beta Roadmap", None)
             .unwrap();
-        repo.create_phase("demo", "beta", "only", "Only Phase", Some(1), None)
-            .unwrap();
-        repo.update_phase(
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "beta",
+            "only",
+            "Only Phase",
+            Some(1),
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::update_phase(
+            &mut store,
             "demo",
             "beta",
             "phase-1-only",

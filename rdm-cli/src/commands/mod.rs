@@ -4,7 +4,6 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use is_terminal::IsTerminal;
 use rdm_core::model::PhaseStatus;
-use rdm_core::repo::PlanRepo;
 use rdm_core::search::ItemStatus;
 
 use crate::paths;
@@ -172,18 +171,16 @@ pub fn reject_non_human(format: OutputFormat, command_name: &str) -> Result<()> 
 }
 
 pub fn maybe_regenerate_index(
-    repo: &mut PlanRepo<AppStore>,
+    store: &mut AppStore,
     no_index: bool,
     staging: bool,
     project: Option<&str>,
 ) -> Result<()> {
     if !no_index {
         match project {
-            Some(p) => repo
-                .generate_index_for_project(p)
+            Some(p) => rdm_core::ops::index::generate_index_for_project(store, p)
                 .context("failed to regenerate INDEX.md")?,
-            None => repo
-                .generate_index()
+            None => rdm_core::ops::index::generate_index(store)
                 .context("failed to regenerate INDEX.md")?,
         }
     }
@@ -229,19 +226,21 @@ pub fn apply_done_directives(
         return Ok(());
     }
 
-    let store = make_store(root, staging)?;
-    let mut repo = PlanRepo::new(store);
+    let mut store = make_store(root, staging)?;
     let hook_global_config = paths::load_global_config();
     let hook_repo_config = paths::load_repo_config(root).with_global_defaults(&hook_global_config);
     let project = paths::resolve_project(None, &hook_repo_config)?;
     for (directive, sha) in directives_with_sha {
         match directive {
             rdm_core::hook::DoneDirective::Phase { roadmap, phase } => {
-                let stem = match repo.resolve_phase_stem(&project, roadmap, phase) {
+                let stem = match rdm_core::ops::phase::resolve_phase_stem(
+                    &store, &project, roadmap, phase,
+                ) {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
-                let _ = repo.update_phase(
+                let _ = rdm_core::ops::phase::update_phase(
+                    &mut store,
                     &project,
                     roadmap,
                     &stem,
@@ -251,7 +250,8 @@ pub fn apply_done_directives(
                 );
             }
             rdm_core::hook::DoneDirective::Task { slug } => {
-                let _ = repo.update_task(
+                let _ = rdm_core::ops::task::update_task(
+                    &mut store,
                     &project,
                     slug,
                     Some(rdm_core::model::TaskStatus::Done),

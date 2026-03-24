@@ -36,8 +36,6 @@ pub mod ops;
 pub mod paths;
 /// RFC 9457 Problem Details for HTTP APIs.
 pub mod problem;
-/// Plan repo operations: path resolution, file I/O, and initialization.
-pub mod repo;
 /// Fuzzy search across plan repo content (roadmaps, phases, and tasks).
 pub mod search;
 /// Storage abstraction layer for plan repo data.
