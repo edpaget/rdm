@@ -4,6 +4,7 @@
 //! how to interact with `rdm` via its CLI.
 
 use std::fmt;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 /// Target platform for agent configuration output.
@@ -28,6 +29,50 @@ impl Platform {
             Platform::Cursor => ".cursor/rules/rdm.mdc",
             Platform::Copilot => ".github/copilot-instructions.md",
         }
+    }
+
+    /// Returns the user-level base directory for this platform.
+    ///
+    /// This is the directory that plays the same role as `--out` but for
+    /// user-global configuration. The instruction file will be written at
+    /// `user_level_dir() / conventional_path()`, just as `--out` writes to
+    /// `out / conventional_path()`.
+    ///
+    /// | Platform   | Directory        |
+    /// |------------|------------------|
+    /// | Claude     | `~/.claude/`     |
+    /// | AgentsMd   | `~/.claude/`     |
+    /// | Cursor     | `~/`             |
+    /// | Copilot    | `~/`             |
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the home directory cannot be determined.
+    pub fn user_level_dir(&self) -> Result<PathBuf, String> {
+        let home = home_dir()?;
+        let dir = match self {
+            // conventional_path is "CLAUDE.md" / "AGENTS.md" — flat file, so base is ~/.claude/
+            Platform::Claude | Platform::AgentsMd => home.join(".claude"),
+            // conventional_path is ".cursor/rules/rdm.mdc" — includes subdirs
+            Platform::Cursor => home,
+            // conventional_path is ".github/copilot-instructions.md" — includes subdir
+            Platform::Copilot => home,
+        };
+        Ok(dir)
+    }
+
+    /// Returns the user-level directory for Claude Code skills (`~/.claude/skills/`).
+    ///
+    /// Skills are always under `~/.claude/skills/` regardless of platform
+    /// (skills are a Claude Code concept), so this is an associated function
+    /// rather than a method on `&self`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the home directory cannot be determined.
+    pub fn user_level_skills_dir() -> Result<PathBuf, String> {
+        let home = home_dir()?;
+        Ok(home.join(".claude").join("skills"))
     }
 }
 
@@ -56,6 +101,12 @@ impl FromStr for Platform {
             )),
         }
     }
+}
+
+fn home_dir() -> Result<PathBuf, String> {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .map_err(|_| "cannot determine home directory (HOME not set)".to_string())
 }
 
 /// Options for generating agent configuration.

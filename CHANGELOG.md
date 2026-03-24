@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ## [0.4.0] - 2026-03-24
+### Added
+
+- `rdm agent-config --user` writes agent config to the user-level config directory (e.g. `~/.claude/`) instead of a project directory, enabling global agent integration
 
 ## [0.3.1] - 2026-03-21
 

@@ -431,3 +431,131 @@ fn agent_config_mcp_no_plan_repo_needed() {
         .assert()
         .success();
 }
+
+// --user flag tests
+
+#[test]
+fn agent_config_user_writes_to_claude_dir() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--user")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote"));
+
+    let path = home.path().join(".claude/CLAUDE.md");
+    assert!(path.exists(), "expected {}", path.display());
+    let content = std::fs::read_to_string(path).unwrap();
+    assert!(content.contains("# rdm"));
+}
+
+#[test]
+fn agent_config_user_agents_md_writes_to_claude_dir() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("agents-md")
+        .arg("--user")
+        .assert()
+        .success();
+
+    let path = home.path().join(".claude/AGENTS.md");
+    assert!(path.exists(), "expected {}", path.display());
+}
+
+#[test]
+fn agent_config_user_cursor_writes_to_cursor_rules() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("cursor")
+        .arg("--user")
+        .assert()
+        .success();
+
+    // conventional_path for cursor is ".cursor/rules/rdm.mdc", base is ~/
+    let path = home.path().join(".cursor/rules/rdm.mdc");
+    assert!(path.exists(), "expected {}", path.display());
+    let content = std::fs::read_to_string(path).unwrap();
+    assert!(content.starts_with("---\n"));
+}
+
+#[test]
+fn agent_config_user_copilot_writes_to_github_dir() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("copilot")
+        .arg("--user")
+        .assert()
+        .success();
+
+    let path = home.path().join(".github/copilot-instructions.md");
+    assert!(path.exists(), "expected {}", path.display());
+}
+
+#[test]
+fn agent_config_user_and_out_conflict() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--user")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn agent_config_user_skills_writes_to_claude_skills() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--user")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote").count(5));
+
+    let skills_dir = home.path().join(".claude/skills");
+    assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-implement/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-tasks/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-review/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-document/SKILL.md").exists());
+}
+
+#[test]
+fn agent_config_user_mcp_writes_instructions_and_mcp_json() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--user")
+        .arg("--mcp")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote").count(2));
+
+    let instructions = home.path().join(".claude/CLAUDE.md");
+    assert!(instructions.exists(), "expected {}", instructions.display());
+    let content = std::fs::read_to_string(&instructions).unwrap();
+    assert!(content.contains("rdm_roadmap_list"));
+
+    let mcp_json = home.path().join(".claude/.mcp.json");
+    assert!(mcp_json.exists(), "expected {}", mcp_json.display());
+    let mcp_content: Value =
+        serde_json::from_str(&std::fs::read_to_string(&mcp_json).unwrap()).unwrap();
+    assert!(mcp_content["mcpServers"]["rdm"].is_object());
+}

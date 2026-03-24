@@ -118,6 +118,10 @@ enum Command {
         /// When combined with --out, also writes .mcp.json alongside.
         #[arg(long)]
         mcp: bool,
+        /// Write to the user-level config directory (e.g. ~/.claude/) instead of a project directory.
+        /// Mutually exclusive with --out.
+        #[arg(long, conflicts_with = "out")]
+        user: bool,
     },
     /// Describe the rdm data model (entities and their fields).
     Describe {
@@ -997,15 +1001,30 @@ fn run() -> Result<()> {
             principles_file,
             skills,
             mcp,
+            user,
         } => {
             let platform: Platform = platform.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+
+            // Resolve output directory: --user resolves to platform's user-level dir,
+            // --out uses the provided path, otherwise None (stdout).
+            let resolved_out = if user {
+                if skills {
+                    Some(Platform::user_level_skills_dir().map_err(|e| anyhow::anyhow!(e))?)
+                } else {
+                    Some(platform.user_level_dir().map_err(|e| anyhow::anyhow!(e))?)
+                }
+            } else {
+                out
+            };
 
             if skills {
                 if platform != Platform::Claude {
                     bail!("--skills is only supported for the claude platform");
                 }
-                let dir = out.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!("--skills requires --out to specify the output directory")
+                let dir = resolved_out.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--skills requires --out or --user to specify the output directory"
+                    )
                 })?;
                 let skill_files = agent_config::generate_skills(&SkillOptions {
                     project,
@@ -1023,7 +1042,7 @@ fn run() -> Result<()> {
                         .with_context(|| format!("failed to write {}", path.display()))?;
                     println!("Wrote {}", path.display());
                 }
-                // When --mcp --out, also write .mcp.json alongside skills
+                // When --mcp, also write .mcp.json alongside skills
                 if mcp {
                     let root_str = root.to_string_lossy().to_string();
                     let mcp_content = agent_config::generate_mcp_config(&McpConfigOptions {
@@ -1041,7 +1060,7 @@ fn run() -> Result<()> {
                     principles_file,
                     mcp,
                 });
-                if let Some(dir) = out {
+                if let Some(dir) = resolved_out {
                     let path = dir.join(platform.conventional_path());
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).with_context(|| {
@@ -1051,7 +1070,7 @@ fn run() -> Result<()> {
                     std::fs::write(&path, &content)
                         .with_context(|| format!("failed to write {}", path.display()))?;
                     println!("Wrote {}", path.display());
-                    // When --mcp --out, also write .mcp.json alongside instructions
+                    // When --mcp, also write .mcp.json alongside instructions
                     if mcp {
                         let root_str = root.to_string_lossy().to_string();
                         let mcp_content = agent_config::generate_mcp_config(&McpConfigOptions {
