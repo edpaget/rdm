@@ -62,7 +62,8 @@ fn config_list_shows_defaults() {
         .stdout(predicate::str::contains("default_format"))
         .stdout(predicate::str::contains("stage"))
         .stdout(predicate::str::contains("remote.default"))
-        .stdout(predicate::str::contains("root"));
+        .stdout(predicate::str::contains("root"))
+        .stdout(predicate::str::contains("default_branch"));
 }
 
 #[test]
@@ -328,4 +329,90 @@ fn format_flag_overrides_config() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No roadmaps"));
+}
+
+#[test]
+fn config_set_and_get_default_branch() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "default_branch", "develop"])
+        .assert()
+        .success();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "default_branch"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("develop"));
+}
+
+#[test]
+fn config_set_and_get_global_default_branch() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "default_branch", "trunk", "--global"])
+        .assert()
+        .success();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "default_branch"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("trunk"))
+        .stdout(predicate::str::contains("global config"));
+}
+
+#[test]
+fn config_repo_default_branch_overrides_global() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    // Set global
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "default_branch", "trunk", "--global"])
+        .assert()
+        .success();
+
+    // Set repo
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "default_branch", "develop"])
+        .assert()
+        .success();
+
+    // Get should show repo value
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "default_branch"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("develop"))
+        .stdout(predicate::str::contains("repo config"));
 }

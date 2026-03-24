@@ -238,6 +238,7 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "default_format" => config.default_format.clone(),
         "stage" => config.stage.map(|b| b.to_string()),
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
+        "default_branch" => config.default_branch.clone(),
         _ => None,
     }
 }
@@ -251,6 +252,7 @@ pub fn get_global_config_field(config: &GlobalConfig, key: &str) -> Option<Strin
         "stage" => config.stage.map(|b| b.to_string()),
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
         "auto_init" => config.auto_init.map(|b| b.to_string()),
+        "default_branch" => config.default_branch.clone(),
         _ => None,
     }
 }
@@ -277,6 +279,7 @@ pub fn set_config_field(
         "remote.default" => {
             config.remote.get_or_insert_with(Default::default).default = Some(value.to_string());
         }
+        "default_branch" => config.default_branch = Some(value.to_string()),
         "root" | "auto_init" => bail!("'{key}' can only be set in global config — use --global"),
         _ => bail!(
             "unknown config key: {key} — valid keys: {}",
@@ -308,6 +311,7 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
         "auto_init" => {
             config.auto_init = Some(parse_bool(value)?);
         }
+        "default_branch" => config.default_branch = Some(value.to_string()),
         _ => bail!(
             "unknown config key: {key} — valid keys: {}",
             KNOWN_KEYS.join(", ")

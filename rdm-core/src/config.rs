@@ -17,6 +17,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "remote.default",
     "root",
     "auto_init",
+    "default_branch",
 ];
 
 /// Keys that may only be set in the global config (not in a repo `rdm.toml`).
@@ -329,6 +330,7 @@ default = "upstream"
         assert_eq!(config.default_project, None);
         assert_eq!(config.stage, None);
         assert_eq!(config.remote, None);
+        assert_eq!(config.default_branch, None);
     }
 
     #[test]
@@ -459,6 +461,43 @@ default = "upstream"
         };
         let merged = repo_config.with_global_defaults(&global);
         assert_eq!(merged.default_format, Some("table".to_string()));
+    }
+
+    #[test]
+    fn with_global_defaults_includes_default_branch() {
+        let repo_config = Config::default();
+        let global = GlobalConfig {
+            default_branch: Some("trunk".to_string()),
+            ..Default::default()
+        };
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(merged.default_branch, Some("trunk".to_string()));
+    }
+
+    #[test]
+    fn with_global_defaults_repo_default_branch_wins() {
+        let repo_config = Config {
+            default_branch: Some("develop".to_string()),
+            ..Default::default()
+        };
+        let global = GlobalConfig {
+            default_branch: Some("trunk".to_string()),
+            ..Default::default()
+        };
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(merged.default_branch, Some("develop".to_string()));
+    }
+
+    #[test]
+    fn config_with_default_branch_round_trip() {
+        let config = Config {
+            default_branch: Some("develop".to_string()),
+            ..Default::default()
+        };
+        let toml_str = config.to_toml().unwrap();
+        let parsed = Config::from_toml(&toml_str).unwrap();
+        assert_eq!(parsed, config);
+        assert_eq!(parsed.default_branch, Some("develop".to_string()));
     }
 
     // --- ConfigSource display tests ---
