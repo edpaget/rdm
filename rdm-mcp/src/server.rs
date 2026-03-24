@@ -251,7 +251,8 @@ impl RdmMcpServer {
         // tool or maybe_auto_init.
         let store = match make_store(&plan_root, staging) {
             Ok(s) => s,
-            Err(_) => {
+            Err(e) => {
+                tracing::warn!("failed to open existing store, falling back to init: {e}");
                 let _ = std::fs::create_dir_all(&plan_root);
                 make_init_store(&plan_root)?
             }
@@ -280,7 +281,10 @@ impl RdmMcpServer {
 
         let new_store = match make_init_store(&self.plan_root) {
             Ok(s) => s,
-            Err(_) => return,
+            Err(e) => {
+                tracing::warn!("auto-init: failed to create store: {e}");
+                return;
+            }
         };
         *self.store.lock().unwrap() = new_store;
         let mut store = self.store.lock().unwrap();
@@ -292,8 +296,8 @@ impl RdmMcpServer {
             Err(rdm_core::error::Error::AlreadyInitialized) => {
                 // Race condition or stale check — fine, just reload
             }
-            Err(_) => {
-                // Silently ignore init failures in auto-init
+            Err(e) => {
+                tracing::warn!("auto-init: failed to initialize config: {e}");
             }
         }
     }
