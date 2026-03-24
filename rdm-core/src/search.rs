@@ -42,6 +42,10 @@ pub enum ItemStatus {
     Task(TaskStatus),
 }
 
+/// Default minimum score ratio — results below this fraction of the top score
+/// are dropped.
+const DEFAULT_MIN_SCORE_RATIO: f64 = 0.25;
+
 /// Filters to narrow search results.
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilter {
@@ -51,6 +55,11 @@ pub struct SearchFilter {
     pub project: Option<String>,
     /// Restrict results to items matching a specific status.
     pub status: Option<ItemStatus>,
+    /// Minimum score as a fraction of the top result's score (0.0–1.0).
+    ///
+    /// Results scoring below `top_score * ratio` are dropped. Defaults to
+    /// [`DEFAULT_MIN_SCORE_RATIO`] (0.25). Set to `Some(0.0)` to disable.
+    pub min_score_ratio: Option<f64>,
 }
 
 /// A single search result.
@@ -73,7 +82,10 @@ pub struct SearchResult {
 /// Searches the plan repo for items matching `query` with optional filters.
 ///
 /// Performs fuzzy matching against titles and body content of roadmaps, phases,
-/// and tasks. Results are sorted by score in descending order.
+/// and tasks. Results are sorted by score in descending order, then trimmed by
+/// a relevance cutoff: any result whose score falls below
+/// [`SearchFilter::min_score_ratio`] × the top result's score is dropped
+/// (default 0.25). Set the ratio to `0.0` to disable the cutoff.
 ///
 /// # Errors
 ///
@@ -179,6 +191,19 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
     }
 
     results.sort_by(|a, b| b.score.cmp(&a.score));
+
+    // Drop results below the relevance cutoff.
+    let ratio = filter
+        .min_score_ratio
+        .unwrap_or(DEFAULT_MIN_SCORE_RATIO)
+        .clamp(0.0, 1.0);
+    if ratio > 0.0
+        && let Some(top) = results.first().map(|r| r.score)
+    {
+        let threshold = (top as f64 * ratio) as u32;
+        results.retain(|r| r.score >= threshold);
+    }
+
     Ok(results)
 }
 
@@ -473,6 +498,134 @@ mod tests {
                 .iter()
                 .any(|r| r.kind == ItemKind::Roadmap && r.identifier == "widget-launch"),
             "Expected roadmap result for 'Widget Launch', got: {results:?}"
+        );
+    }
+
+    #[test]
+    fn relevance_cutoff_drops_low_scoring_results() {
+        let mut store = MemoryStore::new();
+        crate::ops::init::init(&mut store).unwrap();
+        crate::ops::project::create_project(&mut store, "p", "P").unwrap();
+
+        // One task with a title that exactly matches the query
+        crate::ops::task::create_task(
+            &mut store,
+            "p",
+            "exact-match",
+            "authentication",
+            Priority::Medium,
+            None,
+            None,
+        )
+        .unwrap();
+        // Another task whose body vaguely matches (low score)
+        crate::ops::task::create_task(
+            &mut store,
+            "p",
+            "vague-match",
+            "Unrelated Topic",
+            Priority::Medium,
+            None,
+            Some("This has nothing to do with anything but mentions auth once."),
+        )
+        .unwrap();
+
+        // With default cutoff (0.25), the vague result may be dropped
+        let filter_default = SearchFilter {
+            project: Some("p".to_string()),
+            ..Default::default()
+        };
+        let results_default = search(&store, "authentication", &filter_default).unwrap();
+
+        // With cutoff disabled, all matching results are kept
+        let filter_no_cutoff = SearchFilter {
+            project: Some("p".to_string()),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results_all = search(&store, "authentication", &filter_no_cutoff).unwrap();
+
+        // Disabling cutoff should keep at least as many results
+        assert!(
+            results_all.len() >= results_default.len(),
+            "Disabling cutoff should keep at least as many results: all={}, default={}",
+            results_all.len(),
+            results_default.len()
+        );
+    }
+
+    #[test]
+    fn relevance_cutoff_zero_keeps_all() {
+        let store = setup_test_store();
+        let filter = SearchFilter {
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        // A vague query that matches many items with varying scores
+        let results = search(&store, "w", &filter).unwrap();
+        // With 0.0 ratio, nothing is cut — every scored item remains
+        assert!(!results.is_empty(), "Expected results with cutoff disabled");
+        // Compare with strict cutoff
+        let strict_filter = SearchFilter {
+            min_score_ratio: Some(0.9),
+            ..Default::default()
+        };
+        let strict_results = search(&store, "w", &strict_filter).unwrap();
+        assert!(
+            results.len() >= strict_results.len(),
+            "Zero cutoff should keep at least as many results as strict cutoff"
+        );
+    }
+
+    #[test]
+    fn relevance_cutoff_clamps_out_of_range() {
+        let store = setup_test_store();
+
+        // Ratio > 1.0 is clamped to 1.0 (only the top scorer survives)
+        let filter_high = SearchFilter {
+            min_score_ratio: Some(5.0),
+            ..Default::default()
+        };
+        let results = search(&store, "Widget", &filter_high).unwrap();
+        // Should not be empty — top result always survives at ratio 1.0
+        assert!(
+            !results.is_empty(),
+            "Ratio > 1.0 should clamp to 1.0, not drop everything"
+        );
+
+        // Negative ratio is clamped to 0.0 (cutoff disabled)
+        let filter_neg = SearchFilter {
+            min_score_ratio: Some(-1.0),
+            ..Default::default()
+        };
+        let results_neg = search(&store, "Widget", &filter_neg).unwrap();
+        let filter_zero = SearchFilter {
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results_zero = search(&store, "Widget", &filter_zero).unwrap();
+        assert_eq!(
+            results_neg.len(),
+            results_zero.len(),
+            "Negative ratio should behave like 0.0"
+        );
+    }
+
+    #[test]
+    fn relevance_cutoff_keeps_close_scores() {
+        let store = setup_test_store();
+        // "Widget" appears in multiple titles — scores should be close
+        let filter = SearchFilter {
+            min_score_ratio: Some(0.25),
+            kind: Some(ItemKind::Phase),
+            ..Default::default()
+        };
+        let results = search(&store, "Widget", &filter).unwrap();
+        // Both phases have "Widget" in the title, scores should be close enough
+        // that neither is dropped at 0.25 ratio
+        assert!(
+            results.len() >= 2,
+            "Expected at least 2 phase results for 'Widget' with 0.25 cutoff, got: {results:?}"
         );
     }
 

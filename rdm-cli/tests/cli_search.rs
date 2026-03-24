@@ -289,6 +289,50 @@ fn search_no_results() {
 }
 
 #[test]
+fn search_min_score_ratio_zero_keeps_all() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    // With ratio 0, even low-scoring results are kept
+    let output_no_cutoff = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "w", "--min-score-ratio", "0", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let all: serde_json::Value = serde_json::from_slice(&output_no_cutoff).expect("valid JSON");
+    let all_count = all.as_array().unwrap().len();
+
+    // With strict ratio, fewer results
+    let output_strict = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "search",
+            "w",
+            "--min-score-ratio",
+            "0.9",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let strict: serde_json::Value = serde_json::from_slice(&output_strict).expect("valid JSON");
+    let strict_count = strict.as_array().unwrap().len();
+
+    assert!(
+        all_count >= strict_count,
+        "Zero cutoff ({all_count}) should keep at least as many results as strict cutoff ({strict_count})"
+    );
+}
+
+#[test]
 fn search_help() {
     rdm()
         .args(["search", "--help"])

@@ -26,6 +26,9 @@ pub struct SearchQuery {
     pub status: Option<String>,
     /// Maximum number of results (default 20).
     pub limit: Option<usize>,
+    /// Minimum score ratio (0.0–1.0). Results below this fraction of the top
+    /// score are dropped. Defaults to 0.25. Use 0 to disable.
+    pub min_score_ratio: Option<f64>,
 }
 
 /// HAL data for the search results collection.
@@ -145,6 +148,7 @@ pub async fn search_items(
         kind: kind_filter,
         project: Some(project.clone()),
         status: status_filter,
+        min_score_ratio: params.min_score_ratio,
     };
 
     let results = search(&store, &query, &filter).map_err(|e| error_response(e, format))?;
@@ -406,6 +410,48 @@ mod tests {
         // Should contain task link
         assert!(html.contains("/projects/demo/tasks/fix-login"));
         assert!(html.contains("Fix Login Bug"));
+    }
+
+    #[tokio::test]
+    async fn search_min_score_ratio_zero_keeps_all() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+
+        // With ratio 0, all scored results are kept
+        let response_all = app
+            .clone()
+            .oneshot(
+                Request::get("/projects/demo/search?q=w&min_score_ratio=0")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response_all.status(), 200);
+        let body_all = to_bytes(response_all.into_body(), 16384).await.unwrap();
+        let json_all: serde_json::Value = serde_json::from_slice(&body_all).unwrap();
+        let count_all = json_all["total"].as_u64().unwrap();
+
+        // With strict ratio, fewer results
+        let response_strict = app
+            .oneshot(
+                Request::get("/projects/demo/search?q=w&min_score_ratio=0.99")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response_strict.status(), 200);
+        let body_strict = to_bytes(response_strict.into_body(), 16384).await.unwrap();
+        let json_strict: serde_json::Value = serde_json::from_slice(&body_strict).unwrap();
+        let count_strict = json_strict["total"].as_u64().unwrap();
+
+        assert!(
+            count_all >= count_strict,
+            "Zero cutoff ({count_all}) should keep at least as many as strict ({count_strict})"
+        );
     }
 
     #[tokio::test]

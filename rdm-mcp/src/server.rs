@@ -564,6 +564,7 @@ impl RdmMcpServer {
             kind,
             project: params.project,
             status,
+            min_score_ratio: None,
         };
 
         match search::search(&*store, &params.query, &filter) {

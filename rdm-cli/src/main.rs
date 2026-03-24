@@ -150,6 +150,10 @@ enum Command {
         /// Maximum number of results to return.
         #[arg(long, default_value = "20")]
         limit: usize,
+        /// Minimum score ratio (0.0–1.0). Results below this fraction of the top
+        /// score are dropped. Default: 0.25. Use 0 to disable.
+        #[arg(long, default_value = "0.25")]
+        min_score_ratio: f64,
     },
     /// Show uncommitted changes and sync status in the plan repo.
     #[cfg(feature = "git")]
@@ -1093,6 +1097,7 @@ fn run() -> Result<()> {
             status,
             project,
             limit,
+            min_score_ratio,
         } => {
             let store = commands::make_store(&root, staging)?;
             let item_status = status
@@ -1103,6 +1108,7 @@ fn run() -> Result<()> {
                 kind: kind.map(ItemKind::from),
                 project,
                 status: item_status,
+                min_score_ratio: Some(min_score_ratio),
             };
             let results = search::search(&store, &query, &filter).context("search failed")?;
             let results: Vec<_> = results.into_iter().take(limit).collect();
