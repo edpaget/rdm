@@ -203,6 +203,14 @@ struct InitParams {
     default_project: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ProjectCreateParams {
+    /// The project name (slug identifier).
+    name: String,
+    /// The project title. Defaults to the name if omitted.
+    title: Option<String>,
+}
+
 // ---------- Store helpers ----------
 
 /// Creates an [`AppStore`] for an existing plan repo.
@@ -578,6 +586,28 @@ impl RdmMcpServer {
     }
 
     // ==================== Mutation tools ====================
+
+    /// Create a new project.
+    #[rmcp::tool(
+        description = "Create a new project in the plan repo",
+        annotations(read_only_hint = false)
+    )]
+    async fn rdm_project_create(
+        &self,
+        Parameters(params): Parameters<ProjectCreateParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+        let mut store = self.store.lock().unwrap();
+        let title = params.title.as_deref().unwrap_or(&params.name);
+        let doc = match rdm_core::ops::project::create_project(&mut *store, &params.name, title) {
+            Ok(d) => d,
+            Err(e) => return core_err(e),
+        };
+        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
+            return core_err(e);
+        }
+        ok_text(format!("Created project '{}'", doc.frontmatter.name))
+    }
 
     /// Create a new roadmap in a project.
     #[rmcp::tool(

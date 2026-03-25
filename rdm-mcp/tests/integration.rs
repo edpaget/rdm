@@ -291,6 +291,7 @@ fn tools_list() {
         "rdm_task_show",
         "rdm_search",
         // Mutation tools
+        "rdm_project_create",
         "rdm_roadmap_create",
         "rdm_phase_create",
         "rdm_phase_update",
@@ -473,6 +474,7 @@ fn tools_list_includes_mutation_tools() {
 
     let mutation_tools = [
         "rdm_init",
+        "rdm_project_create",
         "rdm_roadmap_create",
         "rdm_phase_create",
         "rdm_phase_update",
@@ -507,6 +509,71 @@ fn tools_list_includes_mutation_tools() {
             );
         }
     }
+}
+
+#[test]
+fn project_create() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_project_create",
+        serde_json::json!({
+            "name": "billing",
+            "title": "Billing System"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("billing"),
+        "Expected project name in create response: {text}"
+    );
+
+    // Verify it persists via rdm_project_list
+    let list = h.call_tool("rdm_project_list", serde_json::json!({}));
+    let list_text = result_text(&list);
+    assert!(
+        list_text.contains("billing"),
+        "Expected 'billing' in project list: {list_text}"
+    );
+}
+
+#[test]
+fn project_create_title_defaults_to_name() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_project_create",
+        serde_json::json!({
+            "name": "my-proj"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("my-proj"),
+        "Expected project name in create response: {text}"
+    );
+}
+
+#[test]
+fn project_create_duplicate() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // test-proj already exists from setup_plan_repo
+    let response = h.call_tool(
+        "rdm_project_create",
+        serde_json::json!({
+            "name": "test-proj",
+            "title": "Duplicate"
+        }),
+    );
+    let is_error = response["result"]["isError"].as_bool().unwrap_or(false);
+    assert!(is_error, "Expected error for duplicate project: {response}");
 }
 
 #[test]
