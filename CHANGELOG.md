@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `rdm_create_project` MCP tool to create new projects from within MCP clients
+- Search results are now capped by relevance score, filtering out low-quality matches
+
+### Fixed
+
+- `default_branch` is now recognized as a valid config key for `rdm config get` and `rdm config set`
+- MCP server logs errors when store construction silently falls back instead of swallowing them
+
 ## [0.4.0] - 2026-03-24
 ### Added
 
