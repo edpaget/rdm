@@ -24,6 +24,7 @@ fn write_and_load_roadmap() {
                 "phase-2-keeper-service".to_string(),
             ],
             dependencies: Some(vec!["keeper-surplus-value".to_string()]),
+            priority: None,
         },
         body: "Summary here.\n".to_string(),
     };

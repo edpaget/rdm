@@ -192,6 +192,7 @@ pub fn promote_task(
             title: task_doc.frontmatter.title.clone(),
             phases: vec![phase_slug.clone()],
             dependencies: None,
+            priority: None,
         },
         body: roadmap_body,
     };

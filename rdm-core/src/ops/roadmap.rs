@@ -38,6 +38,7 @@ pub fn create_roadmap(
             title: title.to_string(),
             phases: Vec::new(),
             dependencies: None,
+            priority: None,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -545,6 +546,7 @@ pub fn split_roadmap(
             title: target_title.to_string(),
             phases: target_phase_stems,
             dependencies: None,
+            priority: None,
         },
         body: String::new(),
     };

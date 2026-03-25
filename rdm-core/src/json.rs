@@ -344,6 +344,7 @@ mod tests {
                 title: title.to_string(),
                 phases: Vec::new(),
                 dependencies: None,
+                priority: None,
             },
             body: String::new(),
         }

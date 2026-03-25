@@ -102,6 +102,13 @@ impl Describe for crate::model::Roadmap {
                     enum_values: &[],
                     description: "Roadmap slugs that must complete before this one.",
                 },
+                FieldInfo {
+                    name: "priority",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &["low", "medium", "high", "critical"],
+                    description: "Optional priority level for the roadmap.",
+                },
             ],
         }
     }
@@ -345,6 +352,7 @@ mod tests {
             title: "Test Roadmap".to_string(),
             phases: vec!["phase-1-foo".to_string()],
             dependencies: Some(vec!["other".to_string()]),
+            priority: Some(crate::model::Priority::High),
         };
         assert_fields_match(&sample);
     }

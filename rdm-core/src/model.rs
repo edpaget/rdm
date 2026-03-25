@@ -238,6 +238,9 @@ pub struct Roadmap {
     /// Roadmap slugs that must complete before this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dependencies: Option<Vec<String>>,
+    /// Optional priority level for the roadmap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
 }
 
 #[cfg(test)]
@@ -472,6 +475,61 @@ phases:
 "#;
         let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(roadmap.dependencies, None);
+    }
+
+    #[test]
+    fn roadmap_deserialize_with_priority() {
+        let yaml = r#"
+project: fbm
+roadmap: urgent-fix
+title: Urgent Fix
+phases:
+  - phase-1-patch
+priority: high
+"#;
+        let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(roadmap.priority, Some(Priority::High));
+    }
+
+    #[test]
+    fn roadmap_deserialize_without_priority() {
+        let yaml = r#"
+project: fbm
+roadmap: solo
+title: Solo Roadmap
+phases:
+  - phase-1-only
+"#;
+        let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(roadmap.priority, None);
+    }
+
+    #[test]
+    fn roadmap_serialize_with_priority() {
+        let roadmap = Roadmap {
+            project: "fbm".to_string(),
+            roadmap: "urgent".to_string(),
+            title: "Urgent".to_string(),
+            phases: vec!["phase-1".to_string()],
+            dependencies: None,
+            priority: Some(Priority::Critical),
+        };
+        let yaml = serde_yaml::to_string(&roadmap).unwrap();
+        assert!(yaml.contains("priority: critical"));
+    }
+
+    #[test]
+    fn roadmap_serialize_without_priority() {
+        let roadmap = Roadmap {
+            project: "fbm".to_string(),
+            roadmap: "chill".to_string(),
+            title: "Chill".to_string(),
+            phases: vec!["phase-1".to_string()],
+            dependencies: None,
+            priority: None,
+        };
+        let yaml = serde_yaml::to_string(&roadmap).unwrap();
+        assert!(!yaml.contains("priority"));
     }
 
     #[test]

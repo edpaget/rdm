@@ -225,6 +225,7 @@ mod tests {
                 title: "Alpha".to_string(),
                 phases: vec![],
                 dependencies: None,
+                priority: None,
             },
             body: "Roadmap body.".to_string(),
         };
