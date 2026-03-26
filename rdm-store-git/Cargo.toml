@@ -9,7 +9,7 @@ description = "Git-backed Store implementation for rdm with automatic commits vi
 [dependencies]
 rdm-core = { path = "../rdm-core" }
 rdm-store-fs = { path = "../rdm-store-fs" }
-gix = { version = "0.80", default-features = false, features = ["basic", "index", "revision", "parallel"] }
+gix = { version = "0.81", default-features = false, features = ["basic", "index", "revision", "parallel"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
