@@ -21,14 +21,22 @@ pub fn run(
             slug,
             title,
             project,
+            priority,
             body,
             no_edit,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            rdm_core::ops::roadmap::create_roadmap(store, &project, &slug, title, body.as_deref())
-                .context("failed to create roadmap")?;
+            rdm_core::ops::roadmap::create_roadmap(
+                store,
+                &project,
+                &slug,
+                title,
+                body.as_deref(),
+                priority,
+            )
+            .context("failed to create roadmap")?;
             println!("Created roadmap '{slug}' in project '{project}'");
             maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
@@ -66,8 +74,42 @@ pub fn run(
             }
             maybe_print_uncommitted_hint(store, staging);
         }
-        RoadmapCommand::List { project, archived } => {
+        RoadmapCommand::Update {
+            slug,
+            project,
+            priority,
+            clear_priority,
+            body,
+            no_edit,
+        } => {
             let project = paths::resolve_project(project, repo_config)?;
+            let body = resolve_body(body, no_edit)?;
+            let priority = if clear_priority {
+                Some(None)
+            } else {
+                priority.map(Some)
+            };
+            rdm_core::ops::roadmap::update_roadmap(
+                store,
+                &project,
+                &slug,
+                body.as_deref(),
+                priority,
+            )
+            .context("failed to update roadmap")?;
+            println!("Updated '{slug}'");
+            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
+        }
+        RoadmapCommand::List {
+            project,
+            archived,
+            sort,
+            priority,
+        } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            if archived && (sort.is_some() || priority.is_some()) {
+                bail!("--sort and --priority are not supported with --archived");
+            }
             let entries = if archived {
                 let roadmaps = rdm_core::ops::roadmap::list_archived_roadmaps(store, &project)
                     .context("failed to list archived roadmaps")?;
@@ -83,8 +125,9 @@ pub fn run(
                 }
                 entries
             } else {
-                let roadmaps = rdm_core::ops::roadmap::list_roadmaps(store, &project)
-                    .context("failed to list roadmaps")?;
+                let roadmaps =
+                    rdm_core::ops::roadmap::list_roadmaps(store, &project, sort, priority)
+                        .context("failed to list roadmaps")?;
                 let mut entries = Vec::new();
                 for roadmap_doc in roadmaps {
                     let slug = &roadmap_doc.frontmatter.roadmap;

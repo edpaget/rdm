@@ -28,6 +28,9 @@ pub struct RoadmapJson {
     /// Roadmap slugs this depends on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dependencies: Option<Vec<String>>,
+    /// Priority level, if set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
     /// Markdown body content.
     pub body: String,
 }
@@ -106,6 +109,9 @@ pub struct RoadmapSummaryJson {
     pub done_phases: usize,
     /// Progress as a human-readable string (e.g. "2/5 done").
     pub progress: String,
+    /// Priority level, if set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
 }
 
 /// Phase summary for list output.
@@ -194,6 +200,7 @@ pub fn roadmap_to_json(
             .map(|(stem, pd)| phase_summary_to_json(stem, pd))
             .collect(),
         dependencies: rm.dependencies.clone(),
+        priority: rm.priority,
         body: doc.body.clone(),
     }
 }
@@ -264,6 +271,7 @@ pub fn roadmap_summary_to_json(
         total_phases: total,
         done_phases: done,
         progress,
+        priority: rm.priority,
     }
 }
 

@@ -114,7 +114,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
         // Search roadmaps (roadmaps have no status; skip when a status filter is active)
         if (filter.kind.is_none() || filter.kind == Some(ItemKind::Roadmap))
             && filter.status.is_none()
-            && let Ok(roadmaps) = crate::ops::roadmap::list_roadmaps(store, project)
+            && let Ok(roadmaps) = crate::ops::roadmap::list_roadmaps(store, project, None, None)
         {
             for doc in &roadmaps {
                 let rm = &doc.frontmatter;
@@ -135,7 +135,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
 
         // Search phases
         if (filter.kind.is_none() || filter.kind == Some(ItemKind::Phase))
-            && let Ok(roadmaps) = crate::ops::roadmap::list_roadmaps(store, project)
+            && let Ok(roadmaps) = crate::ops::roadmap::list_roadmaps(store, project, None, None)
         {
             for roadmap_doc in &roadmaps {
                 let roadmap_slug = &roadmap_doc.frontmatter.roadmap;
@@ -281,6 +281,7 @@ mod tests {
             "widget-launch",
             "Widget Launch",
             Some("Launch the new widget product line."),
+            None,
         )
         .unwrap();
 

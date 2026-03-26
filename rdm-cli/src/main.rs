@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use rdm_core::agent_config::{self, AgentConfigOptions, McpConfigOptions, Platform, SkillOptions};
 use rdm_core::display;
 use rdm_core::json;
-use rdm_core::model::{PhaseStatus, Priority, TaskStatus, TaskStatusFilter};
+use rdm_core::model::{PhaseStatus, Priority, RoadmapSort, TaskStatus, TaskStatusFilter};
 use rdm_core::search::{self, ItemKind, SearchFilter};
 use rdm_core::tree;
 #[cfg(not(feature = "git"))]
@@ -252,6 +252,9 @@ pub(crate) enum RoadmapCommand {
         /// Project to create the roadmap in.
         #[arg(long)]
         project: Option<String>,
+        /// Priority level.
+        #[arg(long)]
+        priority: Option<Priority>,
         /// Body content for the roadmap.
         #[arg(long)]
         body: Option<String>,
@@ -270,6 +273,26 @@ pub(crate) enum RoadmapCommand {
         #[arg(long)]
         no_body: bool,
     },
+    /// Update a roadmap's priority and/or body.
+    Update {
+        /// Roadmap slug.
+        slug: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// New priority level.
+        #[arg(long, conflicts_with = "clear_priority")]
+        priority: Option<Priority>,
+        /// Remove the priority from this roadmap.
+        #[arg(long, conflicts_with = "priority")]
+        clear_priority: bool,
+        /// Body content for the roadmap.
+        #[arg(long)]
+        body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
     /// List all roadmaps in a project.
     List {
         /// Project to list roadmaps for.
@@ -278,6 +301,12 @@ pub(crate) enum RoadmapCommand {
         /// Show archived roadmaps instead of active ones.
         #[arg(long)]
         archived: bool,
+        /// Sort order (alphabetical or priority).
+        #[arg(long)]
+        sort: Option<RoadmapSort>,
+        /// Filter by priority level.
+        #[arg(long)]
+        priority: Option<Priority>,
     },
     /// Add a dependency on another roadmap.
     Depend {
@@ -1411,7 +1440,7 @@ fn run() -> Result<()> {
                 if all && format != OutputFormat::Json {
                     println!("Project: {project}");
                 }
-                let roadmaps = rdm_core::ops::roadmap::list_roadmaps(&store, project)
+                let roadmaps = rdm_core::ops::roadmap::list_roadmaps(&store, project, None, None)
                     .context("failed to list roadmaps")?;
                 let mut entries = Vec::new();
                 for roadmap_doc in roadmaps {

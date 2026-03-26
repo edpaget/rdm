@@ -87,7 +87,7 @@ impl FromStr for TaskStatus {
     }
 }
 
-/// Priority level for a task.
+/// Priority level for a task or roadmap.
 ///
 /// Variants are ordered from lowest to highest: `Low < Medium < High < Critical`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -158,6 +158,38 @@ impl FromStr for TaskStatusFilter {
         match s {
             "all" => Ok(TaskStatusFilter::All),
             other => other.parse::<TaskStatus>().map(TaskStatusFilter::Status),
+        }
+    }
+}
+
+/// Sort order for roadmap listings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoadmapSort {
+    /// Sort alphabetically by slug (default).
+    Alphabetical,
+    /// Sort by priority descending (Critical → High → Medium → Low → None).
+    Priority,
+}
+
+impl fmt::Display for RoadmapSort {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RoadmapSort::Alphabetical => write!(f, "alphabetical"),
+            RoadmapSort::Priority => write!(f, "priority"),
+        }
+    }
+}
+
+impl FromStr for RoadmapSort {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "alphabetical" => Ok(RoadmapSort::Alphabetical),
+            "priority" => Ok(RoadmapSort::Priority),
+            other => Err(format!(
+                "invalid sort: '{other}' (expected alphabetical or priority)"
+            )),
         }
     }
 }

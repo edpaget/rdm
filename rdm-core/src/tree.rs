@@ -44,7 +44,7 @@ pub enum TreeNodeKind {
 pub fn build_tree(store: &impl Store, project: &str) -> crate::error::Result<TreeNode> {
     let mut children = Vec::new();
 
-    let roadmaps = crate::ops::roadmap::list_roadmaps(store, project)?;
+    let roadmaps = crate::ops::roadmap::list_roadmaps(store, project, None, None)?;
     for roadmap_doc in &roadmaps {
         let slug = &roadmap_doc.frontmatter.roadmap;
         let phases = crate::ops::phase::list_phases(store, project, slug)?;

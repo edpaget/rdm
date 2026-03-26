@@ -233,6 +233,7 @@ mod tests {
             "widget-launch",
             "Widget Launch",
             Some("Launch widgets."),
+            None,
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(

@@ -385,10 +385,11 @@ impl RdmMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
         let store = self.store.lock().unwrap();
-        let roadmaps = match rdm_core::ops::roadmap::list_roadmaps(&*store, &params.project) {
-            Ok(r) => r,
-            Err(e) => return core_err(e),
-        };
+        let roadmaps =
+            match rdm_core::ops::roadmap::list_roadmaps(&*store, &params.project, None, None) {
+                Ok(r) => r,
+                Err(e) => return core_err(e),
+            };
 
         let mut entries = Vec::new();
         for roadmap_doc in roadmaps {
@@ -626,6 +627,7 @@ impl RdmMcpServer {
             &params.slug,
             &params.title,
             params.body.as_deref(),
+            None,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),

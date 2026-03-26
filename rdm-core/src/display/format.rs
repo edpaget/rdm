@@ -42,6 +42,9 @@ pub fn format_roadmap_summary(
         "Project: {}  Slug: {}",
         roadmap.project, roadmap.roadmap
     ));
+    if let Some(priority) = roadmap.priority {
+        d.paragraph(&format!("Priority: {priority}"));
+    }
 
     if phases.is_empty() {
         d.push(ast::Block::BlankLine);
@@ -175,13 +178,17 @@ pub fn format_roadmap_list(entries: &[RoadmapWithPhases]) -> String {
                 .filter(|(_, pd)| pd.frontmatter.status == PhaseStatus::Done)
                 .count();
             let total = phases.len();
+            let priority_tag = rm.priority.map(|p| format!(" [{p}]")).unwrap_or_default();
             if total > 0 {
                 d.paragraph(&format!(
-                    "{} — {} ({}/{} done)",
+                    "{} — {} ({}/{} done){priority_tag}",
                     rm.roadmap, rm.title, done, total
                 ));
             } else {
-                d.paragraph(&format!("{} — {} (no phases)", rm.roadmap, rm.title));
+                d.paragraph(&format!(
+                    "{} — {} (no phases){priority_tag}",
+                    rm.roadmap, rm.title
+                ));
             }
         }
     }
@@ -313,6 +320,9 @@ pub fn format_roadmap_summary_md(
     out.push_str(&format!("# {}\n\n", roadmap.title));
     out.push_str(&format!("- **Project:** {}\n", roadmap.project));
     out.push_str(&format!("- **Slug:** {}\n", roadmap.roadmap));
+    if let Some(priority) = roadmap.priority {
+        out.push_str(&format!("- **Priority:** {priority}\n"));
+    }
 
     if phases.is_empty() {
         out.push_str("\nNo phases yet.\n");
@@ -360,8 +370,8 @@ pub fn format_roadmap_list_md(entries: &[RoadmapWithPhases]) -> String {
 
     let mut out = String::new();
     out.push_str("## Roadmaps\n\n");
-    out.push_str("| Slug | Title | Progress |\n");
-    out.push_str("|------|-------|----------|\n");
+    out.push_str("| Slug | Title | Progress | Priority |\n");
+    out.push_str("|------|-------|----------|----------|\n");
     for (roadmap_doc, phases) in entries {
         let rm = &roadmap_doc.frontmatter;
         let done = phases
@@ -374,9 +384,10 @@ pub fn format_roadmap_list_md(entries: &[RoadmapWithPhases]) -> String {
         } else {
             "no phases".to_string()
         };
+        let priority = rm.priority.map(|p| p.to_string()).unwrap_or_default();
         out.push_str(&format!(
-            "| {} | {} | {} |\n",
-            rm.roadmap, rm.title, progress
+            "| {} | {} | {} | {} |\n",
+            rm.roadmap, rm.title, progress, priority
         ));
     }
     out

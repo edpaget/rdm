@@ -20,6 +20,8 @@ struct RoadmapRow {
     title: String,
     #[tabled(rename = "Progress")]
     progress: String,
+    #[tabled(rename = "Priority")]
+    priority: String,
 }
 
 pub fn format_roadmap_table(entries: &[RoadmapWithPhases]) -> String {
@@ -38,6 +40,11 @@ pub fn format_roadmap_table(entries: &[RoadmapWithPhases]) -> String {
                 slug: doc.frontmatter.roadmap.clone(),
                 title: doc.frontmatter.title.clone(),
                 progress: format!("{done}/{total} phases done"),
+                priority: doc
+                    .frontmatter
+                    .priority
+                    .map(|p| p.to_string())
+                    .unwrap_or_default(),
             }
         })
         .collect();

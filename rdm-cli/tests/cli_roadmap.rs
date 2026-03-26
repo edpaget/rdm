@@ -382,6 +382,339 @@ fn roadmap_create_no_edit_skips_editor() {
         .stdout(predicate::str::contains("Created roadmap 'no-edit-rm'"));
 }
 
+// -- Priority tests --
+
+#[test]
+fn roadmap_create_with_priority() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "urgent",
+            "--title",
+            "Urgent Fix",
+            "--priority",
+            "high",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "--format",
+            "json",
+            "roadmap",
+            "show",
+            "urgent",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"priority\": \"high\""));
+}
+
+#[test]
+fn roadmap_show_displays_priority_human() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "urgent",
+            "--title",
+            "Urgent",
+            "--priority",
+            "critical",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "show", "urgent", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Priority: critical"));
+}
+
+#[test]
+fn roadmap_update_priority() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "alpha",
+            "--title",
+            "Alpha",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "update",
+            "alpha",
+            "--priority",
+            "critical",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated 'alpha'"));
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "--format",
+            "json",
+            "roadmap",
+            "show",
+            "alpha",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"priority\": \"critical\""));
+}
+
+#[test]
+fn roadmap_update_clear_priority() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "alpha",
+            "--title",
+            "Alpha",
+            "--priority",
+            "high",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "update",
+            "alpha",
+            "--clear-priority",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "--format",
+            "json",
+            "roadmap",
+            "show",
+            "alpha",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("priority").not());
+}
+
+#[test]
+fn roadmap_list_sort_by_priority() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "low-rm",
+            "--title",
+            "Low",
+            "--priority",
+            "low",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "high-rm",
+            "--title",
+            "High",
+            "--priority",
+            "high",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let assert = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "--format",
+            "json",
+            "roadmap",
+            "list",
+            "--sort",
+            "priority",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let high_pos = stdout.find("high-rm").unwrap();
+    let low_pos = stdout.find("low-rm").unwrap();
+    assert!(high_pos < low_pos, "high priority should sort before low");
+}
+
+#[test]
+fn roadmap_list_filter_by_priority() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "alpha",
+            "--title",
+            "Alpha",
+            "--priority",
+            "high",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "beta",
+            "--title",
+            "Beta",
+            "--priority",
+            "low",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let assert = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "--format",
+            "json",
+            "roadmap",
+            "list",
+            "--priority",
+            "high",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("alpha"));
+    assert!(!stdout.contains("beta"));
+}
+
+#[test]
+fn roadmap_list_archived_rejects_sort_and_priority() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "list",
+            "--archived",
+            "--sort",
+            "priority",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--sort and --priority are not supported with --archived",
+        ));
+}
+
 // -- Dependency tests --
 
 fn init_with_two_roadmaps(dir: &TempDir) {

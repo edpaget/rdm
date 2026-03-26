@@ -105,7 +105,7 @@ pub async fn list_roadmaps(
     Query(filters): Query<RoadmapFilters>,
 ) -> Result<Response, Response> {
     let store = state.store();
-    let roadmaps = rdm_core::ops::roadmap::list_roadmaps(&store, &project)
+    let roadmaps = rdm_core::ops::roadmap::list_roadmaps(&store, &project, None, None)
         .map_err(|e| error_response(e, format))?;
 
     let mut summaries = Vec::new();
@@ -302,6 +302,7 @@ pub async fn create_roadmap(
         &req.slug,
         &req.title,
         req.body.as_deref(),
+        None,
     )
     .map_err(|e| error_response(e, format))?;
     rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
@@ -343,8 +344,15 @@ mod tests {
         let mut store = rdm_store_fs::FsStore::new(dir.path());
         rdm_core::ops::init::init(&mut store).unwrap();
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
-        rdm_core::ops::roadmap::create_roadmap(&mut store, "demo", "alpha", "Alpha Roadmap", None)
-            .unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            "demo",
+            "alpha",
+            "Alpha Roadmap",
+            None,
+            None,
+        )
+        .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
             "demo",
@@ -385,8 +393,15 @@ mod tests {
     fn setup_with_completed() -> (TempDir, AppState) {
         let (dir, state) = setup();
         let mut store = rdm_store_fs::FsStore::new(dir.path());
-        rdm_core::ops::roadmap::create_roadmap(&mut store, "demo", "beta", "Beta Roadmap", None)
-            .unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            "demo",
+            "beta",
+            "Beta Roadmap",
+            None,
+            None,
+        )
+        .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
             "demo",

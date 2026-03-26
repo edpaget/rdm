@@ -2,13 +2,13 @@
 
 use crate::document::Document;
 use crate::error::{Error, Result};
-use crate::model::{Phase, PhaseStatus, Roadmap};
+use crate::model::{Phase, PhaseStatus, Priority, Roadmap, RoadmapSort};
 use crate::store::{DirEntryKind, RelPath, Store};
 
 /// Creates a new roadmap within a project.
 ///
 /// `body` sets the markdown body below the frontmatter. Pass `None` for
-/// an empty body.
+/// an empty body. `priority` sets an optional priority level.
 ///
 /// # Errors
 ///
@@ -22,6 +22,7 @@ pub fn create_roadmap(
     slug: &str,
     title: &str,
     body: Option<&str>,
+    priority: Option<Priority>,
 ) -> Result<Document<Roadmap>> {
     if !store.exists(&crate::paths::project_md_path(project)) {
         return Err(Error::ProjectNotFound(project.to_string()));
@@ -38,7 +39,7 @@ pub fn create_roadmap(
             title: title.to_string(),
             phases: Vec::new(),
             dependencies: None,
-            priority: None,
+            priority,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -47,9 +48,11 @@ pub fn create_roadmap(
     Ok(doc)
 }
 
-/// Updates a roadmap's body.
+/// Updates a roadmap's body and/or priority.
 ///
 /// When `body` is `Some`, replaces the existing body; `None` preserves it.
+/// When `priority` is `Some(p)`, sets the priority to `p` (use
+/// `Some(None)` to clear); `None` preserves the existing value.
 ///
 /// # Errors
 ///
@@ -62,6 +65,7 @@ pub fn update_roadmap(
     project: &str,
     slug: &str,
     body: Option<&str>,
+    priority: Option<Option<Priority>>,
 ) -> Result<Document<Roadmap>> {
     let path = crate::paths::roadmap_path(project, slug);
     if !store.exists(&path) {
@@ -72,12 +76,19 @@ pub fn update_roadmap(
     if let Some(b) = body {
         doc.body = b.to_string();
     }
+    if let Some(p) = priority {
+        doc.frontmatter.priority = p;
+    }
     crate::io::write_roadmap(store, project, slug, &doc)?;
     store.commit()?;
     Ok(doc)
 }
 
-/// Lists all roadmaps for a project, sorted by slug.
+/// Lists all roadmaps for a project.
+///
+/// Results are sorted by `sort` (defaults to alphabetical by slug).
+/// When `priority_filter` is `Some`, only roadmaps with that exact
+/// priority are returned.
 ///
 /// # Errors
 ///
@@ -85,7 +96,12 @@ pub fn update_roadmap(
 /// [`Error::Io`] if the directory cannot be read, or
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a
 /// roadmap file has invalid frontmatter.
-pub fn list_roadmaps(store: &impl Store, project: &str) -> Result<Vec<Document<Roadmap>>> {
+pub fn list_roadmaps(
+    store: &impl Store,
+    project: &str,
+    sort: Option<RoadmapSort>,
+    priority_filter: Option<Priority>,
+) -> Result<Vec<Document<Roadmap>>> {
     if !store.exists(&crate::paths::project_md_path(project)) {
         return Err(Error::ProjectNotFound(project.to_string()));
     }
@@ -105,8 +121,21 @@ pub fn list_roadmaps(store: &impl Store, project: &str) -> Result<Vec<Document<R
             continue;
         }
         let doc = crate::io::load_roadmap(store, project, &slug)?;
-        roadmaps.push(doc);
+        if priority_filter.is_none() || doc.frontmatter.priority == priority_filter {
+            roadmaps.push(doc);
+        }
     }
+
+    if sort == Some(RoadmapSort::Priority) {
+        roadmaps.sort_by(|a, b| {
+            // Descending by priority: Critical > High > Medium > Low > None
+            let pa = a.frontmatter.priority;
+            let pb = b.frontmatter.priority;
+            pb.cmp(&pa)
+                .then_with(|| a.frontmatter.roadmap.cmp(&b.frontmatter.roadmap))
+        });
+    }
+
     Ok(roadmaps)
 }
 
@@ -147,7 +176,7 @@ pub fn add_dependency(
     }
 
     // Check for cycles: build adjacency list, add proposed edge, then DFS
-    let all_roadmaps = list_roadmaps(store, project)?;
+    let all_roadmaps = list_roadmaps(store, project, None, None)?;
     let mut adj: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for rm in &all_roadmaps {
         let s = rm.frontmatter.roadmap.as_str();
@@ -213,7 +242,7 @@ pub fn remove_dependency(
 /// [`Error::Io`] if directory reads fail, or frontmatter errors if
 /// any roadmap file is malformed.
 pub fn dependency_graph(store: &impl Store, project: &str) -> Result<Vec<(String, Vec<String>)>> {
-    let roadmaps = list_roadmaps(store, project)?;
+    let roadmaps = list_roadmaps(store, project, None, None)?;
     let mut graph = Vec::new();
     for rm in roadmaps {
         if let Some(deps) = rm.frontmatter.dependencies
@@ -242,7 +271,7 @@ pub fn delete_roadmap(store: &mut impl Store, project: &str, slug: &str) -> Resu
     }
 
     // Remove this slug from dependency lists of all other roadmaps
-    let roadmaps = list_roadmaps(store, project)?;
+    let roadmaps = list_roadmaps(store, project, None, None)?;
     for rm in roadmaps {
         if rm.frontmatter.roadmap == slug {
             continue;
@@ -293,7 +322,7 @@ pub fn archive_roadmap(
     }
 
     // Clean up dependency refs from other active roadmaps
-    let roadmaps = list_roadmaps(store, project)?;
+    let roadmaps = list_roadmaps(store, project, None, None)?;
     for rm in roadmaps {
         if rm.frontmatter.roadmap == slug {
             continue;

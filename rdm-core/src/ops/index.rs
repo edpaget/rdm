@@ -15,7 +15,7 @@ use crate::store::Store;
 /// Returns [`Error::Io`] if directory reads fail, or frontmatter
 /// errors if any document file is malformed.
 fn build_project_index(store: &impl Store, project: &str) -> Result<ProjectIndex> {
-    let roadmap_docs = super::roadmap::list_roadmaps(store, project)?;
+    let roadmap_docs = super::roadmap::list_roadmaps(store, project, None, None)?;
     let mut roadmap_entries = Vec::new();
     for roadmap_doc in &roadmap_docs {
         let slug = &roadmap_doc.frontmatter.roadmap;

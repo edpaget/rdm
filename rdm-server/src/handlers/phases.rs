@@ -230,7 +230,8 @@ mod tests {
         let mut store = rdm_store_fs::FsStore::new(dir.path());
         rdm_core::ops::init::init(&mut store).unwrap();
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
-        rdm_core::ops::roadmap::create_roadmap(&mut store, "demo", "alpha", "Alpha", None).unwrap();
+        rdm_core::ops::roadmap::create_roadmap(&mut store, "demo", "alpha", "Alpha", None, None)
+            .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
             "demo",
