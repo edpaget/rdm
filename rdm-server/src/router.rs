@@ -19,7 +19,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/projects/{project}/roadmaps/{roadmap}",
-            get(handlers::roadmaps::get_roadmap),
+            get(handlers::roadmaps::get_roadmap).patch(handlers::roadmaps::update_roadmap),
         )
         .route(
             "/projects/{project}/roadmaps/{roadmap}/phases",

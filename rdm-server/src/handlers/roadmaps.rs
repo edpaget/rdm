@@ -8,12 +8,16 @@ use serde::{Deserialize, Serialize};
 
 use rdm_core::document::Document;
 use rdm_core::hal::{HalLink, HalResource};
-use rdm_core::model::{Phase, PhaseStatus};
+use rdm_core::model::{Phase, PhaseStatus, Priority, RoadmapSort};
 
 use axum::extract::Query;
 
+use rdm_core::problem::ProblemDetail;
+
 use crate::content_type::ResponseFormat;
-use crate::error::{error_response, json_rejection_response};
+use crate::error::{
+    error_response, json_rejection_response, problem_detail_into_response, validation_error,
+};
 use crate::extract::{hal_created_response, hal_response, see_other_response};
 use crate::markdown::render_markdown;
 use crate::state::AppState;
@@ -27,6 +31,10 @@ use crate::templates::{
 pub struct RoadmapFilters {
     /// When true, include completed roadmaps (all phases done) in the list.
     pub show_completed: Option<bool>,
+    /// Filter by priority level (low, medium, high, critical).
+    pub priority: Option<String>,
+    /// Sort order (alphabetical or priority).
+    pub sort: Option<String>,
 }
 
 /// Format a `SystemTime` as a `YYYY-MM-DD` date string.
@@ -79,6 +87,8 @@ struct RoadmapSummary {
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_changed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priority: Option<String>,
 }
 
 /// Empty data for the roadmaps collection wrapper.
@@ -95,6 +105,8 @@ struct RoadmapDetail {
     last_changed: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dependencies: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priority: Option<String>,
 }
 
 /// `GET /projects/:project/roadmaps` — list roadmaps with progress summaries.
@@ -105,7 +117,37 @@ pub async fn list_roadmaps(
     Query(filters): Query<RoadmapFilters>,
 ) -> Result<Response, Response> {
     let store = state.store();
-    let roadmaps = rdm_core::ops::roadmap::list_roadmaps(&store, &project, None, None)
+
+    let priority_filter = match &filters.priority {
+        Some(p) => Some(p.parse::<Priority>().map_err(|_| {
+            problem_detail_into_response(ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(format!(
+                    "invalid priority filter: '{p}' (expected low, medium, high, or critical)"
+                )),
+                instance: None,
+            })
+        })?),
+        None => None,
+    };
+    let sort = match &filters.sort {
+        Some(s) => Some(s.parse::<RoadmapSort>().map_err(|_| {
+            problem_detail_into_response(ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(format!(
+                    "invalid sort: '{s}' (expected alphabetical or priority)"
+                )),
+                instance: None,
+            })
+        })?),
+        None => None,
+    };
+
+    let roadmaps = rdm_core::ops::roadmap::list_roadmaps(&store, &project, sort, priority_filter)
         .map_err(|e| error_response(e, format))?;
 
     let mut summaries = Vec::new();
@@ -125,6 +167,7 @@ pub async fn list_roadmaps(
         let (status_text, status_cls) = computed_roadmap_status(&phase_statuses);
 
         let last_changed = last_changed_date(&store, &project, slug, &phases);
+        let priority = roadmap_doc.frontmatter.priority.map(|p| p.to_string());
 
         summaries.push((
             slug.clone(),
@@ -134,18 +177,23 @@ pub async fn list_roadmaps(
             status_text.to_string(),
             status_cls.to_string(),
             last_changed,
+            priority,
         ));
     }
 
     let show_completed = filters.show_completed.unwrap_or(false);
     if !show_completed {
-        summaries.retain(|(_slug, _title, _total, _done, status, _cls, _changed)| status != "done");
+        summaries.retain(
+            |(_slug, _title, _total, _done, status, _cls, _changed, _pri)| status != "done",
+        );
     }
 
     match format {
         ResponseFormat::HalJson => {
             let mut embedded = Vec::new();
-            for (slug, title, total, done, status, _status_cls, last_changed) in &summaries {
+            for (slug, title, total, done, status, _status_cls, last_changed, priority) in
+                &summaries
+            {
                 let summary = HalResource::new(
                     RoadmapSummary {
                         slug: slug.clone(),
@@ -154,6 +202,7 @@ pub async fn list_roadmaps(
                         done_phases: *done,
                         status: status.clone(),
                         last_changed: last_changed.clone(),
+                        priority: priority.clone(),
                     },
                     format!("/projects/{project}/roadmaps/{slug}"),
                 )
@@ -172,7 +221,7 @@ pub async fn list_roadmaps(
             let views: Vec<RoadmapSummaryView> = summaries
                 .into_iter()
                 .map(
-                    |(slug, title, total, done, status, status_class, last_changed)| {
+                    |(slug, title, total, done, status, status_class, last_changed, _priority)| {
                         RoadmapSummaryView {
                             slug,
                             title,
@@ -237,6 +286,7 @@ pub async fn get_roadmap(
                     status: status_text.to_string(),
                     last_changed: last_changed.clone(),
                     dependencies: roadmap_doc.frontmatter.dependencies,
+                    priority: roadmap_doc.frontmatter.priority.map(|p| p.to_string()),
                 },
                 self_href,
             )
@@ -285,6 +335,17 @@ pub struct CreateRoadmapRequest {
     slug: String,
     title: String,
     body: Option<String>,
+    priority: Option<String>,
+}
+
+/// Parse a priority string into a `Priority`, returning a 422 on invalid values.
+#[allow(clippy::result_large_err)]
+fn parse_priority(s: &str) -> Result<Priority, Response> {
+    s.parse::<Priority>().map_err(|_| {
+        validation_error(format!(
+            "invalid priority: '{s}' (expected low, medium, high, or critical)"
+        ))
+    })
 }
 
 /// `POST /projects/:project/roadmaps` — create a new roadmap.
@@ -295,6 +356,7 @@ pub async fn create_roadmap(
     payload: Result<axum::Json<CreateRoadmapRequest>, JsonRejection>,
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
+    let priority = req.priority.as_deref().map(parse_priority).transpose()?;
     let mut store = state.store();
     let doc = rdm_core::ops::roadmap::create_roadmap(
         &mut store,
@@ -302,7 +364,7 @@ pub async fn create_roadmap(
         &req.slug,
         &req.title,
         req.body.as_deref(),
-        None,
+        priority,
     )
     .map_err(|e| error_response(e, format))?;
     rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
@@ -317,6 +379,7 @@ pub async fn create_roadmap(
                     status: "not-started".to_string(),
                     last_changed: None,
                     dependencies: doc.frontmatter.dependencies,
+                    priority: doc.frontmatter.priority.map(|p| p.to_string()),
                 },
                 &location,
             )
@@ -324,6 +387,78 @@ pub async fn create_roadmap(
             Ok(hal_created_response(resource, &location))
         }
         ResponseFormat::Html => Ok(see_other_response(&location)),
+    }
+}
+
+/// Request body for `PATCH /projects/:project/roadmaps/:roadmap`.
+#[derive(Deserialize)]
+pub struct UpdateRoadmapRequest {
+    priority: Option<String>,
+    clear_priority: Option<bool>,
+    body: Option<String>,
+}
+
+/// `PATCH /projects/:project/roadmaps/:roadmap` — update a roadmap.
+pub async fn update_roadmap(
+    format: ResponseFormat,
+    State(state): State<AppState>,
+    Path((project, roadmap)): Path<(String, String)>,
+    payload: Result<axum::Json<UpdateRoadmapRequest>, JsonRejection>,
+) -> Result<Response, Response> {
+    let axum::Json(req) = payload.map_err(json_rejection_response)?;
+
+    if req.clear_priority.unwrap_or(false) && req.priority.is_some() {
+        return Err(validation_error(
+            "cannot set both 'priority' and 'clear_priority'".to_string(),
+        ));
+    }
+
+    let priority = if req.clear_priority.unwrap_or(false) {
+        Some(None)
+    } else {
+        req.priority
+            .as_deref()
+            .map(parse_priority)
+            .transpose()?
+            .map(Some)
+    };
+
+    let mut store = state.store();
+    let doc = rdm_core::ops::roadmap::update_roadmap(
+        &mut store,
+        &project,
+        &roadmap,
+        req.body.as_deref(),
+        priority,
+    )
+    .map_err(|e| error_response(e, format))?;
+    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
+
+    let phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
+        .map_err(|e| error_response(e, format))?;
+    let phase_statuses: Vec<PhaseStatus> =
+        phases.iter().map(|(_, d)| d.frontmatter.status).collect();
+    let (status_text, _) = computed_roadmap_status(&phase_statuses);
+    let last_changed = last_changed_date(&store, &project, &roadmap, &phases);
+
+    let self_href = format!("/projects/{project}/roadmaps/{roadmap}");
+    match format {
+        ResponseFormat::HalJson => {
+            let resource = HalResource::new(
+                RoadmapDetail {
+                    slug: doc.frontmatter.roadmap,
+                    title: doc.frontmatter.title,
+                    status: status_text.to_string(),
+                    last_changed,
+                    dependencies: doc.frontmatter.dependencies,
+                    priority: doc.frontmatter.priority.map(|p| p.to_string()),
+                },
+                &self_href,
+            )
+            .with_link("project", HalLink::new(format!("/projects/{project}")));
+            Ok(hal_response(resource))
+        }
+        ResponseFormat::Html => Ok(see_other_response(&self_href)),
     }
 }
 

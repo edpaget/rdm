@@ -575,6 +575,238 @@ async fn post_with_html_accept_returns_303() {
     assert!(resp.headers().get("location").is_some());
 }
 
+// ── Roadmap priority tests ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn create_roadmap_with_priority() {
+    let (dir, addr, client) = spawn_server().await;
+    let resp = client
+        .post(url(addr, "/projects/demo/roadmaps"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"slug": "urgent", "title": "Urgent", "priority": "high"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(json["priority"], "high");
+
+    let store = FsStore::new(dir.path());
+    let doc = rdm_core::io::load_roadmap(&store, "demo", "urgent").unwrap();
+    assert_eq!(doc.frontmatter.priority, Some(Priority::High));
+}
+
+#[tokio::test]
+async fn list_roadmaps_includes_priority() {
+    let (_dir, addr, client) = spawn_server().await;
+    // Create a roadmap with priority
+    client
+        .post(url(addr, "/projects/demo/roadmaps"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"slug": "urgent", "title": "Urgent", "priority": "critical"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url(addr, "/projects/demo/roadmaps"))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    let roadmaps = json["_embedded"]["roadmaps"].as_array().unwrap();
+    // Find the urgent roadmap
+    let urgent = roadmaps.iter().find(|r| r["slug"] == "urgent").unwrap();
+    assert_eq!(urgent["priority"], "critical");
+    // api roadmap has no priority — field should be absent
+    let api = roadmaps.iter().find(|r| r["slug"] == "api").unwrap();
+    assert!(api.get("priority").is_none());
+}
+
+#[tokio::test]
+async fn list_roadmaps_filter_by_priority() {
+    let (_dir, addr, client) = spawn_server().await;
+    client
+        .post(url(addr, "/projects/demo/roadmaps"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"slug": "urgent", "title": "Urgent", "priority": "high"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url(addr, "/projects/demo/roadmaps?priority=high"))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    let roadmaps = json["_embedded"]["roadmaps"].as_array().unwrap();
+    assert_eq!(roadmaps.len(), 1);
+    assert_eq!(roadmaps[0]["slug"], "urgent");
+}
+
+#[tokio::test]
+async fn list_roadmaps_sort_by_priority() {
+    let (_dir, addr, client) = spawn_server().await;
+    client
+        .post(url(addr, "/projects/demo/roadmaps"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"slug": "critical-rm", "title": "Critical", "priority": "critical"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url(
+            addr,
+            "/projects/demo/roadmaps?sort=priority&show_completed=true",
+        ))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    let roadmaps = json["_embedded"]["roadmaps"].as_array().unwrap();
+    assert_eq!(roadmaps[0]["slug"], "critical-rm");
+}
+
+#[tokio::test]
+async fn update_roadmap_priority_via_patch() {
+    let (dir, addr, client) = spawn_server().await;
+    let resp = client
+        .patch(url(addr, "/projects/demo/roadmaps/api"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"priority": "critical"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(json["priority"], "critical");
+
+    let store = FsStore::new(dir.path());
+    let doc = rdm_core::io::load_roadmap(&store, "demo", "api").unwrap();
+    assert_eq!(doc.frontmatter.priority, Some(Priority::Critical));
+}
+
+#[tokio::test]
+async fn update_roadmap_clear_priority_via_patch() {
+    let (_dir, addr, client) = spawn_server().await;
+    // First set a priority
+    client
+        .patch(url(addr, "/projects/demo/roadmaps/api"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"priority": "high"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Then clear it
+    let resp = client
+        .patch(url(addr, "/projects/demo/roadmaps/api"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"clear_priority": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert!(json.get("priority").is_none());
+}
+
+#[tokio::test]
+async fn roadmap_detail_includes_priority() {
+    let (_dir, addr, client) = spawn_server().await;
+    // Set priority on existing roadmap
+    client
+        .patch(url(addr, "/projects/demo/roadmaps/api"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"priority": "medium"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url(addr, "/projects/demo/roadmaps/api"))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(json["priority"], "medium");
+}
+
+// ── Roadmap priority error case tests ─────────────────────────────────────────
+
+#[tokio::test]
+async fn create_roadmap_invalid_priority_returns_422() {
+    let (_dir, addr, client) = spawn_server().await;
+    let resp = client
+        .post(url(addr, "/projects/demo/roadmaps"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"slug": "bad", "title": "Bad", "priority": "bogus"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 422);
+}
+
+#[tokio::test]
+async fn update_roadmap_invalid_priority_returns_422() {
+    let (_dir, addr, client) = spawn_server().await;
+    let resp = client
+        .patch(url(addr, "/projects/demo/roadmaps/api"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"priority": "bogus"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 422);
+}
+
+#[tokio::test]
+async fn update_roadmap_conflicting_priority_fields_returns_422() {
+    let (_dir, addr, client) = spawn_server().await;
+    let resp = client
+        .patch(url(addr, "/projects/demo/roadmaps/api"))
+        .header("accept", "application/hal+json")
+        .json(&serde_json::json!({"priority": "high", "clear_priority": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 422);
+}
+
+#[tokio::test]
+async fn list_roadmaps_invalid_priority_filter_returns_400() {
+    let (_dir, addr, client) = spawn_server().await;
+    let resp = client
+        .get(url(addr, "/projects/demo/roadmaps?priority=bogus"))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn list_roadmaps_invalid_sort_returns_400() {
+    let (_dir, addr, client) = spawn_server().await;
+    let resp = client
+        .get(url(addr, "/projects/demo/roadmaps?sort=bogus"))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
 // ── Step 5: Error case tests ──────────────────────────────────────────────────
 
 #[tokio::test]
