@@ -57,7 +57,8 @@ Maintain a `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.co
 - Keep an `[Unreleased]` section at the top for pending changes
 - Categories: Added, Changed, Deprecated, Removed, Fixed, Security
 - Move entries from Unreleased to a versioned section on release
-- Update the changelog with every user-facing change
+- **Every commit with a user-facing change MUST include a corresponding `CHANGELOG.md` update in the same commit.** Do not defer changelog entries to a later commit or batch them up. If you are making a `feat`, `fix`, or any change that affects CLI commands, API endpoints, MCP tools, config options, or observable behavior, add the entry before committing.
+- Entries should describe the change from a user's perspective (what they can now do, what was fixed) rather than internal implementation details
 
 ### Public API Docs
 

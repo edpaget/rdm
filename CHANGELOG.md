@@ -6,12 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Roadmap priority support in REST API: list/detail responses include priority, create accepts optional priority, new PATCH endpoint for updating priority, `?sort=priority` and `?priority=<level>` query params on list
+- Roadmap priority support in MCP tools: `rdm_roadmap_create` accepts optional priority, `rdm_roadmap_list` supports sort and priority filter, new `rdm_roadmap_update` tool for setting/clearing priority and body
+
 ## [0.5.0] - 2026-03-26
 
 ### Added
 
 - `rdm_create_project` MCP tool to create new projects from within MCP clients
 - Search results are now capped by relevance score, filtering out low-quality matches
+- Optional `priority` field on roadmaps (`low`, `medium`, `high`, `critical`) — reuses the existing priority model from tasks
+- `rdm roadmap create --priority <level>` and `rdm roadmap update` command for setting/clearing priority via CLI
+- `rdm roadmap list --sort priority` sorts roadmaps by priority descending; `--priority <level>` filters by priority level
+- `rdm roadmap show` displays priority when set
 
 ### Fixed
 
