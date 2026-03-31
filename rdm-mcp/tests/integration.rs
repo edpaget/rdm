@@ -293,6 +293,7 @@ fn tools_list() {
         // Mutation tools
         "rdm_project_create",
         "rdm_roadmap_create",
+        "rdm_roadmap_update",
         "rdm_phase_create",
         "rdm_phase_update",
         "rdm_task_create",
@@ -476,6 +477,7 @@ fn tools_list_includes_mutation_tools() {
         "rdm_init",
         "rdm_project_create",
         "rdm_roadmap_create",
+        "rdm_roadmap_update",
         "rdm_phase_create",
         "rdm_phase_update",
         "rdm_task_create",
@@ -1065,6 +1067,164 @@ fn error_uninitialized_repo() {
     let text = result["content"][0]["text"].as_str().unwrap();
     // Should get a meaningful error (project not found since no projects exist)
     assert!(!text.is_empty(), "Error should have a message: {text}");
+}
+
+// ==================== Roadmap priority tests ====================
+
+#[test]
+fn roadmap_create_with_priority() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "urgent",
+            "title": "Urgent Fix",
+            "priority": "high"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Urgent Fix"),
+        "Expected title in response: {text}"
+    );
+    assert!(
+        text.contains("high"),
+        "Expected priority in response: {text}"
+    );
+}
+
+#[test]
+fn roadmap_update_priority() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_roadmap_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "priority": "critical"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("critical"),
+        "Expected 'critical' in update response: {text}"
+    );
+
+    // Verify via show
+    let show = h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "auth"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("critical"),
+        "Expected 'critical' in show response: {show_text}"
+    );
+}
+
+#[test]
+fn roadmap_update_clear_priority() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Set priority first
+    h.call_tool(
+        "rdm_roadmap_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "priority": "high"
+        }),
+    );
+
+    // Clear it
+    let response = h.call_tool(
+        "rdm_roadmap_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "clear_priority": true
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        !text.contains("Priority:"),
+        "Expected no priority in response after clearing: {text}"
+    );
+}
+
+#[test]
+fn roadmap_list_with_priority_filter() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Create a high-priority roadmap
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "urgent",
+            "title": "Urgent",
+            "priority": "high"
+        }),
+    );
+
+    let response = h.call_tool(
+        "rdm_roadmap_list",
+        serde_json::json!({"project": "test-proj", "priority": "high"}),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Urgent"),
+        "Expected 'Urgent' in filtered list: {text}"
+    );
+    assert!(
+        !text.contains("Authentication"),
+        "Should not contain non-high roadmaps: {text}"
+    );
+}
+
+#[test]
+fn roadmap_list_with_sort_priority() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Create a critical roadmap
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "critical-rm",
+            "title": "Critical Work",
+            "priority": "critical"
+        }),
+    );
+
+    let response = h.call_tool(
+        "rdm_roadmap_list",
+        serde_json::json!({"project": "test-proj", "sort": "priority"}),
+    );
+    let text = result_text(&response);
+    let critical_pos = text
+        .find("Critical Work")
+        .expect("Critical Work should appear");
+    let auth_pos = text
+        .find("Authentication")
+        .expect("Authentication should appear");
+    assert!(
+        critical_pos < auth_pos,
+        "Critical should sort before non-priority roadmap"
+    );
 }
 
 // ==================== GitStore integration tests ====================

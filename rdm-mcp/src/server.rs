@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Mutex;
 
 use rdm_core::display;
-use rdm_core::model::{PhaseStatus, Priority, TaskStatus};
+use rdm_core::model::{PhaseStatus, Priority, RoadmapSort, TaskStatus};
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
@@ -52,12 +52,6 @@ fn err_text(msg: String) -> Result<CallToolResult, ErrorData> {
 }
 
 // ---------- Parameter structs (read-only) ----------
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ProjectParams {
-    /// The project name.
-    project: String,
-}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct RoadmapParams {
@@ -121,7 +115,33 @@ struct RoadmapCreateParams {
     slug: String,
     /// The roadmap title.
     title: String,
+    /// Priority level: "low", "medium", "high", or "critical".
+    priority: Option<String>,
     /// Optional body content (Markdown).
+    body: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RoadmapListParams {
+    /// The project name.
+    project: String,
+    /// Sort order: "alphabetical" (default) or "priority" (descending).
+    sort: Option<String>,
+    /// Filter by priority level: "low", "medium", "high", or "critical".
+    priority: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RoadmapUpdateParams {
+    /// The project name.
+    project: String,
+    /// The roadmap slug.
+    roadmap: String,
+    /// New priority level: "low", "medium", "high", or "critical".
+    priority: Option<String>,
+    /// Set to true to remove the priority from this roadmap.
+    clear_priority: Option<bool>,
+    /// New body content (Markdown). Replaces the existing body.
     body: Option<String>,
 }
 
@@ -374,22 +394,42 @@ impl RdmMcpServer {
         }
     }
 
-    /// List all roadmaps in a project with phase progress.
+    /// List all roadmaps in a project with phase progress. Supports sorting by priority and filtering.
     #[rmcp::tool(
-        description = "List all roadmaps in a project with phase progress",
+        description = "List all roadmaps in a project with phase progress. Supports optional sort (alphabetical or priority) and priority filter.",
         annotations(read_only_hint = true)
     )]
     async fn rdm_roadmap_list(
         &self,
-        Parameters(params): Parameters<ProjectParams>,
+        Parameters(params): Parameters<RoadmapListParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
+
+        let sort = match &params.sort {
+            Some(s) => match RoadmapSort::from_str(s) {
+                Ok(rs) => Some(rs),
+                Err(msg) => return err_text(msg),
+            },
+            None => None,
+        };
+        let priority_filter = match &params.priority {
+            Some(p) => match Priority::from_str(p) {
+                Ok(pr) => Some(pr),
+                Err(msg) => return err_text(msg),
+            },
+            None => None,
+        };
+
         let store = self.store.lock().unwrap();
-        let roadmaps =
-            match rdm_core::ops::roadmap::list_roadmaps(&*store, &params.project, None, None) {
-                Ok(r) => r,
-                Err(e) => return core_err(e),
-            };
+        let roadmaps = match rdm_core::ops::roadmap::list_roadmaps(
+            &*store,
+            &params.project,
+            sort,
+            priority_filter,
+        ) {
+            Ok(r) => r,
+            Err(e) => return core_err(e),
+        };
 
         let mut entries = Vec::new();
         for roadmap_doc in roadmaps {
@@ -620,6 +660,13 @@ impl RdmMcpServer {
         Parameters(params): Parameters<RoadmapCreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
+        let priority = match &params.priority {
+            Some(p) => match Priority::from_str(p) {
+                Ok(pr) => Some(pr),
+                Err(msg) => return err_text(msg),
+            },
+            None => None,
+        };
         let mut store = self.store.lock().unwrap();
         let doc = match rdm_core::ops::roadmap::create_roadmap(
             &mut *store,
@@ -627,7 +674,7 @@ impl RdmMcpServer {
             &params.slug,
             &params.title,
             params.body.as_deref(),
-            None,
+            priority,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),
@@ -640,6 +687,55 @@ impl RdmMcpServer {
             Ok(p) => p,
             Err(e) => return core_err(e),
         };
+        ok_text(display::format_roadmap_summary(&doc, &phases))
+    }
+
+    /// Update a roadmap's priority and/or body.
+    #[rmcp::tool(
+        description = "Update a roadmap's priority and/or body content",
+        annotations(read_only_hint = false)
+    )]
+    async fn rdm_roadmap_update(
+        &self,
+        Parameters(params): Parameters<RoadmapUpdateParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+
+        if params.clear_priority.unwrap_or(false) && params.priority.is_some() {
+            return err_text("cannot set both 'priority' and 'clear_priority'".to_string());
+        }
+
+        let priority = if params.clear_priority.unwrap_or(false) {
+            Some(None)
+        } else {
+            match &params.priority {
+                Some(p) => match Priority::from_str(p) {
+                    Ok(pr) => Some(Some(pr)),
+                    Err(msg) => return err_text(msg),
+                },
+                None => None,
+            }
+        };
+
+        let mut store = self.store.lock().unwrap();
+        let doc = match rdm_core::ops::roadmap::update_roadmap(
+            &mut *store,
+            &params.project,
+            &params.roadmap,
+            params.body.as_deref(),
+            priority,
+        ) {
+            Ok(d) => d,
+            Err(e) => return core_err(e),
+        };
+        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
+            return core_err(e);
+        }
+        let phases =
+            match rdm_core::ops::phase::list_phases(&*store, &params.project, &params.roadmap) {
+                Ok(p) => p,
+                Err(e) => return core_err(e),
+            };
         ok_text(display::format_roadmap_summary(&doc, &phases))
     }
 
