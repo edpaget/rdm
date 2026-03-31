@@ -32,6 +32,7 @@
     <tr>
       <th scope="col">Roadmap</th>
       <th scope="col">Status</th>
+      <th scope="col">Priority</th>
       <th scope="col">Progress</th>
       <th scope="col">Last Changed</th>
     </tr>
@@ -41,6 +42,7 @@
     <tr>
       <td><a href="/projects/{{ project }}/roadmaps/{{ r.slug }}">{{ r.title }}</a></td>
       <td><span class="badge badge-{{ r.status_class }}">{{ r.status }}</span></td>
+      <td>{% if let Some(pri) = r.priority %}<span class="badge badge-{{ r.priority_class.as_deref().unwrap_or("") }}">{{ pri }}</span>{% else %}—{% endif %}</td>
       <td>{{ r.done_phases }}/{{ r.total_phases }} phases done</td>
       <td>{% if let Some(date) = r.last_changed %}{{ date }}{% else %}—{% endif %}</td>
     </tr>

@@ -86,6 +86,10 @@ pub struct RoadmapSummaryView {
     pub status_class: String,
     /// Last modification date, if available.
     pub last_changed: Option<String>,
+    /// Display priority, if set.
+    pub priority: Option<String>,
+    /// CSS class for the priority badge, if set.
+    pub priority_class: Option<String>,
 }
 
 /// Roadmaps list page for a project.
@@ -130,6 +134,10 @@ pub struct RoadmapDetailPage {
     pub status_class: String,
     /// Last modification date, if available.
     pub last_changed: Option<String>,
+    /// Display priority, if set.
+    pub priority: Option<String>,
+    /// CSS class for the priority badge, if set.
+    pub priority_class: Option<String>,
     /// Optional dependencies.
     pub dependencies: Option<Vec<String>>,
     /// Rendered HTML body.

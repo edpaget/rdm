@@ -23,7 +23,7 @@ use crate::markdown::render_markdown;
 use crate::state::AppState;
 use crate::templates::{
     PhaseRow, RoadmapDetailPage, RoadmapSummaryView, RoadmapsPage, computed_roadmap_status,
-    phase_status_class,
+    phase_status_class, priority_class,
 };
 
 /// Query parameters for filtering the roadmap list.
@@ -168,6 +168,10 @@ pub async fn list_roadmaps(
 
         let last_changed = last_changed_date(&store, &project, slug, &phases);
         let priority = roadmap_doc.frontmatter.priority.map(|p| p.to_string());
+        let pri_class = roadmap_doc
+            .frontmatter
+            .priority
+            .map(|p| priority_class(&p).to_string());
 
         summaries.push((
             slug.clone(),
@@ -178,20 +182,21 @@ pub async fn list_roadmaps(
             status_cls.to_string(),
             last_changed,
             priority,
+            pri_class,
         ));
     }
 
     let show_completed = filters.show_completed.unwrap_or(false);
     if !show_completed {
         summaries.retain(
-            |(_slug, _title, _total, _done, status, _cls, _changed, _pri)| status != "done",
+            |(_slug, _title, _total, _done, status, _cls, _changed, _pri, _pcls)| status != "done",
         );
     }
 
     match format {
         ResponseFormat::HalJson => {
             let mut embedded = Vec::new();
-            for (slug, title, total, done, status, _status_cls, last_changed, priority) in
+            for (slug, title, total, done, status, _status_cls, last_changed, priority, _pcls) in
                 &summaries
             {
                 let summary = HalResource::new(
@@ -221,7 +226,17 @@ pub async fn list_roadmaps(
             let views: Vec<RoadmapSummaryView> = summaries
                 .into_iter()
                 .map(
-                    |(slug, title, total, done, status, status_class, last_changed, _priority)| {
+                    |(
+                        slug,
+                        title,
+                        total,
+                        done,
+                        status,
+                        status_class,
+                        last_changed,
+                        priority,
+                        pri_class,
+                    )| {
                         RoadmapSummaryView {
                             slug,
                             title,
@@ -230,6 +245,8 @@ pub async fn list_roadmaps(
                             status,
                             status_class,
                             last_changed,
+                            priority,
+                            priority_class: pri_class,
                         }
                     },
                 )
@@ -309,6 +326,11 @@ pub async fn get_roadmap(
                     }
                 })
                 .collect();
+            let priority = roadmap_doc.frontmatter.priority.map(|p| p.to_string());
+            let pri_class = roadmap_doc
+                .frontmatter
+                .priority
+                .map(|p| priority_class(&p).to_string());
             let page = RoadmapDetailPage {
                 project,
                 slug: roadmap_doc.frontmatter.roadmap,
@@ -316,6 +338,8 @@ pub async fn get_roadmap(
                 status: status_text.to_string(),
                 status_class: status_cls.to_string(),
                 last_changed,
+                priority,
+                priority_class: pri_class,
                 dependencies: roadmap_doc.frontmatter.dependencies,
                 body_html: render_markdown(&roadmap_doc.body),
                 phases: phase_rows,
@@ -933,6 +957,147 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "in-progress");
         assert!(json["last_changed"].is_string());
+    }
+
+    /// Create a setup with a roadmap that has priority set.
+    fn setup_with_priority() -> (TempDir, AppState) {
+        let dir = TempDir::new().unwrap();
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            "demo",
+            "alpha",
+            "Alpha Roadmap",
+            None,
+            Some(rdm_core::model::Priority::High),
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "alpha",
+            "first",
+            "First Phase",
+            Some(1),
+            None,
+        )
+        .unwrap();
+        let state = AppState {
+            plan_root: dir.path().to_path_buf(),
+        };
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_html_includes_priority_badge() {
+        let (_dir, state) = setup_with_priority();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            html.contains("Priority"),
+            "should have Priority column header"
+        );
+        assert!(
+            html.contains("badge-high"),
+            "should have priority badge class"
+        );
+        assert!(html.contains(">high<"), "should display priority text");
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_html_no_priority_shows_dash() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            html.contains("Priority"),
+            "should have Priority column header"
+        );
+        assert!(
+            html.contains("\u{2014}"),
+            "should show em-dash when no priority set"
+        );
+        // Verify no priority badge markup is rendered (CSS definitions contain
+        // "badge-low" etc. so we check for the actual badge span pattern).
+        assert!(
+            !html.contains(r#"class="badge badge-low"#)
+                && !html.contains(r#"class="badge badge-high"#),
+            "should not render any priority badge span"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_html_no_priority_omits_badge() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        // Verify no priority badge markup is rendered (CSS definitions contain
+        // "badge-low" etc. so we check for the actual badge span pattern).
+        assert!(
+            !html.contains(r#"class="badge badge-low"#)
+                && !html.contains(r#"class="badge badge-medium"#)
+                && !html.contains(r#"class="badge badge-high"#)
+                && !html.contains(r#"class="badge badge-critical"#),
+            "should not render any priority badge span"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_html_includes_priority_badge() {
+        let (_dir, state) = setup_with_priority();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            html.contains("badge-high"),
+            "should have priority badge class"
+        );
+        assert!(html.contains(">high<"), "should display priority text");
     }
 
     #[tokio::test]
