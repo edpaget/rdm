@@ -427,8 +427,27 @@ impl GitStore {
             }
         }
 
-        // Git requires tree entries to be sorted
-        entries.sort_by(|a, b| a.filename.cmp(&b.filename));
+        // Git requires tree entries sorted by name, with directories compared
+        // as if their name has a trailing '/'.  A plain byte comparison gets
+        // this wrong (e.g. "foo" dir vs "foo.md" blob) and produces trees that
+        // `git fsck` rejects with "treeNotSorted".
+        entries.sort_by(|a, b| {
+            let a_name = &*a.filename;
+            let b_name = &*b.filename;
+            let a_is_tree = a.mode == EntryMode::from(EntryKind::Tree);
+            let b_is_tree = b.mode == EntryMode::from(EntryKind::Tree);
+            let a_key: Vec<u8> = if a_is_tree {
+                a_name.iter().chain(b"/").copied().collect()
+            } else {
+                a_name.to_vec()
+            };
+            let b_key: Vec<u8> = if b_is_tree {
+                b_name.iter().chain(b"/").copied().collect()
+            } else {
+                b_name.to_vec()
+            };
+            a_key.cmp(&b_key)
+        });
 
         let tree = gix::objs::Tree { entries };
         let tree_id = repo
@@ -467,6 +486,11 @@ impl GitStore {
 
         repo.commit_as(sig_ref, sig_ref, "HEAD", message, tree_id, parents)
             .map_err(|e| Error::Git(format!("failed to create commit: {e}")))?;
+
+        // We built the tree directly, bypassing the git index.  Sync the index
+        // to HEAD so that `git status` doesn't report every touched file as
+        // modified.
+        self.sync_index_to_head()?;
 
         Ok(())
     }
@@ -2905,6 +2929,67 @@ mod tests {
             Err(e) => assert!(e.to_string().contains("not empty"), "got: {e}"),
             Ok(_) => panic!("expected error for non-empty dir"),
         }
+    }
+
+    #[test]
+    fn commit_syncs_git_index_so_status_is_clean() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        let path = RelPath::new("hello.md").unwrap();
+        store.write(&path, "world".to_string()).unwrap();
+        store.commit().unwrap();
+
+        // After rdm commits, `git status` should report a clean tree.
+        let output = git_cmd()
+            .args(["status", "--porcelain"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let status = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            status.trim().is_empty(),
+            "expected clean git status after commit, got: {status}"
+        );
+    }
+
+    #[test]
+    fn tree_sorting_dirs_sort_with_trailing_slash() {
+        // Git sorts tree entries so that directories compare as if their name
+        // ends with '/'.  This means a dir named "foo" sorts AFTER "foo.md"
+        // because "foo/" > "foo.md" (byte '/' 0x2F < '.' 0x2E is false, but
+        // actually '/' > '.' so "foo/" > "foo.").  The key case is names where
+        // a plain comparison differs from the trailing-slash comparison.
+        //
+        // Concretely: "ab" (dir) vs "ab.c" (file).
+        //   plain:  "ab" < "ab.c"   (shorter string)
+        //   git:    "ab/" > "ab.c"  ('/' = 0x2F > '.' = 0x2E)
+        //
+        // If we get this wrong, `git fsck` rejects with "treeNotSorted".
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+
+        // Create a directory "ab" with a file inside, and a file "ab.c"
+        std::fs::create_dir_all(dir.path().join("ab")).unwrap();
+        std::fs::write(dir.path().join("ab").join("x.md"), "inner").unwrap();
+        std::fs::write(dir.path().join("ab.c"), "blob").unwrap();
+
+        let path = RelPath::new("ab.c").unwrap();
+        store.write(&path, "blob".to_string()).unwrap();
+        let inner = RelPath::new("ab/x.md").unwrap();
+        store.write(&inner, "inner".to_string()).unwrap();
+        store.commit().unwrap();
+
+        // Verify git fsck passes (would fail with "treeNotSorted" before fix)
+        let output = git_cmd()
+            .args(["fsck", "--strict"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git fsck failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
