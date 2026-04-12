@@ -7,8 +7,6 @@ use rdm_core::model::{PhaseStatus, Priority, RoadmapSort, TaskStatus};
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
-use rmcp::handler::server::router::tool::ToolRouter;
-
 use rmcp::handler::server::wrapper::Parameters;
 
 /// Store backend selected by feature flags.
@@ -23,7 +21,7 @@ type AppStore = FsStore;
 use rmcp::model::Content;
 use rmcp::{
     ErrorData, ServerHandler, ServiceExt,
-    model::{CallToolResult, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo},
+    model::{CallToolResult, Implementation, ServerCapabilities, ServerInfo},
     schemars, serde,
     transport::io::stdio,
 };
@@ -268,7 +266,6 @@ struct RdmMcpServer {
     store: Mutex<AppStore>,
     plan_root: PathBuf,
     auto_init: bool,
-    tool_router: ToolRouter<Self>,
 }
 
 impl RdmMcpServer {
@@ -289,7 +286,6 @@ impl RdmMcpServer {
             store: Mutex::new(store),
             plan_root,
             auto_init,
-            tool_router: Self::tool_router(),
         })
     }
 
@@ -948,16 +944,9 @@ fn parse_item_status(s: &str) -> Result<ItemStatus, String> {
 #[rmcp::tool_handler]
 impl ServerHandler for RdmMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::default(),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation {
-                name: "rdm-mcp".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                ..Default::default()
-            },
-            instructions: Some("MCP server for managing rdm plan repos.".into()),
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("rdm-mcp", env!("CARGO_PKG_VERSION")))
+            .with_instructions("MCP server for managing rdm plan repos.")
     }
 }
 

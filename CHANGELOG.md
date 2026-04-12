@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Upgraded rmcp dependency from 0.16 to 1.4
+
 ## [0.6.1] - 2026-03-31
 
 ## [0.6.0] - 2026-03-31
