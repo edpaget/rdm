@@ -206,18 +206,20 @@ impl GitStore {
     /// Clones a remote git repository and opens a `GitStore` for it.
     ///
     /// This is the remote counterpart to [`GitStore::init`]. It shells out to
-    /// `git clone` to fetch the remote repository into `root`.
+    /// `git clone` to fetch the remote repository into `root`. When `branch`
+    /// is `Some`, `--branch <name>` is passed to `git clone` so the specified
+    /// branch is checked out.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Git`] if:
     /// - The target directory exists and is not empty
-    /// - `git clone` fails (bad URL, network error, etc.)
+    /// - `git clone` fails (bad URL, missing branch, network error, etc.)
     /// - The cloned repository cannot be opened
     ///
     /// Returns [`Error::Io`] if parent directory creation or directory reading
     /// fails.
-    pub fn clone_remote(url: &str, root: impl Into<PathBuf>) -> Result<Self> {
+    pub fn clone_remote(url: &str, root: impl Into<PathBuf>, branch: Option<&str>) -> Result<Self> {
         let root = root.into();
         // Reject non-empty target
         if root.exists() {
@@ -234,7 +236,15 @@ impl GitStore {
             std::fs::create_dir_all(parent)?;
         }
         // Clone
-        let output = run_git(&["clone", url, &root.display().to_string()])?;
+        let root_str = root.display().to_string();
+        let mut args: Vec<&str> = vec!["clone"];
+        if let Some(b) = branch {
+            args.push("--branch");
+            args.push(b);
+        }
+        args.push(url);
+        args.push(&root_str);
+        let output = run_git(&args)?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(Error::Git(format!("git clone failed: {}", stderr.trim())));
@@ -2906,7 +2916,8 @@ mod tests {
         let target = TempDir::new().unwrap();
         let target_path = target.path().join("cloned");
 
-        let store = GitStore::clone_remote(bare.path().to_str().unwrap(), &target_path).unwrap();
+        let store =
+            GitStore::clone_remote(bare.path().to_str().unwrap(), &target_path, None).unwrap();
 
         assert!(target_path.join(".git").exists());
         assert!(target_path.join("rdm.toml").exists());
@@ -2924,7 +2935,7 @@ mod tests {
         // Pre-populate target
         std::fs::write(target.path().join("blocker.txt"), "hi").unwrap();
 
-        let result = GitStore::clone_remote(bare.path().to_str().unwrap(), target.path());
+        let result = GitStore::clone_remote(bare.path().to_str().unwrap(), target.path(), None);
         match result {
             Err(e) => assert!(e.to_string().contains("not empty"), "got: {e}"),
             Ok(_) => panic!("expected error for non-empty dir"),
@@ -2997,7 +3008,7 @@ mod tests {
         let target = TempDir::new().unwrap();
         let target_path = target.path().join("cloned");
 
-        let result = GitStore::clone_remote("file:///nonexistent/repo.git", &target_path);
+        let result = GitStore::clone_remote("file:///nonexistent/repo.git", &target_path, None);
         match result {
             Err(e) => assert!(e.to_string().contains("git clone failed"), "got: {e}"),
             Ok(_) => panic!("expected error for bad URL"),

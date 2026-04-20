@@ -59,6 +59,28 @@ enum Command {
         #[arg(long, conflicts_with = "default_project")]
         remote: Option<String>,
     },
+    /// Clone or fast-forward a plan repo into a target directory.
+    ///
+    /// Designed for session-start hooks and sandbox bootstrap scripts: safe to
+    /// re-run on every invocation. Clones on first run, fast-forwards on
+    /// subsequent runs.
+    #[cfg(feature = "git")]
+    Bootstrap {
+        /// Git URL of the plan repo to clone.
+        #[arg(long)]
+        plan_repo: String,
+        /// Target directory for the clone.
+        ///
+        /// Defaults to `$XDG_DATA_HOME/rdm/plan-repo` (or `~/.local/share/rdm/plan-repo`).
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Branch to check out at clone time.
+        #[arg(long)]
+        branch: Option<String>,
+        /// If the cloned repo has no `rdm.toml`, run `rdm init` on it.
+        #[arg(long)]
+        init: bool,
+    },
     /// View or modify configuration.
     Config {
         #[command(subcommand)]
@@ -756,7 +778,7 @@ fn run() -> Result<()> {
             #[cfg(feature = "git")]
             if let Some(ref url) = remote {
                 // Clone path: fetch remote repo into root.
-                let store = rdm_store_git::GitStore::clone_remote(url, &root)
+                let store = rdm_store_git::GitStore::clone_remote(url, &root, None)
                     .context("failed to clone remote plan repo")?;
 
                 // Validate and load config: must be a valid rdm plan repo (has rdm.toml).
@@ -902,6 +924,16 @@ fn run() -> Result<()> {
             }
             println!("  rdm roadmap create <slug>  # create a roadmap");
             println!("  rdm task create <slug>     # create a task");
+        }
+
+        #[cfg(feature = "git")]
+        Command::Bootstrap {
+            plan_repo,
+            path,
+            branch,
+            init,
+        } => {
+            commands::bootstrap::run(&plan_repo, path, branch, init)?;
         }
 
         Command::Index => {

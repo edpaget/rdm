@@ -16,6 +16,8 @@ pub mod roadmap;
 pub mod task;
 
 #[cfg(feature = "git")]
+pub mod bootstrap;
+#[cfg(feature = "git")]
 pub mod hook;
 #[cfg(feature = "git")]
 pub mod remote;
