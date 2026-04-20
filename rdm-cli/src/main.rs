@@ -66,9 +66,10 @@ enum Command {
     /// subsequent runs.
     #[cfg(feature = "git")]
     Bootstrap {
-        /// Git URL of the plan repo to clone.
+        /// Git URL of the plan repo to clone. Required unless a subcommand is
+        /// given (e.g. `rdm bootstrap doctor`).
         #[arg(long)]
-        plan_repo: String,
+        plan_repo: Option<String>,
         /// Target directory for the clone.
         ///
         /// Defaults to `$XDG_DATA_HOME/rdm/plan-repo` (or `~/.local/share/rdm/plan-repo`).
@@ -80,6 +81,12 @@ enum Command {
         /// If the cloned repo has no `rdm.toml`, run `rdm init` on it.
         #[arg(long)]
         init: bool,
+        /// Access token injected into an HTTPS clone URL. Read from
+        /// `RDM_PLAN_REPO_TOKEN` if not passed explicitly.
+        #[arg(long, env = "RDM_PLAN_REPO_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+        #[command(subcommand)]
+        command: Option<BootstrapSubcommand>,
     },
     /// View or modify configuration.
     Config {
@@ -612,6 +619,25 @@ pub(crate) enum RemoteCommand {
 
 #[cfg(feature = "git")]
 #[derive(Subcommand)]
+pub(crate) enum BootstrapSubcommand {
+    /// Diagnose a sandbox's readiness to bootstrap a plan repo.
+    ///
+    /// Checks whether the `rdm` binary is on `PATH`, whether a plan-repo
+    /// root is configured, whether a plan-repo URL and access token are
+    /// available, and — for GitHub HTTPS URLs — whether the token has the
+    /// required scopes. Does not clone.
+    Doctor {
+        /// Plan-repo URL (falls back to `RDM_PLAN_REPO`).
+        #[arg(long, env = "RDM_PLAN_REPO", hide_env_values = true)]
+        plan_repo: Option<String>,
+        /// Access token (falls back to `RDM_PLAN_REPO_TOKEN`).
+        #[arg(long, env = "RDM_PLAN_REPO_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+    },
+}
+
+#[cfg(feature = "git")]
+#[derive(Subcommand)]
 pub(crate) enum HookCommand {
     /// Install the post-merge and post-commit git hooks in the current
     /// directory's git repo.
@@ -932,9 +958,26 @@ fn run() -> Result<()> {
             path,
             branch,
             init,
-        } => {
-            commands::bootstrap::run(&plan_repo, path, branch, init)?;
-        }
+            token,
+            command,
+        } => match command {
+            Some(BootstrapSubcommand::Doctor {
+                plan_repo: doc_plan_repo,
+                token: doc_token,
+            }) => {
+                let exit_code = commands::bootstrap::doctor(
+                    doc_plan_repo.or(plan_repo).as_deref(),
+                    doc_token.or(token).as_deref(),
+                );
+                process::exit(exit_code);
+            }
+            None => {
+                let url = plan_repo.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("--plan-repo is required (or pass a subcommand like `doctor`)")
+                })?;
+                commands::bootstrap::run(url, path, branch, init, token.as_deref())?;
+            }
+        },
 
         Command::Index => {
             let mut store = commands::make_store(&root, staging)?;

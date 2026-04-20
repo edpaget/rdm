@@ -31,13 +31,51 @@ Set these in your Claude Code web sandbox settings (or in your devcontainer
 | Name                  | Required | Purpose                                                           |
 | --------------------- | :------: | ----------------------------------------------------------------- |
 | `RDM_PLAN_REPO`       |   yes    | Git URL of the plan repo (HTTPS or SSH).                          |
+| `RDM_PLAN_REPO_TOKEN` | if priv  | Access token for private HTTPS plan repos. See Credentials below. |
 | `RDM_DEFAULT_PROJECT` |    no    | Project name inside the plan repo to treat as the default.        |
 | `RDM_PLAN_REPO_PATH`  |    no    | Override the local path the plan repo gets cloned into.           |
 
-For private plan repos you'll also need a token. First-class credential
-support isn't in this template yet; in the meantime, either use an HTTPS
-URL with an embedded fine-grained PAT (scoped to the single plan repo) or
-mount an SSH deploy key into the sandbox and use an SSH URL.
+## Credentials
+
+Pick one of the following, scoped as narrowly as possible — if a token leaks
+from a sandbox, blast radius should be a single repo.
+
+### Option 1: GitHub fine-grained PAT (recommended)
+
+1. Create a [fine-grained personal access
+   token](https://github.com/settings/personal-access-tokens/new) with:
+   - **Resource owner**: your GitHub account or org that owns the plan repo.
+   - **Repository access**: "Only select repositories" → pick the single
+     plan repo.
+   - **Repository permissions**: `Contents: Read and write` (use
+     `Contents: Read-only` for read-only sessions).
+2. Set it as `RDM_PLAN_REPO_TOKEN` in the Claude Code web sandbox's
+   secret/env settings for the source repo.
+3. `rdm bootstrap` reads the token from the env var and injects it into the
+   clone URL. The token is persisted in the sandbox's `.git/config` so
+   subsequent fast-forward pulls work without re-auth, and `rdm bootstrap
+   doctor` briefly passes the token to `curl` as an `Authorization` header
+   (visible in `/proc/<pid>/cmdline` on Linux for the subprocess's lifetime).
+   Both are acceptable because sandboxes are ephemeral; do not use this flow
+   on a shared long-lived machine.
+
+### Option 2: SSH deploy key
+
+1. Generate a keypair (`ssh-keygen -t ed25519`) and add the public key as a
+   [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
+   on the plan repo (allow write access if the agent should push back).
+2. Mount the private key into the sandbox via its secret mechanism.
+3. Use an SSH URL (`git@github.com:owner/plan-repo.git`) for `RDM_PLAN_REPO`.
+4. Leave `RDM_PLAN_REPO_TOKEN` unset — `rdm bootstrap` skips token injection
+   for SSH URLs.
+
+### Checking the setup
+
+Run `rdm bootstrap doctor` from inside the sandbox (or locally with the same
+env) to verify the binary is on PATH, the plan-repo URL is set, the token is
+present (if needed), and — for GitHub HTTPS URLs — that the token has access
+to the repo via `GET /repos/:owner/:repo`. The doctor exits non-zero when a
+critical check fails, so a CI job can use it as a readiness gate.
 
 ## Wiring options
 
@@ -78,9 +116,9 @@ install-then-bootstrap sequence during container creation and start.
   expected when the env var isn't set. Set it in the sandbox config and
   re-open the session.
 - **`failed to clone plan repo`** — usually an auth error on a private repo.
-  Token-based auth is phase 4; in the meantime use an HTTPS URL with an
-  embedded fine-grained PAT (not recommended long-term) or an SSH URL with a
-  deploy key mounted into the sandbox.
+  Run `rdm bootstrap doctor` to isolate the cause (missing token, token
+  rejected, repo not visible to token, etc.) and see [Credentials](#credentials)
+  for the minimum-scope token setup.
 - **`rdm: command not found` after the hook runs** — the hook installs to
   `$HOME/.local/bin` and prepends that to `PATH` in its own subshell. Claude
   Code tool invocations inherit `PATH` from the parent shell, so if the hook

@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Claude Code web sandbox template under `templates/claude-code-web/`: a `SessionStart` hook script, a `.claude/settings.json` snippet, and a `devcontainer.json` fragment that together install rdm and bootstrap a plan repo on session start. Drop them into a source repo with `scripts/install-claude-code-web-template.sh <target>` (idempotent; prompts before overwriting differing files). Full setup in `docs/claude-code-web.md`.
+- `rdm bootstrap --token <token>` (also `RDM_PLAN_REPO_TOKEN` env) injects an access token into HTTPS clone URLs for private plan repos. SSH URLs are cloned as-is with a warning; plain `http://` URLs with a token are rejected. The token is never echoed to stdout or stderr, including on clone failures.
+- `rdm bootstrap doctor` subcommand diagnoses sandbox readiness: rdm on PATH, configured plan-repo root, plan-repo URL, token presence, and — for GitHub HTTPS URLs — token scopes via `GET /repos/:owner/:repo`. Exits non-zero on critical failures so CI can gate on it.
+- `docs/claude-code-web.md` now has a "Credentials" section covering fine-grained PATs (minimum scopes) and SSH deploy keys.
 
 ## [0.6.2] - 2026-04-12
 ### Added

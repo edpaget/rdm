@@ -286,3 +286,181 @@ fn bootstrap_with_branch_checks_out_that_branch() {
 
     assert!(target.join("feature.txt").exists());
 }
+
+// ----------------------------------------------------------------------------
+// Token handling
+// ----------------------------------------------------------------------------
+
+const SECRET: &str = "HUNTER2SECRETTOKENVALUE";
+
+#[test]
+fn bootstrap_token_flag_is_not_echoed_on_failure() {
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg("https://127.0.0.1:1/foo.git")
+        .arg("--token")
+        .arg(SECRET)
+        .arg("--path")
+        .arg(&target)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "expected failure");
+    assert!(!stdout.contains(SECRET), "token leaked to stdout: {stdout}");
+    assert!(!stderr.contains(SECRET), "token leaked to stderr: {stderr}");
+}
+
+#[test]
+fn bootstrap_token_env_is_not_echoed_on_failure() {
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    let output = rdm()
+        .env("RDM_PLAN_REPO_TOKEN", SECRET)
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg("https://127.0.0.1:1/foo.git")
+        .arg("--path")
+        .arg(&target)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "expected failure");
+    assert!(!stdout.contains(SECRET), "token leaked to stdout: {stdout}");
+    assert!(!stderr.contains(SECRET), "token leaked to stderr: {stderr}");
+}
+
+#[test]
+fn bootstrap_rejects_token_over_plain_http() {
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg("http://example.com/foo.git")
+        .arg("--token")
+        .arg(SECRET)
+        .arg("--path")
+        .arg(&target)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("http://"));
+}
+
+#[test]
+fn bootstrap_ssh_url_with_token_warns_and_proceeds() {
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg("git@example.invalid:foo/bar.git")
+        .arg("--token")
+        .arg(SECRET)
+        .arg("--path")
+        .arg(&target)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ignored for SSH URLs"),
+        "expected SSH warning, got: {stderr}"
+    );
+    assert!(!stderr.contains(SECRET), "token leaked to stderr: {stderr}");
+}
+
+// ----------------------------------------------------------------------------
+// Doctor
+// ----------------------------------------------------------------------------
+
+#[test]
+fn doctor_reports_missing_plan_repo_url() {
+    let xdg = TempDir::new().unwrap();
+    let output = Command::cargo_bin("rdm")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("HOME", xdg.path()) // avoid picking up developer's real config
+        .env_remove("RDM_PLAN_REPO")
+        .env_remove("RDM_PLAN_REPO_TOKEN")
+        .arg("bootstrap")
+        .arg("doctor")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("no plan repo URL"),
+        "expected missing-URL message, got: {combined}"
+    );
+}
+
+#[test]
+fn doctor_reports_missing_token_for_github_https_url() {
+    let xdg = TempDir::new().unwrap();
+    let output = Command::cargo_bin("rdm")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("HOME", xdg.path())
+        .env("RDM_PLAN_REPO", "https://github.com/example/private.git")
+        .env_remove("RDM_PLAN_REPO_TOKEN")
+        .arg("bootstrap")
+        .arg("doctor")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("no token"),
+        "expected missing-token message, got: {combined}"
+    );
+    assert!(
+        combined.contains("RDM_PLAN_REPO_TOKEN"),
+        "expected fix referencing env var, got: {combined}"
+    );
+}
+
+#[test]
+fn doctor_ssh_url_reports_no_token_needed() {
+    let xdg = TempDir::new().unwrap();
+    let output = Command::cargo_bin("rdm")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("HOME", xdg.path())
+        .env("RDM_PLAN_REPO", "git@github.com:example/private.git")
+        .env_remove("RDM_PLAN_REPO_TOKEN")
+        .arg("bootstrap")
+        .arg("doctor")
+        .output()
+        .unwrap();
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("SSH URL"),
+        "expected SSH-no-token message, got: {combined}"
+    );
+}
