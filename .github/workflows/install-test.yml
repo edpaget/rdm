@@ -1,0 +1,33 @@
+name: Install script
+
+on:
+  pull_request:
+    paths:
+      - "install.sh"
+      - ".github/workflows/install-test.yml"
+  workflow_dispatch:
+
+jobs:
+  install:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run install.sh
+        run: |
+          sh install.sh --dir "$HOME/.local/bin"
+
+      - name: Add install dir to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: rdm --version
+        run: |
+          test -x "$HOME/.local/bin/rdm"
+          rdm --version

@@ -10,11 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `rdm bootstrap --plan-repo <url> [--path <dir>] [--branch <name>] [--init]` clones a plan repo into a target directory (defaulting to `$XDG_DATA_HOME/rdm/plan-repo`) and fast-forwards it on subsequent runs. Designed for Claude Code web session-start hooks and other sandbox bootstrap scripts that need an idempotent "get me a plan repo" command.
+- `install.sh` at repo root: `curl -fsSL https://github.com/edpaget/rdm/releases/latest/download/install.sh | sh` downloads a prebuilt rdm binary for the current platform. Supports `--version <tag>` to pin a specific release and `--dir <path>` to override the install location. Wraps the cargo-dist shell installer, which handles OS/arch detection and sha256 verification.
+- CI workflow `install-test.yml` exercises `install.sh` on `ubuntu-latest` and `macos-latest` whenever `install.sh` changes.
+- CI workflow `attach-install-sh.yml` attaches `install.sh` to each GitHub Release so the stable `releases/latest/download/install.sh` URL always resolves to the tagged version of the wrapper.
 
 ### Changed
 
 - Upgraded rmcp dependency from 0.16 to 1.4
 - `GitStore::clone_remote` now takes an optional `branch: Option<&str>` argument to clone a specific branch via `git clone --branch`
+- Releases now publish an `x86_64-unknown-linux-gnu` tarball and a cargo-dist `rdm-cli-installer.sh` alongside the existing `aarch64-apple-darwin` tarball and Homebrew formula.
 
 ## [0.6.1] - 2026-03-31
 

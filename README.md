@@ -13,6 +13,12 @@ Work with your assistant to plan and implement large changes in a structured, re
 ## Installation
 
 ```bash
+# Quick install (Linux x86_64, macOS aarch64) — downloads a signed release binary
+curl -fsSL https://github.com/edpaget/rdm/releases/latest/download/install.sh | sh
+
+# Pin a specific release
+curl -fsSL https://github.com/edpaget/rdm/releases/download/v0.6.2/install.sh | sh
+
 # Homebrew (macOS)
 brew install edpaget/rdm/rdm-cli
 
