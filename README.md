@@ -97,6 +97,17 @@ rdm agent-config --mcp --project fbm --out ~/Projects/fbm
 rdm agent-config claude --mcp --skills --project fbm --out ~/Projects/fbm/.claude/skills/
 ```
 
+### Claude Code web sandbox
+
+Run Claude Code web sessions against your plan repo from a source-repo sandbox. A session-start hook installs rdm, clones the plan repo into the sandbox, and points rdm's global config at it. Drop the template into your source repo:
+
+```bash
+# From a checkout of the rdm repo:
+scripts/install-claude-code-web-template.sh /path/to/your/source-repo
+```
+
+See [docs/claude-code-web.md](docs/claude-code-web.md) for the full setup, required env vars, and troubleshooting.
+
 ## Core Workflow: Plan, Implement, Done
 
 rdm is built around a three-step cycle for shipping work incrementally.

@@ -1,0 +1,16 @@
+// Devcontainer fragment for wiring rdm into a Claude Code web-friendly
+// devcontainer. Merge these fields into your repo's `devcontainer.json`.
+//
+// Required env: RDM_PLAN_REPO
+// Optional env: RDM_DEFAULT_PROJECT, RDM_PLAN_REPO_PATH
+{
+  "containerEnv": {
+    "RDM_PLAN_REPO": "${localEnv:RDM_PLAN_REPO}",
+    "RDM_DEFAULT_PROJECT": "${localEnv:RDM_DEFAULT_PROJECT}"
+  },
+  "remoteEnv": {
+    "PATH": "${containerEnv:HOME}/.local/bin:${containerEnv:PATH}"
+  },
+  "onCreateCommand": "curl --proto '=https' --tlsv1.2 -fsSL https://github.com/edpaget/rdm/releases/latest/download/install.sh | sh -s -- --dir \"$HOME/.local/bin\"",
+  "postStartCommand": "bash .claude/hooks/SessionStart.sh"
+}
