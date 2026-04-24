@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ## [0.7.0] - 2026-04-20
+### Fixed
+
+- `rdm hook post-merge` / `post-commit` no longer panic when a commit message contains a line starting with a multi-byte UTF-8 character (e.g. an em dash). The `Done:` prefix check now operates on bytes instead of slicing the string at a non-char-boundary.
+
 ### Added
 
 - Claude Code web sandbox template under `templates/claude-code-web/`: a `SessionStart` hook script, a `.claude/settings.json` snippet, and a `devcontainer.json` fragment that together install rdm and bootstrap a plan repo on session start. Drop them into a source repo with `scripts/install-claude-code-web-template.sh <target>` (idempotent; prompts before overwriting differing files). Full setup in `docs/claude-code-web.md`.

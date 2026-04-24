@@ -47,11 +47,11 @@ pub fn parse_done_directives(message: &str) -> Vec<DoneDirective> {
     let mut directives = Vec::new();
     for line in message.lines() {
         let trimmed = line.trim();
-        if trimmed.len() < 5 {
-            continue;
-        }
-        // Case-insensitive check for "Done:" prefix
-        if !trimmed[..5].eq_ignore_ascii_case("done:") {
+        // Byte-level prefix check — safe for lines starting with multi-byte
+        // UTF-8 chars. "done:" is pure ASCII, so if the first 5 bytes match,
+        // byte 5 is guaranteed to be a char boundary.
+        let bytes = trimmed.as_bytes();
+        if bytes.len() < 5 || !bytes[..5].eq_ignore_ascii_case(b"done:") {
             continue;
         }
         let value = trimmed[5..].trim();
@@ -180,6 +180,29 @@ mod tests {
                 phase: "p".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn skips_lines_with_multibyte_chars_before_byte_five() {
+        // Regression: previously panicked because `trimmed[..5]` sliced
+        // into the middle of a multi-byte UTF-8 character.
+        let msg = "map — both `lambda` AND `λ` parsed as the lambda special form\nDone: r/p\n";
+        let directives = parse_done_directives(msg);
+        assert_eq!(directives.len(), 1);
+        assert_eq!(
+            directives[0],
+            DoneDirective::Phase {
+                roadmap: "r".to_string(),
+                phase: "p".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn skips_short_multibyte_lines() {
+        // A line shorter than 5 bytes worth of ASCII but with multi-byte chars.
+        assert!(parse_done_directives("λλ").is_empty());
+        assert!(parse_done_directives("— hi").is_empty());
     }
 
     #[test]
