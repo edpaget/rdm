@@ -8,10 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.7.1] - 2026-04-24
 
-## [0.7.0] - 2026-04-20
 ### Fixed
 
 - `rdm hook post-merge` / `post-commit` no longer panic when a commit message contains a line starting with a multi-byte UTF-8 character (e.g. an em dash). The `Done:` prefix check now operates on bytes instead of slicing the string at a non-char-boundary.
+
+## [0.7.0] - 2026-04-20
 
 ### Added
 
