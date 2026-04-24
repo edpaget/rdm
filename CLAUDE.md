@@ -154,6 +154,14 @@ cargo deny check        # license & advisory audit
 
 rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.toml` to `~/Projects/rdm-atlas-repo`).
 
+### Claude Code web
+
+For sessions running in a sandboxed Claude Code web environment (no local plan repo mounted), use the template + harness shipped in this repo:
+
+- Setup: `scripts/install-claude-code-web-template.sh <target-source-repo>` — drops in a `SessionStart` hook that clones the plan repo into the sandbox on every session start.
+- Full setup, credentials, and troubleshooting: `docs/claude-code-web.md`.
+- Regression harness: `bash scripts/verify-claude-code-web-loop.sh` — stands up a hermetic simulation of the bootstrap → Done: → plan-repo-update loop using temp dirs. Run it after touching the template, `rdm bootstrap`, or `rdm hook post-commit`.
+
 ### *** DEVELOPMENT BUILD REQUIREMENT ***
 
 **This is the rdm source repo. You MUST build from source and use the local binary — NEVER use a globally installed `rdm`.**

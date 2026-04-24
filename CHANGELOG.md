@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `rdm bootstrap --token <token>` (also `RDM_PLAN_REPO_TOKEN` env) injects an access token into HTTPS clone URLs for private plan repos. SSH URLs are cloned as-is with a warning; plain `http://` URLs with a token are rejected. The token is never echoed to stdout or stderr, including on clone failures.
 - `rdm bootstrap doctor` subcommand diagnoses sandbox readiness: rdm on PATH, configured plan-repo root, plan-repo URL, token presence, and — for GitHub HTTPS URLs — token scopes via `GET /repos/:owner/:repo`. Exits non-zero on critical failures so CI can gate on it.
 - `docs/claude-code-web.md` now has a "Credentials" section covering fine-grained PATs (minimum scopes) and SSH deploy keys.
+- `scripts/verify-claude-code-web-loop.sh` — hermetic end-to-end regression harness for the Claude Code web sandbox loop. Uses temp dirs and bare clones in place of GitHub; confirms the template, bootstrap, and source-repo `Done:` → plan-repo phase update all work together. Exits non-zero on any regression.
 
 ## [0.6.2] - 2026-04-12
 ### Added

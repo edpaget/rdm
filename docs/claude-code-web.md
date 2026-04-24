@@ -129,3 +129,58 @@ install-then-bootstrap sequence during container creation and start.
 - **Hook output not visible** — Claude Code shows SessionStart stdout in the
   session log; if you're in a devcontainer context, check the
   `postStartCommand` output instead.
+
+## End-to-end verification
+
+### Automated harness
+
+Run the shipped harness to confirm the template, bootstrap, and source-repo
+`Done:` → plan-repo phase update all work together. Uses temp dirs and bare
+clones in place of GitHub, so it needs no network and no credentials:
+
+```bash
+# From a checkout of the rdm repo:
+cargo build
+bash scripts/verify-claude-code-web-loop.sh
+```
+
+The script seeds a throwaway plan repo with a `verify-demo/phase-1-ping`
+phase, runs the SessionStart template against a fake sandbox `$HOME`, makes
+a source-repo commit with the right `Done:` footer, and confirms the plan
+repo phase flips to `done` with the source commit SHA recorded. Any
+regression in bootstrap, the SessionStart template, or `rdm hook post-commit`
+will fail it.
+
+It does **not** exercise `install.sh` (that requires network; it's covered
+by the `install-test.yml` CI workflow) and does **not** open a real PR. For
+the full live pass, see the manual checklist below.
+
+### Manual live run (optional)
+
+Do this once end-to-end against real GitHub to confirm everything works
+through the whole pipeline including `gh pr create` and an actual merge:
+
+1. `gh repo create <owner>/rdm-verify-src --private --clone` — disposable
+   source repo.
+2. `gh repo create <owner>/rdm-verify-plan --private --clone` — disposable
+   plan repo.
+3. In the plan repo clone: `rdm init --default-project verify`,
+   `rdm roadmap create verify-demo --title "Verify Demo" --project verify`,
+   `rdm phase create ping --title Ping --number 1 --roadmap verify-demo --project verify`,
+   `git push`.
+4. Install the template into `rdm-verify-src` with
+   `scripts/install-claude-code-web-template.sh ~/src/rdm-verify-src`.
+5. Start a Claude Code web session on `rdm-verify-src` with these env vars
+   set in the sandbox:
+   - `RDM_PLAN_REPO=https://github.com/<owner>/rdm-verify-plan.git`
+   - `RDM_PLAN_REPO_TOKEN=<fine-grained PAT scoped to rdm-verify-plan>`
+   - `RDM_DEFAULT_PROJECT=verify`
+6. In the session, run `rdm phase show phase-1-ping --roadmap verify-demo`.
+7. Make a trivial code change, commit with `Done: verify-demo/phase-1-ping`
+   in the commit body, push.
+8. `gh pr create` and merge the PR.
+9. On your laptop, pull the plan repo and confirm
+   `rdm phase show phase-1-ping --roadmap verify-demo` reports the phase
+   `done` with the merge commit SHA.
+10. Tear down: `gh repo delete --yes <owner>/rdm-verify-src`,
+    `gh repo delete --yes <owner>/rdm-verify-plan`.
