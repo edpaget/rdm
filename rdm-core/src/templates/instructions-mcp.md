@@ -9,23 +9,28 @@ The rdm MCP server is connected and provides tools for plan repo operations. Mos
 ## Discovering work
 
 - `rdm_roadmap_list` with `project: {proj_param}` — list all roadmaps with progress
+- `rdm_roadmap_list` with `project: {proj_param}, tag: "bug"` — list roadmaps carrying tag "bug"
 - `rdm_task_list` with `project: {proj_param}` — list open/in-progress tasks
 - `rdm_task_list` with `project: {proj_param}, status: "all"` — list all tasks including done
+- `rdm_task_list` with `project: {proj_param}, tag: "bug"` — list open tasks carrying tag "bug"
 
 ## Reading details
 
 - `rdm_roadmap_show` with `project: {proj_param}, roadmap: "<slug>"` — show roadmap with phases and body
 - `rdm_phase_list` with `project: {proj_param}, roadmap: "<slug>"` — list phases with numbers and statuses
+- `rdm_phase_list` with `project: {proj_param}, roadmap: "<slug>", tag: "audit"` — list phases carrying tag "audit"
 - `rdm_phase_show` with `project: {proj_param}, roadmap: "<slug>", phase: "<stem-or-number>"` — show phase details
 - `rdm_task_show` with `project: {proj_param}, task: "<slug>"` — show task details
 
 ## Searching
 
-Use `rdm_search` for fuzzy matching against titles and body content:
+Use `rdm_search` for fuzzy matching against titles and body content. Tags are a hard pre-filter — combine them to narrow results.
 
 - `rdm_search` with `query: "auth", project: {proj_param}` — find items mentioning "auth"
 - `rdm_search` with `query: "index", kind: "task", project: {proj_param}` — find only tasks
 - `rdm_search` with `query: "auth", status: "in-progress", project: {proj_param}` — filter by status
+- `rdm_search` with `query: "", tags: ["bug"], project: {proj_param}` — list every item carrying tag "bug"
+- `rdm_search` with `query: "auth", tags: ["bug", "ui"], project: {proj_param}` — ANDs across tags
 
 ## Updating status
 
@@ -34,11 +39,17 @@ Use `rdm_search` for fuzzy matching against titles and body content:
 
 ## Creating items
 
-- `rdm_roadmap_create` with `project: {proj_param}, slug: "<slug>", title: "Title", body: "Summary."`
-- `rdm_phase_create` with `project: {proj_param}, roadmap: "<slug>", slug: "<slug>", title: "Title", number: <n>, body: "Details."`
-- `rdm_task_create` with `project: {proj_param}, slug: "<slug>", title: "Title", body: "Description."`
+- `rdm_roadmap_create` with `project: {proj_param}, slug: "<slug>", title: "Title", body: "Summary.", tags: ["bug", "ui"]`
+- `rdm_phase_create` with `project: {proj_param}, roadmap: "<slug>", slug: "<slug>", title: "Title", number: <n>, body: "Details.", tags: ["audit"]`
+- `rdm_task_create` with `project: {proj_param}, slug: "<slug>", title: "Title", body: "Description.", tags: ["bug"]`
 
-The `body` parameter accepts full Markdown including multiline content.
+The `body` parameter accepts full Markdown including multiline content. The `tags` parameter is optional. On `*_update`, passing `tags: [...]` replaces the existing list, and `clear_tags: true` removes all tags (roadmap and phase only; task uses `tags: []`).
+
+## Tagging convention
+
+- Tag work to make it findable across roadmaps, phases, and tasks (e.g. all auth-related items get `auth`).
+- Use lowercase kebab-case (`bug`, `auth`, `tech-debt`).
+- Prefer existing tags in the project — call `rdm_search` with `query: "", tags: ["<candidate>"], project: {proj_param}` to check what's already in use before inventing a new one.
 
 ## Planning workflow
 

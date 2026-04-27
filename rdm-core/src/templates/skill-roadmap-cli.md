@@ -14,10 +14,10 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
 
 1. **Explore the codebase** to understand the current state relevant to `$ARGUMENTS`. Read key files, search for related code, and build context.
 2. **Design phases** that break the work into independently deliverable increments. Each phase should produce a working, testable result.
-3. **Create the roadmap**: `rdm roadmap create <slug> --title "Title" --body "Summary." --no-edit {proj_flag}`
+3. **Create the roadmap**: `rdm roadmap create <slug> --title "Title" --body "Summary." --tags <tag1>,<tag2> --no-edit {proj_flag}`
 4. **Create each phase** with context, steps, and acceptance criteria in the body:
    ```bash
-   rdm phase create <slug> --title "Phase title" --number <n> --no-edit --roadmap <roadmap-slug> {proj_flag} <<'EOF'
+   rdm phase create <slug> --title "Phase title" --number <n> --tags <tag> --no-edit --roadmap <roadmap-slug> {proj_flag} <<'EOF'
    ## Context
    Why this phase exists and what it builds on.
 
@@ -39,3 +39,6 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
 - Include Context, Steps, and Acceptance Criteria in every phase body
 - Order phases so each builds on the previous one
 - Use clear, descriptive slugs (e.g., `add-caching`, `migrate-auth`)
+- Tag the roadmap and phases so related work is findable. Use lowercase
+  kebab-case (`auth`, `tech-debt`); prefer existing tags — check with
+  `rdm search "" --tag <candidate> {proj_flag}` before inventing a new one.

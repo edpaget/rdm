@@ -9,9 +9,10 @@ The plan repo location is set via `RDM_ROOT` environment variable or `--root` fl
 ## Discovering work
 
 ```bash
-rdm roadmap list {proj_flag}       # list all roadmaps with progress
-rdm task list {proj_flag}           # list open/in-progress tasks
-rdm task list {proj_flag} --status all  # list all tasks including done
+rdm roadmap list {proj_flag}              # list all roadmaps with progress
+rdm task list {proj_flag}                  # list open/in-progress tasks
+rdm task list {proj_flag} --status all     # list all tasks including done
+rdm task list {proj_flag} --tag bug        # list open tasks carrying tag "bug"
 ```
 
 ## Reading details
@@ -24,6 +25,17 @@ rdm task show <slug> {proj_flag}             # show task details
 ```
 
 Add `--no-body` to any `show` command to suppress body content when you only need metadata.
+
+## Searching
+
+`rdm search` is fuzzy (typo-tolerant) and matches against titles and bodies. Tags are a hard pre-filter — combine them to narrow results.
+
+```bash
+rdm search auth {proj_flag}                  # find items mentioning "auth"
+rdm search index --type task {proj_flag}     # find only tasks matching "index"
+rdm search "" --tag bug {proj_flag}          # list every item carrying tag "bug"
+rdm search auth --tag bug --tag ui {proj_flag}  # ANDs across tags — must carry every listed tag
+```
 
 ## Updating status
 
@@ -39,10 +51,18 @@ rdm task update <slug> --status done --no-edit {proj_flag}
 Always pass `--no-edit` to suppress the interactive editor.
 
 ```bash
-rdm roadmap create <slug> --title "Title" --body "Summary." --no-edit {proj_flag}
-rdm phase create <slug> --title "Title" --number <n> --body "Details." --no-edit --roadmap <slug> {proj_flag}
-rdm task create <slug> --title "Title" --body "Description." --no-edit {proj_flag}
+rdm roadmap create <slug> --title "Title" --body "Summary." --tags bug,ui --no-edit {proj_flag}
+rdm phase create <slug> --title "Title" --number <n> --body "Details." --tags audit --no-edit --roadmap <slug> {proj_flag}
+rdm task create <slug> --title "Title" --body "Description." --tags bug --no-edit {proj_flag}
 ```
+
+`--tags` is comma-separated. Pass `--tags ""` (or omit it) for no tags. On `update`, `--tags` replaces the existing list.
+
+## Tagging convention
+
+- Tag work to make it findable across roadmaps, phases, and tasks (e.g. all auth-related items get `auth`).
+- Use lowercase kebab-case (`bug`, `auth`, `tech-debt`).
+- Prefer existing tags in the project — run `rdm search "" --tag <candidate> {proj_flag}` to check what's already in use before inventing a new one.
 
 ## Body content
 

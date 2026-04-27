@@ -182,9 +182,10 @@ Do NOT use the Read, Glob, Grep, or Bash tools to read, search, list, or modify 
 ### Discovering work
 
 ```bash
-./target/debug/rdm roadmap list --project rdm       # list all roadmaps with progress
-./target/debug/rdm task list --project rdm           # list open/in-progress tasks
-./target/debug/rdm task list --project rdm --status all  # list all tasks including done
+./target/debug/rdm roadmap list --project rdm              # list all roadmaps with progress
+./target/debug/rdm task list --project rdm                  # list open/in-progress tasks
+./target/debug/rdm task list --project rdm --status all     # list all tasks including done
+./target/debug/rdm task list --project rdm --tag bug        # list open tasks carrying tag "bug"
 ```
 
 ### Reading details
@@ -207,9 +208,11 @@ When looking for specific items by keyword, **prefer `rdm search` over listing a
 ./target/debug/rdm search index --type task --project rdm                 # find only tasks matching "index"
 ./target/debug/rdm search search --status in-progress --project rdm       # find in-progress items
 ./target/debug/rdm search auth --format json --project rdm                # structured output for chaining
+./target/debug/rdm search "" --tag bug --project rdm                      # list every item carrying tag "bug"
+./target/debug/rdm search auth --tag bug --tag ui --project rdm           # ANDs across tags
 ```
 
-Available filters: `--type` (roadmap|phase|task), `--status` (e.g., done, in-progress, open), `--limit` (default 20), `--format` (text|json).
+Available filters: `--type` (roadmap|phase|task), `--status` (e.g., done, in-progress, open), `--tag <name>` (repeatable, AND), `--limit` (default 20), `--format` (text|json).
 
 ### Updating status
 
@@ -225,10 +228,12 @@ Always pass `--no-edit` to prevent the CLI from opening an interactive editor (w
 Always pass `--no-edit` to suppress the interactive editor.
 
 ```bash
-./target/debug/rdm roadmap create <slug> --title "Title" --body "Summary." --no-edit --project rdm
-./target/debug/rdm phase create <slug> --title "Title" --number <n> --body "Details." --no-edit --roadmap <slug> --project rdm
-./target/debug/rdm task create <slug> --title "Title" --body "Description." --no-edit --project rdm
+./target/debug/rdm roadmap create <slug> --title "Title" --body "Summary." --tags bug,ui --no-edit --project rdm
+./target/debug/rdm phase create <slug> --title "Title" --number <n> --body "Details." --tags audit --no-edit --roadmap <slug> --project rdm
+./target/debug/rdm task create <slug> --title "Title" --body "Description." --tags bug --no-edit --project rdm
 ```
+
+`--tags` is comma-separated. On `update`, `--tags` replaces the existing list; pass `--tags ""` to clear. Tagging convention: lowercase kebab-case (`bug`, `auth`, `tech-debt`); prefer existing tags — check with `./target/debug/rdm search "" --tag <candidate> --project rdm` before inventing a new one.
 
 For multiline content, pipe via stdin:
 

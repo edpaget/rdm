@@ -16,7 +16,7 @@ Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
 {principles}
 ## Steps
 
-1. **List tasks**: `rdm task list {proj_flag}` to see open and in-progress tasks.
+1. **List tasks**: `rdm task list {proj_flag}` to see open and in-progress tasks. Add `--tag <name>` to narrow by tag (e.g. `rdm task list {proj_flag} --tag bug`).
 2. **Show details**: if a task slug was provided in `$ARGUMENTS`, run `rdm task show <slug> {proj_flag}`. Otherwise, present the task list and ask the user which task to work on.
 3. **Mark in-progress**: `rdm task update <slug> --status in-progress --no-edit {proj_flag}`
 4. **Enter plan mode**: use the `EnterPlanMode` tool to switch into planning mode.
@@ -30,3 +30,11 @@ Work on rdm tasks. `$ARGUMENTS` is an optional task slug.
 10. **Finalize**: on user acceptance, commit the implementation changes with a `Done: task/<slug>` line in the commit message — the post-merge hook will mark the task done and record the commit SHA.
     **Use the exact task slug from the rdm commands you ran earlier — do NOT invent or paraphrase it.**
     If the task is also part of a roadmap phase, include a `Done: <roadmap-slug>/<phase-stem>` line as well (using exact slugs/stems from rdm).
+
+When creating a side-work task during step 5 or 9, attach tags so the task is findable later:
+
+```bash
+rdm task create <slug> --title "Description" --body "Details." --tags <tag1>,<tag2> --no-edit {proj_flag}
+```
+
+Use lowercase kebab-case tags and prefer ones already present in the project (check with `rdm search "" --tag <candidate> {proj_flag}`).

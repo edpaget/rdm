@@ -137,6 +137,83 @@ fn agent_config_contains_planning_workflow() {
 }
 
 #[test]
+fn agent_config_cli_demonstrates_tags() {
+    // The CLI instructions template should teach agents to set tags on
+    // create/update and to filter list/search by tag for tasks, roadmaps,
+    // and phases.
+    rdm()
+        .arg("agent-config")
+        .assert()
+        .success()
+        // Tags on the create commands.
+        .stdout(predicate::str::contains(
+            "rdm roadmap create <slug> --title \"Title\" --body \"Summary.\" --tags",
+        ))
+        .stdout(predicate::str::contains(
+            "rdm phase create <slug> --title \"Title\" --number <n>",
+        ))
+        .stdout(predicate::str::contains(
+            "rdm task create <slug> --title \"Title\" --body \"Description.\" --tags",
+        ))
+        // Tag filter on listing tasks.
+        .stdout(
+            predicate::str::contains("rdm task list").and(predicate::str::contains("--tag bug")),
+        )
+        // Tag filter on search (empty query + tag, plus AND across tags).
+        .stdout(predicate::str::contains("rdm search \"\" --tag bug"))
+        .stdout(predicate::str::contains(
+            "rdm search auth --tag bug --tag ui",
+        ))
+        // Tagging convention guidance present.
+        .stdout(predicate::str::contains("Tagging convention"))
+        .stdout(predicate::str::contains("kebab-case"));
+}
+
+#[test]
+fn agent_config_mcp_demonstrates_tags() {
+    // The MCP instructions template should teach agents to pass tags on
+    // create/update calls and to filter via the list/search tools.
+    rdm()
+        .arg("agent-config")
+        .arg("--mcp")
+        .assert()
+        .success()
+        // Tags array on create tools.
+        .stdout(
+            predicate::str::contains("rdm_roadmap_create")
+                .and(predicate::str::contains("tags: [\"bug\", \"ui\"]")),
+        )
+        .stdout(
+            predicate::str::contains("rdm_phase_create")
+                .and(predicate::str::contains("tags: [\"audit\"]")),
+        )
+        .stdout(
+            predicate::str::contains("rdm_task_create")
+                .and(predicate::str::contains("tags: [\"bug\"]")),
+        )
+        // Tag filter on roadmap_list / phase_list / task_list.
+        .stdout(
+            predicate::str::contains("rdm_roadmap_list")
+                .and(predicate::str::contains("tag: \"bug\"")),
+        )
+        .stdout(
+            predicate::str::contains("rdm_phase_list")
+                .and(predicate::str::contains("tag: \"audit\"")),
+        )
+        .stdout(
+            predicate::str::contains("rdm_task_list").and(predicate::str::contains("tag: \"bug\"")),
+        )
+        // Search with tags array (AND semantics).
+        .stdout(
+            predicate::str::contains("rdm_search").and(predicate::str::contains("tags: [\"bug\"]")),
+        )
+        .stdout(predicate::str::contains("tags: [\"bug\", \"ui\"]"))
+        // Tagging convention guidance present.
+        .stdout(predicate::str::contains("Tagging convention"))
+        .stdout(predicate::str::contains("kebab-case"));
+}
+
+#[test]
 fn agent_config_contains_status_transitions() {
     rdm()
         .arg("agent-config")

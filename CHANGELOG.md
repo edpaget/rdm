@@ -41,6 +41,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   filter, and `rdm_search` accepts a `tags` array (AND semantics) matching
   the CLI `--tag` flag.
 
+### Changed
+
+- `rdm agent-config` instructions (CLI and MCP variants) now demonstrate
+  tagging: `--tags`/`tags: [...]` on create/update, `--tag`/`tag: "..."`
+  on list, and the `--tag`/`tags: [...]` filter on search. Includes a
+  short tagging convention note (lowercase kebab-case; check existing
+  tags before inventing one). The `rdm-tasks` and `rdm-roadmap` skills
+  (and their embedded templates) inherit the same examples.
+
 ## [0.7.1] - 2026-04-24
 
 ### Fixed
