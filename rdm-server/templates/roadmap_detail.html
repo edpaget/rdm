@@ -31,7 +31,6 @@
 <div class="body-content">{{ body_html|safe }}</div>
 {% endif %}
 <h2>Phases</h2>
-{% include "_quick_filters.html" %}
 {% if phases.is_empty() %}
 {% if let Some(tag) = active_tag %}
 <p>No phases match tag "{{ tag }}".</p>
@@ -59,3 +58,5 @@
 </table>
 {% endif %}
 {% endblock %}
+
+{% block quick_filters %}{% include "_quick_filters.html" %}{% endblock %}

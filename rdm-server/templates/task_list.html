@@ -18,7 +18,6 @@
 
 {% block content %}
 <h1>Tasks for {{ project }}</h1>
-{% include "_quick_filters.html" %}
 <p>
 {% if show_completed %}
   <a href="/projects/{{ project }}/tasks">Hide completed tasks</a>
@@ -49,3 +48,5 @@
 </table>
 {% endif %}
 {% endblock %}
+
+{% block quick_filters %}{% include "_quick_filters.html" %}{% endblock %}

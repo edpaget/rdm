@@ -109,7 +109,7 @@ RDM_SERVER_QUICK_FILTERS="Bugs:bug,UI work:ui" rdm serve
 rdm serve --quick-filter Bugs:bug --quick-filter "UI work:ui"
 ```
 
-Precedence: `--quick-filter` flags > `RDM_SERVER_QUICK_FILTERS` env var > `[server.quick_filters]` in `rdm.toml`. Each chip links to the same page with `?tag=<value>`; the active chip is visually highlighted, and an "All" link appears next to the chips when a filter is active so users can clear it in one click.
+Precedence: `--quick-filter` flags > `RDM_SERVER_QUICK_FILTERS` env var > `[server.quick_filters]` in `rdm.toml`. Each chip links to the same page with `?tag=<value>`; the active chip is visually highlighted, and an "All" link appears next to the chips when a filter is active so users can clear it in one click. Chips render right-aligned on the breadcrumb row as a horizontal group with vertical separators on desktop, and stack below the breadcrumb on narrow screens.
 
 ### MCP server
 

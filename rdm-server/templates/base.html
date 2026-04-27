@@ -286,6 +286,47 @@
       padding-top: 1rem;
       border-top: 1px solid var(--color-border-light);
     }
+    .breadcrumb-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .breadcrumb-row nav[aria-label="Breadcrumb"] ol { margin: 0; }
+    .quick-filters-slot:empty { display: none; }
+    @media (max-width: 480px) {
+      .breadcrumb-row { flex-direction: column; align-items: stretch; }
+    }
+    .quick-filters {
+      font-size: 0.875rem;
+      color: var(--color-muted);
+    }
+    .quick-filter-chips {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-wrap: wrap;
+    }
+    .quick-filter-chips li {
+      display: flex;
+      align-items: center;
+    }
+    .quick-filter-chips li + li::before {
+      content: "|";
+      margin: 0 0.5rem;
+      color: var(--color-muted);
+    }
+    .quick-filter-chip.active {
+      font-weight: 600;
+      color: var(--color-link-hover);
+    }
+    .quick-filter-clear { color: var(--color-muted); }
+    @media (max-width: 480px) {
+      .quick-filter-chips { flex-direction: column; }
+      .quick-filter-chips li + li::before { content: ""; margin: 0; }
+    }
     :focus-visible {
       outline: 2px solid var(--color-focus-ring);
       outline-offset: 2px;
@@ -319,11 +360,14 @@
         <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode"></button>
       </div>
     </header>
-    <nav aria-label="Breadcrumb">
-      <ol>
-        {% block breadcrumb %}{% endblock %}
-      </ol>
-    </nav>
+    <div class="breadcrumb-row">
+      <nav aria-label="Breadcrumb">
+        <ol>
+          {% block breadcrumb %}{% endblock %}
+        </ol>
+      </nav>
+      <div class="quick-filters-slot">{% block quick_filters %}{% endblock %}</div>
+    </div>
     <main id="main-content">
       {% block content %}{% endblock %}
     </main>

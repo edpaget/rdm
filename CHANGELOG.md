@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Quick-filter chips render right-aligned on the breadcrumb row as a
+  horizontal group with vertical separators on desktop, and stack below
+  the breadcrumb on narrow screens. The same placement is used on the
+  roadmap list, roadmap detail, and task list pages.
+
 ## [0.8.0] - 2026-04-27
 
 ### Added

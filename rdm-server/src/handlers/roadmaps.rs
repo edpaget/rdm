@@ -1439,7 +1439,7 @@ mod tests {
         // No active highlight when no tag selected.
         assert!(!html.contains(r#"class="quick-filter-chip active""#));
         // No "All" link without active filter.
-        assert!(!html.contains("quick-filter-clear"));
+        assert!(!html.contains(r#"class="quick-filter-clear""#));
     }
 
     #[tokio::test]
@@ -1461,7 +1461,7 @@ mod tests {
         assert!(html.contains(r#"class="quick-filter-chip active""#));
         assert!(html.contains(r#"aria-current="true""#));
         assert!(
-            html.contains("quick-filter-clear"),
+            html.contains(r#"class="quick-filter-clear""#),
             "should render All link"
         );
     }
