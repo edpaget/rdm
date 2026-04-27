@@ -1227,6 +1227,295 @@ fn roadmap_list_with_sort_priority() {
     );
 }
 
+// ==================== Tag tests (expand-tag-support phase 4) ====================
+
+#[test]
+fn roadmap_create_with_tags_persists_them() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "tagged-rm",
+            "title": "Tagged Roadmap",
+            "tags": ["bug", "ui"],
+        }),
+    );
+
+    let show = h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "tagged-rm"}),
+    );
+    let text = result_text(&show);
+    assert!(text.contains("Tagged Roadmap"));
+    assert!(text.contains("bug"), "show should display tags: {text}");
+    assert!(text.contains("ui"));
+}
+
+#[test]
+fn roadmap_update_replaces_tags() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "rm",
+            "title": "RM",
+            "tags": ["a", "b"],
+        }),
+    );
+    h.call_tool(
+        "rdm_roadmap_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "rm",
+            "tags": ["c"],
+        }),
+    );
+    let show = h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "rm"}),
+    );
+    let text = result_text(&show);
+    assert!(text.contains('c'));
+    assert!(
+        !text.contains("- a") && !text.contains("[a"),
+        "old tag 'a' should be removed: {text}"
+    );
+}
+
+#[test]
+fn roadmap_update_clear_tags() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "rm",
+            "title": "RM",
+            "tags": ["a"],
+        }),
+    );
+    h.call_tool(
+        "rdm_roadmap_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "rm",
+            "clear_tags": true,
+        }),
+    );
+    let show = h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "rm"}),
+    );
+    let text = result_text(&show);
+    assert!(
+        !text.contains("Tags:"),
+        "Tags: line should be omitted when no tags: {text}"
+    );
+}
+
+#[test]
+fn roadmap_update_conflicting_tag_fields_returns_error() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_roadmap_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "tags": ["x"],
+            "clear_tags": true,
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("cannot set both 'tags' and 'clear_tags'"),
+        "expected conflict error, got: {text}"
+    );
+}
+
+#[test]
+fn roadmap_list_filter_by_tag() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "tagged-rm",
+            "title": "Tagged",
+            "tags": ["needle"],
+        }),
+    );
+    let response = h.call_tool(
+        "rdm_roadmap_list",
+        serde_json::json!({"project": "test-proj", "tag": "needle"}),
+    );
+    let text = result_text(&response);
+    assert!(text.contains("Tagged"));
+    assert!(
+        !text.contains("Authentication"),
+        "untagged roadmap should be excluded: {text}"
+    );
+}
+
+#[test]
+fn phase_create_with_tags_persists_them() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_phase_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "slug": "review",
+            "title": "Review",
+            "number": 3,
+            "tags": ["audit", "security"],
+        }),
+    );
+    let show = h.call_tool(
+        "rdm_phase_show",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "phase-3-review",
+        }),
+    );
+    let text = result_text(&show);
+    assert!(text.contains("audit"), "tags should appear in show: {text}");
+    assert!(text.contains("security"));
+}
+
+#[test]
+fn phase_update_replaces_tags_and_clear_tags() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "phase-1-design",
+            "tags": ["temp"],
+        }),
+    );
+    let show1 = h.call_tool(
+        "rdm_phase_show",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "phase-1-design",
+        }),
+    );
+    assert!(result_text(&show1).contains("temp"));
+
+    h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "phase-1-design",
+            "clear_tags": true,
+        }),
+    );
+    let show2 = h.call_tool(
+        "rdm_phase_show",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "phase-1-design",
+        }),
+    );
+    let text = result_text(&show2);
+    assert!(
+        !text.contains("Tags:"),
+        "Tags: line should be omitted after clear_tags: {text}"
+    );
+}
+
+#[test]
+fn phase_list_filter_by_tag() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Tag phase 1 with 'needle'.
+    h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "phase-1-design",
+            "tags": ["needle"],
+        }),
+    );
+
+    let response = h.call_tool(
+        "rdm_phase_list",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "tag": "needle",
+        }),
+    );
+    let text = result_text(&response);
+    assert!(text.contains("Design Auth"));
+    assert!(
+        !text.contains("Implement Auth"),
+        "untagged phase should be excluded: {text}"
+    );
+}
+
+#[test]
+fn search_filter_by_tag() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "matchable",
+            "title": "Matchable Roadmap",
+            "tags": ["needle"],
+        }),
+    );
+    let response = h.call_tool(
+        "rdm_search",
+        serde_json::json!({
+            "query": "Roadmap",
+            "project": "test-proj",
+            "tags": ["needle"],
+        }),
+    );
+    let text = result_text(&response);
+    assert!(text.contains("Matchable"));
+    assert!(
+        !text.contains("Authentication"),
+        "untagged roadmap should be excluded by tag filter: {text}"
+    );
+}
+
 // ==================== GitStore integration tests ====================
 
 /// Run a git command in `root`, clearing `GIT_DIR` / `GIT_WORK_TREE` so the

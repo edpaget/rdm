@@ -34,6 +34,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `rdm serve --quick-filter Bugs:bug --quick-filter UI:ui` (repeatable CLI
   flag). CLI flags > env > toml; higher-precedence sources fully replace
   lower ones rather than merging.
+- MCP server tag support. `rdm_roadmap_create` and `rdm_phase_create` now
+  accept a `tags` array; `rdm_roadmap_update` and `rdm_phase_update`
+  accept `tags` (replace) and `clear_tags: true` (remove all). The
+  `rdm_roadmap_list` and `rdm_phase_list` tools accept an optional `tag`
+  filter, and `rdm_search` accepts a `tags` array (AND semantics) matching
+  the CLI `--tag` flag.
 
 ## [0.7.1] - 2026-04-24
 

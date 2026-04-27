@@ -99,6 +99,9 @@ struct SearchParams {
     kind: Option<String>,
     /// Filter by status (e.g. "open", "in-progress", "done").
     status: Option<String>,
+    /// Filter by tags (AND semantics — items must carry every listed tag).
+    /// Items with no tags are excluded by any non-empty list.
+    tags: Option<Vec<String>>,
     /// Maximum number of results to return (default 20).
     limit: Option<usize>,
 }
@@ -115,6 +118,8 @@ struct RoadmapCreateParams {
     title: String,
     /// Priority level: "low", "medium", "high", or "critical".
     priority: Option<String>,
+    /// Optional tags for categorization (e.g. ["bug", "ui"]).
+    tags: Option<Vec<String>>,
     /// Optional body content (Markdown).
     body: Option<String>,
 }
@@ -127,6 +132,8 @@ struct RoadmapListParams {
     sort: Option<String>,
     /// Filter by priority level: "low", "medium", "high", or "critical".
     priority: Option<String>,
+    /// Filter to roadmaps carrying this tag.
+    tag: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -139,6 +146,11 @@ struct RoadmapUpdateParams {
     priority: Option<String>,
     /// Set to true to remove the priority from this roadmap.
     clear_priority: Option<bool>,
+    /// New tags (replaces existing). Pass an empty array or set
+    /// `clear_tags: true` to remove all tags.
+    tags: Option<Vec<String>>,
+    /// Set to true to remove all tags from this roadmap.
+    clear_tags: Option<bool>,
     /// New body content (Markdown). Replaces the existing body.
     body: Option<String>,
 }
@@ -155,6 +167,8 @@ struct PhaseCreateParams {
     title: String,
     /// Optional phase number. If omitted, auto-assigns the next available number.
     number: Option<u32>,
+    /// Optional tags for categorization (e.g. ["bug", "ui"]).
+    tags: Option<Vec<String>>,
     /// Optional body content (Markdown).
     body: Option<String>,
 }
@@ -169,8 +183,23 @@ struct PhaseUpdateParams {
     phase: String,
     /// New status: "not-started", "in-progress", "done", or "blocked".
     status: Option<String>,
+    /// New tags (replaces existing). Pass an empty array or set
+    /// `clear_tags: true` to remove all tags.
+    tags: Option<Vec<String>>,
+    /// Set to true to remove all tags from this phase.
+    clear_tags: Option<bool>,
     /// New body content (Markdown). Replaces the existing body.
     body: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct PhaseListParams {
+    /// The project name.
+    project: String,
+    /// The roadmap slug.
+    roadmap: String,
+    /// Filter to phases carrying this tag.
+    tag: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -390,9 +419,9 @@ impl RdmMcpServer {
         }
     }
 
-    /// List all roadmaps in a project with phase progress. Supports sorting by priority and filtering.
+    /// List all roadmaps in a project with phase progress. Supports sorting and priority/tag filters.
     #[rmcp::tool(
-        description = "List all roadmaps in a project with phase progress. Supports optional sort (alphabetical or priority) and priority filter.",
+        description = "List all roadmaps in a project with phase progress. Supports optional sort (alphabetical or priority), priority filter, and tag filter.",
         annotations(read_only_hint = true)
     )]
     async fn rdm_roadmap_list(
@@ -427,8 +456,21 @@ impl RdmMcpServer {
             Err(e) => return core_err(e),
         };
 
+        let filtered_roadmaps: Vec<_> = match &params.tag {
+            Some(tag) => roadmaps
+                .into_iter()
+                .filter(|doc| {
+                    doc.frontmatter
+                        .tags
+                        .as_ref()
+                        .is_some_and(|tags| tags.iter().any(|t| t == tag))
+                })
+                .collect(),
+            None => roadmaps,
+        };
+
         let mut entries = Vec::new();
-        for roadmap_doc in roadmaps {
+        for roadmap_doc in filtered_roadmaps {
             let slug = &roadmap_doc.frontmatter.roadmap;
             let phases = match rdm_core::ops::phase::list_phases(&*store, &params.project, slug) {
                 Ok(p) => p,
@@ -464,21 +506,35 @@ impl RdmMcpServer {
         ok_text(display::format_roadmap_summary(&doc, &phases))
     }
 
-    /// List all phases in a roadmap.
+    /// List all phases in a roadmap, optionally filtered by tag.
     #[rmcp::tool(
-        description = "List all phases in a roadmap",
+        description = "List all phases in a roadmap, optionally filtered by tag",
         annotations(read_only_hint = true)
     )]
     async fn rdm_phase_list(
         &self,
-        Parameters(params): Parameters<RoadmapParams>,
+        Parameters(params): Parameters<PhaseListParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
         let store = self.store.lock().unwrap();
-        match rdm_core::ops::phase::list_phases(&*store, &params.project, &params.roadmap) {
-            Ok(phases) => ok_text(display::format_phase_list(&phases)),
-            Err(e) => core_err(e),
-        }
+        let phases =
+            match rdm_core::ops::phase::list_phases(&*store, &params.project, &params.roadmap) {
+                Ok(p) => p,
+                Err(e) => return core_err(e),
+            };
+        let filtered: Vec<_> = match &params.tag {
+            Some(tag) => phases
+                .into_iter()
+                .filter(|(_, doc)| {
+                    doc.frontmatter
+                        .tags
+                        .as_ref()
+                        .is_some_and(|tags| tags.iter().any(|t| t == tag))
+                })
+                .collect(),
+            None => phases,
+        };
+        ok_text(display::format_phase_list(&filtered))
     }
 
     /// Show details of a specific phase.
@@ -574,7 +630,7 @@ impl RdmMcpServer {
 
     /// Search for items across the plan repo.
     #[rmcp::tool(
-        description = "Search for items across the plan repo by fuzzy-matching titles and body content",
+        description = "Search for items across the plan repo by fuzzy-matching titles and body content. Optional tag filter ANDs across the listed tags.",
         annotations(read_only_hint = true)
     )]
     async fn rdm_search(
@@ -609,8 +665,7 @@ impl RdmMcpServer {
             kind,
             project: params.project,
             status,
-            // TODO(expand-tag-support phase 4): expose --tag filter via MCP.
-            tags: None,
+            tags: params.tags,
             min_score_ratio: None,
         };
 
@@ -650,7 +705,7 @@ impl RdmMcpServer {
 
     /// Create a new roadmap in a project.
     #[rmcp::tool(
-        description = "Create a new roadmap in a project",
+        description = "Create a new roadmap in a project, optionally with priority and tags",
         annotations(read_only_hint = false)
     )]
     async fn rdm_roadmap_create(
@@ -673,7 +728,7 @@ impl RdmMcpServer {
             &params.title,
             params.body.as_deref(),
             priority,
-            None,
+            params.tags.clone(),
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),
@@ -689,9 +744,9 @@ impl RdmMcpServer {
         ok_text(display::format_roadmap_summary(&doc, &phases))
     }
 
-    /// Update a roadmap's priority and/or body.
+    /// Update a roadmap's priority, tags, and/or body.
     #[rmcp::tool(
-        description = "Update a roadmap's priority and/or body content",
+        description = "Update a roadmap's priority, tags, and/or body content",
         annotations(read_only_hint = false)
     )]
     async fn rdm_roadmap_update(
@@ -702,6 +757,9 @@ impl RdmMcpServer {
 
         if params.clear_priority.unwrap_or(false) && params.priority.is_some() {
             return err_text("cannot set both 'priority' and 'clear_priority'".to_string());
+        }
+        if params.clear_tags.unwrap_or(false) && params.tags.is_some() {
+            return err_text("cannot set both 'tags' and 'clear_tags'".to_string());
         }
 
         let priority = if params.clear_priority.unwrap_or(false) {
@@ -716,6 +774,12 @@ impl RdmMcpServer {
             }
         };
 
+        let tags = if params.clear_tags.unwrap_or(false) {
+            Some(Vec::new())
+        } else {
+            params.tags.clone()
+        };
+
         let mut store = self.store.lock().unwrap();
         let doc = match rdm_core::ops::roadmap::update_roadmap(
             &mut *store,
@@ -723,7 +787,7 @@ impl RdmMcpServer {
             &params.roadmap,
             params.body.as_deref(),
             priority,
-            None,
+            tags,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),
@@ -741,7 +805,7 @@ impl RdmMcpServer {
 
     /// Create a new phase in a roadmap.
     #[rmcp::tool(
-        description = "Create a new phase in a roadmap",
+        description = "Create a new phase in a roadmap, optionally with tags",
         annotations(read_only_hint = false)
     )]
     async fn rdm_phase_create(
@@ -758,7 +822,7 @@ impl RdmMcpServer {
             &params.title,
             params.number,
             params.body.as_deref(),
-            None,
+            params.tags.clone(),
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),
@@ -770,9 +834,9 @@ impl RdmMcpServer {
         ok_text(display::format_phase_detail(&stem, &doc, None))
     }
 
-    /// Update a phase's status or body.
+    /// Update a phase's status, tags, or body.
     #[rmcp::tool(
-        description = "Update a phase's status or body content",
+        description = "Update a phase's status, tags, or body content",
         annotations(read_only_hint = false)
     )]
     async fn rdm_phase_update(
@@ -780,6 +844,11 @@ impl RdmMcpServer {
         Parameters(params): Parameters<PhaseUpdateParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
+
+        if params.clear_tags.unwrap_or(false) && params.tags.is_some() {
+            return err_text("cannot set both 'tags' and 'clear_tags'".to_string());
+        }
+
         let mut store = self.store.lock().unwrap();
         let stem = match rdm_core::ops::phase::resolve_phase_stem(
             &*store,
@@ -799,13 +868,19 @@ impl RdmMcpServer {
             None => None,
         };
 
+        let tags = if params.clear_tags.unwrap_or(false) {
+            Some(Vec::new())
+        } else {
+            params.tags.clone()
+        };
+
         let doc = match rdm_core::ops::phase::update_phase(
             &mut *store,
             &params.project,
             &params.roadmap,
             &stem,
             status,
-            None,
+            tags,
             params.body.as_deref(),
             None,
         ) {
