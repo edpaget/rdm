@@ -18,6 +18,7 @@
 
 {% block content %}
 <h1>Tasks for {{ project }}</h1>
+{% include "_quick_filters.html" %}
 <p>
 {% if show_completed %}
   <a href="/projects/{{ project }}/tasks">Hide completed tasks</a>

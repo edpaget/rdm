@@ -142,6 +142,7 @@ mod tests {
         rdm_core::ops::project::create_project(&mut store, "beta", "Beta Project").unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
         };
         (dir, state)
     }
@@ -184,6 +185,7 @@ mod tests {
         rdm_core::ops::init::init(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
         };
         let app = build_router(state);
         let response = app
@@ -254,6 +256,7 @@ mod tests {
         rdm_core::ops::init::init(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
         };
         let app = build_router(state);
         let response = app
@@ -310,6 +313,7 @@ mod tests {
         rdm_core::ops::init::init(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
         };
         let app = build_router(state);
         let response = app

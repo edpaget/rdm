@@ -37,7 +37,10 @@ async fn main() -> anyhow::Result<()> {
         });
     let plan_root = expand_root(plan_root)?;
 
-    let state = AppState { plan_root };
+    let state = AppState {
+        plan_root,
+        quick_filters: Vec::new(),
+    };
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
     eprintln!("rdm-server listening on http://127.0.0.1:3000");

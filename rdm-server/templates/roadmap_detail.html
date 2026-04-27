@@ -24,11 +24,20 @@
 <p>Dependencies: {% for d in deps %}{% if !loop.first %}, {% endif %}<a href="/projects/{{ project }}/roadmaps/{{ d }}">{{ d }}</a>{% endfor %}</p>
 {% endif %}
 {% endif %}
+{% if let Some(tag_list) = tags %}{% if !tag_list.is_empty() %}
+<p class="tags">Tags: {% for t in tag_list %}{% if !loop.first %}, {% endif %}<span class="tag">{{ t }}</span>{% endfor %}</p>
+{% endif %}{% endif %}
 {% if !body_html.is_empty() %}
 <div class="body-content">{{ body_html|safe }}</div>
 {% endif %}
+<h2>Phases</h2>
+{% include "_quick_filters.html" %}
 {% if phases.is_empty() %}
+{% if let Some(tag) = active_tag %}
+<p>No phases match tag "{{ tag }}".</p>
+{% else %}
 <p>No phases defined.</p>
+{% endif %}
 {% else %}
 <table>
   <thead>

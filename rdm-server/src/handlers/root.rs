@@ -74,6 +74,7 @@ mod tests {
         rdm_core::ops::project::create_project(&mut store, "beta", "Beta").unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
         };
         (dir, state)
     }

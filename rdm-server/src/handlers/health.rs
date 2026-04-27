@@ -16,6 +16,7 @@ mod tests {
     fn test_state() -> AppState {
         AppState {
             plan_root: std::path::PathBuf::from("/tmp/rdm-test"),
+            quick_filters: Vec::new(),
         }
     }
 

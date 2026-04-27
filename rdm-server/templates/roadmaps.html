@@ -17,6 +17,7 @@
 
 {% block content %}
 <h1>Roadmaps for {{ project }}</h1>
+{% include "_quick_filters.html" %}
 <p>
 {% if show_completed %}
   <a href="/projects/{{ project }}/roadmaps">Hide completed roadmaps</a>

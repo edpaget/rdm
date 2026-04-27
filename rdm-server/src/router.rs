@@ -23,7 +23,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/projects/{project}/roadmaps/{roadmap}/phases",
-            post(handlers::phases::create_phase),
+            get(handlers::phases::list_phases).post(handlers::phases::create_phase),
         )
         .route(
             "/projects/{project}/roadmaps/{roadmap}/phases/{phase}",

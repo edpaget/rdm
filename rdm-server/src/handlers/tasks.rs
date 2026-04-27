@@ -158,10 +158,15 @@ pub async fn list_tasks(
                     priority_class: priority_class(&doc.frontmatter.priority).to_string(),
                 })
                 .collect();
+            let task_list_path = format!("/projects/{project}/tasks");
+            let quick_filters =
+                state.quick_filter_views_for_path(&task_list_path, filters.tag.as_deref());
             let page = TaskListPage {
                 project,
                 tasks: rows,
                 show_completed,
+                quick_filters,
+                active_tag: filters.tag,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -420,6 +425,7 @@ mod tests {
         .unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
         };
         (dir, state)
     }
@@ -1005,6 +1011,7 @@ mod tests {
         .unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
         };
         (dir, state)
     }

@@ -241,6 +241,13 @@ enum Command {
         /// Address to bind to.
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
+        /// Quick-filter chip to render on list pages.
+        ///
+        /// Format: `Label:tag` (e.g. `Bugs:bug`). Repeat to add more.
+        /// Overrides any `[server.quick_filters]` from `rdm.toml` and the
+        /// `RDM_SERVER_QUICK_FILTERS` env var.
+        #[arg(long = "quick-filter")]
+        quick_filter: Vec<String>,
     },
     /// List roadmaps and their progress.
     List {
@@ -778,6 +785,49 @@ async fn shutdown_signal() {
     eprintln!("\nShutting down gracefully...");
 }
 
+/// Resolve the final list of quick filters using the precedence chain:
+/// CLI `--quick-filter` flags > `RDM_SERVER_QUICK_FILTERS` env > `[server.quick_filters]`
+/// in `rdm.toml`. Higher-precedence sources fully replace lower ones; they do
+/// not merge.
+#[cfg(feature = "server")]
+fn resolve_quick_filters(
+    repo_config: &rdm_core::config::Config,
+    cli_flags: &[String],
+) -> Result<Vec<rdm_core::config::QuickFilter>> {
+    use rdm_core::config::{QuickFilter, parse_quick_filters_env};
+
+    if !cli_flags.is_empty() {
+        let mut out = Vec::with_capacity(cli_flags.len());
+        for raw in cli_flags {
+            let (label, tag) = raw
+                .split_once(':')
+                .with_context(|| format!("--quick-filter '{raw}': expected 'Label:tag'"))?;
+            let label = label.trim();
+            let tag = tag.trim();
+            if label.is_empty() || tag.is_empty() {
+                anyhow::bail!("--quick-filter '{raw}': label and tag must be non-empty");
+            }
+            out.push(QuickFilter {
+                label: label.to_string(),
+                tag: tag.to_string(),
+            });
+        }
+        return Ok(out);
+    }
+
+    if let Ok(env_value) = std::env::var("RDM_SERVER_QUICK_FILTERS")
+        && !env_value.trim().is_empty()
+    {
+        return parse_quick_filters_env(&env_value).context("RDM_SERVER_QUICK_FILTERS");
+    }
+
+    Ok(repo_config
+        .server
+        .as_ref()
+        .map(|s| s.quick_filters.clone())
+        .unwrap_or_default())
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let global_config = paths::load_global_config();
@@ -1277,11 +1327,18 @@ fn run() -> Result<()> {
         }
 
         #[cfg(feature = "server")]
-        Command::Serve { port, bind } => {
+        Command::Serve {
+            port,
+            bind,
+            quick_filter,
+        } => {
+            let quick_filters = resolve_quick_filters(&repo_config, &quick_filter)
+                .context("invalid quick filter")?;
             let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
             rt.block_on(async {
                 let state = rdm_server::state::AppState {
                     plan_root: root.clone(),
+                    quick_filters,
                 };
                 let app = rdm_server::router::build_router(state);
                 let addr = format!("{bind}:{port}");
@@ -1606,5 +1663,105 @@ mod tests {
     fn expand_root_absolute_path_unchanged() {
         let result = paths::expand_root(PathBuf::from("/tmp/plans")).unwrap();
         assert_eq!(result, PathBuf::from("/tmp/plans"));
+    }
+
+    #[cfg(feature = "server")]
+    mod quick_filter_precedence {
+        use super::super::resolve_quick_filters;
+        use rdm_core::config::{Config, QuickFilter, ServerConfig};
+
+        const ENV_KEY: &str = "RDM_SERVER_QUICK_FILTERS";
+
+        /// Builds a repo config with two `[server.quick_filters]` entries.
+        fn repo_with_filters() -> Config {
+            Config {
+                server: Some(ServerConfig {
+                    quick_filters: vec![
+                        QuickFilter {
+                            label: "TomlA".into(),
+                            tag: "a".into(),
+                        },
+                        QuickFilter {
+                            label: "TomlB".into(),
+                            tag: "b".into(),
+                        },
+                    ],
+                }),
+                ..Default::default()
+            }
+        }
+
+        // These tests mutate the process env, so they cannot run in parallel
+        // safely. We serialize with a static mutex.
+        fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+            use std::sync::{Mutex, OnceLock};
+            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            LOCK.get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+        }
+
+        #[test]
+        fn toml_only_used_when_no_env_no_flags() {
+            let _g = env_lock();
+            // SAFETY: tests in this mod serialize on env_lock() above.
+            unsafe { std::env::remove_var(ENV_KEY) };
+            let resolved = resolve_quick_filters(&repo_with_filters(), &[]).unwrap();
+            assert_eq!(resolved.len(), 2);
+            assert_eq!(resolved[0].label, "TomlA");
+        }
+
+        #[test]
+        fn env_overrides_toml() {
+            let _g = env_lock();
+            // SAFETY: tests in this mod serialize on env_lock() above.
+            unsafe { std::env::set_var(ENV_KEY, "EnvA:e1,EnvB:e2") };
+            let resolved = resolve_quick_filters(&repo_with_filters(), &[]).unwrap();
+            // SAFETY: tests in this mod serialize on env_lock() above.
+            unsafe { std::env::remove_var(ENV_KEY) };
+            assert_eq!(resolved.len(), 2);
+            assert_eq!(resolved[0].label, "EnvA");
+            assert_eq!(resolved[0].tag, "e1");
+        }
+
+        #[test]
+        fn cli_flags_override_env_and_toml() {
+            let _g = env_lock();
+            // SAFETY: tests in this mod serialize on env_lock() above.
+            unsafe { std::env::set_var(ENV_KEY, "EnvA:e1") };
+            let flags = vec!["FlagA:f1".to_string(), "FlagB:f2".to_string()];
+            let resolved = resolve_quick_filters(&repo_with_filters(), &flags).unwrap();
+            // SAFETY: tests in this mod serialize on env_lock() above.
+            unsafe { std::env::remove_var(ENV_KEY) };
+            assert_eq!(resolved.len(), 2);
+            assert_eq!(resolved[0].label, "FlagA");
+            assert_eq!(resolved[1].tag, "f2");
+        }
+
+        #[test]
+        fn empty_env_falls_through_to_toml() {
+            let _g = env_lock();
+            // SAFETY: tests in this mod serialize on env_lock() above.
+            unsafe { std::env::set_var(ENV_KEY, "") };
+            let resolved = resolve_quick_filters(&repo_with_filters(), &[]).unwrap();
+            // SAFETY: tests in this mod serialize on env_lock() above.
+            unsafe { std::env::remove_var(ENV_KEY) };
+            assert_eq!(resolved.len(), 2);
+            assert_eq!(resolved[0].label, "TomlA");
+        }
+
+        #[test]
+        fn invalid_cli_flag_returns_error() {
+            let _g = env_lock();
+            let result = resolve_quick_filters(&Config::default(), &["BadFlag".to_string()]);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn empty_label_in_cli_flag_rejected() {
+            let _g = env_lock();
+            let result = resolve_quick_filters(&Config::default(), &[":bug".to_string()]);
+            assert!(result.is_err());
+        }
     }
 }

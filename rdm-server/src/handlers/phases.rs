@@ -1,11 +1,12 @@
 use askama::Template;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 use rdm_core::hal::{HalLink, HalResource};
 use rdm_core::model::{Phase, PhaseStatus};
+use rdm_core::store::Store;
 
 use crate::content_type::ResponseFormat;
 use crate::error::{error_response, json_rejection_response, validation_error};
@@ -21,6 +22,110 @@ struct PhaseDetail {
     phase: Phase,
     stem: String,
     body: String,
+}
+
+/// Empty data for the phases collection wrapper.
+#[derive(Serialize)]
+struct PhasesCollection {}
+
+/// Query parameters for filtering the phase list.
+#[derive(Debug, Deserialize, Default)]
+pub struct PhaseFilters {
+    /// Filter to phases carrying this tag.
+    pub tag: Option<String>,
+    /// Filter by phase status.
+    pub status: Option<String>,
+}
+
+/// `GET /projects/:project/roadmaps/:roadmap/phases` — list phases for a
+/// roadmap with optional tag/status filtering.
+pub async fn list_phases(
+    format: ResponseFormat,
+    State(state): State<AppState>,
+    Path((project, roadmap)): Path<(String, String)>,
+    Query(filters): Query<PhaseFilters>,
+) -> Result<Response, Response> {
+    let status_filter: Option<PhaseStatus> = match &filters.status {
+        Some(s) => Some(s.parse::<PhaseStatus>().map_err(|_| {
+            validation_error(format!(
+                "invalid status filter: '{s}' (expected not-started, in-progress, done, or blocked)"
+            ))
+        })?),
+        None => None,
+    };
+
+    let store = state.store();
+    // Verify the roadmap exists so we 404 cleanly instead of returning [].
+    if !store.exists(&rdm_core::paths::roadmap_path(&project, &roadmap)) {
+        return Err(error_response(
+            rdm_core::error::Error::RoadmapNotFound(roadmap.clone()),
+            format,
+        ));
+    }
+    let phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
+        .map_err(|e| error_response(e, format))?;
+
+    let filtered: Vec<_> = phases
+        .into_iter()
+        .filter(|(_, doc)| {
+            if let Some(ref sf) = status_filter
+                && doc.frontmatter.status != *sf
+            {
+                return false;
+            }
+            if let Some(ref tag) = filters.tag {
+                let has_tag = doc
+                    .frontmatter
+                    .tags
+                    .as_ref()
+                    .is_some_and(|tags| tags.contains(tag));
+                if !has_tag {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    let self_href = format!("/projects/{project}/roadmaps/{roadmap}/phases");
+    let mut embedded = Vec::new();
+    for (stem, doc) in &filtered {
+        let phase_resource = HalResource::new(
+            PhaseDetail {
+                phase: doc.frontmatter.clone(),
+                stem: stem.clone(),
+                body: doc.body.clone(),
+            },
+            format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}"),
+        )
+        .with_link(
+            "roadmap",
+            HalLink::new(format!("/projects/{project}/roadmaps/{roadmap}")),
+        );
+        embedded.push(serde_json::to_value(&phase_resource).unwrap());
+    }
+
+    match format {
+        ResponseFormat::HalJson => {
+            let resource = HalResource::new(PhasesCollection {}, self_href)
+                .with_link(
+                    "roadmap",
+                    HalLink::new(format!("/projects/{project}/roadmaps/{roadmap}")),
+                )
+                .with_embedded("phases", embedded);
+            Ok(hal_response(resource))
+        }
+        ResponseFormat::Html => {
+            // No dedicated HTML phase-list view: redirect to the roadmap
+            // detail page, which renders the phase table with the same
+            // ?tag=<tag> filter applied.
+            let mut redirect = format!("/projects/{project}/roadmaps/{roadmap}");
+            if let Some(ref tag) = filters.tag {
+                redirect.push_str(&format!("?tag={}", crate::templates::encode_tag_value(tag)));
+            }
+            Ok(see_other_response(&redirect))
+        }
+    }
 }
 
 /// `GET /projects/:project/roadmaps/:roadmap/phases/:phase` — phase detail
@@ -105,6 +210,7 @@ pub struct CreatePhaseRequest {
     title: String,
     number: Option<u32>,
     body: Option<String>,
+    tags: Option<Vec<String>>,
 }
 
 /// `POST /projects/:project/roadmaps/:roadmap/phases` — create a new phase.
@@ -124,7 +230,7 @@ pub async fn create_phase(
         &req.title,
         req.number,
         req.body.as_deref(),
-        None,
+        req.tags.clone(),
     )
     .map_err(|e| error_response(e, format))?;
     rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
@@ -156,6 +262,8 @@ pub async fn create_phase(
 pub struct UpdatePhaseRequest {
     status: Option<String>,
     body: Option<String>,
+    tags: Option<Vec<String>>,
+    clear_tags: Option<bool>,
 }
 
 /// `PATCH /projects/:project/roadmaps/:roadmap/phases/:phase` — update a phase.
@@ -180,6 +288,17 @@ pub async fn update_phase(
         )
         .transpose()?;
 
+    if req.clear_tags.unwrap_or(false) && req.tags.is_some() {
+        return Err(validation_error(
+            "cannot set both 'tags' and 'clear_tags'".to_string(),
+        ));
+    }
+    let tags = if req.clear_tags.unwrap_or(false) {
+        Some(Vec::new())
+    } else {
+        req.tags.clone()
+    };
+
     let mut store = state.store();
     let stem = rdm_core::ops::phase::resolve_phase_stem(&store, &project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
@@ -189,7 +308,7 @@ pub async fn update_phase(
         &roadmap,
         &stem,
         status,
-        None,
+        tags,
         req.body.as_deref(),
         None,
     )
@@ -271,6 +390,7 @@ mod tests {
         .unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
         };
         (dir, state)
     }
@@ -644,5 +764,191 @@ mod tests {
                 .unwrap()
                 .contains("phase-1-first")
         );
+    }
+
+    fn setup_with_phase_tags() -> (TempDir, AppState) {
+        let dir = TempDir::new().unwrap();
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store, "demo", "alpha", "Alpha", None, None, None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "alpha",
+            "tagged",
+            "Tagged",
+            Some(1),
+            None,
+            Some(vec!["bug".to_string(), "ui".to_string()]),
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "alpha",
+            "untagged",
+            "Untagged",
+            Some(2),
+            None,
+            None,
+        )
+        .unwrap();
+        let state = AppState {
+            plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
+        };
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn list_phases_filter_by_tag() {
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha/phases?tag=bug")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let phases = json["_embedded"]["phases"].as_array().unwrap();
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0]["stem"], "phase-1-tagged");
+    }
+
+    #[tokio::test]
+    async fn list_phases_no_filter_returns_all() {
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha/phases")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let phases = json["_embedded"]["phases"].as_array().unwrap();
+        assert_eq!(phases.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_phases_unknown_roadmap_returns_404() {
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/nope/phases?tag=bug")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn list_phases_html_redirects_to_roadmap() {
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha/phases?tag=bug")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 303);
+        let location = response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(location, "/projects/demo/roadmaps/alpha?tag=bug");
+    }
+
+    #[tokio::test]
+    async fn create_phase_persists_tags() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(post_json(
+                "/projects/demo/roadmaps/alpha/phases",
+                r#"{"slug":"new","title":"New","number":4,"tags":["foo","bar"]}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 201);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let tags = json["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn update_phase_replaces_tags() {
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(patch_json(
+                "/projects/demo/roadmaps/alpha/phases/1",
+                r#"{"tags":["only"]}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let tags = json["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0], "only");
+    }
+
+    #[tokio::test]
+    async fn update_phase_clear_tags() {
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(patch_json(
+                "/projects/demo/roadmaps/alpha/phases/1",
+                r#"{"clear_tags":true}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("tags").is_none() || json["tags"].is_null());
+    }
+
+    #[tokio::test]
+    async fn update_phase_conflicting_tag_fields_returns_422() {
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(patch_json(
+                "/projects/demo/roadmaps/alpha/phases/1",
+                r#"{"tags":["x"],"clear_tags":true}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 422);
     }
 }

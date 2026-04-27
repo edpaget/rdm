@@ -35,6 +35,8 @@ pub struct RoadmapFilters {
     pub priority: Option<String>,
     /// Sort order (alphabetical or priority).
     pub sort: Option<String>,
+    /// Filter to roadmaps carrying this tag.
+    pub tag: Option<String>,
 }
 
 /// Format a `SystemTime` as a `YYYY-MM-DD` date string.
@@ -89,6 +91,8 @@ struct RoadmapSummary {
     last_changed: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     priority: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<Vec<String>>,
 }
 
 /// Empty data for the roadmaps collection wrapper.
@@ -107,6 +111,8 @@ struct RoadmapDetail {
     dependencies: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     priority: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<Vec<String>>,
 }
 
 /// `GET /projects/:project/roadmaps` — list roadmaps with progress summaries.
@@ -150,9 +156,32 @@ pub async fn list_roadmaps(
     let roadmaps = rdm_core::ops::roadmap::list_roadmaps(&store, &project, sort, priority_filter)
         .map_err(|e| error_response(e, format))?;
 
+    struct Summary {
+        slug: String,
+        title: String,
+        total_phases: usize,
+        done_phases: usize,
+        status: String,
+        status_class: String,
+        last_changed: Option<String>,
+        priority: Option<String>,
+        priority_class: Option<String>,
+        tags: Option<Vec<String>>,
+    }
+
     let mut summaries = Vec::new();
     for roadmap_doc in &roadmaps {
         let slug = &roadmap_doc.frontmatter.roadmap;
+        if let Some(ref tag) = filters.tag
+            && !roadmap_doc
+                .frontmatter
+                .tags
+                .as_ref()
+                .is_some_and(|tags| tags.iter().any(|t| t == tag))
+        {
+            continue;
+        }
+
         let phases = rdm_core::ops::phase::list_phases(&store, &project, slug)
             .map_err(|e| error_response(e, format))?;
         let done_count = phases
@@ -173,43 +202,41 @@ pub async fn list_roadmaps(
             .priority
             .map(|p| priority_class(&p).to_string());
 
-        summaries.push((
-            slug.clone(),
-            roadmap_doc.frontmatter.title.clone(),
-            phases.len(),
-            done_count,
-            status_text.to_string(),
-            status_cls.to_string(),
+        summaries.push(Summary {
+            slug: slug.clone(),
+            title: roadmap_doc.frontmatter.title.clone(),
+            total_phases: phases.len(),
+            done_phases: done_count,
+            status: status_text.to_string(),
+            status_class: status_cls.to_string(),
             last_changed,
             priority,
-            pri_class,
-        ));
+            priority_class: pri_class,
+            tags: roadmap_doc.frontmatter.tags.clone(),
+        });
     }
 
     let show_completed = filters.show_completed.unwrap_or(false);
     if !show_completed {
-        summaries.retain(
-            |(_slug, _title, _total, _done, status, _cls, _changed, _pri, _pcls)| status != "done",
-        );
+        summaries.retain(|s| s.status != "done");
     }
 
     match format {
         ResponseFormat::HalJson => {
             let mut embedded = Vec::new();
-            for (slug, title, total, done, status, _status_cls, last_changed, priority, _pcls) in
-                &summaries
-            {
+            for s in &summaries {
                 let summary = HalResource::new(
                     RoadmapSummary {
-                        slug: slug.clone(),
-                        title: title.clone(),
-                        total_phases: *total,
-                        done_phases: *done,
-                        status: status.clone(),
-                        last_changed: last_changed.clone(),
-                        priority: priority.clone(),
+                        slug: s.slug.clone(),
+                        title: s.title.clone(),
+                        total_phases: s.total_phases,
+                        done_phases: s.done_phases,
+                        status: s.status.clone(),
+                        last_changed: s.last_changed.clone(),
+                        priority: s.priority.clone(),
+                        tags: s.tags.clone(),
                     },
-                    format!("/projects/{project}/roadmaps/{slug}"),
+                    format!("/projects/{project}/roadmaps/{}", s.slug),
                 )
                 .with_link("project", HalLink::new(format!("/projects/{project}")));
                 embedded.push(serde_json::to_value(&summary).unwrap());
@@ -225,36 +252,28 @@ pub async fn list_roadmaps(
         ResponseFormat::Html => {
             let views: Vec<RoadmapSummaryView> = summaries
                 .into_iter()
-                .map(
-                    |(
-                        slug,
-                        title,
-                        total,
-                        done,
-                        status,
-                        status_class,
-                        last_changed,
-                        priority,
-                        pri_class,
-                    )| {
-                        RoadmapSummaryView {
-                            slug,
-                            title,
-                            total_phases: total,
-                            done_phases: done,
-                            status,
-                            status_class,
-                            last_changed,
-                            priority,
-                            priority_class: pri_class,
-                        }
-                    },
-                )
+                .map(|s| RoadmapSummaryView {
+                    slug: s.slug,
+                    title: s.title,
+                    total_phases: s.total_phases,
+                    done_phases: s.done_phases,
+                    status: s.status,
+                    status_class: s.status_class,
+                    last_changed: s.last_changed,
+                    priority: s.priority,
+                    priority_class: s.priority_class,
+                })
                 .collect();
+            let quick_filters = state.quick_filter_views_for_path(
+                &format!("/projects/{project}/roadmaps"),
+                filters.tag.as_deref(),
+            );
             let page = RoadmapsPage {
                 project,
                 roadmaps: views,
                 show_completed,
+                quick_filters,
+                active_tag: filters.tag,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -265,17 +284,34 @@ pub async fn list_roadmaps(
     }
 }
 
+/// Query parameters for the roadmap detail page (filters the embedded phases).
+#[derive(Debug, Deserialize, Default)]
+pub struct RoadmapDetailFilters {
+    /// Filter the embedded phases section to phases carrying this tag.
+    pub tag: Option<String>,
+}
+
 /// `GET /projects/:project/roadmaps/:roadmap` — roadmap detail with embedded phases.
 pub async fn get_roadmap(
     format: ResponseFormat,
     State(state): State<AppState>,
     Path((project, roadmap)): Path<(String, String)>,
+    Query(filters): Query<RoadmapDetailFilters>,
 ) -> Result<Response, Response> {
     let store = state.store();
     let roadmap_doc = rdm_core::io::load_roadmap(&store, &project, &roadmap)
         .map_err(|e| error_response(e, format))?;
-    let phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
+    let mut phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
         .map_err(|e| error_response(e, format))?;
+
+    if let Some(ref tag) = filters.tag {
+        phases.retain(|(_, doc)| {
+            doc.frontmatter
+                .tags
+                .as_ref()
+                .is_some_and(|tags| tags.iter().any(|t| t == tag))
+        });
+    }
 
     let phase_statuses: Vec<PhaseStatus> = phases
         .iter()
@@ -304,6 +340,7 @@ pub async fn get_roadmap(
                     last_changed: last_changed.clone(),
                     dependencies: roadmap_doc.frontmatter.dependencies,
                     priority: roadmap_doc.frontmatter.priority.map(|p| p.to_string()),
+                    tags: roadmap_doc.frontmatter.tags,
                 },
                 self_href,
             )
@@ -331,6 +368,12 @@ pub async fn get_roadmap(
                 .frontmatter
                 .priority
                 .map(|p| priority_class(&p).to_string());
+            let detail_path = format!(
+                "/projects/{project}/roadmaps/{}",
+                roadmap_doc.frontmatter.roadmap
+            );
+            let quick_filters =
+                state.quick_filter_views_for_path(&detail_path, filters.tag.as_deref());
             let page = RoadmapDetailPage {
                 project,
                 slug: roadmap_doc.frontmatter.roadmap,
@@ -341,8 +384,11 @@ pub async fn get_roadmap(
                 priority,
                 priority_class: pri_class,
                 dependencies: roadmap_doc.frontmatter.dependencies,
+                tags: roadmap_doc.frontmatter.tags,
                 body_html: render_markdown(&roadmap_doc.body),
                 phases: phase_rows,
+                quick_filters,
+                active_tag: filters.tag,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -360,6 +406,7 @@ pub struct CreateRoadmapRequest {
     title: String,
     body: Option<String>,
     priority: Option<String>,
+    tags: Option<Vec<String>>,
 }
 
 /// Parse a priority string into a `Priority`, returning a 422 on invalid values.
@@ -389,7 +436,7 @@ pub async fn create_roadmap(
         &req.title,
         req.body.as_deref(),
         priority,
-        None,
+        req.tags.clone(),
     )
     .map_err(|e| error_response(e, format))?;
     rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
@@ -405,6 +452,7 @@ pub async fn create_roadmap(
                     last_changed: None,
                     dependencies: doc.frontmatter.dependencies,
                     priority: doc.frontmatter.priority.map(|p| p.to_string()),
+                    tags: doc.frontmatter.tags,
                 },
                 &location,
             )
@@ -421,6 +469,8 @@ pub struct UpdateRoadmapRequest {
     priority: Option<String>,
     clear_priority: Option<bool>,
     body: Option<String>,
+    tags: Option<Vec<String>>,
+    clear_tags: Option<bool>,
 }
 
 /// `PATCH /projects/:project/roadmaps/:roadmap` — update a roadmap.
@@ -437,6 +487,11 @@ pub async fn update_roadmap(
             "cannot set both 'priority' and 'clear_priority'".to_string(),
         ));
     }
+    if req.clear_tags.unwrap_or(false) && req.tags.is_some() {
+        return Err(validation_error(
+            "cannot set both 'tags' and 'clear_tags'".to_string(),
+        ));
+    }
 
     let priority = if req.clear_priority.unwrap_or(false) {
         Some(None)
@@ -448,6 +503,12 @@ pub async fn update_roadmap(
             .map(Some)
     };
 
+    let tags = if req.clear_tags.unwrap_or(false) {
+        Some(Vec::new())
+    } else {
+        req.tags
+    };
+
     let mut store = state.store();
     let doc = rdm_core::ops::roadmap::update_roadmap(
         &mut store,
@@ -455,7 +516,7 @@ pub async fn update_roadmap(
         &roadmap,
         req.body.as_deref(),
         priority,
-        None,
+        tags,
     )
     .map_err(|e| error_response(e, format))?;
     rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
@@ -478,6 +539,7 @@ pub async fn update_roadmap(
                     last_changed,
                     dependencies: doc.frontmatter.dependencies,
                     priority: doc.frontmatter.priority.map(|p| p.to_string()),
+                    tags: doc.frontmatter.tags,
                 },
                 &self_href,
             )
@@ -550,6 +612,7 @@ mod tests {
         .unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
         };
         (dir, state)
     }
@@ -997,6 +1060,7 @@ mod tests {
         .unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
+            quick_filters: Vec::new(),
         };
         (dir, state)
     }
@@ -1128,5 +1192,298 @@ mod tests {
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("badge-in-progress"));
         assert!(html.contains("Last changed:"));
+    }
+
+    /// Setup with two roadmaps: `tagged` (tags: foo, bar) and `untagged-rm`.
+    /// `tagged` has phase 1 with tag foo, phase 2 with no tag.
+    fn setup_with_tags() -> (TempDir, AppState) {
+        let dir = TempDir::new().unwrap();
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            "demo",
+            "tagged",
+            "Tagged Roadmap",
+            None,
+            None,
+            Some(vec!["foo".to_string(), "bar".to_string()]),
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "tagged",
+            "first",
+            "First",
+            Some(1),
+            None,
+            Some(vec!["foo".to_string()]),
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "tagged",
+            "second",
+            "Second",
+            Some(2),
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            "demo",
+            "untagged-rm",
+            "Untagged Roadmap",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "demo",
+            "untagged-rm",
+            "only",
+            "Only",
+            Some(1),
+            None,
+            None,
+        )
+        .unwrap();
+        let state = AppState {
+            plan_root: dir.path().to_path_buf(),
+            quick_filters: vec![rdm_core::config::QuickFilter {
+                label: "Foo".to_string(),
+                tag: "foo".to_string(),
+            }],
+        };
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_filter_by_tag_hal() {
+        let (_dir, state) = setup_with_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps?tag=foo")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let roadmaps = json["_embedded"]["roadmaps"].as_array().unwrap();
+        assert_eq!(roadmaps.len(), 1);
+        assert_eq!(roadmaps[0]["slug"], "tagged");
+        // tags appear in the summary
+        let tags = roadmaps[0]["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_unknown_tag_returns_empty() {
+        let (_dir, state) = setup_with_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps?tag=does-not-exist")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["_embedded"]["roadmaps"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_returns_tags_in_detail() {
+        let (_dir, state) = setup_with_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/tagged")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let tags = json["tags"].as_array().unwrap();
+        assert!(tags.iter().any(|t| t == "foo"));
+    }
+
+    #[tokio::test]
+    async fn create_roadmap_persists_tags() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::post("/projects/demo/roadmaps")
+                    .header("accept", "application/hal+json")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"slug":"new","title":"New","tags":["x","y"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 201);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let tags = json["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn update_roadmap_replaces_tags() {
+        let (_dir, state) = setup_with_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::patch("/projects/demo/roadmaps/tagged")
+                    .header("accept", "application/hal+json")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"tags":["only"]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let tags = json["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0], "only");
+    }
+
+    #[tokio::test]
+    async fn update_roadmap_clear_tags() {
+        let (_dir, state) = setup_with_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::patch("/projects/demo/roadmaps/tagged")
+                    .header("accept", "application/hal+json")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"clear_tags":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("tags").is_none() || json["tags"].is_null());
+    }
+
+    #[tokio::test]
+    async fn update_roadmap_conflicting_tag_fields_returns_422() {
+        let (_dir, state) = setup_with_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::patch("/projects/demo/roadmaps/tagged")
+                    .header("accept", "application/hal+json")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"tags":["x"],"clear_tags":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 422);
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_html_renders_quick_filter_chips() {
+        let (_dir, state) = setup_with_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            html.contains("quick-filter-chips"),
+            "should render chip nav"
+        );
+        assert!(
+            html.contains(r#"href="/projects/demo/roadmaps?tag=foo""#),
+            "chip href should target the page with ?tag=<tag>"
+        );
+        assert!(html.contains(">Foo</a>"));
+        // No active highlight when no tag selected.
+        assert!(!html.contains(r#"class="quick-filter-chip active""#));
+        // No "All" link without active filter.
+        assert!(!html.contains("quick-filter-clear"));
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_html_active_chip_highlighted() {
+        let (_dir, state) = setup_with_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps?tag=foo")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains(r#"class="quick-filter-chip active""#));
+        assert!(html.contains(r#"aria-current="true""#));
+        assert!(
+            html.contains("quick-filter-clear"),
+            "should render All link"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_html_filters_phases_by_tag() {
+        let (_dir, state) = setup_with_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/tagged?tag=foo")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        // First phase has tag foo and should appear; second has no tags and should not.
+        assert!(html.contains("phase-1-first"));
+        assert!(!html.contains("phase-2-second"));
     }
 }

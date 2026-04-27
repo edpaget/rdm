@@ -1,7 +1,54 @@
 //! Askama template structs for HTML rendering.
 
 use askama::Template;
+use rdm_core::config::QuickFilter;
 use rdm_core::model::PhaseStatus;
+
+/// A rendered quick-filter chip, paired with the URL it should navigate to.
+pub struct QuickFilterView {
+    /// User-facing label.
+    pub label: String,
+    /// Tag value the chip applies.
+    pub tag: String,
+    /// Pre-built `?tag=<tag>` href targeting the page the chip is rendered on.
+    pub href: String,
+    /// `true` when the page's currently active tag equals this chip's `tag`.
+    pub is_active: bool,
+}
+
+/// Percent-encode a tag value for safe inclusion in a `?tag=` query string.
+///
+/// Encodes everything outside the unreserved set (alphanumerics, `-`, `.`,
+/// `_`, `~`) per RFC 3986. Tag values in practice are alphanumeric+dashes,
+/// but we encode defensively so chips don't break on stray characters.
+pub fn encode_tag_value(tag: &str) -> String {
+    let mut out = String::with_capacity(tag.len());
+    for b in tag.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || b == b'~' {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Build a [`QuickFilterView`] list for a given page path and active tag.
+pub fn quick_filter_views(
+    quick_filters: &[QuickFilter],
+    page_path: &str,
+    active_tag: Option<&str>,
+) -> Vec<QuickFilterView> {
+    quick_filters
+        .iter()
+        .map(|qf| QuickFilterView {
+            label: qf.label.clone(),
+            tag: qf.tag.clone(),
+            href: format!("{page_path}?tag={}", encode_tag_value(&qf.tag)),
+            is_active: active_tag == Some(qf.tag.as_str()),
+        })
+        .collect()
+}
 
 /// Helper to map phase status to CSS badge class.
 pub fn phase_status_class(status: &rdm_core::model::PhaseStatus) -> &'static str {
@@ -102,6 +149,10 @@ pub struct RoadmapsPage {
     pub roadmaps: Vec<RoadmapSummaryView>,
     /// Whether completed roadmaps are currently shown.
     pub show_completed: bool,
+    /// Quick-filter chips for tag presets.
+    pub quick_filters: Vec<QuickFilterView>,
+    /// Currently active `?tag=` filter, if any.
+    pub active_tag: Option<String>,
 }
 
 /// A phase row for the roadmap detail page.
@@ -140,10 +191,16 @@ pub struct RoadmapDetailPage {
     pub priority_class: Option<String>,
     /// Optional dependencies.
     pub dependencies: Option<Vec<String>>,
+    /// Optional roadmap tags.
+    pub tags: Option<Vec<String>>,
     /// Rendered HTML body.
     pub body_html: String,
-    /// Phases in this roadmap.
+    /// Phases in this roadmap (filtered by `active_tag` if set).
     pub phases: Vec<PhaseRow>,
+    /// Quick-filter chips for tag presets.
+    pub quick_filters: Vec<QuickFilterView>,
+    /// Currently active `?tag=` filter, if any.
+    pub active_tag: Option<String>,
 }
 
 /// Phase detail page with rendered markdown body.
@@ -200,6 +257,10 @@ pub struct TaskListPage {
     pub tasks: Vec<TaskRow>,
     /// Whether completed tasks are currently shown.
     pub show_completed: bool,
+    /// Quick-filter chips for tag presets.
+    pub quick_filters: Vec<QuickFilterView>,
+    /// Currently active `?tag=` filter, if any.
+    pub active_tag: Option<String>,
 }
 
 /// Task detail page with rendered markdown body.
@@ -264,4 +325,53 @@ pub struct ErrorPage {
     pub title: String,
     /// Optional detail message.
     pub detail: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_tag_value_passes_through_alphanumerics() {
+        assert_eq!(encode_tag_value("bug"), "bug");
+        assert_eq!(encode_tag_value("ui-work"), "ui-work");
+        assert_eq!(encode_tag_value("v1.2_alpha~beta"), "v1.2_alpha~beta");
+    }
+
+    #[test]
+    fn encode_tag_value_percent_encodes_specials() {
+        assert_eq!(encode_tag_value("a b"), "a%20b");
+        assert_eq!(encode_tag_value("a&b"), "a%26b");
+        assert_eq!(encode_tag_value("a/b"), "a%2Fb");
+    }
+
+    #[test]
+    fn quick_filter_views_marks_active_chip() {
+        let filters = vec![
+            QuickFilter {
+                label: "Bugs".into(),
+                tag: "bug".into(),
+            },
+            QuickFilter {
+                label: "UI".into(),
+                tag: "ui".into(),
+            },
+        ];
+        let views = quick_filter_views(&filters, "/projects/p/tasks", Some("ui"));
+        assert_eq!(views.len(), 2);
+        assert!(!views[0].is_active);
+        assert_eq!(views[0].href, "/projects/p/tasks?tag=bug");
+        assert!(views[1].is_active);
+        assert_eq!(views[1].href, "/projects/p/tasks?tag=ui");
+    }
+
+    #[test]
+    fn quick_filter_views_no_active_when_tag_unmatched() {
+        let filters = vec![QuickFilter {
+            label: "Bugs".into(),
+            tag: "bug".into(),
+        }];
+        let views = quick_filter_views(&filters, "/x", Some("other"));
+        assert!(!views[0].is_active);
+    }
 }

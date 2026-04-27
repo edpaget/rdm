@@ -1,0 +1,16 @@
+{% if !quick_filters.is_empty() %}
+<nav class="quick-filters" aria-label="Quick filters">
+  <ul class="quick-filter-chips">
+  {% for qf in quick_filters %}
+    <li>
+      <a class="quick-filter-chip{% if qf.is_active %} active{% endif %}"
+         href="{{ qf.href }}"
+         {% if qf.is_active %}aria-current="true"{% endif %}>{{ qf.label }}</a>
+    </li>
+  {% endfor %}
+  {% if let Some(_) = active_tag %}
+    <li><a class="quick-filter-clear" href="?">All</a></li>
+  {% endif %}
+  </ul>
+</nav>
+{% endif %}

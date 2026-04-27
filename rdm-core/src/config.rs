@@ -67,6 +67,27 @@ pub struct RemoteConfig {
     pub default: Option<String>,
 }
 
+/// A named tag preset rendered as a clickable chip on the HTTP server's HTML
+/// list views.
+///
+/// Clicking a chip navigates to the same page with `?tag=<tag>` set so the
+/// user filters by tag without typing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuickFilter {
+    /// User-facing label rendered on the chip.
+    pub label: String,
+    /// Tag value to filter by when this chip is clicked.
+    pub tag: String,
+}
+
+/// Configuration for the `rdm serve` HTTP server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ServerConfig {
+    /// Quick-filter chips rendered on the roadmap, phase, and task list views.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quick_filters: Vec<QuickFilter>,
+}
+
 /// Global configuration stored at `~/.config/rdm/config.toml`.
 ///
 /// Fields here act as fallback defaults for repo-level config and CLI flags.
@@ -157,6 +178,10 @@ pub struct Config {
     /// The default branch name for post-commit hook filtering (e.g. `"main"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_branch: Option<String>,
+
+    /// HTTP server configuration (`[server]` table).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<ServerConfig>,
 }
 
 impl Config {
@@ -212,8 +237,50 @@ impl Config {
                 .default_branch
                 .clone()
                 .or_else(|| global.default_branch.clone()),
+            server: self.server.clone(),
         }
     }
+}
+
+/// Parses the `RDM_SERVER_QUICK_FILTERS` env var into a list of [`QuickFilter`].
+///
+/// Format: `Label1:tag1,Label2:tag2`. Whitespace around items and around the
+/// `:` separator is trimmed. Returns `Ok(vec![])` if `value` is empty.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfigValue`] if any item does not contain a `:`
+/// separator, or if either side of the `:` is empty after trimming.
+pub fn parse_quick_filters_env(value: &str) -> Result<Vec<QuickFilter>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    trimmed
+        .split(',')
+        .map(|item| {
+            let (label, tag) = item
+                .split_once(':')
+                .ok_or_else(|| Error::InvalidConfigValue {
+                    key: "RDM_SERVER_QUICK_FILTERS".to_string(),
+                    value: item.to_string(),
+                    valid: "Label:tag (comma-separated for multiple)".to_string(),
+                })?;
+            let label = label.trim();
+            let tag = tag.trim();
+            if label.is_empty() || tag.is_empty() {
+                return Err(Error::InvalidConfigValue {
+                    key: "RDM_SERVER_QUICK_FILTERS".to_string(),
+                    value: item.to_string(),
+                    valid: "Label:tag with non-empty label and tag".to_string(),
+                });
+            }
+            Ok(QuickFilter {
+                label: label.to_string(),
+                tag: tag.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Validates that a `default_format` value (if present) is one of the known formats.
@@ -299,6 +366,71 @@ mod tests {
         let toml_str = r#"default_project = "fbm""#;
         let config = Config::from_toml(toml_str).unwrap();
         assert_eq!(config.remote, None);
+    }
+
+    #[test]
+    fn config_with_quick_filters_round_trip() {
+        let toml_str = r#"
+[server]
+quick_filters = [
+    { label = "Bugs", tag = "bug" },
+    { label = "UI", tag = "ui" },
+]
+"#;
+        let config = Config::from_toml(toml_str).unwrap();
+        let server = config.server.as_ref().expect("server section parsed");
+        assert_eq!(server.quick_filters.len(), 2);
+        assert_eq!(server.quick_filters[0].label, "Bugs");
+        assert_eq!(server.quick_filters[0].tag, "bug");
+        assert_eq!(server.quick_filters[1].label, "UI");
+        assert_eq!(server.quick_filters[1].tag, "ui");
+
+        let serialized = config.to_toml().unwrap();
+        let reparsed = Config::from_toml(&serialized).unwrap();
+        assert_eq!(reparsed, config);
+    }
+
+    #[test]
+    fn parse_quick_filters_env_basic() {
+        let parsed = parse_quick_filters_env("Bugs:bug,UI:ui").unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].label, "Bugs");
+        assert_eq!(parsed[0].tag, "bug");
+        assert_eq!(parsed[1].label, "UI");
+        assert_eq!(parsed[1].tag, "ui");
+    }
+
+    #[test]
+    fn parse_quick_filters_env_trims_whitespace() {
+        let parsed = parse_quick_filters_env("  Bugs : bug , UI : ui  ").unwrap();
+        assert_eq!(parsed[0].label, "Bugs");
+        assert_eq!(parsed[0].tag, "bug");
+        assert_eq!(parsed[1].label, "UI");
+    }
+
+    #[test]
+    fn parse_quick_filters_env_empty() {
+        let parsed = parse_quick_filters_env("").unwrap();
+        assert!(parsed.is_empty());
+        let parsed = parse_quick_filters_env("   ").unwrap();
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn parse_quick_filters_env_missing_separator_rejected() {
+        let err = parse_quick_filters_env("Bugs").unwrap_err();
+        match err {
+            Error::InvalidConfigValue { key, .. } => {
+                assert_eq!(key, "RDM_SERVER_QUICK_FILTERS");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_quick_filters_env_empty_side_rejected() {
+        assert!(parse_quick_filters_env("Bugs:").is_err());
+        assert!(parse_quick_filters_env(":bug").is_err());
     }
 
     #[test]

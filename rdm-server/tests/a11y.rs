@@ -68,6 +68,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
 
     let state = rdm_server::state::AppState {
         plan_root: dir.path().to_path_buf(),
+        quick_filters: Vec::new(),
     };
     let app = rdm_server::router::build_router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

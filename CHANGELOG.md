@@ -18,6 +18,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   any non-empty tag filter. Combine with `--type`, `--status`, etc., or use
   `--tag` with an empty query (`rdm search "" --tag bug`) to list every
   item carrying the tag. JSON results include a `tags` field.
+- HTTP server tag filtering for roadmaps and phases:
+  `GET /projects/<p>/roadmaps?tag=<t>` and the new
+  `GET /projects/<p>/roadmaps/<r>/phases?tag=<t>` endpoint return only items
+  with the given tag. The roadmap detail page also honors `?tag=<t>` to
+  filter the embedded phases section. JSON responses include a `tags` field
+  on roadmap and phase summaries/details. `POST` and `PATCH` bodies for
+  roadmaps and phases now accept `tags: [...]` (and `clear_tags: true` on
+  PATCH) to set, replace, or clear tags.
+- `[server.quick_filters]` in `rdm.toml` defines named tag presets that
+  render as clickable chips on the roadmap, phase, and task list HTML
+  pages. Each chip links to the same page with `?tag=<value>`; the active
+  chip is highlighted and an "All" link clears the filter. Override per-run
+  via `RDM_SERVER_QUICK_FILTERS="Bugs:bug,UI:ui"` (env) or
+  `rdm serve --quick-filter Bugs:bug --quick-filter UI:ui` (repeatable CLI
+  flag). CLI flags > env > toml; higher-precedence sources fully replace
+  lower ones rather than merging.
 
 ## [0.7.1] - 2026-04-24
 
