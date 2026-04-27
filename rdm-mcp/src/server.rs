@@ -212,7 +212,7 @@ struct TaskCreateParams {
     title: String,
     /// Priority: "low", "medium", "high", or "critical". Defaults to "medium".
     priority: Option<String>,
-    /// Optional tags for categorization.
+    /// Optional tags for categorization (e.g. ["bug", "ui"]).
     tags: Option<Vec<String>>,
     /// Optional body content (Markdown).
     body: Option<String>,
@@ -228,7 +228,7 @@ struct TaskUpdateParams {
     status: Option<String>,
     /// New priority: "low", "medium", "high", or "critical".
     priority: Option<String>,
-    /// New tags (replaces existing tags).
+    /// New tags (replaces existing). Pass an empty array to remove all tags.
     tags: Option<Vec<String>>,
     /// New body content (Markdown). Replaces the existing body.
     body: Option<String>,

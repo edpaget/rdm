@@ -1283,10 +1283,15 @@ fn roadmap_update_replaces_tags() {
         serde_json::json!({"project": "test-proj", "roadmap": "rm"}),
     );
     let text = result_text(&show);
-    assert!(text.contains('c'));
+    // Tags render as `Tags: a, b, c` — assert the new tag appears in that
+    // context so we don't false-positive on incidental letters.
     assert!(
-        !text.contains("- a") && !text.contains("[a"),
-        "old tag 'a' should be removed: {text}"
+        text.contains("Tags: c"),
+        "Tags: line should show 'c': {text}"
+    );
+    assert!(
+        !text.contains("Tags: a") && !text.contains(", a") && !text.contains(", b"),
+        "old tags 'a'/'b' should be removed: {text}"
     );
 }
 
@@ -1513,6 +1518,52 @@ fn search_filter_by_tag() {
     assert!(
         !text.contains("Authentication"),
         "untagged roadmap should be excluded by tag filter: {text}"
+    );
+}
+
+#[test]
+fn search_tag_filter_ands_multiple_tags() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Has both `alpha` and `beta` — should match an AND filter on those two.
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "both",
+            "title": "Both Tags",
+            "tags": ["alpha", "beta"],
+        }),
+    );
+    // Has only `alpha` — should be excluded when both `alpha` AND `beta` are required.
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "only-alpha",
+            "title": "Only Alpha",
+            "tags": ["alpha"],
+        }),
+    );
+
+    let response = h.call_tool(
+        "rdm_search",
+        serde_json::json!({
+            "query": "",
+            "project": "test-proj",
+            "tags": ["alpha", "beta"],
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Both Tags"),
+        "roadmap with both tags should match: {text}"
+    );
+    assert!(
+        !text.contains("Only Alpha"),
+        "roadmap with only `alpha` must be excluded by AND filter: {text}"
     );
 }
 
