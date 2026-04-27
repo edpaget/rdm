@@ -148,6 +148,7 @@ pub async fn search_items(
         kind: kind_filter,
         project: Some(project.clone()),
         status: status_filter,
+        tags: None,
         min_score_ratio: params.min_score_ratio,
     };
 

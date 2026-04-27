@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   update`, `phase create`, and `phase update` sets/replaces tags. Tags appear
   in `roadmap show`, `phase show`, and JSON output. Promoting a task
   preserves its tags onto the seed phase.
+- `rdm search --tag <name>` filters results to items carrying the given tag.
+  The flag is repeatable (`--tag bug --tag ui`) and ANDs together — an item
+  must carry every listed tag to match. Items with no tags are excluded by
+  any non-empty tag filter. Combine with `--type`, `--status`, etc., or use
+  `--tag` with an empty query (`rdm search "" --tag bug`) to list every
+  item carrying the tag. JSON results include a `tags` field.
 
 ## [0.7.1] - 2026-04-24
 

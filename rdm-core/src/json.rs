@@ -191,6 +191,9 @@ pub struct SearchResultJson {
     pub snippet: String,
     /// Match score (higher is better).
     pub score: u32,
+    /// Tags carried by the matched item, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +337,7 @@ pub fn search_result_to_json(result: &SearchResult) -> SearchResultJson {
         title: result.title.clone(),
         snippet: result.snippet.clone(),
         score: result.score,
+        tags: result.tags.clone(),
     }
 }
 
@@ -522,6 +526,7 @@ mod tests {
             title: "Fix Bug".to_string(),
             snippet: "...fix the bug...".to_string(),
             score: 42,
+            tags: Some(vec!["bug".to_string()]),
         };
         let json = search_result_to_json(&result);
         assert_eq!(json.kind, ItemKind::Task);
@@ -529,6 +534,7 @@ mod tests {
         assert_eq!(json.project, "acme");
         assert_eq!(json.title, "Fix Bug");
         assert_eq!(json.snippet, "...fix the bug...");
+        assert_eq!(json.tags, Some(vec!["bug".to_string()]));
     }
 
     #[test]

@@ -609,6 +609,7 @@ impl RdmMcpServer {
             kind,
             project: params.project,
             status,
+            tags: None,
             min_score_ratio: None,
         };
 

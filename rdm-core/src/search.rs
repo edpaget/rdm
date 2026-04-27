@@ -55,11 +55,32 @@ pub struct SearchFilter {
     pub project: Option<String>,
     /// Restrict results to items matching a specific status.
     pub status: Option<ItemStatus>,
+    /// Restrict results to items carrying every listed tag (AND semantics).
+    ///
+    /// An item with no tags never matches a non-empty tag filter. Tag
+    /// comparison is exact and case-sensitive — tags are not part of the
+    /// fuzzy score, only a hard pre-filter. `None` and `Some(empty)` apply
+    /// no tag constraint.
+    pub tags: Option<Vec<String>>,
     /// Minimum score as a fraction of the top result's score (0.0–1.0).
     ///
     /// Results scoring below `top_score * ratio` are dropped. Defaults to
     /// [`DEFAULT_MIN_SCORE_RATIO`] (0.25). Set to `Some(0.0)` to disable.
     pub min_score_ratio: Option<f64>,
+}
+
+/// Returns `true` if `item_tags` contains every tag in `required`.
+///
+/// `required` empty → always matches. An item with `None` tags never
+/// matches a non-empty `required`.
+fn matches_required_tags(item_tags: Option<&Vec<String>>, required: &[String]) -> bool {
+    if required.is_empty() {
+        return true;
+    }
+    match item_tags {
+        None => false,
+        Some(tags) => required.iter().all(|t| tags.iter().any(|it| it == t)),
+    }
 }
 
 /// A single search result.
@@ -77,6 +98,9 @@ pub struct SearchResult {
     pub snippet: String,
     /// Match score (higher is better).
     pub score: u32,
+    /// Tags carried by the matched item, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
 }
 
 /// Searches the plan repo for items matching `query` with optional filters.
@@ -111,6 +135,8 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
             continue;
         }
 
+        let required_tags: &[String] = filter.tags.as_deref().unwrap_or(&[]);
+
         // Search roadmaps (roadmaps have no status; skip when a status filter is active)
         if (filter.kind.is_none() || filter.kind == Some(ItemKind::Roadmap))
             && filter.status.is_none()
@@ -118,6 +144,9 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
         {
             for doc in &roadmaps {
                 let rm = &doc.frontmatter;
+                if !matches_required_tags(rm.tags.as_ref(), required_tags) {
+                    continue;
+                }
                 if let Some(result) = score_item(
                     &pattern,
                     &mut matcher,
@@ -127,6 +156,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                     project,
                     &rm.title,
                     &doc.body,
+                    rm.tags.as_ref(),
                 ) {
                     results.push(result);
                 }
@@ -146,6 +176,12 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                         {
                             continue;
                         }
+                        if !matches_required_tags(
+                            phase_doc.frontmatter.tags.as_ref(),
+                            required_tags,
+                        ) {
+                            continue;
+                        }
                         let identifier = format!("{roadmap_slug}/{stem}");
                         if let Some(result) = score_item(
                             &pattern,
@@ -156,6 +192,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                             project,
                             &phase_doc.frontmatter.title,
                             &phase_doc.body,
+                            phase_doc.frontmatter.tags.as_ref(),
                         ) {
                             results.push(result);
                         }
@@ -174,6 +211,9 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                 {
                     continue;
                 }
+                if !matches_required_tags(task_doc.frontmatter.tags.as_ref(), required_tags) {
+                    continue;
+                }
                 if let Some(result) = score_item(
                     &pattern,
                     &mut matcher,
@@ -183,6 +223,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                     project,
                     &task_doc.frontmatter.title,
                     &task_doc.body,
+                    task_doc.frontmatter.tags.as_ref(),
                 ) {
                     results.push(result);
                 }
@@ -208,6 +249,10 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
 }
 
 /// Scores a single item against the pattern and returns a `SearchResult` if it matches.
+///
+/// `tags` are passed through to the result for display/JSON output but are
+/// not part of the score — tag filtering is handled before this call as a
+/// hard pre-filter.
 #[allow(clippy::too_many_arguments)]
 fn score_item(
     pattern: &Pattern,
@@ -218,6 +263,7 @@ fn score_item(
     project: &str,
     title: &str,
     body: &str,
+    tags: Option<&Vec<String>>,
 ) -> Option<SearchResult> {
     let title_score = pattern.score(Utf32Str::new(title, buf), matcher);
     let body_score = pattern.score(Utf32Str::new(body, buf), matcher);
@@ -242,6 +288,7 @@ fn score_item(
         title: title.to_string(),
         snippet,
         score: best_score,
+        tags: tags.cloned(),
     })
 }
 
@@ -480,7 +527,7 @@ mod tests {
         // "search" appears in the title of "Add Search Feature" and in the body
         // The title match should score higher.
         let results = search(&store, "search", &filter).unwrap();
-        assert!(results.len() >= 1, "Expected at least one result");
+        assert!(!results.is_empty(), "Expected at least one result");
 
         // Verify descending score order
         for window in results.windows(2) {
@@ -631,6 +678,273 @@ mod tests {
         assert!(
             results.len() >= 2,
             "Expected at least 2 phase results for 'Widget' with 0.25 cutoff, got: {results:?}"
+        );
+    }
+
+    /// Builds a store seeded with tagged items spanning all three kinds.
+    ///
+    /// Layout:
+    /// - roadmap `rust-cleanup` tagged `[refactor, rust]`
+    ///   - phase 1 `rust-fmt` tagged `[refactor]`
+    ///   - phase 2 `rust-clippy` tagged `[refactor, lint]`
+    /// - roadmap `untagged-roadmap` (no tags)
+    ///   - phase 1 `untagged-phase` (no tags)
+    /// - task `bug-fix` tagged `[bug, refactor]`
+    /// - task `untagged-task` (no tags)
+    fn setup_tag_store() -> MemoryStore {
+        let mut store = MemoryStore::new();
+        crate::ops::init::init(&mut store).unwrap();
+        crate::ops::project::create_project(&mut store, "p", "P").unwrap();
+
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            "p",
+            "rust-cleanup",
+            "Rust Cleanup",
+            None,
+            None,
+            Some(vec!["refactor".to_string(), "rust".to_string()]),
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            "p",
+            "rust-cleanup",
+            "fmt",
+            "Rust Fmt",
+            Some(1),
+            None,
+            Some(vec!["refactor".to_string()]),
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            "p",
+            "rust-cleanup",
+            "clippy",
+            "Rust Clippy",
+            Some(2),
+            None,
+            Some(vec!["refactor".to_string(), "lint".to_string()]),
+        )
+        .unwrap();
+
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            "p",
+            "untagged-roadmap",
+            "Untagged Roadmap",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            "p",
+            "untagged-roadmap",
+            "phase",
+            "Untagged Phase",
+            Some(1),
+            None,
+            None,
+        )
+        .unwrap();
+
+        crate::ops::task::create_task(
+            &mut store,
+            "p",
+            "bug-fix",
+            "Bug Fix Task",
+            Priority::Medium,
+            Some(vec!["bug".to_string(), "refactor".to_string()]),
+            None,
+        )
+        .unwrap();
+        crate::ops::task::create_task(
+            &mut store,
+            "p",
+            "untagged-task",
+            "Untagged Task",
+            Priority::Medium,
+            None,
+            None,
+        )
+        .unwrap();
+
+        store
+    }
+
+    #[test]
+    fn matches_required_tags_helper() {
+        let tags = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        // Empty required matches anything (including None).
+        assert!(matches_required_tags(None, &[]));
+        assert!(matches_required_tags(Some(&tags), &[]));
+        // Non-empty required: None never matches.
+        assert!(!matches_required_tags(None, &["a".to_string()]));
+        // Subset matches.
+        assert!(matches_required_tags(Some(&tags), &["a".to_string()]));
+        assert!(matches_required_tags(
+            Some(&tags),
+            &["a".to_string(), "c".to_string()]
+        ));
+        // Missing tag fails AND.
+        assert!(!matches_required_tags(
+            Some(&tags),
+            &["a".to_string(), "z".to_string()]
+        ));
+    }
+
+    #[test]
+    fn tag_filter_matches_tasks() {
+        let store = setup_tag_store();
+        let filter = SearchFilter {
+            tags: Some(vec!["bug".to_string()]),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results = search(&store, "task", &filter).unwrap();
+        assert!(
+            results.iter().any(|r| r.identifier == "bug-fix"),
+            "Expected tagged task 'bug-fix' to match, got: {results:?}"
+        );
+        assert!(
+            !results.iter().any(|r| r.identifier == "untagged-task"),
+            "Untagged task must not match a non-empty tag filter"
+        );
+    }
+
+    #[test]
+    fn tag_filter_matches_phases_and_roadmaps() {
+        let store = setup_tag_store();
+        let filter = SearchFilter {
+            tags: Some(vec!["refactor".to_string()]),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results = search(&store, "rust", &filter).unwrap();
+
+        let has =
+            |kind: ItemKind, id: &str| results.iter().any(|r| r.kind == kind && r.identifier == id);
+
+        assert!(
+            has(ItemKind::Roadmap, "rust-cleanup"),
+            "Expected roadmap rust-cleanup with tag refactor, got: {results:?}"
+        );
+        assert!(
+            has(ItemKind::Phase, "rust-cleanup/phase-1-fmt"),
+            "Expected phase fmt with tag refactor"
+        );
+        assert!(
+            has(ItemKind::Phase, "rust-cleanup/phase-2-clippy"),
+            "Expected phase clippy with tag refactor"
+        );
+        // Untagged roadmap and phase must be excluded.
+        assert!(
+            !has(ItemKind::Roadmap, "untagged-roadmap"),
+            "Untagged roadmap must be excluded"
+        );
+    }
+
+    #[test]
+    fn tag_filter_and_semantics() {
+        let store = setup_tag_store();
+        // Both `refactor` and `lint` — only the clippy phase qualifies.
+        let filter = SearchFilter {
+            tags: Some(vec!["refactor".to_string(), "lint".to_string()]),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results = search(&store, "rust", &filter).unwrap();
+        assert!(
+            results
+                .iter()
+                .any(|r| r.identifier == "rust-cleanup/phase-2-clippy"),
+            "Expected clippy phase to match both tags"
+        );
+        assert!(
+            !results
+                .iter()
+                .any(|r| r.identifier == "rust-cleanup/phase-1-fmt"),
+            "fmt phase has only `refactor`, not `lint`; must be excluded"
+        );
+        assert!(
+            !results.iter().any(|r| r.identifier == "rust-cleanup"),
+            "rust-cleanup roadmap has refactor+rust but not lint; must be excluded"
+        );
+    }
+
+    #[test]
+    fn tag_filter_combined_with_kind() {
+        let store = setup_tag_store();
+        let filter = SearchFilter {
+            kind: Some(ItemKind::Task),
+            tags: Some(vec!["refactor".to_string()]),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results = search(&store, "task", &filter).unwrap();
+        // Only the bug-fix task carries `refactor`; phases/roadmaps are excluded by kind.
+        for r in &results {
+            assert_eq!(r.kind, ItemKind::Task);
+        }
+        assert!(results.iter().any(|r| r.identifier == "bug-fix"));
+    }
+
+    #[test]
+    fn tag_filter_empty_query_returns_all_tagged() {
+        // Empty query + tag filter: every tagged item matches; relevance cutoff
+        // at 0.0 ensures none are dropped. Validates the "tag-only" UX.
+        let store = setup_tag_store();
+        let filter = SearchFilter {
+            tags: Some(vec!["refactor".to_string()]),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results = search(&store, "", &filter).unwrap();
+        let has_id = |id: &str| results.iter().any(|r| r.identifier == id);
+        assert!(has_id("rust-cleanup"), "got: {results:?}");
+        assert!(has_id("rust-cleanup/phase-1-fmt"));
+        assert!(has_id("rust-cleanup/phase-2-clippy"));
+        assert!(has_id("bug-fix"));
+        assert!(!has_id("untagged-task"));
+        assert!(!has_id("untagged-roadmap"));
+    }
+
+    #[test]
+    fn tag_filter_results_carry_tags() {
+        let store = setup_tag_store();
+        let filter = SearchFilter {
+            tags: Some(vec!["bug".to_string()]),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results = search(&store, "task", &filter).unwrap();
+        let bug = results
+            .iter()
+            .find(|r| r.identifier == "bug-fix")
+            .expect("bug-fix should be in results");
+        assert_eq!(
+            bug.tags.as_ref().expect("bug-fix has tags"),
+            &vec!["bug".to_string(), "refactor".to_string()]
+        );
+    }
+
+    #[test]
+    fn empty_tags_vec_treated_as_no_filter() {
+        // `Some(vec![])` should behave like `None` — no constraint applied.
+        let store = setup_tag_store();
+        let filter = SearchFilter {
+            tags: Some(vec![]),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results = search(&store, "task", &filter).unwrap();
+        // Should include the untagged task too since no constraint.
+        assert!(
+            results.iter().any(|r| r.identifier == "untagged-task"),
+            "Empty tags vec should not filter out untagged items"
         );
     }
 

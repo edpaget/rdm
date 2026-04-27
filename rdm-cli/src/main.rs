@@ -176,6 +176,9 @@ enum Command {
         /// Filter by project.
         #[arg(long)]
         project: Option<String>,
+        /// Filter by tag. Repeat to require multiple tags (AND).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
         /// Maximum number of results to return.
         #[arg(long, default_value = "20")]
         limit: usize,
@@ -1212,6 +1215,7 @@ fn run() -> Result<()> {
             kind,
             status,
             project,
+            tags,
             limit,
             min_score_ratio,
         } => {
@@ -1224,6 +1228,7 @@ fn run() -> Result<()> {
                 kind: kind.map(ItemKind::from),
                 project,
                 status: item_status,
+                tags: if tags.is_empty() { None } else { Some(tags) },
                 min_score_ratio: Some(min_score_ratio),
             };
             let results = search::search(&store, &query, &filter).context("search failed")?;

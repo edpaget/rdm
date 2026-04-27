@@ -1063,6 +1063,7 @@ mod tests {
             title: "Fix Bug".to_string(),
             snippet: "Fix the login bug".to_string(),
             score: 100,
+            tags: None,
         }];
         let output = format_search_results_md(&results);
         assert!(output.contains("## Search Results"));
