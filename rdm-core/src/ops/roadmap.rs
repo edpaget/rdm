@@ -8,7 +8,8 @@ use crate::store::{DirEntryKind, RelPath, Store};
 /// Creates a new roadmap within a project.
 ///
 /// `body` sets the markdown body below the frontmatter. Pass `None` for
-/// an empty body. `priority` sets an optional priority level.
+/// an empty body. `priority` sets an optional priority level. `tags`
+/// sets optional tags for categorization.
 ///
 /// # Errors
 ///
@@ -23,6 +24,7 @@ pub fn create_roadmap(
     title: &str,
     body: Option<&str>,
     priority: Option<Priority>,
+    tags: Option<Vec<String>>,
 ) -> Result<Document<Roadmap>> {
     if !store.exists(&crate::paths::project_md_path(project)) {
         return Err(Error::ProjectNotFound(project.to_string()));
@@ -40,6 +42,7 @@ pub fn create_roadmap(
             phases: Vec::new(),
             dependencies: None,
             priority,
+            tags,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -48,11 +51,13 @@ pub fn create_roadmap(
     Ok(doc)
 }
 
-/// Updates a roadmap's body and/or priority.
+/// Updates a roadmap's body, priority, and/or tags.
 ///
 /// When `body` is `Some`, replaces the existing body; `None` preserves it.
 /// When `priority` is `Some(p)`, sets the priority to `p` (use
 /// `Some(None)` to clear); `None` preserves the existing value.
+/// When `tags` is `Some(non_empty)`, replaces existing tags; `Some(empty)`
+/// clears tags; `None` preserves the existing value.
 ///
 /// # Errors
 ///
@@ -66,6 +71,7 @@ pub fn update_roadmap(
     slug: &str,
     body: Option<&str>,
     priority: Option<Option<Priority>>,
+    tags: Option<Vec<String>>,
 ) -> Result<Document<Roadmap>> {
     let path = crate::paths::roadmap_path(project, slug);
     if !store.exists(&path) {
@@ -78,6 +84,9 @@ pub fn update_roadmap(
     }
     if let Some(p) = priority {
         doc.frontmatter.priority = p;
+    }
+    if let Some(t) = tags {
+        doc.frontmatter.tags = if t.is_empty() { None } else { Some(t) };
     }
     crate::io::write_roadmap(store, project, slug, &doc)?;
     store.commit()?;
@@ -576,6 +585,7 @@ pub fn split_roadmap(
             phases: target_phase_stems,
             dependencies: None,
             priority: None,
+            tags: None,
         },
         body: String::new(),
     };

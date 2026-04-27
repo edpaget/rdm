@@ -24,6 +24,7 @@ pub fn run(
             roadmap,
             project,
             number,
+            tags,
             body,
             no_edit,
         } => {
@@ -38,6 +39,7 @@ pub fn run(
                 title,
                 number,
                 body.as_deref(),
+                tags,
             )
             .context("failed to create phase")?;
             let stem = doc.frontmatter.stem(&slug);
@@ -131,6 +133,7 @@ pub fn run(
             status,
             roadmap,
             project,
+            tags,
             body,
             commit,
             no_edit,
@@ -148,6 +151,7 @@ pub fn run(
                 &roadmap,
                 &stem,
                 status,
+                tags,
                 body.as_deref(),
                 commit,
             )

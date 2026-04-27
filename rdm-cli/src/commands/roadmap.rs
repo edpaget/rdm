@@ -22,6 +22,7 @@ pub fn run(
             title,
             project,
             priority,
+            tags,
             body,
             no_edit,
         } => {
@@ -35,6 +36,7 @@ pub fn run(
                 title,
                 body.as_deref(),
                 priority,
+                tags,
             )
             .context("failed to create roadmap")?;
             println!("Created roadmap '{slug}' in project '{project}'");
@@ -79,6 +81,7 @@ pub fn run(
             project,
             priority,
             clear_priority,
+            tags,
             body,
             no_edit,
         } => {
@@ -95,6 +98,7 @@ pub fn run(
                 &slug,
                 body.as_deref(),
                 priority,
+                tags,
             )
             .context("failed to update roadmap")?;
             println!("Updated '{slug}'");

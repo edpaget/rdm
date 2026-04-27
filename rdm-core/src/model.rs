@@ -212,6 +212,9 @@ pub struct Phase {
     pub title: String,
     /// Current status.
     pub status: PhaseStatus,
+    /// Optional tags for categorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
     /// Date the phase was completed, if applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed: Option<NaiveDate>,
@@ -273,6 +276,9 @@ pub struct Roadmap {
     /// Optional priority level for the roadmap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
+    /// Optional tags for categorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -441,6 +447,62 @@ status: not-started
     }
 
     #[test]
+    fn phase_deserialize_with_tags() {
+        let yaml = r#"
+phase: 1
+title: Core valuation layer
+status: not-started
+tags: [infra, search]
+"#;
+        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            phase.tags,
+            Some(vec!["infra".to_string(), "search".to_string()])
+        );
+    }
+
+    #[test]
+    fn phase_deserialize_without_tags() {
+        let yaml = r#"
+phase: 2
+title: Keeper service threading
+status: not-started
+"#;
+        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(phase.tags, None);
+    }
+
+    #[test]
+    fn roadmap_deserialize_with_tags() {
+        let yaml = r#"
+project: fbm
+roadmap: tagged
+title: Tagged Roadmap
+phases:
+  - phase-1-only
+tags: [api, mcp]
+"#;
+        let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            roadmap.tags,
+            Some(vec!["api".to_string(), "mcp".to_string()])
+        );
+    }
+
+    #[test]
+    fn roadmap_deserialize_without_tags() {
+        let yaml = r#"
+project: fbm
+roadmap: solo
+title: Solo Roadmap
+phases:
+  - phase-1-only
+"#;
+        let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(roadmap.tags, None);
+    }
+
+    #[test]
     fn task_deserialize_with_tags() {
         let yaml = r#"
 project: fbm
@@ -545,6 +607,7 @@ phases:
             phases: vec!["phase-1".to_string()],
             dependencies: None,
             priority: Some(Priority::Critical),
+            tags: None,
         };
         let yaml = serde_yaml::to_string(&roadmap).unwrap();
         assert!(yaml.contains("priority: critical"));
@@ -559,6 +622,7 @@ phases:
             phases: vec!["phase-1".to_string()],
             dependencies: None,
             priority: None,
+            tags: None,
         };
         let yaml = serde_yaml::to_string(&roadmap).unwrap();
         assert!(!yaml.contains("priority"));

@@ -193,6 +193,7 @@ pub fn promote_task(
             phases: vec![phase_slug.clone()],
             dependencies: None,
             priority: None,
+            tags: None,
         },
         body: roadmap_body,
     };
@@ -203,6 +204,7 @@ pub fn promote_task(
             phase: 1,
             title: task_doc.frontmatter.title,
             status: PhaseStatus::NotStarted,
+            tags: task_doc.frontmatter.tags.clone(),
             completed: None,
             commit: None,
         },

@@ -248,6 +248,7 @@ pub fn apply_done_directives(
                     &stem,
                     Some(rdm_core::model::PhaseStatus::Done),
                     None,
+                    None,
                     Some(sha.clone()),
                 );
             }

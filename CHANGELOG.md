@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Tags on roadmaps and phases. `--tags <csv>` on `roadmap create`, `roadmap
+  update`, `phase create`, and `phase update` sets/replaces tags. Tags appear
+  in `roadmap show`, `phase show`, and JSON output. Promoting a task
+  preserves its tags onto the seed phase.
+
 ## [0.7.1] - 2026-04-24
 
 ### Fixed

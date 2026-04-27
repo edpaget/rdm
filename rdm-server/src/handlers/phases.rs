@@ -124,6 +124,7 @@ pub async fn create_phase(
         &req.title,
         req.number,
         req.body.as_deref(),
+        None,
     )
     .map_err(|e| error_response(e, format))?;
     rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
@@ -188,6 +189,7 @@ pub async fn update_phase(
         &roadmap,
         &stem,
         status,
+        None,
         req.body.as_deref(),
         None,
     )
@@ -230,8 +232,10 @@ mod tests {
         let mut store = rdm_store_fs::FsStore::new(dir.path());
         rdm_core::ops::init::init(&mut store).unwrap();
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
-        rdm_core::ops::roadmap::create_roadmap(&mut store, "demo", "alpha", "Alpha", None, None)
-            .unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store, "demo", "alpha", "Alpha", None, None, None,
+        )
+        .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
             "demo",
@@ -239,6 +243,7 @@ mod tests {
             "first",
             "First",
             Some(1),
+            None,
             None,
         )
         .unwrap();
@@ -250,6 +255,7 @@ mod tests {
             "Second",
             Some(2),
             Some("## Details\n\nSome **bold** text.\n"),
+            None,
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
@@ -259,6 +265,7 @@ mod tests {
             "third",
             "Third",
             Some(3),
+            None,
             None,
         )
         .unwrap();

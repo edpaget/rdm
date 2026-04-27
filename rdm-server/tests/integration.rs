@@ -21,6 +21,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         "API Roadmap",
         Some("API roadmap body."),
         None,
+        None,
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
@@ -31,6 +32,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         "Design Phase",
         Some(1),
         Some("Design details."),
+        None,
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
@@ -41,6 +43,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         "Build Phase",
         Some(2),
         None,
+        None,
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -49,6 +52,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         "api",
         "phase-1-design",
         Some(PhaseStatus::Done),
+        None,
         None,
         None,
     )

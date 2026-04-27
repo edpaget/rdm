@@ -50,7 +50,7 @@ pub fn list_phases(
 ///
 /// If `phase_number` is `None`, auto-assigns the next number.
 /// `body` sets the markdown body below the frontmatter. Pass `None` for
-/// an empty body.
+/// an empty body. `tags` sets optional tags for categorization.
 ///
 /// # Errors
 ///
@@ -58,6 +58,7 @@ pub fn list_phases(
 /// [`Error::DuplicateSlug`] if a phase with the same stem already exists,
 /// [`Error::Io`] if file creation fails, or
 /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
+#[allow(clippy::too_many_arguments)]
 pub fn create_phase(
     store: &mut impl Store,
     project: &str,
@@ -66,6 +67,7 @@ pub fn create_phase(
     title: &str,
     phase_number: Option<u32>,
     body: Option<&str>,
+    tags: Option<Vec<String>>,
 ) -> Result<Document<Phase>> {
     let roadmap_file = crate::paths::roadmap_path(project, roadmap);
     if !store.exists(&roadmap_file) {
@@ -94,6 +96,7 @@ pub fn create_phase(
             phase: number,
             title: title.to_string(),
             status: PhaseStatus::NotStarted,
+            tags,
             completed: None,
             commit: None,
         },
@@ -110,12 +113,14 @@ pub fn create_phase(
     Ok(doc)
 }
 
-/// Updates a phase's status, body, and/or commit SHA.
+/// Updates a phase's status, tags, body, and/or commit SHA.
 ///
 /// When `status` is `Some(Done)`, auto-sets `completed` to today and stores
 /// the optional `commit` SHA. When `status` is `Some` but not `Done`,
 /// clears both `completed` and `commit`. When `status` is `None`, the
 /// existing status, `completed`, and `commit` are preserved.
+/// When `tags` is `Some(non_empty)`, replaces existing tags; `Some(empty)`
+/// clears tags; `None` preserves the existing value.
 /// When `body` is `Some`, replaces the existing body; `None` preserves it.
 ///
 /// # Errors
@@ -124,12 +129,14 @@ pub fn create_phase(
 /// [`Error::Io`] if reading or writing fails, or
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
 /// existing phase file has invalid frontmatter.
+#[allow(clippy::too_many_arguments)]
 pub fn update_phase(
     store: &mut impl Store,
     project: &str,
     roadmap: &str,
     phase_stem: &str,
     status: Option<PhaseStatus>,
+    tags: Option<Vec<String>>,
     body: Option<&str>,
     commit: Option<String>,
 ) -> Result<Document<Phase>> {
@@ -155,6 +162,9 @@ pub fn update_phase(
                 doc.frontmatter.commit = None;
             }
         }
+    }
+    if let Some(t) = tags {
+        doc.frontmatter.tags = if t.is_empty() { None } else { Some(t) };
     }
     if let Some(b) = body {
         doc.body = b.to_string();

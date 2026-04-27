@@ -12,8 +12,16 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
     rdm_core::ops::init::init(&mut store).unwrap();
 
     rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "demo", "api", "API Roadmap", None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        "demo",
+        "api",
+        "API Roadmap",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
         "demo",
@@ -22,6 +30,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         "Design Phase",
         Some(1),
         Some("Details."),
+        None,
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
@@ -32,6 +41,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         "Build Phase",
         Some(2),
         None,
+        None,
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -40,6 +50,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         "api",
         "phase-1-design",
         Some(PhaseStatus::Done),
+        None,
         None,
         None,
     )

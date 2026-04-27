@@ -31,6 +31,9 @@ pub struct RoadmapJson {
     /// Priority level, if set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
+    /// Tags for categorization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
     /// Markdown body content.
     pub body: String,
 }
@@ -46,6 +49,9 @@ pub struct PhaseJson {
     pub title: String,
     /// Current status.
     pub status: PhaseStatus,
+    /// Tags for categorization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
     /// Completion date, if done.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed: Option<NaiveDate>,
@@ -112,6 +118,9 @@ pub struct RoadmapSummaryJson {
     /// Priority level, if set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
+    /// Tags for categorization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
 }
 
 /// Phase summary for list output.
@@ -125,6 +134,9 @@ pub struct PhaseSummaryJson {
     pub title: String,
     /// Current status.
     pub status: PhaseStatus,
+    /// Tags for categorization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
 }
 
 /// Task summary for list output.
@@ -201,6 +213,7 @@ pub fn roadmap_to_json(
             .collect(),
         dependencies: rm.dependencies.clone(),
         priority: rm.priority,
+        tags: rm.tags.clone(),
         body: doc.body.clone(),
     }
 }
@@ -221,6 +234,7 @@ pub fn phase_to_json(
         phase: fm.phase,
         title: fm.title.clone(),
         status: fm.status,
+        tags: fm.tags.clone(),
         completed: fm.completed,
         commit: fm.commit.clone(),
         roadmap: roadmap.to_string(),
@@ -272,6 +286,7 @@ pub fn roadmap_summary_to_json(
         done_phases: done,
         progress,
         priority: rm.priority,
+        tags: rm.tags.clone(),
     }
 }
 
@@ -283,6 +298,7 @@ pub fn phase_summary_to_json(stem: &str, doc: &Document<Phase>) -> PhaseSummaryJ
         stem: stem.to_string(),
         title: fm.title.clone(),
         status: fm.status,
+        tags: fm.tags.clone(),
     }
 }
 
@@ -333,6 +349,7 @@ mod tests {
                 phase: num,
                 title: title.to_string(),
                 status,
+                tags: None,
                 completed: if status == PhaseStatus::Done {
                     Some(NaiveDate::from_ymd_opt(2026, 3, 14).unwrap())
                 } else {
@@ -353,6 +370,7 @@ mod tests {
                 phases: Vec::new(),
                 dependencies: None,
                 priority: None,
+                tags: None,
             },
             body: String::new(),
         }
@@ -447,6 +465,37 @@ mod tests {
         let pj = phase_to_json("phase-1-x", &phase_doc, "rm", None, None);
         let serialized = serde_json::to_string(&pj).unwrap();
         assert!(!serialized.contains("completed"));
+        assert!(!serialized.contains("tags"));
+
+        let psj = phase_summary_to_json("phase-1-x", &phase_doc);
+        let serialized = serde_json::to_string(&psj).unwrap();
+        assert!(!serialized.contains("tags"));
+
+        let rm_doc = make_roadmap_doc("acme", "alpha", "Alpha");
+        let rj = roadmap_to_json(&rm_doc, &[]);
+        let serialized = serde_json::to_string(&rj).unwrap();
+        assert!(!serialized.contains("tags"));
+
+        let rsj = roadmap_summary_to_json(&rm_doc, &[]);
+        let serialized = serde_json::to_string(&rsj).unwrap();
+        assert!(!serialized.contains("tags"));
+    }
+
+    #[test]
+    fn roadmap_and_phase_tags_round_trip_through_json() {
+        let mut rm_doc = make_roadmap_doc("acme", "alpha", "Alpha");
+        rm_doc.frontmatter.tags = Some(vec!["api".to_string(), "mcp".to_string()]);
+        let rj = roadmap_to_json(&rm_doc, &[]);
+        assert_eq!(rj.tags, Some(vec!["api".to_string(), "mcp".to_string()]));
+        let rsj = roadmap_summary_to_json(&rm_doc, &[]);
+        assert_eq!(rsj.tags, Some(vec!["api".to_string(), "mcp".to_string()]));
+
+        let mut p_doc = make_phase_doc(1, "X", PhaseStatus::NotStarted);
+        p_doc.frontmatter.tags = Some(vec!["infra".to_string()]);
+        let pj = phase_to_json("phase-1-x", &p_doc, "rm", None, None);
+        assert_eq!(pj.tags, Some(vec!["infra".to_string()]));
+        let psj = phase_summary_to_json("phase-1-x", &p_doc);
+        assert_eq!(psj.tags, Some(vec!["infra".to_string()]));
     }
 
     #[test]

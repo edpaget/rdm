@@ -234,6 +234,7 @@ mod tests {
             "Widget Launch",
             Some("Launch widgets."),
             None,
+            None,
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
@@ -244,6 +245,7 @@ mod tests {
             "Design the Widget",
             Some(1),
             Some("Create mockups and wireframes."),
+            None,
         )
         .unwrap();
         rdm_core::ops::task::create_task(

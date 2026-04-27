@@ -282,6 +282,7 @@ mod tests {
             "Widget Launch",
             Some("Launch the new widget product line."),
             None,
+            None,
         )
         .unwrap();
 
@@ -294,6 +295,7 @@ mod tests {
             "Design the Widget",
             Some(1),
             Some("Create mockups and wireframes for the widget."),
+            None,
         )
         .unwrap();
         crate::ops::phase::create_phase(
@@ -304,6 +306,7 @@ mod tests {
             "Implement the Widget",
             Some(2),
             Some("Build the widget according to the design specifications."),
+            None,
         )
         .unwrap();
 
@@ -314,6 +317,7 @@ mod tests {
             "widget-launch",
             "phase-1-design",
             Some(PhaseStatus::Done),
+            None,
             None,
             None,
         )

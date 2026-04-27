@@ -226,6 +226,7 @@ mod tests {
                 phases: vec![],
                 dependencies: None,
                 priority: None,
+                tags: None,
             },
             body: "Roadmap body.".to_string(),
         };
@@ -252,6 +253,7 @@ mod tests {
                 phase: 1,
                 title: "Phase One".to_string(),
                 status: PhaseStatus::NotStarted,
+                tags: None,
                 completed: None,
                 commit: None,
             },

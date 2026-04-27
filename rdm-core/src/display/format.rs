@@ -45,6 +45,9 @@ pub fn format_roadmap_summary(
     if let Some(priority) = roadmap.priority {
         d.paragraph(&format!("Priority: {priority}"));
     }
+    if let Some(tags) = &roadmap.tags {
+        d.paragraph(&format!("Tags: {}", tags.join(", ")));
+    }
 
     if phases.is_empty() {
         d.push(ast::Block::BlankLine);
@@ -111,6 +114,9 @@ pub fn format_phase_detail(
     }
     if let Some(ref sha) = fm.commit {
         d.paragraph(&format!("Commit: {sha}"));
+    }
+    if let Some(tags) = &fm.tags {
+        d.paragraph(&format!("Tags: {}", tags.join(", ")));
     }
     if !doc.body.is_empty() {
         d.push(ast::Block::BlankLine);
@@ -323,6 +329,9 @@ pub fn format_roadmap_summary_md(
     if let Some(priority) = roadmap.priority {
         out.push_str(&format!("- **Priority:** {priority}\n"));
     }
+    if let Some(tags) = &roadmap.tags {
+        out.push_str(&format!("- **Tags:** {}\n", tags.join(", ")));
+    }
 
     if phases.is_empty() {
         out.push_str("\nNo phases yet.\n");
@@ -410,6 +419,9 @@ pub fn format_phase_detail_md(
     }
     if let Some(ref sha) = fm.commit {
         out.push_str(&format!("- **Commit:** {sha}\n"));
+    }
+    if let Some(tags) = &fm.tags {
+        out.push_str(&format!("- **Tags:** {}\n", tags.join(", ")));
     }
     if !doc.body.is_empty() {
         out.push_str(&format!("\n{}", doc.body));
@@ -536,6 +548,7 @@ mod tests {
                 phase: num,
                 title: title.to_string(),
                 status,
+                tags: None,
                 completed: if status == PhaseStatus::Done {
                     Some(NaiveDate::from_ymd_opt(2026, 3, 14).unwrap())
                 } else {
@@ -555,6 +568,7 @@ mod tests {
             phases: Vec::new(),
             dependencies: None,
             priority: None,
+            tags: None,
         }
     }
 
@@ -645,6 +659,21 @@ mod tests {
     }
 
     #[test]
+    fn roadmap_summary_with_tags() {
+        let mut doc = make_roadmap_doc("fbm", "tagged", "Tagged");
+        doc.frontmatter.tags = Some(vec!["api".to_string(), "mcp".to_string()]);
+        let output = format_roadmap_summary(&doc, &[]);
+        assert!(output.contains("Tags: api, mcp"));
+    }
+
+    #[test]
+    fn roadmap_summary_without_tags_omits_line() {
+        let doc = make_roadmap_doc("fbm", "untagged", "Untagged");
+        let output = format_roadmap_summary(&doc, &[]);
+        assert!(!output.contains("Tags:"));
+    }
+
+    #[test]
     fn phase_detail_with_completed() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
         let output = format_phase_detail("phase-1-core", &doc, None);
@@ -660,6 +689,21 @@ mod tests {
         let output = format_phase_detail("phase-2-service", &doc, None);
         assert!(output.contains("Status: not-started"));
         assert!(!output.contains("Completed:"));
+    }
+
+    #[test]
+    fn phase_detail_with_tags() {
+        let mut doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
+        doc.frontmatter.tags = Some(vec!["infra".to_string(), "search".to_string()]);
+        let output = format_phase_detail("phase-1-core", &doc, None);
+        assert!(output.contains("Tags: infra, search"));
+    }
+
+    #[test]
+    fn phase_detail_without_tags_omits_line() {
+        let doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
+        let output = format_phase_detail("phase-1-core", &doc, None);
+        assert!(!output.contains("Tags:"));
     }
 
     #[test]
@@ -829,6 +873,21 @@ mod tests {
     }
 
     #[test]
+    fn roadmap_summary_md_with_tags() {
+        let mut doc = make_roadmap_doc("fbm", "tagged", "Tagged");
+        doc.frontmatter.tags = Some(vec!["api".to_string(), "mcp".to_string()]);
+        let output = format_roadmap_summary_md(&doc, &[]);
+        assert!(output.contains("- **Tags:** api, mcp"));
+    }
+
+    #[test]
+    fn roadmap_summary_md_without_tags_omits_line() {
+        let doc = make_roadmap_doc("fbm", "untagged", "Untagged");
+        let output = format_roadmap_summary_md(&doc, &[]);
+        assert!(!output.contains("**Tags:**"));
+    }
+
+    #[test]
     fn roadmap_list_md_with_entries() {
         let entries = vec![
             (
@@ -890,6 +949,21 @@ mod tests {
         doc.body = "Implementation details.\n".to_string();
         let output = format_phase_detail_md("phase-1-core", &doc, None);
         assert!(output.contains("Implementation details."));
+    }
+
+    #[test]
+    fn phase_detail_md_with_tags() {
+        let mut doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
+        doc.frontmatter.tags = Some(vec!["infra".to_string(), "search".to_string()]);
+        let output = format_phase_detail_md("phase-1-core", &doc, None);
+        assert!(output.contains("- **Tags:** infra, search"));
+    }
+
+    #[test]
+    fn phase_detail_md_without_tags_omits_line() {
+        let doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
+        let output = format_phase_detail_md("phase-1-core", &doc, None);
+        assert!(!output.contains("**Tags:**"));
     }
 
     #[test]

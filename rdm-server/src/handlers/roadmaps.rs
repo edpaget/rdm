@@ -389,6 +389,7 @@ pub async fn create_roadmap(
         &req.title,
         req.body.as_deref(),
         priority,
+        None,
     )
     .map_err(|e| error_response(e, format))?;
     rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
@@ -454,6 +455,7 @@ pub async fn update_roadmap(
         &roadmap,
         req.body.as_deref(),
         priority,
+        None,
     )
     .map_err(|e| error_response(e, format))?;
     rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
@@ -510,6 +512,7 @@ mod tests {
             "Alpha Roadmap",
             None,
             None,
+            None,
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
@@ -519,6 +522,7 @@ mod tests {
             "first",
             "First Phase",
             Some(1),
+            None,
             None,
         )
         .unwrap();
@@ -530,6 +534,7 @@ mod tests {
             "Second Phase",
             Some(2),
             None,
+            None,
         )
         .unwrap();
         rdm_core::ops::phase::update_phase(
@@ -538,6 +543,7 @@ mod tests {
             "alpha",
             "phase-1-first",
             Some(PhaseStatus::Done),
+            None,
             None,
             None,
         )
@@ -559,6 +565,7 @@ mod tests {
             "Beta Roadmap",
             None,
             None,
+            None,
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
@@ -569,6 +576,7 @@ mod tests {
             "Only Phase",
             Some(1),
             None,
+            None,
         )
         .unwrap();
         rdm_core::ops::phase::update_phase(
@@ -577,6 +585,7 @@ mod tests {
             "beta",
             "phase-1-only",
             Some(PhaseStatus::Done),
+            None,
             None,
             None,
         )
@@ -972,6 +981,7 @@ mod tests {
             "Alpha Roadmap",
             None,
             Some(rdm_core::model::Priority::High),
+            None,
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
@@ -981,6 +991,7 @@ mod tests {
             "first",
             "First Phase",
             Some(1),
+            None,
             None,
         )
         .unwrap();

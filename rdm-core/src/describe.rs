@@ -109,6 +109,13 @@ impl Describe for crate::model::Roadmap {
                     enum_values: &["low", "medium", "high", "critical"],
                     description: "Optional priority level for the roadmap.",
                 },
+                FieldInfo {
+                    name: "tags",
+                    type_name: "list of strings",
+                    required: false,
+                    enum_values: &[],
+                    description: "Optional tags for categorization.",
+                },
             ],
         }
     }
@@ -140,6 +147,13 @@ impl Describe for crate::model::Phase {
                     required: true,
                     enum_values: &["not-started", "in-progress", "done", "blocked"],
                     description: "Current status.",
+                },
+                FieldInfo {
+                    name: "tags",
+                    type_name: "list of strings",
+                    required: false,
+                    enum_values: &[],
+                    description: "Optional tags for categorization.",
                 },
                 FieldInfo {
                     name: "completed",
@@ -353,6 +367,7 @@ mod tests {
             phases: vec!["phase-1-foo".to_string()],
             dependencies: Some(vec!["other".to_string()]),
             priority: Some(crate::model::Priority::High),
+            tags: Some(vec!["api".to_string()]),
         };
         assert_fields_match(&sample);
     }
@@ -363,6 +378,7 @@ mod tests {
             phase: 1,
             title: "Test Phase".to_string(),
             status: crate::model::PhaseStatus::Done,
+            tags: Some(vec!["infra".to_string()]),
             completed: Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()),
             commit: Some("abc123".to_string()),
         };

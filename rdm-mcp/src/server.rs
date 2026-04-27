@@ -671,6 +671,7 @@ impl RdmMcpServer {
             &params.title,
             params.body.as_deref(),
             priority,
+            None,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),
@@ -720,6 +721,7 @@ impl RdmMcpServer {
             &params.roadmap,
             params.body.as_deref(),
             priority,
+            None,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),
@@ -754,6 +756,7 @@ impl RdmMcpServer {
             &params.title,
             params.number,
             params.body.as_deref(),
+            None,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),
@@ -800,6 +803,7 @@ impl RdmMcpServer {
             &params.roadmap,
             &stem,
             status,
+            None,
             params.body.as_deref(),
             None,
         ) {

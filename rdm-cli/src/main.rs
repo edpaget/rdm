@@ -284,6 +284,9 @@ pub(crate) enum RoadmapCommand {
         /// Priority level.
         #[arg(long)]
         priority: Option<Priority>,
+        /// Comma-separated tags.
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
         /// Body content for the roadmap.
         #[arg(long)]
         body: Option<String>,
@@ -315,6 +318,9 @@ pub(crate) enum RoadmapCommand {
         /// Remove the priority from this roadmap.
         #[arg(long, conflicts_with = "priority")]
         clear_priority: bool,
+        /// New comma-separated tags (replaces existing).
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
         /// Body content for the roadmap.
         #[arg(long)]
         body: Option<String>,
@@ -435,6 +441,9 @@ pub(crate) enum PhaseCommand {
         /// Explicit phase number (auto-assigned if omitted).
         #[arg(long)]
         number: Option<u32>,
+        /// Comma-separated tags.
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
         /// Body content for the phase.
         #[arg(long)]
         body: Option<String>,
@@ -478,6 +487,9 @@ pub(crate) enum PhaseCommand {
         /// Project the roadmap belongs to.
         #[arg(long)]
         project: Option<String>,
+        /// New comma-separated tags (replaces existing).
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
         /// Body content for the phase.
         #[arg(long)]
         body: Option<String>,
