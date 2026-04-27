@@ -609,6 +609,7 @@ impl RdmMcpServer {
             kind,
             project: params.project,
             status,
+            // TODO(expand-tag-support phase 4): expose --tag filter via MCP.
             tags: None,
             min_score_ratio: None,
         };

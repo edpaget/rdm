@@ -73,7 +73,7 @@ pub struct SearchFilter {
 ///
 /// `required` empty → always matches. An item with `None` tags never
 /// matches a non-empty `required`.
-fn matches_required_tags(item_tags: Option<&Vec<String>>, required: &[String]) -> bool {
+fn matches_required_tags(item_tags: Option<&[String]>, required: &[String]) -> bool {
     if required.is_empty() {
         return true;
     }
@@ -127,6 +127,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
     let mut buf = Vec::new();
 
     let projects = crate::ops::project::list_projects(store)?;
+    let required_tags: &[String] = filter.tags.as_deref().unwrap_or(&[]);
 
     for project in &projects {
         if let Some(ref fp) = filter.project
@@ -135,8 +136,6 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
             continue;
         }
 
-        let required_tags: &[String] = filter.tags.as_deref().unwrap_or(&[]);
-
         // Search roadmaps (roadmaps have no status; skip when a status filter is active)
         if (filter.kind.is_none() || filter.kind == Some(ItemKind::Roadmap))
             && filter.status.is_none()
@@ -144,7 +143,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
         {
             for doc in &roadmaps {
                 let rm = &doc.frontmatter;
-                if !matches_required_tags(rm.tags.as_ref(), required_tags) {
+                if !matches_required_tags(rm.tags.as_deref(), required_tags) {
                     continue;
                 }
                 if let Some(result) = score_item(
@@ -156,7 +155,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                     project,
                     &rm.title,
                     &doc.body,
-                    rm.tags.as_ref(),
+                    rm.tags.as_deref(),
                 ) {
                     results.push(result);
                 }
@@ -177,7 +176,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                             continue;
                         }
                         if !matches_required_tags(
-                            phase_doc.frontmatter.tags.as_ref(),
+                            phase_doc.frontmatter.tags.as_deref(),
                             required_tags,
                         ) {
                             continue;
@@ -192,7 +191,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                             project,
                             &phase_doc.frontmatter.title,
                             &phase_doc.body,
-                            phase_doc.frontmatter.tags.as_ref(),
+                            phase_doc.frontmatter.tags.as_deref(),
                         ) {
                             results.push(result);
                         }
@@ -211,7 +210,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                 {
                     continue;
                 }
-                if !matches_required_tags(task_doc.frontmatter.tags.as_ref(), required_tags) {
+                if !matches_required_tags(task_doc.frontmatter.tags.as_deref(), required_tags) {
                     continue;
                 }
                 if let Some(result) = score_item(
@@ -223,7 +222,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                     project,
                     &task_doc.frontmatter.title,
                     &task_doc.body,
-                    task_doc.frontmatter.tags.as_ref(),
+                    task_doc.frontmatter.tags.as_deref(),
                 ) {
                     results.push(result);
                 }
@@ -263,7 +262,7 @@ fn score_item(
     project: &str,
     title: &str,
     body: &str,
-    tags: Option<&Vec<String>>,
+    tags: Option<&[String]>,
 ) -> Option<SearchResult> {
     let title_score = pattern.score(Utf32Str::new(title, buf), matcher);
     let body_score = pattern.score(Utf32Str::new(body, buf), matcher);
@@ -288,7 +287,7 @@ fn score_item(
         title: title.to_string(),
         snippet,
         score: best_score,
-        tags: tags.cloned(),
+        tags: tags.map(|t| t.to_vec()),
     })
 }
 
@@ -778,20 +777,21 @@ mod tests {
     #[test]
     fn matches_required_tags_helper() {
         let tags = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let tags_slice: &[String] = &tags;
         // Empty required matches anything (including None).
         assert!(matches_required_tags(None, &[]));
-        assert!(matches_required_tags(Some(&tags), &[]));
+        assert!(matches_required_tags(Some(tags_slice), &[]));
         // Non-empty required: None never matches.
         assert!(!matches_required_tags(None, &["a".to_string()]));
         // Subset matches.
-        assert!(matches_required_tags(Some(&tags), &["a".to_string()]));
+        assert!(matches_required_tags(Some(tags_slice), &["a".to_string()]));
         assert!(matches_required_tags(
-            Some(&tags),
+            Some(tags_slice),
             &["a".to_string(), "c".to_string()]
         ));
         // Missing tag fails AND.
         assert!(!matches_required_tags(
-            Some(&tags),
+            Some(tags_slice),
             &["a".to_string(), "z".to_string()]
         ));
     }

@@ -1228,7 +1228,7 @@ fn run() -> Result<()> {
                 kind: kind.map(ItemKind::from),
                 project,
                 status: item_status,
-                tags: if tags.is_empty() { None } else { Some(tags) },
+                tags: Some(tags),
                 min_score_ratio: Some(min_score_ratio),
             };
             let results = search::search(&store, &query, &filter).context("search failed")?;
