@@ -2,7 +2,6 @@
 
 use crate::display::{self, ProjectIndex, RoadmapIndexEntry};
 use crate::error::Result;
-use crate::model::PhaseStatus;
 use crate::store::Store;
 
 /// Builds a [`ProjectIndex`] for a single project.
@@ -22,7 +21,7 @@ fn build_project_index(store: &impl Store, project: &str) -> Result<ProjectIndex
         let phases = super::phase::list_phases(store, project, slug)?;
         let done_count = phases
             .iter()
-            .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
+            .filter(|(_, doc)| doc.frontmatter.status.is_terminal())
             .count();
         roadmap_entries.push(RoadmapIndexEntry {
             slug: slug.clone(),

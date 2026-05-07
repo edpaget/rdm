@@ -98,7 +98,7 @@ Markdown with YAML frontmatter is human-readable, diff-friendly, and git-native.
 Status types (`PhaseStatus`, `TaskStatus`) are enums with `Display` and `FromStr` implementations. Valid transitions are enforced — terminal states cannot be exited.
 
 - **Kebab-case serialization.** Statuses serialize as `"not-started"`, `"in-progress"`, `"done"` — matching the YAML frontmatter convention. Use `#[serde(rename_all = "kebab-case")]` for consistency.
-- **Terminal states are documented.** `done` and `wont-fix` are terminal for tasks; `done` is terminal for phases. The core library enforces these constraints.
+- **Terminal states are documented.** `done` and `wont-fix` are terminal for tasks; `done` and `wont-fix` are terminal for phases. The core library enforces these constraints.
 - **FromStr errors are actionable.** An invalid status string produces an error message listing all valid options, not just "parse error."
 
 ### Why

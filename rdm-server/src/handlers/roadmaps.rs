@@ -186,7 +186,7 @@ pub async fn list_roadmaps(
             .map_err(|e| error_response(e, format))?;
         let done_count = phases
             .iter()
-            .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
+            .filter(|(_, doc)| doc.frontmatter.status.is_terminal())
             .count();
 
         let phase_statuses: Vec<PhaseStatus> = phases
@@ -971,6 +971,30 @@ mod tests {
     fn computed_status_empty_phases() {
         use crate::templates::computed_roadmap_status;
         assert_eq!(computed_roadmap_status(&[]), ("not-started", "not-started"));
+    }
+
+    #[test]
+    fn computed_status_done_and_wont_fix_is_done() {
+        use crate::templates::computed_roadmap_status;
+        let statuses = vec![PhaseStatus::Done, PhaseStatus::WontFix];
+        assert_eq!(computed_roadmap_status(&statuses), ("done", "done"));
+    }
+
+    #[test]
+    fn computed_status_in_progress_and_wont_fix_is_in_progress() {
+        use crate::templates::computed_roadmap_status;
+        let statuses = vec![PhaseStatus::InProgress, PhaseStatus::WontFix];
+        assert_eq!(
+            computed_roadmap_status(&statuses),
+            ("in-progress", "in-progress")
+        );
+    }
+
+    #[test]
+    fn computed_status_only_wont_fix_is_done() {
+        use crate::templates::computed_roadmap_status;
+        let statuses = vec![PhaseStatus::WontFix];
+        assert_eq!(computed_roadmap_status(&statuses), ("done", "done"));
     }
 
     #[tokio::test]

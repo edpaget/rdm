@@ -24,7 +24,7 @@ pub struct RoadmapIndexEntry {
     pub project: String,
     /// Total number of phases.
     pub phase_count: usize,
-    /// Number of completed phases.
+    /// Number of phases in a terminal state (`done` or `wont-fix`).
     pub done_count: usize,
     /// Optional list of dependency roadmap slugs.
     pub dependencies: Option<Vec<String>>,

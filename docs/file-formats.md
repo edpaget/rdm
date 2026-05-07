@@ -141,15 +141,15 @@ The current valuation engine treats pitchers and hitters as separate entities...
 |-------|----------|------|-------------|
 | `phase` | yes | integer | 1-based phase number |
 | `title` | yes | string | Human-readable title |
-| `status` | yes | string | `not-started` \| `in-progress` \| `done` \| `blocked` |
-| `completed` | no | date | Completion date (YYYY-MM-DD). Set automatically when status becomes `done` |
+| `status` | yes | string | `not-started` \| `in-progress` \| `done` \| `blocked` \| `wont-fix` |
+| `completed` | no | date | Completion date (YYYY-MM-DD). Set automatically when status becomes `done` or `wont-fix` |
 | `commit` | no | string | Git commit SHA. Recorded by the post-merge hook or `--commit` flag |
 
 ### Status transitions
 
 `not-started` &rarr; `in-progress` &rarr; `done`
 
-A phase can also be `blocked` from any non-terminal state. `done` is terminal and cannot be changed.
+A phase can also be `blocked` from any non-terminal state. A phase can also be marked `wont-fix` from any non-terminal state. Both `done` and `wont-fix` are terminal.
 
 ## Task Files
 

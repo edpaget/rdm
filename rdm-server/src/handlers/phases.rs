@@ -48,7 +48,7 @@ pub async fn list_phases(
     let status_filter: Option<PhaseStatus> = match &filters.status {
         Some(s) => Some(s.parse::<PhaseStatus>().map_err(|_| {
             validation_error(format!(
-                "invalid status filter: '{s}' (expected not-started, in-progress, done, or blocked)"
+                "invalid status filter: '{s}' (expected not-started, in-progress, done, blocked, or wont-fix)"
             ))
         })?),
         None => None,
@@ -281,7 +281,7 @@ pub async fn update_phase(
             |s| {
                 s.parse().map_err(|_| {
                     validation_error(format!(
-                        "invalid status: '{s}' (expected not-started, in-progress, done, or blocked)",
+                        "invalid status: '{s}' (expected not-started, in-progress, done, blocked, or wont-fix)",
                     ))
                 })
             },

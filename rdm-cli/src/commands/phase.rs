@@ -2,7 +2,6 @@ use anyhow::{Context, Result, bail};
 use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
-use rdm_core::model::PhaseStatus;
 
 use super::{maybe_print_uncommitted_hint, maybe_regenerate_index, resolve_body};
 use crate::paths;
@@ -138,8 +137,8 @@ pub fn run(
             commit,
             no_edit,
         } => {
-            if commit.is_some() && status != Some(PhaseStatus::Done) {
-                anyhow::bail!("--commit can only be used with --status done");
+            if commit.is_some() && !matches!(status, Some(s) if s.is_terminal()) {
+                anyhow::bail!("--commit can only be used with --status done or --status wont-fix");
             }
             let project = paths::resolve_project(project, repo_config)?;
             let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)

@@ -273,7 +273,7 @@ pub fn roadmap_summary_to_json(
     let total = phases.len();
     let done = phases
         .iter()
-        .filter(|(_, pd)| pd.frontmatter.status == PhaseStatus::Done)
+        .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
         .count();
     let progress = if total == 0 {
         "no phases".to_string()

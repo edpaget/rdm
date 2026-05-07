@@ -115,10 +115,13 @@ pub fn create_phase(
 
 /// Updates a phase's status, tags, body, and/or commit SHA.
 ///
-/// When `status` is `Some(Done)`, auto-sets `completed` to today and stores
-/// the optional `commit` SHA. When `status` is `Some` but not `Done`,
-/// clears both `completed` and `commit`. When `status` is `None`, the
-/// existing status, `completed`, and `commit` are preserved.
+/// When `status` is `Some` of a terminal state (`Done` or `WontFix`),
+/// auto-sets `completed` to today and stores the optional `commit` SHA.
+/// Re-setting the same terminal state preserves the existing `completed`
+/// date and only updates `commit` if a new value is provided. When `status`
+/// transitions to a non-terminal state, both `completed` and `commit` are
+/// cleared. When `status` is `None`, the existing status, `completed`, and
+/// `commit` are preserved.
 /// When `tags` is `Some(non_empty)`, replaces existing tags; `Some(empty)`
 /// clears tags; `None` preserves the existing value.
 /// When `body` is `Some`, replaces the existing body; `None` preserves it.
@@ -147,14 +150,14 @@ pub fn update_phase(
 
     let mut doc = crate::io::load_phase(store, project, roadmap, phase_stem)?;
     if let Some(status) = status {
-        if status == PhaseStatus::Done && doc.frontmatter.status == PhaseStatus::Done {
-            // Already done: only update commit if a new one is provided
+        if status.is_terminal() && doc.frontmatter.status == status {
+            // Already at this terminal state: only update commit if a new one is provided
             if let Some(sha) = commit {
                 doc.frontmatter.commit = Some(sha);
             }
         } else {
             doc.frontmatter.status = status;
-            if status == PhaseStatus::Done {
+            if status.is_terminal() {
                 doc.frontmatter.completed = Some(Local::now().date_naive());
                 doc.frontmatter.commit = commit;
             } else {

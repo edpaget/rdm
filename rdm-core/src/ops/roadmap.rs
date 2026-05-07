@@ -2,7 +2,7 @@
 
 use crate::document::Document;
 use crate::error::{Error, Result};
-use crate::model::{Phase, PhaseStatus, Priority, Roadmap, RoadmapSort};
+use crate::model::{Phase, Priority, Roadmap, RoadmapSort};
 use crate::store::{DirEntryKind, RelPath, Store};
 
 /// Creates a new roadmap within a project.
@@ -301,14 +301,16 @@ pub fn delete_roadmap(store: &mut impl Store, project: &str, slug: &str) -> Resu
 
 /// Archives a completed roadmap, moving it from active to archive.
 ///
-/// Unless `force` is true, all phases must have status `Done`.
-/// Dependency references from other active roadmaps are cleaned up.
+/// Unless `force` is true, all phases must be in a terminal state
+/// (`done` or `wont-fix`). Dependency references from other active
+/// roadmaps are cleaned up.
 ///
 /// # Errors
 ///
 /// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
-/// [`Error::RoadmapHasIncompletePhases`] if any phase is not done and
-/// `force` is false, or [`Error::Io`] on file I/O failures.
+/// [`Error::RoadmapHasIncompletePhases`] if any phase is not in a
+/// terminal state and `force` is false, or [`Error::Io`] on file I/O
+/// failures.
 pub fn archive_roadmap(
     store: &mut impl Store,
     project: &str,
@@ -322,10 +324,10 @@ pub fn archive_roadmap(
 
     if !force {
         let phases = super::phase::list_phases(store, project, slug)?;
-        let all_done = phases
+        let all_terminal = phases
             .iter()
-            .all(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done);
-        if !all_done {
+            .all(|(_, doc)| doc.frontmatter.status.is_terminal());
+        if !all_terminal {
             return Err(Error::RoadmapHasIncompletePhases(slug.to_string()));
         }
     }

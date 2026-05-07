@@ -4,7 +4,7 @@
 /// for display in the CLI and MCP server.
 use crate::ast;
 use crate::document::Document;
-use crate::model::{Phase, PhaseStatus, Roadmap, Task};
+use crate::model::{Phase, Roadmap, Task};
 use crate::search::SearchResult;
 
 /// A roadmap document paired with its phases (stem + phase document).
@@ -55,7 +55,7 @@ pub fn format_roadmap_summary(
     } else {
         let done_count = phases
             .iter()
-            .filter(|(_, pd)| pd.frontmatter.status == PhaseStatus::Done)
+            .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
             .count();
         d.paragraph(&format!(
             "Progress: {}/{} phases done",
@@ -181,7 +181,7 @@ pub fn format_roadmap_list(entries: &[RoadmapWithPhases]) -> String {
             let rm = &roadmap_doc.frontmatter;
             let done = phases
                 .iter()
-                .filter(|(_, pd)| pd.frontmatter.status == PhaseStatus::Done)
+                .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
                 .count();
             let total = phases.len();
             let priority_tag = rm.priority.map(|p| format!(" [{p}]")).unwrap_or_default();
@@ -338,7 +338,7 @@ pub fn format_roadmap_summary_md(
     } else {
         let done_count = phases
             .iter()
-            .filter(|(_, d)| d.frontmatter.status == PhaseStatus::Done)
+            .filter(|(_, d)| d.frontmatter.status.is_terminal())
             .count();
         out.push_str(&format!(
             "- **Progress:** {}/{} phases done\n",
@@ -385,7 +385,7 @@ pub fn format_roadmap_list_md(entries: &[RoadmapWithPhases]) -> String {
         let rm = &roadmap_doc.frontmatter;
         let done = phases
             .iter()
-            .filter(|(_, doc)| doc.frontmatter.status == PhaseStatus::Done)
+            .filter(|(_, doc)| doc.frontmatter.status.is_terminal())
             .count();
         let total = phases.len();
         let progress = if total > 0 {
@@ -549,7 +549,7 @@ mod tests {
                 title: title.to_string(),
                 status,
                 tags: None,
-                completed: if status == PhaseStatus::Done {
+                completed: if status.is_terminal() {
                     Some(NaiveDate::from_ymd_opt(2026, 3, 14).unwrap())
                 } else {
                     None

@@ -17,6 +17,19 @@ pub enum PhaseStatus {
     Done,
     /// Phase is blocked by an external dependency.
     Blocked,
+    /// Phase was closed without completing.
+    WontFix,
+}
+
+impl PhaseStatus {
+    /// Returns `true` for terminal states (`Done` or `WontFix`).
+    ///
+    /// Terminal states stamp a `completed` date on the phase and count
+    /// toward roadmap completion equally.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, PhaseStatus::Done | PhaseStatus::WontFix)
+    }
 }
 
 impl fmt::Display for PhaseStatus {
@@ -26,6 +39,7 @@ impl fmt::Display for PhaseStatus {
             PhaseStatus::InProgress => write!(f, "in-progress"),
             PhaseStatus::Done => write!(f, "done"),
             PhaseStatus::Blocked => write!(f, "blocked"),
+            PhaseStatus::WontFix => write!(f, "wont-fix"),
         }
     }
 }
@@ -39,8 +53,9 @@ impl FromStr for PhaseStatus {
             "in-progress" => Ok(PhaseStatus::InProgress),
             "done" => Ok(PhaseStatus::Done),
             "blocked" => Ok(PhaseStatus::Blocked),
+            "wont-fix" => Ok(PhaseStatus::WontFix),
             other => Err(format!(
-                "invalid phase status: '{other}' (expected not-started, in-progress, done, or blocked)"
+                "invalid phase status: '{other}' (expected not-started, in-progress, done, blocked, or wont-fix)"
             )),
         }
     }
@@ -292,6 +307,7 @@ mod tests {
             (PhaseStatus::InProgress, "in-progress"),
             (PhaseStatus::Done, "done"),
             (PhaseStatus::Blocked, "blocked"),
+            (PhaseStatus::WontFix, "wont-fix"),
         ];
         for (variant, expected) in variants {
             assert_eq!(variant.to_string(), expected);
@@ -303,6 +319,15 @@ mod tests {
     #[test]
     fn phase_status_from_str_invalid() {
         assert!("invalid".parse::<PhaseStatus>().is_err());
+    }
+
+    #[test]
+    fn phase_status_is_terminal() {
+        assert!(PhaseStatus::Done.is_terminal());
+        assert!(PhaseStatus::WontFix.is_terminal());
+        assert!(!PhaseStatus::NotStarted.is_terminal());
+        assert!(!PhaseStatus::InProgress.is_terminal());
+        assert!(!PhaseStatus::Blocked.is_terminal());
     }
 
     #[test]
@@ -371,6 +396,7 @@ mod tests {
             (PhaseStatus::InProgress, "in-progress"),
             (PhaseStatus::Done, "done"),
             (PhaseStatus::Blocked, "blocked"),
+            (PhaseStatus::WontFix, "wont-fix"),
         ];
         for (variant, expected_yaml) in variants {
             let yaml = serde_yaml::to_string(&variant).unwrap();

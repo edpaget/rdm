@@ -181,7 +181,7 @@ struct PhaseUpdateParams {
     roadmap: String,
     /// The phase stem or number.
     phase: String,
-    /// New status: "not-started", "in-progress", "done", or "blocked".
+    /// New status: "not-started", "in-progress", "done", "blocked", or "wont-fix".
     status: Option<String>,
     /// New tags (replaces existing). Pass an empty array or set
     /// `clear_tags: true` to remove all tags.
@@ -1018,7 +1018,7 @@ fn parse_item_status(s: &str) -> Result<ItemStatus, String> {
         return Ok(ItemStatus::Task(ts));
     }
     Err(format!(
-        "Invalid status: {s}. Expected a phase status (not-started, in-progress, done, blocked) or task status (open, in-progress, done, wont-fix)"
+        "Invalid status: {s}. Expected a phase status (not-started, in-progress, done, blocked, wont-fix) or task status (open, in-progress, done, wont-fix)"
     ))
 }
 

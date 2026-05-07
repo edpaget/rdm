@@ -1045,6 +1045,68 @@ fn update_phase_done_to_done_without_commit_is_noop() {
 }
 
 #[test]
+fn update_phase_to_wont_fix_sets_completed() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+    let updated = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::WontFix),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(updated.frontmatter.status, PhaseStatus::WontFix);
+    assert!(updated.frontmatter.completed.is_some());
+    assert_eq!(updated.frontmatter.commit, None);
+
+    // Verify persistence
+    let loaded = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    assert_eq!(loaded.frontmatter.status, PhaseStatus::WontFix);
+    assert!(loaded.frontmatter.completed.is_some());
+}
+
+#[test]
+fn update_phase_wont_fix_to_not_started_clears_completed() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::WontFix),
+        None,
+        None,
+        Some("abc123".to_string()),
+    )
+    .unwrap();
+    let updated = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::NotStarted),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(updated.frontmatter.status, PhaseStatus::NotStarted);
+    assert_eq!(updated.frontmatter.completed, None);
+    assert_eq!(updated.frontmatter.commit, None);
+}
+
+#[test]
 fn resolve_by_number() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
@@ -2510,6 +2572,47 @@ fn archive_roadmap_all_done_no_force_needed() {
     .unwrap();
 
     // All phases done, force=false should succeed
+    rdm_core::ops::roadmap::archive_roadmap(&mut store, "fbm", "alpha", false).unwrap();
+    assert!(store.exists(&rdm_core::paths::archived_roadmap_path("fbm", "alpha")));
+}
+
+#[test]
+fn archive_succeeds_with_mixed_done_and_wont_fix() {
+    let mut store = setup_with_project();
+    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
+        .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "alpha", "skip", "Skip", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "alpha",
+        "phase-1-core",
+        Some(PhaseStatus::Done),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "alpha",
+        "phase-2-skip",
+        Some(PhaseStatus::WontFix),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    // Mixed done + wont-fix is all-terminal; force=false should succeed
     rdm_core::ops::roadmap::archive_roadmap(&mut store, "fbm", "alpha", false).unwrap();
     assert!(store.exists(&rdm_core::paths::archived_roadmap_path("fbm", "alpha")));
 }

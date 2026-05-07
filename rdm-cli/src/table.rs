@@ -34,7 +34,7 @@ pub fn format_roadmap_table(entries: &[RoadmapWithPhases]) -> String {
             let total = phases.len();
             let done = phases
                 .iter()
-                .filter(|(_, p)| p.frontmatter.status == rdm_core::model::PhaseStatus::Done)
+                .filter(|(_, p)| p.frontmatter.status.is_terminal())
                 .count();
             RoadmapRow {
                 slug: doc.frontmatter.roadmap.clone(),

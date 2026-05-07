@@ -57,6 +57,7 @@ pub fn phase_status_class(status: &rdm_core::model::PhaseStatus) -> &'static str
         rdm_core::model::PhaseStatus::InProgress => "in-progress",
         rdm_core::model::PhaseStatus::Done => "done",
         rdm_core::model::PhaseStatus::Blocked => "blocked",
+        rdm_core::model::PhaseStatus::WontFix => "wont-fix",
     }
 }
 
@@ -99,19 +100,19 @@ pub struct IndexPage {
 /// Compute an overall roadmap status from its phase statuses.
 ///
 /// Returns `(display_text, css_class)`:
-/// - All phases done → `("done", "done")`
-/// - Any phase in-progress, or a mix of done and not-started → `("in-progress", "in-progress")`
+/// - All phases terminal (`done` or `wont-fix`) → `("done", "done")`
+/// - Any phase in-progress, or any terminal phase mixed with non-terminal phases → `("in-progress", "in-progress")`
 /// - Otherwise (all not-started, all blocked, or no phases) → `("not-started", "not-started")`
 pub fn computed_roadmap_status(phases: &[PhaseStatus]) -> (&'static str, &'static str) {
     if phases.is_empty() {
         return ("not-started", "not-started");
     }
-    if phases.iter().all(|s| *s == PhaseStatus::Done) {
+    if phases.iter().all(PhaseStatus::is_terminal) {
         return ("done", "done");
     }
-    let has_done = phases.contains(&PhaseStatus::Done);
+    let has_terminal = phases.iter().any(PhaseStatus::is_terminal);
     let has_in_progress = phases.contains(&PhaseStatus::InProgress);
-    if has_in_progress || has_done {
+    if has_in_progress || has_terminal {
         return ("in-progress", "in-progress");
     }
     ("not-started", "not-started")
