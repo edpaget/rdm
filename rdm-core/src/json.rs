@@ -441,6 +441,21 @@ mod tests {
     }
 
     #[test]
+    fn roadmap_summary_to_json_counts_wont_fix_as_done() {
+        let doc = make_roadmap_doc("acme", "a", "A");
+        let phases = vec![
+            ("p1".to_string(), make_phase_doc(1, "P1", PhaseStatus::Done)),
+            (
+                "p2".to_string(),
+                make_phase_doc(2, "P2", PhaseStatus::WontFix),
+            ),
+        ];
+        let s = roadmap_summary_to_json(&doc, &phases);
+        assert_eq!(s.done_phases, 2);
+        assert_eq!(s.progress, "complete");
+    }
+
+    #[test]
     fn task_to_json_fields() {
         let doc = make_task_doc("fix-bug", "acme");
         let json = task_to_json("fix-bug", &doc);

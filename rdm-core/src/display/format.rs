@@ -621,6 +621,23 @@ mod tests {
     }
 
     #[test]
+    fn roadmap_summary_counts_wont_fix_as_done() {
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        let phases = vec![
+            (
+                "phase-1-core".to_string(),
+                make_phase_doc(1, "Core", PhaseStatus::Done),
+            ),
+            (
+                "phase-2-service".to_string(),
+                make_phase_doc(2, "Service", PhaseStatus::WontFix),
+            ),
+        ];
+        let output = format_roadmap_summary(&doc, &phases);
+        assert!(output.contains("2/2 phases done"));
+    }
+
+    #[test]
     fn roadmap_summary_no_phases() {
         let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
         let output = format_roadmap_summary(&doc, &[]);

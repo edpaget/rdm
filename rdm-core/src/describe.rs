@@ -145,7 +145,7 @@ impl Describe for crate::model::Phase {
                     name: "status",
                     type_name: "enum",
                     required: true,
-                    enum_values: &["not-started", "in-progress", "done", "blocked"],
+                    enum_values: &["not-started", "in-progress", "done", "blocked", "wont-fix"],
                     description: "Current status.",
                 },
                 FieldInfo {
@@ -441,6 +441,6 @@ mod tests {
         let output = format_entity_detail_md(&entity);
         assert!(output.contains("## phase"));
         assert!(output.contains("| Field |"));
-        assert!(output.contains("not-started, in-progress, done, blocked"));
+        assert!(output.contains("not-started, in-progress, done, blocked, wont-fix"));
     }
 }

@@ -18,7 +18,7 @@ Core is the source of truth. CLI and server are thin layers. New interfaces (TUI
 
 - **Plan repo**: a git-managed directory (`RDM_ROOT`) containing markdown files for roadmaps and tasks
 - **INDEX.md**: auto-generated from individual files — never edited by hand
-- **Roadmaps** contain ordered **phases** (not-started | in-progress | done | blocked)
+- **Roadmaps** contain ordered **phases** (not-started | in-progress | done | blocked | wont-fix)
 - **Tasks** are standalone work items (open | in-progress | done | wont-fix)
 - Agent integration: `rdm agent-config` generates config for AI agents to interact via CLI
 - **Claude Code skills** (`.claude/skills/`): `rdm-roadmap` (create roadmaps), `rdm-implement` (implement phases), `rdm-tasks` (work on tasks), `rdm-document` (generate docs from completed roadmaps)
@@ -283,7 +283,7 @@ If a task becomes large enough to warrant multiple phases, promote it to a roadm
 
 ### Status transitions
 
-**Phase statuses:** `not-started` → `in-progress` → `done` (or `blocked`). `done` is terminal.
+**Phase statuses:** `not-started` → `in-progress` → `done` (or `blocked`, or `wont-fix`). `done` and `wont-fix` are terminal.
 
 **Task statuses:** `open` → `in-progress` → `done` (or `wont-fix`). `done` and `wont-fix` are terminal.
 

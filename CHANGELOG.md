@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Phase status `wont-fix`, treated like `done` for roadmap completion.
+  Agent-facing surface area (`Describe` schema, agent-config instruction
+  templates, and the CLI's combined-status error message) now lists
+  `wont-fix` as a valid phase status and documents the
+  `not-started`/`in-progress` → `wont-fix` transitions.
 
 ### Changed
 

@@ -97,7 +97,9 @@ If a task becomes large enough to warrant multiple phases, promote it to a roadm
 - `in-progress` → `done` — work is complete
 - `in-progress` → `blocked` — waiting on an external dependency
 - `blocked` → `in-progress` — blocker resolved
-- `done` is terminal (can be manually reverted if needed)
+- `in-progress` → `wont-fix` — decided not to do
+- `not-started` → `wont-fix` — decided not to do before starting
+- `done` and `wont-fix` are terminal
 
 ### Task statuses
 

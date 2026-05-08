@@ -2399,6 +2399,57 @@ fn generate_index_task_priority_ordering_in_project_index() {
     assert!(root.contains("| 3 |")); // 3 tasks
 }
 
+#[test]
+fn generate_index_counts_wont_fix_in_done_count() {
+    let mut store = setup_with_project();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        "fbm",
+        "alpha",
+        "Alpha Roadmap",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "alpha", "extra", "Extra", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "alpha",
+        "phase-1-core",
+        Some(PhaseStatus::Done),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "alpha",
+        "phase-2-extra",
+        Some(PhaseStatus::WontFix),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::index::generate_index(&mut store).unwrap();
+
+    let content = store
+        .read(&rdm_core::paths::project_index_path("fbm"))
+        .unwrap();
+    assert!(content.contains("complete"));
+}
+
 // -- Per-project index tests --
 
 #[test]
