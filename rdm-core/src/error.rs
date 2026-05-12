@@ -60,6 +60,22 @@ pub enum Error {
     },
     /// A git operation failed.
     Git(String),
+    /// The revision exists, but the requested path is not present in that
+    /// revision (e.g. the file was added later or deleted at that point).
+    BodyAtRevisionMissing {
+        /// The relative path that was requested.
+        path: String,
+        /// The revision (commit SHA) that was searched.
+        sha: String,
+    },
+    /// The requested revision does not exist in the backing store.
+    RevisionUnknown {
+        /// The revision (commit SHA) that could not be resolved.
+        sha: String,
+    },
+    /// The storage backend has no notion of history (e.g. an unborn HEAD or a
+    /// backend that opted out of revision-scoped reads).
+    HistoryUnavailable,
 }
 
 impl std::fmt::Display for Error {
@@ -156,6 +172,18 @@ impl std::fmt::Display for Error {
                 )
             }
             Error::Git(msg) => write!(f, "git error: {msg}"),
+            Error::BodyAtRevisionMissing { path, sha } => {
+                write!(f, "path '{path}' is not present at revision {sha}")
+            }
+            Error::RevisionUnknown { sha } => {
+                write!(f, "revision '{sha}' is not known to the store")
+            }
+            Error::HistoryUnavailable => {
+                write!(
+                    f,
+                    "the store has no history available (unborn HEAD or backend without revision support)"
+                )
+            }
         }
     }
 }

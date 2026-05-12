@@ -267,6 +267,14 @@ impl Store for FsStore {
     fn discard(&mut self) {
         self.staged.clear();
     }
+
+    fn head_sha(&self) -> Result<String> {
+        Err(Error::HistoryUnavailable)
+    }
+
+    fn fetch_body_at(&self, _path: &RelPath, _sha: &str) -> Result<String> {
+        Err(Error::HistoryUnavailable)
+    }
 }
 
 impl FsStore {

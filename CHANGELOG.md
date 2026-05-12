@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Revision-scoped reads on the storage layer: `Store::head_sha` and
+  `Store::fetch_body_at(path, sha)` let callers read a target's body at a
+  specific git revision. Backed by `git show` in the git store and a
+  snapshot map (synthetic `mem-N` SHAs) in the memory store. Surfaces
+  typed errors for unknown SHAs, paths missing at a SHA, and backends with
+  no notion of history.
 - A small embedded JavaScript client (`/static/edit.js`) wired into every
   rdm-server page that intercepts `<form data-rdm-edit>` submissions, PATCHes
   the resource as JSON, reloads on success, and surfaces server validation

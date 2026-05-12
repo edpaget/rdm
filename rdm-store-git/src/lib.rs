@@ -1382,6 +1382,48 @@ impl Store for GitStore {
         self.touched.clear();
         self.inner.discard();
     }
+
+    fn head_sha(&self) -> Result<String> {
+        match self.head_commit_info()? {
+            Some(info) => Ok(info.sha),
+            None => Err(Error::HistoryUnavailable),
+        }
+    }
+
+    fn fetch_body_at(&self, path: &RelPath, sha: &str) -> Result<String> {
+        // Verify the SHA resolves to a commit first. Without this, `git show
+        // <unknown-40-hex>:<path>` returns "exists on disk, but not in
+        // '<sha>'" — indistinguishable from a real missing-path error.
+        let verify = self.run_git(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{sha}^{{commit}}"),
+        ])?;
+        if !verify.status.success() {
+            return Err(Error::RevisionUnknown {
+                sha: sha.to_string(),
+            });
+        }
+
+        let spec = format!("{sha}:{p}", p = path.as_str());
+        let output = self.run_git(&["show", &spec])?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lower = stderr.to_lowercase();
+        if lower.contains("does not exist in")
+            || lower.contains("exists on disk, but not in")
+            || (lower.contains("path") && lower.contains("does not exist"))
+        {
+            return Err(Error::BodyAtRevisionMissing {
+                path: path.as_str().to_string(),
+                sha: sha.to_string(),
+            });
+        }
+        Err(Error::Git(stderr.trim().to_string()))
+    }
 }
 
 /// Discover the git directory for the repository containing `path`.
@@ -3012,6 +3054,98 @@ mod tests {
         match result {
             Err(e) => assert!(e.to_string().contains("git clone failed"), "got: {e}"),
             Ok(_) => panic!("expected error for bad URL"),
+        }
+    }
+
+    #[test]
+    fn head_sha_returns_current_commit() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        let path = RelPath::new("a.md").unwrap();
+        store.write(&path, "first".to_string()).unwrap();
+        store.commit().unwrap();
+
+        let sha = store.head_sha().unwrap();
+        let info = store.head_commit_info().unwrap().unwrap();
+        assert_eq!(sha, info.sha);
+        assert_eq!(sha.len(), 40);
+    }
+
+    #[test]
+    fn head_sha_returns_history_unavailable_on_unborn_head() {
+        let dir = TempDir::new().unwrap();
+        let store = GitStore::init(dir.path()).unwrap();
+        match store.head_sha() {
+            Err(Error::HistoryUnavailable) => {}
+            other => panic!("expected HistoryUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fetch_body_at_returns_body_at_previous_commit() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        let path = RelPath::new("a.md").unwrap();
+        store.write(&path, "v1".to_string()).unwrap();
+        store.commit().unwrap();
+        let v1_sha = store.head_sha().unwrap();
+
+        store.write(&path, "v2".to_string()).unwrap();
+        store.commit().unwrap();
+        let v2_sha = store.head_sha().unwrap();
+        assert_ne!(v1_sha, v2_sha);
+
+        let old = store.fetch_body_at(&path, &v1_sha).unwrap();
+        let new = store.fetch_body_at(&path, &v2_sha).unwrap();
+        assert_eq!(old, "v1");
+        assert_eq!(new, "v2");
+    }
+
+    #[test]
+    fn fetch_body_at_returns_body_at_revision_missing_when_path_absent_at_sha() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        // Initial commit: only seed.md exists.
+        store
+            .write(&RelPath::new("seed.md").unwrap(), "seed".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        let early_sha = store.head_sha().unwrap();
+
+        // Later commit: introduce later.md.
+        store
+            .write(&RelPath::new("later.md").unwrap(), "later".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let err = store
+            .fetch_body_at(&RelPath::new("later.md").unwrap(), &early_sha)
+            .unwrap_err();
+        match err {
+            Error::BodyAtRevisionMissing { path, sha } => {
+                assert_eq!(path, "later.md");
+                assert_eq!(sha, early_sha);
+            }
+            other => panic!("expected BodyAtRevisionMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fetch_body_at_returns_revision_unknown_for_bogus_sha() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        let path = RelPath::new("a.md").unwrap();
+        store.write(&path, "content".to_string()).unwrap();
+        store.commit().unwrap();
+
+        let err = store
+            .fetch_body_at(&path, "0000000000000000000000000000000000000000")
+            .unwrap_err();
+        match err {
+            Error::RevisionUnknown { sha } => {
+                assert_eq!(sha, "0000000000000000000000000000000000000000");
+            }
+            other => panic!("expected RevisionUnknown, got {other:?}"),
         }
     }
 }

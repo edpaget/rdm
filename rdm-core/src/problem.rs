@@ -135,6 +135,27 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("file '{path}' is not in the unmerged list")),
                 instance: None,
             },
+            Error::BodyAtRevisionMissing { path, sha } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Not Found".to_string(),
+                status: 404,
+                detail: Some(format!("path '{path}' is not present at revision {sha}")),
+                instance: None,
+            },
+            Error::RevisionUnknown { sha } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Not Found".to_string(),
+                status: 404,
+                detail: Some(format!("revision '{sha}' is not known to the store")),
+                instance: None,
+            },
+            Error::HistoryUnavailable => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Not Found".to_string(),
+                status: 404,
+                detail: Some("the store has no history available".to_string()),
+                instance: None,
+            },
             // Internal errors: no detail leak
             Error::Io(_)
             | Error::FrontmatterParse(_)

@@ -198,6 +198,36 @@ pub trait Store {
 
     /// Discards all staged changes without committing.
     fn discard(&mut self);
+
+    /// Returns an opaque identifier for the current committed state.
+    ///
+    /// For git-backed stores this is the HEAD commit SHA. For the in-memory
+    /// store this is a synthetic `mem-N` token that advances on each
+    /// [`Store::commit`] call (see [`MemoryStore`] for details).
+    ///
+    /// The returned value is opaque — callers must treat it as a string,
+    /// not assume any specific format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::HistoryUnavailable`] when the backend has no
+    /// committed state to identify (e.g. an unborn HEAD in a fresh git
+    /// repository), or when the backend has opted out of revision tracking.
+    fn head_sha(&self) -> Result<String>;
+
+    /// Reads the content of a file as it existed at a specific revision.
+    ///
+    /// Unlike [`Store::read`], this method ignores staged changes and reads
+    /// from history.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::RevisionUnknown`] if `sha` does not name a known revision.
+    /// - [`Error::BodyAtRevisionMissing`] if `sha` exists but `path` is not
+    ///   present at that revision (added later, deleted at that point, etc).
+    /// - [`Error::HistoryUnavailable`] if the backend has no notion of
+    ///   history.
+    fn fetch_body_at(&self, path: &RelPath, sha: &str) -> Result<String>;
 }
 
 #[cfg(test)]
