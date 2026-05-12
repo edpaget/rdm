@@ -45,5 +45,6 @@ pub fn build_router(state: AppState) -> Router {
             "/projects/{project}/tasks/{task}/promote",
             post(handlers::tasks::promote_task),
         )
+        .route("/static/edit.js", get(handlers::static_assets::edit_js))
         .with_state(state)
 }

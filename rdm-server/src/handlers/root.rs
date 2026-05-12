@@ -141,6 +141,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn base_template_renders_edit_js_script_tag() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("src=\"/static/edit.js\""));
+        assert!(html.contains("defer"));
+    }
+
+    #[tokio::test]
     async fn root_default_accept_returns_html() {
         let (_dir, state) = setup();
         let app = build_router(state);

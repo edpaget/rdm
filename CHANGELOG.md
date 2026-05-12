@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A small embedded JavaScript client (`/static/edit.js`) wired into every
+  rdm-server page that intercepts `<form data-rdm-edit>` submissions, PATCHes
+  the resource as JSON, reloads on success, and surfaces server validation
+  errors inline.
 - Phase status `wont-fix`, treated like `done` for roadmap completion.
   Agent-facing surface area (`Describe` schema, agent-config instruction
   templates, and the CLI's combined-status error message) now lists

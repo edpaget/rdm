@@ -10,5 +10,7 @@ pub mod roadmaps;
 pub mod root;
 /// Search endpoint.
 pub mod search;
+/// Embedded static assets (e.g., edit-form client script).
+pub mod static_assets;
 /// Task list and detail endpoints.
 pub mod tasks;
