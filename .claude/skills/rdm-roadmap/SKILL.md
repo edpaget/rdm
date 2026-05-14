@@ -33,6 +33,8 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
    - [ ] Criterion two
    EOF
    ```
+
+   Pass a bare slug like `hook-commit-bug` — rdm prepends `phase-<number>-` automatically. Do **not** include `phase-N-` in the slug; you'll get a doubled prefix like `phase-1-phase-1-hook-commit-bug`.
 6. **Verify** the roadmap looks correct: `./target/debug/rdm roadmap show <slug> --project rdm`
 
 ## Guidelines

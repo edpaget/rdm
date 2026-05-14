@@ -41,6 +41,7 @@ Use `rdm_search` for fuzzy matching against titles and body content. Tags are a 
 
 - `rdm_roadmap_create` with `project: {proj_param}, slug: "<slug>", title: "Title", body: "Summary.", tags: ["bug", "ui"]`
 - `rdm_phase_create` with `project: {proj_param}, roadmap: "<slug>", slug: "<slug>", title: "Title", number: <n>, body: "Details.", tags: ["audit"]`
+  - Pass a bare slug like `hook-commit-bug` for `slug:` — rdm builds the final stem as `phase-<number>-<slug>`. Do **not** include `phase-N-` in `slug:` or you'll get a doubled prefix like `phase-1-phase-1-hook-commit-bug`.
 - `rdm_task_create` with `project: {proj_param}, slug: "<slug>", title: "Title", body: "Description.", tags: ["bug"]`
 
 The `body` parameter accepts full Markdown including multiline content. The `tags` parameter is optional. On `*_update`, passing `tags: [...]` replaces the existing list, and `clear_tags: true` removes all tags (roadmap and phase only; task uses `tags: []`).

@@ -57,6 +57,8 @@ rdm phase create <slug> --title "Title" --number <n> --body "Details." --tags au
 rdm task create <slug> --title "Title" --body "Description." --tags bug --no-edit {proj_flag}
 ```
 
+For `phase create`, pass a bare slug like `hook-commit-bug` — rdm prepends `phase-<number>-` automatically. Do **not** include `phase-N-` in the slug; you'll get a doubled prefix like `phase-1-phase-1-hook-commit-bug`.
+
 `--tags` is comma-separated. Pass `--tags ""` (or omit it) for no tags. On `update`, `--tags` replaces the existing list.
 
 ## Tagging convention
