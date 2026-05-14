@@ -40,6 +40,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   horizontal group with vertical separators on desktop, and stack below
   the breadcrumb on narrow screens. The same placement is used on the
   roadmap list, roadmap detail, and task list pages.
+- HTML pages now load their stylesheet from `/static/styles.css` instead
+  of an inline `<style>` block, making each rendered page significantly
+  smaller and allowing the browser to cache the stylesheet across
+  navigations.
 
 ## [0.8.0] - 2026-04-27
 

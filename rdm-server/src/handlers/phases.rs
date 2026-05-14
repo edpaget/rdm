@@ -1095,6 +1095,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_phase_html_tag_edit_form_renders_when_no_tags() {
+        // `phase-2-untagged` in setup_with_phase_tags has no tags; the editor
+        // should still render with an empty input value and the Clear button.
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha/phases/phase-2-untagged")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!html.contains("<dt>Tags</dt>"), "Tags row should be absent");
+        assert!(html.contains("id=\"phase-tags-edit\""));
+        assert!(
+            html.contains("value=\"\""),
+            "empty tag input value missing in:\n{html}"
+        );
+        assert!(html.contains("name=\"clear_tags\""));
+    }
+
+    /// Round-trip: clearing tags via PATCH must remove the `<dt>Tags</dt>` row
+    /// on the next GET. Pins the contract that rdm-core normalizes an empty
+    /// `Vec` to `None` rather than `Some(vec![])`, so the template never
+    /// renders an empty Tags row.
+    #[tokio::test]
+    async fn patch_phase_clear_tags_html_omits_tags_row() {
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state.clone());
+        let response = app
+            .oneshot(patch_json(
+                "/projects/demo/roadmaps/alpha/phases/phase-1-tagged",
+                r#"{"clear_tags":true}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+
+        let app2 = build_router(state);
+        let response = app2
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha/phases/phase-1-tagged")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            !html.contains("<dt>Tags</dt>"),
+            "Tags row should be gone after clear in:\n{html}"
+        );
+    }
+
+    #[tokio::test]
     async fn get_phase_html_includes_tag_edit_form() {
         let (_dir, state) = setup_with_phase_tags();
         let app = build_router(state);

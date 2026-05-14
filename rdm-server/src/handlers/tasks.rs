@@ -693,6 +693,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_task_html_tag_edit_form_renders_when_no_tags() {
+        // `feature` task in setup() has no tags; tag editor should still render
+        // with an empty input value and the Clear button still present.
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/tasks/feature")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!html.contains("<dt>Tags</dt>"), "Tags row should be absent");
+        assert!(html.contains("id=\"task-tags-edit\""));
+        assert!(
+            html.contains("value=\"\""),
+            "empty tag input value missing in:\n{html}"
+        );
+        assert!(html.contains("name=\"clear_tags\""));
+    }
+
+    #[tokio::test]
     async fn get_task_html_includes_tag_edit_form() {
         let (_dir, state) = setup();
         let app = build_router(state);

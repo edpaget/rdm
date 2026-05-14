@@ -2,6 +2,7 @@ use axum::http::header;
 use axum::response::IntoResponse;
 
 const EDIT_JS: &str = include_str!("../../assets/edit.js");
+const STYLES_CSS: &str = include_str!("../../assets/styles.css");
 
 /// `GET /static/edit.js` — serves the embedded edit-form client script.
 pub async fn edit_js() -> impl IntoResponse {
@@ -14,6 +15,17 @@ pub async fn edit_js() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-store"),
         ],
         EDIT_JS,
+    )
+}
+
+/// `GET /static/styles.css` — serves the embedded stylesheet.
+pub async fn styles_css() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        STYLES_CSS,
     )
 }
 
@@ -31,6 +43,38 @@ mod tests {
             plan_root: std::path::PathBuf::from("/tmp/rdm-test"),
             quick_filters: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn styles_css_returns_200_with_css_content_type() {
+        let app = build_router(test_state());
+        let response = app
+            .oneshot(
+                Request::get("/static/styles.css")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let ctype = response
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            ctype.contains("text/css"),
+            "expected text/css content-type, got: {ctype}"
+        );
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!text.is_empty(), "styles.css body should not be empty");
+        assert!(
+            text.contains(".tag-edit"),
+            "styles.css should contain the tag-edit rule"
+        );
     }
 
     #[tokio::test]

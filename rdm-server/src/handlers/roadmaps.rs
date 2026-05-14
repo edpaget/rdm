@@ -834,7 +834,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Alpha Roadmap"));
@@ -855,7 +855,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Alpha Roadmap"));
@@ -1416,6 +1416,36 @@ mod tests {
         let body = to_bytes(response.into_body(), 16384).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("tags").is_none() || json["tags"].is_null());
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_html_tag_edit_form_renders_when_no_tags() {
+        // `untagged-rm` in setup_with_tags has no tags; the editor should still
+        // render with an empty input value and the Clear button.
+        let (_dir, state) = setup_with_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/untagged-rm")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            !html.contains("class=\"tags\""),
+            "tags paragraph should be absent in:\n{html}"
+        );
+        assert!(html.contains("id=\"roadmap-tags-edit\""));
+        assert!(
+            html.contains("value=\"\""),
+            "empty tag input value missing in:\n{html}"
+        );
+        assert!(html.contains("name=\"clear_tags\""));
     }
 
     #[tokio::test]
