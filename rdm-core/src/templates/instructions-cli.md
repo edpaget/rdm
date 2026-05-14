@@ -25,6 +25,7 @@ rdm task show <slug> {proj_flag}             # show task details
 ```
 
 Add `--no-body` to any `show` command to suppress body content when you only need metadata.
+Add `--at <sha>` to any `show` command to read the body as it was at a specific git revision; metadata still reflects the current state, and the SHA is surfaced in the output as a `Revision:` line (text/markdown) or a `revision` field (JSON).
 
 ## Searching
 

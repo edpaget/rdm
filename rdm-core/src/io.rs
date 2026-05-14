@@ -99,6 +99,89 @@ pub fn load_task(store: &impl Store, project: &str, task_slug: &str) -> Result<D
     Document::parse(&content)
 }
 
+/// Loads a roadmap document with its body read at a specific git revision.
+///
+/// Metadata (frontmatter) reflects the current state, but the body is the
+/// content that was present at `sha`. Use this to inspect "what did this
+/// look like back then" without rewriting the rest of the document.
+///
+/// # Errors
+///
+/// Returns [`Error::RoadmapNotFound`] if the roadmap does not currently
+/// exist, [`Error::RevisionUnknown`] if `sha` is not a known revision,
+/// [`Error::BodyAtRevisionMissing`] if `sha` exists but the roadmap file
+/// is not present at that revision, [`Error::HistoryUnavailable`] if the
+/// backend cannot serve history, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+/// historical content fails to parse.
+pub fn load_roadmap_at(
+    store: &impl Store,
+    project: &str,
+    roadmap: &str,
+    sha: &str,
+) -> Result<Document<Roadmap>> {
+    let mut doc = load_roadmap(store, project, roadmap)?;
+    let path = crate::paths::roadmap_path(project, roadmap);
+    let historical = store.fetch_body_at(&path, sha)?;
+    doc.body = Document::<Roadmap>::parse(&historical)?.body;
+    Ok(doc)
+}
+
+/// Loads a phase document with its body read at a specific git revision.
+///
+/// Metadata reflects the current state; only the body is replaced with the
+/// version from `sha`.
+///
+/// # Errors
+///
+/// Returns [`Error::PhaseNotFound`] if the phase does not currently exist,
+/// [`Error::RevisionUnknown`] if `sha` is not a known revision,
+/// [`Error::BodyAtRevisionMissing`] if `sha` exists but the phase file is
+/// not present at that revision, [`Error::HistoryUnavailable`] if the
+/// backend cannot serve history, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+/// historical content fails to parse.
+pub fn load_phase_at(
+    store: &impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+    sha: &str,
+) -> Result<Document<Phase>> {
+    let mut doc = load_phase(store, project, roadmap, phase_stem)?;
+    let path = crate::paths::phase_path(project, roadmap, phase_stem);
+    let historical = store.fetch_body_at(&path, sha)?;
+    doc.body = Document::<Phase>::parse(&historical)?.body;
+    Ok(doc)
+}
+
+/// Loads a task document with its body read at a specific git revision.
+///
+/// Metadata reflects the current state; only the body is replaced with the
+/// version from `sha`.
+///
+/// # Errors
+///
+/// Returns [`Error::TaskNotFound`] if the task does not currently exist,
+/// [`Error::RevisionUnknown`] if `sha` is not a known revision,
+/// [`Error::BodyAtRevisionMissing`] if `sha` exists but the task file is
+/// not present at that revision, [`Error::HistoryUnavailable`] if the
+/// backend cannot serve history, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+/// historical content fails to parse.
+pub fn load_task_at(
+    store: &impl Store,
+    project: &str,
+    task_slug: &str,
+    sha: &str,
+) -> Result<Document<Task>> {
+    let mut doc = load_task(store, project, task_slug)?;
+    let path = crate::paths::task_path(project, task_slug);
+    let historical = store.fetch_body_at(&path, sha)?;
+    doc.body = Document::<Task>::parse(&historical)?.body;
+    Ok(doc)
+}
+
 /// Writes a roadmap document to the store.
 ///
 /// # Errors
@@ -304,5 +387,156 @@ mod tests {
             load_task(&store, "test", "nonexistent"),
             Err(Error::TaskNotFound(_))
         ));
+    }
+
+    // -- load_*_at history-aware loaders --
+
+    fn seed_roadmap(store: &mut MemoryStore, body: &str) {
+        let doc = Document {
+            frontmatter: Roadmap {
+                project: "test".to_string(),
+                roadmap: "alpha".to_string(),
+                title: "Alpha".to_string(),
+                phases: Vec::new(),
+                dependencies: None,
+                priority: None,
+                tags: None,
+            },
+            body: body.to_string(),
+        };
+        write_roadmap(store, "test", "alpha", &doc).unwrap();
+    }
+
+    fn seed_phase(store: &mut MemoryStore, body: &str) {
+        let doc = Document {
+            frontmatter: Phase {
+                phase: 1,
+                title: "One".to_string(),
+                status: PhaseStatus::NotStarted,
+                tags: None,
+                completed: None,
+                commit: None,
+            },
+            body: body.to_string(),
+        };
+        write_phase(store, "test", "alpha", "phase-1-one", &doc).unwrap();
+    }
+
+    fn seed_task(store: &mut MemoryStore, body: &str) {
+        let doc = Document {
+            frontmatter: Task {
+                project: "test".to_string(),
+                title: "Fix".to_string(),
+                status: TaskStatus::Open,
+                priority: crate::model::Priority::Medium,
+                created: chrono::NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+                tags: None,
+                completed: None,
+                commit: None,
+            },
+            body: body.to_string(),
+        };
+        write_task(store, "test", "fix", &doc).unwrap();
+    }
+
+    #[test]
+    fn load_roadmap_at_returns_historical_body() {
+        let mut store = setup_store();
+        seed_roadmap(&mut store, "v1-body");
+        store.commit().unwrap();
+        let old = store.head_sha().unwrap();
+        seed_roadmap(&mut store, "v2-body");
+        store.commit().unwrap();
+
+        let loaded = load_roadmap_at(&store, "test", "alpha", &old).unwrap();
+        assert_eq!(loaded.frontmatter.title, "Alpha");
+        assert_eq!(loaded.body, "v1-body\n");
+    }
+
+    #[test]
+    fn load_roadmap_at_revision_unknown() {
+        let mut store = setup_store();
+        seed_roadmap(&mut store, "body");
+        store.commit().unwrap();
+        let err = load_roadmap_at(&store, "test", "alpha", "mem-nope").unwrap_err();
+        assert!(matches!(err, Error::RevisionUnknown { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn load_roadmap_at_missing_at_revision() {
+        let mut store = setup_store();
+        store.commit().unwrap();
+        let pre = store.head_sha().unwrap();
+        seed_roadmap(&mut store, "body");
+        store.commit().unwrap();
+        let err = load_roadmap_at(&store, "test", "alpha", &pre).unwrap_err();
+        assert!(
+            matches!(err, Error::BodyAtRevisionMissing { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn load_phase_at_returns_historical_body() {
+        let mut store = setup_store();
+        seed_phase(&mut store, "v1-phase");
+        store.commit().unwrap();
+        let old = store.head_sha().unwrap();
+        seed_phase(&mut store, "v2-phase");
+        store.commit().unwrap();
+        let loaded = load_phase_at(&store, "test", "alpha", "phase-1-one", &old).unwrap();
+        assert_eq!(loaded.body, "v1-phase\n");
+    }
+
+    #[test]
+    fn load_phase_at_revision_unknown() {
+        let mut store = setup_store();
+        seed_phase(&mut store, "body");
+        store.commit().unwrap();
+        let err = load_phase_at(&store, "test", "alpha", "phase-1-one", "mem-nope").unwrap_err();
+        assert!(matches!(err, Error::RevisionUnknown { .. }));
+    }
+
+    #[test]
+    fn load_phase_at_missing_at_revision() {
+        let mut store = setup_store();
+        store.commit().unwrap();
+        let pre = store.head_sha().unwrap();
+        seed_phase(&mut store, "body");
+        store.commit().unwrap();
+        let err = load_phase_at(&store, "test", "alpha", "phase-1-one", &pre).unwrap_err();
+        assert!(matches!(err, Error::BodyAtRevisionMissing { .. }));
+    }
+
+    #[test]
+    fn load_task_at_returns_historical_body() {
+        let mut store = setup_store();
+        seed_task(&mut store, "v1-task");
+        store.commit().unwrap();
+        let old = store.head_sha().unwrap();
+        seed_task(&mut store, "v2-task");
+        store.commit().unwrap();
+        let loaded = load_task_at(&store, "test", "fix", &old).unwrap();
+        assert_eq!(loaded.body, "v1-task\n");
+    }
+
+    #[test]
+    fn load_task_at_revision_unknown() {
+        let mut store = setup_store();
+        seed_task(&mut store, "body");
+        store.commit().unwrap();
+        let err = load_task_at(&store, "test", "fix", "mem-nope").unwrap_err();
+        assert!(matches!(err, Error::RevisionUnknown { .. }));
+    }
+
+    #[test]
+    fn load_task_at_missing_at_revision() {
+        let mut store = setup_store();
+        store.commit().unwrap();
+        let pre = store.head_sha().unwrap();
+        seed_task(&mut store, "body");
+        store.commit().unwrap();
+        let err = load_task_at(&store, "test", "fix", &pre).unwrap_err();
+        assert!(matches!(err, Error::BodyAtRevisionMissing { .. }));
     }
 }

@@ -914,3 +914,105 @@ async fn roadmap_detail_html_renders_body() {
     assert!(body.contains("body-content"));
     assert!(body.contains("API roadmap body."));
 }
+
+// ── ?at=<sha> revision-history tests ─────────────────────────────────────────
+//
+// The server uses `FsStore`, whose `fetch_body_at` always returns
+// `Error::HistoryUnavailable`. That covers the wire-shape concerns at the
+// HTTP layer: `?at=<sha>` is accepted, parsed, and routed through the
+// `fetch_body_at` path, with errors surfaced as 404 Problem+JSON. The
+// historical-body happy path is exercised end-to-end against `GitStore` in
+// `rdm-cli/tests/cli_{roadmap,phase,task}.rs`.
+
+#[tokio::test]
+async fn roadmap_show_at_revision_with_fs_store_returns_404() {
+    let (_dir, addr, client) = spawn_server().await;
+    let resp = client
+        .get(url(
+            addr,
+            "/projects/demo/roadmaps/api?at=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        ))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(ct, "application/problem+json");
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(json["status"], 404);
+    assert!(
+        json["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no history available"),
+        "detail should mention HistoryUnavailable: {}",
+        json["detail"]
+    );
+}
+
+#[tokio::test]
+async fn phase_show_at_revision_with_fs_store_returns_404() {
+    let (_dir, addr, client) = spawn_server().await;
+    let resp = client
+        .get(url(
+            addr,
+            "/projects/demo/roadmaps/api/phases/phase-1-design?at=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        ))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(ct, "application/problem+json");
+}
+
+#[tokio::test]
+async fn task_show_at_revision_with_fs_store_returns_404() {
+    let (_dir, addr, client) = spawn_server().await;
+    let resp = client
+        .get(url(
+            addr,
+            "/projects/demo/tasks/bug-1?at=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        ))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(ct, "application/problem+json");
+}
+
+#[tokio::test]
+async fn roadmap_show_without_at_omits_revision_field() {
+    let (_dir, addr, client) = spawn_server().await;
+    let resp = client
+        .get(url(addr, "/projects/demo/roadmaps/api"))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        json.get("revision").is_none() || json["revision"].is_null(),
+        "revision field must not appear without ?at=, got: {json}"
+    );
+}

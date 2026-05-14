@@ -314,6 +314,9 @@ pub(crate) enum RoadmapCommand {
         /// Suppress body content in output.
         #[arg(long)]
         no_body: bool,
+        /// Read the body as it was at a specific git revision.
+        #[arg(long)]
+        at: Option<String>,
     },
     /// Update a roadmap's priority and/or body.
     Update {
@@ -483,6 +486,9 @@ pub(crate) enum PhaseCommand {
         /// Suppress body content in output.
         #[arg(long)]
         no_body: bool,
+        /// Read the body as it was at a specific git revision.
+        #[arg(long)]
+        at: Option<String>,
     },
     /// Update a phase's status and/or body.
     Update {
@@ -558,6 +564,9 @@ pub(crate) enum TaskCommand {
         /// Suppress body content in output.
         #[arg(long)]
         no_body: bool,
+        /// Read the body as it was at a specific git revision.
+        #[arg(long)]
+        at: Option<String>,
     },
     /// Update a task.
     Update {

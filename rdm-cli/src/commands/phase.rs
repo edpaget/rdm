@@ -74,12 +74,19 @@ pub fn run(
             roadmap,
             project,
             no_body,
+            at,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
                 .context("failed to resolve phase")?;
-            let mut doc = rdm_core::io::load_phase(store, &project, &roadmap, &stem)
-                .context("failed to load phase")?;
+            let mut doc = match at.as_deref() {
+                Some(sha) => rdm_core::io::load_phase_at(store, &project, &roadmap, &stem, sha)
+                    .with_context(|| {
+                        format!("failed to load phase '{stem}' at revision '{sha}'")
+                    })?,
+                None => rdm_core::io::load_phase(store, &project, &roadmap, &stem)
+                    .context("failed to load phase")?,
+            };
             if no_body {
                 doc.body = String::new();
             }
@@ -104,18 +111,21 @@ pub fn run(
                 project: &project,
             };
 
+            let revision = at.as_deref();
             match format {
-                OutputFormat::Human => {
-                    print!("{}", display::format_phase_detail(&stem, &doc, Some(&nav)))
-                }
+                OutputFormat::Human => print!(
+                    "{}",
+                    display::format_phase_detail(&stem, &doc, Some(&nav), revision)
+                ),
                 OutputFormat::Markdown => {
                     print!(
                         "{}",
-                        display::format_phase_detail_md(&stem, &doc, Some(&nav))
+                        display::format_phase_detail_md(&stem, &doc, Some(&nav), revision)
                     )
                 }
                 OutputFormat::Json => {
-                    let j = json::phase_to_json(&stem, &doc, &roadmap, prev_stem, next_stem);
+                    let j =
+                        json::phase_to_json(&stem, &doc, &roadmap, prev_stem, next_stem, revision);
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&j).context("failed to serialize phase")?

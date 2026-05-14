@@ -695,3 +695,121 @@ fn task_create_no_edit_with_body_flag_still_works() {
         "expected body content, got: {content}"
     );
 }
+
+fn head_sha(dir: &std::path::Path) -> String {
+    let repo = gix::open(dir).unwrap();
+    let mut head = repo.head().unwrap();
+    head.peel_to_commit().unwrap().id.to_string()
+}
+
+#[test]
+fn task_show_at_revision_returns_historical_body() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix the bug",
+            "--project",
+            "fbm",
+            "--body",
+            "original-task-body",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let old_sha = head_sha(dir.path());
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--body",
+            "new-task-body",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "show",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--at",
+            &old_sha,
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("original-task-body")
+                .and(predicate::str::contains(format!("Revision: {old_sha}")))
+                .and(predicate::str::contains("new-task-body").not()),
+        );
+}
+
+#[test]
+fn task_show_at_unknown_revision_errors() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-bug", "Fix Bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "show",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--at",
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not known to the store"));
+}
+
+#[test]
+fn task_show_at_revision_missing_path_errors() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    // Anchor before task exists.
+    let pre_sha = head_sha(dir.path());
+
+    create_task(&dir, "fix-bug", "Fix Bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "show",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--at",
+            &pre_sha,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not present at revision"));
+}

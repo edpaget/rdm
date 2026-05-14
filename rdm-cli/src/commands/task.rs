@@ -47,22 +47,28 @@ pub fn run(
             slug,
             project,
             no_body,
+            at,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let mut doc =
-                rdm_core::io::load_task(store, &project, &slug).context("failed to load task")?;
+            let mut doc = match at.as_deref() {
+                Some(sha) => rdm_core::io::load_task_at(store, &project, &slug, sha)
+                    .with_context(|| format!("failed to load task '{slug}' at revision '{sha}'"))?,
+                None => rdm_core::io::load_task(store, &project, &slug)
+                    .context("failed to load task")?,
+            };
             if no_body {
                 doc.body = String::new();
             }
+            let revision = at.as_deref();
             match format {
                 OutputFormat::Human => {
-                    print!("{}", display::format_task_detail(&slug, &doc))
+                    print!("{}", display::format_task_detail(&slug, &doc, revision))
                 }
                 OutputFormat::Markdown => {
-                    print!("{}", display::format_task_detail_md(&slug, &doc))
+                    print!("{}", display::format_task_detail_md(&slug, &doc, revision))
                 }
                 OutputFormat::Json => {
-                    let j = json::task_to_json(&slug, &doc);
+                    let j = json::task_to_json(&slug, &doc, revision);
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&j).context("failed to serialize task")?

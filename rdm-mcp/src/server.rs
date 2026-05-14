@@ -503,7 +503,7 @@ impl RdmMcpServer {
                 Err(e) => return core_err(e),
             };
 
-        ok_text(display::format_roadmap_summary(&doc, &phases))
+        ok_text(display::format_roadmap_summary(&doc, &phases, None))
     }
 
     /// List all phases in a roadmap, optionally filtered by tag.
@@ -562,7 +562,7 @@ impl RdmMcpServer {
             Err(e) => return core_err(e),
         };
 
-        ok_text(display::format_phase_detail(&stem, &doc, None))
+        ok_text(display::format_phase_detail(&stem, &doc, None, None))
     }
 
     /// List tasks in a project with optional filters.
@@ -623,7 +623,7 @@ impl RdmMcpServer {
         self.maybe_auto_init();
         let store = self.store.lock().unwrap();
         match rdm_core::io::load_task(&*store, &params.project, &params.task) {
-            Ok(doc) => ok_text(display::format_task_detail(&params.task, &doc)),
+            Ok(doc) => ok_text(display::format_task_detail(&params.task, &doc, None)),
             Err(e) => core_err(e),
         }
     }
@@ -741,7 +741,7 @@ impl RdmMcpServer {
             Ok(p) => p,
             Err(e) => return core_err(e),
         };
-        ok_text(display::format_roadmap_summary(&doc, &phases))
+        ok_text(display::format_roadmap_summary(&doc, &phases, None))
     }
 
     /// Update a roadmap's priority, tags, and/or body.
@@ -800,7 +800,7 @@ impl RdmMcpServer {
                 Ok(p) => p,
                 Err(e) => return core_err(e),
             };
-        ok_text(display::format_roadmap_summary(&doc, &phases))
+        ok_text(display::format_roadmap_summary(&doc, &phases, None))
     }
 
     /// Create a new phase in a roadmap.
@@ -831,7 +831,7 @@ impl RdmMcpServer {
             return core_err(e);
         }
         let stem = doc.frontmatter.stem(&params.slug);
-        ok_text(display::format_phase_detail(&stem, &doc, None))
+        ok_text(display::format_phase_detail(&stem, &doc, None, None))
     }
 
     /// Update a phase's status, tags, or body.
@@ -890,7 +890,7 @@ impl RdmMcpServer {
         if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
             return core_err(e);
         }
-        ok_text(display::format_phase_detail(&stem, &doc, None))
+        ok_text(display::format_phase_detail(&stem, &doc, None, None))
     }
 
     /// Create a new task in a project.
@@ -927,7 +927,7 @@ impl RdmMcpServer {
         if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
             return core_err(e);
         }
-        ok_text(display::format_task_detail(&params.slug, &doc))
+        ok_text(display::format_task_detail(&params.slug, &doc, None))
     }
 
     /// Update a task's status, priority, tags, or body.
@@ -973,7 +973,7 @@ impl RdmMcpServer {
         if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
             return core_err(e);
         }
-        ok_text(display::format_task_detail(&params.task, &doc))
+        ok_text(display::format_task_detail(&params.task, &doc, None))
     }
 
     /// Promote a task to a roadmap.
@@ -1005,7 +1005,7 @@ impl RdmMcpServer {
                 Ok(p) => p,
                 Err(e) => return core_err(e),
             };
-        ok_text(display::format_roadmap_summary(&doc, &phases))
+        ok_text(display::format_roadmap_summary(&doc, &phases, None))
     }
 }
 

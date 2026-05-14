@@ -18,6 +18,11 @@
 
 {% block content %}
 <h1>{{ title }}</h1>
+{% if let Some(sha) = revision %}
+<p class="revision-badge" aria-live="polite" aria-label="Viewing historical revision">
+  <span class="badge badge-revision">Viewing revision {{ sha }}</span>
+</p>
+{% endif %}
 <p><span class="badge badge-{{ status_class }}">{{ status }}</span>{% if let Some(pri) = priority %} <span class="badge badge-{{ priority_class.as_deref().unwrap_or("") }}">{{ pri }}</span>{% endif %}{% if let Some(date) = last_changed %} · Last changed: {{ date }}{% endif %}</p>
 {% if let Some(deps) = dependencies %}
 {% if !deps.is_empty() %}

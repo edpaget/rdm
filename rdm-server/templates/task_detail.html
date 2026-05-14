@@ -19,6 +19,11 @@
 
 {% block content %}
 <h1>{{ title }}</h1>
+{% if let Some(sha) = revision %}
+<p class="revision-badge" aria-live="polite" aria-label="Viewing historical revision">
+  <span class="badge badge-revision">Viewing revision {{ sha }}</span>
+</p>
+{% endif %}
 <dl class="meta">
   <dt>Status</dt>
   <dd>

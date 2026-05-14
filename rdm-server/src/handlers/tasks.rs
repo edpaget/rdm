@@ -43,6 +43,15 @@ struct TaskDetail {
     #[serde(flatten)]
     task: Task,
     body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<String>,
+}
+
+/// Query parameters for the task detail route.
+#[derive(Debug, Deserialize, Default)]
+pub struct TaskDetailFilters {
+    /// Read the body as it was at a specific git revision.
+    pub at: Option<String>,
 }
 
 /// `GET /projects/:project/tasks` — list tasks with optional filters.
@@ -184,10 +193,15 @@ pub async fn get_task(
     format: ResponseFormat,
     State(state): State<AppState>,
     Path((project, task_slug)): Path<(String, String)>,
+    Query(filters): Query<TaskDetailFilters>,
 ) -> Result<Response, Response> {
     let store = state.store();
-    let doc = rdm_core::io::load_task(&store, &project, &task_slug)
-        .map_err(|e| error_response(e, format))?;
+    let doc = match filters.at.as_deref() {
+        Some(sha) => rdm_core::io::load_task_at(&store, &project, &task_slug, sha)
+            .map_err(|e| error_response(e, format))?,
+        None => rdm_core::io::load_task(&store, &project, &task_slug)
+            .map_err(|e| error_response(e, format))?,
+    };
 
     match format {
         ResponseFormat::HalJson => {
@@ -197,6 +211,7 @@ pub async fn get_task(
                     slug: task_slug,
                     task: doc.frontmatter,
                     body: doc.body,
+                    revision: filters.at.clone(),
                 },
                 self_href,
             )
@@ -219,6 +234,7 @@ pub async fn get_task(
                 tags: doc.frontmatter.tags,
                 body_html,
                 body_md: doc.body,
+                revision: filters.at,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -274,6 +290,7 @@ pub async fn create_task(
                     slug: req.slug,
                     task: doc.frontmatter,
                     body: doc.body,
+                    revision: None,
                 },
                 &location,
             )
@@ -342,6 +359,7 @@ pub async fn update_task(
                     slug: task_slug,
                     task: doc.frontmatter,
                     body: doc.body,
+                    revision: None,
                 },
                 &self_href,
             )

@@ -49,6 +49,10 @@
   --badge-critical-bg: #8b1a1a;
   --badge-critical-text: #fff;
   --badge-critical-border: #8b1a1a;
+
+  --badge-revision-bg: #fff4e0;
+  --badge-revision-text: #7a4a00;
+  --badge-revision-border: #d99a3a;
 }
 
 [data-theme="dark"] {
@@ -102,6 +106,10 @@
   --badge-critical-bg: #cc2a2a;
   --badge-critical-text: #fff;
   --badge-critical-border: #cc2a2a;
+
+  --badge-revision-bg: #3a2a00;
+  --badge-revision-text: #f0c060;
+  --badge-revision-border: #6a4a00;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -243,6 +251,8 @@ th { font-weight: 600; }
 .badge-medium { background: var(--badge-medium-bg); color: var(--badge-medium-text); border-color: var(--badge-medium-border); }
 .badge-high { background: var(--badge-high-bg); color: var(--badge-high-text); border-color: var(--badge-high-border); }
 .badge-critical { background: var(--badge-critical-bg); color: var(--badge-critical-text); border-color: var(--badge-critical-border); }
+.badge-revision { background: var(--badge-revision-bg); color: var(--badge-revision-text); border-color: var(--badge-revision-border); }
+.revision-badge { margin: 0 0 0.5rem 0; }
 .body-content { margin: 1.5rem 0; }
 .body-content pre {
   background: var(--color-code-bg);

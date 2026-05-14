@@ -1035,3 +1035,131 @@ fn phase_show_last_phase_no_next() {
                 .and(predicate::str::contains("Next:").not()),
         );
 }
+
+fn head_sha(dir: &std::path::Path) -> String {
+    let repo = gix::open(dir).unwrap();
+    let mut head = repo.head().unwrap();
+    head.peel_to_commit().unwrap().id.to_string()
+}
+
+#[test]
+fn phase_show_at_revision_returns_historical_body() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--title",
+            "Core Valuation",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "original-phase-body",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let old_sha = head_sha(dir.path());
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "new-phase-body",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--at",
+            &old_sha,
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("original-phase-body")
+                .and(predicate::str::contains(format!("Revision: {old_sha}")))
+                .and(predicate::str::contains("new-phase-body").not()),
+        );
+}
+
+#[test]
+fn phase_show_at_unknown_revision_errors() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--at",
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not known to the store"));
+}
+
+#[test]
+fn phase_show_at_revision_missing_path_errors() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    // Capture anchor SHA *before* the phase exists.
+    let pre_sha = head_sha(dir.path());
+
+    create_phase(&dir, "core", "Core");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--at",
+            &pre_sha,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not present at revision"));
+}

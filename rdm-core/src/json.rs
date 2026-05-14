@@ -36,6 +36,10 @@ pub struct RoadmapJson {
     pub tags: Option<Vec<String>>,
     /// Markdown body content.
     pub body: String,
+    /// Git revision the body was read from (only set when this view was
+    /// requested at a specific historical SHA).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 /// Full phase detail with body.
@@ -58,6 +62,10 @@ pub struct PhaseJson {
     /// Git commit SHA associated with phase completion, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// Git revision the body was read from (only set when this view was
+    /// requested at a specific historical SHA).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
     /// Parent roadmap slug.
     pub roadmap: String,
     /// Stem of the previous phase, if any.
@@ -96,6 +104,10 @@ pub struct TaskJson {
     pub commit: Option<String>,
     /// Markdown body content.
     pub body: String,
+    /// Git revision the body was read from (only set when this view was
+    /// requested at a specific historical SHA).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -201,9 +213,14 @@ pub struct SearchResultJson {
 // ---------------------------------------------------------------------------
 
 /// Build a [`RoadmapJson`] from a roadmap document and its loaded phases.
+///
+/// When `revision` is `Some`, the resulting JSON surfaces the historical
+/// SHA in the `revision` field so callers can tell that `body` was read
+/// from history rather than HEAD.
 pub fn roadmap_to_json(
     doc: &Document<Roadmap>,
     phases: &[(String, Document<Phase>)],
+    revision: Option<&str>,
 ) -> RoadmapJson {
     let rm = &doc.frontmatter;
     RoadmapJson {
@@ -218,18 +235,22 @@ pub fn roadmap_to_json(
         priority: rm.priority,
         tags: rm.tags.clone(),
         body: doc.body.clone(),
+        revision: revision.map(String::from),
     }
 }
 
 /// Build a [`PhaseJson`] from a phase document, stem, and parent roadmap slug.
 ///
-/// `prev` and `next` are optional stems of adjacent phases.
+/// `prev` and `next` are optional stems of adjacent phases. When `revision`
+/// is `Some`, the resulting JSON surfaces the historical SHA in the
+/// `revision` field.
 pub fn phase_to_json(
     stem: &str,
     doc: &Document<Phase>,
     roadmap: &str,
     prev: Option<&str>,
     next: Option<&str>,
+    revision: Option<&str>,
 ) -> PhaseJson {
     let fm = &doc.frontmatter;
     PhaseJson {
@@ -240,6 +261,7 @@ pub fn phase_to_json(
         tags: fm.tags.clone(),
         completed: fm.completed,
         commit: fm.commit.clone(),
+        revision: revision.map(String::from),
         roadmap: roadmap.to_string(),
         prev_phase: prev.map(String::from),
         next_phase: next.map(String::from),
@@ -248,7 +270,10 @@ pub fn phase_to_json(
 }
 
 /// Build a [`TaskJson`] from a task document and slug.
-pub fn task_to_json(slug: &str, doc: &Document<Task>) -> TaskJson {
+///
+/// When `revision` is `Some`, the resulting JSON surfaces the historical
+/// SHA in the `revision` field.
+pub fn task_to_json(slug: &str, doc: &Document<Task>, revision: Option<&str>) -> TaskJson {
     let fm = &doc.frontmatter;
     TaskJson {
         slug: slug.to_string(),
@@ -261,6 +286,7 @@ pub fn task_to_json(slug: &str, doc: &Document<Task>) -> TaskJson {
         completed: fm.completed,
         commit: fm.commit.clone(),
         body: doc.body.clone(),
+        revision: revision.map(String::from),
     }
 }
 
@@ -409,7 +435,7 @@ mod tests {
                 make_phase_doc(2, "Impl", PhaseStatus::InProgress),
             ),
         ];
-        let json = roadmap_to_json(&doc, &phases);
+        let json = roadmap_to_json(&doc, &phases, None);
         assert_eq!(json.slug, "alpha");
         assert_eq!(json.phases.len(), 2);
         assert_eq!(json.phases[0].stem, "phase-1-setup");
@@ -458,7 +484,7 @@ mod tests {
     #[test]
     fn task_to_json_fields() {
         let doc = make_task_doc("fix-bug", "acme");
-        let json = task_to_json("fix-bug", &doc);
+        let json = task_to_json("fix-bug", &doc, None);
         assert_eq!(json.slug, "fix-bug");
         assert_eq!(json.project, "acme");
         assert_eq!(json.status, TaskStatus::Open);
@@ -476,12 +502,12 @@ mod tests {
     #[test]
     fn optional_fields_skipped_when_none() {
         let doc = make_task_doc("t", "p");
-        let json = task_to_json("t", &doc);
+        let json = task_to_json("t", &doc, None);
         let serialized = serde_json::to_string(&json).unwrap();
         assert!(!serialized.contains("tags"));
 
         let phase_doc = make_phase_doc(1, "X", PhaseStatus::NotStarted);
-        let pj = phase_to_json("phase-1-x", &phase_doc, "rm", None, None);
+        let pj = phase_to_json("phase-1-x", &phase_doc, "rm", None, None, None);
         let serialized = serde_json::to_string(&pj).unwrap();
         assert!(!serialized.contains("completed"));
         assert!(!serialized.contains("tags"));
@@ -491,7 +517,7 @@ mod tests {
         assert!(!serialized.contains("tags"));
 
         let rm_doc = make_roadmap_doc("acme", "alpha", "Alpha");
-        let rj = roadmap_to_json(&rm_doc, &[]);
+        let rj = roadmap_to_json(&rm_doc, &[], None);
         let serialized = serde_json::to_string(&rj).unwrap();
         assert!(!serialized.contains("tags"));
 
@@ -504,14 +530,14 @@ mod tests {
     fn roadmap_and_phase_tags_round_trip_through_json() {
         let mut rm_doc = make_roadmap_doc("acme", "alpha", "Alpha");
         rm_doc.frontmatter.tags = Some(vec!["api".to_string(), "mcp".to_string()]);
-        let rj = roadmap_to_json(&rm_doc, &[]);
+        let rj = roadmap_to_json(&rm_doc, &[], None);
         assert_eq!(rj.tags, Some(vec!["api".to_string(), "mcp".to_string()]));
         let rsj = roadmap_summary_to_json(&rm_doc, &[]);
         assert_eq!(rsj.tags, Some(vec!["api".to_string(), "mcp".to_string()]));
 
         let mut p_doc = make_phase_doc(1, "X", PhaseStatus::NotStarted);
         p_doc.frontmatter.tags = Some(vec!["infra".to_string()]);
-        let pj = phase_to_json("phase-1-x", &p_doc, "rm", None, None);
+        let pj = phase_to_json("phase-1-x", &p_doc, "rm", None, None, None);
         assert_eq!(pj.tags, Some(vec!["infra".to_string()]));
         let psj = phase_summary_to_json("phase-1-x", &p_doc);
         assert_eq!(psj.tags, Some(vec!["infra".to_string()]));
@@ -558,7 +584,7 @@ mod tests {
         let mut phase_doc = make_phase_doc(1, "Setup", PhaseStatus::InProgress);
         phase_doc.body = "Detailed phase body content.".to_string();
         let phases = vec![("phase-1-setup".to_string(), phase_doc)];
-        let json = roadmap_to_json(&doc, &phases);
+        let json = roadmap_to_json(&doc, &phases, None);
         let serialized = serde_json::to_string(&json).unwrap();
         // Phase summaries should not contain body content
         assert!(!serialized.contains("Detailed phase body content"));

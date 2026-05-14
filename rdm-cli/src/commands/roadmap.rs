@@ -46,25 +46,34 @@ pub fn run(
             slug,
             project,
             no_body,
+            at,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let mut roadmap_doc = rdm_core::io::load_roadmap(store, &project, &slug)
-                .context("failed to load roadmap")?;
+            let mut roadmap_doc = match at.as_deref() {
+                Some(sha) => rdm_core::io::load_roadmap_at(store, &project, &slug, sha)
+                    .with_context(|| {
+                        format!("failed to load roadmap '{slug}' at revision '{sha}'")
+                    })?,
+                None => rdm_core::io::load_roadmap(store, &project, &slug)
+                    .context("failed to load roadmap")?,
+            };
             let phases = rdm_core::ops::phase::list_phases(store, &project, &slug)
                 .context("failed to list phases")?;
             if no_body {
                 roadmap_doc.body = String::new();
             }
+            let revision = at.as_deref();
             match format {
-                OutputFormat::Human => {
-                    print!("{}", display::format_roadmap_summary(&roadmap_doc, &phases))
-                }
+                OutputFormat::Human => print!(
+                    "{}",
+                    display::format_roadmap_summary(&roadmap_doc, &phases, revision)
+                ),
                 OutputFormat::Markdown => print!(
                     "{}",
-                    display::format_roadmap_summary_md(&roadmap_doc, &phases)
+                    display::format_roadmap_summary_md(&roadmap_doc, &phases, revision)
                 ),
                 OutputFormat::Json => {
-                    let j = json::roadmap_to_json(&roadmap_doc, &phases);
+                    let j = json::roadmap_to_json(&roadmap_doc, &phases, revision);
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&j).context("failed to serialize roadmap")?

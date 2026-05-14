@@ -29,10 +29,12 @@ pub struct PhaseNav<'a> {
 /// it is appended after the phase table (or "No phases yet." message).
 ///
 /// When `project` is `Some`, a navigation hint is appended showing how to
-/// drill into individual phases.
+/// drill into individual phases. When `revision` is `Some`, a `Revision: <sha>`
+/// line is rendered near the top to signal a historical view.
 pub fn format_roadmap_summary(
     doc: &Document<Roadmap>,
     phases: &[(String, Document<Phase>)],
+    revision: Option<&str>,
 ) -> String {
     let roadmap = &doc.frontmatter;
     let mut d = ast::Document::new();
@@ -42,6 +44,9 @@ pub fn format_roadmap_summary(
         "Project: {}  Slug: {}",
         roadmap.project, roadmap.roadmap
     ));
+    if let Some(sha) = revision {
+        d.paragraph(&format!("Revision: {sha}"));
+    }
     if let Some(priority) = roadmap.priority {
         d.paragraph(&format!("Priority: {priority}"));
     }
@@ -98,16 +103,23 @@ pub fn format_roadmap_summary(
 }
 
 /// Formats a single phase detail view with optional prev/next navigation.
+///
+/// When `revision` is `Some`, a `Revision: <sha>` line is rendered near
+/// the top of the output to signal a historical view.
 pub fn format_phase_detail(
     stem: &str,
     doc: &Document<Phase>,
     nav: Option<&PhaseNav<'_>>,
+    revision: Option<&str>,
 ) -> String {
     let fm = &doc.frontmatter;
     let mut d = ast::Document::new();
     d.heading(1, &format!("Phase {}: {}", fm.phase, fm.title));
     d.push(ast::Block::BlankLine);
     d.paragraph(&format!("Stem: {stem}"));
+    if let Some(sha) = revision {
+        d.paragraph(&format!("Revision: {sha}"));
+    }
     d.paragraph(&format!("Status: {}", fm.status));
     if let Some(date) = fm.completed {
         d.paragraph(&format!("Completed: {date}"));
@@ -202,12 +214,18 @@ pub fn format_roadmap_list(entries: &[RoadmapWithPhases]) -> String {
 }
 
 /// Formats a single task detail view.
-pub fn format_task_detail(slug: &str, doc: &Document<Task>) -> String {
+///
+/// When `revision` is `Some`, a `Revision: <sha>` line is rendered near
+/// the top of the output to signal a historical view.
+pub fn format_task_detail(slug: &str, doc: &Document<Task>, revision: Option<&str>) -> String {
     let fm = &doc.frontmatter;
     let mut d = ast::Document::new();
     d.heading(1, &fm.title);
     d.push(ast::Block::BlankLine);
     d.paragraph(&format!("Slug: {slug}"));
+    if let Some(sha) = revision {
+        d.paragraph(&format!("Revision: {sha}"));
+    }
     d.paragraph(&format!("Status: {}", fm.status));
     d.paragraph(&format!("Priority: {}", fm.priority));
     d.paragraph(&format!("Created: {}", fm.created));
@@ -316,16 +334,23 @@ fn truncate_snippet(s: &str, max_len: usize) -> String {
 }
 
 /// Formats a roadmap summary as Markdown with heading, bullet metadata, phase table, and body.
+///
+/// When `revision` is `Some`, a `- **Revision:** <sha>` bullet is rendered
+/// near the top of the output to signal a historical view.
 #[must_use]
 pub fn format_roadmap_summary_md(
     doc: &Document<Roadmap>,
     phases: &[(String, Document<Phase>)],
+    revision: Option<&str>,
 ) -> String {
     let roadmap = &doc.frontmatter;
     let mut out = String::new();
     out.push_str(&format!("# {}\n\n", roadmap.title));
     out.push_str(&format!("- **Project:** {}\n", roadmap.project));
     out.push_str(&format!("- **Slug:** {}\n", roadmap.roadmap));
+    if let Some(sha) = revision {
+        out.push_str(&format!("- **Revision:** {sha}\n"));
+    }
     if let Some(priority) = roadmap.priority {
         out.push_str(&format!("- **Priority:** {priority}\n"));
     }
@@ -403,16 +428,23 @@ pub fn format_roadmap_list_md(entries: &[RoadmapWithPhases]) -> String {
 }
 
 /// Formats a single phase detail as Markdown with heading, bullet metadata, and body.
+///
+/// When `revision` is `Some`, a `- **Revision:** <sha>` bullet is rendered
+/// near the top of the output to signal a historical view.
 #[must_use]
 pub fn format_phase_detail_md(
     stem: &str,
     doc: &Document<Phase>,
     nav: Option<&PhaseNav<'_>>,
+    revision: Option<&str>,
 ) -> String {
     let fm = &doc.frontmatter;
     let mut out = String::new();
     out.push_str(&format!("# Phase {}: {}\n\n", fm.phase, fm.title));
     out.push_str(&format!("- **Stem:** {stem}\n"));
+    if let Some(sha) = revision {
+        out.push_str(&format!("- **Revision:** {sha}\n"));
+    }
     out.push_str(&format!("- **Status:** {}\n", fm.status));
     if let Some(date) = fm.completed {
         out.push_str(&format!("- **Completed:** {date}\n"));
@@ -466,12 +498,18 @@ pub fn format_phase_list_md(phases: &[(String, Document<Phase>)]) -> String {
 }
 
 /// Formats a single task detail as Markdown with heading, bullet metadata, and body.
+///
+/// When `revision` is `Some`, a `- **Revision:** <sha>` bullet is rendered
+/// near the top of the output to signal a historical view.
 #[must_use]
-pub fn format_task_detail_md(slug: &str, doc: &Document<Task>) -> String {
+pub fn format_task_detail_md(slug: &str, doc: &Document<Task>, revision: Option<&str>) -> String {
     let fm = &doc.frontmatter;
     let mut out = String::new();
     out.push_str(&format!("# {}\n\n", fm.title));
     out.push_str(&format!("- **Slug:** {slug}\n"));
+    if let Some(sha) = revision {
+        out.push_str(&format!("- **Revision:** {sha}\n"));
+    }
     out.push_str(&format!("- **Status:** {}\n", fm.status));
     out.push_str(&format!("- **Priority:** {}\n", fm.priority));
     out.push_str(&format!("- **Created:** {}\n", fm.created));
@@ -613,7 +651,7 @@ mod tests {
                 make_phase_doc(2, "Service", PhaseStatus::InProgress),
             ),
         ];
-        let output = format_roadmap_summary(&doc, &phases);
+        let output = format_roadmap_summary(&doc, &phases, None);
         assert!(output.contains("# Two-Way Players"));
         assert!(output.contains("1/2 phases done"));
         assert!(output.contains("| 1 | Core | done |"));
@@ -633,14 +671,14 @@ mod tests {
                 make_phase_doc(2, "Service", PhaseStatus::WontFix),
             ),
         ];
-        let output = format_roadmap_summary(&doc, &phases);
+        let output = format_roadmap_summary(&doc, &phases, None);
         assert!(output.contains("2/2 phases done"));
     }
 
     #[test]
     fn roadmap_summary_no_phases() {
         let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
-        let output = format_roadmap_summary(&doc, &[]);
+        let output = format_roadmap_summary(&doc, &[], None);
         assert!(output.contains("No phases yet."));
     }
 
@@ -652,7 +690,7 @@ mod tests {
             "phase-1-core".to_string(),
             make_phase_doc(1, "Core", PhaseStatus::InProgress),
         )];
-        let output = format_roadmap_summary(&doc, &phases);
+        let output = format_roadmap_summary(&doc, &phases, None);
         assert!(output.contains("| 1 | Core | in-progress |"));
         assert!(output.contains("## Overview"));
         assert!(output.contains("This roadmap covers two-way player valuation."));
@@ -662,7 +700,7 @@ mod tests {
     fn roadmap_summary_no_phases_with_body() {
         let mut doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
         doc.body = "Some body text.\n".to_string();
-        let output = format_roadmap_summary(&doc, &[]);
+        let output = format_roadmap_summary(&doc, &[], None);
         assert!(output.contains("No phases yet."));
         assert!(output.contains("Some body text."));
     }
@@ -670,7 +708,7 @@ mod tests {
     #[test]
     fn roadmap_summary_empty_body() {
         let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
-        let output = format_roadmap_summary(&doc, &[]);
+        let output = format_roadmap_summary(&doc, &[], None);
         // Should end with "No phases yet.\n" — no trailing blank line from body
         assert!(output.ends_with("No phases yet.\n"));
     }
@@ -679,21 +717,21 @@ mod tests {
     fn roadmap_summary_with_tags() {
         let mut doc = make_roadmap_doc("fbm", "tagged", "Tagged");
         doc.frontmatter.tags = Some(vec!["api".to_string(), "mcp".to_string()]);
-        let output = format_roadmap_summary(&doc, &[]);
+        let output = format_roadmap_summary(&doc, &[], None);
         assert!(output.contains("Tags: api, mcp"));
     }
 
     #[test]
     fn roadmap_summary_without_tags_omits_line() {
         let doc = make_roadmap_doc("fbm", "untagged", "Untagged");
-        let output = format_roadmap_summary(&doc, &[]);
+        let output = format_roadmap_summary(&doc, &[], None);
         assert!(!output.contains("Tags:"));
     }
 
     #[test]
     fn phase_detail_with_completed() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
-        let output = format_phase_detail("phase-1-core", &doc, None);
+        let output = format_phase_detail("phase-1-core", &doc, None, None);
         assert!(output.contains("# Phase 1: Core"));
         assert!(output.contains("Status: done"));
         assert!(output.contains("Completed: 2026-03-14"));
@@ -703,7 +741,7 @@ mod tests {
     #[test]
     fn phase_detail_without_completed() {
         let doc = make_phase_doc(2, "Service", PhaseStatus::NotStarted);
-        let output = format_phase_detail("phase-2-service", &doc, None);
+        let output = format_phase_detail("phase-2-service", &doc, None, None);
         assert!(output.contains("Status: not-started"));
         assert!(!output.contains("Completed:"));
     }
@@ -712,14 +750,14 @@ mod tests {
     fn phase_detail_with_tags() {
         let mut doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
         doc.frontmatter.tags = Some(vec!["infra".to_string(), "search".to_string()]);
-        let output = format_phase_detail("phase-1-core", &doc, None);
+        let output = format_phase_detail("phase-1-core", &doc, None, None);
         assert!(output.contains("Tags: infra, search"));
     }
 
     #[test]
     fn phase_detail_without_tags_omits_line() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
-        let output = format_phase_detail("phase-1-core", &doc, None);
+        let output = format_phase_detail("phase-1-core", &doc, None, None);
         assert!(!output.contains("Tags:"));
     }
 
@@ -785,7 +823,7 @@ mod tests {
     #[test]
     fn task_detail_basic() {
         let doc = make_task_doc("Fix the bug", TaskStatus::Open, Priority::High, None);
-        let output = format_task_detail("fix-bug", &doc);
+        let output = format_task_detail("fix-bug", &doc, None);
         assert!(output.contains("# Fix the bug"));
         assert!(output.contains("Slug: fix-bug"));
         assert!(output.contains("Status: open"));
@@ -802,7 +840,7 @@ mod tests {
             Priority::Low,
             Some(vec!["bug".to_string(), "urgent".to_string()]),
         );
-        let output = format_task_detail("fix", &doc);
+        let output = format_task_detail("fix", &doc, None);
         assert!(output.contains("Tags: bug, urgent"));
     }
 
@@ -810,7 +848,7 @@ mod tests {
     fn task_detail_with_body() {
         let mut doc = make_task_doc("Fix", TaskStatus::Open, Priority::Low, None);
         doc.body = "Some details.\n".to_string();
-        let output = format_task_detail("fix", &doc);
+        let output = format_task_detail("fix", &doc, None);
         assert!(output.contains("Some details."));
     }
 
@@ -858,7 +896,7 @@ mod tests {
                 make_phase_doc(2, "Service", PhaseStatus::InProgress),
             ),
         ];
-        let output = format_roadmap_summary_md(&doc, &phases);
+        let output = format_roadmap_summary_md(&doc, &phases, None);
         assert!(output.contains("# Two-Way Players"));
         assert!(output.contains("- **Project:** fbm"));
         assert!(output.contains("- **Slug:** two-way"));
@@ -871,7 +909,7 @@ mod tests {
     #[test]
     fn roadmap_summary_md_no_phases() {
         let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
-        let output = format_roadmap_summary_md(&doc, &[]);
+        let output = format_roadmap_summary_md(&doc, &[], None);
         assert!(output.contains("No phases yet."));
         assert!(!output.contains("- **Progress:**"));
     }
@@ -884,7 +922,7 @@ mod tests {
             "phase-1-core".to_string(),
             make_phase_doc(1, "Core", PhaseStatus::InProgress),
         )];
-        let output = format_roadmap_summary_md(&doc, &phases);
+        let output = format_roadmap_summary_md(&doc, &phases, None);
         assert!(output.contains("## Overview"));
         assert!(output.contains("Details here."));
     }
@@ -893,14 +931,14 @@ mod tests {
     fn roadmap_summary_md_with_tags() {
         let mut doc = make_roadmap_doc("fbm", "tagged", "Tagged");
         doc.frontmatter.tags = Some(vec!["api".to_string(), "mcp".to_string()]);
-        let output = format_roadmap_summary_md(&doc, &[]);
+        let output = format_roadmap_summary_md(&doc, &[], None);
         assert!(output.contains("- **Tags:** api, mcp"));
     }
 
     #[test]
     fn roadmap_summary_md_without_tags_omits_line() {
         let doc = make_roadmap_doc("fbm", "untagged", "Untagged");
-        let output = format_roadmap_summary_md(&doc, &[]);
+        let output = format_roadmap_summary_md(&doc, &[], None);
         assert!(!output.contains("**Tags:**"));
     }
 
@@ -945,7 +983,7 @@ mod tests {
     #[test]
     fn phase_detail_md_with_completed() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
-        let output = format_phase_detail_md("phase-1-core", &doc, None);
+        let output = format_phase_detail_md("phase-1-core", &doc, None, None);
         assert!(output.contains("# Phase 1: Core"));
         assert!(output.contains("- **Stem:** phase-1-core"));
         assert!(output.contains("- **Status:** done"));
@@ -955,7 +993,7 @@ mod tests {
     #[test]
     fn phase_detail_md_without_completed() {
         let doc = make_phase_doc(2, "Service", PhaseStatus::NotStarted);
-        let output = format_phase_detail_md("phase-2-service", &doc, None);
+        let output = format_phase_detail_md("phase-2-service", &doc, None, None);
         assert!(output.contains("- **Status:** not-started"));
         assert!(!output.contains("- **Completed:**"));
     }
@@ -964,7 +1002,7 @@ mod tests {
     fn phase_detail_md_with_body() {
         let mut doc = make_phase_doc(1, "Core", PhaseStatus::InProgress);
         doc.body = "Implementation details.\n".to_string();
-        let output = format_phase_detail_md("phase-1-core", &doc, None);
+        let output = format_phase_detail_md("phase-1-core", &doc, None, None);
         assert!(output.contains("Implementation details."));
     }
 
@@ -972,14 +1010,14 @@ mod tests {
     fn phase_detail_md_with_tags() {
         let mut doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
         doc.frontmatter.tags = Some(vec!["infra".to_string(), "search".to_string()]);
-        let output = format_phase_detail_md("phase-1-core", &doc, None);
+        let output = format_phase_detail_md("phase-1-core", &doc, None, None);
         assert!(output.contains("- **Tags:** infra, search"));
     }
 
     #[test]
     fn phase_detail_md_without_tags_omits_line() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
-        let output = format_phase_detail_md("phase-1-core", &doc, None);
+        let output = format_phase_detail_md("phase-1-core", &doc, None, None);
         assert!(!output.contains("**Tags:**"));
     }
 
@@ -1011,7 +1049,7 @@ mod tests {
     #[test]
     fn task_detail_md_basic() {
         let doc = make_task_doc("Fix the bug", TaskStatus::Open, Priority::High, None);
-        let output = format_task_detail_md("fix-bug", &doc);
+        let output = format_task_detail_md("fix-bug", &doc, None);
         assert!(output.contains("# Fix the bug"));
         assert!(output.contains("- **Slug:** fix-bug"));
         assert!(output.contains("- **Status:** open"));
@@ -1028,7 +1066,7 @@ mod tests {
             Priority::Low,
             Some(vec!["bug".to_string(), "urgent".to_string()]),
         );
-        let output = format_task_detail_md("fix", &doc);
+        let output = format_task_detail_md("fix", &doc, None);
         assert!(output.contains("- **Tags:** bug, urgent"));
     }
 
@@ -1036,7 +1074,7 @@ mod tests {
     fn task_detail_md_with_body() {
         let mut doc = make_task_doc("Fix", TaskStatus::Open, Priority::Low, None);
         doc.body = "Some details.\n".to_string();
-        let output = format_task_detail_md("fix", &doc);
+        let output = format_task_detail_md("fix", &doc, None);
         assert!(output.contains("Some details."));
     }
 
@@ -1105,14 +1143,14 @@ mod tests {
             "phase-1-core".to_string(),
             make_phase_doc(1, "Core", PhaseStatus::InProgress),
         )];
-        let output = format_roadmap_summary(&doc, &phases);
+        let output = format_roadmap_summary(&doc, &phases, None);
         assert!(output.contains("Hint: rdm phase show <stem> --roadmap two-way --project fbm"));
     }
 
     #[test]
     fn roadmap_summary_no_hint_when_no_phases() {
         let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
-        let output = format_roadmap_summary(&doc, &[]);
+        let output = format_roadmap_summary(&doc, &[], None);
         assert!(!output.contains("Hint:"));
     }
 
@@ -1123,7 +1161,7 @@ mod tests {
             "phase-1-core".to_string(),
             make_phase_doc(1, "Core", PhaseStatus::InProgress),
         )];
-        let output = format_roadmap_summary_md(&doc, &phases);
+        let output = format_roadmap_summary_md(&doc, &phases, None);
         assert!(output.contains("Hint:"));
         assert!(output.contains("--roadmap two-way --project fbm"));
     }
@@ -1131,7 +1169,7 @@ mod tests {
     #[test]
     fn roadmap_summary_md_no_hint_when_no_phases() {
         let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
-        let output = format_roadmap_summary_md(&doc, &[]);
+        let output = format_roadmap_summary_md(&doc, &[], None);
         assert!(!output.contains("Hint:"));
     }
 
@@ -1144,7 +1182,7 @@ mod tests {
             roadmap: "two-way",
             project: "fbm",
         };
-        let output = format_phase_detail("phase-2-service", &doc, Some(&nav));
+        let output = format_phase_detail("phase-2-service", &doc, Some(&nav), None);
         assert!(
             output.contains("Prev: rdm phase show phase-1-core --roadmap two-way --project fbm")
         );
@@ -1160,7 +1198,7 @@ mod tests {
             roadmap: "two-way",
             project: "fbm",
         };
-        let output = format_phase_detail("phase-1-core", &doc, Some(&nav));
+        let output = format_phase_detail("phase-1-core", &doc, Some(&nav), None);
         assert!(!output.contains("Prev:"));
         assert!(output.contains("Next: rdm phase show phase-2-service"));
     }
@@ -1174,7 +1212,7 @@ mod tests {
             roadmap: "two-way",
             project: "fbm",
         };
-        let output = format_phase_detail("phase-3-ui", &doc, Some(&nav));
+        let output = format_phase_detail("phase-3-ui", &doc, Some(&nav), None);
         assert!(output.contains("Prev: rdm phase show phase-2-service"));
         assert!(!output.contains("Next:"));
     }
@@ -1188,7 +1226,7 @@ mod tests {
             roadmap: "two-way",
             project: "fbm",
         };
-        let output = format_phase_detail_md("phase-2-service", &doc, Some(&nav));
+        let output = format_phase_detail_md("phase-2-service", &doc, Some(&nav), None);
         assert!(output.contains("> Prev:"));
         assert!(output.contains("> Next:"));
         assert!(output.contains("phase-1-core"));
@@ -1198,7 +1236,7 @@ mod tests {
     #[test]
     fn phase_detail_no_nav_shows_no_hints() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
-        let output = format_phase_detail("phase-1-core", &doc, None);
+        let output = format_phase_detail("phase-1-core", &doc, None, None);
         assert!(!output.contains("Prev:"));
         assert!(!output.contains("Next:"));
     }

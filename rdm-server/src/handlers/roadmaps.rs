@@ -113,6 +113,8 @@ struct RoadmapDetail {
     priority: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<String>,
 }
 
 /// `GET /projects/:project/roadmaps` — list roadmaps with progress summaries.
@@ -289,6 +291,8 @@ pub async fn list_roadmaps(
 pub struct RoadmapDetailFilters {
     /// Filter the embedded phases section to phases carrying this tag.
     pub tag: Option<String>,
+    /// Read the body as it was at a specific git revision.
+    pub at: Option<String>,
 }
 
 /// `GET /projects/:project/roadmaps/:roadmap` — roadmap detail with embedded phases.
@@ -299,8 +303,13 @@ pub async fn get_roadmap(
     Query(filters): Query<RoadmapDetailFilters>,
 ) -> Result<Response, Response> {
     let store = state.store();
-    let roadmap_doc = rdm_core::io::load_roadmap(&store, &project, &roadmap)
-        .map_err(|e| error_response(e, format))?;
+    let roadmap_doc = match filters.at.as_deref() {
+        Some(sha) => rdm_core::io::load_roadmap_at(&store, &project, &roadmap, sha)
+            .map_err(|e| error_response(e, format))?,
+        None => rdm_core::io::load_roadmap(&store, &project, &roadmap)
+            .map_err(|e| error_response(e, format))?,
+    };
+
     let mut phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
         .map_err(|e| error_response(e, format))?;
 
@@ -341,6 +350,7 @@ pub async fn get_roadmap(
                     dependencies: roadmap_doc.frontmatter.dependencies,
                     priority: roadmap_doc.frontmatter.priority.map(|p| p.to_string()),
                     tags: roadmap_doc.frontmatter.tags,
+                    revision: filters.at.clone(),
                 },
                 self_href,
             )
@@ -391,6 +401,7 @@ pub async fn get_roadmap(
                 phases: phase_rows,
                 quick_filters,
                 active_tag: filters.tag,
+                revision: filters.at,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -455,6 +466,7 @@ pub async fn create_roadmap(
                     dependencies: doc.frontmatter.dependencies,
                     priority: doc.frontmatter.priority.map(|p| p.to_string()),
                     tags: doc.frontmatter.tags,
+                    revision: None,
                 },
                 &location,
             )
@@ -542,6 +554,7 @@ pub async fn update_roadmap(
                     dependencies: doc.frontmatter.dependencies,
                     priority: doc.frontmatter.priority.map(|p| p.to_string()),
                     tags: doc.frontmatter.tags,
+                    revision: None,
                 },
                 &self_href,
             )
@@ -855,7 +868,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Alpha Roadmap"));

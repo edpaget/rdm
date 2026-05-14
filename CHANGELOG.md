@@ -14,6 +14,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   snapshot map (synthetic `mem-N` SHAs) in the memory store. Surfaces
   typed errors for unknown SHAs, paths missing at a SHA, and backends with
   no notion of history.
+- `--at <sha>` flag on `rdm roadmap show`, `rdm phase show`, and
+  `rdm task show` reads the body as it was at the given git revision while
+  keeping current metadata. The same capability is exposed as the `?at=<sha>`
+  query parameter on the matching `GET /projects/...` detail routes (HTML,
+  HAL+JSON, Problem+JSON 404 on unknown/missing-at-revision SHAs). Text and
+  Markdown output prepend a `Revision: <sha>` line; HAL+JSON includes a
+  `revision` field; HTML detail pages render an `aria-live` "Viewing
+  revision …" badge near the title.
 - A small embedded JavaScript client (`/static/edit.js`) wired into every
   rdm-server page that intercepts `<form data-rdm-edit>` submissions, PATCHes
   the resource as JSON, reloads on success, and surfaces server validation

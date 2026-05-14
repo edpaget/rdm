@@ -1105,3 +1105,150 @@ fn roadmap_delete_cleans_up_dependencies() {
         .success()
         .stdout(predicate::str::contains("No dependencies found."));
 }
+
+fn head_sha(dir: &std::path::Path) -> String {
+    let repo = gix::open(dir).unwrap();
+    let mut head = repo.head().unwrap();
+    head.peel_to_commit().unwrap().id.to_string()
+}
+
+#[test]
+fn roadmap_show_at_revision_returns_historical_body() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way Players",
+            "--project",
+            "fbm",
+            "--body",
+            "original-body-marker",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let old_sha = head_sha(dir.path());
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "update",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "new-body-marker",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "show",
+            "two-way",
+            "--project",
+            "fbm",
+            "--at",
+            &old_sha,
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("original-body-marker")
+                .and(predicate::str::contains(format!("Revision: {old_sha}")))
+                .and(predicate::str::contains("new-body-marker").not()),
+        );
+}
+
+#[test]
+fn roadmap_show_at_unknown_revision_errors() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way Players",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "show",
+            "two-way",
+            "--project",
+            "fbm",
+            "--at",
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not known to the store"));
+}
+
+#[test]
+fn roadmap_show_at_revision_missing_path_errors() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    // Anchor SHA captured before the roadmap exists.
+    let pre_sha = head_sha(dir.path());
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way Players",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "show",
+            "two-way",
+            "--project",
+            "fbm",
+            "--at",
+            &pre_sha,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not present at revision"));
+}

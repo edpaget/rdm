@@ -263,6 +263,8 @@ pub struct RoadmapDetailPage {
     pub quick_filters: Vec<QuickFilterView>,
     /// Currently active `?tag=` filter, if any.
     pub active_tag: Option<String>,
+    /// Git revision the body is sourced from, when viewing at a historical SHA.
+    pub revision: Option<String>,
 }
 
 /// Phase detail page with rendered markdown body.
@@ -298,6 +300,8 @@ pub struct PhaseDetailPage {
     /// Options for the inline status `<select>`. Lifecycle-ordered; the entry
     /// matching the current status is flagged `selected`.
     pub status_options: Vec<StatusOption>,
+    /// Git revision the body is sourced from, when viewing at a historical SHA.
+    pub revision: Option<String>,
 }
 
 /// A task row for the task list page.
@@ -361,6 +365,8 @@ pub struct TaskDetailPage {
     /// Options for the inline status `<select>`. Lifecycle-ordered; the entry
     /// matching the current status is flagged `selected`.
     pub status_options: Vec<StatusOption>,
+    /// Git revision the body is sourced from, when viewing at a historical SHA.
+    pub revision: Option<String>,
 }
 
 /// A single search result row for the search results page.
@@ -481,5 +487,161 @@ mod tests {
         }];
         let views = quick_filter_views(&filters, "/x", Some("other"));
         assert!(!views[0].is_active);
+    }
+
+    // -- Revision badge a11y tests --
+
+    fn revision_page_html(revision: Option<String>) -> String {
+        let page = TaskDetailPage {
+            project: "demo".to_string(),
+            slug: "fix-bug".to_string(),
+            title: "Fix the bug".to_string(),
+            status: "open".to_string(),
+            status_class: "open".to_string(),
+            priority: "medium".to_string(),
+            priority_class: "medium".to_string(),
+            created: "2026-05-01".to_string(),
+            tags: None,
+            body_html: String::new(),
+            body_md: String::new(),
+            status_options: task_status_options(&rdm_core::model::TaskStatus::Open),
+            revision,
+        };
+        page.render().unwrap()
+    }
+
+    #[test]
+    fn task_detail_renders_revision_badge_with_aria_live() {
+        let html = revision_page_html(Some("abcdef1234".to_string()));
+        assert!(
+            html.contains(r#"class="revision-badge""#),
+            "expected revision-badge container class, got:\n{html}"
+        );
+        assert!(
+            html.contains(r#"aria-live="polite""#),
+            "expected aria-live=polite on revision badge"
+        );
+        assert!(
+            html.contains(r#"aria-label="Viewing historical revision""#),
+            "expected aria-label on revision badge"
+        );
+        assert!(
+            html.contains("Viewing revision abcdef1234"),
+            "expected revision text to include sha"
+        );
+    }
+
+    #[test]
+    fn task_detail_omits_revision_badge_when_none() {
+        let html = revision_page_html(None);
+        assert!(
+            !html.contains(r#"class="revision-badge""#),
+            "revision badge must not render without revision"
+        );
+    }
+
+    fn roadmap_detail_html(revision: Option<String>) -> String {
+        let page = RoadmapDetailPage {
+            project: "demo".to_string(),
+            slug: "alpha".to_string(),
+            title: "Alpha Roadmap".to_string(),
+            status: "in-progress".to_string(),
+            status_class: "in-progress".to_string(),
+            last_changed: None,
+            priority: None,
+            priority_class: None,
+            dependencies: None,
+            tags: None,
+            body_html: String::new(),
+            body_md: String::new(),
+            phases: Vec::new(),
+            quick_filters: Vec::new(),
+            active_tag: None,
+            revision,
+        };
+        page.render().unwrap()
+    }
+
+    #[test]
+    fn roadmap_detail_renders_revision_badge_with_aria_live() {
+        let html = roadmap_detail_html(Some("abcdef1234".to_string()));
+        assert!(html.contains(r#"class="revision-badge""#));
+        assert!(html.contains(r#"aria-live="polite""#));
+        assert!(html.contains(r#"aria-label="Viewing historical revision""#));
+        assert!(html.contains("Viewing revision abcdef1234"));
+    }
+
+    #[test]
+    fn roadmap_detail_omits_revision_badge_when_none() {
+        let html = roadmap_detail_html(None);
+        assert!(!html.contains(r#"class="revision-badge""#));
+    }
+
+    fn phase_detail_html(revision: Option<String>) -> String {
+        let page = PhaseDetailPage {
+            project: "demo".to_string(),
+            roadmap: "alpha".to_string(),
+            stem: "phase-1-core".to_string(),
+            phase_number: 1,
+            title: "Core".to_string(),
+            status: "in-progress".to_string(),
+            status_class: "in-progress".to_string(),
+            completed: None,
+            body_html: String::new(),
+            body_md: String::new(),
+            tags: None,
+            prev_href: None,
+            next_href: None,
+            status_options: phase_status_options(&rdm_core::model::PhaseStatus::InProgress),
+            revision,
+        };
+        page.render().unwrap()
+    }
+
+    #[test]
+    fn phase_detail_renders_revision_badge_with_aria_live() {
+        let html = phase_detail_html(Some("abcdef1234".to_string()));
+        assert!(html.contains(r#"class="revision-badge""#));
+        assert!(html.contains(r#"aria-live="polite""#));
+        assert!(html.contains(r#"aria-label="Viewing historical revision""#));
+        assert!(html.contains("Viewing revision abcdef1234"));
+    }
+
+    #[test]
+    fn phase_detail_omits_revision_badge_when_none() {
+        let html = phase_detail_html(None);
+        assert!(!html.contains(r#"class="revision-badge""#));
+    }
+
+    #[test]
+    fn task_detail_renders_revision_badge_class_is_styled() {
+        // Render a page with a revision and confirm the badge class is on the
+        // element so the external `styles.css` rule applies. The CSS rule
+        // itself is verified by `styles_css_defines_badge_revision_rule`.
+        let html = revision_page_html(Some("deadbeef".to_string()));
+        assert!(
+            html.contains(r#"class="badge badge-revision""#),
+            "badge element must carry the badge-revision class"
+        );
+    }
+
+    #[test]
+    fn styles_css_defines_badge_revision_rule() {
+        // The historical-view badge needs a distinctive style. The external
+        // stylesheet must define a `.badge-revision` rule so the class on
+        // the badge element actually picks up colors.
+        let css = include_str!("../assets/styles.css");
+        assert!(
+            css.contains(".badge-revision {"),
+            "styles.css must define a .badge-revision rule"
+        );
+        assert!(
+            css.contains(".revision-badge {"),
+            "styles.css must define a .revision-badge rule for the wrapper"
+        );
+        assert!(
+            css.contains("--badge-revision-bg"),
+            "styles.css must define --badge-revision-bg CSS variable"
+        );
     }
 }

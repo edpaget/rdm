@@ -22,6 +22,8 @@ struct PhaseDetail {
     phase: Phase,
     stem: String,
     body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<String>,
 }
 
 /// Empty data for the phases collection wrapper.
@@ -95,6 +97,7 @@ pub async fn list_phases(
                 phase: doc.frontmatter.clone(),
                 stem: stem.clone(),
                 body: doc.body.clone(),
+                revision: None,
             },
             format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}"),
         )
@@ -128,18 +131,30 @@ pub async fn list_phases(
     }
 }
 
+/// Query parameters for the phase detail route.
+#[derive(Debug, Deserialize, Default)]
+pub struct PhaseDetailFilters {
+    /// Read the body as it was at a specific git revision.
+    pub at: Option<String>,
+}
+
 /// `GET /projects/:project/roadmaps/:roadmap/phases/:phase` — phase detail
 /// with sibling links.
 pub async fn get_phase(
     format: ResponseFormat,
     State(state): State<AppState>,
     Path((project, roadmap, phase_id)): Path<(String, String, String)>,
+    Query(filters): Query<PhaseDetailFilters>,
 ) -> Result<Response, Response> {
     let store = state.store();
     let stem = rdm_core::ops::phase::resolve_phase_stem(&store, &project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
-    let doc = rdm_core::io::load_phase(&store, &project, &roadmap, &stem)
-        .map_err(|e| error_response(e, format))?;
+    let doc = match filters.at.as_deref() {
+        Some(sha) => rdm_core::io::load_phase_at(&store, &project, &roadmap, &stem, sha)
+            .map_err(|e| error_response(e, format))?,
+        None => rdm_core::io::load_phase(&store, &project, &roadmap, &stem)
+            .map_err(|e| error_response(e, format))?,
+    };
 
     // Load all phases to compute sibling links.
     let all_phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
@@ -163,6 +178,7 @@ pub async fn get_phase(
                     phase: doc.frontmatter,
                     stem: stem.clone(),
                     body: doc.body,
+                    revision: filters.at.clone(),
                 },
                 self_href,
             )
@@ -197,6 +213,7 @@ pub async fn get_phase(
                 tags: doc.frontmatter.tags,
                 prev_href,
                 next_href,
+                revision: filters.at,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -248,6 +265,7 @@ pub async fn create_phase(
                     phase: doc.frontmatter,
                     stem: stem.clone(),
                     body: doc.body,
+                    revision: None,
                 },
                 &location,
             )
@@ -327,6 +345,7 @@ pub async fn update_phase(
                     phase: doc.frontmatter,
                     stem: stem.clone(),
                     body: doc.body,
+                    revision: None,
                 },
                 &self_href,
             )
