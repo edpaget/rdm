@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   next to the status badge submits a `PATCH` (via `/static/edit.js`) and
   reloads the page with the new status. Phases include `wont-fix`; tasks
   include all four statuses.
+- Inline body editor on roadmap-, phase-, and task-detail HTML pages: a
+  collapsible `<details>` block exposes the raw markdown in a `<textarea>`
+  and PATCHes the resource (via `/static/edit.js`) on submit. Clearing the
+  textarea and saving is supported and round-trips. The rendered HTML body
+  remains the default read view.
 - Phase status `wont-fix`, treated like `done` for roadmap completion.
   Agent-facing surface area (`Describe` schema, agent-config instruction
   templates, and the CLI's combined-status error message) now lists

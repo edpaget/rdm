@@ -255,6 +255,8 @@ pub struct RoadmapDetailPage {
     pub tags: Option<Vec<String>>,
     /// Rendered HTML body.
     pub body_html: String,
+    /// Raw markdown source of the body, used to back the inline editor textarea.
+    pub body_md: String,
     /// Phases in this roadmap (filtered by `active_tag` if set).
     pub phases: Vec<PhaseRow>,
     /// Quick-filter chips for tag presets.
@@ -285,6 +287,8 @@ pub struct PhaseDetailPage {
     pub completed: Option<String>,
     /// Rendered HTML body.
     pub body_html: String,
+    /// Raw markdown source of the body, used to back the inline editor textarea.
+    pub body_md: String,
     /// URL for the previous phase, if any.
     pub prev_href: Option<String>,
     /// URL for the next phase, if any.
@@ -350,6 +354,8 @@ pub struct TaskDetailPage {
     pub tags: Option<Vec<String>>,
     /// Rendered HTML body.
     pub body_html: String,
+    /// Raw markdown source of the body, used to back the inline editor textarea.
+    pub body_md: String,
     /// Options for the inline status `<select>`. Lifecycle-ordered; the entry
     /// matching the current status is flagged `selected`.
     pub status_options: Vec<StatusOption>,

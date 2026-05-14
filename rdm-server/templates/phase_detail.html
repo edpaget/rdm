@@ -42,6 +42,15 @@
 {% if !body_html.is_empty() %}
 <div class="body-content">{{ body_html|safe }}</div>
 {% endif %}
+<details class="body-edit">
+  <summary>Edit body</summary>
+  <form class="body-edit-form" data-rdm-edit data-rdm-method="PATCH" method="post"
+        action="/projects/{{ project }}/roadmaps/{{ roadmap }}/phases/{{ stem }}">
+    <label for="phase-body-edit" class="visually-hidden">Body (markdown)</label>
+    <textarea id="phase-body-edit" name="body" rows="12">{{ body_md }}</textarea>
+    <button type="submit">Save body</button>
+  </form>
+</details>
 <nav class="sibling-nav" aria-label="Phase navigation">
   {% if let Some(prev) = prev_href %}
   <a href="{{ prev }}">Previous phase</a>

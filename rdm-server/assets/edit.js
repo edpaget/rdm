@@ -28,7 +28,7 @@
     var statusEl = form.elements.namedItem("status");
     if (statusEl && statusEl.value !== "") payload.status = statusEl.value;
     var bodyEl = form.elements.namedItem("body");
-    if (bodyEl && bodyEl.value !== "") payload.body = bodyEl.value;
+    if (bodyEl) payload.body = bodyEl.value;
     if (clearTags) {
       payload.clear_tags = true;
     } else {

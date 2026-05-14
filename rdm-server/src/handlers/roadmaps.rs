@@ -374,6 +374,7 @@ pub async fn get_roadmap(
             );
             let quick_filters =
                 state.quick_filter_views_for_path(&detail_path, filters.tag.as_deref());
+            let body_html = render_markdown(&roadmap_doc.body);
             let page = RoadmapDetailPage {
                 project,
                 slug: roadmap_doc.frontmatter.roadmap,
@@ -385,7 +386,8 @@ pub async fn get_roadmap(
                 priority_class: pri_class,
                 dependencies: roadmap_doc.frontmatter.dependencies,
                 tags: roadmap_doc.frontmatter.tags,
-                body_html: render_markdown(&roadmap_doc.body),
+                body_html,
+                body_md: roadmap_doc.body,
                 phases: phase_rows,
                 quick_filters,
                 active_tag: filters.tag,
@@ -1488,6 +1490,31 @@ mod tests {
             html.contains(r#"class="quick-filter-clear""#),
             "should render All link"
         );
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_html_includes_body_edit_form() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<details"));
+        assert!(html.contains("<summary"));
+        assert!(html.contains("data-rdm-edit"));
+        assert!(html.contains("data-rdm-method=\"PATCH\""));
+        assert!(html.contains("action=\"/projects/demo/roadmaps/alpha\""));
+        assert!(html.contains("<textarea"));
+        assert!(html.contains("name=\"body\""));
     }
 
     #[tokio::test]

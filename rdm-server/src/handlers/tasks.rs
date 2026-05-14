@@ -205,6 +205,7 @@ pub async fn get_task(
             Ok(hal_response(resource))
         }
         ResponseFormat::Html => {
+            let body_html = render_markdown(&doc.body);
             let page = TaskDetailPage {
                 project,
                 slug: task_slug,
@@ -216,7 +217,8 @@ pub async fn get_task(
                 priority_class: priority_class(&doc.frontmatter.priority).to_string(),
                 created: doc.frontmatter.created.to_string(),
                 tags: doc.frontmatter.tags,
-                body_html: render_markdown(&doc.body),
+                body_html,
+                body_md: doc.body,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -447,7 +449,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let tasks = json["_embedded"]["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 2);
@@ -467,7 +469,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let tasks = json["_embedded"]["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 1);
@@ -488,7 +490,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let tasks = json["_embedded"]["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 1);
@@ -509,7 +511,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 400);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["detail"].as_str().unwrap().contains("bogus"));
     }
@@ -544,7 +546,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["slug"], "bug-fix");
         assert_eq!(json["title"], "Fix the Bug");
@@ -598,7 +600,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Fix the Bug"));
@@ -620,7 +622,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Fix the Bug"));
@@ -644,7 +646,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("data-rdm-edit"));
         assert!(html.contains("data-rdm-method=\"PATCH\""));
@@ -661,6 +663,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_task_html_includes_body_edit_form() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/tasks/bug-fix")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<details"));
+        assert!(html.contains("<summary"));
+        assert!(html.contains("data-rdm-edit"));
+        assert!(html.contains("data-rdm-method=\"PATCH\""));
+        assert!(html.contains("action=\"/projects/demo/tasks/bug-fix\""));
+        assert!(html.contains("<textarea"));
+        assert!(html.contains("name=\"body\""));
+        // The raw markdown body must appear inside the textarea.
+        assert!(
+            html.contains("Bug details."),
+            "raw markdown body missing in:\n{html}"
+        );
+    }
+
+    #[tokio::test]
     async fn get_task_404_returns_html_error() {
         let (_dir, state) = setup();
         let app = build_router(state);
@@ -674,7 +706,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 404);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Not Found"));
@@ -712,7 +744,7 @@ mod tests {
             response.headers().get("location").unwrap(),
             "/projects/demo/tasks/new-task"
         );
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["slug"], "new-task");
         assert_eq!(json["title"], "New Task");
@@ -731,7 +763,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 201);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["priority"], "medium");
     }
@@ -813,7 +845,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "done");
     }
@@ -830,7 +862,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["priority"], "critical");
     }
@@ -847,7 +879,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "done");
         assert_eq!(json["priority"], "low");
@@ -1063,7 +1095,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("Open Task"));
         assert!(!html.contains("Done Task"));
@@ -1085,7 +1117,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("Open Task"));
         assert!(html.contains("Done Task"));
@@ -1107,7 +1139,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let tasks = json["_embedded"]["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 1);
@@ -1128,7 +1160,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let tasks = json["_embedded"]["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 3);
