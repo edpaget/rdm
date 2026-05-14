@@ -59,6 +59,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   smaller and allowing the browser to cache the stylesheet across
   navigations.
 
+### Fixed
+
+- Roadmap, phase, and task detail pages now render GFM pipe tables (and
+  strikethrough, task lists, and GitHub-style `[!NOTE]` callouts) as proper
+  HTML instead of passing the source syntax through as literal text.
+
 ## [0.8.0] - 2026-04-27
 
 ### Added

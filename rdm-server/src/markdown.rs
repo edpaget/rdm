@@ -2,7 +2,19 @@
 
 use pulldown_cmark::{Options, Parser, Tag, TagEnd, html};
 
-/// Renders CommonMark markdown to HTML with raw HTML disabled.
+/// Renders Markdown to HTML with the core GFM extensions enabled and raw
+/// HTML disabled.
+///
+/// Enabled pulldown-cmark options:
+///
+/// - `ENABLE_TABLES` — GFM pipe tables
+/// - `ENABLE_STRIKETHROUGH` — `~~text~~`
+/// - `ENABLE_TASKLISTS` — `- [ ]` / `- [x]`
+/// - `ENABLE_GFM` — GitHub-style `[!NOTE]`/`[!TIP]`/etc. blockquote alerts
+///
+/// These match the GFM dialect that LLM-authored roadmap, phase, and task
+/// bodies routinely emit; without them the source syntax leaks through as
+/// literal text in the rendered HTML.
 ///
 /// Raw HTML tags in the input are escaped rather than passed through.
 /// This is safe for author-controlled content from the plan repo.
@@ -15,7 +27,10 @@ use pulldown_cmark::{Options, Parser, Tag, TagEnd, html};
 /// assert!(html.contains("<strong>bold</strong>"));
 /// ```
 pub fn render_markdown(input: &str) -> String {
-    let options = Options::empty();
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_GFM;
     // Parse then filter out any raw HTML events.
     let parser = Parser::new_ext(input, options).filter(|event| {
         !matches!(
@@ -72,5 +87,30 @@ mod tests {
     fn inline_html_is_stripped() {
         let html = render_markdown("text <b>bold</b> more");
         assert!(!html.contains("<b>"));
+    }
+
+    #[test]
+    fn renders_pipe_table() {
+        let html = render_markdown("| a | b |\n|---|---|\n| 1 | 2 |\n");
+        assert!(html.contains("<table>"));
+        assert!(html.contains("<thead>"));
+        assert!(html.contains("<th>a</th>"));
+        assert!(html.contains("<th>b</th>"));
+        assert!(html.contains("<tbody>"));
+        assert!(html.contains("<td>1</td>"));
+        assert!(html.contains("<td>2</td>"));
+    }
+
+    #[test]
+    fn renders_strikethrough() {
+        let html = render_markdown("~~gone~~");
+        assert!(html.contains("<del>gone</del>"));
+    }
+
+    #[test]
+    fn renders_task_list_item() {
+        let html = render_markdown("- [x] done\n- [ ] todo\n");
+        assert!(html.contains("type=\"checkbox\""));
+        assert!(html.contains("checked"));
     }
 }
