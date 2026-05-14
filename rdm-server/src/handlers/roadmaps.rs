@@ -1438,6 +1438,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn patch_roadmap_clears_body_with_empty_string() {
+        let (_dir, state) = setup();
+        // First seed a body so we have something to clear.
+        let app = build_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::patch("/projects/demo/roadmaps/alpha")
+                    .header("accept", "application/hal+json")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"body":"Initial roadmap body."}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+
+        // Now clear it.
+        let app2 = build_router(state.clone());
+        let response = app2
+            .oneshot(
+                Request::patch("/projects/demo/roadmaps/alpha")
+                    .header("accept", "application/hal+json")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"body":""}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+
+        let app3 = build_router(state);
+        let response = app3
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            !html.contains(r#"<div class="body-content">"#),
+            "body-content div should be gone after clearing"
+        );
+    }
+
+    #[tokio::test]
     async fn list_roadmaps_html_renders_quick_filter_chips() {
         let (_dir, state) = setup_with_tags();
         let app = build_router(state);

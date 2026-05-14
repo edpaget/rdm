@@ -915,6 +915,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn patch_task_clears_body_with_empty_string() {
+        let (_dir, state) = setup();
+        let app = build_router(state.clone());
+        let response = app
+            .oneshot(patch_json("/projects/demo/tasks/bug-fix", r#"{"body":""}"#))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+
+        let app2 = build_router(state);
+        let response = app2
+            .oneshot(
+                Request::get("/projects/demo/tasks/bug-fix")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            !html.contains(r#"<div class="body-content">"#),
+            "body-content div should be gone after clearing"
+        );
+    }
+
+    #[tokio::test]
     async fn update_task_html_returns_303() {
         let (_dir, state) = setup();
         let app = build_router(state);

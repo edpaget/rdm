@@ -591,6 +591,37 @@ mod tests {
         );
     }
 
+    /// The HTML spec strips a single newline immediately following a `<textarea>`
+    /// opening tag. To make a body whose first character is `\n` survive a
+    /// render→edit→PATCH round-trip, the template must emit a literal newline
+    /// right after the opening tag (which gets stripped) so the author's own
+    /// leading newline is preserved.
+    #[tokio::test]
+    async fn get_phase_html_textarea_preserves_leading_newline() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha/phases/phase-2-second")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        let needle = "<textarea id=\"phase-body-edit\" name=\"body\" rows=\"12\">";
+        let idx = html.find(needle).expect("textarea opening tag missing");
+        let after = &html[idx + needle.len()..];
+        assert!(
+            after.starts_with('\n'),
+            "textarea must have a literal newline immediately after the opening tag so leading-newline bodies survive round-trip; got: {:?}",
+            &after.chars().take(10).collect::<String>()
+        );
+    }
+
     #[tokio::test]
     async fn patch_phase_clears_body_with_empty_string() {
         let (_dir, state) = setup();
