@@ -21,7 +21,19 @@
 <h1>Phase {{ phase_number }}: {{ title }}</h1>
 <dl class="meta">
   <dt>Status</dt>
-  <dd><span class="badge badge-{{ status_class }}">{{ status }}</span></dd>
+  <dd>
+    <span class="badge badge-{{ status_class }}">{{ status }}</span>
+    <form class="status-edit-form" data-rdm-edit data-rdm-method="PATCH" method="post"
+          action="/projects/{{ project }}/roadmaps/{{ roadmap }}/phases/{{ stem }}">
+      <label for="phase-status-edit" class="visually-hidden">New status</label>
+      <select id="phase-status-edit" name="status">
+        {% for opt in status_options %}
+        <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Update</button>
+    </form>
+  </dd>
   {% if let Some(date) = completed %}
   <dt>Completed</dt>
   <dd>{{ date }}</dd>

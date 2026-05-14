@@ -71,6 +71,65 @@ pub fn task_status_class(status: &rdm_core::model::TaskStatus) -> &'static str {
     }
 }
 
+/// One `<option>` in a status `<select>`: `value` is the canonical
+/// kebab-case status string, `label` is the human-readable form, and
+/// `selected` is true when it matches the current status.
+pub struct StatusOption {
+    /// Canonical kebab-case status string used as the `<option value="…">`.
+    pub value: &'static str,
+    /// Human-readable text rendered as the `<option>`'s content.
+    pub label: &'static str,
+    /// `true` when this option matches the current status.
+    pub selected: bool,
+}
+
+/// Build the option list for a phase status `<select>`, in lifecycle order.
+///
+/// Returns all five phase statuses (`not-started`, `in-progress`, `done`,
+/// `blocked`, `wont-fix`), marking the entry matching `current` as selected.
+/// Values are the canonical kebab-case strings parsed by `PhaseStatus::from_str`;
+/// labels are sentence-case for display.
+pub fn phase_status_options(current: &rdm_core::model::PhaseStatus) -> Vec<StatusOption> {
+    use rdm_core::model::PhaseStatus;
+    [
+        ("not-started", "Not started", PhaseStatus::NotStarted),
+        ("in-progress", "In progress", PhaseStatus::InProgress),
+        ("done", "Done", PhaseStatus::Done),
+        ("blocked", "Blocked", PhaseStatus::Blocked),
+        ("wont-fix", "Won't fix", PhaseStatus::WontFix),
+    ]
+    .into_iter()
+    .map(|(value, label, variant)| StatusOption {
+        value,
+        label,
+        selected: *current == variant,
+    })
+    .collect()
+}
+
+/// Build the option list for a task status `<select>`, in lifecycle order.
+///
+/// Returns all four task statuses (`open`, `in-progress`, `done`,
+/// `wont-fix`), marking the entry matching `current` as selected.
+/// Values are the canonical kebab-case strings parsed by `TaskStatus::from_str`;
+/// labels are sentence-case for display.
+pub fn task_status_options(current: &rdm_core::model::TaskStatus) -> Vec<StatusOption> {
+    use rdm_core::model::TaskStatus;
+    [
+        ("open", "Open", TaskStatus::Open),
+        ("in-progress", "In progress", TaskStatus::InProgress),
+        ("done", "Done", TaskStatus::Done),
+        ("wont-fix", "Won't fix", TaskStatus::WontFix),
+    ]
+    .into_iter()
+    .map(|(value, label, variant)| StatusOption {
+        value,
+        label,
+        selected: *current == variant,
+    })
+    .collect()
+}
+
 /// Helper to map priority to CSS badge class.
 pub fn priority_class(priority: &rdm_core::model::Priority) -> &'static str {
     match priority {
@@ -230,6 +289,9 @@ pub struct PhaseDetailPage {
     pub prev_href: Option<String>,
     /// URL for the next phase, if any.
     pub next_href: Option<String>,
+    /// Options for the inline status `<select>`. Lifecycle-ordered; the entry
+    /// matching the current status is flagged `selected`.
+    pub status_options: Vec<StatusOption>,
 }
 
 /// A task row for the task list page.
@@ -288,6 +350,9 @@ pub struct TaskDetailPage {
     pub tags: Option<Vec<String>>,
     /// Rendered HTML body.
     pub body_html: String,
+    /// Options for the inline status `<select>`. Lifecycle-ordered; the entry
+    /// matching the current status is flagged `selected`.
+    pub status_options: Vec<StatusOption>,
 }
 
 /// A single search result row for the search results page.
@@ -364,6 +429,40 @@ mod tests {
         assert_eq!(views[0].href, "/projects/p/tasks?tag=bug");
         assert!(views[1].is_active);
         assert_eq!(views[1].href, "/projects/p/tasks?tag=ui");
+    }
+
+    #[test]
+    fn phase_status_options_marks_current_selected() {
+        let opts = phase_status_options(&rdm_core::model::PhaseStatus::InProgress);
+        let selected: Vec<&str> = opts
+            .iter()
+            .filter(|o| o.selected)
+            .map(|o| o.value)
+            .collect();
+        assert_eq!(selected, vec!["in-progress"]);
+    }
+
+    #[test]
+    fn phase_status_options_includes_wont_fix() {
+        let opts = phase_status_options(&rdm_core::model::PhaseStatus::NotStarted);
+        let values: Vec<&str> = opts.iter().map(|o| o.value).collect();
+        assert_eq!(
+            values,
+            vec!["not-started", "in-progress", "done", "blocked", "wont-fix"]
+        );
+    }
+
+    #[test]
+    fn task_status_options_marks_current_selected() {
+        let opts = task_status_options(&rdm_core::model::TaskStatus::Done);
+        let selected: Vec<&str> = opts
+            .iter()
+            .filter(|o| o.selected)
+            .map(|o| o.value)
+            .collect();
+        assert_eq!(selected, vec!["done"]);
+        let values: Vec<&str> = opts.iter().map(|o| o.value).collect();
+        assert_eq!(values, vec!["open", "in-progress", "done", "wont-fix"]);
     }
 
     #[test]

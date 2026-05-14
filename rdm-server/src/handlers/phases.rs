@@ -13,7 +13,7 @@ use crate::error::{error_response, json_rejection_response, validation_error};
 use crate::extract::{hal_created_response, hal_response, see_other_response};
 use crate::markdown::render_markdown;
 use crate::state::AppState;
-use crate::templates::{PhaseDetailPage, phase_status_class};
+use crate::templates::{PhaseDetailPage, phase_status_class, phase_status_options};
 
 /// Detail data for a single phase.
 #[derive(Serialize)]
@@ -189,6 +189,7 @@ pub async fn get_phase(
                 title: doc.frontmatter.title,
                 status: doc.frontmatter.status.to_string(),
                 status_class: phase_status_class(&doc.frontmatter.status).to_string(),
+                status_options: phase_status_options(&doc.frontmatter.status),
                 completed: doc.frontmatter.completed.map(|d| d.to_string()),
                 body_html: render_markdown(&doc.body),
                 prev_href,
@@ -521,6 +522,36 @@ mod tests {
         assert!(html.contains("Next phase"));
         assert!(html.contains("#main-content"));
         assert!(html.contains("aria-current=\"page\""));
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_includes_status_edit_form() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha/phases/phase-2-second")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("data-rdm-edit"));
+        assert!(html.contains("data-rdm-method=\"PATCH\""));
+        assert!(html.contains("action=\"/projects/demo/roadmaps/alpha/phases/phase-2-second\""));
+        assert!(html.contains("<select id=\"phase-status-edit\" name=\"status\">"));
+        for s in ["not-started", "in-progress", "done", "blocked", "wont-fix"] {
+            assert!(
+                html.contains(&format!("value=\"{s}\"")),
+                "missing option value={s} in:\n{html}"
+            );
+        }
+        // The phase is freshly created so its status is "not-started" — verify it is marked selected.
+        assert!(html.contains("value=\"not-started\" selected"));
     }
 
     #[tokio::test]

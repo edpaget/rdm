@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rdm-server page that intercepts `<form data-rdm-edit>` submissions, PATCHes
   the resource as JSON, reloads on success, and surfaces server validation
   errors inline.
+- Inline status editor on the phase- and task-detail HTML pages: a `<select>`
+  next to the status badge submits a `PATCH` (via `/static/edit.js`) and
+  reloads the page with the new status. Phases include `wont-fix`; tasks
+  include all four statuses.
 - Phase status `wont-fix`, treated like `done` for roadmap completion.
   Agent-facing surface area (`Describe` schema, agent-config instruction
   templates, and the CLI's combined-status error message) now lists

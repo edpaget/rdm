@@ -15,7 +15,9 @@ use crate::error::{
 use crate::extract::{hal_created_response, hal_response, see_other_response};
 use crate::markdown::render_markdown;
 use crate::state::AppState;
-use crate::templates::{TaskDetailPage, TaskListPage, TaskRow, priority_class, task_status_class};
+use crate::templates::{
+    TaskDetailPage, TaskListPage, TaskRow, priority_class, task_status_class, task_status_options,
+};
 
 /// Query parameters for filtering the task list.
 #[derive(Debug, Deserialize, Default)]
@@ -209,6 +211,7 @@ pub async fn get_task(
                 title: doc.frontmatter.title,
                 status: doc.frontmatter.status.to_string(),
                 status_class: task_status_class(&doc.frontmatter.status).to_string(),
+                status_options: task_status_options(&doc.frontmatter.status),
                 priority: doc.frontmatter.priority.to_string(),
                 priority_class: priority_class(&doc.frontmatter.priority).to_string(),
                 created: doc.frontmatter.created.to_string(),
@@ -625,6 +628,36 @@ mod tests {
         assert!(html.contains("badge-high"));
         assert!(html.contains("#main-content"));
         assert!(html.contains("aria-current=\"page\""));
+    }
+
+    #[tokio::test]
+    async fn get_task_html_includes_status_edit_form() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/tasks/bug-fix")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("data-rdm-edit"));
+        assert!(html.contains("data-rdm-method=\"PATCH\""));
+        assert!(html.contains("action=\"/projects/demo/tasks/bug-fix\""));
+        assert!(html.contains("<select id=\"task-status-edit\" name=\"status\">"));
+        for s in ["open", "in-progress", "done", "wont-fix"] {
+            assert!(
+                html.contains(&format!("value=\"{s}\"")),
+                "missing option value={s} in:\n{html}"
+            );
+        }
+        // Freshly created task — its status is "open"; verify it is marked selected.
+        assert!(html.contains("value=\"open\" selected"));
     }
 
     #[tokio::test]
