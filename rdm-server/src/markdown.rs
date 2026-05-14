@@ -10,7 +10,9 @@ use pulldown_cmark::{Options, Parser, Tag, TagEnd, html};
 /// - `ENABLE_TABLES` — GFM pipe tables
 /// - `ENABLE_STRIKETHROUGH` — `~~text~~`
 /// - `ENABLE_TASKLISTS` — `- [ ]` / `- [x]`
-/// - `ENABLE_GFM` — GitHub-style `[!NOTE]`/`[!TIP]`/etc. blockquote alerts
+/// - `ENABLE_GFM` — pulldown-cmark's umbrella GFM flag; enables
+///   GitHub-style `[!NOTE]`/`[!TIP]`/etc. blockquote alerts and
+///   GFM-spec event handling beyond the per-feature flags above.
 ///
 /// These match the GFM dialect that LLM-authored roadmap, phase, and task
 /// bodies routinely emit; without them the source syntax leaks through as
@@ -31,7 +33,6 @@ pub fn render_markdown(input: &str) -> String {
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_GFM;
-    // Parse then filter out any raw HTML events.
     let parser = Parser::new_ext(input, options).filter(|event| {
         !matches!(
             event,
@@ -92,13 +93,16 @@ mod tests {
     #[test]
     fn renders_pipe_table() {
         let html = render_markdown("| a | b |\n|---|---|\n| 1 | 2 |\n");
-        assert!(html.contains("<table>"));
-        assert!(html.contains("<thead>"));
+        let thead_idx = html.find("<thead>").expect("thead present");
+        let tbody_idx = html.find("<tbody>").expect("tbody present");
+        assert!(thead_idx < tbody_idx, "<thead> must precede <tbody>");
         assert!(html.contains("<th>a</th>"));
         assert!(html.contains("<th>b</th>"));
-        assert!(html.contains("<tbody>"));
         assert!(html.contains("<td>1</td>"));
         assert!(html.contains("<td>2</td>"));
+        let thead_section = &html[thead_idx..tbody_idx];
+        assert!(thead_section.contains("<th>a</th>"));
+        assert!(thead_section.contains("<th>b</th>"));
     }
 
     #[test]
@@ -110,7 +114,23 @@ mod tests {
     #[test]
     fn renders_task_list_item() {
         let html = render_markdown("- [x] done\n- [ ] todo\n");
-        assert!(html.contains("type=\"checkbox\""));
-        assert!(html.contains("checked"));
+        assert!(
+            html.contains(r#"<input disabled="" type="checkbox" checked=""/>"#),
+            "expected a checked checkbox: {html}",
+        );
+        assert!(
+            html.contains(r#"<input disabled="" type="checkbox"/>"#),
+            "expected an unchecked checkbox (no `checked` attribute): {html}",
+        );
+    }
+
+    #[test]
+    fn renders_note_callout() {
+        let html = render_markdown("> [!NOTE]\n> heads up\n");
+        assert!(
+            html.contains(r#"<blockquote class="markdown-alert-note">"#),
+            "expected GFM alert blockquote: {html}",
+        );
+        assert!(html.contains("heads up"));
     }
 }
