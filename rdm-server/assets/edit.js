@@ -34,9 +34,15 @@
     } else {
       var tagsEl = form.elements.namedItem("tags");
       if (tagsEl && tagsEl.value !== "") {
-        payload.tags = tagsEl.value.split(",")
+        var arr = tagsEl.value.split(",")
           .map(function (t) { return t.trim(); })
           .filter(function (t) { return t.length > 0; });
+        var seen = {};
+        payload.tags = arr.filter(function (t) {
+          if (Object.prototype.hasOwnProperty.call(seen, t)) return false;
+          seen[t] = true;
+          return true;
+        });
       }
     }
     return payload;

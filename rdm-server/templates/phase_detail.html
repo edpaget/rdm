@@ -38,6 +38,10 @@
   <dt>Completed</dt>
   <dd>{{ date }}</dd>
   {% endif %}
+  {% if let Some(tag_list) = tags %}{% if !tag_list.is_empty() %}
+  <dt>Tags</dt>
+  <dd>{{ tag_list.join(", ") }}</dd>
+  {% endif %}{% endif %}
 </dl>
 {% if !body_html.is_empty() %}
 <div class="body-content">{{ body_html|safe }}</div>
@@ -50,6 +54,17 @@
     <textarea id="phase-body-edit" name="body" rows="12">
 {{ body_md }}</textarea>
     <button type="submit">Save body</button>
+  </form>
+</details>
+<details class="tag-edit">
+  <summary>Edit tags</summary>
+  <form class="tag-edit-form" data-rdm-edit data-rdm-method="PATCH" method="post"
+        action="/projects/{{ project }}/roadmaps/{{ roadmap }}/phases/{{ stem }}">
+    <label for="phase-tags-edit">Tags (comma-separated)</label>
+    <input type="text" id="phase-tags-edit" name="tags"
+           value="{% if let Some(tag_list) = tags %}{{ tag_list.join(", ") }}{% endif %}">
+    <button type="submit">Save tags</button>
+    <button type="submit" name="clear_tags" value="true">Clear tags</button>
   </form>
 </details>
 <nav class="sibling-nav" aria-label="Phase navigation">

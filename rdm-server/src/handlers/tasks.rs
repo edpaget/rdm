@@ -693,6 +693,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_task_html_includes_tag_edit_form() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/tasks/bug-fix")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<details"));
+        assert!(html.contains("<summary"));
+        assert!(html.contains("data-rdm-edit"));
+        assert!(html.contains("data-rdm-method=\"PATCH\""));
+        assert!(html.contains("action=\"/projects/demo/tasks/bug-fix\""));
+        assert!(html.contains("name=\"tags\""));
+        assert!(
+            html.contains("value=\"bug\""),
+            "missing pre-populated tag input value in:\n{html}"
+        );
+        assert!(
+            html.contains("name=\"clear_tags\"") && html.contains("value=\"true\""),
+            "missing clear_tags submitter in:\n{html}"
+        );
+    }
+
+    #[tokio::test]
     async fn get_task_404_returns_html_error() {
         let (_dir, state) = setup();
         let app = build_router(state);

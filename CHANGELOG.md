@@ -21,6 +21,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and PATCHes the resource (via `/static/edit.js`) on submit. Clearing the
   textarea and saving is supported and round-trips. The rendered HTML body
   remains the default read view.
+- Inline tag editor on roadmap-, phase-, and task-detail HTML pages: a
+  collapsible `<details>` block exposes the current tags as a
+  comma-separated `<input>` with "Save tags" and "Clear tags" buttons;
+  submits PATCH the resource (via `/static/edit.js`) and reload.
+  Whitespace, empty entries, and duplicates are normalized client-side.
+  The phase detail page now also shows tags in the read view (parity with
+  task/roadmap).
 - Phase status `wont-fix`, treated like `done` for roadmap completion.
   Agent-facing surface area (`Describe` schema, agent-config instruction
   templates, and the CLI's combined-status error message) now lists

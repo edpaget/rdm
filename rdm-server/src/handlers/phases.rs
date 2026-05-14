@@ -194,6 +194,7 @@ pub async fn get_phase(
                 completed: doc.frontmatter.completed.map(|d| d.to_string()),
                 body_html,
                 body_md: doc.body,
+                tags: doc.frontmatter.tags,
                 prev_href,
                 next_href,
             };
@@ -1068,6 +1069,61 @@ mod tests {
         let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("tags").is_none() || json["tags"].is_null());
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_includes_tags_in_read_view() {
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha/phases/phase-1-tagged")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            html.contains("<dt>Tags</dt>"),
+            "missing Tags dt in:\n{html}"
+        );
+        assert!(html.contains("bug, ui"), "missing tag list in:\n{html}");
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_includes_tag_edit_form() {
+        let (_dir, state) = setup_with_phase_tags();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha/phases/phase-1-tagged")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<details"));
+        assert!(html.contains("<summary"));
+        assert!(html.contains("data-rdm-edit"));
+        assert!(html.contains("data-rdm-method=\"PATCH\""));
+        assert!(html.contains("action=\"/projects/demo/roadmaps/alpha/phases/phase-1-tagged\""));
+        assert!(html.contains("name=\"tags\""));
+        assert!(
+            html.contains("value=\"bug, ui\""),
+            "missing pre-populated tag input value in:\n{html}"
+        );
+        assert!(
+            html.contains("name=\"clear_tags\"") && html.contains("value=\"true\""),
+            "missing clear_tags submitter in:\n{html}"
+        );
     }
 
     #[tokio::test]

@@ -289,6 +289,8 @@ pub struct PhaseDetailPage {
     pub body_html: String,
     /// Raw markdown source of the body, used to back the inline editor textarea.
     pub body_md: String,
+    /// Optional phase tags.
+    pub tags: Option<Vec<String>>,
     /// URL for the previous phase, if any.
     pub prev_href: Option<String>,
     /// URL for the next phase, if any.

@@ -40,6 +40,17 @@
     <button type="submit">Save body</button>
   </form>
 </details>
+<details class="tag-edit">
+  <summary>Edit tags</summary>
+  <form class="tag-edit-form" data-rdm-edit data-rdm-method="PATCH" method="post"
+        action="/projects/{{ project }}/roadmaps/{{ slug }}">
+    <label for="roadmap-tags-edit">Tags (comma-separated)</label>
+    <input type="text" id="roadmap-tags-edit" name="tags"
+           value="{% if let Some(tag_list) = tags %}{{ tag_list.join(", ") }}{% endif %}">
+    <button type="submit">Save tags</button>
+    <button type="submit" name="clear_tags" value="true">Clear tags</button>
+  </form>
+</details>
 <h2>Phases</h2>
 {% if phases.is_empty() %}
 {% if let Some(tag) = active_tag %}
