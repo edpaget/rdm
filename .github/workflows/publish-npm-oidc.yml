@@ -54,6 +54,8 @@ jobs:
             dir="extracted/${pkg%.tar.gz}"
             mkdir -p "$dir"
             tar -xzf "./npm/${pkg}" -C "$dir" --strip-components=1
-            (cd "$dir" && npm pkg set mcpName=io.github.edpaget/rdm)
-            npm publish --access public --provenance "$dir"
+            # Run from inside $dir so npm doesn't interpret the relative
+            # path as an `<owner>/<repo>` GitHub shorthand.
+            (cd "$dir" && npm pkg set mcpName=io.github.edpaget/rdm \
+              && npm publish --access public --provenance)
           done
