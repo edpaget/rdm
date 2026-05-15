@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- npm publish step now runs from inside the extracted package directory
+  instead of passing the path as an argument, so npm no longer
+  misinterprets the relative path as a GitHub `<owner>/<repo>`
+  shorthand and fails with `Permission denied (publickey)`.
+
 ## [0.10.2] - 2026-05-15
 
 ### Fixed
@@ -15,10 +22,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `promise-retry` module), which was causing the `npm install -g
   npm@latest` step to crash and prevent the npm package from being
   published on release.
-- npm publish step now runs from inside the extracted package directory
-  instead of passing the path as an argument, so npm no longer
-  misinterprets the relative path as a GitHub `<owner>/<repo>`
-  shorthand and fails with `Permission denied (publickey)`.
 
 ## [0.10.1] - 2026-05-15
 
