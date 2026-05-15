@@ -29,6 +29,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   [npm trusted publishing (OIDC)](https://docs.npmjs.com/trusted-publishers/),
   so no long-lived `NPM_TOKEN` secret is needed. Covers macOS arm64/x64
   and Linux arm64/x64.
+- MCP Registry metadata at `io.github.edpaget/rdm` — `server.json`
+  committed at the repo root, and the npm publish workflow now injects
+  `mcpName: io.github.edpaget/rdm` into every published `package.json`
+  so the MCP Registry can verify ownership. README adds Claude Code
+  (`claude mcp add rdm -- npx -y @edpaget/rdm mcp`) and Cursor install
+  snippets.
 
 ## [0.9.0] - 2026-05-15
 

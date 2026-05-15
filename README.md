@@ -102,6 +102,35 @@ rdm agent-config --mcp --project fbm --out ~/Projects/fbm
 rdm agent-config claude --mcp --skills --project fbm --out ~/Projects/fbm/.claude/skills/
 ```
 
+#### Claude Code / Cursor / MCP Registry
+
+Register rdm with [Claude Code](https://github.com/anthropics/claude-code) (uses the published npm package):
+
+```bash
+# User-scoped (available in every project)
+claude mcp add rdm -- npx -y @edpaget/rdm mcp
+
+# Or project-scoped (writes to .mcp.json in the current repo)
+claude mcp add --scope project rdm -- npx -y @edpaget/rdm mcp
+```
+
+For [Cursor](https://docs.cursor.com/context/model-context-protocol), add the
+following to `~/.cursor/mcp.json` (or the project-scoped `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "rdm": {
+      "command": "npx",
+      "args": ["-y", "@edpaget/rdm", "mcp"]
+    }
+  }
+}
+```
+
+rdm is also published to the [MCP Registry](https://github.com/modelcontextprotocol/registry)
+under the canonical name `io.github.edpaget/rdm`.
+
 ### Claude Code web sandbox
 
 Run Claude Code web sessions against your plan repo from a source-repo sandbox. A session-start hook installs rdm, clones the plan repo into the sandbox, and points rdm's global config at it. Drop the template into your source repo:
@@ -207,7 +236,32 @@ package:
 Once that's in place, tagging a release triggers
 `.github/workflows/release.yml`, which dispatches to
 `.github/workflows/publish-npm-oidc.yml` and publishes with
-`npm publish --provenance` using the GitHub-issued OIDC token.
+`npm publish --provenance` using the GitHub-issued OIDC token. The
+publish workflow also injects `mcpName: io.github.edpaget/rdm` into the
+published `package.json` so the MCP Registry can verify ownership.
+
+#### Submitting to the MCP Registry
+
+The first release that ships with `mcpName` in `package.json` unlocks the
+[MCP Registry](https://github.com/modelcontextprotocol/registry)
+submission. This is a manual, one-time step (subsequent releases only
+need to be re-pushed to the registry if `server.json` changes):
+
+1. Install the publisher CLI:
+   ```bash
+   brew install mcp-publisher
+   ```
+2. Bump `server.json` so its `version` (and the matching `packages[].version`)
+   tracks the released npm version.
+3. Authenticate with GitHub (interactive OAuth — claims the
+   `io.github.edpaget` namespace):
+   ```bash
+   mcp-publisher login github
+   ```
+4. From the repo root, push `server.json` to the registry:
+   ```bash
+   mcp-publisher publish
+   ```
 
 ## License
 

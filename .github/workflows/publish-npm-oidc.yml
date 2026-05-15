@@ -40,9 +40,18 @@ jobs:
       # older bundled npm, so refresh it before publishing.
       - name: Upgrade npm to a trusted-publishing-capable version
         run: npm install -g npm@latest
+      # Each cargo-dist-generated tarball is extracted, patched with the
+      # `mcpName` field required by the MCP Registry verification flow,
+      # and republished from the extracted directory. The `mcpName` value
+      # must match `name` in server.json (io.github.edpaget/rdm).
       - name: Publish npm packages
         run: |
+          mkdir -p extracted
           for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith("-npm-package.tar.gz")] | any)'); do
             pkg=$(echo "$release" | jq '.artifacts[] | select(endswith("-npm-package.tar.gz"))' --raw-output)
-            npm publish --access public --provenance "./npm/${pkg}"
+            dir="extracted/${pkg%.tar.gz}"
+            mkdir -p "$dir"
+            tar -xzf "./npm/${pkg}" -C "$dir" --strip-components=1
+            (cd "$dir" && npm pkg set mcpName=io.github.edpaget/rdm)
+            npm publish --access public --provenance "$dir"
           done
