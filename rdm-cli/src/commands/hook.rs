@@ -16,11 +16,11 @@ pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
             let hooks: &[(&str, &str)] = &[
                 (
                     "post-merge",
-                    "#!/usr/bin/env bash\nrdm hook post-merge 2>/dev/null || true\n",
+                    "#!/usr/bin/env bash\nGIT_DIR_PATH=$(git rev-parse --git-dir 2>/dev/null)\nLOG=\"${GIT_DIR_PATH:-.git}/rdm-hook.log\"\n{ rdm hook post-merge; } >>\"$LOG\" 2>&1 || true\n",
                 ),
                 (
                     "post-commit",
-                    "#!/usr/bin/env bash\nrdm hook post-commit 2>/dev/null || true\n",
+                    "#!/usr/bin/env bash\nGIT_DIR_PATH=$(git rev-parse --git-dir 2>/dev/null)\nLOG=\"${GIT_DIR_PATH:-.git}/rdm-hook.log\"\n{ rdm hook post-commit; } >>\"$LOG\" 2>&1 || true\n",
                 ),
             ];
             for (name, shim) in hooks {
@@ -41,6 +41,9 @@ pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
                 }
                 println!("Installed {name} hook at {}", hook_path.display());
             }
+            println!(
+                "Hook diagnostics will be appended to <git_dir>/rdm-hook.log on every invocation."
+            );
         }
         HookCommand::Uninstall => {
             let cwd = std::env::current_dir().context("cannot determine current directory")?;
@@ -72,12 +75,22 @@ pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
             }
         }
         HookCommand::PostMerge { since } => {
-            // Silently swallow all errors — hook must never fail.
-            let _ = run_post_merge_hook(root, staging, since.as_deref());
+            // Capture errors so we can log them, but never propagate — the hook
+            // must always exit 0 to avoid blocking git.
+            if let Err(err) = run_post_merge_hook(root, staging, since.as_deref()) {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let logger = crate::hook_log::HookLogger::new(&cwd);
+                let msg = format!("{err:#}");
+                logger.log("post-merge", "wrapper-error", &[("error", msg.as_str())]);
+            }
         }
         HookCommand::PostCommit => {
-            // Silently swallow all errors — hook must never fail.
-            let _ = run_post_commit_hook(root, staging);
+            if let Err(err) = run_post_commit_hook(root, staging) {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let logger = crate::hook_log::HookLogger::new(&cwd);
+                let msg = format!("{err:#}");
+                logger.log("post-commit", "wrapper-error", &[("error", msg.as_str())]);
+            }
         }
     }
     Ok(())

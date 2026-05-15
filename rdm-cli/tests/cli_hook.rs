@@ -1049,3 +1049,230 @@ fn hook_post_commit_idempotent_with_post_merge() {
         .stdout(predicate::str::contains("Status: done"))
         .stdout(predicate::str::contains(&sha));
 }
+
+// -- hook log tests --
+
+fn read_log(project_dir: &TempDir) -> String {
+    let path = project_dir.path().join(".git/rdm-hook.log");
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+}
+
+#[test]
+fn hook_post_commit_writes_log_on_success() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "x").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: x\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("post-commit entry"),
+        "log missing entry: {log}"
+    );
+    assert!(
+        log.contains("post-commit apply-phase status=ok"),
+        "log missing apply-phase: {log}"
+    );
+    assert!(log.contains("post-commit exit"), "log missing exit: {log}");
+}
+
+#[test]
+fn hook_post_commit_logs_skip_on_feature_branch() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    git_cmd()
+        .args(["checkout", "-b", "feature-x"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    fs::write(project_dir.path().join("dummy.txt"), "feat").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: x\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("skip-branch branch=feature-x default=main"),
+        "log missing skip-branch: {log}"
+    );
+}
+
+#[test]
+fn hook_post_merge_logs_skip_on_unknown_phase() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "bad").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            // Numeric phase identifier forces resolve_phase_stem to query the
+            // store, which fails because phase 99 does not exist.
+            "feat: merge\n\nDone: my-roadmap/99",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-merge"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("skip-unknown-phase"),
+        "log missing skip-unknown-phase: {log}"
+    );
+    assert!(
+        log.contains("roadmap=my-roadmap"),
+        "log missing roadmap kv: {log}"
+    );
+}
+
+#[test]
+fn hook_install_shim_redirects_to_log_file() {
+    let project_dir = TempDir::new().unwrap();
+    init_project_repo(&project_dir);
+
+    rdm()
+        .args(["hook", "install"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    for name in &["post-merge", "post-commit"] {
+        let hook_path = project_dir.path().join(format!(".git/hooks/{name}"));
+        let contents = fs::read_to_string(&hook_path).unwrap();
+        assert!(
+            contents.contains("rdm-hook.log"),
+            "{name} shim should reference rdm-hook.log: {contents}"
+        );
+    }
+
+    rdm()
+        .args(["hook", "uninstall"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+    assert!(!project_dir.path().join(".git/hooks/post-merge").exists());
+    assert!(!project_dir.path().join(".git/hooks/post-commit").exists());
+}
+
+#[test]
+fn hook_log_truncates_when_oversize() {
+    use std::io::Write;
+
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    // Pre-seed log with > 256 KB of junk lines.
+    let log_path = project_dir.path().join(".git/rdm-hook.log");
+    fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+    let mut f = fs::File::create(&log_path).unwrap();
+    let line = format!("{}\n", "x".repeat(1023));
+    for _ in 0..400 {
+        f.write_all(line.as_bytes()).unwrap();
+    }
+    drop(f);
+    let pre_len = fs::metadata(&log_path).unwrap().len();
+    assert!(
+        pre_len > 256 * 1024,
+        "pre-seed should be > cap, was {pre_len}"
+    );
+
+    fs::write(project_dir.path().join("dummy.txt"), "x").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "chore: noop"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    let post_len = fs::metadata(&log_path).unwrap().len();
+    assert!(
+        post_len < 256 * 1024,
+        "log should be under cap after truncate, was {post_len}"
+    );
+    let log = fs::read_to_string(&log_path).unwrap();
+    assert!(
+        log.contains("post-commit entry"),
+        "latest entry should be present after truncate: tail={}",
+        &log[log.len().saturating_sub(500)..]
+    );
+}

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- post-commit and post-merge hooks now write a diagnostic log to
+  `<git_dir>/rdm-hook.log` on every invocation, recording entry, branch and
+  directive decisions, per-directive apply outcomes, and any errors. The file
+  is auto-truncated past 256 KB and lives inside `.git/`, so it is never
+  committed. Re-run `rdm hook install --force` to pick up the matching shim
+  update that also captures native git/binary errors into the same file.
+
 ## [0.9.0] - 2026-05-15
 
 ### Added

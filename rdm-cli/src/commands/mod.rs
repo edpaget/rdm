@@ -223,15 +223,36 @@ pub fn apply_done_directives(
     root: &Path,
     staging: bool,
     directives_with_sha: &[(rdm_core::hook::DoneDirective, String)],
+    logger: &crate::hook_log::HookLogger,
+    hook: &str,
 ) -> Result<()> {
     if directives_with_sha.is_empty() {
+        logger.log(hook, "skip-empty", &[]);
         return Ok(());
     }
 
-    let mut store = make_store(root, staging)?;
+    let mut store = match make_store(root, staging) {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = format!("{e:#}");
+            logger.log(hook, "store-open-error", &[("error", msg.as_str())]);
+            return Err(e);
+        }
+    };
     let hook_global_config = paths::load_global_config();
     let hook_repo_config = paths::load_repo_config(root).with_global_defaults(&hook_global_config);
-    let project = paths::resolve_project(None, &hook_repo_config)?;
+    let project = match paths::resolve_project(None, &hook_repo_config) {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = format!("{e:#}");
+            logger.log(
+                hook,
+                "project-resolution-failed",
+                &[("error", msg.as_str())],
+            );
+            return Err(e);
+        }
+    };
     for (directive, sha) in directives_with_sha {
         match directive {
             rdm_core::hook::DoneDirective::Phase { roadmap, phase } => {
@@ -239,9 +260,21 @@ pub fn apply_done_directives(
                     &store, &project, roadmap, phase,
                 ) {
                     Ok(s) => s,
-                    Err(_) => continue,
+                    Err(e) => {
+                        let msg = format!("{e}");
+                        logger.log(
+                            hook,
+                            "skip-unknown-phase",
+                            &[
+                                ("roadmap", roadmap.as_str()),
+                                ("phase", phase.as_str()),
+                                ("error", msg.as_str()),
+                            ],
+                        );
+                        continue;
+                    }
                 };
-                let _ = rdm_core::ops::phase::update_phase(
+                match rdm_core::ops::phase::update_phase(
                     &mut store,
                     &project,
                     roadmap,
@@ -250,10 +283,35 @@ pub fn apply_done_directives(
                     None,
                     None,
                     Some(sha.clone()),
-                );
+                ) {
+                    Ok(_) => logger.log(
+                        hook,
+                        "apply-phase",
+                        &[
+                            ("status", "ok"),
+                            ("roadmap", roadmap.as_str()),
+                            ("phase", stem.as_str()),
+                            ("sha", sha.as_str()),
+                        ],
+                    ),
+                    Err(e) => {
+                        let msg = format!("{e}");
+                        logger.log(
+                            hook,
+                            "apply-phase",
+                            &[
+                                ("status", "error"),
+                                ("roadmap", roadmap.as_str()),
+                                ("phase", stem.as_str()),
+                                ("sha", sha.as_str()),
+                                ("error", msg.as_str()),
+                            ],
+                        );
+                    }
+                }
             }
             rdm_core::hook::DoneDirective::Task { slug } => {
-                let _ = rdm_core::ops::task::update_task(
+                match rdm_core::ops::task::update_task(
                     &mut store,
                     &project,
                     slug,
@@ -262,7 +320,30 @@ pub fn apply_done_directives(
                     None,
                     None,
                     Some(sha.clone()),
-                );
+                ) {
+                    Ok(_) => logger.log(
+                        hook,
+                        "apply-task",
+                        &[
+                            ("status", "ok"),
+                            ("slug", slug.as_str()),
+                            ("sha", sha.as_str()),
+                        ],
+                    ),
+                    Err(e) => {
+                        let msg = format!("{e}");
+                        logger.log(
+                            hook,
+                            "apply-task",
+                            &[
+                                ("status", "error"),
+                                ("slug", slug.as_str()),
+                                ("sha", sha.as_str()),
+                                ("error", msg.as_str()),
+                            ],
+                        );
+                    }
+                }
             }
         }
     }
@@ -281,8 +362,32 @@ pub fn apply_done_directives(
 #[cfg(feature = "git")]
 pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
-    let commits = rdm_store_git::commit_messages_since_at(&cwd, since)?;
+    let logger = crate::hook_log::HookLogger::new(&cwd);
+    let hook = "post-merge";
+    let cwd_str = cwd.display().to_string();
+    let staging_str = staging.to_string();
+    logger.log(
+        hook,
+        "entry",
+        &[
+            ("cwd", cwd_str.as_str()),
+            ("since", since.unwrap_or("")),
+            ("staging", staging_str.as_str()),
+        ],
+    );
+
+    let commits = match rdm_store_git::commit_messages_since_at(&cwd, since) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("{e}");
+            logger.log(hook, "git-error", &[("error", msg.as_str())]);
+            logger.log(hook, "exit", &[("ok", "false")]);
+            return Err(e.into());
+        }
+    };
     if commits.is_empty() {
+        logger.log(hook, "skip-no-commits", &[]);
+        logger.log(hook, "exit", &[("ok", "true")]);
         return Ok(());
     }
 
@@ -298,7 +403,16 @@ pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> R
         }
     }
 
-    apply_done_directives(root, staging, &directives_with_sha)
+    let count = directives_with_sha.len().to_string();
+    logger.log(hook, "parsed-directives", &[("count", count.as_str())]);
+
+    let result = apply_done_directives(root, staging, &directives_with_sha, &logger, hook);
+    logger.log(
+        hook,
+        "exit",
+        &[("ok", if result.is_ok() { "true" } else { "false" })],
+    );
+    result
 }
 
 /// Runs the post-commit hook logic: on the default branch, parse `Done:`
@@ -312,21 +426,58 @@ pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> R
 #[cfg(feature = "git")]
 pub fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let logger = crate::hook_log::HookLogger::new(&cwd);
+    let hook = "post-commit";
+    let cwd_str = cwd.display().to_string();
+    let staging_str = staging.to_string();
+    logger.log(
+        hook,
+        "entry",
+        &[("cwd", cwd_str.as_str()), ("staging", staging_str.as_str())],
+    );
 
     // Only run on the default branch.
-    let current_branch = rdm_store_git::current_branch_at(&cwd)?;
+    let current_branch = match rdm_store_git::current_branch_at(&cwd) {
+        Ok(b) => b,
+        Err(e) => {
+            let msg = format!("{e}");
+            logger.log(hook, "git-error", &[("error", msg.as_str())]);
+            logger.log(hook, "exit", &[("ok", "false")]);
+            return Err(e.into());
+        }
+    };
     let hook_global_config = paths::load_global_config();
     let hook_repo_config = paths::load_repo_config(root).with_global_defaults(&hook_global_config);
     let default_branch = hook_repo_config.default_branch.as_deref().unwrap_or("main");
     match current_branch.as_deref() {
         Some(branch) if branch == default_branch => {}
-        _ => return Ok(()),
+        other => {
+            logger.log(
+                hook,
+                "skip-branch",
+                &[("branch", other.unwrap_or("")), ("default", default_branch)],
+            );
+            logger.log(hook, "exit", &[("ok", "true")]);
+            return Ok(());
+        }
     }
 
-    let commit = rdm_store_git::head_commit_info_at(&cwd)?;
+    let commit = match rdm_store_git::head_commit_info_at(&cwd) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("{e}");
+            logger.log(hook, "git-error", &[("error", msg.as_str())]);
+            logger.log(hook, "exit", &[("ok", "false")]);
+            return Err(e.into());
+        }
+    };
     let commit = match commit {
         Some(c) => c,
-        None => return Ok(()),
+        None => {
+            logger.log(hook, "skip-no-head", &[]);
+            logger.log(hook, "exit", &[("ok", "true")]);
+            return Ok(());
+        }
     };
 
     let directives: Vec<_> = rdm_core::hook::parse_done_directives(&commit.message)
@@ -334,5 +485,18 @@ pub fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
         .map(|d| (d, commit.sha.clone()))
         .collect();
 
-    apply_done_directives(root, staging, &directives)
+    let count = directives.len().to_string();
+    logger.log(
+        hook,
+        "parsed-directives",
+        &[("count", count.as_str()), ("sha", commit.sha.as_str())],
+    );
+
+    let result = apply_done_directives(root, staging, &directives, &logger, hook);
+    logger.log(
+        hook,
+        "exit",
+        &[("ok", if result.is_ok() { "true" } else { "false" })],
+    );
+    result
 }

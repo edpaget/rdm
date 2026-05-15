@@ -13,6 +13,8 @@ use rdm_core::tree;
 use rdm_store_fs::FsStore;
 
 mod commands;
+#[cfg(feature = "git")]
+mod hook_log;
 mod paths;
 mod table;
 
