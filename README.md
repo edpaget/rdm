@@ -22,6 +22,11 @@ curl -fsSL https://github.com/edpaget/rdm/releases/download/v0.6.2/install.sh | 
 # Homebrew (macOS)
 brew install edpaget/rdm/rdm-cli
 
+# npm / npx (macOS x64/arm64, Linux x64/arm64) — downloads the matching release binary on install
+npx -y @edpaget/rdm mcp           # start the MCP server (default entry point for MCP clients)
+npx -y @edpaget/rdm --help        # run any rdm CLI command without installing globally
+npm install -g @edpaget/rdm       # or install globally so `rdm` is on PATH
+
 # From source
 cargo install --path rdm-cli
 ```
@@ -96,6 +101,35 @@ rdm agent-config --mcp --project fbm --out ~/Projects/fbm
 # Generate MCP-aware Claude Code skills + .mcp.json
 rdm agent-config claude --mcp --skills --project fbm --out ~/Projects/fbm/.claude/skills/
 ```
+
+#### Claude Code / Cursor / MCP Registry
+
+Register rdm with [Claude Code](https://github.com/anthropics/claude-code) (uses the published npm package):
+
+```bash
+# User-scoped (available in every project)
+claude mcp add rdm -- npx -y @edpaget/rdm mcp
+
+# Or project-scoped (writes to .mcp.json in the current repo)
+claude mcp add --scope project rdm -- npx -y @edpaget/rdm mcp
+```
+
+For [Cursor](https://docs.cursor.com/context/model-context-protocol), add the
+following to `~/.cursor/mcp.json` (or the project-scoped `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "rdm": {
+      "command": "npx",
+      "args": ["-y", "@edpaget/rdm", "mcp"]
+    }
+  }
+}
+```
+
+rdm is also published to the [MCP Registry](https://github.com/modelcontextprotocol/registry)
+under the canonical name `io.github.edpaget/rdm`.
 
 ### Claude Code web sandbox
 
@@ -181,6 +215,53 @@ rdm serve --port 8400
 ## Contributing
 
 rdm uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), TDD, and `cargo nextest run` for testing. See [CLAUDE.md](CLAUDE.md) for development practices and build instructions.
+
+### Release prerequisites
+
+The release workflow publishes the `@edpaget/rdm` npm package via
+[npm trusted publishing (OIDC)](https://docs.npmjs.com/trusted-publishers/),
+so no long-lived `NPM_TOKEN` secret is required. Setup is one-time per
+package:
+
+1. Create the `@edpaget` scope on npmjs.com (only needed once for the
+   whole org).
+2. Bootstrap the package: npm requires a Trusted Publisher to point at
+   an *existing* package, so the very first release of `@edpaget/rdm`
+   has to be published manually (`npm publish --access public ...`) or
+   via a one-off token. Subsequent versions go through OIDC.
+3. On the `@edpaget/rdm` package settings page → Trusted Publishers,
+   add a publisher pointing at `edpaget/rdm` with workflow file
+   `release.yml`, environment left blank.
+
+Once that's in place, tagging a release triggers
+`.github/workflows/release.yml`, which dispatches to
+`.github/workflows/publish-npm-oidc.yml` and publishes with
+`npm publish --provenance` using the GitHub-issued OIDC token. The
+publish workflow also injects `mcpName: io.github.edpaget/rdm` into the
+published `package.json` so the MCP Registry can verify ownership.
+
+#### Submitting to the MCP Registry
+
+The first release that ships with `mcpName` in `package.json` unlocks the
+[MCP Registry](https://github.com/modelcontextprotocol/registry)
+submission. This is a manual, one-time step (subsequent releases only
+need to be re-pushed to the registry if `server.json` changes):
+
+1. Install the publisher CLI:
+   ```bash
+   brew install mcp-publisher
+   ```
+2. Bump `server.json` so its `version` (and the matching `packages[].version`)
+   tracks the released npm version.
+3. Authenticate with GitHub (interactive OAuth — claims the
+   `io.github.edpaget` namespace):
+   ```bash
+   mcp-publisher login github
+   ```
+4. From the repo root, push `server.json` to the registry:
+   ```bash
+   mcp-publisher publish
+   ```
 
 ## License
 
