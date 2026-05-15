@@ -1,0 +1,48 @@
+# Reusable workflow invoked by the dist-generated release.yml as a
+# custom publish job (configured via `publish-jobs = ["./publish-npm-oidc"]`
+# in dist-workspace.toml). Publishes the cargo-dist-generated npm tarball
+# using npm trusted publishing (OIDC) so we don't need a long-lived
+# NPM_TOKEN secret. Requires that a Trusted Publisher is configured on
+# npmjs.com for the @edpaget/rdm package, pointing at this repo and the
+# top-level `release.yml` workflow.
+name: Publish npm package (OIDC)
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish-npm-oidc:
+    runs-on: ubuntu-22.04
+    # Trusted publishing exchanges this OIDC token with npmjs.com for a
+    # short-lived publish credential. The caller (release.yml) also grants
+    # this permission at the job level; both must agree.
+    permissions:
+      id-token: write
+    env:
+      PLAN: ${{ inputs.plan }}
+    if: ${{ !fromJson(inputs.plan).announcement_is_prerelease || fromJson(inputs.plan).publish_prereleases }}
+    steps:
+      - name: Fetch npm packages
+        uses: actions/download-artifact@v7
+        with:
+          pattern: artifacts-*
+          path: npm/
+          merge-multiple: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      # npm trusted publishing requires npm >= 11.5.1; Node 22 ships an
+      # older bundled npm, so refresh it before publishing.
+      - name: Upgrade npm to a trusted-publishing-capable version
+        run: npm install -g npm@latest
+      - name: Publish npm packages
+        run: |
+          for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith("-npm-package.tar.gz")] | any)'); do
+            pkg=$(echo "$release" | jq '.artifacts[] | select(endswith("-npm-package.tar.gz"))' --raw-output)
+            npm publish --access public --provenance "./npm/${pkg}"
+          done

@@ -8,9 +8,17 @@ cargo-dist-version = "0.31.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
-installers = ["shell", "homebrew"]
-# Publish jobs to run in CI
-publish-jobs = ["homebrew"]
+installers = ["shell", "npm", "homebrew"]
+# Publish jobs to run in CI.
+# `./publish-npm-oidc` is a custom reusable workflow
+# (.github/workflows/publish-npm-oidc.yml) used in place of the built-in
+# "npm" publish job so we can publish via npm trusted publishing (OIDC)
+# rather than a long-lived NPM_TOKEN secret.
+publish-jobs = ["homebrew", "./publish-npm-oidc"]
+# A namespace to use when publishing this package to the npm registry
+npm-scope = "@edpaget"
+# The npm package should have this name
+npm-package = "rdm"
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
 # Where to host releases

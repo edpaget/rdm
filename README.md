@@ -22,6 +22,11 @@ curl -fsSL https://github.com/edpaget/rdm/releases/download/v0.6.2/install.sh | 
 # Homebrew (macOS)
 brew install edpaget/rdm/rdm-cli
 
+# npm / npx (macOS x64/arm64, Linux x64/arm64) — downloads the matching release binary on install
+npx -y @edpaget/rdm mcp           # start the MCP server (default entry point for MCP clients)
+npx -y @edpaget/rdm --help        # run any rdm CLI command without installing globally
+npm install -g @edpaget/rdm       # or install globally so `rdm` is on PATH
+
 # From source
 cargo install --path rdm-cli
 ```
@@ -181,6 +186,28 @@ rdm serve --port 8400
 ## Contributing
 
 rdm uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), TDD, and `cargo nextest run` for testing. See [CLAUDE.md](CLAUDE.md) for development practices and build instructions.
+
+### Release prerequisites
+
+The release workflow publishes the `@edpaget/rdm` npm package via
+[npm trusted publishing (OIDC)](https://docs.npmjs.com/trusted-publishers/),
+so no long-lived `NPM_TOKEN` secret is required. Setup is one-time per
+package:
+
+1. Create the `@edpaget` scope on npmjs.com (only needed once for the
+   whole org).
+2. Bootstrap the package: npm requires a Trusted Publisher to point at
+   an *existing* package, so the very first release of `@edpaget/rdm`
+   has to be published manually (`npm publish --access public ...`) or
+   via a one-off token. Subsequent versions go through OIDC.
+3. On the `@edpaget/rdm` package settings page → Trusted Publishers,
+   add a publisher pointing at `edpaget/rdm` with workflow file
+   `release.yml`, environment left blank.
+
+Once that's in place, tagging a release triggers
+`.github/workflows/release.yml`, which dispatches to
+`.github/workflows/publish-npm-oidc.yml` and publishes with
+`npm publish --provenance` using the GitHub-issued OIDC token.
 
 ## License
 
