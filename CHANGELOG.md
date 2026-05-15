@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- npm publish workflow now uses Node 24 instead of Node 22 to avoid the
+  broken bundled npm in the 22.22.2 runner toolcache image (missing
+  `promise-retry` module), which was causing the `npm install -g
+  npm@latest` step to crash and prevent the npm package from being
+  published on release.
+
 ## [0.10.1] - 2026-05-15
 
 ## [0.10.0] - 2026-05-15
