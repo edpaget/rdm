@@ -23,15 +23,26 @@
   <span class="badge badge-revision">Viewing revision {{ sha }}</span>
 </p>
 {% endif %}
-<p><span class="badge badge-{{ status_class }}">{{ status }}</span>{% if let Some(pri) = priority %} <span class="badge badge-{{ priority_class.as_deref().unwrap_or("") }}">{{ pri }}</span>{% endif %}{% if let Some(date) = last_changed %} · Last changed: {{ date }}{% endif %}</p>
-{% if let Some(deps) = dependencies %}
-{% if !deps.is_empty() %}
-<p>Dependencies: {% for d in deps %}{% if !loop.first %}, {% endif %}<a href="/projects/{{ project }}/roadmaps/{{ d }}">{{ d }}</a>{% endfor %}</p>
-{% endif %}
-{% endif %}
-{% if let Some(tag_list) = tags %}{% if !tag_list.is_empty() %}
-<p class="tags">Tags: {% for t in tag_list %}{% if !loop.first %}, {% endif %}<span class="tag">{{ t }}</span>{% endfor %}</p>
-{% endif %}{% endif %}
+<dl class="meta">
+  <dt>Status</dt>
+  <dd><span class="badge badge-{{ status_class }}">{{ status }}</span></dd>
+  {% if let Some(pri) = priority %}
+  <dt>Priority</dt>
+  <dd><span class="badge badge-{{ priority_class.as_deref().unwrap_or("") }}">{{ pri }}</span></dd>
+  {% endif %}
+  {% if let Some(date) = last_changed %}
+  <dt>Last changed</dt>
+  <dd>{{ date }}</dd>
+  {% endif %}
+  {% if let Some(deps) = dependencies %}{% if !deps.is_empty() %}
+  <dt>Dependencies</dt>
+  <dd>{% for d in deps %}{% if !loop.first %}, {% endif %}<a href="/projects/{{ project }}/roadmaps/{{ d }}">{{ d }}</a>{% endfor %}</dd>
+  {% endif %}{% endif %}
+  {% if let Some(tag_list) = tags %}{% if !tag_list.is_empty() %}
+  <dt>Tags</dt>
+  <dd>{{ tag_list.join(", ") }}</dd>
+  {% endif %}{% endif %}
+</dl>
 {% if !body_html.is_empty() %}
 <div class="body-content">{{ body_html|safe }}</div>
 {% endif %}

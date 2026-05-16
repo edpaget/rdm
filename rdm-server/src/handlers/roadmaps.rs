@@ -1230,7 +1230,7 @@ mod tests {
         let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("badge-in-progress"));
-        assert!(html.contains("Last changed:"));
+        assert!(html.contains("<dt>Last changed</dt>"));
     }
 
     /// Setup with two roadmaps: `tagged` (tags: foo, bar) and `untagged-rm`.

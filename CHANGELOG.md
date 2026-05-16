@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Roadmap detail page now lays out its metadata (status, priority, last
+  changed, dependencies, tags) in the same definition-list style as the
+  task and phase pages, with badges for status and priority, instead of a
+  loose run of inline paragraphs.
+
 ## [0.10.3] - 2026-05-15
 
 ### Fixed
