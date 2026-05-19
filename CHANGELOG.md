@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- HTTP server now serves the project logo as an SVG favicon at `/favicon.ico`.
+  The favicon is linked in the base template, displayed in browser tabs, and
+  sent with a `Cache-Control: public, max-age=86400` header so browsers can
+  cache it for a day.
+
 ### Changed
 
 - Roadmap detail page now lays out its metadata (status, priority, last

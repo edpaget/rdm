@@ -50,5 +50,6 @@ pub fn build_router(state: AppState) -> Router {
             "/static/styles.css",
             get(handlers::static_assets::styles_css),
         )
+        .route("/favicon.ico", get(handlers::static_assets::favicon))
         .with_state(state)
 }
