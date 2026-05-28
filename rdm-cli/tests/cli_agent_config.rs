@@ -613,6 +613,75 @@ fn agent_config_user_skills_writes_to_claude_skills() {
 }
 
 #[test]
+fn agent_config_pi_platform() {
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# rdm"))
+        .stdout(predicate::str::contains("--project <PROJECT>"));
+}
+
+#[test]
+fn agent_config_pi_out_writes_nested_file() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    let path = dir.path().join(".pi/AGENTS.md");
+    assert!(path.exists(), "expected {}", path.display());
+    let content = std::fs::read_to_string(path).unwrap();
+    assert!(content.contains("# rdm"));
+}
+
+#[test]
+fn agent_config_pi_with_project_substitutes() {
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--project")
+        .arg("myproj")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--project myproj"))
+        .stdout(predicate::str::contains("<PROJECT>").not());
+}
+
+#[test]
+fn agent_config_pi_in_help_text() {
+    rdm()
+        .arg("agent-config")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pi"));
+}
+
+#[test]
+fn agent_config_pi_user_writes_to_dot_pi_agent() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--user")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote"));
+
+    let path = home.path().join(".pi/agent/AGENTS.md");
+    assert!(path.exists(), "expected {}", path.display());
+    let content = std::fs::read_to_string(path).unwrap();
+    assert!(content.contains("# rdm"));
+}
+
+#[test]
 fn agent_config_user_mcp_writes_instructions_and_mcp_json() {
     let home = TempDir::new().unwrap();
     rdm()

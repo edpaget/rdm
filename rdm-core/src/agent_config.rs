@@ -18,6 +18,8 @@ pub enum Platform {
     Cursor,
     /// GitHub Copilot (`.github/copilot-instructions.md`)
     Copilot,
+    /// Pi coding agent (`.pi/AGENTS.md`)
+    Pi,
 }
 
 impl Platform {
@@ -28,6 +30,7 @@ impl Platform {
             Platform::AgentsMd => "AGENTS.md",
             Platform::Cursor => ".cursor/rules/rdm.mdc",
             Platform::Copilot => ".github/copilot-instructions.md",
+            Platform::Pi => ".pi/AGENTS.md",
         }
     }
 
@@ -44,6 +47,7 @@ impl Platform {
     /// | AgentsMd   | `~/.claude/`     |
     /// | Cursor     | `~/`             |
     /// | Copilot    | `~/`             |
+    /// | Pi         | `~/.pi/agent`    |
     ///
     /// # Errors
     ///
@@ -57,8 +61,28 @@ impl Platform {
             Platform::Cursor => home,
             // conventional_path is ".github/copilot-instructions.md" — includes subdir
             Platform::Copilot => home,
+            // Pi loads AGENTS.md from ~/.pi/agent/ (note: not symmetric with project path)
+            Platform::Pi => home.join(".pi/agent"),
         };
         Ok(dir)
+    }
+
+    /// Returns the absolute path to the user-level instruction file for this platform.
+    ///
+    /// For most platforms this is `user_level_dir().join(conventional_path())`,
+    /// but Pi breaks the symmetry: its project-local path is `.pi/AGENTS.md`
+    /// while its user-global path is `~/.pi/agent/AGENTS.md` (note the extra
+    /// `agent/` segment). This method hides that asymmetry so callers don't
+    /// need to special-case Pi.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the home directory cannot be determined.
+    pub fn user_level_instruction_path(&self) -> Result<PathBuf, String> {
+        match self {
+            Platform::Pi => Ok(home_dir()?.join(".pi/agent/AGENTS.md")),
+            _ => Ok(self.user_level_dir()?.join(self.conventional_path())),
+        }
     }
 
     /// Returns the user-level directory for Claude Code skills (`~/.claude/skills/`).
@@ -83,6 +107,7 @@ impl fmt::Display for Platform {
             Platform::AgentsMd => write!(f, "agents-md"),
             Platform::Cursor => write!(f, "cursor"),
             Platform::Copilot => write!(f, "copilot"),
+            Platform::Pi => write!(f, "pi"),
         }
     }
 }
@@ -96,8 +121,9 @@ impl FromStr for Platform {
             "agents-md" => Ok(Platform::AgentsMd),
             "cursor" => Ok(Platform::Cursor),
             "copilot" => Ok(Platform::Copilot),
+            "pi" => Ok(Platform::Pi),
             other => Err(format!(
-                "unknown platform '{other}'; expected one of: claude, agents-md, cursor, copilot"
+                "unknown platform '{other}'; expected one of: claude, agents-md, cursor, copilot, pi"
             )),
         }
     }
@@ -492,6 +518,7 @@ mod tests {
         assert_eq!("agents-md".parse::<Platform>().unwrap(), Platform::AgentsMd);
         assert_eq!("cursor".parse::<Platform>().unwrap(), Platform::Cursor);
         assert_eq!("copilot".parse::<Platform>().unwrap(), Platform::Copilot);
+        assert_eq!("pi".parse::<Platform>().unwrap(), Platform::Pi);
     }
 
     #[test]
@@ -513,6 +540,7 @@ mod tests {
         assert_eq!(Platform::AgentsMd.to_string(), "agents-md");
         assert_eq!(Platform::Cursor.to_string(), "cursor");
         assert_eq!(Platform::Copilot.to_string(), "copilot");
+        assert_eq!(Platform::Pi.to_string(), "pi");
     }
 
     #[test]
@@ -526,6 +554,27 @@ mod tests {
         assert_eq!(
             Platform::Copilot.conventional_path(),
             ".github/copilot-instructions.md"
+        );
+        assert_eq!(Platform::Pi.conventional_path(), ".pi/AGENTS.md");
+    }
+
+    #[test]
+    fn pi_user_level_instruction_path() {
+        let path = Platform::Pi.user_level_instruction_path().unwrap();
+        assert!(
+            path.ends_with(".pi/agent/AGENTS.md"),
+            "unexpected path: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn claude_user_level_instruction_path_default() {
+        let path = Platform::Claude.user_level_instruction_path().unwrap();
+        assert!(
+            path.ends_with(".claude/CLAUDE.md"),
+            "unexpected path: {}",
+            path.display()
         );
     }
 

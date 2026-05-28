@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm agent-config` now supports the `pi` coding agent platform. Writes to
+  `.pi/AGENTS.md` for project-local config or `~/.pi/agent/AGENTS.md` with
+  `--user`.
 - HTTP server now serves the project logo as an SVG favicon at `/favicon.ico`.
   The favicon is linked in the base template, displayed in browser tabs, and
   sent with a `Cache-Control: public, max-age=86400` header so browsers can

@@ -130,7 +130,7 @@ enum Command {
     Index,
     /// Generate agent configuration for AI coding assistants.
     AgentConfig {
-        /// Target platform (claude, agents-md, cursor, copilot).
+        /// Target platform (claude, agents-md, cursor, copilot, pi).
         #[arg(default_value = "agents-md")]
         platform: String,
         /// Project name to embed in generated examples.
@@ -1189,19 +1189,13 @@ fn run() -> Result<()> {
         } => {
             let platform: Platform = platform.parse().map_err(|e: String| anyhow::anyhow!(e))?;
 
-            // Resolve output directory: --user resolves to platform's user-level dir,
-            // --out uses the provided path, otherwise None (stdout).
-            let resolved_out = if user {
-                if skills {
+            if skills {
+                // Resolve skills directory: --user → ~/.claude/skills, --out → that dir.
+                let resolved_out = if user {
                     Some(Platform::user_level_skills_dir().map_err(|e| anyhow::anyhow!(e))?)
                 } else {
-                    Some(platform.user_level_dir().map_err(|e| anyhow::anyhow!(e))?)
-                }
-            } else {
-                out
-            };
-
-            if skills {
+                    out
+                };
                 if platform != Platform::Claude {
                     bail!("--skills is only supported for the claude platform");
                 }
@@ -1238,14 +1232,28 @@ fn run() -> Result<()> {
                     println!("Wrote {}", mcp_path.display());
                 }
             } else {
+                // Resolve the output base dir and instruction file path. --user
+                // uses the platform-aware user-level path (which handles Pi's
+                // asymmetric layout); --out joins the conventional path under the
+                // supplied directory. `base_dir` is where .mcp.json lands.
+                let resolved: Option<(PathBuf, PathBuf)> = if user {
+                    let base = platform.user_level_dir().map_err(|e| anyhow::anyhow!(e))?;
+                    let path = platform
+                        .user_level_instruction_path()
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    Some((base, path))
+                } else {
+                    out.as_ref()
+                        .map(|dir| (dir.clone(), dir.join(platform.conventional_path())))
+                };
+
                 let content = agent_config::generate_agent_config(&AgentConfigOptions {
                     platform,
                     project,
                     principles_file,
                     mcp,
                 });
-                if let Some(dir) = resolved_out {
-                    let path = dir.join(platform.conventional_path());
+                if let Some((base_dir, path)) = resolved {
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).with_context(|| {
                             format!("failed to create directory {}", parent.display())
@@ -1254,13 +1262,16 @@ fn run() -> Result<()> {
                     std::fs::write(&path, &content)
                         .with_context(|| format!("failed to write {}", path.display()))?;
                     println!("Wrote {}", path.display());
-                    // When --mcp, also write .mcp.json alongside instructions
+                    // When --mcp, also write .mcp.json in the output base dir
                     if mcp {
                         let root_str = root.to_string_lossy().to_string();
                         let mcp_content = agent_config::generate_mcp_config(&McpConfigOptions {
                             root: Some(root_str),
                         });
-                        let mcp_path = dir.join(".mcp.json");
+                        std::fs::create_dir_all(&base_dir).with_context(|| {
+                            format!("failed to create directory {}", base_dir.display())
+                        })?;
+                        let mcp_path = base_dir.join(".mcp.json");
                         std::fs::write(&mcp_path, &mcp_content)
                             .with_context(|| format!("failed to write {}", mcp_path.display()))?;
                         println!("Wrote {}", mcp_path.display());
