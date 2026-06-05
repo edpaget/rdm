@@ -235,7 +235,9 @@ Always pass `--no-edit` to suppress the interactive editor.
 
 `--tags` is comma-separated. On `update`, `--tags` replaces the existing list; pass `--tags ""` to clear. Tagging convention: lowercase kebab-case (`bug`, `auth`, `tech-debt`); prefer existing tags — check with `./target/debug/rdm search "" --tag <candidate> --project rdm` before inventing a new one.
 
-For multiline content, pipe via stdin:
+`--body` is **authoritative**: when you pass `--body`, rdm uses that value verbatim and ignores stdin. To intentionally empty an existing body on `phase update`, `task update`, or `roadmap update`, pass `--clear-body` (mutually exclusive with `--body`); passing `--body ""` against a non-empty body is rejected with an actionable error to prevent silent clobber from a truncated heredoc or empty command substitution.
+
+For multiline content, pipe via stdin (do not also pass `--body` — stdin is ignored when `--body` is present):
 
 ```bash
 ./target/debug/rdm task create <slug> --title "Title" --no-edit --project rdm <<'EOF'
@@ -244,8 +246,6 @@ Multi-line body content goes here.
 It supports full Markdown.
 EOF
 ```
-
-Do **not** use `--body` and stdin together — the CLI will error.
 
 ### Planning workflow
 

@@ -3,7 +3,10 @@ use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
 
-use super::{maybe_print_uncommitted_hint, maybe_regenerate_index, reject_non_human, resolve_body};
+use super::{
+    map_body_clobber, maybe_print_uncommitted_hint, maybe_regenerate_index, reject_non_human,
+    resolve_body,
+};
 use crate::paths;
 use crate::table;
 use crate::{AppStore, OutputFormat, RoadmapCommand};
@@ -92,10 +95,15 @@ pub fn run(
             clear_priority,
             tags,
             body,
+            clear_body,
             no_edit,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let body = resolve_body(body, no_edit)?;
+            let (body, allow_empty_body) = if clear_body {
+                (Some(String::new()), true)
+            } else {
+                (resolve_body(body, no_edit)?, false)
+            };
             let priority = if clear_priority {
                 Some(None)
             } else {
@@ -108,8 +116,10 @@ pub fn run(
                 body.as_deref(),
                 priority,
                 tags,
+                allow_empty_body,
             )
-            .context("failed to update roadmap")?;
+            .context("failed to update roadmap")
+            .map_err(map_body_clobber)?;
             println!("Updated '{slug}'");
             maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }

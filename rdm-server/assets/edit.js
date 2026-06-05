@@ -28,7 +28,16 @@
     var statusEl = form.elements.namedItem("status");
     if (statusEl && statusEl.value !== "") payload.status = statusEl.value;
     var bodyEl = form.elements.namedItem("body");
-    if (bodyEl) payload.body = bodyEl.value;
+    if (bodyEl) {
+      if (bodyEl.value === "") {
+        // Server refuses `body:""` against a non-empty body; translate an
+        // empty textarea into an explicit clear so the web UI can still
+        // empty a body in one save.
+        payload.clear_body = true;
+      } else {
+        payload.body = bodyEl.value;
+      }
+    }
     if (clearTags) {
       payload.clear_tags = true;
     } else {

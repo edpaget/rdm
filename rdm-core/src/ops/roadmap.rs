@@ -54,6 +54,9 @@ pub fn create_roadmap(
 /// Updates a roadmap's body, priority, and/or tags.
 ///
 /// When `body` is `Some`, replaces the existing body; `None` preserves it.
+/// When `body` is `Some("")` and the existing body is non-empty,
+/// `allow_empty_body` must be `true` or the call is rejected with
+/// [`Error::BodyClobberRefused`].
 /// When `priority` is `Some(p)`, sets the priority to `p` (use
 /// `Some(None)` to clear); `None` preserves the existing value.
 /// When `tags` is `Some(non_empty)`, replaces existing tags; `Some(empty)`
@@ -62,9 +65,12 @@ pub fn create_roadmap(
 /// # Errors
 ///
 /// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
+/// [`Error::BodyClobberRefused`] if `body` is `Some("")`, the existing body
+/// is non-empty, and `allow_empty_body` is `false`,
 /// [`Error::Io`] if reading or writing fails, or
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
 /// existing roadmap file has invalid frontmatter.
+#[allow(clippy::too_many_arguments)]
 pub fn update_roadmap(
     store: &mut impl Store,
     project: &str,
@@ -72,6 +78,7 @@ pub fn update_roadmap(
     body: Option<&str>,
     priority: Option<Option<Priority>>,
     tags: Option<Vec<String>>,
+    allow_empty_body: bool,
 ) -> Result<Document<Roadmap>> {
     let path = crate::paths::roadmap_path(project, slug);
     if !store.exists(&path) {
@@ -80,6 +87,9 @@ pub fn update_roadmap(
 
     let mut doc = crate::io::load_roadmap(store, project, slug)?;
     if let Some(b) = body {
+        if b.is_empty() && !doc.body.is_empty() && !allow_empty_body {
+            return Err(Error::BodyClobberRefused);
+        }
         doc.body = b.to_string();
     }
     if let Some(p) = priority {

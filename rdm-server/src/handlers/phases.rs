@@ -284,6 +284,7 @@ pub async fn create_phase(
 pub struct UpdatePhaseRequest {
     status: Option<String>,
     body: Option<String>,
+    clear_body: Option<bool>,
     tags: Option<Vec<String>>,
     clear_tags: Option<bool>,
 }
@@ -321,6 +322,17 @@ pub async fn update_phase(
         req.tags.clone()
     };
 
+    if req.clear_body.unwrap_or(false) && req.body.is_some() {
+        return Err(validation_error(
+            "cannot set both 'body' and 'clear_body'".to_string(),
+        ));
+    }
+    let (body, allow_empty_body) = if req.clear_body.unwrap_or(false) {
+        (Some(""), true)
+    } else {
+        (req.body.as_deref(), false)
+    };
+
     let mut store = state.store();
     let stem = rdm_core::ops::phase::resolve_phase_stem(&store, &project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
@@ -331,8 +343,9 @@ pub async fn update_phase(
         &stem,
         status,
         tags,
-        req.body.as_deref(),
+        body,
         None,
+        allow_empty_body,
     )
     .map_err(|e| error_response(e, format))?;
     rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
@@ -649,7 +662,7 @@ mod tests {
         let response = app
             .oneshot(patch_json(
                 "/projects/demo/roadmaps/alpha/phases/phase-2-second",
-                r#"{"body":""}"#,
+                r#"{"clear_body":true}"#,
             ))
             .await
             .unwrap();

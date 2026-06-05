@@ -337,8 +337,11 @@ pub(crate) enum RoadmapCommand {
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
         /// Body content for the roadmap.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_body")]
         body: Option<String>,
+        /// Clear an existing body (replace it with an empty string).
+        #[arg(long, conflicts_with = "body")]
+        clear_body: bool,
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,
@@ -509,8 +512,11 @@ pub(crate) enum PhaseCommand {
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
         /// Body content for the phase.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_body")]
         body: Option<String>,
+        /// Clear an existing body (replace it with an empty string).
+        #[arg(long, conflicts_with = "body")]
+        clear_body: bool,
         /// Git commit SHA to associate with phase completion.
         #[arg(long)]
         commit: Option<String>,
@@ -587,8 +593,11 @@ pub(crate) enum TaskCommand {
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
         /// Body content for the task.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_body")]
         body: Option<String>,
+        /// Clear an existing body (replace it with an empty string).
+        #[arg(long, conflicts_with = "body")]
+        clear_body: bool,
         /// Git commit SHA to associate with this task.
         #[arg(long)]
         commit: Option<String>,

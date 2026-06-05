@@ -76,6 +76,11 @@ pub enum Error {
     /// The storage backend has no notion of history (e.g. an unborn HEAD or a
     /// backend that opted out of revision-scoped reads).
     HistoryUnavailable,
+    /// An update tried to replace a non-empty body with an empty string
+    /// without an explicit opt-in. Callers must set the `allow_empty_body`
+    /// flag to confirm the clobber (the CLI exposes this as `--clear-body`,
+    /// the HTTP/MCP surfaces as `clear_body: true`).
+    BodyClobberRefused,
 }
 
 impl std::fmt::Display for Error {
@@ -182,6 +187,12 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "the store has no history available (unborn HEAD or backend without revision support)"
+                )
+            }
+            Error::BodyClobberRefused => {
+                write!(
+                    f,
+                    "refusing to overwrite non-empty body with an empty value without explicit opt-in"
                 )
             }
         }

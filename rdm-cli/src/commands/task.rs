@@ -4,7 +4,7 @@ use rdm_core::display;
 use rdm_core::json;
 use rdm_core::model::{TaskStatus, TaskStatusFilter};
 
-use super::{maybe_print_uncommitted_hint, maybe_regenerate_index, resolve_body};
+use super::{map_body_clobber, maybe_print_uncommitted_hint, maybe_regenerate_index, resolve_body};
 use crate::paths;
 use crate::table;
 use crate::{AppStore, OutputFormat, TaskCommand};
@@ -87,11 +87,16 @@ pub fn run(
             priority,
             tags,
             body,
+            clear_body,
             commit,
             no_edit,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let body = resolve_body(body, no_edit)?;
+            let (body, allow_empty_body) = if clear_body {
+                (Some(String::new()), true)
+            } else {
+                (resolve_body(body, no_edit)?, false)
+            };
             let doc = rdm_core::ops::task::update_task(
                 store,
                 &project,
@@ -101,8 +106,10 @@ pub fn run(
                 tags,
                 body.as_deref(),
                 commit,
+                allow_empty_body,
             )
-            .context("failed to update task")?;
+            .context("failed to update task")
+            .map_err(map_body_clobber)?;
             println!(
                 "Updated task '{slug}' → status: {}, priority: {}",
                 doc.frontmatter.status, doc.frontmatter.priority

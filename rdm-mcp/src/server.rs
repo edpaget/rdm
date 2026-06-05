@@ -151,8 +151,12 @@ struct RoadmapUpdateParams {
     tags: Option<Vec<String>>,
     /// Set to true to remove all tags from this roadmap.
     clear_tags: Option<bool>,
-    /// New body content (Markdown). Replaces the existing body.
+    /// New body content (Markdown). Replaces the existing body. Passing
+    /// an empty string against a non-empty body is rejected; use
+    /// `clear_body: true` to confirm.
     body: Option<String>,
+    /// Set to true to clear the existing body (mutually exclusive with `body`).
+    clear_body: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -188,8 +192,12 @@ struct PhaseUpdateParams {
     tags: Option<Vec<String>>,
     /// Set to true to remove all tags from this phase.
     clear_tags: Option<bool>,
-    /// New body content (Markdown). Replaces the existing body.
+    /// New body content (Markdown). Replaces the existing body. Passing
+    /// an empty string against a non-empty body is rejected; use
+    /// `clear_body: true` to confirm.
     body: Option<String>,
+    /// Set to true to clear the existing body (mutually exclusive with `body`).
+    clear_body: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -230,8 +238,12 @@ struct TaskUpdateParams {
     priority: Option<String>,
     /// New tags (replaces existing). Pass an empty array to remove all tags.
     tags: Option<Vec<String>>,
-    /// New body content (Markdown). Replaces the existing body.
+    /// New body content (Markdown). Replaces the existing body. Passing
+    /// an empty string against a non-empty body is rejected; use
+    /// `clear_body: true` to confirm.
     body: Option<String>,
+    /// Set to true to clear the existing body (mutually exclusive with `body`).
+    clear_body: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -761,6 +773,9 @@ impl RdmMcpServer {
         if params.clear_tags.unwrap_or(false) && params.tags.is_some() {
             return err_text("cannot set both 'tags' and 'clear_tags'".to_string());
         }
+        if params.clear_body.unwrap_or(false) && params.body.is_some() {
+            return err_text("cannot set both 'body' and 'clear_body'".to_string());
+        }
 
         let priority = if params.clear_priority.unwrap_or(false) {
             Some(None)
@@ -780,14 +795,21 @@ impl RdmMcpServer {
             params.tags.clone()
         };
 
+        let (body, allow_empty_body) = if params.clear_body.unwrap_or(false) {
+            (Some(""), true)
+        } else {
+            (params.body.as_deref(), false)
+        };
+
         let mut store = self.store.lock().unwrap();
         let doc = match rdm_core::ops::roadmap::update_roadmap(
             &mut *store,
             &params.project,
             &params.roadmap,
-            params.body.as_deref(),
+            body,
             priority,
             tags,
+            allow_empty_body,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),
@@ -848,6 +870,9 @@ impl RdmMcpServer {
         if params.clear_tags.unwrap_or(false) && params.tags.is_some() {
             return err_text("cannot set both 'tags' and 'clear_tags'".to_string());
         }
+        if params.clear_body.unwrap_or(false) && params.body.is_some() {
+            return err_text("cannot set both 'body' and 'clear_body'".to_string());
+        }
 
         let mut store = self.store.lock().unwrap();
         let stem = match rdm_core::ops::phase::resolve_phase_stem(
@@ -874,6 +899,12 @@ impl RdmMcpServer {
             params.tags.clone()
         };
 
+        let (body, allow_empty_body) = if params.clear_body.unwrap_or(false) {
+            (Some(""), true)
+        } else {
+            (params.body.as_deref(), false)
+        };
+
         let doc = match rdm_core::ops::phase::update_phase(
             &mut *store,
             &params.project,
@@ -881,8 +912,9 @@ impl RdmMcpServer {
             &stem,
             status,
             tags,
-            params.body.as_deref(),
+            body,
             None,
+            allow_empty_body,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),
@@ -940,6 +972,9 @@ impl RdmMcpServer {
         Parameters(params): Parameters<TaskUpdateParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
+        if params.clear_body.unwrap_or(false) && params.body.is_some() {
+            return err_text("cannot set both 'body' and 'clear_body'".to_string());
+        }
         let status = match &params.status {
             Some(s) => match TaskStatus::from_str(s) {
                 Ok(st) => Some(st),
@@ -956,6 +991,12 @@ impl RdmMcpServer {
             None => None,
         };
 
+        let (body, allow_empty_body) = if params.clear_body.unwrap_or(false) {
+            (Some(""), true)
+        } else {
+            (params.body.as_deref(), false)
+        };
+
         let mut store = self.store.lock().unwrap();
         let doc = match rdm_core::ops::task::update_task(
             &mut *store,
@@ -964,8 +1005,9 @@ impl RdmMcpServer {
             status,
             priority,
             params.tags,
-            params.body.as_deref(),
+            body,
             None,
+            allow_empty_body,
         ) {
             Ok(d) => d,
             Err(e) => return core_err(e),

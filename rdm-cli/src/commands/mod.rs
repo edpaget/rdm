@@ -81,10 +81,17 @@ pub fn make_init_store(root: &Path) -> Result<AppStore> {
 }
 
 /// Resolve body content from `--body` flag, piped stdin, or interactive editor.
-/// Returns an error if both `--body` and stdin are provided.
+///
+/// `--body` is authoritative: when `body_flag` is `Some`, stdin is not read
+/// at all. This avoids fragile interactions with background and other
+/// non-interactive runners that may leave bytes on stdin even when the
+/// caller intended to pass the body inline.
 pub fn resolve_body(body_flag: Option<String>, no_edit: bool) -> Result<Option<String>> {
-    let is_tty = io::stdin().is_terminal();
+    if let Some(b) = body_flag {
+        return Ok(Some(b));
+    }
 
+    let is_tty = io::stdin().is_terminal();
     let stdin_body = if !is_tty {
         let mut buf = String::new();
         io::stdin().read_to_string(&mut buf)?;
@@ -98,11 +105,9 @@ pub fn resolve_body(body_flag: Option<String>, no_edit: bool) -> Result<Option<S
         None
     };
 
-    match (body_flag, stdin_body) {
-        (Some(_), Some(_)) => bail!("cannot use --body and piped stdin together; pick one"),
-        (Some(b), None) => Ok(Some(b)),
-        (None, Some(s)) => Ok(Some(s)),
-        (None, None) => {
+    match stdin_body {
+        Some(s) => Ok(Some(s)),
+        None => {
             if no_edit || !is_tty {
                 Ok(None)
             } else {
@@ -110,6 +115,19 @@ pub fn resolve_body(body_flag: Option<String>, no_edit: bool) -> Result<Option<S
             }
         }
     }
+}
+
+/// Map a [`rdm_core::error::Error::BodyClobberRefused`] into an actionable
+/// CLI error message that points at `--clear-body`.
+pub fn map_body_clobber(err: anyhow::Error) -> anyhow::Error {
+    if let Some(rdm_core::error::Error::BodyClobberRefused) =
+        err.downcast_ref::<rdm_core::error::Error>()
+    {
+        return anyhow::anyhow!(
+            "refusing to clear an existing body; pass `--clear-body` to confirm or `--body <text>` to replace it"
+        );
+    }
+    err
 }
 
 /// Launch `$VISUAL` / `$EDITOR` / `vi` to interactively edit body content.
@@ -283,6 +301,7 @@ pub fn apply_done_directives(
                     None,
                     None,
                     Some(sha.clone()),
+                    false,
                 ) {
                     Ok(_) => logger.log(
                         hook,
@@ -320,6 +339,7 @@ pub fn apply_done_directives(
                     None,
                     None,
                     Some(sha.clone()),
+                    false,
                 ) {
                     Ok(_) => logger.log(
                         hook,

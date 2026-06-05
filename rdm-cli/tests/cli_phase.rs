@@ -1163,3 +1163,196 @@ fn phase_show_at_revision_missing_path_errors() {
         .failure()
         .stderr(predicate::str::contains("is not present at revision"));
 }
+
+#[test]
+fn phase_update_body_flag_beats_stdin() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "inline body wins",
+        ])
+        .write_stdin("piped body loses")
+        .assert()
+        .success();
+
+    let phase_file = dir
+        .path()
+        .join("projects/fbm/roadmaps/two-way/phase-1-core.md");
+    let content = fs::read_to_string(&phase_file).unwrap();
+    assert!(
+        content.contains("inline body wins"),
+        "expected inline body in file, got: {content}"
+    );
+    assert!(
+        !content.contains("piped body loses"),
+        "stdin must be ignored when --body is provided, got: {content}"
+    );
+}
+
+#[test]
+fn phase_update_empty_body_refuses_clobber() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "existing content",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "",
+            "--no-edit",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--clear-body"));
+
+    let phase_file = dir
+        .path()
+        .join("projects/fbm/roadmaps/two-way/phase-1-core.md");
+    let content = fs::read_to_string(&phase_file).unwrap();
+    assert!(
+        content.contains("existing content"),
+        "body should be unchanged after refused clobber, got: {content}"
+    );
+}
+
+#[test]
+fn phase_update_clear_body_succeeds() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "existing content",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--clear-body",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let phase_file = dir
+        .path()
+        .join("projects/fbm/roadmaps/two-way/phase-1-core.md");
+    let content = fs::read_to_string(&phase_file).unwrap();
+    assert!(
+        !content.contains("existing content"),
+        "body should be empty after --clear-body, got: {content}"
+    );
+}
+
+#[test]
+fn phase_update_empty_body_ok_when_already_empty() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn phase_update_clear_body_conflicts_with_body_flag() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "x",
+            "--clear-body",
+            "--no-edit",
+        ])
+        .assert()
+        .failure();
+}

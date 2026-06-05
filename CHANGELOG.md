@@ -17,6 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The favicon is linked in the base template, displayed in browser tabs, and
   sent with a `Cache-Control: public, max-age=86400` header so browsers can
   cache it for a day.
+- `--clear-body` flag on `phase update`, `task update`, and `roadmap update`.
+  Use it to intentionally empty an existing body (it is mutually exclusive
+  with `--body`).
+- `clear_body` field on `PATCH /projects/:project/roadmaps/:roadmap`,
+  `PATCH /projects/:project/roadmaps/:roadmap/phases/:phase`, and
+  `PATCH /projects/:project/tasks/:task` (mirrors the new CLI flag).
 
 ### Changed
 
@@ -28,6 +34,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   changed, dependencies, tags) in the same definition-list style as the
   task and phase pages, with badges for status and priority, instead of a
   loose run of inline paragraphs.
+- `--body` is now authoritative on `phase`, `task`, and `roadmap`
+  create/update: rdm no longer reads stdin when `--body` is provided,
+  eliminating a fragile interaction with background and other
+  non-interactive runners that could overwrite or mix bodies.
+
+### Fixed
+
+- `phase update`, `task update`, and `roadmap update` no longer silently
+  overwrite a non-empty body with empty content. Passing an explicit
+  `--body ""` against an existing body is now rejected with an actionable
+  error; use `--clear-body` to confirm.
 
 ## [0.10.3] - 2026-05-15
 

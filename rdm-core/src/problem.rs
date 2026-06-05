@@ -156,6 +156,15 @@ impl From<&Error> for ProblemDetail {
                 detail: Some("the store has no history available".to_string()),
                 instance: None,
             },
+            Error::BodyClobberRefused => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(
+                    "refusing to overwrite non-empty body with an empty value".to_string(),
+                ),
+                instance: None,
+            },
             // Internal errors: no detail leak
             Error::Io(_)
             | Error::FrontmatterParse(_)

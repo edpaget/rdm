@@ -89,10 +89,15 @@ pub fn list_tasks(store: &impl Store, project: &str) -> Result<Vec<(String, Docu
 /// Updates a task's status, priority, tags, and/or body.
 ///
 /// Only fields that are `Some(...)` are updated; others are left unchanged.
+/// When `body` is `Some("")` and the existing body is non-empty,
+/// `allow_empty_body` must be `true` or the call is rejected with
+/// [`Error::BodyClobberRefused`].
 ///
 /// # Errors
 ///
 /// Returns [`Error::TaskNotFound`] if the task file doesn't exist,
+/// [`Error::BodyClobberRefused`] if `body` is `Some("")`, the existing body
+/// is non-empty, and `allow_empty_body` is `false`,
 /// [`Error::Io`] if reading or writing fails, or
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
 /// existing task file has invalid frontmatter.
@@ -106,6 +111,7 @@ pub fn update_task(
     tags: Option<Vec<String>>,
     body: Option<&str>,
     commit: Option<String>,
+    allow_empty_body: bool,
 ) -> Result<Document<Task>> {
     let path = crate::paths::task_path(project, slug);
     if !store.exists(&path) {
@@ -137,6 +143,9 @@ pub fn update_task(
         doc.frontmatter.tags = if t.is_empty() { None } else { Some(t) };
     }
     if let Some(b) = body {
+        if b.is_empty() && !doc.body.is_empty() && !allow_empty_body {
+            return Err(Error::BodyClobberRefused);
+        }
         doc.body = b.to_string();
     }
     crate::io::write_task(store, project, slug, &doc)?;

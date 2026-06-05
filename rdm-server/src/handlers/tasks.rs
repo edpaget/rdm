@@ -308,6 +308,7 @@ pub struct UpdateTaskRequest {
     priority: Option<String>,
     tags: Option<Vec<String>>,
     body: Option<String>,
+    clear_body: Option<bool>,
 }
 
 /// `PATCH /projects/:project/tasks/:task` — update a task.
@@ -337,6 +338,17 @@ pub async fn update_task(
         None => None,
     };
 
+    if req.clear_body.unwrap_or(false) && req.body.is_some() {
+        return Err(validation_error(
+            "cannot set both 'body' and 'clear_body'".to_string(),
+        ));
+    }
+    let (body, allow_empty_body) = if req.clear_body.unwrap_or(false) {
+        (Some(""), true)
+    } else {
+        (req.body.as_deref(), false)
+    };
+
     let mut store = state.store();
     let doc = rdm_core::ops::task::update_task(
         &mut store,
@@ -345,8 +357,9 @@ pub async fn update_task(
         status,
         priority,
         req.tags,
-        req.body.as_deref(),
+        body,
         None,
+        allow_empty_body,
     )
     .map_err(|e| error_response(e, format))?;
     rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
@@ -996,7 +1009,10 @@ mod tests {
         let (_dir, state) = setup();
         let app = build_router(state.clone());
         let response = app
-            .oneshot(patch_json("/projects/demo/tasks/bug-fix", r#"{"body":""}"#))
+            .oneshot(patch_json(
+                "/projects/demo/tasks/bug-fix",
+                r#"{"clear_body":true}"#,
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
@@ -1157,6 +1173,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
         rdm_core::ops::task::create_task(
@@ -1178,6 +1195,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
         let state = AppState {

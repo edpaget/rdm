@@ -293,6 +293,7 @@ fn update_roadmap_body_replaces_existing() {
         Some("Replaced.\n"),
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.body, "Replaced.\n");
@@ -316,9 +317,10 @@ fn update_roadmap_none_body_preserves_existing() {
         None,
     )
     .unwrap();
-    let updated =
-        rdm_core::ops::roadmap::update_roadmap(&mut store, "fbm", "two-way", None, None, None)
-            .unwrap();
+    let updated = rdm_core::ops::roadmap::update_roadmap(
+        &mut store, "fbm", "two-way", None, None, None, false,
+    )
+    .unwrap();
     assert_eq!(updated.body, "Keep this.\n");
 }
 
@@ -327,8 +329,15 @@ fn update_roadmap_not_found() {
     let mut store = MemoryStore::new();
     rdm_core::ops::init::init(&mut store).unwrap();
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
-    let result =
-        rdm_core::ops::roadmap::update_roadmap(&mut store, "fbm", "nope", Some("body"), None, None);
+    let result = rdm_core::ops::roadmap::update_roadmap(
+        &mut store,
+        "fbm",
+        "nope",
+        Some("body"),
+        None,
+        None,
+        false,
+    );
     assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
 }
 
@@ -399,6 +408,7 @@ fn update_roadmap_priority() {
         None,
         Some(Some(rdm_core::model::Priority::Critical)),
         None,
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -455,6 +465,7 @@ fn update_roadmap_replace_tags() {
         None,
         None,
         Some(vec!["new".to_string(), "fresh".to_string()]),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -485,6 +496,7 @@ fn update_roadmap_clear_tags() {
         None,
         None,
         Some(vec![]),
+        false,
     )
     .unwrap();
     assert_eq!(doc.frontmatter.tags, None);
@@ -505,9 +517,16 @@ fn update_roadmap_clear_priority() {
         None,
     )
     .unwrap();
-    let doc =
-        rdm_core::ops::roadmap::update_roadmap(&mut store, "fbm", "alpha", None, Some(None), None)
-            .unwrap();
+    let doc = rdm_core::ops::roadmap::update_roadmap(
+        &mut store,
+        "fbm",
+        "alpha",
+        None,
+        Some(None),
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(doc.frontmatter.priority, None);
 }
 
@@ -736,6 +755,7 @@ fn update_phase_replace_tags() {
         Some(vec!["new".to_string(), "fresh".to_string()]),
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -767,6 +787,7 @@ fn update_phase_clear_tags() {
         Some(vec![]),
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(doc.frontmatter.tags, None);
@@ -829,6 +850,7 @@ fn update_phase_to_done_sets_completed() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
@@ -852,6 +874,7 @@ fn update_phase_to_done_with_commit_stores_sha() {
         None,
         None,
         Some("abc123".to_string()),
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
@@ -879,6 +902,7 @@ fn update_phase_from_done_clears_completed() {
         None,
         None,
         Some("abc123".to_string()),
+        false,
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -890,6 +914,7 @@ fn update_phase_from_done_clears_completed() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::InProgress);
@@ -920,6 +945,7 @@ fn update_phase_body_replaces_existing() {
         None,
         Some("Replaced body.\n"),
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.body, "Replaced body.\n");
@@ -951,6 +977,7 @@ fn update_phase_none_body_preserves_existing() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.body, "Keep this body.\n");
@@ -968,6 +995,7 @@ fn update_phase_not_found() {
         None,
         None,
         None,
+        false,
     );
     assert!(matches!(result, Err(Error::PhaseNotFound(_))));
 }
@@ -988,6 +1016,7 @@ fn update_phase_done_to_done_with_new_commit_updates_sha() {
         None,
         None,
         Some("abc123".to_string()),
+        false,
     )
     .unwrap();
     let first_completed = first.frontmatter.completed;
@@ -1001,6 +1030,7 @@ fn update_phase_done_to_done_with_new_commit_updates_sha() {
         None,
         None,
         Some("def456".to_string()),
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
@@ -1024,6 +1054,7 @@ fn update_phase_done_to_done_without_commit_is_noop() {
         None,
         None,
         Some("abc123".to_string()),
+        false,
     )
     .unwrap();
     let first_completed = first.frontmatter.completed;
@@ -1037,6 +1068,7 @@ fn update_phase_done_to_done_without_commit_is_noop() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
@@ -1060,6 +1092,7 @@ fn update_phase_to_wont_fix_sets_completed() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::WontFix);
@@ -1088,6 +1121,7 @@ fn update_phase_wont_fix_to_not_started_clears_completed() {
         None,
         None,
         Some("abc123".to_string()),
+        false,
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -1099,6 +1133,7 @@ fn update_phase_wont_fix_to_not_started_clears_completed() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::NotStarted);
@@ -1380,6 +1415,7 @@ fn update_task_status() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, TaskStatus::Done);
@@ -1410,6 +1446,7 @@ fn update_task_priority() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.priority, Priority::Critical);
@@ -1437,6 +1474,7 @@ fn update_task_tags() {
         Some(vec!["new-tag".to_string()]),
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.tags, Some(vec!["new-tag".to_string()]));
@@ -1464,6 +1502,7 @@ fn update_task_body_replaces_existing() {
         None,
         Some("Replaced.\n"),
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.body, "Replaced.\n");
@@ -1494,6 +1533,7 @@ fn update_task_none_body_preserves_existing() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.body, "Keep this.\n");
@@ -1511,6 +1551,7 @@ fn update_task_not_found() {
         None,
         None,
         None,
+        false,
     );
     assert!(matches!(result, Err(Error::TaskNotFound(_))));
 }
@@ -1537,6 +1578,7 @@ fn update_task_done_sets_completed_and_commit() {
         None,
         None,
         Some("abc123".to_string()),
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, TaskStatus::Done);
@@ -1571,6 +1613,7 @@ fn update_task_done_sets_completed_without_commit() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, TaskStatus::Done);
@@ -1600,6 +1643,7 @@ fn update_task_idempotent_done_updates_commit() {
         None,
         None,
         Some("sha1".to_string()),
+        false,
     )
     .unwrap();
     let first_completed = first.frontmatter.completed;
@@ -1614,6 +1658,7 @@ fn update_task_idempotent_done_updates_commit() {
         None,
         None,
         Some("sha2".to_string()),
+        false,
     )
     .unwrap();
     assert_eq!(second.frontmatter.status, TaskStatus::Done);
@@ -1644,6 +1689,7 @@ fn update_task_reopen_clears_completed_and_commit() {
         None,
         None,
         Some("abc123".to_string()),
+        false,
     )
     .unwrap();
 
@@ -1657,6 +1703,7 @@ fn update_task_reopen_clears_completed_and_commit() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(reopened.frontmatter.status, TaskStatus::InProgress);
@@ -2429,6 +2476,7 @@ fn generate_index_counts_wont_fix_in_done_count() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -2440,6 +2488,7 @@ fn generate_index_counts_wont_fix_in_done_count() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     rdm_core::ops::index::generate_index(&mut store).unwrap();
@@ -2551,6 +2600,7 @@ fn archive_roadmap_moves_files() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -2619,6 +2669,7 @@ fn archive_roadmap_all_done_no_force_needed() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -2649,6 +2700,7 @@ fn archive_succeeds_with_mixed_done_and_wont_fix() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -2660,6 +2712,7 @@ fn archive_succeeds_with_mixed_done_and_wont_fix() {
         None,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -2777,4 +2830,230 @@ fn unarchive_roadmap_duplicate_slug() {
 
     let result = rdm_core::ops::roadmap::unarchive_roadmap(&mut store, "fbm", "alpha");
     assert!(matches!(result, Err(Error::DuplicateSlug(ref s)) if s == "alpha"));
+}
+
+// -- Body-clobber guard tests for update_phase / update_task / update_roadmap --
+
+#[test]
+fn update_phase_empty_body_refused_when_existing_nonempty() {
+    let mut store = MemoryStore::new();
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store, "fbm", "two-way", "Two-Way", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "core",
+        "Core",
+        Some(1),
+        Some("Existing body."),
+        None,
+    )
+    .unwrap();
+    let result = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        None,
+        None,
+        Some(""),
+        None,
+        false,
+    );
+    assert!(matches!(result, Err(Error::BodyClobberRefused)));
+    let loaded = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    assert_eq!(loaded.body, "Existing body.\n");
+}
+
+#[test]
+fn update_phase_empty_body_allowed_when_existing_empty() {
+    let mut store = MemoryStore::new();
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store, "fbm", "two-way", "Two-Way", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "core",
+        "Core",
+        Some(1),
+        None,
+        None,
+    )
+    .unwrap();
+    let updated = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        None,
+        None,
+        Some(""),
+        None,
+        false,
+    )
+    .unwrap();
+    assert!(updated.body.is_empty());
+}
+
+#[test]
+fn update_phase_empty_body_allowed_with_flag() {
+    let mut store = MemoryStore::new();
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store, "fbm", "two-way", "Two-Way", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "core",
+        "Core",
+        Some(1),
+        Some("Existing body."),
+        None,
+    )
+    .unwrap();
+    let updated = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        None,
+        None,
+        Some(""),
+        None,
+        true,
+    )
+    .unwrap();
+    assert!(updated.body.is_empty());
+}
+
+#[test]
+fn update_task_empty_body_refused_when_existing_nonempty() {
+    let mut store = MemoryStore::new();
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        "Fix Bug",
+        rdm_core::model::Priority::Medium,
+        None,
+        Some("Existing body."),
+    )
+    .unwrap();
+    let result = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        None,
+        None,
+        None,
+        Some(""),
+        None,
+        false,
+    );
+    assert!(matches!(result, Err(Error::BodyClobberRefused)));
+    let loaded = rdm_core::io::load_task(&store, "fbm", "fix-bug").unwrap();
+    assert_eq!(loaded.body, "Existing body.\n");
+}
+
+#[test]
+fn update_task_empty_body_allowed_with_flag() {
+    let mut store = MemoryStore::new();
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        "Fix Bug",
+        rdm_core::model::Priority::Medium,
+        None,
+        Some("Existing body."),
+    )
+    .unwrap();
+    let updated = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        None,
+        None,
+        None,
+        Some(""),
+        None,
+        true,
+    )
+    .unwrap();
+    assert!(updated.body.is_empty());
+}
+
+#[test]
+fn update_roadmap_empty_body_refused_when_existing_nonempty() {
+    let mut store = MemoryStore::new();
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        "fbm",
+        "two-way",
+        "Two-Way",
+        Some("Existing body."),
+        None,
+        None,
+    )
+    .unwrap();
+    let result = rdm_core::ops::roadmap::update_roadmap(
+        &mut store,
+        "fbm",
+        "two-way",
+        Some(""),
+        None,
+        None,
+        false,
+    );
+    assert!(matches!(result, Err(Error::BodyClobberRefused)));
+    let loaded = rdm_core::io::load_roadmap(&store, "fbm", "two-way").unwrap();
+    assert_eq!(loaded.body, "Existing body.\n");
+}
+
+#[test]
+fn update_roadmap_empty_body_allowed_with_flag() {
+    let mut store = MemoryStore::new();
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        "fbm",
+        "two-way",
+        "Two-Way",
+        Some("Existing body."),
+        None,
+        None,
+    )
+    .unwrap();
+    let updated = rdm_core::ops::roadmap::update_roadmap(
+        &mut store,
+        "fbm",
+        "two-way",
+        Some(""),
+        None,
+        None,
+        true,
+    )
+    .unwrap();
+    assert!(updated.body.is_empty());
 }

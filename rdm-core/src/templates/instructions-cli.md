@@ -69,7 +69,7 @@ For `phase create`, pass a bare slug like `hook-commit-bug` — rdm prepends `ph
 
 ## Body content
 
-Use `--body` for short inline content. For multiline content, pipe via stdin:
+Use `--body` for short inline content. `--body` is **authoritative**: when you pass it, rdm uses the value verbatim and ignores stdin. For multiline content, pipe via stdin instead (do not also pass `--body`):
 
 ```bash
 rdm task create <slug> --title "Title" --no-edit {proj_flag} <<'EOF'
@@ -79,7 +79,7 @@ It supports full Markdown.
 EOF
 ```
 
-Do **not** use `--body` and stdin together — the CLI will error.
+To intentionally empty an existing body on `phase update`, `task update`, or `roadmap update`, pass `--clear-body` (mutually exclusive with `--body`). Passing `--body ""` against a non-empty body is rejected to prevent silent clobber from a truncated heredoc or empty command substitution.
 
 ## Planning workflow
 

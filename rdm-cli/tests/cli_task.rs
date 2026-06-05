@@ -541,7 +541,7 @@ fn task_create_with_stdin_pipe() {
 }
 
 #[test]
-fn body_flag_and_stdin_errors() {
+fn body_flag_beats_stdin() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);
 
@@ -561,10 +561,18 @@ fn body_flag_and_stdin_errors() {
         ])
         .write_stdin("piped body")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "cannot use --body and piped stdin together",
-        ));
+        .success();
+
+    let task_file = dir.path().join("projects/fbm/tasks/fix-bug.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    assert!(
+        content.contains("inline body"),
+        "expected inline --body content in file, got: {content}"
+    );
+    assert!(
+        !content.contains("piped body"),
+        "stdin should be ignored when --body is provided, got: {content}"
+    );
 }
 
 #[test]
@@ -812,4 +820,177 @@ fn task_show_at_revision_missing_path_errors() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("is not present at revision"));
+}
+
+#[test]
+fn task_update_body_flag_beats_stdin() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-bug", "Fix the bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--body",
+            "inline body wins",
+        ])
+        .write_stdin("piped body loses")
+        .assert()
+        .success();
+
+    let task_file = dir.path().join("projects/fbm/tasks/fix-bug.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    assert!(
+        content.contains("inline body wins"),
+        "expected inline body in file, got: {content}"
+    );
+    assert!(
+        !content.contains("piped body loses"),
+        "stdin must be ignored when --body is provided, got: {content}"
+    );
+}
+
+#[test]
+fn task_update_empty_body_refuses_clobber() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-bug", "Fix the bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--body",
+            "existing content",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--body",
+            "",
+            "--no-edit",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--clear-body"));
+
+    let task_file = dir.path().join("projects/fbm/tasks/fix-bug.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    assert!(
+        content.contains("existing content"),
+        "body should be unchanged after refused clobber, got: {content}"
+    );
+}
+
+#[test]
+fn task_update_clear_body_succeeds() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-bug", "Fix the bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--body",
+            "existing content",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--clear-body",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let task_file = dir.path().join("projects/fbm/tasks/fix-bug.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    assert!(
+        !content.contains("existing content"),
+        "body should be empty after --clear-body, got: {content}"
+    );
+}
+
+#[test]
+fn task_update_empty_body_ok_when_already_empty() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-bug", "Fix the bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--body",
+            "",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn task_update_clear_body_conflicts_with_body_flag() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-bug", "Fix the bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--body",
+            "x",
+            "--clear-body",
+            "--no-edit",
+        ])
+        .assert()
+        .failure();
 }

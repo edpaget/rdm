@@ -125,10 +125,15 @@ pub fn create_phase(
 /// When `tags` is `Some(non_empty)`, replaces existing tags; `Some(empty)`
 /// clears tags; `None` preserves the existing value.
 /// When `body` is `Some`, replaces the existing body; `None` preserves it.
+/// When `body` is `Some("")` and the existing body is non-empty,
+/// `allow_empty_body` must be `true` or the call is rejected with
+/// [`Error::BodyClobberRefused`].
 ///
 /// # Errors
 ///
 /// Returns [`Error::PhaseNotFound`] if the phase file doesn't exist,
+/// [`Error::BodyClobberRefused`] if `body` is `Some("")`, the existing body
+/// is non-empty, and `allow_empty_body` is `false`,
 /// [`Error::Io`] if reading or writing fails, or
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
 /// existing phase file has invalid frontmatter.
@@ -142,6 +147,7 @@ pub fn update_phase(
     tags: Option<Vec<String>>,
     body: Option<&str>,
     commit: Option<String>,
+    allow_empty_body: bool,
 ) -> Result<Document<Phase>> {
     let path = crate::paths::phase_path(project, roadmap, phase_stem);
     if !store.exists(&path) {
@@ -170,6 +176,9 @@ pub fn update_phase(
         doc.frontmatter.tags = if t.is_empty() { None } else { Some(t) };
     }
     if let Some(b) = body {
+        if b.is_empty() && !doc.body.is_empty() && !allow_empty_body {
+            return Err(Error::BodyClobberRefused);
+        }
         doc.body = b.to_string();
     }
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
