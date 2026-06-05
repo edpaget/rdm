@@ -82,10 +82,13 @@ Generate instructions and skill definitions for your agent:
 rdm agent-config claude --project fbm > ~/Projects/fbm/.claude/rdm.md
 
 # Generate Claude Code skill definitions
-rdm agent-config claude --skills --project fbm --out ~/Projects/fbm/.claude/skills/
+rdm agent-config claude --skills --project fbm --out ~/Projects/fbm
+
+# Or generate AGENTS.md + skills for the Pi coding agent
+rdm agent-config pi --skills --project fbm --out ~/Projects/fbm
 ```
 
-rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), implementation (`rdm-implement`), task management (`rdm-tasks`), review (`rdm-review`), and documentation generation (`rdm-document`).
+rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), implementation (`rdm-implement`), task management (`rdm-tasks`), review (`rdm-review`), and documentation generation (`rdm-document`). The same skill set is emitted for Pi under `.pi/skills/`.
 
 ### MCP Server
 
@@ -99,8 +102,10 @@ rdm mcp
 rdm agent-config --mcp --project fbm --out ~/Projects/fbm
 
 # Generate MCP-aware Claude Code skills + .mcp.json
-rdm agent-config claude --mcp --skills --project fbm --out ~/Projects/fbm/.claude/skills/
+rdm agent-config claude --mcp --skills --project fbm --out ~/Projects/fbm
 ```
+
+Pi has no native MCP support, so `rdm agent-config pi --mcp` is rejected with an actionable error. Use `rdm agent-config pi --skills` (or omit `--mcp` for the AGENTS.md integration) instead.
 
 #### Claude Code / Cursor / MCP Registry
 

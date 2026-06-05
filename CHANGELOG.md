@@ -38,6 +38,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   create/update: rdm no longer reads stdin when `--body` is provided,
   eliminating a fragile interaction with background and other
   non-interactive runners that could overwrite or mix bodies.
+- `rdm agent-config pi --mcp` now exits with an actionable error
+  pointing users to `--skills` (or omitting `--mcp` for the AGENTS.md
+  integration). Pi has no native MCP support, so the previous behavior
+  silently produced unusable output.
 
 ### Fixed
 

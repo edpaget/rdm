@@ -1198,6 +1198,13 @@ fn run() -> Result<()> {
         } => {
             let platform: Platform = platform.parse().map_err(|e: String| anyhow::anyhow!(e))?;
 
+            if platform == Platform::Pi && mcp {
+                bail!(
+                    "Pi does not support MCP natively. Use `--skills` for skill-based \
+                     integration, or omit `--mcp` for an AGENTS.md integration."
+                );
+            }
+
             if skills {
                 // Resolve the skills root and the base dir for .mcp.json.
                 // --user → ~/.claude/skills or ~/.pi/agent/skills (base dir is

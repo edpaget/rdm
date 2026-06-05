@@ -804,6 +804,33 @@ fn agent_config_pi_skills_user_writes_to_pi_agent_skills() {
 }
 
 #[test]
+fn agent_config_pi_mcp_rejected() {
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--mcp")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Pi does not support MCP"))
+        .stderr(predicate::str::contains("--skills"));
+}
+
+#[test]
+fn agent_config_pi_mcp_skills_rejected() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--mcp")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Pi does not support MCP"));
+}
+
+#[test]
 fn agent_config_user_mcp_writes_instructions_and_mcp_json() {
     let home = TempDir::new().unwrap();
     rdm()
