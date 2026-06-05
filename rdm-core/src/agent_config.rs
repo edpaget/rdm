@@ -85,18 +85,41 @@ impl Platform {
         }
     }
 
-    /// Returns the user-level directory for Claude Code skills (`~/.claude/skills/`).
+    /// Returns the relative skills directory inside a project root.
     ///
-    /// Skills are always under `~/.claude/skills/` regardless of platform
-    /// (skills are a Claude Code concept), so this is an associated function
-    /// rather than a method on `&self`.
+    /// | Platform   | Subdir          |
+    /// |------------|-----------------|
+    /// | Claude     | `.claude/skills`|
+    /// | Pi         | `.pi/skills`    |
+    /// | others     | `None`          |
+    ///
+    /// Returns `None` for platforms that don't follow the Agent Skills standard.
+    pub fn project_skills_subdir(&self) -> Option<&'static str> {
+        match self {
+            Platform::Claude => Some(".claude/skills"),
+            Platform::Pi => Some(".pi/skills"),
+            _ => None,
+        }
+    }
+
+    /// Returns the user-level skills directory for this platform.
+    ///
+    /// | Platform   | Directory                |
+    /// |------------|--------------------------|
+    /// | Claude     | `~/.claude/skills`       |
+    /// | Pi         | `~/.pi/agent/skills`     |
     ///
     /// # Errors
     ///
-    /// Returns an error if the home directory cannot be determined.
-    pub fn user_level_skills_dir() -> Result<PathBuf, String> {
+    /// Returns an error if the platform doesn't support skills, or if the
+    /// home directory cannot be determined.
+    pub fn user_level_skills_dir(&self) -> Result<PathBuf, String> {
         let home = home_dir()?;
-        Ok(home.join(".claude").join("skills"))
+        match self {
+            Platform::Claude => Ok(home.join(".claude").join("skills")),
+            Platform::Pi => Ok(home.join(".pi").join("agent").join("skills")),
+            other => Err(format!("--skills is not supported for platform '{other}'")),
+        }
     }
 }
 
@@ -566,6 +589,45 @@ mod tests {
             "unexpected path: {}",
             path.display()
         );
+    }
+
+    #[test]
+    fn project_skills_subdir_for_claude_and_pi() {
+        assert_eq!(
+            Platform::Claude.project_skills_subdir(),
+            Some(".claude/skills")
+        );
+        assert_eq!(Platform::Pi.project_skills_subdir(), Some(".pi/skills"));
+        assert_eq!(Platform::AgentsMd.project_skills_subdir(), None);
+        assert_eq!(Platform::Cursor.project_skills_subdir(), None);
+        assert_eq!(Platform::Copilot.project_skills_subdir(), None);
+    }
+
+    #[test]
+    fn user_level_skills_dir_for_claude() {
+        let path = Platform::Claude.user_level_skills_dir().unwrap();
+        assert!(
+            path.ends_with(".claude/skills"),
+            "unexpected path: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn user_level_skills_dir_for_pi() {
+        let path = Platform::Pi.user_level_skills_dir().unwrap();
+        assert!(
+            path.ends_with(".pi/agent/skills"),
+            "unexpected path: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn user_level_skills_dir_rejects_unsupported() {
+        assert!(Platform::Cursor.user_level_skills_dir().is_err());
+        assert!(Platform::AgentsMd.user_level_skills_dir().is_err());
+        assert!(Platform::Copilot.user_level_skills_dir().is_err());
     }
 
     #[test]

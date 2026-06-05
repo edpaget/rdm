@@ -1190,27 +1190,36 @@ fn run() -> Result<()> {
             let platform: Platform = platform.parse().map_err(|e: String| anyhow::anyhow!(e))?;
 
             if skills {
-                // Resolve skills directory: --user → ~/.claude/skills, --out → that dir.
-                let resolved_out = if user {
-                    Some(Platform::user_level_skills_dir().map_err(|e| anyhow::anyhow!(e))?)
+                // Resolve the skills root and the base dir for .mcp.json.
+                // --user → ~/.claude/skills or ~/.pi/agent/skills (base dir is
+                // platform.user_level_dir()). --out <dir> → <dir>/<project_skills_subdir>
+                // (base dir is <dir>). Other platforms reject --skills.
+                let (skills_root, base_dir): (PathBuf, PathBuf) = if user {
+                    let root_path = platform
+                        .user_level_skills_dir()
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    let base = platform.user_level_dir().map_err(|e| anyhow::anyhow!(e))?;
+                    (root_path, base)
                 } else {
-                    out
+                    let dir = out.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "--skills requires --out or --user to specify the output directory"
+                        )
+                    })?;
+                    let sub = platform.project_skills_subdir().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "--skills is only supported for the claude and pi platforms"
+                        )
+                    })?;
+                    (dir.join(sub), dir.clone())
                 };
-                if platform != Platform::Claude {
-                    bail!("--skills is only supported for the claude platform");
-                }
-                let dir = resolved_out.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "--skills requires --out or --user to specify the output directory"
-                    )
-                })?;
                 let skill_files = agent_config::generate_skills(&SkillOptions {
                     project,
                     principles_file,
                     mcp,
                 });
                 for skill in &skill_files {
-                    let path = dir.join(skill.relative_path);
+                    let path = skills_root.join(skill.relative_path);
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).with_context(|| {
                             format!("failed to create directory {}", parent.display())
@@ -1220,13 +1229,16 @@ fn run() -> Result<()> {
                         .with_context(|| format!("failed to write {}", path.display()))?;
                     println!("Wrote {}", path.display());
                 }
-                // When --mcp, also write .mcp.json alongside skills
+                // When --mcp, also write .mcp.json at the project (or user-level) root.
                 if mcp {
                     let root_str = root.to_string_lossy().to_string();
                     let mcp_content = agent_config::generate_mcp_config(&McpConfigOptions {
                         root: Some(root_str),
                     });
-                    let mcp_path = dir.join(".mcp.json");
+                    std::fs::create_dir_all(&base_dir).with_context(|| {
+                        format!("failed to create directory {}", base_dir.display())
+                    })?;
+                    let mcp_path = base_dir.join(".mcp.json");
                     std::fs::write(&mcp_path, &mcp_content)
                         .with_context(|| format!("failed to write {}", mcp_path.display()))?;
                     println!("Wrote {}", mcp_path.display());

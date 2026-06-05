@@ -248,7 +248,7 @@ fn agent_config_no_principles_without_flag() {
 }
 
 #[test]
-fn agent_config_skills_requires_claude_platform() {
+fn agent_config_skills_rejects_unsupported_platform() {
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("agent-config")
@@ -259,8 +259,22 @@ fn agent_config_skills_requires_claude_platform() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "--skills is only supported for the claude platform",
+            "--skills is only supported for the claude and pi platforms",
         ));
+}
+
+#[test]
+fn agent_config_skills_rejects_cursor() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("cursor")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("claude and pi"));
 }
 
 #[test]
@@ -287,11 +301,12 @@ fn agent_config_skills_generates_four_files() {
         .success()
         .stdout(predicate::str::contains("Wrote").count(5));
 
-    assert!(dir.path().join("rdm-roadmap/SKILL.md").exists());
-    assert!(dir.path().join("rdm-implement/SKILL.md").exists());
-    assert!(dir.path().join("rdm-tasks/SKILL.md").exists());
-    assert!(dir.path().join("rdm-review/SKILL.md").exists());
-    assert!(dir.path().join("rdm-document/SKILL.md").exists());
+    let skills_dir = dir.path().join(".claude/skills");
+    assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-implement/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-tasks/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-review/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-document/SKILL.md").exists());
 }
 
 #[test]
@@ -313,7 +328,7 @@ fn agent_config_skills_have_valid_frontmatter() {
         "rdm-review",
         "rdm-document",
     ] {
-        let path = dir.path().join(format!("{name}/SKILL.md"));
+        let path = dir.path().join(format!(".claude/skills/{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
             content.starts_with("---\n"),
@@ -348,7 +363,7 @@ fn agent_config_skills_embed_project_flag() {
         "rdm-review",
         "rdm-document",
     ] {
-        let path = dir.path().join(format!("{name}/SKILL.md"));
+        let path = dir.path().join(format!(".claude/skills/{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
             content.contains("--project testproj"),
@@ -371,7 +386,8 @@ fn agent_config_skills_include_principles() {
         .assert()
         .success();
 
-    let content = std::fs::read_to_string(dir.path().join("rdm-implement/SKILL.md")).unwrap();
+    let content =
+        std::fs::read_to_string(dir.path().join(".claude/skills/rdm-implement/SKILL.md")).unwrap();
     assert!(content.contains("## Principles"));
     assert!(content.contains("docs/principles.md"));
 }
@@ -488,12 +504,13 @@ fn agent_config_mcp_skills_writes_skills_and_mcp_json() {
         .assert()
         .success();
 
-    // Should write skill files with MCP tool references
-    let skill_content = std::fs::read_to_string(out.path().join("rdm-roadmap/SKILL.md")).unwrap();
+    // Should write skill files under <out>/.claude/skills/ with MCP tool references
+    let skill_content =
+        std::fs::read_to_string(out.path().join(".claude/skills/rdm-roadmap/SKILL.md")).unwrap();
     assert!(skill_content.contains("mcp__rdm__"));
     assert!(!skill_content.contains("  - Bash"));
 
-    // Should also write .mcp.json
+    // Should also write .mcp.json at the project root, not under .claude/skills/
     let mcp_path = out.path().join(".mcp.json");
     assert!(mcp_path.exists());
 }
@@ -679,6 +696,111 @@ fn agent_config_pi_user_writes_to_dot_pi_agent() {
     assert!(path.exists(), "expected {}", path.display());
     let content = std::fs::read_to_string(path).unwrap();
     assert!(content.contains("# rdm"));
+}
+
+#[test]
+fn agent_config_pi_skills_out_writes_five_files() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote").count(5));
+
+    let skills_dir = dir.path().join(".pi/skills");
+    assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-implement/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-tasks/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-review/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-document/SKILL.md").exists());
+}
+
+#[test]
+fn agent_config_pi_skills_have_valid_frontmatter() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    for name in &[
+        "rdm-roadmap",
+        "rdm-implement",
+        "rdm-tasks",
+        "rdm-review",
+        "rdm-document",
+    ] {
+        let path = dir.path().join(format!(".pi/skills/{name}/SKILL.md"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.starts_with("---\n"),
+            "{name} missing frontmatter start"
+        );
+        assert!(content.contains("name:"), "{name} missing name field");
+        assert!(
+            content.contains("allowed-tools:"),
+            "{name} missing allowed-tools"
+        );
+    }
+}
+
+#[test]
+fn agent_config_pi_skills_embed_project_flag() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--skills")
+        .arg("--project")
+        .arg("myproj")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    for name in &[
+        "rdm-roadmap",
+        "rdm-implement",
+        "rdm-tasks",
+        "rdm-review",
+        "rdm-document",
+    ] {
+        let path = dir.path().join(format!(".pi/skills/{name}/SKILL.md"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("--project myproj"),
+            "{name} missing project flag"
+        );
+    }
+}
+
+#[test]
+fn agent_config_pi_skills_user_writes_to_pi_agent_skills() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--skills")
+        .arg("--user")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote").count(5));
+
+    let skills_dir = home.path().join(".pi/agent/skills");
+    assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-implement/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-tasks/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-review/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-document/SKILL.md").exists());
 }
 
 #[test]

@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `rdm agent-config` now supports the `pi` coding agent platform. Writes to
   `.pi/AGENTS.md` for project-local config or `~/.pi/agent/AGENTS.md` with
   `--user`.
+- `rdm agent-config --skills` now supports the `pi` platform, writing skill
+  files to `.pi/skills/` (project) or `~/.pi/agent/skills/` (user).
 - HTTP server now serves the project logo as an SVG favicon at `/favicon.ico`.
   The favicon is linked in the base template, displayed in browser tabs, and
   sent with a `Cache-Control: public, max-age=86400` header so browsers can
@@ -18,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `rdm agent-config claude --skills --out <dir>` now writes skill files under
+  `<dir>/.claude/skills/rdm-*/SKILL.md` (treating `<dir>` as a project root).
+  Previously the files were placed directly under `<dir>/rdm-*/SKILL.md`. The
+  `--user` path is unchanged.
 - Roadmap detail page now lays out its metadata (status, priority, last
   changed, dependencies, tags) in the same definition-list style as the
   task and phase pages, with badges for status and priority, instead of a
