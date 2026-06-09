@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `needs-review` and `reviewed` statuses for both phases and tasks, accepted
+  everywhere statuses are (CLI `--status` on `create`/`update`/`list`/`search`,
+  the REST server status selects and request parsing, the MCP tools, the
+  `rdm describe` schema, and the web UI status badges).
+  `needs-review` means implementation is finalized and awaiting review;
+  `reviewed` means review passed and the item is awaiting merge to main (where
+  the existing `Done:` merge hook flips it to `done`). Both are non-terminal,
+  so they never stamp a completion date. The intended review lifecycle
+  (`in-progress → needs-review → reviewed → done`) is documented in the agent
+  instructions; status transitions remain unconstrained.
 - `rdm agent-config` now supports the `pi` coding agent platform. Writes to
   `.pi/AGENTS.md` for project-local config or `~/.pi/agent/AGENTS.md` with
   `--user`.

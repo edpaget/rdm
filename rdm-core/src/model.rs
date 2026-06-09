@@ -13,6 +13,10 @@ pub enum PhaseStatus {
     NotStarted,
     /// Work is actively underway.
     InProgress,
+    /// Implementation is finalized and awaiting review.
+    NeedsReview,
+    /// Review has passed; awaiting merge to main.
+    Reviewed,
     /// Phase is complete.
     Done,
     /// Phase is blocked by an external dependency.
@@ -37,6 +41,8 @@ impl fmt::Display for PhaseStatus {
         match self {
             PhaseStatus::NotStarted => write!(f, "not-started"),
             PhaseStatus::InProgress => write!(f, "in-progress"),
+            PhaseStatus::NeedsReview => write!(f, "needs-review"),
+            PhaseStatus::Reviewed => write!(f, "reviewed"),
             PhaseStatus::Done => write!(f, "done"),
             PhaseStatus::Blocked => write!(f, "blocked"),
             PhaseStatus::WontFix => write!(f, "wont-fix"),
@@ -51,11 +57,13 @@ impl FromStr for PhaseStatus {
         match s {
             "not-started" => Ok(PhaseStatus::NotStarted),
             "in-progress" => Ok(PhaseStatus::InProgress),
+            "needs-review" => Ok(PhaseStatus::NeedsReview),
+            "reviewed" => Ok(PhaseStatus::Reviewed),
             "done" => Ok(PhaseStatus::Done),
             "blocked" => Ok(PhaseStatus::Blocked),
             "wont-fix" => Ok(PhaseStatus::WontFix),
             other => Err(format!(
-                "invalid phase status: '{other}' (expected not-started, in-progress, done, blocked, or wont-fix)"
+                "invalid phase status: '{other}' (expected not-started, in-progress, needs-review, reviewed, done, blocked, or wont-fix)"
             )),
         }
     }
@@ -69,6 +77,10 @@ pub enum TaskStatus {
     Open,
     /// Task is actively being worked on.
     InProgress,
+    /// Implementation is finalized and awaiting review.
+    NeedsReview,
+    /// Review has passed; awaiting merge to main.
+    Reviewed,
     /// Task is complete.
     Done,
     /// Task was closed without completing.
@@ -80,6 +92,8 @@ impl fmt::Display for TaskStatus {
         match self {
             TaskStatus::Open => write!(f, "open"),
             TaskStatus::InProgress => write!(f, "in-progress"),
+            TaskStatus::NeedsReview => write!(f, "needs-review"),
+            TaskStatus::Reviewed => write!(f, "reviewed"),
             TaskStatus::Done => write!(f, "done"),
             TaskStatus::WontFix => write!(f, "wont-fix"),
         }
@@ -93,10 +107,12 @@ impl FromStr for TaskStatus {
         match s {
             "open" => Ok(TaskStatus::Open),
             "in-progress" => Ok(TaskStatus::InProgress),
+            "needs-review" => Ok(TaskStatus::NeedsReview),
+            "reviewed" => Ok(TaskStatus::Reviewed),
             "done" => Ok(TaskStatus::Done),
             "wont-fix" => Ok(TaskStatus::WontFix),
             other => Err(format!(
-                "invalid task status: '{other}' (expected open, in-progress, done, or wont-fix)"
+                "invalid task status: '{other}' (expected open, in-progress, needs-review, reviewed, done, or wont-fix)"
             )),
         }
     }
@@ -305,6 +321,8 @@ mod tests {
         let variants = [
             (PhaseStatus::NotStarted, "not-started"),
             (PhaseStatus::InProgress, "in-progress"),
+            (PhaseStatus::NeedsReview, "needs-review"),
+            (PhaseStatus::Reviewed, "reviewed"),
             (PhaseStatus::Done, "done"),
             (PhaseStatus::Blocked, "blocked"),
             (PhaseStatus::WontFix, "wont-fix"),
@@ -335,6 +353,8 @@ mod tests {
         let variants = [
             (TaskStatus::Open, "open"),
             (TaskStatus::InProgress, "in-progress"),
+            (TaskStatus::NeedsReview, "needs-review"),
+            (TaskStatus::Reviewed, "reviewed"),
             (TaskStatus::Done, "done"),
             (TaskStatus::WontFix, "wont-fix"),
         ];
@@ -394,6 +414,8 @@ mod tests {
         let variants = [
             (PhaseStatus::NotStarted, "not-started"),
             (PhaseStatus::InProgress, "in-progress"),
+            (PhaseStatus::NeedsReview, "needs-review"),
+            (PhaseStatus::Reviewed, "reviewed"),
             (PhaseStatus::Done, "done"),
             (PhaseStatus::Blocked, "blocked"),
             (PhaseStatus::WontFix, "wont-fix"),
@@ -411,6 +433,8 @@ mod tests {
         let variants = [
             (TaskStatus::Open, "open"),
             (TaskStatus::InProgress, "in-progress"),
+            (TaskStatus::NeedsReview, "needs-review"),
+            (TaskStatus::Reviewed, "reviewed"),
             (TaskStatus::Done, "done"),
             (TaskStatus::WontFix, "wont-fix"),
         ];

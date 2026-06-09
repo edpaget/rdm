@@ -55,6 +55,8 @@ pub fn phase_status_class(status: &rdm_core::model::PhaseStatus) -> &'static str
     match status {
         rdm_core::model::PhaseStatus::NotStarted => "not-started",
         rdm_core::model::PhaseStatus::InProgress => "in-progress",
+        rdm_core::model::PhaseStatus::NeedsReview => "needs-review",
+        rdm_core::model::PhaseStatus::Reviewed => "reviewed",
         rdm_core::model::PhaseStatus::Done => "done",
         rdm_core::model::PhaseStatus::Blocked => "blocked",
         rdm_core::model::PhaseStatus::WontFix => "wont-fix",
@@ -66,6 +68,8 @@ pub fn task_status_class(status: &rdm_core::model::TaskStatus) -> &'static str {
     match status {
         rdm_core::model::TaskStatus::Open => "open",
         rdm_core::model::TaskStatus::InProgress => "in-progress",
+        rdm_core::model::TaskStatus::NeedsReview => "needs-review",
+        rdm_core::model::TaskStatus::Reviewed => "reviewed",
         rdm_core::model::TaskStatus::Done => "done",
         rdm_core::model::TaskStatus::WontFix => "wont-fix",
     }
@@ -85,8 +89,9 @@ pub struct StatusOption {
 
 /// Build the option list for a phase status `<select>`, in lifecycle order.
 ///
-/// Returns all five phase statuses (`not-started`, `in-progress`, `done`,
-/// `blocked`, `wont-fix`), marking the entry matching `current` as selected.
+/// Returns all phase statuses (`not-started`, `in-progress`, `needs-review`,
+/// `reviewed`, `done`, `blocked`, `wont-fix`), marking the entry matching
+/// `current` as selected.
 /// Values are the canonical kebab-case strings parsed by `PhaseStatus::from_str`;
 /// labels are sentence-case for display.
 pub fn phase_status_options(current: &rdm_core::model::PhaseStatus) -> Vec<StatusOption> {
@@ -94,6 +99,8 @@ pub fn phase_status_options(current: &rdm_core::model::PhaseStatus) -> Vec<Statu
     [
         ("not-started", "Not started", PhaseStatus::NotStarted),
         ("in-progress", "In progress", PhaseStatus::InProgress),
+        ("needs-review", "Needs review", PhaseStatus::NeedsReview),
+        ("reviewed", "Reviewed", PhaseStatus::Reviewed),
         ("done", "Done", PhaseStatus::Done),
         ("blocked", "Blocked", PhaseStatus::Blocked),
         ("wont-fix", "Won't fix", PhaseStatus::WontFix),
@@ -109,8 +116,9 @@ pub fn phase_status_options(current: &rdm_core::model::PhaseStatus) -> Vec<Statu
 
 /// Build the option list for a task status `<select>`, in lifecycle order.
 ///
-/// Returns all four task statuses (`open`, `in-progress`, `done`,
-/// `wont-fix`), marking the entry matching `current` as selected.
+/// Returns all task statuses (`open`, `in-progress`, `needs-review`,
+/// `reviewed`, `done`, `wont-fix`), marking the entry matching `current`
+/// as selected.
 /// Values are the canonical kebab-case strings parsed by `TaskStatus::from_str`;
 /// labels are sentence-case for display.
 pub fn task_status_options(current: &rdm_core::model::TaskStatus) -> Vec<StatusOption> {
@@ -118,6 +126,8 @@ pub fn task_status_options(current: &rdm_core::model::TaskStatus) -> Vec<StatusO
     [
         ("open", "Open", TaskStatus::Open),
         ("in-progress", "In progress", TaskStatus::InProgress),
+        ("needs-review", "Needs review", TaskStatus::NeedsReview),
+        ("reviewed", "Reviewed", TaskStatus::Reviewed),
         ("done", "Done", TaskStatus::Done),
         ("wont-fix", "Won't fix", TaskStatus::WontFix),
     ]
@@ -462,7 +472,15 @@ mod tests {
         let values: Vec<&str> = opts.iter().map(|o| o.value).collect();
         assert_eq!(
             values,
-            vec!["not-started", "in-progress", "done", "blocked", "wont-fix"]
+            vec![
+                "not-started",
+                "in-progress",
+                "needs-review",
+                "reviewed",
+                "done",
+                "blocked",
+                "wont-fix"
+            ]
         );
     }
 
@@ -476,7 +494,17 @@ mod tests {
             .collect();
         assert_eq!(selected, vec!["done"]);
         let values: Vec<&str> = opts.iter().map(|o| o.value).collect();
-        assert_eq!(values, vec!["open", "in-progress", "done", "wont-fix"]);
+        assert_eq!(
+            values,
+            vec![
+                "open",
+                "in-progress",
+                "needs-review",
+                "reviewed",
+                "done",
+                "wont-fix"
+            ]
+        );
     }
 
     #[test]
@@ -643,5 +671,23 @@ mod tests {
             css.contains("--badge-revision-bg"),
             "styles.css must define --badge-revision-bg CSS variable"
         );
+    }
+
+    #[test]
+    fn styles_css_defines_review_status_badge_rules() {
+        // The `needs-review` and `reviewed` statuses render as
+        // `.badge-needs-review` / `.badge-reviewed`; the stylesheet must
+        // define matching rules (and their CSS variables) so these badges
+        // are styled rather than falling back to the bare `.badge` rule.
+        let css = include_str!("../assets/styles.css");
+        for class in [".badge-needs-review {", ".badge-reviewed {"] {
+            assert!(css.contains(class), "styles.css must define a {class} rule");
+        }
+        for var in ["--badge-needs-review-bg", "--badge-reviewed-bg"] {
+            assert!(
+                css.contains(var),
+                "styles.css must define the {var} CSS variable"
+            );
+        }
     }
 }

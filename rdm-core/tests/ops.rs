@@ -2499,6 +2499,81 @@ fn generate_index_counts_wont_fix_in_done_count() {
     assert!(content.contains("complete"));
 }
 
+#[test]
+fn needs_review_and_reviewed_round_trip_and_render_in_index() {
+    let mut store = setup_with_project();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        "fbm",
+        "alpha",
+        "Alpha Roadmap",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "alpha",
+        "phase-1-core",
+        Some(PhaseStatus::NeedsReview),
+        None,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        "fbm",
+        "ship-it",
+        "Ship It",
+        Priority::Medium,
+        None,
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "ship-it",
+        Some(TaskStatus::Reviewed),
+        None,
+        None,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+
+    // Statuses round-trip losslessly through write→read, and neither
+    // non-terminal status stamps a `completed` date.
+    let phase = rdm_core::io::load_phase(&store, "fbm", "alpha", "phase-1-core").unwrap();
+    assert_eq!(phase.frontmatter.status, PhaseStatus::NeedsReview);
+    assert_eq!(phase.frontmatter.completed, None);
+    let task = rdm_core::io::load_task(&store, "fbm", "ship-it").unwrap();
+    assert_eq!(task.frontmatter.status, TaskStatus::Reviewed);
+    assert_eq!(task.frontmatter.completed, None);
+
+    // The task status renders in the per-project INDEX.md (the roadmap row
+    // shows progress counts rather than per-phase statuses).
+    rdm_core::ops::index::generate_index(&mut store).unwrap();
+    let content = store
+        .read(&rdm_core::paths::project_index_path("fbm"))
+        .unwrap();
+    assert!(content.contains("reviewed"));
+
+    // The phase status renders in the roadmap's phase list (Display path).
+    let phases = rdm_core::ops::phase::list_phases(&store, "fbm", "alpha").unwrap();
+    let rendered = rdm_core::display::format_phase_list(&phases);
+    assert!(rendered.contains("needs-review"));
+}
+
 // -- Per-project index tests --
 
 #[test]

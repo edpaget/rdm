@@ -125,9 +125,16 @@ rdm promote <task-slug> --roadmap-slug <new-roadmap-slug> {proj_flag}
 
 ## Status transitions
 
+Transitions are not enforced — any status can move to any other. The flow
+below is the intended review lifecycle, offered as guidance.
+
 ### Phase statuses
 
 - `not-started` → `in-progress` — work begins
+- `in-progress` → `needs-review` — implementation finalized, awaiting review
+- `needs-review` → `reviewed` — review passed, awaiting merge to main
+- `needs-review` → `in-progress` — review found changes to make
+- `reviewed` → `done` — merged to main (the `Done:` merge hook flips this)
 - `in-progress` → `done` — work is complete
 - `in-progress` → `blocked` — waiting on an external dependency
 - `blocked` → `in-progress` — blocker resolved
@@ -138,6 +145,10 @@ rdm promote <task-slug> --roadmap-slug <new-roadmap-slug> {proj_flag}
 ### Task statuses
 
 - `open` → `in-progress` — work begins
+- `in-progress` → `needs-review` — implementation finalized, awaiting review
+- `needs-review` → `reviewed` — review passed, awaiting merge to main
+- `needs-review` → `in-progress` — review found changes to make
+- `reviewed` → `done` — merged to main (the `Done:` merge hook flips this)
 - `in-progress` → `done` — work is complete
 - `in-progress` → `wont-fix` — decided not to do
 - `open` → `wont-fix` — decided not to do before starting

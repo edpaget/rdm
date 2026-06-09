@@ -145,7 +145,15 @@ impl Describe for crate::model::Phase {
                     name: "status",
                     type_name: "enum",
                     required: true,
-                    enum_values: &["not-started", "in-progress", "done", "blocked", "wont-fix"],
+                    enum_values: &[
+                        "not-started",
+                        "in-progress",
+                        "needs-review",
+                        "reviewed",
+                        "done",
+                        "blocked",
+                        "wont-fix",
+                    ],
                     description: "Current status.",
                 },
                 FieldInfo {
@@ -198,7 +206,14 @@ impl Describe for crate::model::Task {
                     name: "status",
                     type_name: "enum",
                     required: true,
-                    enum_values: &["open", "in-progress", "done", "wont-fix"],
+                    enum_values: &[
+                        "open",
+                        "in-progress",
+                        "needs-review",
+                        "reviewed",
+                        "done",
+                        "wont-fix",
+                    ],
                     description: "Current status.",
                 },
                 FieldInfo {
@@ -424,7 +439,7 @@ mod tests {
         assert!(output.contains("task"));
         assert!(output.contains("status"));
         assert!(output.contains("priority"));
-        assert!(output.contains("open, in-progress, done, wont-fix"));
+        assert!(output.contains("open, in-progress, needs-review, reviewed, done, wont-fix"));
     }
 
     #[test]
@@ -441,6 +456,10 @@ mod tests {
         let output = format_entity_detail_md(&entity);
         assert!(output.contains("## phase"));
         assert!(output.contains("| Field |"));
-        assert!(output.contains("not-started, in-progress, done, blocked, wont-fix"));
+        assert!(
+            output.contains(
+                "not-started, in-progress, needs-review, reviewed, done, blocked, wont-fix"
+            )
+        );
     }
 }

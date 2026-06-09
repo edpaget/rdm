@@ -782,6 +782,9 @@ mod tests {
         assert!(content.contains("`in-progress` → `done`"));
         assert!(content.contains("`in-progress` → `blocked`"));
         assert!(content.contains("`blocked` → `in-progress`"));
+        assert!(content.contains("`in-progress` → `needs-review`"));
+        assert!(content.contains("`needs-review` → `reviewed`"));
+        assert!(content.contains("`reviewed` → `done`"));
     }
 
     #[test]
@@ -797,6 +800,9 @@ mod tests {
         assert!(content.contains("`in-progress` → `done`"));
         assert!(content.contains("`in-progress` → `wont-fix`"));
         assert!(content.contains("`open` → `wont-fix`"));
+        assert!(content.contains("`in-progress` → `needs-review`"));
+        assert!(content.contains("`needs-review` → `reviewed`"));
+        assert!(content.contains("`reviewed` → `done`"));
     }
 
     #[test]

@@ -46,7 +46,7 @@ pub fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatu
                 Ok(ItemStatus::Task(s))
             } else {
                 bail!(
-                    "invalid status '{status}' — use a phase status (not-started, in-progress, done, blocked, wont-fix) or task status (open, in-progress, done, wont-fix)"
+                    "invalid status '{status}' — use a phase status (not-started, in-progress, needs-review, reviewed, done, blocked, wont-fix) or task status (open, in-progress, needs-review, reviewed, done, wont-fix)"
                 )
             }
         }

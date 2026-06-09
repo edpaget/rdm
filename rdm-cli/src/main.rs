@@ -610,7 +610,7 @@ pub(crate) enum TaskCommand {
         /// Project to list tasks for.
         #[arg(long)]
         project: Option<String>,
-        /// Filter by status (open, in-progress, done, wont-fix, or all).
+        /// Filter by status (open, in-progress, needs-review, reviewed, done, wont-fix, or all).
         #[arg(long)]
         status: Option<TaskStatusFilter>,
         /// Filter by priority.

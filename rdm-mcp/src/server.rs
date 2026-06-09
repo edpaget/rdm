@@ -81,7 +81,7 @@ struct TaskShowParams {
 struct TaskListParams {
     /// The project name.
     project: String,
-    /// Filter by status (e.g. "open", "in-progress", "done", "wont-fix", or "all"). Omit for default (open + in-progress).
+    /// Filter by status (e.g. "open", "in-progress", "needs-review", "reviewed", "done", "wont-fix", or "all"). Omit for default (open + in-progress).
     status: Option<String>,
     /// Filter by priority (e.g. "low", "medium", "high", "critical").
     priority: Option<String>,
@@ -97,7 +97,7 @@ struct SearchParams {
     project: Option<String>,
     /// Restrict to a specific item kind: "roadmap", "phase", or "task".
     kind: Option<String>,
-    /// Filter by status (e.g. "open", "in-progress", "done").
+    /// Filter by status (e.g. "open", "in-progress", "needs-review", "reviewed", "done").
     status: Option<String>,
     /// Filter by tags (AND semantics — items must carry every listed tag).
     /// Items with no tags are excluded by any non-empty list.
@@ -185,7 +185,7 @@ struct PhaseUpdateParams {
     roadmap: String,
     /// The phase stem or number.
     phase: String,
-    /// New status: "not-started", "in-progress", "done", "blocked", or "wont-fix".
+    /// New status: "not-started", "in-progress", "needs-review", "reviewed", "done", "blocked", or "wont-fix".
     status: Option<String>,
     /// New tags (replaces existing). Pass an empty array or set
     /// `clear_tags: true` to remove all tags.
@@ -232,7 +232,7 @@ struct TaskUpdateParams {
     project: String,
     /// The task slug.
     task: String,
-    /// New status: "open", "in-progress", "done", or "wont-fix".
+    /// New status: "open", "in-progress", "needs-review", "reviewed", "done", or "wont-fix".
     status: Option<String>,
     /// New priority: "low", "medium", "high", or "critical".
     priority: Option<String>,
@@ -1060,7 +1060,7 @@ fn parse_item_status(s: &str) -> Result<ItemStatus, String> {
         return Ok(ItemStatus::Task(ts));
     }
     Err(format!(
-        "Invalid status: {s}. Expected a phase status (not-started, in-progress, done, blocked, wont-fix) or task status (open, in-progress, done, wont-fix)"
+        "Invalid status: {s}. Expected a phase status (not-started, in-progress, needs-review, reviewed, done, blocked, wont-fix) or task status (open, in-progress, needs-review, reviewed, done, wont-fix)"
     ))
 }
 

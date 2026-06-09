@@ -495,6 +495,66 @@ mod tests {
     }
 
     #[test]
+    fn filter_by_needs_review_status() {
+        let mut store = setup_test_store();
+
+        // Move the implementation phase to needs-review.
+        crate::ops::phase::update_phase(
+            &mut store,
+            "acme",
+            "widget-launch",
+            "phase-2-implementation",
+            Some(PhaseStatus::NeedsReview),
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let filter = SearchFilter {
+            status: Some(ItemStatus::Phase(PhaseStatus::NeedsReview)),
+            ..Default::default()
+        };
+        let results = search(&store, "widget", &filter).unwrap();
+        assert!(
+            results
+                .iter()
+                .any(|r| r.identifier == "widget-launch/phase-2-implementation"),
+            "Expected needs-review phase, got: {results:?}"
+        );
+    }
+
+    #[test]
+    fn filter_by_reviewed_status_task() {
+        let mut store = setup_test_store();
+
+        // Move the add-search task to reviewed.
+        crate::ops::task::update_task(
+            &mut store,
+            "acme",
+            "add-search",
+            Some(TaskStatus::Reviewed),
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let filter = SearchFilter {
+            status: Some(ItemStatus::Task(TaskStatus::Reviewed)),
+            ..Default::default()
+        };
+        let results = search(&store, "search", &filter).unwrap();
+        assert!(
+            results.iter().any(|r| r.identifier == "add-search"),
+            "Expected reviewed task, got: {results:?}"
+        );
+    }
+
+    #[test]
     fn filter_by_project() {
         let mut store = setup_test_store();
 
