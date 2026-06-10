@@ -88,7 +88,7 @@ rdm agent-config claude --skills --project fbm --out ~/Projects/fbm
 rdm agent-config pi --skills --project fbm --out ~/Projects/fbm
 ```
 
-rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), implementation (`rdm-implement`), task management (`rdm-tasks`), review (`rdm-review`), and documentation generation (`rdm-document`). The same skill set is emitted for Pi under `.pi/skills/`.
+rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), implementation and task work (`rdm-do`), review (`rdm-review`), and documentation generation (`rdm-document`). The same skill set is emitted for Pi under `.pi/skills/`.
 
 ### MCP Server
 

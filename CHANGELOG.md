@@ -38,6 +38,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The in-repo Claude Code skills `rdm-implement` and `rdm-tasks` are merged
+  into a single `rdm-do` skill that handles both roadmap phases
+  (`<roadmap-slug> [phase-number]`) and tasks (`--task <slug>`). Finalize no
+  longer commits a `Done:` line straight to `done`; instead it commits the
+  implementation and transitions the item to `needs-review`, leaving it for
+  the `rdm-review` skill to produce the `Done:` line on a passing review.
 - `rdm agent-config claude --skills --out <dir>` now writes skill files under
   `<dir>/.claude/skills/rdm-*/SKILL.md` (treating `<dir>` as a project root).
   Previously the files were placed directly under `<dir>/rdm-*/SKILL.md`. The

@@ -137,7 +137,7 @@ Schema descriptions on each new field tell MCP clients the semantics (replace vs
 - Prefer existing tags — check with `rdm search "" --tag <candidate>` (or the MCP equivalent) before inventing a new one.
 - Tag work to make it findable across roadmaps, phases, and tasks.
 
-The in-repo Claude Code skills (`.claude/skills/rdm-tasks`, `.claude/skills/rdm-roadmap`) inherit the same examples, so agents driving the rdm source repo also tag their work.
+The in-repo Claude Code skills (`.claude/skills/rdm-do`, `.claude/skills/rdm-roadmap`) inherit the same examples, so agents driving the rdm source repo also tag their work.
 
 ## How it works
 
