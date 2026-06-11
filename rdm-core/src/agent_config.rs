@@ -1134,8 +1134,8 @@ mod tests {
             mcp: false,
         });
         let content = &skills[1].content;
-        // Finalize transitions the item to needs-review...
-        assert!(content.contains("needs-review"));
+        // Finalize transitions the item to needs-review via the update command...
+        assert!(content.contains("--status needs-review"));
         // ...and defers the Done: line to the rdm-review skill on a passing review.
         assert!(content.contains("rdm-review"));
         assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
@@ -1468,8 +1468,8 @@ mod tests {
             mcp: true,
         });
         let content = &skills[1].content;
-        // Finalize transitions the item to needs-review...
-        assert!(content.contains("needs-review"));
+        // Finalize transitions the item to needs-review via the update tool...
+        assert!(content.contains("status: \"needs-review\""));
         // ...and defers the Done: line to the rdm-review skill on a passing review.
         assert!(content.contains("rdm-review"));
         assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
