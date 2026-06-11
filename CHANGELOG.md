@@ -38,6 +38,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `rdm agent-config --skills` now emits a single `rdm-do` skill (CLI and MCP)
+  in place of the previous `rdm-implement` and `rdm-tasks` skills, so the
+  shipped skill set drops from 5 to 4 (`rdm-roadmap`, `rdm-do`, `rdm-review`,
+  `rdm-document`). The merged `rdm-do` skill handles both roadmap phases
+  (`<roadmap-slug> [phase-number]`) and tasks (`--task <slug>`), and finalizes
+  by transitioning the item to `needs-review` (no `Done:` line); `rdm-review`
+  produces the `Done:` line on a passing review.
 - The in-repo Claude Code skills `rdm-implement` and `rdm-tasks` are merged
   into a single `rdm-do` skill that handles both roadmap phases
   (`<roadmap-slug> [phase-number]`) and tasks (`--task <slug>`). Finalize no

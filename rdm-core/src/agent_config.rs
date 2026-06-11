@@ -257,7 +257,7 @@ pub struct SkillOptions {
 ///     principles_file: None,
 ///     mcp: false,
 /// });
-/// assert_eq!(skills.len(), 5);
+/// assert_eq!(skills.len(), 4);
 /// assert!(skills[0].content.contains("--project myproj"));
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
@@ -266,8 +266,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
         let proj = proj_param_str(opts.project.as_deref());
         vec![
             skill_roadmap_mcp(&proj, principles_note.as_deref()),
-            skill_implement_mcp(&proj, principles_note.as_deref()),
-            skill_tasks_mcp(&proj, principles_note.as_deref()),
+            skill_do_mcp(&proj, principles_note.as_deref()),
             skill_review_mcp(&proj, principles_note.as_deref()),
             skill_document_mcp(&proj, principles_note.as_deref()),
         ]
@@ -275,8 +274,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
         let proj_flag = proj_flag_str(opts.project.as_deref());
         vec![
             skill_roadmap(&proj_flag, principles_note.as_deref()),
-            skill_implement(&proj_flag, principles_note.as_deref()),
-            skill_tasks(&proj_flag, principles_note.as_deref()),
+            skill_do(&proj_flag, principles_note.as_deref()),
             skill_review(&proj_flag, principles_note.as_deref()),
             skill_document(&proj_flag, principles_note.as_deref()),
         ]
@@ -313,23 +311,11 @@ fn skill_roadmap(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
     }
 }
 
-fn skill_implement(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+fn skill_do(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
     SkillFile {
-        relative_path: "rdm-implement/SKILL.md",
+        relative_path: "rdm-do/SKILL.md",
         content: render_skill(
-            include_str!("templates/skill-implement-cli.md"),
-            "{proj_flag}",
-            proj_flag,
-            principles_note,
-        ),
-    }
-}
-
-fn skill_tasks(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-tasks/SKILL.md",
-        content: render_skill(
-            include_str!("templates/skill-tasks-cli.md"),
+            include_str!("templates/skill-do-cli.md"),
             "{proj_flag}",
             proj_flag,
             principles_note,
@@ -443,34 +429,21 @@ fn skill_roadmap_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
     }
 }
 
-fn skill_implement_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+fn skill_do_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
     SkillFile {
-        relative_path: "rdm-implement/SKILL.md",
+        relative_path: "rdm-do/SKILL.md",
         content: render_mcp_skill(
-            include_str!("templates/skill-implement-mcp.md"),
+            include_str!("templates/skill-do-mcp.md"),
             proj,
             principles_note,
             &[
                 ("t_phase_list", "rdm_phase_list"),
                 ("t_phase_show", "rdm_phase_show"),
                 ("t_phase_update", "rdm_phase_update"),
-                ("t_task_create", "rdm_task_create"),
-            ],
-        ),
-    }
-}
-
-fn skill_tasks_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-tasks/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-tasks-mcp.md"),
-            proj,
-            principles_note,
-            &[
                 ("t_task_list", "rdm_task_list"),
                 ("t_task_show", "rdm_task_show"),
                 ("t_task_update", "rdm_task_update"),
+                ("t_task_create", "rdm_task_create"),
             ],
         ),
     }
@@ -831,13 +804,13 @@ mod tests {
     // --- Skill generation tests ---
 
     #[test]
-    fn generate_skills_returns_five_files() {
+    fn generate_skills_returns_four_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
-        assert_eq!(skills.len(), 5);
+        assert_eq!(skills.len(), 4);
     }
 
     #[test]
@@ -848,10 +821,9 @@ mod tests {
             mcp: false,
         });
         assert_eq!(skills[0].relative_path, "rdm-roadmap/SKILL.md");
-        assert_eq!(skills[1].relative_path, "rdm-implement/SKILL.md");
-        assert_eq!(skills[2].relative_path, "rdm-tasks/SKILL.md");
-        assert_eq!(skills[3].relative_path, "rdm-review/SKILL.md");
-        assert_eq!(skills[4].relative_path, "rdm-document/SKILL.md");
+        assert_eq!(skills[1].relative_path, "rdm-do/SKILL.md");
+        assert_eq!(skills[2].relative_path, "rdm-review/SKILL.md");
+        assert_eq!(skills[3].relative_path, "rdm-document/SKILL.md");
     }
 
     #[test]
@@ -888,10 +860,9 @@ mod tests {
             mcp: false,
         });
         assert!(skills[0].content.contains("name: rdm-roadmap"));
-        assert!(skills[1].content.contains("name: rdm-implement"));
-        assert!(skills[2].content.contains("name: rdm-tasks"));
-        assert!(skills[3].content.contains("name: rdm-review"));
-        assert!(skills[4].content.contains("name: rdm-document"));
+        assert!(skills[1].content.contains("name: rdm-do"));
+        assert!(skills[2].content.contains("name: rdm-review"));
+        assert!(skills[3].content.contains("name: rdm-document"));
     }
 
     #[test]
@@ -961,30 +932,22 @@ mod tests {
     }
 
     #[test]
-    fn skill_implement_contains_rdm_commands() {
+    fn skill_do_contains_rdm_commands() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
         let content = &skills[1].content;
+        // Phase flow commands.
         assert!(content.contains("rdm phase list"));
         assert!(content.contains("rdm phase show"));
         assert!(content.contains("rdm phase update"));
-        assert!(content.contains("rdm task create"));
-    }
-
-    #[test]
-    fn skill_tasks_contains_rdm_commands() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[2].content;
+        // Task flow commands.
         assert!(content.contains("rdm task list"));
         assert!(content.contains("rdm task show"));
         assert!(content.contains("rdm task update"));
+        assert!(content.contains("rdm task create"));
     }
 
     #[test]
@@ -1025,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn skill_implement_has_write_edit_tools() {
+    fn skill_do_has_write_edit_tools() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
@@ -1037,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn skill_implement_has_plan_mode_tools() {
+    fn skill_do_has_plan_mode_tools() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
@@ -1049,19 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn skill_tasks_has_plan_mode_tools() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[2].content;
-        assert!(content.contains("EnterPlanMode"));
-        assert!(content.contains("ExitPlanMode"));
-    }
-
-    #[test]
-    fn skill_implement_uses_plan_mode_workflow() {
+    fn skill_do_uses_plan_mode_workflow() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
@@ -1069,20 +1020,6 @@ mod tests {
         });
         let content = &skills[1].content;
         assert!(content.contains("Enter plan mode"));
-        assert!(content.contains("Exit plan mode"));
-        assert!(content.contains("implementation plan"));
-    }
-
-    #[test]
-    fn skill_tasks_uses_plan_mode_workflow() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[2].content;
-        assert!(content.contains("Enter plan mode"));
-        assert!(content.contains("Exit plan mode"));
         assert!(content.contains("implementation plan"));
     }
 
@@ -1110,7 +1047,7 @@ mod tests {
             principles_file: None,
             mcp: false,
         });
-        let content = &skills[3].content;
+        let content = &skills[2].content;
         assert!(content.contains("rdm phase show"));
         assert!(content.contains("rdm task show"));
     }
@@ -1122,7 +1059,7 @@ mod tests {
             principles_file: None,
             mcp: false,
         });
-        assert!(skills[3].content.contains("name: rdm-review"));
+        assert!(skills[2].content.contains("name: rdm-review"));
     }
 
     #[test]
@@ -1132,7 +1069,7 @@ mod tests {
             principles_file: None,
             mcp: false,
         });
-        let content = &skills[3].content;
+        let content = &skills[2].content;
         assert!(content.contains("Agent"));
     }
 
@@ -1143,7 +1080,7 @@ mod tests {
             principles_file: None,
             mcp: false,
         });
-        assert!(skills[3].content.contains("$ARGUMENTS"));
+        assert!(skills[2].content.contains("$ARGUMENTS"));
     }
 
     #[test]
@@ -1153,7 +1090,7 @@ mod tests {
             principles_file: None,
             mcp: false,
         });
-        let content = &skills[4].content;
+        let content = &skills[3].content;
         assert!(content.contains("rdm roadmap show"));
         assert!(content.contains("rdm phase show"));
         assert!(content.contains("--format json"));
@@ -1168,7 +1105,7 @@ mod tests {
             principles_file: None,
             mcp: false,
         });
-        let content = &skills[4].content;
+        let content = &skills[3].content;
         assert!(content.contains("Write"));
         assert!(content.contains("Edit"));
     }
@@ -1180,7 +1117,7 @@ mod tests {
             principles_file: None,
             mcp: false,
         });
-        let frontmatter = skills[4]
+        let frontmatter = skills[3]
             .content
             .split("---")
             .nth(1)
@@ -1190,27 +1127,18 @@ mod tests {
     }
 
     #[test]
-    fn skill_implement_includes_done_convention() {
+    fn skill_do_finalizes_into_needs_review() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
         let content = &skills[1].content;
-        assert!(content.contains("Done:"));
-        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
-    }
-
-    #[test]
-    fn skill_tasks_includes_done_convention() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[2].content;
-        assert!(content.contains("Done:"));
-        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
+        // Finalize transitions the item to needs-review...
+        assert!(content.contains("needs-review"));
+        // ...and defers the Done: line to the rdm-review skill on a passing review.
+        assert!(content.contains("rdm-review"));
+        assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
     }
 
     #[test]
@@ -1411,13 +1339,13 @@ mod tests {
     // --- MCP skill generation tests ---
 
     #[test]
-    fn mcp_skills_returns_five_files() {
+    fn mcp_skills_returns_four_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: true,
         });
-        assert_eq!(skills.len(), 5);
+        assert_eq!(skills.len(), 4);
     }
 
     #[test]
@@ -1428,10 +1356,9 @@ mod tests {
             mcp: true,
         });
         assert_eq!(skills[0].relative_path, "rdm-roadmap/SKILL.md");
-        assert_eq!(skills[1].relative_path, "rdm-implement/SKILL.md");
-        assert_eq!(skills[2].relative_path, "rdm-tasks/SKILL.md");
-        assert_eq!(skills[3].relative_path, "rdm-review/SKILL.md");
-        assert_eq!(skills[4].relative_path, "rdm-document/SKILL.md");
+        assert_eq!(skills[1].relative_path, "rdm-do/SKILL.md");
+        assert_eq!(skills[2].relative_path, "rdm-review/SKILL.md");
+        assert_eq!(skills[3].relative_path, "rdm-document/SKILL.md");
     }
 
     #[test]
@@ -1479,14 +1406,13 @@ mod tests {
         // Roadmap skill should reference MCP create tools
         assert!(skills[0].content.contains("rdm_roadmap_create"));
         assert!(skills[0].content.contains("rdm_phase_create"));
-        // Implement skill should reference MCP phase tools
+        // Do skill should reference both MCP phase and task tools
         assert!(skills[1].content.contains("rdm_phase_list"));
         assert!(skills[1].content.contains("rdm_phase_show"));
         assert!(skills[1].content.contains("rdm_phase_update"));
-        // Tasks skill should reference MCP task tools
-        assert!(skills[2].content.contains("rdm_task_list"));
-        assert!(skills[2].content.contains("rdm_task_show"));
-        assert!(skills[2].content.contains("rdm_task_update"));
+        assert!(skills[1].content.contains("rdm_task_list"));
+        assert!(skills[1].content.contains("rdm_task_show"));
+        assert!(skills[1].content.contains("rdm_task_update"));
     }
 
     #[test]
@@ -1497,10 +1423,9 @@ mod tests {
             mcp: true,
         });
         assert!(skills[0].content.contains("name: rdm-roadmap"));
-        assert!(skills[1].content.contains("name: rdm-implement"));
-        assert!(skills[2].content.contains("name: rdm-tasks"));
-        assert!(skills[3].content.contains("name: rdm-review"));
-        assert!(skills[4].content.contains("name: rdm-document"));
+        assert!(skills[1].content.contains("name: rdm-do"));
+        assert!(skills[2].content.contains("name: rdm-review"));
+        assert!(skills[3].content.contains("name: rdm-document"));
     }
 
     #[test]
@@ -1536,26 +1461,17 @@ mod tests {
     }
 
     #[test]
-    fn mcp_skill_implement_includes_done_convention() {
+    fn mcp_skill_do_finalizes_into_needs_review() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: true,
         });
         let content = &skills[1].content;
-        assert!(content.contains("Done:"));
-        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
-    }
-
-    #[test]
-    fn mcp_skill_tasks_includes_done_convention() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[2].content;
-        assert!(content.contains("Done:"));
-        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
+        // Finalize transitions the item to needs-review...
+        assert!(content.contains("needs-review"));
+        // ...and defers the Done: line to the rdm-review skill on a passing review.
+        assert!(content.contains("rdm-review"));
+        assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
     }
 }
