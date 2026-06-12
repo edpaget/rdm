@@ -39,15 +39,17 @@ pub fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatu
             bail!("roadmaps do not have a status — remove --status or change --type")
         }
         None => {
-            // Try both; phase first then task
-            if let Ok(s) = status.parse::<PhaseStatus>() {
-                Ok(ItemStatus::Phase(s))
-            } else if let Ok(s) = status.parse::<TaskStatus>() {
-                Ok(ItemStatus::Task(s))
-            } else {
-                bail!(
+            // Try both; a status valid for both kinds becomes kind-agnostic.
+            match (
+                status.parse::<PhaseStatus>().ok(),
+                status.parse::<TaskStatus>().ok(),
+            ) {
+                (Some(p), Some(t)) => Ok(ItemStatus::Either(p, t)),
+                (Some(p), None) => Ok(ItemStatus::Phase(p)),
+                (None, Some(t)) => Ok(ItemStatus::Task(t)),
+                (None, None) => bail!(
                     "invalid status '{status}' — use a phase status (not-started, in-progress, needs-review, reviewed, done, blocked, wont-fix) or task status (open, in-progress, needs-review, reviewed, done, wont-fix)"
-                )
+                ),
             }
         }
     }

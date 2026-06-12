@@ -85,6 +85,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `rdm search --status <status>` without `--type` now matches both phases and
+  tasks for statuses shared by both kinds (`in-progress`, `needs-review`,
+  `reviewed`, `done`, `wont-fix`); previously it silently returned phases only.
+  Applies to the CLI, the server's `?status=` filter, and the MCP `search`
+  tool's `status` argument.
 - `phase update`, `task update`, and `roadmap update` no longer silently
   overwrite a non-empty body with empty content. Passing an explicit
   `--body ""` against an existing body is now rejected with an actionable

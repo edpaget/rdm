@@ -62,13 +62,14 @@ fn parse_kind(s: &str) -> Option<ItemKind> {
 ///
 /// Tries both phase and task status variants.
 fn parse_status(s: &str) -> Option<ItemStatus> {
-    if let Ok(ps) = s.parse::<PhaseStatus>() {
-        return Some(ItemStatus::Phase(ps));
+    // A status valid for both kinds becomes kind-agnostic so the `?status=`
+    // filter matches both phases and tasks.
+    match (s.parse::<PhaseStatus>().ok(), s.parse::<TaskStatus>().ok()) {
+        (Some(ps), Some(ts)) => Some(ItemStatus::Either(ps, ts)),
+        (Some(ps), None) => Some(ItemStatus::Phase(ps)),
+        (None, Some(ts)) => Some(ItemStatus::Task(ts)),
+        (None, None) => None,
     }
-    if let Ok(ts) = s.parse::<TaskStatus>() {
-        return Some(ItemStatus::Task(ts));
-    }
-    None
 }
 
 /// Builds the detail page href for a search result.

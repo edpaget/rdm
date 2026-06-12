@@ -1052,16 +1052,18 @@ impl RdmMcpServer {
 }
 
 /// Parse a status string into an `ItemStatus`.
+///
+/// A status valid for both kinds becomes kind-agnostic ([`ItemStatus::Either`])
+/// so the `search` tool matches both phases and tasks when no kind is given.
 fn parse_item_status(s: &str) -> Result<ItemStatus, String> {
-    if let Ok(ps) = PhaseStatus::from_str(s) {
-        return Ok(ItemStatus::Phase(ps));
+    match (PhaseStatus::from_str(s).ok(), TaskStatus::from_str(s).ok()) {
+        (Some(ps), Some(ts)) => Ok(ItemStatus::Either(ps, ts)),
+        (Some(ps), None) => Ok(ItemStatus::Phase(ps)),
+        (None, Some(ts)) => Ok(ItemStatus::Task(ts)),
+        (None, None) => Err(format!(
+            "Invalid status: {s}. Expected a phase status (not-started, in-progress, needs-review, reviewed, done, blocked, wont-fix) or task status (open, in-progress, needs-review, reviewed, done, wont-fix)"
+        )),
     }
-    if let Ok(ts) = TaskStatus::from_str(s) {
-        return Ok(ItemStatus::Task(ts));
-    }
-    Err(format!(
-        "Invalid status: {s}. Expected a phase status (not-started, in-progress, needs-review, reviewed, done, blocked, wont-fix) or task status (open, in-progress, needs-review, reviewed, done, wont-fix)"
-    ))
 }
 
 #[rmcp::tool_handler]

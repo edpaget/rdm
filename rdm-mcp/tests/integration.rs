@@ -1567,6 +1567,51 @@ fn search_tag_filter_ands_multiple_tags() {
     );
 }
 
+#[test]
+fn search_ambiguous_status_without_kind_matches_both_kinds() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // `needs-review` is valid for both phases and tasks. Move one of each there.
+    h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "2",
+            "status": "needs-review"
+        }),
+    );
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "status": "needs-review"
+        }),
+    );
+
+    // With no `kind`, the shared status must surface BOTH the phase and the task.
+    let response = h.call_tool(
+        "rdm_search",
+        serde_json::json!({
+            "query": "",
+            "project": "test-proj",
+            "status": "needs-review"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Implement Auth"),
+        "needs-review phase should appear without a kind filter: {text}"
+    );
+    assert!(
+        text.contains("Fix login bug"),
+        "needs-review task should appear without a kind filter: {text}"
+    );
+}
+
 // ==================== GitStore integration tests ====================
 
 /// Run a git command in `root`, clearing `GIT_DIR` / `GIT_WORK_TREE` so the

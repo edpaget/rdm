@@ -40,6 +40,35 @@ pub enum ItemStatus {
     Phase(PhaseStatus),
     /// A task status.
     Task(TaskStatus),
+    /// Match a phase or task whose status equals the given value — produced
+    /// when a status string is valid for both kinds and no `--type` is given.
+    Either(PhaseStatus, TaskStatus),
+}
+
+impl ItemStatus {
+    /// Returns `true` if this filter matches a phase in `status`.
+    ///
+    /// `Phase(s)` matches only when `s == status`; `Task(_)` never matches a
+    /// phase; `Either(p, _)` matches when `p == status`.
+    pub fn matches_phase(self, status: PhaseStatus) -> bool {
+        match self {
+            ItemStatus::Phase(s) => s == status,
+            ItemStatus::Task(_) => false,
+            ItemStatus::Either(p, _) => p == status,
+        }
+    }
+
+    /// Returns `true` if this filter matches a task in `status`.
+    ///
+    /// `Task(s)` matches only when `s == status`; `Phase(_)` never matches a
+    /// task; `Either(_, t)` matches when `t == status`.
+    pub fn matches_task(self, status: TaskStatus) -> bool {
+        match self {
+            ItemStatus::Task(s) => s == status,
+            ItemStatus::Phase(_) => false,
+            ItemStatus::Either(_, t) => t == status,
+        }
+    }
 }
 
 /// Default minimum score ratio — results below this fraction of the top score
@@ -170,8 +199,8 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                 let roadmap_slug = &roadmap_doc.frontmatter.roadmap;
                 if let Ok(phases) = crate::ops::phase::list_phases(store, project, roadmap_slug) {
                     for (stem, phase_doc) in &phases {
-                        if let Some(ref fs) = filter.status
-                            && *fs != ItemStatus::Phase(phase_doc.frontmatter.status)
+                        if let Some(fs) = filter.status
+                            && !fs.matches_phase(phase_doc.frontmatter.status)
                         {
                             continue;
                         }
@@ -205,8 +234,8 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
             && let Ok(tasks) = crate::ops::task::list_tasks(store, project)
         {
             for (slug, task_doc) in &tasks {
-                if let Some(ref fs) = filter.status
-                    && *fs != ItemStatus::Task(task_doc.frontmatter.status)
+                if let Some(fs) = filter.status
+                    && !fs.matches_task(task_doc.frontmatter.status)
                 {
                     continue;
                 }
@@ -551,6 +580,75 @@ mod tests {
         assert!(
             results.iter().any(|r| r.identifier == "add-search"),
             "Expected reviewed task, got: {results:?}"
+        );
+    }
+
+    #[test]
+    fn filter_by_ambiguous_status_matches_both_kinds() {
+        let mut store = setup_test_store();
+
+        // Move a phase and a task both to needs-review.
+        crate::ops::phase::update_phase(
+            &mut store,
+            "acme",
+            "widget-launch",
+            "phase-2-implementation",
+            Some(PhaseStatus::NeedsReview),
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        crate::ops::task::update_task(
+            &mut store,
+            "acme",
+            "add-search",
+            Some(TaskStatus::NeedsReview),
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let filter = SearchFilter {
+            status: Some(ItemStatus::Either(
+                PhaseStatus::NeedsReview,
+                TaskStatus::NeedsReview,
+            )),
+            ..Default::default()
+        };
+        let results = search(&store, "", &filter).unwrap();
+        assert!(
+            results
+                .iter()
+                .any(|r| r.identifier == "widget-launch/phase-2-implementation"),
+            "Expected needs-review phase, got: {results:?}"
+        );
+        assert!(
+            results.iter().any(|r| r.identifier == "add-search"),
+            "Expected needs-review task, got: {results:?}"
+        );
+    }
+
+    #[test]
+    fn filter_by_either_excludes_other_status() {
+        let store = setup_test_store();
+
+        // fix-login-bug is done; an Either(_, NeedsReview) filter must exclude it.
+        let filter = SearchFilter {
+            status: Some(ItemStatus::Either(
+                PhaseStatus::NeedsReview,
+                TaskStatus::NeedsReview,
+            )),
+            ..Default::default()
+        };
+        let results = search(&store, "", &filter).unwrap();
+        assert!(
+            !results.iter().any(|r| r.identifier == "fix-login-bug"),
+            "Done task should be excluded by needs-review Either filter, got: {results:?}"
         );
     }
 

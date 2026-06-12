@@ -188,6 +188,38 @@ fn search_filter_by_status() {
 }
 
 #[test]
+fn search_ambiguous_status_without_type_matches_task() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    // Move the add-search task to needs-review (a status shared by both kinds).
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "add-search",
+            "--status",
+            "needs-review",
+            "--project",
+            "acme",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // With no --type, the needs-review filter must still surface the task.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "", "--status", "needs-review"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("add-search"));
+}
+
+#[test]
 fn search_filter_by_project() {
     let dir = TempDir::new().unwrap();
     setup_test_data(&dir);
