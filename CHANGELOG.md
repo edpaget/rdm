@@ -28,6 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Removed the unmaintained transitive dependency `proc-macro-error2`
+  (RUSTSEC-2026-0173) by building CLI tables with tabled's `Builder` API
+  instead of its derive feature (and bumping tabled to 0.21). Table output is
+  unchanged.
 - `rdm-review` (the in-repo Claude Code skill plus the shipped CLI and MCP
   skill templates) now categorizes findings by size and owns the status
   transition. Small findings (localized, low-risk) are fixed inline and amended

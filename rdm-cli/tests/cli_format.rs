@@ -495,7 +495,11 @@ fn format_table_on_roadmap_list() {
         .args(["roadmap", "list", "--project", "acme", "--format", "table"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Alpha Roadmap"));
+        .stdout(predicate::str::contains("Alpha Roadmap"))
+        .stdout(predicate::str::contains(
+            "│ Slug  │ Title         │ Progress        │ Priority │",
+        ))
+        .stdout(predicate::str::contains("╭"));
 }
 
 #[test]
@@ -518,7 +522,11 @@ fn format_table_on_phase_list() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Setup Phase"));
+        .stdout(predicate::str::contains("Setup Phase"))
+        .stdout(predicate::str::contains(
+            "│ # │ Phase       │ Status      │ Stem          │",
+        ))
+        .stdout(predicate::str::contains("╭"));
 }
 
 #[test]
@@ -532,7 +540,11 @@ fn format_table_on_task_list() {
         .args(["task", "list", "--project", "acme", "--format", "table"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Fix Bug"));
+        .stdout(predicate::str::contains("Fix Bug"))
+        .stdout(predicate::str::contains(
+            "│ Slug    │ Title   │ Status │ Priority │",
+        ))
+        .stdout(predicate::str::contains("╭"));
 }
 
 #[test]
@@ -546,7 +558,12 @@ fn format_table_on_search() {
         .args(["search", "Alpha", "--format", "table"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Alpha Roadmap"));
+        .stdout(predicate::str::contains("Alpha Roadmap"))
+        .stdout(predicate::str::contains("│ # │ Type"))
+        .stdout(predicate::str::contains(
+            "│ Title         │ Identifier │ Snippet",
+        ))
+        .stdout(predicate::str::contains("╭"));
 }
 
 #[test]
