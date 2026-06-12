@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+GIT_DIR_PATH=$(git rev-parse --git-dir 2>/dev/null)
+LOG="${GIT_DIR_PATH:-.git}/rdm-hook.log"
+{ ./target/debug/rdm hook post-commit; } >>"$LOG" 2>&1 || true
