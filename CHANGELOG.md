@@ -6,8 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-06-05
-
 ### Added
 
 - Dogfood Claude Code Stop hook (`.claude/hooks/rdm-review-on-finalize.sh`)
@@ -27,21 +25,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so they never stamp a completion date. The intended review lifecycle
   (`in-progress → needs-review → reviewed → done`) is documented in the agent
   instructions; status transitions remain unconstrained.
-- `rdm agent-config` now supports the `pi` coding agent platform. Writes to
-  `.pi/AGENTS.md` for project-local config or `~/.pi/agent/AGENTS.md` with
-  `--user`.
-- `rdm agent-config --skills` now supports the `pi` platform, writing skill
-  files to `.pi/skills/` (project) or `~/.pi/agent/skills/` (user).
-- HTTP server now serves the project logo as an SVG favicon at `/favicon.ico`.
-  The favicon is linked in the base template, displayed in browser tabs, and
-  sent with a `Cache-Control: public, max-age=86400` header so browsers can
-  cache it for a day.
-- `--clear-body` flag on `phase update`, `task update`, and `roadmap update`.
-  Use it to intentionally empty an existing body (it is mutually exclusive
-  with `--body`).
-- `clear_body` field on `PATCH /projects/:project/roadmaps/:roadmap`,
-  `PATCH /projects/:project/roadmaps/:roadmap/phases/:phase`, and
-  `PATCH /projects/:project/tasks/:task` (mirrors the new CLI flag).
 
 ### Changed
 
@@ -66,6 +49,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer commits a `Done:` line straight to `done`; instead it commits the
   implementation and transitions the item to `needs-review`, leaving it for
   the `rdm-review` skill to produce the `Done:` line on a passing review.
+
+### Fixed
+
+- `rdm search --status <status>` without `--type` now matches both phases and
+  tasks for statuses shared by both kinds (`in-progress`, `needs-review`,
+  `reviewed`, `done`, `wont-fix`); previously it silently returned phases only.
+  Applies to the CLI, the server's `?status=` filter, and the MCP `search`
+  tool's `status` argument.
+
+## [0.11.0] - 2026-06-05
+
+### Added
+
+- `rdm agent-config` now supports the `pi` coding agent platform. Writes to
+  `.pi/AGENTS.md` for project-local config or `~/.pi/agent/AGENTS.md` with
+  `--user`.
+- `rdm agent-config --skills` now supports the `pi` platform, writing skill
+  files to `.pi/skills/` (project) or `~/.pi/agent/skills/` (user).
+- HTTP server now serves the project logo as an SVG favicon at `/favicon.ico`.
+  The favicon is linked in the base template, displayed in browser tabs, and
+  sent with a `Cache-Control: public, max-age=86400` header so browsers can
+  cache it for a day.
+- `--clear-body` flag on `phase update`, `task update`, and `roadmap update`.
+  Use it to intentionally empty an existing body (it is mutually exclusive
+  with `--body`).
+- `clear_body` field on `PATCH /projects/:project/roadmaps/:roadmap`,
+  `PATCH /projects/:project/roadmaps/:roadmap/phases/:phase`, and
+  `PATCH /projects/:project/tasks/:task` (mirrors the new CLI flag).
+
+### Changed
+
 - `rdm agent-config claude --skills --out <dir>` now writes skill files under
   `<dir>/.claude/skills/rdm-*/SKILL.md` (treating `<dir>` as a project root).
   Previously the files were placed directly under `<dir>/rdm-*/SKILL.md`. The
@@ -85,11 +99,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `rdm search --status <status>` without `--type` now matches both phases and
-  tasks for statuses shared by both kinds (`in-progress`, `needs-review`,
-  `reviewed`, `done`, `wont-fix`); previously it silently returned phases only.
-  Applies to the CLI, the server's `?status=` filter, and the MCP `search`
-  tool's `status` argument.
 - `phase update`, `task update`, and `roadmap update` no longer silently
   overwrite a non-empty body with empty content. Passing an explicit
   `--body ""` against an existing body is now rejected with an actionable
