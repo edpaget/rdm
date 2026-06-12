@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Dogfood Claude Code Stop hook (`.claude/hooks/rdm-review-on-finalize.sh`)
+  that reprompts the agent to run the `rdm-review` skill while any rdm item is
+  in `needs-review`. The status is the sentinel — there is no marker file — so
+  once review moves the item out of `needs-review` the next stop is allowed,
+  and `stop_hook_active` prevents reprompt loops. Wires `.claude/` in this repo
+  only; shipping equivalent config from `rdm agent-config` is tracked
+  separately.
 - `needs-review` and `reviewed` statuses for both phases and tasks, accepted
   everywhere statuses are (CLI `--status` on `create`/`update`/`list`/`search`,
   the REST server status selects and request parsing, the MCP tools, the
