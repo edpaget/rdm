@@ -526,16 +526,14 @@ mod tests {
     #[test]
     fn inject_token_refuses_existing_basic_auth() {
         let err = inject_token("https://user:pw@github.com/acme/plan.git", "T")
-            .err()
-            .expect("should refuse existing creds");
+            .expect_err("should refuse existing creds");
         assert!(err.to_string().contains("basic-auth"), "got: {err}");
     }
 
     #[test]
     fn inject_token_refuses_basic_auth_with_port() {
         let err = inject_token("https://user:pw@git.example.com:8443/a/b.git", "T")
-            .err()
-            .expect("should refuse existing creds even with port");
+            .expect_err("should refuse existing creds even with port");
         assert!(err.to_string().contains("basic-auth"), "got: {err}");
     }
 
@@ -549,8 +547,7 @@ mod tests {
     #[test]
     fn resolve_clone_url_http_with_token_errors() {
         let err = resolve_clone_url("http://example.com/foo.git", Some("T"))
-            .err()
-            .expect("plain http should be rejected");
+            .expect_err("plain http should be rejected");
         assert!(err.to_string().contains("http://"), "got: {err}");
     }
 

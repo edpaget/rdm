@@ -34,13 +34,13 @@ fn init_repo(dir: &TempDir) {
 fn count_git_commits(dir: &std::path::Path) -> usize {
     let repo = gix::open(dir).unwrap();
     let mut count = 0;
-    if let Ok(mut head) = repo.head() {
-        if let Ok(commit) = head.peel_to_commit() {
-            count = 1;
-            let mut ancestors = commit.ancestors().all().unwrap();
-            while ancestors.next().is_some() {
-                count += 1;
-            }
+    if let Ok(mut head) = repo.head()
+        && let Ok(commit) = head.peel_to_commit()
+    {
+        count = 1;
+        let mut ancestors = commit.ancestors().all().unwrap();
+        while ancestors.next().is_some() {
+            count += 1;
         }
     }
     count
