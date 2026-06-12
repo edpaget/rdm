@@ -4,6 +4,8 @@ description: Review implementation of an rdm phase or task
 allowed-tools:
   - Read
   - Bash
+  - Write
+  - Edit
   - Glob
   - Grep
   - Agent
@@ -43,17 +45,34 @@ Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<road
    - List code quality findings grouped by severity (blocking, concern, suggestion)
    - Provide an overall verdict: **PASS**, **PASS WITH CONCERNS**, or **FAIL**
 
-6. **Present the report** to the user in a clear, structured format.
+6. **Categorize each finding by size** and act on it:
+   - **Small** — localized, low-risk, no new acceptance criteria (a typo, a missing doc comment, a tightened error message, an extra test). Fix it inline: apply the change with `Edit`/`Write`, run the relevant tests, then fold it into the implementation commit with `git commit --amend --no-edit`.
+   - **Large** — new modules, cross-cutting changes, or anything that warrants its own acceptance criterion. Do NOT fix inline. File a task:
+     ```bash
+     rdm task create <slug> --title "Review finding: description" --body "Details." --tags <tag1>,<tag2> --no-edit {proj_flag}
+     ```
 
-7. **Offer to create rdm tasks** for any actionable issues found:
-   ```bash
-   rdm task create <slug> --title "Review finding: description" --body "Details." --no-edit {proj_flag}
-   ```
+7. **Present the report** to the user in a clear, structured format. For each finding, state how it was handled (fixed-inline / filed-as-task `<slug>`), and give the overall verdict.
+
+8. **Transition the item** by verdict (this skill owns the `needs-review` → `reviewed` gate):
+   - **Pass** (clean, or clean after small fixes): set the item to `reviewed`, then amend a `Done:` line into the branch commit so the merge-to-main hook flips it to `done` later.
+     ```bash
+     rdm phase update <phase> --status reviewed --no-edit --roadmap <slug> {proj_flag}
+     # or: rdm task update <slug> --status reviewed --no-edit {proj_flag}
+     git commit --amend   # add the Done: line to the branch commit message
+     ```
+     The `Done:` line is `Done: <roadmap-slug>/<phase-stem>` (phase) or `Done: task/<slug>` (task), using the exact slugs/stems from the rdm commands above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
+   - **Rework** (FAIL — substantial changes needed): return the item to `in-progress` and write **no** `Done:` line.
+     ```bash
+     rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> {proj_flag}
+     # or: rdm task update <slug> --status in-progress --no-edit {proj_flag}
+     ```
 
 ## Guidelines
 
 - Be objective — evaluate against the stated AC, not personal preferences
 - Provide specific evidence (file paths, line numbers) for every finding
 - Distinguish between blocking issues (FAIL) and minor concerns (PASS WITH CONCERNS)
-- Do not re-implement or fix code — only review and report
+- The dispatched sub-agents only review and report — they never modify code. The orchestrator (this skill) applies small fixes per the categorization step.
+- Never fix large changes inline — file them as tasks. Only small, localized fixes are amended into the implementation commit.
 - If AC are missing or vague, note this as a finding rather than guessing intent

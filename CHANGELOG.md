@@ -38,6 +38,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `rdm-review` (the in-repo Claude Code skill plus the shipped CLI and MCP
+  skill templates) now categorizes findings by size and owns the status
+  transition. Small findings (localized, low-risk) are fixed inline and amended
+  into the implementation commit; large findings (new modules, cross-cutting)
+  are filed as rdm tasks instead of being fixed inline. On a passing review the
+  skill sets the item to `reviewed` and writes the `Done:` line (the merge hook
+  later flips it to `done`); on substantial rework it returns the item to
+  `in-progress` with no `Done:` line.
 - `rdm agent-config --skills` now emits a single `rdm-do` skill (CLI and MCP)
   in place of the previous `rdm-implement` and `rdm-tasks` skills, so the
   shipped skill set drops from 5 to 4 (`rdm-roadmap`, `rdm-do`, `rdm-review`,

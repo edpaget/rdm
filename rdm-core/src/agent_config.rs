@@ -473,7 +473,9 @@ fn skill_review_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
             principles_note,
             &[
                 ("t_phase_show", "rdm_phase_show"),
+                ("t_phase_update", "rdm_phase_update"),
                 ("t_task_show", "rdm_task_show"),
+                ("t_task_update", "rdm_task_update"),
                 ("t_task_create", "rdm_task_create"),
             ],
         ),
@@ -1084,6 +1086,34 @@ mod tests {
     }
 
     #[test]
+    fn skill_review_categorizes_findings() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[2].content;
+        // Small findings are fixed inline and amended; large findings are filed as tasks.
+        assert!(content.contains("git commit --amend"));
+        assert!(content.contains("rdm task create"));
+        assert!(content.contains("Small"));
+        assert!(content.contains("Large"));
+    }
+
+    #[test]
+    fn skill_review_transitions_to_reviewed() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("--status reviewed"));
+        assert!(content.contains("Done: <roadmap-slug>/<phase-stem>"));
+        assert!(content.contains("--status in-progress"));
+    }
+
+    #[test]
     fn skill_document_contains_rdm_commands() {
         let skills = generate_skills(&SkillOptions {
             project: None,
@@ -1473,5 +1503,39 @@ mod tests {
         // ...and defers the Done: line to the rdm-review skill on a passing review.
         assert!(content.contains("rdm-review"));
         assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
+    }
+
+    #[test]
+    fn mcp_skill_review_categorizes_findings() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[2].content;
+        // Large findings are filed as tasks via the MCP create tool.
+        assert!(content.contains("rdm_task_create"));
+        assert!(content.contains("Small"));
+        assert!(content.contains("Large"));
+        assert!(content.contains("git commit --amend"));
+    }
+
+    #[test]
+    fn mcp_skill_review_drives_transition() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[2].content;
+        // Transition is driven via the MCP update tools to reviewed / in-progress.
+        assert!(content.contains("rdm_phase_update"));
+        assert!(content.contains("rdm_task_update"));
+        assert!(content.contains("\"reviewed\""));
+        assert!(content.contains("\"in-progress\""));
+        // allowed-tools frontmatter lists the new MCP tools.
+        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
+        assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_task_update"));
     }
 }
