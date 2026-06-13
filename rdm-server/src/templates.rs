@@ -173,18 +173,8 @@ pub struct IndexPage {
 /// - Any phase in-progress, or any terminal phase mixed with non-terminal phases → `("in-progress", "in-progress")`
 /// - Otherwise (all not-started, all blocked, or no phases) → `("not-started", "not-started")`
 pub fn computed_roadmap_status(phases: &[PhaseStatus]) -> (&'static str, &'static str) {
-    if phases.is_empty() {
-        return ("not-started", "not-started");
-    }
-    if phases.iter().all(PhaseStatus::is_terminal) {
-        return ("done", "done");
-    }
-    let has_terminal = phases.iter().any(PhaseStatus::is_terminal);
-    let has_in_progress = phases.contains(&PhaseStatus::InProgress);
-    if has_in_progress || has_terminal {
-        return ("in-progress", "in-progress");
-    }
-    ("not-started", "not-started")
+    let status = rdm_core::ops::roadmap::computed_status(phases);
+    (status.as_str(), status.as_str())
 }
 
 /// A roadmap summary for the roadmaps list page.

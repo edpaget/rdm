@@ -1,9 +1,68 @@
 //! Roadmap operations.
 
+use std::fmt;
+
 use crate::document::Document;
 use crate::error::{Error, Result};
-use crate::model::{Phase, Priority, Roadmap, RoadmapSort};
+use crate::model::{Phase, PhaseStatus, Priority, Roadmap, RoadmapSort};
 use crate::store::{DirEntryKind, RelPath, Store};
+
+/// Overall status of a roadmap, aggregated from its phase statuses.
+///
+/// This is a coarser view than [`PhaseStatus`]: a roadmap is `Done` only when
+/// every phase is terminal, `InProgress` when work has begun or partially
+/// completed, and `NotStarted` otherwise (including when it has no phases).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoadmapStatus {
+    /// No phases, or all phases not yet started (or only blocked).
+    NotStarted,
+    /// At least one phase in progress, or a mix of terminal and non-terminal phases.
+    InProgress,
+    /// Every phase is in a terminal state (`done` or `wont-fix`).
+    Done,
+}
+
+impl RoadmapStatus {
+    /// Returns the kebab-case string for this status (`not-started`,
+    /// `in-progress`, or `done`).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RoadmapStatus::NotStarted => "not-started",
+            RoadmapStatus::InProgress => "in-progress",
+            RoadmapStatus::Done => "done",
+        }
+    }
+}
+
+impl fmt::Display for RoadmapStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Computes a roadmap's overall status from its phase statuses.
+///
+/// - No phases → [`RoadmapStatus::NotStarted`].
+/// - All phases terminal (`done` or `wont-fix`) → [`RoadmapStatus::Done`].
+/// - Any phase in progress, or any terminal phase mixed with non-terminal
+///   phases → [`RoadmapStatus::InProgress`].
+/// - Otherwise (all not-started, or all blocked) → [`RoadmapStatus::NotStarted`].
+#[must_use]
+pub fn computed_status(phases: &[PhaseStatus]) -> RoadmapStatus {
+    if phases.is_empty() {
+        return RoadmapStatus::NotStarted;
+    }
+    if phases.iter().all(PhaseStatus::is_terminal) {
+        return RoadmapStatus::Done;
+    }
+    let has_terminal = phases.iter().any(PhaseStatus::is_terminal);
+    let has_in_progress = phases.contains(&PhaseStatus::InProgress);
+    if has_in_progress || has_terminal {
+        return RoadmapStatus::InProgress;
+    }
+    RoadmapStatus::NotStarted
+}
 
 /// Creates a new roadmap within a project.
 ///
@@ -669,4 +728,58 @@ fn has_cycle(adj: &std::collections::HashMap<&str, Vec<&str>>, start: &str) -> b
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn computed_status_empty_is_not_started() {
+        assert_eq!(computed_status(&[]), RoadmapStatus::NotStarted);
+    }
+
+    #[test]
+    fn computed_status_all_done_is_done() {
+        let statuses = [PhaseStatus::Done, PhaseStatus::Done];
+        assert_eq!(computed_status(&statuses), RoadmapStatus::Done);
+    }
+
+    #[test]
+    fn computed_status_done_and_wont_fix_is_done() {
+        let statuses = [PhaseStatus::Done, PhaseStatus::WontFix];
+        assert_eq!(computed_status(&statuses), RoadmapStatus::Done);
+    }
+
+    #[test]
+    fn computed_status_mixed_terminal_and_not_started_is_in_progress() {
+        let statuses = [PhaseStatus::Done, PhaseStatus::NotStarted];
+        assert_eq!(computed_status(&statuses), RoadmapStatus::InProgress);
+    }
+
+    #[test]
+    fn computed_status_any_in_progress_is_in_progress() {
+        let statuses = [PhaseStatus::NotStarted, PhaseStatus::InProgress];
+        assert_eq!(computed_status(&statuses), RoadmapStatus::InProgress);
+    }
+
+    #[test]
+    fn computed_status_all_not_started_is_not_started() {
+        let statuses = [PhaseStatus::NotStarted, PhaseStatus::NotStarted];
+        assert_eq!(computed_status(&statuses), RoadmapStatus::NotStarted);
+    }
+
+    #[test]
+    fn computed_status_only_blocked_is_not_started() {
+        let statuses = [PhaseStatus::Blocked, PhaseStatus::Blocked];
+        assert_eq!(computed_status(&statuses), RoadmapStatus::NotStarted);
+    }
+
+    #[test]
+    fn roadmap_status_as_str_and_display() {
+        assert_eq!(RoadmapStatus::NotStarted.as_str(), "not-started");
+        assert_eq!(RoadmapStatus::InProgress.as_str(), "in-progress");
+        assert_eq!(RoadmapStatus::Done.as_str(), "done");
+        assert_eq!(RoadmapStatus::InProgress.to_string(), "in-progress");
+    }
 }

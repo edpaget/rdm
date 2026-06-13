@@ -44,6 +44,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Esc`, or `Ctrl-C` while always restoring the terminal — even on a panic.
   This is the foundation for richer roadmap and task browsing in later
   releases; it is read-only and does not yet open roadmaps or tasks.
+- The `rdm-tui` terminal UI now navigates: press `Enter` on a project to open
+  its roadmap list (showing each roadmap's status, slug, title, priority, and
+  `done/total` phase progress), and `Enter` on a roadmap to open its detail
+  view (the roadmap body plus its phases with status badges). `Esc`/`h` go back
+  one screen — restoring the previous cursor position — and `Esc`/`h` from the
+  project list quits. Statuses are shown as text labels with ASCII symbols so
+  they remain distinguishable without color.
 - Dogfood Claude Code Stop hook (`.claude/hooks/rdm-review-on-finalize.sh`)
   that reprompts the agent to run the `rdm-review` skill while any rdm item is
   in `needs-review`. The status is the sentinel — there is no marker file — so
@@ -64,6 +71,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Roadmap aggregate-status computation (the overall `not-started` /
+  `in-progress` / `done` derived from a roadmap's phases) now lives in
+  `rdm-core` so every interface shares one implementation. No behavior change
+  to the server or web UI.
 - Removed the unmaintained transitive dependency `proc-macro-error2`
   (RUSTSEC-2026-0173) by building CLI tables with tabled's `Builder` API
   instead of its derive feature (and bumping tabled to 0.21). Table output is

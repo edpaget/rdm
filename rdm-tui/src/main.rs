@@ -27,6 +27,7 @@ use rdm_store_fs::FsStore;
 mod app;
 mod paths;
 mod ui;
+mod view;
 
 use app::App;
 
@@ -45,7 +46,7 @@ fn run() -> Result<()> {
     let store = FsStore::new(&root);
     let projects = list_projects(&store)
         .with_context(|| format!("failed to list projects in {}", root.display()))?;
-    let mut app = App::new(projects);
+    let mut app = App::new(store, projects);
 
     let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, &mut app);
@@ -64,7 +65,11 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
             .draw(|frame| ui::render(frame, app))
             .context("failed to draw frame")?;
         if let Event::Key(key) = event::read().context("failed to read terminal event")? {
-            app.handle_key(key);
+            // A load error while drilling in is shown in the footer rather than
+            // aborting the loop, so the user stays where they are.
+            if let Err(err) = app.handle_key(key) {
+                app.status_message = Some(format!("{err:#}"));
+            }
         }
     }
     Ok(())
