@@ -37,6 +37,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   commits without `--force`). Commands run against the repo discovered from the
   current directory and refuse to run inside the plan repo. Only rdm-created
   worktrees (tracked via an internal marker) are listed or removable.
+- New `rdm-tui` crate: a terminal UI binary (`rdm-tui`) that opens an
+  interactive screen listing the projects in your plan repo. It resolves the
+  plan repo the same way the CLI does (`RDM_ROOT`, global config `root`, then
+  the XDG data dir), shows a hint when no projects exist yet, and quits on `q`,
+  `Esc`, or `Ctrl-C` while always restoring the terminal — even on a panic.
+  This is the foundation for richer roadmap and task browsing in later
+  releases; it is read-only and does not yet open roadmaps or tasks.
 - Dogfood Claude Code Stop hook (`.claude/hooks/rdm-review-on-finalize.sh`)
   that reprompts the agent to run the `rdm-review` skill while any rdm item is
   in `needs-review`. The status is the sentinel — there is no marker file — so

@@ -1,0 +1,25 @@
+[package]
+name = "rdm-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terminal UI for rdm"
+publish = false
+
+[package.metadata.dist]
+dist = false
+
+[[bin]]
+name = "rdm-tui"
+path = "src/main.rs"
+
+[dependencies]
+rdm-core = { path = "../rdm-core" }
+rdm-store-fs = { path = "../rdm-store-fs" }
+anyhow = { workspace = true }
+ratatui = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
