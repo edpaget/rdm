@@ -201,6 +201,39 @@ rdm hook install
 The hooks parse `Done:` directives for both phases (`Done: <roadmap>/<phase>`) and tasks (`Done: task/<slug>`). This creates a traceable link from every completed item back to the commit that shipped it.
 
 
+## Worktrees
+
+`rdm worktree` manages git worktrees in your **project (code) repo** — the git repo you invoke rdm from — keyed to plan items. It lets you (or an agent harness) spin up an isolated checkout per phase or task without depending on the harness's own worktree support. These commands operate on the project repo discovered from the current directory, **not** the plan repo (`RDM_ROOT`); running them from inside the plan repo is refused.
+
+```bash
+# Create (or reuse) a worktree for a phase — prints the worktree path
+rdm worktree add my-roadmap/phase-1-indexing --project fbm
+
+# Phase numbers are resolved against the plan repo
+rdm worktree add my-roadmap/1 --project fbm
+
+# Branch from a specific base instead of the current HEAD
+rdm worktree add my-roadmap/1 --base main --project fbm
+
+# Worktrees for standalone tasks
+rdm worktree add task/fix-edge-case --project fbm
+
+# List rdm-managed worktrees (item · branch · path · dirty)
+rdm worktree list
+
+# Remove a worktree by item or path; refuses a dirty tree without --force
+rdm worktree remove my-roadmap/phase-1-indexing
+rdm worktree remove my-roadmap/phase-1-indexing --delete-branch
+rdm worktree remove /path/to/worktree --force
+```
+
+**Branch naming:** phases use `phase/<roadmap>/<stem>`; tasks use `task/<slug>`.
+
+**Location:** worktrees are created as siblings of the project repo under `<parent>/<repo-name>__worktrees/<branch-with-slashes-as-dashes>` (e.g. `../myrepo__worktrees/phase-my-roadmap-phase-1-indexing`).
+
+`add` is idempotent — re-running it for an existing item prints the existing path instead of erroring. Only worktrees created by rdm (tracked via an internal marker file) are listed or removable; `remove` refuses worktrees it didn't create.
+
+
 ## REST API
 
 For programmatic integrations beyond the CLI, `rdm serve` starts a REST API that mirrors the CLI commands. See [docs/rest-api.md](docs/rest-api.md) for endpoints, content negotiation, and error format.

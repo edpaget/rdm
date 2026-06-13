@@ -21,6 +21,8 @@ pub mod bootstrap;
 pub mod hook;
 #[cfg(feature = "git")]
 pub mod remote;
+#[cfg(feature = "git")]
+pub mod worktree;
 
 /// Parses a status string into an `ItemStatus`, using the `--type` hint if available.
 pub fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatus> {

@@ -231,6 +231,12 @@ enum Command {
         #[command(subcommand)]
         command: HookCommand,
     },
+    /// Manage git worktrees keyed to plan items in the project (code) repo.
+    #[cfg(feature = "git")]
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeCommand,
+    },
     /// Start the MCP server on stdin/stdout.
     #[cfg(feature = "mcp")]
     Mcp,
@@ -700,6 +706,41 @@ pub(crate) enum HookCommand {
     /// Run post-commit logic: on the default branch, parse Done: directives
     /// from HEAD and mark phases/tasks done.
     PostCommit,
+}
+
+#[cfg(feature = "git")]
+#[derive(Subcommand)]
+pub(crate) enum WorktreeCommand {
+    /// Create (or reuse) a worktree for a plan item.
+    ///
+    /// The item is `<roadmap>/<phase-stem-or-number>` or `task/<slug>`.
+    Add {
+        /// Plan item to key the worktree/branch to.
+        item: String,
+        /// Base ref to branch from (defaults to current HEAD).
+        #[arg(long)]
+        base: Option<String>,
+        /// Project to resolve the item against.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// List rdm-managed worktrees in the current project repo.
+    List,
+    /// Remove an rdm-managed worktree by item or path.
+    Remove {
+        /// Item (`<roadmap>/<phase-stem-or-number>` or `task/<slug>`) or
+        /// worktree path.
+        target: String,
+        /// Also delete the worktree's branch.
+        #[arg(long)]
+        delete_branch: bool,
+        /// Remove even if dirty (and force-delete the branch).
+        #[arg(long)]
+        force: bool,
+        /// Project to resolve a phase-number item against.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1621,6 +1662,11 @@ fn run() -> Result<()> {
         #[cfg(feature = "git")]
         Command::Hook { command } => {
             commands::hook::run(command, &root, staging)?;
+        }
+
+        #[cfg(feature = "git")]
+        Command::Worktree { command } => {
+            commands::worktree::run(command, &root, &repo_config, staging, format)?;
         }
 
         Command::List { project, all } => {

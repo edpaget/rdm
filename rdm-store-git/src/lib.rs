@@ -17,6 +17,8 @@ use rdm_core::error::{Error, Result};
 use rdm_core::store::{DirEntry, RelPath, Store};
 use rdm_store_fs::FsStore;
 
+pub mod worktree;
+
 /// The kind of change tracked for commit message generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChangeKind {

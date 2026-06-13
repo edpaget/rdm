@@ -10,6 +10,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm worktree` command family (`add` / `list` / `remove`) for managing git
+  worktrees in your project (code) repo, keyed to plan items. `add <item>`
+  creates (or idempotently reuses) a worktree and branch for a phase
+  (`<roadmap>/<phase-stem-or-number>`) or task (`task/<slug>`); branches are
+  named `phase/<roadmap>/<stem>` or `task/<slug>`, and worktrees live as
+  siblings of the repo under `<repo>__worktrees/`. `--base <ref>` chooses the
+  branch point (default current HEAD); `--format json` emits the item, branch,
+  path, and created flag. `list` shows item/branch/path and a dirty flag.
+  `remove <item|path>` deletes a worktree (refusing a dirty tree without
+  `--force`), with `--delete-branch` to drop the branch too (refusing unmerged
+  commits without `--force`). Commands run against the repo discovered from the
+  current directory and refuse to run inside the plan repo. Only rdm-created
+  worktrees (tracked via an internal marker) are listed or removable.
 - Dogfood Claude Code Stop hook (`.claude/hooks/rdm-review-on-finalize.sh`)
   that reprompts the agent to run the `rdm-review` skill while any rdm item is
   in `needs-review`. The status is the sentinel — there is no marker file — so

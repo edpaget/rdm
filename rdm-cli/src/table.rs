@@ -94,7 +94,7 @@ pub fn format_search_table(results: &[SearchResult]) -> String {
     build_table(["#", "Type", "Title", "Identifier", "Snippet"], rows)
 }
 
-fn build_table<const N: usize>(headers: [&str; N], rows: Vec<[String; N]>) -> String {
+pub fn build_table<const N: usize>(headers: [&str; N], rows: Vec<[String; N]>) -> String {
     let mut builder = Builder::default();
     builder.push_record(headers);
     for row in rows {
