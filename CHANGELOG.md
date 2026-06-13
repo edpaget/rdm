@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm agent-config claude --hooks` ships the auto-review Stop hook to end-user
+  projects. It writes a generalized `.claude/hooks/rdm-review-on-finalize.sh`
+  (executable; calls `rdm` on `PATH` and uses standard project resolution
+  instead of a hard-coded project) and registers it under `hooks.Stop` in
+  `.claude/settings.json`, merging non-destructively into any existing settings
+  (other keys preserved; re-running is idempotent). The flag is claude-only and
+  composable with `--skills`; it honors `--out <dir>` and `--user` (`~/.claude/`).
 - `rdm worktree` command family (`add` / `list` / `remove`) for managing git
   worktrees in your project (code) repo, keyed to plan items. `add <item>`
   creates (or idempotently reuses) a worktree and branch for a phase
@@ -28,8 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in `needs-review`. The status is the sentinel — there is no marker file — so
   once review moves the item out of `needs-review` the next stop is allowed,
   and `stop_hook_active` prevents reprompt loops. Wires `.claude/` in this repo
-  only; shipping equivalent config from `rdm agent-config` is tracked
-  separately.
+  only; the generalized, end-user-facing version ships via
+  `rdm agent-config claude --hooks` (see above).
 - `needs-review` and `reviewed` statuses for both phases and tasks, accepted
   everywhere statuses are (CLI `--status` on `create`/`update`/`list`/`search`,
   the REST server status selects and request parsing, the MCP tools, the

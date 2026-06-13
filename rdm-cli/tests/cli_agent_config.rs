@@ -615,6 +615,151 @@ fn agent_config_user_skills_writes_to_claude_skills() {
     assert!(skills_dir.join("rdm-document/SKILL.md").exists());
 }
 
+// --hooks flag tests
+
+#[test]
+fn agent_config_hooks_writes_script_and_settings() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--hooks")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote"));
+
+    let script = dir.path().join(".claude/hooks/rdm-review-on-finalize.sh");
+    assert!(script.exists(), "expected {}", script.display());
+    let content = std::fs::read_to_string(&script).unwrap();
+    assert!(content.contains("needs-review"));
+    assert!(!content.contains("--project"));
+    assert!(!content.contains("target/debug/rdm"));
+
+    // Script is executable (unix).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&script).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "script should be executable");
+    }
+
+    let settings = dir.path().join(".claude/settings.json");
+    assert!(settings.exists(), "expected {}", settings.display());
+    let parsed: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(
+        parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
+        "$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh"
+    );
+}
+
+#[test]
+fn agent_config_hooks_is_non_destructive() {
+    let dir = TempDir::new().unwrap();
+    let claude = dir.path().join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(
+        claude.join("settings.json"),
+        r#"{"model":"sonnet","hooks":{"PreToolUse":[{"matcher":"Bash"}]}}"#,
+    )
+    .unwrap();
+
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--hooks")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    let parsed: Value =
+        serde_json::from_str(&std::fs::read_to_string(claude.join("settings.json")).unwrap())
+            .unwrap();
+    // Unrelated key and existing hooks bucket survive.
+    assert_eq!(parsed["model"], "sonnet");
+    assert_eq!(parsed["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+    // Stop hook is registered.
+    assert_eq!(
+        parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
+        "$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh"
+    );
+}
+
+#[test]
+fn agent_config_hooks_with_skills_writes_both() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--hooks")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    assert!(dir.path().join(".claude/skills/rdm-do/SKILL.md").exists());
+    assert!(
+        dir.path()
+            .join(".claude/hooks/rdm-review-on-finalize.sh")
+            .exists()
+    );
+    assert!(dir.path().join(".claude/settings.json").exists());
+}
+
+#[test]
+fn agent_config_hooks_rejects_non_claude_platform() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("agents-md")
+        .arg("--hooks")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--hooks is only supported for the claude platform",
+        ));
+
+    // The gate is validated up front: no instruction file is written before the bail.
+    assert!(
+        !dir.path().join("AGENTS.md").exists(),
+        "no instruction file should be written when --hooks is rejected"
+    );
+}
+
+#[test]
+fn agent_config_hooks_requires_out_or_user() {
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--hooks")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--hooks requires --out or --user"));
+}
+
+#[test]
+fn agent_config_hooks_user_writes_to_claude_dir() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--hooks")
+        .arg("--user")
+        .assert()
+        .success();
+
+    let script = home.path().join(".claude/hooks/rdm-review-on-finalize.sh");
+    assert!(script.exists(), "expected {}", script.display());
+    let settings = home.path().join(".claude/settings.json");
+    assert!(settings.exists(), "expected {}", settings.display());
+}
+
 #[test]
 fn agent_config_pi_platform() {
     rdm()

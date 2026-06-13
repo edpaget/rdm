@@ -90,6 +90,16 @@ rdm agent-config pi --skills --project fbm --out ~/Projects/fbm
 
 rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), implementation and task work (`rdm-do`), review (`rdm-review`), and documentation generation (`rdm-document`). The same skill set is emitted for Pi under `.pi/skills/`.
 
+#### Auto-review Stop hook (Claude Code)
+
+Add `--hooks` (claude only, composable with `--skills`) to also install a Claude Code [Stop hook](https://docs.claude.com/en/docs/claude-code/hooks) that reprompts the agent to run the `rdm-review` skill whenever an rdm item is left in `needs-review`:
+
+```bash
+rdm agent-config claude --skills --hooks --out .
+```
+
+This writes `.claude/hooks/rdm-review-on-finalize.sh` (executable) and registers it under `hooks.Stop` in `.claude/settings.json`, merging non-destructively into any existing settings (other keys are preserved; re-running is idempotent). The hook calls `rdm` on your `PATH` and relies on standard project resolution (`RDM_PROJECT` env var or `default_project` in `rdm.toml`). Use `--user` instead of `--out` to install into `~/.claude/`.
+
 ### MCP Server
 
 For agents that support [Model Context Protocol](https://modelcontextprotocol.io/), rdm exposes all operations as MCP tools — projects, roadmaps, phases, tasks, and search:

@@ -145,6 +145,10 @@ enum Command {
         /// Generate Claude Code skill files instead of an instruction file.
         #[arg(long)]
         skills: bool,
+        /// Also write the Claude auto-review Stop hook and register it in
+        /// `.claude/settings.json` (claude only; composable with `--skills`).
+        #[arg(long)]
+        hooks: bool,
         /// Generate MCP-oriented instructions (referencing MCP tool names instead of CLI commands).
         /// When combined with --out, also writes .mcp.json alongside.
         #[arg(long)]
@@ -1234,6 +1238,7 @@ fn run() -> Result<()> {
             out,
             principles_file,
             skills,
+            hooks,
             mcp,
             user,
         } => {
@@ -1244,6 +1249,20 @@ fn run() -> Result<()> {
                     "Pi does not support MCP natively. Use `--skills` for skill-based \
                      integration, or omit `--mcp` for an AGENTS.md integration."
                 );
+            }
+
+            // Validate --hooks up front, before any files are written, so an invalid
+            // combination never leaves a partially-written instruction/skills tree.
+            if hooks {
+                if platform != Platform::Claude {
+                    bail!(
+                        "--hooks is only supported for the claude platform (it writes a \
+                         Claude Code Stop hook and registers it in .claude/settings.json)"
+                    );
+                }
+                if out.is_none() && !user {
+                    bail!("--hooks requires --out or --user to specify the output directory");
+                }
             }
 
             if skills {
@@ -1348,6 +1367,70 @@ fn run() -> Result<()> {
                 } else {
                     print!("{content}");
                 }
+            }
+
+            if hooks {
+                // Platform and --out/--user were validated up front. Resolve the
+                // `.claude/` directory that hosts the hook script and settings file.
+                // --user writes under ~/.claude (which user_level_dir already resolves
+                // to for claude); --out <dir> writes under <dir>/.claude so it lands
+                // alongside any skills written above.
+                let claude_dir: PathBuf = if user {
+                    platform.user_level_dir().map_err(|e| anyhow::anyhow!(e))?
+                } else {
+                    let dir = out
+                        .as_ref()
+                        .expect("validated: --out present when not --user");
+                    dir.join(".claude")
+                };
+
+                let hook_files = agent_config::generate_claude_hook();
+
+                // Write the hook script and mark it executable (unix only).
+                let script_path = claude_dir.join(hook_files.script_relative_path);
+                if let Some(parent) = script_path.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("failed to create directory {}", parent.display())
+                    })?;
+                }
+                std::fs::write(&script_path, hook_files.script_content)
+                    .with_context(|| format!("failed to write {}", script_path.display()))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = std::fs::metadata(&script_path)
+                        .with_context(|| format!("failed to stat {}", script_path.display()))?
+                        .permissions();
+                    perms.set_mode(0o755);
+                    std::fs::set_permissions(&script_path, perms).with_context(|| {
+                        format!("failed to set permissions on {}", script_path.display())
+                    })?;
+                }
+                println!("Wrote {}", script_path.display());
+
+                // Merge the Stop hook registration into settings.json (non-destructive).
+                let settings_path = claude_dir.join(hook_files.settings_relative_path);
+                let existing = match std::fs::read_to_string(&settings_path) {
+                    Ok(s) => Some(s),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(e) => {
+                        return Err(e).with_context(|| {
+                            format!("failed to read {}", settings_path.display())
+                        });
+                    }
+                };
+                let merged = agent_config::merge_stop_hook_into_settings(existing.as_deref())
+                    .with_context(|| {
+                        format!("failed to merge Stop hook into {}", settings_path.display())
+                    })?;
+                if let Some(parent) = settings_path.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("failed to create directory {}", parent.display())
+                    })?;
+                }
+                std::fs::write(&settings_path, &merged)
+                    .with_context(|| format!("failed to write {}", settings_path.display()))?;
+                println!("Wrote {}", settings_path.display());
             }
         }
 

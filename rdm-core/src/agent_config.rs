@@ -506,6 +506,194 @@ Read `{path}` before starting implementation work. It contains project conventio
     )
 }
 
+// ---------- Claude auto-review Stop hook ----------
+
+/// The command registered in `.claude/settings.json` for the auto-review Stop hook.
+///
+/// This is the exact `command` string the hook entry carries; it is used both when
+/// writing the registration and when checking (for idempotency) whether the hook is
+/// already present.
+const CLAUDE_STOP_HOOK_COMMAND: &str =
+    "$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh";
+
+/// Returns the generalized auto-review Stop hook script for Claude Code.
+///
+/// The script re-prompts the agent to run `rdm-review` while any rdm item is in
+/// `needs-review`. It calls `rdm` on `PATH` and relies on the standard project
+/// resolution chain (`RDM_PROJECT` / `default_project`), so it is portable across
+/// end-user plan repos.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_claude_stop_hook_script;
+///
+/// let script = generate_claude_stop_hook_script();
+/// assert!(script.contains("needs-review"));
+/// ```
+pub fn generate_claude_stop_hook_script() -> &'static str {
+    include_str!("templates/hook-review-on-finalize.sh")
+}
+
+/// The files emitted by `rdm agent-config claude --hooks`.
+///
+/// Describes the Stop hook script and the settings file it must be registered in,
+/// each as a relative path under the target `.claude/` directory.
+pub struct ClaudeHookFiles {
+    /// Relative path for the hook script (`hooks/rdm-review-on-finalize.sh`).
+    pub script_relative_path: &'static str,
+    /// The full content of the hook script.
+    pub script_content: &'static str,
+    /// Relative path for the Claude Code settings file (`settings.json`).
+    pub settings_relative_path: &'static str,
+}
+
+/// Returns the file plan for the Claude auto-review Stop hook.
+///
+/// The caller writes [`ClaudeHookFiles::script_content`] to
+/// [`ClaudeHookFiles::script_relative_path`] (setting the executable bit), then merges
+/// the Stop hook registration into the file at
+/// [`ClaudeHookFiles::settings_relative_path`] via [`merge_stop_hook_into_settings`].
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_claude_hook;
+///
+/// let files = generate_claude_hook();
+/// assert_eq!(files.script_relative_path, "hooks/rdm-review-on-finalize.sh");
+/// assert_eq!(files.settings_relative_path, "settings.json");
+/// ```
+pub fn generate_claude_hook() -> ClaudeHookFiles {
+    ClaudeHookFiles {
+        script_relative_path: "hooks/rdm-review-on-finalize.sh",
+        script_content: generate_claude_stop_hook_script(),
+        settings_relative_path: "settings.json",
+    }
+}
+
+/// Errors that can occur while merging the Stop hook into Claude Code settings.
+#[derive(Debug)]
+pub enum AgentConfigError {
+    /// The existing settings content was not valid JSON.
+    InvalidJson(serde_json::Error),
+    /// The existing settings content was valid JSON but not a JSON object.
+    NotAnObject,
+}
+
+impl fmt::Display for AgentConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentConfigError::InvalidJson(e) => {
+                write!(f, "settings.json is not valid JSON: {e}")
+            }
+            AgentConfigError::NotAnObject => {
+                write!(f, "settings.json must be a JSON object")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AgentConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            AgentConfigError::InvalidJson(e) => Some(e),
+            AgentConfigError::NotAnObject => None,
+        }
+    }
+}
+
+/// Merges the auto-review Stop hook registration into Claude Code settings JSON.
+///
+/// Given the existing `settings.json` content (or `None` to start from `{}`), returns
+/// pretty-printed JSON with a `hooks.Stop` entry registering
+/// `$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh`. All other keys are
+/// preserved.
+///
+/// The merge is idempotent: if the Stop hook command is already registered, the input
+/// is returned unchanged so re-running `--hooks` never duplicates the entry.
+///
+/// Only top-level objecthood is enforced as an invariant. If `hooks` exists but is not
+/// an object, or `hooks.Stop` exists but is not an array, that wrong-typed value is
+/// rebuilt rather than preserved — such shapes are invalid under Claude Code's settings
+/// schema, so no usable data is lost. Sibling keys are always preserved.
+///
+/// # Errors
+///
+/// Returns [`AgentConfigError::InvalidJson`] if `existing` is not parseable JSON, and
+/// [`AgentConfigError::NotAnObject`] if it parses to a non-object value (e.g. an array
+/// or scalar).
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::merge_stop_hook_into_settings;
+///
+/// let merged = merge_stop_hook_into_settings(None).unwrap();
+/// assert!(merged.contains("rdm-review-on-finalize.sh"));
+/// // Idempotent: merging again changes nothing.
+/// assert_eq!(merge_stop_hook_into_settings(Some(&merged)).unwrap(), merged);
+/// ```
+pub fn merge_stop_hook_into_settings(existing: Option<&str>) -> Result<String, AgentConfigError> {
+    let mut root: serde_json::Value = match existing {
+        Some(s) if !s.trim().is_empty() => {
+            serde_json::from_str(s).map_err(AgentConfigError::InvalidJson)?
+        }
+        _ => serde_json::json!({}),
+    };
+
+    let obj = root.as_object_mut().ok_or(AgentConfigError::NotAnObject)?;
+
+    // hooks must be an object; tolerate a pre-existing non-object by replacing? No —
+    // per the error policy we only reject the top-level non-object case. Nested shapes
+    // that don't match are treated as "not present" and rebuilt.
+    let hooks = obj.entry("hooks").or_insert_with(|| serde_json::json!({}));
+    if !hooks.is_object() {
+        *hooks = serde_json::json!({});
+    }
+    let hooks = hooks.as_object_mut().expect("hooks is an object");
+
+    let stop = hooks.entry("Stop").or_insert_with(|| serde_json::json!([]));
+    if !stop.is_array() {
+        *stop = serde_json::json!([]);
+    }
+    let stop = stop.as_array_mut().expect("Stop is an array");
+
+    // Idempotency: bail out unchanged if the command is already registered anywhere
+    // in the Stop matcher entries.
+    let already_present = stop.iter().any(|entry| {
+        entry
+            .get("hooks")
+            .and_then(|h| h.as_array())
+            .map(|hooks| {
+                hooks.iter().any(|h| {
+                    h.get("command").and_then(|c| c.as_str()) == Some(CLAUDE_STOP_HOOK_COMMAND)
+                })
+            })
+            .unwrap_or(false)
+    });
+
+    if already_present {
+        // Return the input verbatim so re-running `--hooks` is a true no-op. (When
+        // `existing` is None the command can never already be present, so this branch
+        // only fires for real, non-empty inputs.)
+        if let Some(s) = existing {
+            return Ok(s.to_string());
+        }
+    } else {
+        stop.push(serde_json::json!({
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": CLAUDE_STOP_HOOK_COMMAND,
+                }
+            ]
+        }));
+    }
+
+    serde_json::to_string_pretty(&root).map_err(AgentConfigError::InvalidJson)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1569,5 +1757,114 @@ mod tests {
         let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
         assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
         assert!(frontmatter.contains("mcp__rdm__rdm_task_update"));
+    }
+
+    // --- Claude auto-review Stop hook tests ---
+
+    #[test]
+    fn stop_hook_script_is_generalized() {
+        let script = generate_claude_stop_hook_script();
+        // Keeps the loop guard and the needs-review query approach.
+        assert!(script.contains("stop_hook_active"));
+        assert!(script.contains("needs-review"));
+        assert!(script.contains("rdm search"));
+        // Generalized: no dev-binary path and no hard-coded project.
+        assert!(
+            !script.contains("--project"),
+            "script should not hard-code a project"
+        );
+        assert!(
+            !script.contains("target/debug/rdm"),
+            "script should call rdm on PATH, not the dev binary"
+        );
+    }
+
+    #[test]
+    fn generate_claude_hook_paths() {
+        let files = generate_claude_hook();
+        assert_eq!(
+            files.script_relative_path,
+            "hooks/rdm-review-on-finalize.sh"
+        );
+        assert_eq!(files.settings_relative_path, "settings.json");
+        assert!(files.script_content.contains("needs-review"));
+    }
+
+    #[test]
+    fn merge_into_none_produces_stop_hook() {
+        let merged = merge_stop_hook_into_settings(None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let cmd = parsed["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .expect("command should be a string");
+        assert_eq!(cmd, CLAUDE_STOP_HOOK_COMMAND);
+    }
+
+    #[test]
+    fn merge_into_empty_object_produces_stop_hook() {
+        let merged = merge_stop_hook_into_settings(Some("{}")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(
+            parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
+            CLAUDE_STOP_HOOK_COMMAND
+        );
+    }
+
+    #[test]
+    fn merge_preserves_unrelated_keys() {
+        let existing = r#"{"model":"x","hooks":{"PreToolUse":[{"matcher":"Bash"}]}}"#;
+        let merged = merge_stop_hook_into_settings(Some(existing)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        // Unrelated top-level key survives.
+        assert_eq!(parsed["model"], "x");
+        // Existing hooks bucket survives alongside the new Stop entry.
+        assert_eq!(parsed["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+        assert_eq!(
+            parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
+            CLAUDE_STOP_HOOK_COMMAND
+        );
+    }
+
+    #[test]
+    fn merge_is_idempotent() {
+        let once = merge_stop_hook_into_settings(None).unwrap();
+        let twice = merge_stop_hook_into_settings(Some(&once)).unwrap();
+        // Re-running returns the input verbatim — no duplicate entry.
+        assert_eq!(once, twice);
+        let parsed: serde_json::Value = serde_json::from_str(&twice).unwrap();
+        let stop = parsed["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1, "Stop should not be duplicated");
+    }
+
+    #[test]
+    fn merge_replaces_wrong_typed_nested_shapes() {
+        // A top-level object with `hooks` of the wrong type: the nested shape is
+        // rebuilt (not preserved), but the merge still succeeds and registers Stop.
+        // Top-level objecthood is the only structural invariant we enforce.
+        let merged = merge_stop_hook_into_settings(Some(r#"{"hooks":"oops"}"#)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(
+            parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
+            CLAUDE_STOP_HOOK_COMMAND
+        );
+
+        // `Stop` present but not an array is likewise rebuilt into a single-entry array.
+        let merged = merge_stop_hook_into_settings(Some(r#"{"hooks":{"Stop":{}}}"#)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let stop = parsed["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1);
+        assert_eq!(stop[0]["hooks"][0]["command"], CLAUDE_STOP_HOOK_COMMAND);
+    }
+
+    #[test]
+    fn merge_rejects_non_object_json() {
+        let err = merge_stop_hook_into_settings(Some("[1, 2, 3]")).unwrap_err();
+        assert!(matches!(err, AgentConfigError::NotAnObject));
+    }
+
+    #[test]
+    fn merge_rejects_invalid_json() {
+        let err = merge_stop_hook_into_settings(Some("{not json")).unwrap_err();
+        assert!(matches!(err, AgentConfigError::InvalidJson(_)));
     }
 }
