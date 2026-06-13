@@ -16,6 +16,15 @@ Implement a roadmap phase or work on a task. One shared flow: find the target �
 
 **IMPORTANT: This is the rdm source repo. Always run `cargo build` first, then use `./target/debug/rdm` — never bare `rdm`. If you modify any rdm source, `cargo build` again before running it.**
 
+## Run modes
+
+`$ARGUMENTS` may include `--auto` to select the run mode:
+
+- **interactive** (default): plan → wait for approval → implement → review with the user → finalize. The approval and review gates pause for human input.
+- **`--auto`** (non-interactive): skip the approval and review gates and proceed autonomously — build the plan, implement it, and finalize without waiting for a human.
+
+For unattended Claude Code runs (where no human is present to approve permission prompts), launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so worktree edits and bash commands don't block on prompts.
+
 ## Argument forms
 
 `$ARGUMENTS` selects the flow:
@@ -38,17 +47,18 @@ Implement a roadmap phase or work on a task. One shared flow: find the target �
 4. **Mark in-progress:**
    - phase: `./target/debug/rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> --project rdm`
    - task: `./target/debug/rdm task update <slug> --status in-progress --no-edit --project rdm`
-5. **Enter plan mode** with the `EnterPlanMode` tool, then **create an implementation plan**. The plan should:
+5. **Create an isolated worktree:** run `./target/debug/rdm worktree add <item> --project rdm`, where `<item>` is the same ref form used elsewhere (`<roadmap>/<phase-stem>` for a phase, `task/<slug>` for a task). `cd` into the path it prints, run `cargo build` there, and use **that worktree's** `./target/debug/rdm` for all later rdm commands — this exercises your changes where you made them. Do the rest of the work in this worktree.
+6. **Enter plan mode** with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
    - Break the phase/task into concrete implementation steps based on its description and acceptance criteria.
    - Include a final step: "Review changes with user and finalize".
-6. **Wait for user approval**: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
-7. **Execute the plan**: implement each step, following the plan and any acceptance criteria.
-8. **Review with user**: present a summary of the changes and ask the user to confirm they are ready to finalize.
-9. **Finalize (new flow):** on user acceptance, commit the implementation changes, then transition the item to `needs-review`:
-   - phase: `./target/debug/rdm phase update <phase> --status needs-review --no-edit --roadmap <slug> --project rdm`
-   - task: `./target/debug/rdm task update <slug> --status needs-review --no-edit --project rdm`
+7. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
+8. **Execute the plan**: implement each step, following the plan and any acceptance criteria.
+9. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
+10. **Finalize (new flow):** on user acceptance, commit the implementation changes, then transition the item to `needs-review`:
+    - phase: `./target/debug/rdm phase update <phase> --status needs-review --no-edit --roadmap <slug> --project rdm`
+    - task: `./target/debug/rdm task update <slug> --status needs-review --no-edit --project rdm`
 
-   **Do NOT emit a `Done:` line in the commit message.** The `rdm-review` skill produces the `Done:` line when review passes; an item sitting in `needs-review` is the sentinel that signals a review is pending. Use the exact roadmap slug / phase stem / task slug from the rdm commands you ran earlier — do NOT invent or paraphrase them.
+    **Do NOT emit a `Done:` line in the commit message.** The `rdm-review` skill produces the `Done:` line when review passes; an item sitting in `needs-review` is the sentinel that signals a review is pending. Use the exact roadmap slug / phase stem / task slug from the rdm commands you ran earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch, which is left for merge to main (review takes it `needs-review` → `reviewed`, and the merge hook flips it to `done`).
 
 ## Side-work
 

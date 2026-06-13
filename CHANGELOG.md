@@ -68,6 +68,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer commits a `Done:` line straight to `done`; instead it commits the
   implementation and transitions the item to `needs-review`, leaving it for
   the `rdm-review` skill to produce the `Done:` line on a passing review.
+- `rdm-do` (the in-repo Claude Code skill plus the shipped CLI skill template)
+  now does its work in an isolated git worktree created via
+  `rdm worktree add <item>` (after marking the item in-progress) instead of the
+  live checkout. All three variants (dogfood, CLI, MCP) also gain two run modes:
+  interactive (default — plan, approval gate, review-with-user) and `--auto`
+  non-interactive (skips the approval and review gates and finalizes
+  autonomously). For unattended Claude Code runs, launch with
+  `--permission-mode auto` (or `bypassPermissions` in a sandbox) so file edits
+  and bash/tool calls don't block on prompts. The finalize contract is
+  unchanged (commit on the branch, set `needs-review`); the branch is left for
+  merge to main. The MCP variant does not yet drive a worktree (`rdm worktree`
+  is CLI-only and MCP skills are Bash-free); it works in the live checkout.
 
 ### Fixed
 

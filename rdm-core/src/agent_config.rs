@@ -1172,6 +1172,22 @@ mod tests {
     }
 
     #[test]
+    fn skill_do_uses_worktree_and_run_modes() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[1].content;
+        // Work happens in an isolated worktree created via the worktree command...
+        assert!(content.contains("worktree add"));
+        // ...and the skill supports a non-interactive run mode...
+        assert!(content.contains("--auto"));
+        // ...with unattended-permission guidance for Claude Code.
+        assert!(content.contains("--permission-mode auto"));
+    }
+
+    #[test]
     fn planning_workflow_includes_done_convention() {
         let content = generate_agent_config(&AgentConfigOptions {
             platform: Platform::AgentsMd,
@@ -1503,6 +1519,22 @@ mod tests {
         // ...and defers the Done: line to the rdm-review skill on a passing review.
         assert!(content.contains("rdm-review"));
         assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
+    }
+
+    #[test]
+    fn mcp_skill_do_supports_run_modes_without_worktree() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[1].content;
+        // The MCP variant supports the interactive/non-interactive run modes...
+        assert!(content.contains("--auto"));
+        assert!(content.contains("Run modes"));
+        // ...but does NOT drive a worktree: `rdm worktree` is CLI-only and the MCP
+        // skill is Bash-free, so worktree isolation is intentionally absent here.
+        assert!(!content.contains("worktree add"));
     }
 
     #[test]
