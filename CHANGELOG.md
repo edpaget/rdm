@@ -6,8 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.12.0] - 2026-06-12
-
 ### Added
 
 - `rdm agent-config pi --hooks` ships the Pi auto-review extension to end-user
@@ -70,13 +68,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `rdm_core::ops::task::filter_tasks` (and the `TaskFilter`/`task_matches`
   building blocks): a reusable task-filtering op over status, priority, and tags
   (AND), now shared by the CLI's `task list` and the TUI's task browser.
+### Changed
+
+- Roadmap aggregate-status computation (the overall `not-started` /
+  `in-progress` / `done` derived from a roadmap's phases) now lives in
+  `rdm-core` so every interface shares one implementation. No behavior change
+  to the server or web UI.
+- `rdm-do` (the in-repo Claude Code skill plus the shipped CLI skill template)
+  now does its work in an isolated git worktree created via
+  `rdm worktree add <item>` (after marking the item in-progress) instead of the
+  live checkout. All three variants (dogfood, CLI, MCP) also gain two run modes:
+  interactive (default — plan, approval gate, review-with-user) and `--auto`
+  non-interactive (skips the approval and review gates and finalizes
+  autonomously). For unattended Claude Code runs, launch with
+  `--permission-mode auto` (or `bypassPermissions` in a sandbox) so file edits
+  and bash/tool calls don't block on prompts. The finalize contract is
+  unchanged (commit on the branch, set `needs-review`); the branch is left for
+  merge to main. The MCP variant does not yet drive a worktree (`rdm worktree`
+  is CLI-only and MCP skills are Bash-free); it works in the live checkout.
+
+## [0.12.0] - 2026-06-12
+
+### Added
+
 - Dogfood Claude Code Stop hook (`.claude/hooks/rdm-review-on-finalize.sh`)
   that reprompts the agent to run the `rdm-review` skill while any rdm item is
   in `needs-review`. The status is the sentinel — there is no marker file — so
   once review moves the item out of `needs-review` the next stop is allowed,
   and `stop_hook_active` prevents reprompt loops. Wires `.claude/` in this repo
-  only; the generalized, end-user-facing version ships via
-  `rdm agent-config claude --hooks` (see above).
+  only; shipping equivalent config from `rdm agent-config` is tracked
+  separately.
 - `needs-review` and `reviewed` statuses for both phases and tasks, accepted
   everywhere statuses are (CLI `--status` on `create`/`update`/`list`/`search`,
   the REST server status selects and request parsing, the MCP tools, the
@@ -90,10 +111,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Roadmap aggregate-status computation (the overall `not-started` /
-  `in-progress` / `done` derived from a roadmap's phases) now lives in
-  `rdm-core` so every interface shares one implementation. No behavior change
-  to the server or web UI.
 - Removed the unmaintained transitive dependency `proc-macro-error2`
   (RUSTSEC-2026-0173) by building CLI tables with tabled's `Builder` API
   instead of its derive feature (and bumping tabled to 0.21). Table output is
@@ -119,18 +136,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer commits a `Done:` line straight to `done`; instead it commits the
   implementation and transitions the item to `needs-review`, leaving it for
   the `rdm-review` skill to produce the `Done:` line on a passing review.
-- `rdm-do` (the in-repo Claude Code skill plus the shipped CLI skill template)
-  now does its work in an isolated git worktree created via
-  `rdm worktree add <item>` (after marking the item in-progress) instead of the
-  live checkout. All three variants (dogfood, CLI, MCP) also gain two run modes:
-  interactive (default — plan, approval gate, review-with-user) and `--auto`
-  non-interactive (skips the approval and review gates and finalizes
-  autonomously). For unattended Claude Code runs, launch with
-  `--permission-mode auto` (or `bypassPermissions` in a sandbox) so file edits
-  and bash/tool calls don't block on prompts. The finalize contract is
-  unchanged (commit on the branch, set `needs-review`); the branch is left for
-  merge to main. The MCP variant does not yet drive a worktree (`rdm worktree`
-  is CLI-only and MCP skills are Bash-free); it works in the live checkout.
 
 ### Fixed
 
