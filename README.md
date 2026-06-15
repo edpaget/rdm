@@ -100,6 +100,18 @@ rdm agent-config claude --skills --hooks --out .
 
 This writes `.claude/hooks/rdm-review-on-finalize.sh` (executable) and registers it under `hooks.Stop` in `.claude/settings.json`, merging non-destructively into any existing settings (other keys are preserved; re-running is idempotent). The hook calls `rdm` on your `PATH` and relies on standard project resolution (`RDM_PROJECT` env var or `default_project` in `rdm.toml`). Use `--user` instead of `--out` to install into `~/.claude/`.
 
+`--hooks` also works for Pi, which has no `settings.json` hooks — the equivalent is a TypeScript extension that subscribes to the `agent_end` lifecycle event:
+
+```bash
+rdm agent-config pi --skills --hooks --out .
+```
+
+This writes `.pi/extensions/rdm-review.ts`, which Pi auto-discovers from its extensions directory (no registration step). On every `agent_end` it calls `rdm` on your `PATH` (standard project resolution) and re-prompts the agent to run the `rdm-review` skill while any item is in `needs-review`. Use `--user` instead of `--out` to install into `~/.pi/agent/extensions/`.
+
+#### Headless / unattended runs
+
+To run the worktree + auto-review loop unattended, drive Pi in a non-interactive mode (`pi -p "<prompt>"`, or `--mode json` / `--mode rpc` for structured I/O) backed by a sandbox (OpenShell, Gondolin, or Docker) so the agent can create worktrees and apply changes without an interactive terminal.
+
 ### MCP Server
 
 For agents that support [Model Context Protocol](https://modelcontextprotocol.io/), rdm exposes all operations as MCP tools — projects, roadmaps, phases, tasks, and search:

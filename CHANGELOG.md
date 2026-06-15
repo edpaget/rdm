@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm agent-config pi --hooks` ships the Pi auto-review extension to end-user
+  projects. It writes `.pi/extensions/rdm-review.ts`, which Pi auto-discovers
+  (no settings registration). The extension subscribes to Pi's `agent_end`
+  lifecycle event and re-prompts the agent to run the `rdm-review` skill while
+  any item is in `needs-review`; it calls `rdm` on `PATH` with standard project
+  resolution (no hard-coded project). The flag is composable with `--skills` and
+  honors `--out <dir>` (project `.pi/`) and `--user` (`~/.pi/agent/`).
 - `rdm agent-config claude --hooks` ships the auto-review Stop hook to end-user
   projects. It writes a generalized `.claude/hooks/rdm-review-on-finalize.sh`
   (executable; calls `rdm` on `PATH` and uses standard project resolution

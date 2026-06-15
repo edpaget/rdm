@@ -652,6 +652,9 @@ fn agent_config_hooks_writes_script_and_settings() {
         parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
         "$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh"
     );
+
+    // No Pi artifacts leak from the Claude path (reciprocal of the pi hook test).
+    assert!(!dir.path().join(".pi").exists());
 }
 
 #[test]
@@ -721,7 +724,7 @@ fn agent_config_hooks_rejects_non_claude_platform() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "--hooks is only supported for the claude platform",
+            "--hooks is only supported for the claude and pi platforms",
         ));
 
     // The gate is validated up front: no instruction file is written before the bail.
@@ -758,6 +761,89 @@ fn agent_config_hooks_user_writes_to_claude_dir() {
     assert!(script.exists(), "expected {}", script.display());
     let settings = home.path().join(".claude/settings.json");
     assert!(settings.exists(), "expected {}", settings.display());
+}
+
+#[test]
+fn agent_config_pi_hooks_writes_extension() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--hooks")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote"));
+
+    let ext = dir.path().join(".pi/extensions/rdm-review.ts");
+    assert!(ext.exists(), "expected {}", ext.display());
+    let content = std::fs::read_to_string(&ext).unwrap();
+    assert!(content.contains("export default"));
+    assert!(content.contains("agent_end"));
+    assert!(content.contains("needs-review"));
+    assert!(content.contains("pi.exec"));
+    assert!(content.contains("sendUserMessage"));
+    assert!(!content.contains("--project"));
+    assert!(!content.contains("target/debug"));
+
+    // No Claude artifacts and no settings file for Pi (auto-discovered).
+    assert!(!dir.path().join(".claude").exists());
+    assert!(!dir.path().join(".pi/settings.json").exists());
+}
+
+#[test]
+fn agent_config_pi_hooks_user_writes_to_pi_agent_dir() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--hooks")
+        .arg("--user")
+        .assert()
+        .success();
+
+    let ext = home.path().join(".pi/agent/extensions/rdm-review.ts");
+    assert!(ext.exists(), "expected {}", ext.display());
+    let content = std::fs::read_to_string(&ext).unwrap();
+    assert!(content.contains("agent_end"));
+}
+
+#[test]
+fn agent_config_pi_hooks_with_skills_writes_both() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--skills")
+        .arg("--hooks")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    assert!(dir.path().join(".pi/skills/rdm-do/SKILL.md").exists());
+    assert!(dir.path().join(".pi/extensions/rdm-review.ts").exists());
+}
+
+#[test]
+fn agent_config_hooks_rejects_unsupported_platform_names_claude_and_pi() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("agents-md")
+        .arg("--hooks")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("claude and pi"));
+
+    // The gate is validated up front: no files are written before the bail.
+    assert!(!dir.path().join("AGENTS.md").exists());
+    assert!(!dir.path().join(".pi").exists());
+    assert!(!dir.path().join(".claude").exists());
 }
 
 #[test]

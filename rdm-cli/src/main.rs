@@ -145,8 +145,9 @@ enum Command {
         /// Generate Claude Code skill files instead of an instruction file.
         #[arg(long)]
         skills: bool,
-        /// Also write the Claude auto-review Stop hook and register it in
-        /// `.claude/settings.json` (claude only; composable with `--skills`).
+        /// Also write the auto-review hook (claude and pi; composable with `--skills`).
+        /// Claude: a Stop hook script registered in `.claude/settings.json`. Pi: a
+        /// `.pi/extensions/rdm-review.ts` extension (auto-discovered, fires on `agent_end`).
         #[arg(long)]
         hooks: bool,
         /// Generate MCP-oriented instructions (referencing MCP tool names instead of CLI commands).
@@ -1254,10 +1255,11 @@ fn run() -> Result<()> {
             // Validate --hooks up front, before any files are written, so an invalid
             // combination never leaves a partially-written instruction/skills tree.
             if hooks {
-                if platform != Platform::Claude {
+                if platform != Platform::Claude && platform != Platform::Pi {
                     bail!(
-                        "--hooks is only supported for the claude platform (it writes a \
-                         Claude Code Stop hook and registers it in .claude/settings.json)"
+                        "--hooks is only supported for the claude and pi platforms (claude \
+                         writes a Stop hook registered in .claude/settings.json; pi writes a \
+                         .pi/extensions/rdm-review.ts extension)"
                     );
                 }
                 if out.is_none() && !user {
@@ -1369,7 +1371,7 @@ fn run() -> Result<()> {
                 }
             }
 
-            if hooks {
+            if hooks && platform == Platform::Claude {
                 // Platform and --out/--user were validated up front. Resolve the
                 // `.claude/` directory that hosts the hook script and settings file.
                 // --user writes under ~/.claude (which user_level_dir already resolves
@@ -1431,6 +1433,31 @@ fn run() -> Result<()> {
                 std::fs::write(&settings_path, &merged)
                     .with_context(|| format!("failed to write {}", settings_path.display()))?;
                 println!("Wrote {}", settings_path.display());
+            } else if hooks && platform == Platform::Pi {
+                // Pi auto-discovers extensions from its `extensions/` directory, so there
+                // is no settings file to register and no executable bit to set — the file
+                // is a TypeScript module, not a directly-executed script. --user writes
+                // under ~/.pi/agent; --out <dir> writes under <dir>/.pi alongside any
+                // skills written above.
+                let pi_base: PathBuf = if user {
+                    platform.user_level_dir().map_err(|e| anyhow::anyhow!(e))?
+                } else {
+                    let dir = out
+                        .as_ref()
+                        .expect("validated: --out present when not --user");
+                    dir.join(".pi")
+                };
+
+                let ext_files = agent_config::generate_pi_extension();
+                let ext_path = pi_base.join(ext_files.extension_relative_path);
+                if let Some(parent) = ext_path.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("failed to create directory {}", parent.display())
+                    })?;
+                }
+                std::fs::write(&ext_path, ext_files.extension_content)
+                    .with_context(|| format!("failed to write {}", ext_path.display()))?;
+                println!("Wrote {}", ext_path.display());
             }
         }
 

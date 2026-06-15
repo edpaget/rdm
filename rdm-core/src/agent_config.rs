@@ -694,6 +694,62 @@ pub fn merge_stop_hook_into_settings(existing: Option<&str>) -> Result<String, A
     serde_json::to_string_pretty(&root).map_err(AgentConfigError::InvalidJson)
 }
 
+// ---------- Pi auto-review extension ----------
+
+/// Returns the auto-review extension script for the Pi coding agent.
+///
+/// The extension subscribes to Pi's `agent_end` lifecycle event and re-prompts the agent
+/// to run `rdm-review` while any rdm item is in `needs-review`. It calls `rdm` on `PATH`
+/// and relies on the standard project resolution chain (`RDM_PROJECT` / `default_project`),
+/// so it is portable across end-user plan repos. It is the Pi analog of
+/// [`generate_claude_stop_hook_script`].
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_pi_extension_script;
+///
+/// let script = generate_pi_extension_script();
+/// assert!(script.contains("agent_end"));
+/// assert!(script.contains("needs-review"));
+/// ```
+pub fn generate_pi_extension_script() -> &'static str {
+    include_str!("templates/extension-review-on-finalize.ts")
+}
+
+/// The files emitted by `rdm agent-config pi --hooks`.
+///
+/// Describes the auto-review extension as a relative path under the target `.pi/`
+/// directory. Unlike Claude, Pi auto-discovers extensions from its `extensions/`
+/// directory, so there is no settings file to register.
+pub struct PiExtensionFiles {
+    /// Relative path for the extension (`extensions/rdm-review.ts`).
+    pub extension_relative_path: &'static str,
+    /// The full content of the extension.
+    pub extension_content: &'static str,
+}
+
+/// Returns the file plan for the Pi auto-review extension.
+///
+/// The caller writes [`PiExtensionFiles::extension_content`] to
+/// [`PiExtensionFiles::extension_relative_path`]. No executable bit and no settings merge
+/// are needed — the file is a TypeScript module auto-discovered by Pi.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_pi_extension;
+///
+/// let files = generate_pi_extension();
+/// assert_eq!(files.extension_relative_path, "extensions/rdm-review.ts");
+/// ```
+pub fn generate_pi_extension() -> PiExtensionFiles {
+    PiExtensionFiles {
+        extension_relative_path: "extensions/rdm-review.ts",
+        extension_content: generate_pi_extension_script(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1866,5 +1922,34 @@ mod tests {
     fn merge_rejects_invalid_json() {
         let err = merge_stop_hook_into_settings(Some("{not json")).unwrap_err();
         assert!(matches!(err, AgentConfigError::InvalidJson(_)));
+    }
+
+    // --- Pi auto-review extension tests ---
+
+    #[test]
+    fn pi_extension_script_is_generalized() {
+        let script = generate_pi_extension_script();
+        // Subscribes to the agent_end lifecycle event and queries needs-review via rdm.
+        assert!(script.contains("agent_end"));
+        assert!(script.contains("needs-review"));
+        assert!(script.contains("pi.exec"));
+        assert!(script.contains("sendUserMessage"));
+        assert!(script.contains("export default"));
+        // Generalized: no dev-binary path and no hard-coded project.
+        assert!(
+            !script.contains("--project"),
+            "extension should not hard-code a project"
+        );
+        assert!(
+            !script.contains("target/debug"),
+            "extension should call rdm on PATH, not the dev binary"
+        );
+    }
+
+    #[test]
+    fn generate_pi_extension_paths() {
+        let files = generate_pi_extension();
+        assert_eq!(files.extension_relative_path, "extensions/rdm-review.ts");
+        assert!(files.extension_content.contains("agent_end"));
     }
 }
