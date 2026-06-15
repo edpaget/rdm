@@ -51,6 +51,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one screen — restoring the previous cursor position — and `Esc`/`h` from the
   project list quits. Statuses are shown as text labels with ASCII symbols so
   they remain distinguishable without color.
+- The `rdm-tui` terminal UI now opens a phase to a detail screen: press `Enter`
+  on a phase to see a metadata block (status, completion date, short commit SHA,
+  tags) above the phase body rendered as terminal markdown — headings, bold/
+  italic/strikethrough, lists, code blocks, GFM tables, and block quotes are all
+  visually distinct without color. Cycle between phases with `n`/`p` (or the
+  arrow keys), and scroll long bodies with `j`/`k`, `PageUp`/`PageDown`, and
+  `Ctrl-u`/`Ctrl-d`. `Esc`/`h` returns to the phase list with its cursor intact.
 - Dogfood Claude Code Stop hook (`.claude/hooks/rdm-review-on-finalize.sh`)
   that reprompts the agent to run the `rdm-review` skill while any rdm item is
   in `needs-review`. The status is the sentinel — there is no marker file — so

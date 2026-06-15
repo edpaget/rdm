@@ -19,6 +19,8 @@ path = "src/main.rs"
 rdm-core = { path = "../rdm-core" }
 rdm-store-fs = { path = "../rdm-store-fs" }
 anyhow = { workspace = true }
+chrono = { workspace = true }
+pulldown-cmark = { workspace = true }
 ratatui = { workspace = true }
 
 [dev-dependencies]

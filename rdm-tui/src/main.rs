@@ -25,6 +25,7 @@ use rdm_core::ops::project::list_projects;
 use rdm_store_fs::FsStore;
 
 mod app;
+mod markdown;
 mod paths;
 mod ui;
 mod view;

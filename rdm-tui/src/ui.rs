@@ -10,7 +10,10 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{App, Screen};
-use crate::view::{PhaseRow, RoadmapDetail, RoadmapRow, roadmap_status_label, status_label};
+use crate::markdown::render_markdown;
+use crate::view::{
+    PhaseDetailView, PhaseRow, RoadmapDetail, RoadmapRow, roadmap_status_label, status_label,
+};
 
 /// Renders the active screen into `frame`.
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -28,9 +31,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             rows,
             state,
         } => render_roadmap_list(frame, project, rows, state, footer),
-        Screen::RoadmapDetail { detail, state } => {
+        Screen::RoadmapDetail { detail, state, .. } => {
             render_roadmap_detail(frame, detail, state, footer)
         }
+        Screen::PhaseDetail {
+            phases,
+            index,
+            scroll,
+        } => render_phase_detail(
+            frame,
+            &phases[*index],
+            *index,
+            phases.len(),
+            *scroll,
+            footer,
+        ),
     }
 }
 
@@ -147,6 +162,65 @@ fn render_roadmap_detail(
     frame.render_stateful_widget(list, chunks[1], state);
 }
 
+/// Renders the phase-detail screen: a bordered metadata header above a bordered,
+/// scrollable, markdown-rendered body.
+///
+/// `index`/`total` drive the `phase i/n` title; `scroll` is the body's vertical
+/// offset in logical lines. The body re-wraps to the current width on every
+/// draw, so a terminal resize needs no extra bookkeeping.
+fn render_phase_detail(
+    frame: &mut Frame,
+    view: &PhaseDetailView,
+    index: usize,
+    total: usize,
+    scroll: u16,
+    footer: Option<&str>,
+) {
+    let area = frame.area();
+    let meta = phase_meta_lines(view);
+    // +2 for the header block's top and bottom borders.
+    let header_height = u16::try_from(meta.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2);
+    let chunks =
+        Layout::vertical([Constraint::Length(header_height), Constraint::Min(1)]).split(area);
+
+    let header_block =
+        Block::bordered().title(format!("phase {}/{} — {}", index + 1, total, view.roadmap));
+    let header = Paragraph::new(meta).block(header_block);
+    frame.render_widget(header, chunks[0]);
+
+    let body_block = Block::bordered().title("body").title_bottom(Line::from(
+        footer.unwrap_or("j/k: scroll  n/p: prev/next  esc: back  q: quit"),
+    ));
+    let body = Paragraph::new(render_markdown(&view.body))
+        .block(body_block)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(body, chunks[1]);
+}
+
+/// Builds the metadata lines shown in the phase-detail header: the phase's
+/// numbered title, its status badge, and (when present) completion date, short
+/// commit SHA, and tags.
+fn phase_meta_lines(view: &PhaseDetailView) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(format!("{}. {}", view.number, view.title)),
+        Line::from(format!("status: {}", status_label(view.status))),
+    ];
+    if let Some(date) = view.completed {
+        lines.push(Line::from(format!("completed: {date}")));
+    }
+    if let Some(commit) = &view.commit {
+        let short: String = commit.chars().take(7).collect();
+        lines.push(Line::from(format!("commit: {short}")));
+    }
+    if !view.tags.is_empty() {
+        lines.push(Line::from(format!("tags: {}", view.tags.join(", "))));
+    }
+    lines
+}
+
 /// Formats a single phase row into a line: `<number>. <title>  <status badge>`.
 fn phase_row_line(row: &PhaseRow) -> String {
     format!(
@@ -247,6 +321,67 @@ mod tests {
             "│                                                                              │",
             "└j/k: move  enter: open  esc: back  q: quit────────────────────────────────────┘",
         ]);
+    }
+
+    /// Collects a test backend's buffer into one newline-joined string.
+    fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn phase_detail_renders_distinct_block_kinds() {
+        let body = "\
+# Title
+
+- one
+- two
+
+```
+let x = 1;
+```
+
+| a | b |
+|---|---|
+| 1 | 2 |
+";
+        let view = PhaseDetailView {
+            roadmap: "alpha".to_string(),
+            number: 2,
+            title: "Second".to_string(),
+            status: PhaseStatus::InProgress,
+            completed: None,
+            commit: Some("abcdef1234567".to_string()),
+            tags: vec!["ui".to_string()],
+            body: body.to_string(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(50, 28)).unwrap();
+        terminal
+            .draw(|frame| render_phase_detail(frame, &view, 1, 3, 0, None))
+            .unwrap();
+        let text = buffer_text(&terminal);
+
+        // Header metadata.
+        assert!(text.contains("phase 2/3 — alpha"), "{text}");
+        assert!(text.contains("2. Second"), "{text}");
+        assert!(text.contains("in-progress"), "{text}");
+        assert!(text.contains("commit: abcdef1"), "{text}");
+        assert!(text.contains("tags: ui"), "{text}");
+
+        // Each block kind renders distinctly in the body.
+        assert!(text.contains("# Title"), "heading missing: {text}");
+        assert!(text.contains("• one"), "list bullet missing: {text}");
+        assert!(text.contains("let x = 1;"), "code block missing: {text}");
+        assert!(text.contains("a | b"), "table header missing: {text}");
+        assert!(text.contains('+'), "table separator missing: {text}");
     }
 
     #[test]

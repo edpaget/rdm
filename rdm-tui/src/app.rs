@@ -14,7 +14,7 @@ use rdm_core::ops::phase::list_phases;
 use rdm_core::ops::roadmap::{computed_status, list_roadmaps};
 use rdm_store_fs::FsStore;
 
-use crate::view::{PhaseRow, RoadmapDetail, RoadmapRow};
+use crate::view::{PhaseDetailView, PhaseRow, RoadmapDetail, RoadmapRow, build_phase_details};
 
 /// A single screen in the navigation stack.
 pub enum Screen {
@@ -34,10 +34,25 @@ pub enum Screen {
     },
     /// A single roadmap's body and phase list.
     RoadmapDetail {
+        /// Project the roadmap belongs to; needed to load phase bodies on
+        /// drill-in.
+        project: String,
         /// The roadmap detail being shown.
         detail: RoadmapDetail,
         /// Selection state for the phase list.
         state: ListState,
+    },
+    /// A single phase's metadata and markdown-rendered body.
+    ///
+    /// All phases of the roadmap are loaded once on entry, so prev/next is pure
+    /// indexing. `scroll` is the body's vertical offset in logical lines.
+    PhaseDetail {
+        /// Every phase of the roadmap, in number order.
+        phases: Vec<PhaseDetailView>,
+        /// Index of the phase currently shown.
+        index: usize,
+        /// Vertical scroll offset into the rendered body.
+        scroll: u16,
     },
 }
 
@@ -95,18 +110,63 @@ impl App {
         // A fresh key dismisses any stale status message; a failing `enter()`
         // re-sets one via the caller.
         self.status_message = None;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_quit = true;
-            }
+            KeyCode::Char('c') if ctrl => self.should_quit = true,
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc | KeyCode::Char('h') => self.back(),
             KeyCode::Enter => self.enter()?,
+            // Movement is screen-specific: the phase-detail screen scrolls its
+            // body and cycles phases; list screens move a selection cursor.
+            _ if matches!(self.stack.last(), Some(Screen::PhaseDetail { .. })) => {
+                self.handle_phase_key(key, ctrl);
+            }
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.select_previous(),
             _ => {}
         }
         Ok(())
+    }
+
+    /// Handles a movement key while a [`Screen::PhaseDetail`] is active.
+    ///
+    /// `j`/`Down` and `k`/`Up` scroll one line; `PageDown`/`PageUp` and
+    /// `Ctrl-d`/`Ctrl-u` scroll by a (half-)page. `n`/`Right` and `p`/`Left`
+    /// move to the next/previous phase, resetting the scroll. Scrolling clamps
+    /// to `[0, logical_lines - 1]` so the last line can always reach the top.
+    fn handle_phase_key(&mut self, key: KeyEvent, ctrl: bool) {
+        /// Page size used by `PageUp`/`PageDown`; half of it for `Ctrl-u`/`Ctrl-d`.
+        const PAGE: u16 = 20;
+        let Some(Screen::PhaseDetail {
+            phases,
+            index,
+            scroll,
+        }) = self.stack.last_mut()
+        else {
+            return;
+        };
+        let max = max_scroll(&phases[*index]);
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1).min(max),
+            KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+            KeyCode::PageDown => *scroll = scroll.saturating_add(PAGE).min(max),
+            KeyCode::PageUp => *scroll = scroll.saturating_sub(PAGE),
+            KeyCode::Char('d') if ctrl => *scroll = scroll.saturating_add(PAGE / 2).min(max),
+            KeyCode::Char('u') if ctrl => *scroll = scroll.saturating_sub(PAGE / 2),
+            KeyCode::Char('n') | KeyCode::Right => {
+                if *index + 1 < phases.len() {
+                    *index += 1;
+                    *scroll = 0;
+                }
+            }
+            KeyCode::Char('p') | KeyCode::Left => {
+                if *index > 0 {
+                    *index -= 1;
+                    *scroll = 0;
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Drills into the selected item on the active screen, pushing a new screen.
@@ -152,9 +212,36 @@ impl App {
                 let slug = row.slug.clone();
                 let detail = load_roadmap_detail(&self.store, &project, &slug)?;
                 let state = initial_state(detail.phases.len());
-                self.stack.push(Screen::RoadmapDetail { detail, state });
+                self.stack.push(Screen::RoadmapDetail {
+                    project,
+                    detail,
+                    state,
+                });
             }
-            Screen::RoadmapDetail { .. } => {}
+            Screen::RoadmapDetail {
+                project,
+                detail,
+                state,
+            } => {
+                let Some(idx) = state.selected() else {
+                    return Ok(());
+                };
+                let project = project.clone();
+                let slug = detail.slug.clone();
+                let phases = list_phases(&self.store, &project, &slug)
+                    .with_context(|| format!("failed to list phases for roadmap '{slug}'"))?;
+                let views = build_phase_details(&slug, phases);
+                if views.is_empty() {
+                    return Ok(());
+                }
+                let index = idx.min(views.len() - 1);
+                self.stack.push(Screen::PhaseDetail {
+                    phases: views,
+                    index,
+                    scroll: 0,
+                });
+            }
+            Screen::PhaseDetail { .. } => {}
         }
         Ok(())
     }
@@ -171,20 +258,33 @@ impl App {
     }
 
     /// Number of selectable items on the active screen.
+    ///
+    /// [`Screen::PhaseDetail`] has no list cursor (it scrolls instead), so it
+    /// reports zero; the movement keys are routed away from selection there.
     fn active_len(&self) -> usize {
         match self.stack.last().expect("stack is never empty") {
             Screen::Home { .. } => self.projects.len(),
             Screen::RoadmapList { rows, .. } => rows.len(),
             Screen::RoadmapDetail { detail, .. } => detail.phases.len(),
+            Screen::PhaseDetail { .. } => 0,
         }
     }
 
     /// Mutable access to the active screen's selection state.
+    ///
+    /// # Panics
+    ///
+    /// Panics on [`Screen::PhaseDetail`], which has no selection state. Callers
+    /// (the `select_*` helpers) only reach this for list screens; phase-detail
+    /// movement is routed through [`handle_phase_key`](App::handle_phase_key).
     fn active_state_mut(&mut self) -> &mut ListState {
         match self.stack.last_mut().expect("stack is never empty") {
             Screen::Home { state } => state,
             Screen::RoadmapList { state, .. } => state,
             Screen::RoadmapDetail { state, .. } => state,
+            Screen::PhaseDetail { .. } => {
+                unreachable!("phase-detail movement does not use a list cursor")
+            }
         }
     }
 
@@ -216,6 +316,16 @@ impl App {
         };
         state.select(Some(prev));
     }
+}
+
+/// Maximum scroll offset for a phase body: `logical_lines - 1`.
+///
+/// Clamping to this (rather than to a viewport-relative value) guarantees the
+/// last rendered line can always reach the top of the body pane, so every line
+/// stays reachable even after the widget re-wraps to a narrow width.
+fn max_scroll(view: &PhaseDetailView) -> u16 {
+    let lines = crate::markdown::render_markdown(&view.body).lines.len();
+    u16::try_from(lines.saturating_sub(1)).unwrap_or(u16::MAX)
 }
 
 /// Builds a [`ListState`] selecting the first item when `len` is non-zero.
@@ -468,13 +578,17 @@ mod tests {
     }
 
     #[test]
-    fn enter_is_noop_on_detail_leaf() {
+    fn enter_on_roadmap_detail_opens_phase_detail() {
         let (mut app, _tmp) = populated_app();
         app.handle_key(press(KeyCode::Enter)).unwrap();
         app.handle_key(press(KeyCode::Enter)).unwrap();
         assert_eq!(app.stack.len(), 3);
         app.handle_key(press(KeyCode::Enter)).unwrap();
-        assert_eq!(app.stack.len(), 3);
+        assert_eq!(app.stack.len(), 4);
+        assert!(matches!(
+            app.stack.last().unwrap(),
+            Screen::PhaseDetail { .. }
+        ));
     }
 
     #[test]
@@ -537,6 +651,150 @@ mod tests {
         assert_eq!(beta.slug, "beta");
         assert_eq!(beta.status, RoadmapStatus::NotStarted);
         assert_eq!((beta.done, beta.total), (0, 1));
+    }
+
+    /// Drills home → list → detail for "alpha" (2 phases), then opens the
+    /// selected phase. Returns the app at the `PhaseDetail` screen.
+    fn open_phase_detail() -> (App, TempDir) {
+        let (mut app, tmp) = populated_app();
+        app.enter().unwrap(); // home -> list (alpha selected)
+        app.enter().unwrap(); // list -> detail for alpha
+        app.enter().unwrap(); // detail -> phase detail (phase 1 selected)
+        (app, tmp)
+    }
+
+    #[test]
+    fn enter_from_detail_opens_phase_at_selected_index() {
+        let (mut app, _tmp) = populated_app();
+        app.enter().unwrap(); // home -> list
+        app.enter().unwrap(); // list -> detail
+        // Select the second phase before drilling in.
+        app.handle_key(press(KeyCode::Down)).unwrap();
+        app.enter().unwrap();
+        let Screen::PhaseDetail { phases, index, .. } = app.stack.last().unwrap() else {
+            panic!("expected PhaseDetail");
+        };
+        assert_eq!(phases.len(), 2);
+        assert_eq!(*index, 1);
+        assert_eq!(phases[1].number, 2);
+        assert_eq!(phases[1].roadmap, "alpha");
+    }
+
+    #[test]
+    fn enter_is_noop_on_phase_detail_leaf() {
+        let (mut app, _tmp) = open_phase_detail();
+        assert_eq!(app.stack.len(), 4);
+        app.handle_key(press(KeyCode::Enter)).unwrap();
+        assert_eq!(app.stack.len(), 4);
+    }
+
+    #[test]
+    fn n_and_p_cycle_phases_and_clamp() {
+        let (mut app, _tmp) = open_phase_detail();
+        // Starts at phase 1; `p` at the start is a no-op.
+        app.handle_key(press(KeyCode::Char('p'))).unwrap();
+        assert_eq!(phase_index(&app), 0);
+        // `n` advances to phase 2, then clamps at the end.
+        app.handle_key(press(KeyCode::Char('n'))).unwrap();
+        assert_eq!(phase_index(&app), 1);
+        app.handle_key(press(KeyCode::Char('n'))).unwrap();
+        assert_eq!(phase_index(&app), 1);
+        // `p` walks back.
+        app.handle_key(press(KeyCode::Char('p'))).unwrap();
+        assert_eq!(phase_index(&app), 0);
+    }
+
+    #[test]
+    fn switching_phase_resets_scroll() {
+        let (mut app, _tmp) = open_phase_detail();
+        set_scroll(&mut app, 1);
+        app.handle_key(press(KeyCode::Char('n'))).unwrap();
+        assert_eq!(phase_scroll(&app), 0);
+    }
+
+    #[test]
+    fn j_and_k_scroll_and_clamp() {
+        // A body with several logical lines so scrolling has room.
+        let (mut app, _tmp) = open_phase_detail();
+        // The fixture bodies are short ("First"/"Second" have empty bodies), so
+        // max_scroll is 0 and scrolling is pinned. Verify the clamp at 0 first.
+        app.handle_key(press(KeyCode::Char('k'))).unwrap();
+        assert_eq!(phase_scroll(&app), 0);
+        app.handle_key(press(KeyCode::Char('j'))).unwrap();
+        assert_eq!(phase_scroll(&app), 0);
+    }
+
+    #[test]
+    fn j_scrolls_down_on_a_long_body() {
+        let phases = vec![PhaseDetailView {
+            roadmap: "alpha".to_string(),
+            number: 1,
+            title: "First".to_string(),
+            status: PhaseStatus::InProgress,
+            completed: None,
+            commit: None,
+            tags: Vec::new(),
+            body: "a\n\nb\n\nc\n\nd\n".to_string(),
+        }];
+        let tmp = TempDir::new().unwrap();
+        let mut app = App::new(FsStore::new(tmp.path()), vec!["demo".to_string()]);
+        app.stack.push(Screen::PhaseDetail {
+            phases,
+            index: 0,
+            scroll: 0,
+        });
+        app.handle_key(press(KeyCode::Char('j'))).unwrap();
+        assert_eq!(phase_scroll(&app), 1);
+        app.handle_key(press(KeyCode::Char('k'))).unwrap();
+        assert_eq!(phase_scroll(&app), 0);
+        // Hammer `j` past the end: clamps to logical_lines - 1.
+        let max = max_scroll(phase_view(&app));
+        for _ in 0..50 {
+            app.handle_key(press(KeyCode::Char('j'))).unwrap();
+        }
+        assert_eq!(phase_scroll(&app), max);
+    }
+
+    #[test]
+    fn esc_pops_phase_detail_preserving_phase_cursor() {
+        let (mut app, _tmp) = populated_app();
+        app.enter().unwrap(); // home -> list
+        app.enter().unwrap(); // list -> detail
+        app.handle_key(press(KeyCode::Down)).unwrap(); // select phase 2
+        app.enter().unwrap(); // detail -> phase detail
+        app.handle_key(press(KeyCode::Esc)).unwrap(); // back to detail
+        let Screen::RoadmapDetail { state, .. } = app.stack.last().unwrap() else {
+            panic!("expected RoadmapDetail");
+        };
+        assert_eq!(state.selected(), Some(1));
+    }
+
+    fn phase_index(app: &App) -> usize {
+        match app.stack.last().unwrap() {
+            Screen::PhaseDetail { index, .. } => *index,
+            _ => panic!("expected PhaseDetail"),
+        }
+    }
+
+    fn phase_scroll(app: &App) -> u16 {
+        match app.stack.last().unwrap() {
+            Screen::PhaseDetail { scroll, .. } => *scroll,
+            _ => panic!("expected PhaseDetail"),
+        }
+    }
+
+    fn phase_view(app: &App) -> &PhaseDetailView {
+        match app.stack.last().unwrap() {
+            Screen::PhaseDetail { phases, index, .. } => &phases[*index],
+            _ => panic!("expected PhaseDetail"),
+        }
+    }
+
+    fn set_scroll(app: &mut App, value: u16) {
+        match app.stack.last_mut().unwrap() {
+            Screen::PhaseDetail { scroll, .. } => *scroll = value,
+            _ => panic!("expected PhaseDetail"),
+        }
     }
 
     #[test]
