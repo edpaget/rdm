@@ -7,7 +7,7 @@
 
 use chrono::NaiveDate;
 use rdm_core::document::Document;
-use rdm_core::model::{Phase, PhaseStatus, Priority};
+use rdm_core::model::{Phase, PhaseStatus, Priority, Task, TaskStatus};
 use rdm_core::ops::roadmap::RoadmapStatus;
 
 /// A single row in the roadmap-list screen.
@@ -99,6 +99,90 @@ pub fn build_phase_details(
         .collect()
 }
 
+/// A single row in the task-list screen.
+pub struct TaskRow {
+    /// Task slug (its file stem).
+    pub slug: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Current task status.
+    pub status: TaskStatus,
+    /// Priority level.
+    pub priority: Priority,
+    /// Tags for categorization.
+    pub tags: Vec<String>,
+}
+
+/// The task-detail screen: a task's metadata plus its full markdown body.
+pub struct TaskDetailView {
+    /// Task slug (its file stem).
+    pub slug: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Current task status.
+    pub status: TaskStatus,
+    /// Priority level.
+    pub priority: Priority,
+    /// Date the task was created.
+    pub created: NaiveDate,
+    /// Completion date, if the task is done.
+    pub completed: Option<NaiveDate>,
+    /// Git commit SHA recorded at completion, if any.
+    pub commit: Option<String>,
+    /// Tags for categorization.
+    pub tags: Vec<String>,
+    /// Markdown body, rendered through [`crate::markdown::render_markdown`].
+    pub body: String,
+}
+
+/// Builds one [`TaskRow`] per task from [`list_tasks`] output, preserving order.
+///
+/// [`list_tasks`]: rdm_core::ops::task::list_tasks
+pub fn build_task_rows(tasks: &[(String, Document<Task>)]) -> Vec<TaskRow> {
+    tasks
+        .iter()
+        .map(|(slug, doc)| TaskRow {
+            slug: slug.clone(),
+            title: doc.frontmatter.title.clone(),
+            status: doc.frontmatter.status,
+            priority: doc.frontmatter.priority,
+            tags: doc.frontmatter.tags.clone().unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// Builds a [`TaskDetailView`] for drill-in from a single `(slug, task)` pair.
+pub fn task_detail_view(task: &(String, Document<Task>)) -> TaskDetailView {
+    let (slug, doc) = task;
+    TaskDetailView {
+        slug: slug.clone(),
+        title: doc.frontmatter.title.clone(),
+        status: doc.frontmatter.status,
+        priority: doc.frontmatter.priority,
+        created: doc.frontmatter.created,
+        completed: doc.frontmatter.completed,
+        commit: doc.frontmatter.commit.clone(),
+        tags: doc.frontmatter.tags.clone().unwrap_or_default(),
+        body: doc.body.clone(),
+    }
+}
+
+/// Maps a [`TaskStatus`] to a `"<symbol> <label>"` string.
+///
+/// Mirrors [`status_label`]: the text label is the colorless-terminal signal,
+/// and the leading ASCII glyph just aids quick scanning.
+pub fn task_status_label(status: TaskStatus) -> String {
+    let (symbol, label) = match status {
+        TaskStatus::Open => ("[ ]", "open"),
+        TaskStatus::InProgress => ("[~]", "in-progress"),
+        TaskStatus::NeedsReview => ("[?]", "needs-review"),
+        TaskStatus::Reviewed => ("[+]", "reviewed"),
+        TaskStatus::Done => ("[x]", "done"),
+        TaskStatus::WontFix => ("[-]", "wont-fix"),
+    };
+    format!("{symbol} {label}")
+}
+
 /// Maps a [`PhaseStatus`] to a `"<symbol> <label>"` string.
 ///
 /// The label is the signal that survives a colorless terminal; the leading
@@ -156,6 +240,33 @@ mod tests {
             PhaseStatus::WontFix,
         ] {
             assert!(status_label(status).is_ascii());
+        }
+    }
+
+    #[test]
+    fn task_status_label_covers_all_task_statuses() {
+        assert_eq!(task_status_label(TaskStatus::Open), "[ ] open");
+        assert_eq!(task_status_label(TaskStatus::InProgress), "[~] in-progress");
+        assert_eq!(
+            task_status_label(TaskStatus::NeedsReview),
+            "[?] needs-review"
+        );
+        assert_eq!(task_status_label(TaskStatus::Reviewed), "[+] reviewed");
+        assert_eq!(task_status_label(TaskStatus::Done), "[x] done");
+        assert_eq!(task_status_label(TaskStatus::WontFix), "[-] wont-fix");
+    }
+
+    #[test]
+    fn task_status_labels_are_ascii() {
+        for status in [
+            TaskStatus::Open,
+            TaskStatus::InProgress,
+            TaskStatus::NeedsReview,
+            TaskStatus::Reviewed,
+            TaskStatus::Done,
+            TaskStatus::WontFix,
+        ] {
+            assert!(task_status_label(status).is_ascii());
         }
     }
 

@@ -2,7 +2,6 @@ use anyhow::{Context, Result, bail};
 use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
-use rdm_core::model::{TaskStatus, TaskStatusFilter};
 
 use super::{map_body_clobber, maybe_print_uncommitted_hint, maybe_regenerate_index, resolve_body};
 use crate::paths;
@@ -126,26 +125,14 @@ pub fn run(
             let all_tasks =
                 rdm_core::ops::task::list_tasks(store, &project).context("failed to list tasks")?;
 
-            let filtered: Vec<(String, _)> = all_tasks
-                .into_iter()
-                .filter(|(_, doc)| match status {
-                    Some(TaskStatusFilter::All) => true,
-                    Some(TaskStatusFilter::Status(s)) => doc.frontmatter.status == s,
-                    None => {
-                        doc.frontmatter.status == TaskStatus::Open
-                            || doc.frontmatter.status == TaskStatus::InProgress
-                    }
-                })
-                .filter(|(_, doc)| priority.is_none_or(|p| doc.frontmatter.priority == p))
-                .filter(|(_, doc)| {
-                    tag.as_ref().is_none_or(|t| {
-                        doc.frontmatter
-                            .tags
-                            .as_ref()
-                            .is_some_and(|tags| tags.contains(t))
-                    })
-                })
-                .collect();
+            let filtered = rdm_core::ops::task::filter_tasks(
+                all_tasks,
+                &rdm_core::ops::task::TaskFilter {
+                    status,
+                    priority,
+                    tags: tag.into_iter().collect(),
+                },
+            );
 
             match format {
                 OutputFormat::Human => print!("{}", display::format_task_list(&filtered)),

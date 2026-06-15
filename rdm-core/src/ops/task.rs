@@ -4,8 +4,62 @@ use chrono::Local;
 
 use crate::document::Document;
 use crate::error::{Error, Result};
-use crate::model::{Phase, PhaseStatus, Priority, Roadmap, Task, TaskStatus};
+use crate::model::{Phase, PhaseStatus, Priority, Roadmap, Task, TaskStatus, TaskStatusFilter};
 use crate::store::{DirEntryKind, Store};
+
+/// Criteria for filtering a list of tasks.
+///
+/// Each field narrows the result set independently; a task is kept only if it
+/// satisfies all populated criteria. The default value (all fields empty) keeps
+/// the "active work" set — open or in-progress tasks of any priority and tags.
+#[derive(Debug, Clone, Default)]
+pub struct TaskFilter {
+    /// Status criterion. `None` keeps open **or** in-progress tasks (the
+    /// "active work" default); `Some(All)` keeps any status; `Some(Status(s))`
+    /// keeps only tasks with exactly status `s`.
+    pub status: Option<TaskStatusFilter>,
+    /// Priority criterion. `None` keeps tasks of any priority; `Some(p)` keeps
+    /// only tasks with exactly priority `p`.
+    pub priority: Option<Priority>,
+    /// Tag criterion. Empty keeps tasks regardless of tags; otherwise a task is
+    /// kept only if it carries **all** of these tags (logical AND).
+    pub tags: Vec<String>,
+}
+
+/// Returns whether `task` satisfies every populated criterion in `filter`.
+///
+/// Status semantics match the CLI's `task list`: `filter.status` of `None`
+/// keeps open or in-progress tasks, `Some(All)` keeps any status, and
+/// `Some(Status(s))` keeps an exact match. Priority of `None` matches any.
+/// Tags are matched as a logical AND — every tag in `filter.tags` must be
+/// present on the task (an empty list imposes no tag constraint).
+pub fn task_matches(task: &Task, filter: &TaskFilter) -> bool {
+    let status_ok = match filter.status {
+        Some(TaskStatusFilter::All) => true,
+        Some(TaskStatusFilter::Status(s)) => task.status == s,
+        None => task.status == TaskStatus::Open || task.status == TaskStatus::InProgress,
+    };
+    let priority_ok = filter.priority.is_none_or(|p| task.priority == p);
+    let tags_ok = filter
+        .tags
+        .iter()
+        .all(|t| task.tags.as_ref().is_some_and(|tags| tags.contains(t)));
+    status_ok && priority_ok && tags_ok
+}
+
+/// Filters `tasks` to those satisfying `filter`, preserving order.
+///
+/// An owned convenience wrapper over [`task_matches`] for callers that hold a
+/// `Vec` of `(slug, Document<Task>)` pairs (e.g. [`list_tasks`] output).
+pub fn filter_tasks(
+    tasks: Vec<(String, Document<Task>)>,
+    filter: &TaskFilter,
+) -> Vec<(String, Document<Task>)> {
+    tasks
+        .into_iter()
+        .filter(|(_, doc)| task_matches(&doc.frontmatter, filter))
+        .collect()
+}
 
 /// Creates a new task within a project.
 ///
@@ -225,4 +279,180 @@ pub fn promote_task(
     store.commit()?;
 
     Ok(roadmap_doc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn task(status: TaskStatus, priority: Priority, tags: &[&str]) -> Task {
+        Task {
+            project: "demo".to_string(),
+            title: "A task".to_string(),
+            status,
+            priority,
+            created: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            tags: if tags.is_empty() {
+                None
+            } else {
+                Some(tags.iter().map(|s| s.to_string()).collect())
+            },
+            completed: None,
+            commit: None,
+        }
+    }
+
+    #[test]
+    fn default_filter_keeps_open_and_in_progress() {
+        let filter = TaskFilter::default();
+        assert!(task_matches(
+            &task(TaskStatus::Open, Priority::Medium, &[]),
+            &filter
+        ));
+        assert!(task_matches(
+            &task(TaskStatus::InProgress, Priority::Medium, &[]),
+            &filter
+        ));
+        assert!(!task_matches(
+            &task(TaskStatus::Done, Priority::Medium, &[]),
+            &filter
+        ));
+        assert!(!task_matches(
+            &task(TaskStatus::WontFix, Priority::Medium, &[]),
+            &filter
+        ));
+    }
+
+    #[test]
+    fn all_status_keeps_every_status() {
+        let filter = TaskFilter {
+            status: Some(TaskStatusFilter::All),
+            ..Default::default()
+        };
+        for status in [
+            TaskStatus::Open,
+            TaskStatus::InProgress,
+            TaskStatus::NeedsReview,
+            TaskStatus::Reviewed,
+            TaskStatus::Done,
+            TaskStatus::WontFix,
+        ] {
+            assert!(task_matches(&task(status, Priority::Low, &[]), &filter));
+        }
+    }
+
+    #[test]
+    fn exact_status_matches_only_that_status() {
+        let filter = TaskFilter {
+            status: Some(TaskStatusFilter::Status(TaskStatus::Done)),
+            ..Default::default()
+        };
+        assert!(task_matches(
+            &task(TaskStatus::Done, Priority::Low, &[]),
+            &filter
+        ));
+        assert!(!task_matches(
+            &task(TaskStatus::Open, Priority::Low, &[]),
+            &filter
+        ));
+    }
+
+    #[test]
+    fn priority_filter_matches_exactly() {
+        let filter = TaskFilter {
+            status: Some(TaskStatusFilter::All),
+            priority: Some(Priority::High),
+            ..Default::default()
+        };
+        assert!(task_matches(
+            &task(TaskStatus::Open, Priority::High, &[]),
+            &filter
+        ));
+        assert!(!task_matches(
+            &task(TaskStatus::Open, Priority::Low, &[]),
+            &filter
+        ));
+    }
+
+    #[test]
+    fn single_tag_filter() {
+        let filter = TaskFilter {
+            status: Some(TaskStatusFilter::All),
+            tags: vec!["bug".to_string()],
+            ..Default::default()
+        };
+        assert!(task_matches(
+            &task(TaskStatus::Open, Priority::Low, &["bug", "ui"]),
+            &filter
+        ));
+        assert!(!task_matches(
+            &task(TaskStatus::Open, Priority::Low, &["ui"]),
+            &filter
+        ));
+        assert!(!task_matches(
+            &task(TaskStatus::Open, Priority::Low, &[]),
+            &filter
+        ));
+    }
+
+    #[test]
+    fn multi_tag_filter_is_and() {
+        let filter = TaskFilter {
+            status: Some(TaskStatusFilter::All),
+            tags: vec!["bug".to_string(), "ui".to_string()],
+            ..Default::default()
+        };
+        assert!(task_matches(
+            &task(TaskStatus::Open, Priority::Low, &["bug", "ui", "extra"]),
+            &filter
+        ));
+        // Missing one of the required tags fails the AND.
+        assert!(!task_matches(
+            &task(TaskStatus::Open, Priority::Low, &["bug"]),
+            &filter
+        ));
+    }
+
+    #[test]
+    fn empty_tag_filter_imposes_no_constraint() {
+        let filter = TaskFilter {
+            status: Some(TaskStatusFilter::All),
+            ..Default::default()
+        };
+        assert!(task_matches(
+            &task(TaskStatus::Open, Priority::Low, &[]),
+            &filter
+        ));
+    }
+
+    #[test]
+    fn filter_tasks_keeps_matching_in_order() {
+        let tasks = vec![
+            (
+                "a".to_string(),
+                Document {
+                    frontmatter: task(TaskStatus::Open, Priority::Low, &[]),
+                    body: String::new(),
+                },
+            ),
+            (
+                "b".to_string(),
+                Document {
+                    frontmatter: task(TaskStatus::Done, Priority::Low, &[]),
+                    body: String::new(),
+                },
+            ),
+            (
+                "c".to_string(),
+                Document {
+                    frontmatter: task(TaskStatus::InProgress, Priority::Low, &[]),
+                    body: String::new(),
+                },
+            ),
+        ];
+        let kept = filter_tasks(tasks, &TaskFilter::default());
+        let slugs: Vec<&str> = kept.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(slugs, vec!["a", "c"]);
+    }
 }

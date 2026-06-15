@@ -58,6 +58,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   visually distinct without color. Cycle between phases with `n`/`p` (or the
   arrow keys), and scroll long bodies with `j`/`k`, `PageUp`/`PageDown`, and
   `Ctrl-u`/`Ctrl-d`. `Esc`/`h` returns to the phase list with its cursor intact.
+- The `rdm-tui` terminal UI now opens a per-project task list: press `t` from the
+  project list to browse a project's tasks in columns (slug, title, status,
+  priority, tags), and use `t`/`r` to switch between the task and roadmap lists.
+  Quick-filter the list by cycling the status filter with `s`
+  (`all`→`open`→`in-progress`→`done`→`wont-fix`) and toggling a tag-filter popup
+  with `f` (`space` to toggle tags, `enter` to apply, `esc` to cancel). Press
+  `Enter` on a task to open a scrollable detail screen with its metadata (status,
+  priority, tags, created/completed dates, short commit SHA) above its markdown
+  body; `Esc`/`h` returns to the list with the cursor and filters intact.
+- `rdm_core::ops::task::filter_tasks` (and the `TaskFilter`/`task_matches`
+  building blocks): a reusable task-filtering op over status, priority, and tags
+  (AND), now shared by the CLI's `task list` and the TUI's task browser.
 - Dogfood Claude Code Stop hook (`.claude/hooks/rdm-review-on-finalize.sh`)
   that reprompts the agent to run the `rdm-review` skill while any rdm item is
   in `needs-review`. The status is the sentinel — there is no marker file — so
