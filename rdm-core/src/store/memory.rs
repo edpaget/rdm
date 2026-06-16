@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::{Error, Result};
 
-use super::{DirEntry, DirEntryKind, RelPath, Store};
+use super::{DirEntry, DirEntryKind, RelPath, Store, VersionedStore};
 
 /// A staged entry: either a pending write or a pending delete.
 #[derive(Clone, Debug)]
@@ -231,7 +231,9 @@ impl Store for MemoryStore {
     fn discard(&mut self) {
         self.staged.clear();
     }
+}
 
+impl VersionedStore for MemoryStore {
     fn head_sha(&self) -> Result<String> {
         Ok(self.current_sha())
     }

@@ -35,20 +35,6 @@ pub enum Error {
     InvalidPhaseSelection(String),
     /// The roadmap has incomplete phases and cannot be archived without force.
     RoadmapHasIncompletePhases(String),
-    /// The specified git remote was not found.
-    RemoteNotFound(String),
-    /// A git remote with the given name already exists.
-    DuplicateRemote(String),
-    /// A git push was rejected (non-fast-forward).
-    PushRejected(String),
-    /// Local and remote branches have diverged.
-    BranchesDiverged(String),
-    /// A merge conflict occurred during pull.
-    MergeConflict(String),
-    /// No merge is in progress.
-    NoMergeInProgress,
-    /// A file is not in the unmerged list.
-    NotConflicted(String),
     /// A config value is not valid for the given key.
     InvalidConfigValue {
         /// The configuration key.
@@ -136,39 +122,6 @@ impl std::fmt::Display for Error {
                     f,
                     "roadmap '{slug}' has incomplete phases — pass --force to archive anyway"
                 )
-            }
-            Error::RemoteNotFound(name) => {
-                write!(
-                    f,
-                    "remote not found: {name} — use `rdm remote add` to create one"
-                )
-            }
-            Error::DuplicateRemote(name) => {
-                write!(f, "remote '{name}' already exists")
-            }
-            Error::PushRejected(msg) => {
-                write!(
-                    f,
-                    "push rejected: {msg} — pull first with `rdm remote pull`, then push again"
-                )
-            }
-            Error::BranchesDiverged(msg) => {
-                write!(
-                    f,
-                    "branches have diverged: {msg} — resolve manually with `git rebase` or `git merge`"
-                )
-            }
-            Error::MergeConflict(msg) => {
-                write!(
-                    f,
-                    "merge conflict: {msg} — run `rdm conflicts` to see details, then `rdm resolve <file>`"
-                )
-            }
-            Error::NoMergeInProgress => {
-                write!(f, "no merge in progress — nothing to resolve")
-            }
-            Error::NotConflicted(path) => {
-                write!(f, "file '{path}' is not in the unmerged list")
             }
             Error::InvalidConfigValue { key, value, valid } => {
                 write!(

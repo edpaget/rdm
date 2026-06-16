@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, Project, Roadmap, Task};
-use crate::store::Store;
+use crate::store::{Store, VersionedStore};
 
 /// Loads and parses `rdm.toml` from the plan repo root.
 ///
@@ -115,7 +115,7 @@ pub fn load_task(store: &impl Store, project: &str, task_slug: &str) -> Result<D
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
 /// historical content fails to parse.
 pub fn load_roadmap_at(
-    store: &impl Store,
+    store: &impl VersionedStore,
     project: &str,
     roadmap: &str,
     sha: &str,
@@ -142,7 +142,7 @@ pub fn load_roadmap_at(
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
 /// historical content fails to parse.
 pub fn load_phase_at(
-    store: &impl Store,
+    store: &impl VersionedStore,
     project: &str,
     roadmap: &str,
     phase_stem: &str,
@@ -170,7 +170,7 @@ pub fn load_phase_at(
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
 /// historical content fails to parse.
 pub fn load_task_at(
-    store: &impl Store,
+    store: &impl VersionedStore,
     project: &str,
     task_slug: &str,
     sha: &str,

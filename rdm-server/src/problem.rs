@@ -100,41 +100,6 @@ impl From<&Error> for ProblemDetail {
                 )),
                 instance: None,
             },
-            Error::RemoteNotFound(name) => ProblemDetail {
-                problem_type: "about:blank".to_string(),
-                title: "Not Found".to_string(),
-                status: 404,
-                detail: Some(format!("remote not found: {name}")),
-                instance: None,
-            },
-            Error::DuplicateRemote(name) => ProblemDetail {
-                problem_type: "about:blank".to_string(),
-                title: "Conflict".to_string(),
-                status: 409,
-                detail: Some(format!("remote '{name}' already exists")),
-                instance: None,
-            },
-            Error::MergeConflict(msg) => ProblemDetail {
-                problem_type: "about:blank".to_string(),
-                title: "Conflict".to_string(),
-                status: 409,
-                detail: Some(format!("merge conflict: {msg}")),
-                instance: None,
-            },
-            Error::NoMergeInProgress => ProblemDetail {
-                problem_type: "about:blank".to_string(),
-                title: "Conflict".to_string(),
-                status: 409,
-                detail: Some("no merge in progress".to_string()),
-                instance: None,
-            },
-            Error::NotConflicted(path) => ProblemDetail {
-                problem_type: "about:blank".to_string(),
-                title: "Bad Request".to_string(),
-                status: 400,
-                detail: Some(format!("file '{path}' is not in the unmerged list")),
-                instance: None,
-            },
             Error::BodyAtRevisionMissing { path, sha } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Not Found".to_string(),
@@ -173,8 +138,6 @@ impl From<&Error> for ProblemDetail {
             | Error::ConfigNotFound
             | Error::ConfigSerialize(_)
             | Error::InvalidPath(_)
-            | Error::PushRejected(_)
-            | Error::BranchesDiverged(_)
             | Error::InvalidConfigValue { .. }
             | Error::Git(_) => ProblemDetail {
                 problem_type: "about:blank".to_string(),

@@ -198,7 +198,17 @@ pub trait Store {
 
     /// Discards all staged changes without committing.
     fn discard(&mut self);
+}
 
+/// A [`Store`] that also exposes read access to committed history.
+///
+/// Version-control-backed stores (such as the git store) and the in-memory
+/// test store implement this in addition to [`Store`]; a minimal,
+/// history-less backend can implement just [`Store`]. Functions that read a
+/// document as of a specific revision — [`crate::io::load_roadmap_at`],
+/// [`crate::io::load_phase_at`], [`crate::io::load_task_at`] — are bounded by
+/// `VersionedStore` rather than the base [`Store`].
+pub trait VersionedStore: Store {
     /// Returns an opaque identifier for the current committed state.
     ///
     /// For git-backed stores this is the HEAD commit SHA. For the in-memory

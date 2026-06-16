@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use rdm_core::error::{Error, Result};
-use rdm_core::store::{DirEntry, DirEntryKind, RelPath, Store};
+use rdm_core::store::{DirEntry, DirEntryKind, RelPath, Store, VersionedStore};
 
 /// A staged entry: either a pending write or a pending delete.
 #[derive(Clone, Debug)]
@@ -267,7 +267,14 @@ impl Store for FsStore {
     fn discard(&mut self) {
         self.staged.clear();
     }
+}
 
+/// `FsStore` has no notion of committed history, so both methods report
+/// [`Error::HistoryUnavailable`]. It implements [`VersionedStore`] only so
+/// that callers generic over revision-aware reads (e.g. the server's
+/// `?at=<sha>` path) type-check against a filesystem backend; such reads
+/// surface as a "history unavailable" error rather than real history.
+impl VersionedStore for FsStore {
     fn head_sha(&self) -> Result<String> {
         Err(Error::HistoryUnavailable)
     }

@@ -14,9 +14,12 @@ use gix::object::tree::EntryKind;
 use gix::objs::tree::EntryMode;
 use rdm_core::conflict::{self, ConflictItem};
 use rdm_core::error::{Error, Result};
-use rdm_core::store::{DirEntry, RelPath, Store};
+use rdm_core::store::{DirEntry, RelPath, Store, VersionedStore};
 use rdm_store_fs::FsStore;
 
+use crate::error::GitError;
+
+pub mod error;
 pub mod worktree;
 
 /// The kind of change tracked for commit message generation.
@@ -629,8 +632,8 @@ impl GitStore {
     ///
     /// # Errors
     ///
-    /// Returns `Error::Git` if the repository configuration cannot be read.
-    pub fn git_remote_list(&self) -> Result<Vec<RemoteInfo>> {
+    /// Returns [`GitError::Git`] if the repository configuration cannot be read.
+    pub fn git_remote_list(&self) -> error::Result<Vec<RemoteInfo>> {
         let config_path = self.repo.git_dir().join("config");
         let content = std::fs::read_to_string(&config_path)
             .map_err(|e| Error::Git(format!("failed to read git config: {e}")))?;
@@ -678,13 +681,13 @@ impl GitStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::DuplicateRemote`] if a remote with the given name
-    /// already exists. Returns `Error::Git` if the configuration cannot be
+    /// Returns [`GitError::DuplicateRemote`] if a remote with the given name
+    /// already exists. Returns [`GitError::Git`] if the configuration cannot be
     /// written.
-    pub fn git_remote_add(&mut self, name: &str, url: &str) -> Result<()> {
+    pub fn git_remote_add(&mut self, name: &str, url: &str) -> error::Result<()> {
         let existing = self.git_remote_list()?;
         if existing.iter().any(|r| r.name == name) {
-            return Err(Error::DuplicateRemote(name.to_string()));
+            return Err(GitError::DuplicateRemote(name.to_string()));
         }
 
         let config_path = self.repo.git_dir().join("config");
@@ -709,12 +712,12 @@ impl GitStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::RemoteNotFound`] if no remote with the given name
-    /// exists. Returns `Error::Git` if the configuration cannot be written.
-    pub fn git_remote_remove(&mut self, name: &str) -> Result<()> {
+    /// Returns [`GitError::RemoteNotFound`] if no remote with the given name
+    /// exists. Returns [`GitError::Git`] if the configuration cannot be written.
+    pub fn git_remote_remove(&mut self, name: &str) -> error::Result<()> {
         let existing = self.git_remote_list()?;
         if !existing.iter().any(|r| r.name == name) {
-            return Err(Error::RemoteNotFound(name.to_string()));
+            return Err(GitError::RemoteNotFound(name.to_string()));
         }
 
         let config_path = self.repo.git_dir().join("config");
@@ -754,19 +757,19 @@ impl GitStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::RemoteNotFound`] if no remote with the given name exists.
-    /// Returns `Error::Git` if `git` is not found or the fetch fails.
-    pub fn git_fetch(&mut self, remote_name: &str) -> Result<()> {
+    /// Returns [`GitError::RemoteNotFound`] if no remote with the given name exists.
+    /// Returns [`GitError::Git`] if `git` is not found or the fetch fails.
+    pub fn git_fetch(&mut self, remote_name: &str) -> error::Result<()> {
         let existing = self.git_remote_list()?;
         if !existing.iter().any(|r| r.name == remote_name) {
-            return Err(Error::RemoteNotFound(remote_name.to_string()));
+            return Err(GitError::RemoteNotFound(remote_name.to_string()));
         }
 
         let output = self.run_git(&["fetch", remote_name])?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Git(format!(
+            return Err(GitError::Git(format!(
                 "git fetch {remote_name} failed: {stderr}"
             )));
         }
@@ -786,14 +789,14 @@ impl GitStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::RemoteNotFound`] if no remote with the given name exists.
-    /// Returns [`Error::PushRejected`] if the push is rejected (non-fast-forward).
-    /// Returns `Error::Git` if HEAD is detached, `git` is not found, or the
+    /// Returns [`GitError::RemoteNotFound`] if no remote with the given name exists.
+    /// Returns [`GitError::PushRejected`] if the push is rejected (non-fast-forward).
+    /// Returns [`GitError::Git`] if HEAD is detached, `git` is not found, or the
     /// push fails for another reason.
-    pub fn git_push(&mut self, remote_name: &str, force: bool) -> Result<PushResult> {
+    pub fn git_push(&mut self, remote_name: &str, force: bool) -> error::Result<PushResult> {
         let existing = self.git_remote_list()?;
         if !existing.iter().any(|r| r.name == remote_name) {
-            return Err(Error::RemoteNotFound(remote_name.to_string()));
+            return Err(GitError::RemoteNotFound(remote_name.to_string()));
         }
 
         let branch = self
@@ -818,11 +821,11 @@ impl GitStore {
                 || stderr.contains("rejected")
                 || stderr.contains("fetch first")
             {
-                return Err(Error::PushRejected(format!(
+                return Err(GitError::PushRejected(format!(
                     "remote has commits you don't have locally ({remote_name}/{branch})"
                 )));
             }
-            return Err(Error::Git(format!(
+            return Err(GitError::Git(format!(
                 "git push {remote_name} failed: {stderr}"
             )));
         }
@@ -859,13 +862,13 @@ impl GitStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::RemoteNotFound`] if no remote with the given name exists.
-    /// Returns `Error::Git` if HEAD is detached, `git` is not found, or the
+    /// Returns [`GitError::RemoteNotFound`] if no remote with the given name exists.
+    /// Returns [`GitError::Git`] if HEAD is detached, `git` is not found, or the
     /// merge fails for a non-conflict reason.
-    pub fn git_pull(&mut self, remote_name: &str) -> Result<PullOutcome> {
+    pub fn git_pull(&mut self, remote_name: &str) -> error::Result<PullOutcome> {
         let existing = self.git_remote_list()?;
         if !existing.iter().any(|r| r.name == remote_name) {
-            return Err(Error::RemoteNotFound(remote_name.to_string()));
+            return Err(GitError::RemoteNotFound(remote_name.to_string()));
         }
 
         let branch = self
@@ -905,7 +908,7 @@ impl GitStore {
             // Check working tree is clean first
             let statuses = self.git_status()?;
             if !statuses.is_empty() {
-                return Err(Error::Git(
+                return Err(GitError::Git(
                     "cannot pull with uncommitted changes — commit or discard first".to_string(),
                 ));
             }
@@ -931,7 +934,7 @@ impl GitStore {
                 }
                 // Not a conflict — some other merge failure
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(Error::Git(format!("git merge failed: {stderr}")));
+                return Err(GitError::Git(format!("git merge failed: {stderr}")));
             }
 
             // Clean merge succeeded
@@ -954,7 +957,9 @@ impl GitStore {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Git(format!("git merge --ff-only failed: {stderr}")));
+            return Err(GitError::Git(format!(
+                "git merge --ff-only failed: {stderr}"
+            )));
         }
 
         // Reopen repo to refresh state
@@ -1008,16 +1013,16 @@ impl GitStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::NoMergeInProgress`] if no merge is active.
-    /// Returns `Error::Git` if `git merge --abort` fails.
-    pub fn git_merge_abort(&mut self) -> Result<()> {
+    /// Returns [`GitError::NoMergeInProgress`] if no merge is active.
+    /// Returns [`GitError::Git`] if `git merge --abort` fails.
+    pub fn git_merge_abort(&mut self) -> error::Result<()> {
         if !self.git_is_merge_in_progress()? {
-            return Err(Error::NoMergeInProgress);
+            return Err(GitError::NoMergeInProgress);
         }
         let output = self.run_git(&["merge", "--abort"])?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Git(format!("git merge --abort failed: {stderr}")));
+            return Err(GitError::Git(format!("git merge --abort failed: {stderr}")));
         }
         self.repo = gix::open(self.inner.root())
             .map_err(|e| Error::Git(e.to_string()))?
@@ -1032,24 +1037,24 @@ impl GitStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::NoMergeInProgress`] if no merge is active.
-    /// Returns [`Error::NotConflicted`] if the file is not in the unmerged list.
-    /// Returns `Error::Git` if `git add` or `git commit` fails.
-    pub fn git_resolve_conflict(&mut self, path: &str) -> Result<ResolveResult> {
+    /// Returns [`GitError::NoMergeInProgress`] if no merge is active.
+    /// Returns [`GitError::NotConflicted`] if the file is not in the unmerged list.
+    /// Returns [`GitError::Git`] if `git add` or `git commit` fails.
+    pub fn git_resolve_conflict(&mut self, path: &str) -> error::Result<ResolveResult> {
         if !self.git_is_merge_in_progress()? {
-            return Err(Error::NoMergeInProgress);
+            return Err(GitError::NoMergeInProgress);
         }
 
         let unmerged = self.git_list_unmerged()?;
         if !unmerged.iter().any(|p| p == path) {
-            return Err(Error::NotConflicted(path.to_string()));
+            return Err(GitError::NotConflicted(path.to_string()));
         }
 
         // Stage the resolved file
         let output = self.run_git(&["add", path])?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Git(format!("git add failed: {stderr}")));
+            return Err(GitError::Git(format!("git add failed: {stderr}")));
         }
 
         // Check remaining unmerged files
@@ -1062,7 +1067,9 @@ impl GitStore {
             let output = self.run_git(&["commit", "--no-edit"])?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(Error::Git(format!("git commit --no-edit failed: {stderr}")));
+                return Err(GitError::Git(format!(
+                    "git commit --no-edit failed: {stderr}"
+                )));
             }
             self.repo = gix::open(self.inner.root())
                 .map_err(|e| Error::Git(e.to_string()))?
@@ -1127,12 +1134,12 @@ impl GitStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::RemoteNotFound`] if no remote with the given name exists.
-    /// Returns `Error::Git` if the repository state cannot be read.
-    pub fn git_sync_status(&self, remote_name: &str) -> Result<Option<SyncStatus>> {
+    /// Returns [`GitError::RemoteNotFound`] if no remote with the given name exists.
+    /// Returns [`GitError::Git`] if the repository state cannot be read.
+    pub fn git_sync_status(&self, remote_name: &str) -> error::Result<Option<SyncStatus>> {
         let existing = self.git_remote_list()?;
         if !existing.iter().any(|r| r.name == remote_name) {
-            return Err(Error::RemoteNotFound(remote_name.to_string()));
+            return Err(GitError::RemoteNotFound(remote_name.to_string()));
         }
 
         // Get local branch name
@@ -1153,7 +1160,7 @@ impl GitStore {
         let output = self.run_git(&["rev-list", "--left-right", "--count", &range])?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Git(format!(
+            return Err(GitError::Git(format!(
                 "failed to compute ahead/behind: {stderr}"
             )));
         }
@@ -1384,7 +1391,9 @@ impl Store for GitStore {
         self.touched.clear();
         self.inner.discard();
     }
+}
 
+impl VersionedStore for GitStore {
     fn head_sha(&self) -> Result<String> {
         match self.head_commit_info()? {
             Some(info) => Ok(info.sha),
