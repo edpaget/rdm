@@ -16,6 +16,7 @@ allowed-tools:
   - {t_task_show}
   - {t_task_update}
   - {t_task_create}
+  - {t_worktree_add}
 ---
 
 Implement a roadmap phase or work on a task. One shared flow: find the target → mark in-progress → plan → execute → review with the user → finalize into `needs-review`.
@@ -29,7 +30,7 @@ Implement a roadmap phase or work on a task. One shared flow: find the target �
 
 For unattended Claude Code runs (where no human is present to approve permission prompts), launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so file edits and rdm tool calls don't block on prompts.
 
-Worktree isolation (working in a dedicated git worktree) is not available in this MCP variant — `rdm worktree` is CLI-only and there is no MCP tool for it yet, so this skill works in the live checkout. Use the CLI `rdm-do` skill if you want worktree isolation.
+This skill does its work in an isolated git worktree, created via the `{t_worktree_add}` MCP tool after marking the item in-progress (see the "Create an isolated worktree" step). That keeps the live checkout untouched while you implement.
 
 ## Argument forms
 
@@ -50,17 +51,22 @@ Worktree isolation (working in a dedicated git worktree) is not available in thi
 3. **Mark in-progress:**
    - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`
    - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "in-progress"`
-4. **Enter plan mode** with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
+4. **Create an isolated worktree:** use the `{t_worktree_add}` MCP tool to create (or idempotently reuse) a dedicated git worktree and branch for the item, then do all implementation work inside it. Pass the item reference form:
+   - phase: `project: {proj_param}, item: "<slug>/<phase-stem>"`
+   - task: `project: {proj_param}, item: "task/<slug>"`
+
+   The tool returns the worktree `path` and `branch`; `cd` into that path (or open it) before editing files. Run the MCP server from your project (code) repo — the tool refuses to run inside the plan repo.
+5. **Enter plan mode** with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
    - Break the phase/task into concrete implementation steps based on its description and acceptance criteria.
    - Include a final step: "Review changes with user and finalize".
-5. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
-6. **Execute the plan**: implement each step, following the plan and any acceptance criteria.
-7. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
-8. **Finalize:** on user acceptance, commit the implementation changes, then transition the item to `needs-review`:
+6. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
+7. **Execute the plan**: implement each step inside the worktree, following the plan and any acceptance criteria.
+8. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
+9. **Finalize:** on user acceptance, commit the implementation changes, then transition the item to `needs-review`:
    - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "needs-review"`
    - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "needs-review"`
 
-   **Do NOT emit a `Done:` line in the commit message.** The `rdm-review` skill produces the `Done:` line when review passes; an item sitting in `needs-review` is the sentinel that signals a review is pending. Use the exact roadmap slug / phase stem / task slug from the rdm tools you used earlier — do NOT invent or paraphrase them. The commit is left for merge to main (review takes it `needs-review` → `reviewed`, and the merge hook flips it to `done`).
+   **Do NOT emit a `Done:` line in the commit message.** The `rdm-review` skill produces the `Done:` line when review passes; an item sitting in `needs-review` is the sentinel that signals a review is pending. Use the exact roadmap slug / phase stem / task slug from the rdm tools you used earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch and is left for merge to main (review takes it `needs-review` → `reviewed`, and the merge hook flips it to `done`).
 
 ## Side-work
 

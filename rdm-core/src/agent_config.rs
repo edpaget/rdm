@@ -444,6 +444,7 @@ fn skill_do_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_task_show", "rdm_task_show"),
                 ("t_task_update", "rdm_task_update"),
                 ("t_task_create", "rdm_task_create"),
+                ("t_worktree_add", "rdm_worktree_add"),
             ],
         ),
     }
@@ -1703,6 +1704,8 @@ mod tests {
         assert!(skills[1].content.contains("rdm_task_list"));
         assert!(skills[1].content.contains("rdm_task_show"));
         assert!(skills[1].content.contains("rdm_task_update"));
+        // ...and the worktree tool that isolates its work.
+        assert!(skills[1].content.contains("rdm_worktree_add"));
     }
 
     #[test]
@@ -1766,7 +1769,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_skill_do_supports_run_modes_without_worktree() {
+    fn mcp_skill_do_supports_run_modes_and_worktree() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
@@ -1776,9 +1779,12 @@ mod tests {
         // The MCP variant supports the interactive/non-interactive run modes...
         assert!(content.contains("--auto"));
         assert!(content.contains("Run modes"));
-        // ...but does NOT drive a worktree: `rdm worktree` is CLI-only and the MCP
-        // skill is Bash-free, so worktree isolation is intentionally absent here.
-        assert!(!content.contains("worktree add"));
+        // ...and now drives an isolated worktree via the MCP worktree tool
+        // (not Bash) — the body references it and the allowed-tools frontmatter
+        // lists the resolved tool name.
+        assert!(content.contains("rdm_worktree_add"));
+        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
+        assert!(frontmatter.contains("mcp__rdm__rdm_worktree_add"));
     }
 
     #[test]
