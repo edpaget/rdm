@@ -87,6 +87,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   merge to main. The MCP variant does not yet drive a worktree (`rdm worktree`
   is CLI-only and MCP skills are Bash-free); it works in the live checkout.
 
+### Fixed
+
+- Merge-conflict output now shows roadmap/phase context for conflicted phase
+  files. Phase conflicts were previously misclassified as generic ("Other")
+  paths because the classifier expected a layout the tool never writes, so the
+  conflict listing dropped their roadmap and phase names.
+
 ## [0.12.0] - 2026-06-12
 
 ### Added
