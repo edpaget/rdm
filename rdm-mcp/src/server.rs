@@ -270,6 +270,34 @@ struct ProjectCreateParams {
     title: Option<String>,
 }
 
+// ---------- Parameter structs (worktree; git feature only) ----------
+
+/// Parameters for `rdm_worktree_add`.
+#[cfg(feature = "git")]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WorktreeAddParams {
+    /// The project name (used to validate the item against the plan repo).
+    project: String,
+    /// The plan item: `<roadmap>/<phase-stem-or-number>` or `task/<slug>`.
+    item: String,
+    /// Optional base ref to branch from (defaults to the current HEAD).
+    base: Option<String>,
+}
+
+/// Parameters for `rdm_worktree_remove`.
+#[cfg(feature = "git")]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WorktreeRemoveParams {
+    /// The project name (used to resolve a numeric phase identifier in `target`).
+    project: Option<String>,
+    /// The worktree to remove: a plan item reference or a filesystem path.
+    target: String,
+    /// Also delete the worktree's branch after removal.
+    delete_branch: Option<bool>,
+    /// Remove even if the worktree is dirty (and force-delete the branch).
+    force: Option<bool>,
+}
+
 // ---------- Store helpers ----------
 
 /// Creates an [`AppStore`] for an existing plan repo.
@@ -365,6 +393,21 @@ impl RdmMcpServer {
                 tracing::warn!("auto-init: failed to initialize config: {e}");
             }
         }
+    }
+
+    /// Builds the full tool router, combining the core tools with the
+    /// worktree tools when the `git` feature is enabled.
+    ///
+    /// The worktree tools live in a separate `#[tool_router]` impl block so the
+    /// whole block (and its generated router) can be `#[cfg]`-gated — the
+    /// `#[tool_router]` macro does not propagate `#[cfg]` attributes on
+    /// individual tool methods.
+    fn all_tools_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
+        #[allow(unused_mut)]
+        let mut router = Self::tool_router();
+        #[cfg(feature = "git")]
+        router.merge(Self::worktree_tool_router());
+        router
     }
 }
 
@@ -1051,6 +1094,129 @@ impl RdmMcpServer {
     }
 }
 
+// ==================== Worktree tools (git feature only) ====================
+//
+// These tools live in their own `#[tool_router]` impl block so the entire block
+// — and the `worktree_tool_router()` it generates — can be `#[cfg]`-gated. The
+// router is combined with the core router in [`RdmMcpServer::all_tools_router`].
+
+#[cfg(feature = "git")]
+#[rmcp::tool_router(router = worktree_tool_router)]
+impl RdmMcpServer {
+    /// Create (or idempotently reuse) an isolated git worktree for a plan item.
+    #[rmcp::tool(
+        description = "Create (or idempotently reuse) an isolated git worktree and branch in the project (code) repo for a plan item (`<roadmap>/<phase-stem-or-number>` or `task/<slug>`). Runs against the repo discovered from the server's working directory and refuses to run inside the plan repo. Returns the item, branch, path, and whether it was newly created.",
+        annotations(read_only_hint = false)
+    )]
+    async fn rdm_worktree_add(
+        &self,
+        Parameters(params): Parameters<WorktreeAddParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+        let cwd = match std::env::current_dir() {
+            Ok(c) => c,
+            Err(e) => return err_text(format!("cannot determine current directory: {e}")),
+        };
+        let repo =
+            match rdm_store_git::worktree::discover_distinct_project_repo(&cwd, &self.plan_root) {
+                Ok(r) => r,
+                Err(e) => return err_text(format!("{e}")),
+            };
+        let item = {
+            let store = self.store.lock().unwrap();
+            match rdm_store_git::worktree::resolve_item(&*store, &params.project, &params.item) {
+                Ok(i) => i,
+                Err(e) => return err_text(format!("{e}")),
+            }
+        };
+        let info = match rdm_store_git::worktree::add(
+            &repo,
+            &item,
+            &item.branch_name(),
+            params.base.as_deref(),
+        ) {
+            Ok(i) => i,
+            Err(e) => return err_text(format!("{e}")),
+        };
+        let value = serde_json::json!({
+            "item": info.item,
+            "branch": info.branch,
+            "path": info.path.display().to_string(),
+            "created": info.created,
+        });
+        ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
+    }
+
+    /// List the rdm-managed git worktrees in the project (code) repo.
+    #[rmcp::tool(
+        description = "List the rdm-managed git worktrees in the project (code) repo, with each worktree's item, branch, path, and dirty flag. Runs against the repo discovered from the server's working directory.",
+        annotations(read_only_hint = true)
+    )]
+    async fn rdm_worktree_list(&self) -> Result<CallToolResult, ErrorData> {
+        let cwd = match std::env::current_dir() {
+            Ok(c) => c,
+            Err(e) => return err_text(format!("cannot determine current directory: {e}")),
+        };
+        let repo = match rdm_store_git::worktree::discover_project_repo(&cwd) {
+            Ok(r) => r,
+            Err(e) => return err_text(format!("{e}")),
+        };
+        let worktrees = match rdm_store_git::worktree::list(&repo) {
+            Ok(w) => w,
+            Err(e) => return err_text(format!("{e}")),
+        };
+        let arr: Vec<_> = worktrees
+            .iter()
+            .map(|w| {
+                serde_json::json!({
+                    "item": w.item,
+                    "branch": w.branch,
+                    "path": w.path.display().to_string(),
+                    "dirty": w.dirty,
+                })
+            })
+            .collect();
+        let value = serde_json::Value::Array(arr);
+        ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
+    }
+
+    /// Remove an rdm-managed git worktree from the project (code) repo.
+    #[rmcp::tool(
+        description = "Remove an rdm-managed git worktree (by plan item reference or filesystem path) from the project (code) repo. Refuses a dirty worktree unless `force`; `delete_branch` also drops the branch (refusing unmerged commits without `force`).",
+        annotations(read_only_hint = false)
+    )]
+    async fn rdm_worktree_remove(
+        &self,
+        Parameters(params): Parameters<WorktreeRemoveParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+        let cwd = match std::env::current_dir() {
+            Ok(c) => c,
+            Err(e) => return err_text(format!("cannot determine current directory: {e}")),
+        };
+        let repo = match rdm_store_git::worktree::discover_project_repo(&cwd) {
+            Ok(r) => r,
+            Err(e) => return err_text(format!("{e}")),
+        };
+        let resolved = {
+            let store = self.store.lock().unwrap();
+            let project = params.project.as_deref().unwrap_or("");
+            rdm_store_git::worktree::resolve_target(&*store, project, &params.target)
+        };
+        match rdm_store_git::worktree::remove(
+            &repo,
+            &resolved,
+            rdm_store_git::worktree::RemoveOptions {
+                force: params.force.unwrap_or(false),
+                delete_branch: params.delete_branch.unwrap_or(false),
+            },
+        ) {
+            Ok(()) => ok_text(format!("Removed worktree for {}", params.target)),
+            Err(e) => err_text(format!("{e}")),
+        }
+    }
+}
+
 /// Parse a status string into an `ItemStatus`.
 ///
 /// A status valid for both kinds becomes kind-agnostic ([`ItemStatus::Either`])
@@ -1066,7 +1232,7 @@ fn parse_item_status(s: &str) -> Result<ItemStatus, String> {
     }
 }
 
-#[rmcp::tool_handler]
+#[rmcp::tool_handler(router = Self::all_tools_router())]
 impl ServerHandler for RdmMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())

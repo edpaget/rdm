@@ -480,6 +480,106 @@ fn run_git_at(path: &Path, args: &[&str]) -> Result<Output> {
     }
 }
 
+// ---------- Plan-repo canonicalization glue ----------
+//
+// These helpers bridge a raw item reference (as a user types it) to a validated
+// [`ItemRef`] against the plan `store`, and discover the distinct project repo.
+// They live here — beside [`ItemRef`] — so both the CLI and the MCP server share
+// one implementation rather than duplicating the resolution logic.
+
+/// Canonicalizes an item reference against the plan `store`, validating that it
+/// exists before any git mutation. A numeric phase identifier is resolved to its
+/// stem.
+///
+/// # Errors
+///
+/// Returns [`WorktreeError::NotFound`] if `raw` is not a valid item reference,
+/// if the roadmap/phase number cannot be resolved, or if the referenced phase or
+/// task does not exist in `project`.
+pub fn resolve_item(
+    store: &impl rdm_core::store::Store,
+    project: &str,
+    raw: &str,
+) -> Result<ItemRef> {
+    let item = ItemRef::parse(raw)?;
+    match item {
+        ItemRef::Phase { roadmap, stem } => {
+            let resolved = rdm_core::ops::phase::resolve_phase_stem(
+                store, project, &roadmap, &stem,
+            )
+            .map_err(|_| {
+                WorktreeError::NotFound(format!(
+                    "unknown item '{roadmap}/{stem}' — check `rdm phase list`"
+                ))
+            })?;
+            // Confirm the phase actually exists (resolve_phase_stem passes
+            // non-numeric stems through unverified).
+            rdm_core::io::load_phase(store, project, &roadmap, &resolved).map_err(|_| {
+                WorktreeError::NotFound(format!(
+                    "phase '{roadmap}/{resolved}' not found — check `rdm phase list`"
+                ))
+            })?;
+            Ok(ItemRef::Phase {
+                roadmap,
+                stem: resolved,
+            })
+        }
+        ItemRef::Task { slug } => {
+            rdm_core::io::load_task(store, project, &slug).map_err(|_| {
+                WorktreeError::NotFound(format!("task '{slug}' not found — check `rdm task list`"))
+            })?;
+            Ok(ItemRef::Task { slug })
+        }
+    }
+}
+
+/// Best-effort canonicalization of a `remove` target.
+///
+/// An item reference with a numeric phase identifier is resolved to its stem
+/// against the plan `store`; anything that does not parse or resolve as an item
+/// (a filesystem path, or an item whose phase no longer exists) is returned
+/// verbatim so it can still match by path or stored canonical string.
+pub fn resolve_target(store: &impl rdm_core::store::Store, project: &str, raw: &str) -> String {
+    let Ok(item) = ItemRef::parse(raw) else {
+        return raw.to_string();
+    };
+    // Only a numeric phase stem needs plan-repo resolution; everything else is
+    // already canonical.
+    if let ItemRef::Phase { roadmap, stem } = &item
+        && stem.parse::<u32>().is_ok()
+    {
+        if let Ok(resolved) =
+            rdm_core::ops::phase::resolve_phase_stem(store, project, roadmap, stem)
+        {
+            return format!("{roadmap}/{resolved}");
+        }
+        return raw.to_string();
+    }
+    item.canonical()
+}
+
+/// Discovers the project (code) repo from `cwd` and refuses if it is the plan
+/// repo at `plan_root` — the two must be distinct directories.
+///
+/// Compares canonicalized paths so symlinks (e.g. macOS `/private`) don't mask a
+/// match between the project repo and the plan repo.
+///
+/// # Errors
+///
+/// Returns [`WorktreeError::IsPlanRepo`] if the discovered repo is the plan repo,
+/// or any error propagated from [`discover_project_repo`].
+pub fn discover_distinct_project_repo(cwd: &Path, plan_root: &Path) -> Result<PathBuf> {
+    let repo = discover_project_repo(cwd)?;
+    let repo_canon = repo.canonicalize().unwrap_or_else(|_| repo.clone());
+    let root_canon = plan_root
+        .canonicalize()
+        .unwrap_or_else(|_| plan_root.to_path_buf());
+    if repo_canon == root_canon {
+        return Err(WorktreeError::IsPlanRepo(repo));
+    }
+    Ok(repo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +683,141 @@ mod tests {
             path,
             PathBuf::from("/home/me/Projects/rdm__worktrees/task-fix-bug")
         );
+    }
+
+    // ---------- Plan-repo canonicalization glue ----------
+
+    /// Builds a plan store fixture with one roadmap (`my-roadmap`) carrying phase
+    /// number 2 (`phase-2-do-thing`) and one task (`fix-bug`).
+    fn plan_fixture() -> (tempfile::TempDir, rdm_store_fs::FsStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "proj", "Proj").unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            "proj",
+            "my-roadmap",
+            "My Roadmap",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "proj",
+            "my-roadmap",
+            "do-thing",
+            "Do Thing",
+            Some(2),
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::task::create_task(
+            &mut store,
+            "proj",
+            "fix-bug",
+            "Fix Bug",
+            rdm_core::model::Priority::Medium,
+            None,
+            None,
+        )
+        .unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn resolve_item_resolves_phase_number_to_stem() {
+        let (_dir, store) = plan_fixture();
+        let item = resolve_item(&store, "proj", "my-roadmap/2").unwrap();
+        assert_eq!(
+            item,
+            ItemRef::Phase {
+                roadmap: "my-roadmap".to_string(),
+                stem: "phase-2-do-thing".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_item_unknown_phase_is_not_found() {
+        let (_dir, store) = plan_fixture();
+        // Numeric identifier with no matching phase.
+        assert!(matches!(
+            resolve_item(&store, "proj", "my-roadmap/99"),
+            Err(WorktreeError::NotFound(_))
+        ));
+        // Non-numeric stem that does not exist passes resolve_phase_stem but
+        // fails the load_phase existence check.
+        assert!(matches!(
+            resolve_item(&store, "proj", "my-roadmap/phase-9-nope"),
+            Err(WorktreeError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_item_validates_task() {
+        let (_dir, store) = plan_fixture();
+        assert_eq!(
+            resolve_item(&store, "proj", "task/fix-bug").unwrap(),
+            ItemRef::Task {
+                slug: "fix-bug".to_string()
+            }
+        );
+        assert!(matches!(
+            resolve_item(&store, "proj", "task/nope"),
+            Err(WorktreeError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_target_resolves_phase_number() {
+        let (_dir, store) = plan_fixture();
+        assert_eq!(
+            resolve_target(&store, "proj", "my-roadmap/2"),
+            "my-roadmap/phase-2-do-thing"
+        );
+    }
+
+    #[test]
+    fn resolve_target_passes_through_unparseable_and_tasks() {
+        let (_dir, store) = plan_fixture();
+        // A filesystem path (leading slash → empty roadmap) is returned verbatim.
+        assert_eq!(resolve_target(&store, "proj", "/some/path"), "/some/path");
+        // A task ref is returned canonically.
+        assert_eq!(
+            resolve_target(&store, "proj", "task/fix-bug"),
+            "task/fix-bug"
+        );
+        // An unresolvable numeric phase falls back to the raw input verbatim.
+        assert_eq!(
+            resolve_target(&store, "proj", "my-roadmap/99"),
+            "my-roadmap/99"
+        );
+    }
+
+    #[test]
+    fn discover_distinct_project_repo_refuses_plan_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        // A real git repo so `git rev-parse --show-toplevel` succeeds. Clear the
+        // GIT_* env vars (as `run_git_at` does) so `git init` targets the tempdir
+        // even when this test runs inside a git hook, which exports GIT_DIR etc.
+        let initialized = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !initialized {
+            return; // git not available — nothing to assert.
+        }
+        let root = dir.path();
+        let err = discover_distinct_project_repo(root, root).unwrap_err();
+        assert!(matches!(err, WorktreeError::IsPlanRepo(_)));
     }
 }

@@ -299,6 +299,12 @@ fn tools_list() {
         "rdm_task_create",
         "rdm_task_update",
         "rdm_task_promote",
+        // Worktree tools — the spawned `rdm` binary is built via `cargo build -p
+        // rdm-cli`, whose default features enable `git` (and `rdm-mcp?/git`), so
+        // these are always registered regardless of this test crate's features.
+        "rdm_worktree_add",
+        "rdm_worktree_list",
+        "rdm_worktree_remove",
     ];
 
     for name in &expected {
@@ -483,6 +489,12 @@ fn tools_list_includes_mutation_tools() {
         "rdm_task_create",
         "rdm_task_update",
         "rdm_task_promote",
+        // `rdm_worktree_add` / `rdm_worktree_remove` mutate the project repo and
+        // so carry readOnlyHint=false; `rdm_worktree_list` is read-only. The
+        // spawned `rdm` binary always has the git feature on (see `tools_list`),
+        // so these tools are always present.
+        "rdm_worktree_add",
+        "rdm_worktree_remove",
     ];
 
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();

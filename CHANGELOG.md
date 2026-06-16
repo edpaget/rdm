@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The rdm MCP server now exposes worktree lifecycle tools — `rdm_worktree_add`,
+  `rdm_worktree_list`, and `rdm_worktree_remove` — mirroring the `rdm worktree`
+  CLI commands. They run against the project (code) repo discovered from the
+  server's working directory (refusing to run inside the plan repo) and are
+  available when the server is built with the `git` feature. With them, the MCP
+  `rdm-do` skill now creates and works inside an isolated git worktree via the
+  MCP tool (no Bash), matching the CLI skill's behavior.
+
 - `rdm agent-config pi --hooks` ships the Pi auto-review extension to end-user
   projects. It writes `.pi/extensions/rdm-review.ts`, which Pi auto-discovers
   (no settings registration). The extension subscribes to Pi's `agent_end`
@@ -74,18 +82,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `in-progress` / `done` derived from a roadmap's phases) now lives in
   `rdm-core` so every interface shares one implementation. No behavior change
   to the server or web UI.
-- `rdm-do` (the in-repo Claude Code skill plus the shipped CLI skill template)
-  now does its work in an isolated git worktree created via
-  `rdm worktree add <item>` (after marking the item in-progress) instead of the
-  live checkout. All three variants (dogfood, CLI, MCP) also gain two run modes:
-  interactive (default — plan, approval gate, review-with-user) and `--auto`
-  non-interactive (skips the approval and review gates and finalizes
-  autonomously). For unattended Claude Code runs, launch with
-  `--permission-mode auto` (or `bypassPermissions` in a sandbox) so file edits
-  and bash/tool calls don't block on prompts. The finalize contract is
-  unchanged (commit on the branch, set `needs-review`); the branch is left for
-  merge to main. The MCP variant does not yet drive a worktree (`rdm worktree`
-  is CLI-only and MCP skills are Bash-free); it works in the live checkout.
+- `rdm-do` (the in-repo Claude Code skill plus the shipped CLI and MCP skill
+  templates) now does its work in an isolated git worktree created after marking
+  the item in-progress instead of the live checkout. The CLI variants use
+  `rdm worktree add <item>`; the MCP variant drives the equivalent
+  `rdm_worktree_add` MCP tool (it no longer works in the live checkout). All
+  three variants (dogfood, CLI, MCP) also gain two run modes: interactive
+  (default — plan, approval gate, review-with-user) and `--auto` non-interactive
+  (skips the approval and review gates and finalizes autonomously). For
+  unattended Claude Code runs, launch with `--permission-mode auto` (or
+  `bypassPermissions` in a sandbox) so file edits and bash/tool calls don't
+  block on prompts. The finalize contract is unchanged (commit on the branch,
+  set `needs-review`); the branch is left for merge to main.
 
 ## [0.12.0] - 2026-06-12
 
