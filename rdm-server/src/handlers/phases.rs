@@ -243,18 +243,19 @@ pub async fn create_phase(
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let mut store = state.store();
-    let doc = rdm_core::ops::phase::create_phase(
-        &mut store,
-        &project,
-        &roadmap,
-        &req.slug,
-        &req.title,
-        req.number,
-        req.body.as_deref(),
-        req.tags.clone(),
-    )
+    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+        rdm_core::ops::phase::create_phase(
+            s,
+            &project,
+            &roadmap,
+            &req.slug,
+            &req.title,
+            req.number,
+            req.body.as_deref(),
+            req.tags.clone(),
+        )
+    })
     .map_err(|e| error_response(e, format))?;
-    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let stem = format!("phase-{}-{}", doc.frontmatter.phase, req.slug);
     let location = format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}");
@@ -336,19 +337,20 @@ pub async fn update_phase(
     let mut store = state.store();
     let stem = rdm_core::ops::phase::resolve_phase_stem(&store, &project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
-    let doc = rdm_core::ops::phase::update_phase(
-        &mut store,
-        &project,
-        &roadmap,
-        &stem,
-        status,
-        tags,
-        body,
-        None,
-        allow_empty_body,
-    )
+    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+        rdm_core::ops::phase::update_phase(
+            s,
+            &project,
+            &roadmap,
+            &stem,
+            status,
+            tags,
+            body,
+            None,
+            allow_empty_body,
+        )
+    })
     .map_err(|e| error_response(e, format))?;
-    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let self_href = format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}");
     match format {
@@ -424,6 +426,7 @@ mod tests {
             None,
         )
         .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
@@ -962,6 +965,7 @@ mod tests {
             None,
         )
         .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),

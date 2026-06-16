@@ -106,7 +106,6 @@ pub fn create_roadmap(
         body: body.unwrap_or_default().to_string(),
     };
     crate::io::write_roadmap(store, project, slug, &doc)?;
-    store.commit()?;
     Ok(doc)
 }
 
@@ -158,7 +157,6 @@ pub fn update_roadmap(
         doc.frontmatter.tags = if t.is_empty() { None } else { Some(t) };
     }
     crate::io::write_roadmap(store, project, slug, &doc)?;
-    store.commit()?;
     Ok(doc)
 }
 
@@ -275,7 +273,6 @@ pub fn add_dependency(
 
     deps.push(depends_on.to_string());
     crate::io::write_roadmap(store, project, slug, &doc)?;
-    store.commit()?;
     Ok(doc)
 }
 
@@ -305,7 +302,6 @@ pub fn remove_dependency(
     }
 
     crate::io::write_roadmap(store, project, slug, &doc)?;
-    store.commit()?;
     Ok(doc)
 }
 
@@ -364,7 +360,6 @@ pub fn delete_roadmap(store: &mut impl Store, project: &str, slug: &str) -> Resu
     // Remove all files in the roadmap directory
     let dir = crate::paths::roadmap_dir(project, slug);
     delete_tree(store, &dir)?;
-    store.commit()?;
     Ok(())
 }
 
@@ -418,7 +413,6 @@ pub fn archive_roadmap(
     let dst = crate::paths::archived_roadmap_dir(project, slug);
     copy_tree(store, &src, &dst)?;
     delete_tree(store, &src)?;
-    store.commit()?;
     Ok(())
 }
 
@@ -514,7 +508,6 @@ pub fn unarchive_roadmap(store: &mut impl Store, project: &str, slug: &str) -> R
     let dst = crate::paths::roadmap_dir(project, slug);
     copy_tree(store, &src, &dst)?;
     delete_tree(store, &src)?;
-    store.commit()?;
     Ok(())
 }
 
@@ -661,8 +654,6 @@ pub fn split_roadmap(
         body: String::new(),
     };
     crate::io::write_roadmap(store, project, target_slug, &target_doc)?;
-
-    store.commit()?;
 
     // Add dependency if requested
     if let Some(dep_slug) = depends_on {

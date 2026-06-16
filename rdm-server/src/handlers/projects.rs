@@ -96,9 +96,10 @@ pub async fn create_project(
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let mut store = state.store();
-    let doc = rdm_core::ops::project::create_project(&mut store, &req.name, &req.title)
-        .map_err(|e| error_response(e, format))?;
-    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
+    let doc = rdm_core::ops::mutate(&mut store, &req.name, |s| {
+        rdm_core::ops::project::create_project(s, &req.name, &req.title)
+    })
+    .map_err(|e| error_response(e, format))?;
 
     let location = format!("/projects/{}/roadmaps", doc.frontmatter.name);
     match format {
@@ -140,6 +141,7 @@ mod tests {
         rdm_core::ops::init::init(&mut store).unwrap();
         rdm_core::ops::project::create_project(&mut store, "alpha", "Alpha Project").unwrap();
         rdm_core::ops::project::create_project(&mut store, "beta", "Beta Project").unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
@@ -183,6 +185,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut store = rdm_store_fs::FsStore::new(dir.path());
         rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
@@ -254,6 +257,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut store = rdm_store_fs::FsStore::new(dir.path());
         rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
@@ -311,6 +315,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut store = rdm_store_fs::FsStore::new(dir.path());
         rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),

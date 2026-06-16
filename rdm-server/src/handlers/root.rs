@@ -72,6 +72,7 @@ mod tests {
         rdm_core::ops::init::init(&mut store).unwrap();
         rdm_core::ops::project::create_project(&mut store, "alpha", "Alpha").unwrap();
         rdm_core::ops::project::create_project(&mut store, "beta", "Beta").unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),

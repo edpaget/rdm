@@ -1025,8 +1025,10 @@ fn run() -> Result<()> {
 
             // Create project directory if --default-project was given.
             if let Some(ref proj) = default_project {
-                rdm_core::ops::project::create_project(&mut store, proj, proj)
-                    .with_context(|| format!("failed to create project '{proj}'"))?;
+                rdm_core::ops::mutate(&mut store, proj, |s| {
+                    rdm_core::ops::project::create_project(s, proj, proj)
+                })
+                .with_context(|| format!("failed to create project '{proj}'"))?;
             }
 
             // Ensure global config exists; required if --default-format was given,
@@ -1164,14 +1166,18 @@ fn run() -> Result<()> {
         } => {
             let mut store = commands::make_store(&root, staging)?;
             let project = paths::resolve_project(project, &repo_config)?;
-            let doc =
-                rdm_core::ops::task::promote_task(&mut store, &project, &task_slug, &roadmap_slug)
-                    .context("failed to promote task")?;
+            let doc = commands::commit_mutation(
+                &mut store,
+                &project,
+                cli.no_index,
+                staging,
+                "failed to promote task",
+                |s| rdm_core::ops::task::promote_task(s, &project, &task_slug, &roadmap_slug),
+            )?;
             println!(
                 "Promoted task '{task_slug}' → roadmap '{}'",
                 doc.frontmatter.roadmap
             );
-            commands::maybe_regenerate_index(&mut store, cli.no_index, staging, Some(&project))?;
         }
 
         Command::Tree { project } => {

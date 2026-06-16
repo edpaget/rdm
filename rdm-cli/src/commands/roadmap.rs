@@ -4,8 +4,7 @@ use rdm_core::display;
 use rdm_core::json;
 
 use super::{
-    map_body_clobber, maybe_print_uncommitted_hint, maybe_regenerate_index, reject_non_human,
-    resolve_body,
+    commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, reject_non_human, resolve_body,
 };
 use crate::paths;
 use crate::table;
@@ -32,18 +31,25 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            rdm_core::ops::roadmap::create_roadmap(
+            commit_mutation(
                 store,
                 &project,
-                &slug,
-                title,
-                body.as_deref(),
-                priority,
-                tags,
-            )
-            .context("failed to create roadmap")?;
+                no_index,
+                staging,
+                "failed to create roadmap",
+                |s| {
+                    rdm_core::ops::roadmap::create_roadmap(
+                        s,
+                        &project,
+                        &slug,
+                        title,
+                        body.as_deref(),
+                        priority,
+                        tags,
+                    )
+                },
+            )?;
             println!("Created roadmap '{slug}' in project '{project}'");
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         RoadmapCommand::Show {
             slug,
@@ -109,19 +115,26 @@ pub fn run(
             } else {
                 priority.map(Some)
             };
-            rdm_core::ops::roadmap::update_roadmap(
+            commit_mutation(
                 store,
                 &project,
-                &slug,
-                body.as_deref(),
-                priority,
-                tags,
-                allow_empty_body,
+                no_index,
+                staging,
+                "failed to update roadmap",
+                |s| {
+                    rdm_core::ops::roadmap::update_roadmap(
+                        s,
+                        &project,
+                        &slug,
+                        body.as_deref(),
+                        priority,
+                        tags,
+                        allow_empty_body,
+                    )
+                },
             )
-            .context("failed to update roadmap")
             .map_err(map_body_clobber)?;
             println!("Updated '{slug}'");
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         RoadmapCommand::List {
             project,
@@ -182,17 +195,27 @@ pub fn run(
         }
         RoadmapCommand::Depend { slug, on, project } => {
             let project = paths::resolve_project(project, repo_config)?;
-            rdm_core::ops::roadmap::add_dependency(store, &project, &slug, &on)
-                .context("failed to add dependency")?;
+            commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to add dependency",
+                |s| rdm_core::ops::roadmap::add_dependency(s, &project, &slug, &on),
+            )?;
             println!("Added dependency: {slug} → {on}");
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         RoadmapCommand::Undepend { slug, on, project } => {
             let project = paths::resolve_project(project, repo_config)?;
-            rdm_core::ops::roadmap::remove_dependency(store, &project, &slug, &on)
-                .context("failed to remove dependency")?;
+            commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to remove dependency",
+                |s| rdm_core::ops::roadmap::remove_dependency(s, &project, &slug, &on),
+            )?;
             println!("Removed dependency: {slug} → {on}");
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         RoadmapCommand::Deps { project } => {
             reject_non_human(format, "roadmap deps")?;
@@ -213,10 +236,15 @@ pub fn run(
                 );
             }
             let project = paths::resolve_project(project, repo_config)?;
-            rdm_core::ops::roadmap::delete_roadmap(store, &project, &slug)
-                .context("failed to delete roadmap")?;
+            commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to delete roadmap",
+                |s| rdm_core::ops::roadmap::delete_roadmap(s, &project, &slug),
+            )?;
             println!("Deleted roadmap '{slug}' from project '{project}'");
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         RoadmapCommand::Split {
             slug,
@@ -238,21 +266,28 @@ pub fn run(
             } else {
                 None
             };
-            rdm_core::ops::roadmap::split_roadmap(
+            commit_mutation(
                 store,
                 &project,
-                &slug,
-                &into,
-                &title,
-                &resolved_stems,
-                dep,
-            )
-            .context("failed to split roadmap")?;
+                no_index,
+                staging,
+                "failed to split roadmap",
+                |s| {
+                    rdm_core::ops::roadmap::split_roadmap(
+                        s,
+                        &project,
+                        &slug,
+                        &into,
+                        &title,
+                        &resolved_stems,
+                        dep,
+                    )
+                },
+            )?;
             println!(
                 "Split {} phase(s) from '{slug}' into new roadmap '{into}'",
                 resolved_stems.len()
             );
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         RoadmapCommand::Archive {
             slug,
@@ -260,17 +295,27 @@ pub fn run(
             force,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            rdm_core::ops::roadmap::archive_roadmap(store, &project, &slug, force)
-                .context("failed to archive roadmap")?;
+            commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to archive roadmap",
+                |s| rdm_core::ops::roadmap::archive_roadmap(s, &project, &slug, force),
+            )?;
             println!("Archived roadmap '{slug}' from project '{project}'");
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         RoadmapCommand::Unarchive { slug, project } => {
             let project = paths::resolve_project(project, repo_config)?;
-            rdm_core::ops::roadmap::unarchive_roadmap(store, &project, &slug)
-                .context("failed to unarchive roadmap")?;
+            commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to unarchive roadmap",
+                |s| rdm_core::ops::roadmap::unarchive_roadmap(s, &project, &slug),
+            )?;
             println!("Restored roadmap '{slug}' to project '{project}'");
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
     }
     Ok(())

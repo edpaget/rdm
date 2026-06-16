@@ -446,7 +446,9 @@ impl RdmMcpServer {
         }
 
         if let Some(ref proj) = params.default_project
-            && let Err(e) = rdm_core::ops::project::create_project(&mut *store, proj, proj)
+            && let Err(e) = rdm_core::ops::mutate(&mut *store, proj, |s| {
+                rdm_core::ops::project::create_project(s, proj, proj)
+            })
         {
             return core_err(e);
         }
@@ -748,13 +750,12 @@ impl RdmMcpServer {
         self.maybe_auto_init();
         let mut store = self.store.lock().unwrap();
         let title = params.title.as_deref().unwrap_or(&params.name);
-        let doc = match rdm_core::ops::project::create_project(&mut *store, &params.name, title) {
+        let doc = match rdm_core::ops::mutate(&mut *store, &params.name, |s| {
+            rdm_core::ops::project::create_project(s, &params.name, title)
+        }) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
-            return core_err(e);
-        }
         ok_text(format!("Created project '{}'", doc.frontmatter.name))
     }
 
@@ -776,21 +777,20 @@ impl RdmMcpServer {
             None => None,
         };
         let mut store = self.store.lock().unwrap();
-        let doc = match rdm_core::ops::roadmap::create_roadmap(
-            &mut *store,
-            &params.project,
-            &params.slug,
-            &params.title,
-            params.body.as_deref(),
-            priority,
-            params.tags.clone(),
-        ) {
+        let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
+            rdm_core::ops::roadmap::create_roadmap(
+                s,
+                &params.project,
+                &params.slug,
+                &params.title,
+                params.body.as_deref(),
+                priority,
+                params.tags.clone(),
+            )
+        }) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
-            return core_err(e);
-        }
         let phases = match rdm_core::ops::phase::list_phases(&*store, &params.project, &params.slug)
         {
             Ok(p) => p,
@@ -845,21 +845,20 @@ impl RdmMcpServer {
         };
 
         let mut store = self.store.lock().unwrap();
-        let doc = match rdm_core::ops::roadmap::update_roadmap(
-            &mut *store,
-            &params.project,
-            &params.roadmap,
-            body,
-            priority,
-            tags,
-            allow_empty_body,
-        ) {
+        let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
+            rdm_core::ops::roadmap::update_roadmap(
+                s,
+                &params.project,
+                &params.roadmap,
+                body,
+                priority,
+                tags,
+                allow_empty_body,
+            )
+        }) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
-            return core_err(e);
-        }
         let phases =
             match rdm_core::ops::phase::list_phases(&*store, &params.project, &params.roadmap) {
                 Ok(p) => p,
@@ -879,22 +878,21 @@ impl RdmMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
         let mut store = self.store.lock().unwrap();
-        let doc = match rdm_core::ops::phase::create_phase(
-            &mut *store,
-            &params.project,
-            &params.roadmap,
-            &params.slug,
-            &params.title,
-            params.number,
-            params.body.as_deref(),
-            params.tags.clone(),
-        ) {
+        let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
+            rdm_core::ops::phase::create_phase(
+                s,
+                &params.project,
+                &params.roadmap,
+                &params.slug,
+                &params.title,
+                params.number,
+                params.body.as_deref(),
+                params.tags.clone(),
+            )
+        }) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
-            return core_err(e);
-        }
         let stem = doc.frontmatter.stem(&params.slug);
         ok_text(display::format_phase_detail(&stem, &doc, None, None))
     }
@@ -948,23 +946,22 @@ impl RdmMcpServer {
             (params.body.as_deref(), false)
         };
 
-        let doc = match rdm_core::ops::phase::update_phase(
-            &mut *store,
-            &params.project,
-            &params.roadmap,
-            &stem,
-            status,
-            tags,
-            body,
-            None,
-            allow_empty_body,
-        ) {
+        let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
+            rdm_core::ops::phase::update_phase(
+                s,
+                &params.project,
+                &params.roadmap,
+                &stem,
+                status,
+                tags,
+                body,
+                None,
+                allow_empty_body,
+            )
+        }) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
-            return core_err(e);
-        }
         ok_text(display::format_phase_detail(&stem, &doc, None, None))
     }
 
@@ -987,21 +984,20 @@ impl RdmMcpServer {
         };
 
         let mut store = self.store.lock().unwrap();
-        let doc = match rdm_core::ops::task::create_task(
-            &mut *store,
-            &params.project,
-            &params.slug,
-            &params.title,
-            priority,
-            params.tags,
-            params.body.as_deref(),
-        ) {
+        let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
+            rdm_core::ops::task::create_task(
+                s,
+                &params.project,
+                &params.slug,
+                &params.title,
+                priority,
+                params.tags,
+                params.body.as_deref(),
+            )
+        }) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
-            return core_err(e);
-        }
         ok_text(display::format_task_detail(&params.slug, &doc, None))
     }
 
@@ -1041,23 +1037,22 @@ impl RdmMcpServer {
         };
 
         let mut store = self.store.lock().unwrap();
-        let doc = match rdm_core::ops::task::update_task(
-            &mut *store,
-            &params.project,
-            &params.task,
-            status,
-            priority,
-            params.tags,
-            body,
-            None,
-            allow_empty_body,
-        ) {
+        let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                &params.project,
+                &params.task,
+                status,
+                priority,
+                params.tags,
+                body,
+                None,
+                allow_empty_body,
+            )
+        }) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
-            return core_err(e);
-        }
         ok_text(display::format_task_detail(&params.task, &doc, None))
     }
 
@@ -1072,18 +1067,17 @@ impl RdmMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
         let mut store = self.store.lock().unwrap();
-        let doc = match rdm_core::ops::task::promote_task(
-            &mut *store,
-            &params.project,
-            &params.task,
-            &params.roadmap_slug,
-        ) {
+        let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
+            rdm_core::ops::task::promote_task(
+                s,
+                &params.project,
+                &params.task,
+                &params.roadmap_slug,
+            )
+        }) {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        if let Err(e) = rdm_core::ops::index::generate_index(&mut *store) {
-            return core_err(e);
-        }
         let phases =
             match rdm_core::ops::phase::list_phases(&*store, &params.project, &params.roadmap_slug)
             {

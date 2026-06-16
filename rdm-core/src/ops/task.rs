@@ -103,7 +103,6 @@ pub fn create_task(
         body: body.unwrap_or_default().to_string(),
     };
     crate::io::write_task(store, project, slug, &doc)?;
-    store.commit()?;
     Ok(doc)
 }
 
@@ -203,7 +202,6 @@ pub fn update_task(
         doc.body = b.to_string();
     }
     crate::io::write_task(store, project, slug, &doc)?;
-    store.commit()?;
     Ok(doc)
 }
 
@@ -276,7 +274,6 @@ pub fn promote_task(
     crate::io::write_phase(store, project, roadmap_slug, &phase_slug, &phase_doc)?;
 
     store.delete(&task_path)?;
-    store.commit()?;
 
     Ok(roadmap_doc)
 }

@@ -271,6 +271,7 @@ mod tests {
             None,
         )
         .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),

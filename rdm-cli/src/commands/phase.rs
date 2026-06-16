@@ -3,7 +3,7 @@ use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
 
-use super::{map_body_clobber, maybe_print_uncommitted_hint, maybe_regenerate_index, resolve_body};
+use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
 use crate::paths;
 use crate::table;
 use crate::{AppStore, OutputFormat, PhaseCommand};
@@ -30,20 +30,27 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            let doc = rdm_core::ops::phase::create_phase(
+            let doc = commit_mutation(
                 store,
                 &project,
-                &roadmap,
-                &slug,
-                title,
-                number,
-                body.as_deref(),
-                tags,
-            )
-            .context("failed to create phase")?;
+                no_index,
+                staging,
+                "failed to create phase",
+                |s| {
+                    rdm_core::ops::phase::create_phase(
+                        s,
+                        &project,
+                        &roadmap,
+                        &slug,
+                        title,
+                        number,
+                        body.as_deref(),
+                        tags,
+                    )
+                },
+            )?;
             let stem = doc.frontmatter.stem(&slug);
             println!("Created phase '{stem}' in roadmap '{roadmap}'");
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         PhaseCommand::List { roadmap, project } => {
             let project = paths::resolve_project(project, repo_config)?;
@@ -159,21 +166,28 @@ pub fn run(
             } else {
                 (resolve_body(body, no_edit)?, false)
             };
-            let doc = rdm_core::ops::phase::update_phase(
+            let doc = commit_mutation(
                 store,
                 &project,
-                &roadmap,
-                &stem,
-                status,
-                tags,
-                body.as_deref(),
-                commit,
-                allow_empty_body,
+                no_index,
+                staging,
+                "failed to update phase",
+                |s| {
+                    rdm_core::ops::phase::update_phase(
+                        s,
+                        &project,
+                        &roadmap,
+                        &stem,
+                        status,
+                        tags,
+                        body.as_deref(),
+                        commit,
+                        allow_empty_body,
+                    )
+                },
             )
-            .context("failed to update phase")
             .map_err(map_body_clobber)?;
             println!("Updated '{stem}' → {}", doc.frontmatter.status);
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         PhaseCommand::Remove {
             stem,
@@ -183,10 +197,15 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
                 .context("failed to resolve phase")?;
-            rdm_core::ops::phase::remove_phase(store, &project, &roadmap, &stem)
-                .context("failed to remove phase")?;
+            commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to remove phase",
+                |s| rdm_core::ops::phase::remove_phase(s, &project, &roadmap, &stem),
+            )?;
             println!("Removed phase '{stem}' from roadmap '{roadmap}'");
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
     }
     Ok(())

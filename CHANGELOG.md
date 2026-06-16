@@ -78,6 +78,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (AND), now shared by the CLI's `task list` and the TUI's task browser.
 ### Changed
 
+- Each plan-repo mutation (create/update/delete/promote/archive/split of a
+  roadmap, phase, task, or project) now records a **single** git commit that
+  bundles the entity change with the regenerated `INDEX.md`, instead of two
+  separate commits. `INDEX.md` regeneration is now an inherent part of every
+  mutation, so the index can no longer drift out of date. `--no-index` still
+  skips regeneration (committing the entity change alone) as before.
 - Roadmap aggregate-status computation (the overall `not-started` /
   `in-progress` / `done` derived from a roadmap's phases) now lives in
   `rdm-core` so every interface shares one implementation. No behavior change

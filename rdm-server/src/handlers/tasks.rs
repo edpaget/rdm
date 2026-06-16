@@ -270,17 +270,18 @@ pub async fn create_task(
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let mut store = state.store();
-    let doc = rdm_core::ops::task::create_task(
-        &mut store,
-        &project,
-        &req.slug,
-        &req.title,
-        req.priority,
-        req.tags,
-        req.body.as_deref(),
-    )
+    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+        rdm_core::ops::task::create_task(
+            s,
+            &project,
+            &req.slug,
+            &req.title,
+            req.priority,
+            req.tags,
+            req.body.as_deref(),
+        )
+    })
     .map_err(|e| error_response(e, format))?;
-    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let location = format!("/projects/{project}/tasks/{}", req.slug);
     match format {
@@ -350,19 +351,20 @@ pub async fn update_task(
     };
 
     let mut store = state.store();
-    let doc = rdm_core::ops::task::update_task(
-        &mut store,
-        &project,
-        &task_slug,
-        status,
-        priority,
-        req.tags,
-        body,
-        None,
-        allow_empty_body,
-    )
+    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+        rdm_core::ops::task::update_task(
+            s,
+            &project,
+            &task_slug,
+            status,
+            priority,
+            req.tags,
+            body,
+            None,
+            allow_empty_body,
+        )
+    })
     .map_err(|e| error_response(e, format))?;
-    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let self_href = format!("/projects/{project}/tasks/{task_slug}");
     match format {
@@ -398,9 +400,10 @@ pub async fn promote_task(
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let mut store = state.store();
-    rdm_core::ops::task::promote_task(&mut store, &project, &task_slug, &req.roadmap_slug)
-        .map_err(|e| error_response(e, format))?;
-    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
+    rdm_core::ops::mutate(&mut store, &project, |s| {
+        rdm_core::ops::task::promote_task(s, &project, &task_slug, &req.roadmap_slug)
+    })
+    .map_err(|e| error_response(e, format))?;
 
     let location = format!("/projects/{project}/roadmaps/{}", req.roadmap_slug);
     match format {
@@ -459,6 +462,7 @@ mod tests {
             None,
         )
         .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
@@ -1198,6 +1202,7 @@ mod tests {
             false,
         )
         .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),

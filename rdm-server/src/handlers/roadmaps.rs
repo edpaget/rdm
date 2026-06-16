@@ -442,17 +442,18 @@ pub async fn create_roadmap(
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let priority = req.priority.as_deref().map(parse_priority).transpose()?;
     let mut store = state.store();
-    let doc = rdm_core::ops::roadmap::create_roadmap(
-        &mut store,
-        &project,
-        &req.slug,
-        &req.title,
-        req.body.as_deref(),
-        priority,
-        req.tags.clone(),
-    )
+    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+        rdm_core::ops::roadmap::create_roadmap(
+            s,
+            &project,
+            &req.slug,
+            &req.title,
+            req.body.as_deref(),
+            priority,
+            req.tags.clone(),
+        )
+    })
     .map_err(|e| error_response(e, format))?;
-    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let location = format!("/projects/{project}/roadmaps/{}", doc.frontmatter.roadmap);
     match format {
@@ -536,17 +537,18 @@ pub async fn update_roadmap(
     };
 
     let mut store = state.store();
-    let doc = rdm_core::ops::roadmap::update_roadmap(
-        &mut store,
-        &project,
-        &roadmap,
-        body,
-        priority,
-        tags,
-        allow_empty_body,
-    )
+    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+        rdm_core::ops::roadmap::update_roadmap(
+            s,
+            &project,
+            &roadmap,
+            body,
+            priority,
+            tags,
+            allow_empty_body,
+        )
+    })
     .map_err(|e| error_response(e, format))?;
-    rdm_core::ops::index::generate_index(&mut store).map_err(|e| error_response(e, format))?;
 
     let phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
         .map_err(|e| error_response(e, format))?;
@@ -639,6 +641,7 @@ mod tests {
             false,
         )
         .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
@@ -683,6 +686,7 @@ mod tests {
             false,
         )
         .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         (dir, state)
     }
 
@@ -1112,6 +1116,7 @@ mod tests {
             None,
         )
         .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
@@ -1308,6 +1313,7 @@ mod tests {
             None,
         )
         .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: vec![rdm_core::config::QuickFilter {

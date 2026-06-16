@@ -3,7 +3,7 @@ use rdm_core::config::Config;
 use rdm_core::document::Document;
 use rdm_core::error::Error;
 use rdm_core::model::*;
-use rdm_core::store::{MemoryStore, Store};
+use rdm_core::store::{MemoryStore, Store, VersionedStore};
 
 fn make_store() -> MemoryStore {
     MemoryStore::new()
@@ -2634,6 +2634,46 @@ fn generate_index_for_project_only_writes_targeted_project() {
     let root = store.read(&rdm_core::paths::index_path()).unwrap();
     assert!(root.contains("[fbm]"));
     assert!(root.contains("[acme]"));
+}
+
+#[test]
+fn mutate_regenerates_index_and_commits_once() {
+    let mut store = MemoryStore::new();
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::mutate(&mut store, "fbm", |s| {
+        rdm_core::ops::project::create_project(s, "fbm", "FBM")
+    })
+    .unwrap();
+
+    // Snapshot the commit identifier before the mutation under test. The
+    // MemoryStore exposes a monotonic `mem-N` token that advances once per
+    // commit, so it doubles as a commit counter.
+    let before = store.head_sha().unwrap();
+
+    let doc = rdm_core::ops::mutate(&mut store, "fbm", |s| {
+        rdm_core::ops::roadmap::create_roadmap(s, "fbm", "alpha", "Alpha", None, None, None)
+    })
+    .unwrap();
+    assert_eq!(doc.frontmatter.roadmap, "alpha");
+
+    // The entity write + index regeneration collapse into exactly ONE commit.
+    let after = store.head_sha().unwrap();
+    let counter = |sha: &str| sha.strip_prefix("mem-").unwrap().parse::<u32>().unwrap();
+    assert_eq!(
+        counter(&after),
+        counter(&before) + 1,
+        "ops::mutate must produce exactly one commit (before={before}, after={after})"
+    );
+
+    // The index was regenerated inside the same transaction: the roadmap
+    // created by `f` is already referenced in the freshly written INDEX.md.
+    let project_index = store
+        .read(&rdm_core::paths::project_index_path("fbm"))
+        .unwrap();
+    assert!(
+        project_index.contains("roadmaps/alpha/roadmap.md"),
+        "INDEX.md should reference the roadmap created in the same mutate(): {project_index}"
+    );
 }
 
 #[test]

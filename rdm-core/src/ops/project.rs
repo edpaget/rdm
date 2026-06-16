@@ -31,7 +31,6 @@ pub fn create_project(
     };
     let content = doc.render()?;
     store.write(&md_path, content)?;
-    store.commit()?;
     Ok(doc)
 }
 

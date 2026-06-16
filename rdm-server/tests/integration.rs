@@ -78,6 +78,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         None,
     )
     .unwrap();
+    rdm_core::store::Store::commit(&mut store).unwrap();
 
     let state = rdm_server::state::AppState {
         plan_root: dir.path().to_path_buf(),

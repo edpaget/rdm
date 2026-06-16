@@ -3,7 +3,7 @@ use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
 
-use super::{map_body_clobber, maybe_print_uncommitted_hint, maybe_regenerate_index, resolve_body};
+use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
 use crate::paths;
 use crate::table;
 use crate::{AppStore, OutputFormat, TaskCommand};
@@ -29,18 +29,25 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            rdm_core::ops::task::create_task(
+            commit_mutation(
                 store,
                 &project,
-                &slug,
-                title,
-                priority,
-                tags,
-                body.as_deref(),
-            )
-            .context("failed to create task")?;
+                no_index,
+                staging,
+                "failed to create task",
+                |s| {
+                    rdm_core::ops::task::create_task(
+                        s,
+                        &project,
+                        &slug,
+                        title,
+                        priority,
+                        tags,
+                        body.as_deref(),
+                    )
+                },
+            )?;
             println!("Created task '{slug}' in project '{project}'");
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         TaskCommand::Show {
             slug,
@@ -96,24 +103,31 @@ pub fn run(
             } else {
                 (resolve_body(body, no_edit)?, false)
             };
-            let doc = rdm_core::ops::task::update_task(
+            let doc = commit_mutation(
                 store,
                 &project,
-                &slug,
-                status,
-                priority,
-                tags,
-                body.as_deref(),
-                commit,
-                allow_empty_body,
+                no_index,
+                staging,
+                "failed to update task",
+                |s| {
+                    rdm_core::ops::task::update_task(
+                        s,
+                        &project,
+                        &slug,
+                        status,
+                        priority,
+                        tags,
+                        body.as_deref(),
+                        commit,
+                        allow_empty_body,
+                    )
+                },
             )
-            .context("failed to update task")
             .map_err(map_body_clobber)?;
             println!(
                 "Updated task '{slug}' → status: {}, priority: {}",
                 doc.frontmatter.status, doc.frontmatter.priority
             );
-            maybe_regenerate_index(store, no_index, staging, Some(&project))?;
         }
         TaskCommand::List {
             project,

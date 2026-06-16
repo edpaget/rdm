@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use is_terminal::IsTerminal;
 use rdm_core::model::PhaseStatus;
 use rdm_core::search::ItemStatus;
+use rdm_core::store::Store;
 
 use crate::paths;
 use crate::{AppStore, ItemKindArg, OutputFormat};
@@ -194,24 +195,35 @@ pub fn reject_non_human(format: OutputFormat, command_name: &str) -> Result<()> 
     Ok(())
 }
 
-pub fn maybe_regenerate_index(
+/// Runs a mutating op as a single transaction and prints the staging hint.
+///
+/// Wraps `f` in [`rdm_core::ops::mutate`], so the entity write, `INDEX.md`
+/// regeneration, and the single git commit happen together — the CLI never
+/// has to remember to regenerate the index. `context` labels any failure.
+///
+/// `--no-index` is honored as an escape hatch: the mutation is still applied
+/// and committed, but the index is left stale (the user can rebuild it later
+/// with `rdm index`). When staging mode is active, the trailing `rdm commit`
+/// hint is printed.
+pub fn commit_mutation<T>(
     store: &mut AppStore,
+    project: &str,
     no_index: bool,
     staging: bool,
-    project: Option<&str>,
-) -> Result<()> {
-    if !no_index {
-        match project {
-            Some(p) => rdm_core::ops::index::generate_index_for_project(store, p)
-                .context("failed to regenerate INDEX.md")?,
-            None => rdm_core::ops::index::generate_index(store)
-                .context("failed to regenerate INDEX.md")?,
-        }
-    }
+    context: &str,
+    f: impl FnOnce(&mut AppStore) -> rdm_core::error::Result<T>,
+) -> Result<T> {
+    let out = if no_index {
+        let out = f(store).with_context(|| context.to_string())?;
+        store.commit().with_context(|| context.to_string())?;
+        out
+    } else {
+        rdm_core::ops::mutate(store, project, f).with_context(|| context.to_string())?
+    };
     if staging {
         println!("  (staged — run `rdm commit` to persist)");
     }
-    Ok(())
+    Ok(out)
 }
 
 /// Prints a hint about uncommitted changes when staging mode is active.
@@ -296,17 +308,19 @@ pub fn apply_done_directives(
                         continue;
                     }
                 };
-                match rdm_core::ops::phase::update_phase(
-                    &mut store,
-                    &project,
-                    roadmap,
-                    &stem,
-                    Some(rdm_core::model::PhaseStatus::Done),
-                    None,
-                    None,
-                    Some(sha.clone()),
-                    false,
-                ) {
+                match rdm_core::ops::mutate(&mut store, &project, |s| {
+                    rdm_core::ops::phase::update_phase(
+                        s,
+                        &project,
+                        roadmap,
+                        &stem,
+                        Some(rdm_core::model::PhaseStatus::Done),
+                        None,
+                        None,
+                        Some(sha.clone()),
+                        false,
+                    )
+                }) {
                     Ok(_) => logger.log(
                         hook,
                         "apply-phase",
@@ -334,17 +348,19 @@ pub fn apply_done_directives(
                 }
             }
             rdm_core::hook::DoneDirective::Task { slug } => {
-                match rdm_core::ops::task::update_task(
-                    &mut store,
-                    &project,
-                    slug,
-                    Some(rdm_core::model::TaskStatus::Done),
-                    None,
-                    None,
-                    None,
-                    Some(sha.clone()),
-                    false,
-                ) {
+                match rdm_core::ops::mutate(&mut store, &project, |s| {
+                    rdm_core::ops::task::update_task(
+                        s,
+                        &project,
+                        slug,
+                        Some(rdm_core::model::TaskStatus::Done),
+                        None,
+                        None,
+                        None,
+                        Some(sha.clone()),
+                        false,
+                    )
+                }) {
                     Ok(_) => logger.log(
                         hook,
                         "apply-task",

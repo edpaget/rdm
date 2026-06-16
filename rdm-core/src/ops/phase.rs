@@ -108,7 +108,6 @@ pub fn create_phase(
     let mut roadmap_doc = crate::io::load_roadmap(store, project, roadmap)?;
     roadmap_doc.frontmatter.phases.push(stem);
     crate::io::write_roadmap(store, project, roadmap, &roadmap_doc)?;
-    store.commit()?;
 
     Ok(doc)
 }
@@ -182,7 +181,6 @@ pub fn update_phase(
         doc.body = b.to_string();
     }
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
-    store.commit()?;
     Ok(doc)
 }
 
@@ -213,7 +211,6 @@ pub fn remove_phase(
     let mut roadmap_doc = crate::io::load_roadmap(store, project, roadmap)?;
     roadmap_doc.frontmatter.phases.retain(|s| s != phase_stem);
     crate::io::write_roadmap(store, project, roadmap, &roadmap_doc)?;
-    store.commit()?;
     Ok(())
 }
 

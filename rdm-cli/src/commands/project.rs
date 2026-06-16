@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use rdm_core::json;
 
-use super::{maybe_print_uncommitted_hint, maybe_regenerate_index, reject_non_human};
+use super::{commit_mutation, maybe_print_uncommitted_hint, reject_non_human};
 use crate::{AppStore, OutputFormat, ProjectCommand};
 
 pub fn run(
@@ -14,10 +14,15 @@ pub fn run(
     match command {
         ProjectCommand::Create { name, title } => {
             let title = title.as_deref().unwrap_or(&name);
-            let doc = rdm_core::ops::project::create_project(store, &name, title)
-                .context("failed to create project")?;
+            let doc = commit_mutation(
+                store,
+                &name,
+                no_index,
+                staging,
+                "failed to create project",
+                |s| rdm_core::ops::project::create_project(s, &name, title),
+            )?;
             println!("Created project '{}'", doc.frontmatter.name);
-            maybe_regenerate_index(store, no_index, staging, Some(&name))?;
         }
         ProjectCommand::Show { name } => {
             let doc = rdm_core::io::load_project(store, &name).context("failed to load project")?;
