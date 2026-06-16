@@ -3,9 +3,9 @@ use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use rdm_core::hal::{HalLink, HalResource};
+use crate::hal::{HalLink, HalResource};
+use crate::problem::ProblemDetail;
 use rdm_core::model::{PhaseStatus, TaskStatus};
-use rdm_core::problem::ProblemDetail;
 use rdm_core::search::{ItemKind, ItemStatus, SearchFilter, search};
 
 use crate::content_type::ResponseFormat;

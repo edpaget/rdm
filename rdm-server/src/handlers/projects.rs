@@ -4,7 +4,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use rdm_core::hal::{HalLink, HalResource};
+use crate::hal::{HalLink, HalResource};
 
 use crate::content_type::ResponseFormat;
 use crate::error::{error_response, json_rejection_response};

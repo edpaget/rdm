@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
-use rdm_core::hal::HalResource;
+use crate::hal::HalResource;
 
 /// Content type for HAL+JSON responses.
 const HAL_JSON: &str = "application/hal+json";

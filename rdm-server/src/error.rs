@@ -4,7 +4,7 @@ use askama::Template;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use rdm_core::problem::ProblemDetail;
+use crate::problem::ProblemDetail;
 
 use axum::extract::rejection::JsonRejection;
 

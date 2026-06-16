@@ -17,8 +17,6 @@ pub mod display;
 pub mod document;
 /// Error types for rdm-core.
 pub mod error;
-/// HAL (Hypertext Application Language) response types.
-pub mod hal;
 /// Git hook helpers for parsing `Done:` directives from commit messages.
 pub mod hook;
 /// Document I/O primitives for plan repo data.
@@ -34,8 +32,6 @@ pub mod model;
 pub mod ops;
 /// Path builders for plan repo layout.
 pub mod paths;
-/// RFC 9457 Problem Details for HTTP APIs.
-pub mod problem;
 /// Fuzzy search across plan repo content (roadmaps, phases, and tasks).
 pub mod search;
 /// Storage abstraction layer for plan repo data.

@@ -4,7 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use rdm_core::hal::{HalLink, HalResource};
+use crate::hal::{HalLink, HalResource};
 use rdm_core::model::{Phase, PhaseStatus};
 use rdm_core::store::Store;
 

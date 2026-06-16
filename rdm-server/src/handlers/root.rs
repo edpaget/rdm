@@ -3,7 +3,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
-use rdm_core::hal::{HalLink, HalResource};
+use crate::hal::{HalLink, HalResource};
 
 use crate::content_type::ResponseFormat;
 use crate::error::error_response;

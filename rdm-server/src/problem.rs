@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 
-use crate::error::Error;
+use rdm_core::error::Error;
 
 /// An RFC 9457 Problem Details object.
 #[derive(Debug, Clone, Serialize)]

@@ -14,10 +14,14 @@ pub mod content_type;
 pub mod error;
 /// HAL+JSON response helpers and content negotiation guards.
 pub mod extract;
+/// HAL (Hypertext Application Language) response types.
+pub mod hal;
 /// HTTP request handlers.
 pub mod handlers;
 /// Markdown-to-HTML rendering.
 pub mod markdown;
+/// RFC 9457 Problem Details for HTTP APIs.
+pub mod problem;
 /// Axum router construction.
 pub mod router;
 /// Shared application state.

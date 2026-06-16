@@ -6,13 +6,13 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
+use crate::hal::{HalLink, HalResource};
 use rdm_core::document::Document;
-use rdm_core::hal::{HalLink, HalResource};
 use rdm_core::model::{Phase, PhaseStatus, Priority, RoadmapSort};
 
 use axum::extract::Query;
 
-use rdm_core::problem::ProblemDetail;
+use crate::problem::ProblemDetail;
 
 use crate::content_type::ResponseFormat;
 use crate::error::{
