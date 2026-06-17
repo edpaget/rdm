@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::hal::{HalLink, HalResource};
 use rdm_core::document::Document;
 use rdm_core::model::{Phase, PhaseStatus, Priority, RoadmapSort};
+use rdm_core::ops::{BodyUpdate, PriorityUpdate, TagsUpdate};
 
 use axum::extract::Query;
 
@@ -498,55 +499,19 @@ pub async fn update_roadmap(
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
 
-    if req.clear_priority.unwrap_or(false) && req.priority.is_some() {
-        return Err(validation_error(
-            "cannot set both 'priority' and 'clear_priority'".to_string(),
-        ));
-    }
-    if req.clear_tags.unwrap_or(false) && req.tags.is_some() {
-        return Err(validation_error(
-            "cannot set both 'tags' and 'clear_tags'".to_string(),
-        ));
-    }
-
-    let priority = if req.clear_priority.unwrap_or(false) {
-        Some(None)
-    } else {
-        req.priority
-            .as_deref()
-            .map(parse_priority)
-            .transpose()?
-            .map(Some)
-    };
-
-    let tags = if req.clear_tags.unwrap_or(false) {
-        Some(Vec::new())
-    } else {
-        req.tags
-    };
-
-    if req.clear_body.unwrap_or(false) && req.body.is_some() {
-        return Err(validation_error(
-            "cannot set both 'body' and 'clear_body'".to_string(),
-        ));
-    }
-    let (body, allow_empty_body) = if req.clear_body.unwrap_or(false) {
-        (Some(""), true)
-    } else {
-        (req.body.as_deref(), false)
-    };
+    let body = BodyUpdate::from_args(req.body, req.clear_body.unwrap_or(false))
+        .map_err(|e| error_response(e, format))?;
+    let priority = PriorityUpdate::from_args(
+        req.priority.as_deref().map(parse_priority).transpose()?,
+        req.clear_priority.unwrap_or(false),
+    )
+    .map_err(|e| error_response(e, format))?;
+    let tags = TagsUpdate::from_args(req.tags, req.clear_tags.unwrap_or(false))
+        .map_err(|e| error_response(e, format))?;
 
     let mut store = state.store();
     let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
-        rdm_core::ops::roadmap::update_roadmap(
-            s,
-            &project,
-            &roadmap,
-            body,
-            priority,
-            tags,
-            allow_empty_body,
-        )
+        rdm_core::ops::roadmap::update_roadmap(s, &project, &roadmap, body, priority, tags)
     })
     .map_err(|e| error_response(e, format))?;
 
@@ -635,10 +600,9 @@ mod tests {
             "alpha",
             "phase-1-first",
             Some(PhaseStatus::Done),
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();
@@ -680,10 +644,9 @@ mod tests {
             "beta",
             "phase-1-only",
             Some(PhaseStatus::Done),
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();

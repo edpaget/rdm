@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::hal::{HalLink, HalResource};
 use crate::problem::ProblemDetail;
 use rdm_core::model::{Priority, Task, TaskStatus};
+use rdm_core::ops::{BodyUpdate, TagsUpdate};
 
 use crate::content_type::ResponseFormat;
 use crate::error::{
@@ -339,29 +340,14 @@ pub async fn update_task(
         None => None,
     };
 
-    if req.clear_body.unwrap_or(false) && req.body.is_some() {
-        return Err(validation_error(
-            "cannot set both 'body' and 'clear_body'".to_string(),
-        ));
-    }
-    let (body, allow_empty_body) = if req.clear_body.unwrap_or(false) {
-        (Some(""), true)
-    } else {
-        (req.body.as_deref(), false)
-    };
+    let tags = TagsUpdate::from_args(req.tags, false).map_err(|e| error_response(e, format))?;
+    let body = BodyUpdate::from_args(req.body, req.clear_body.unwrap_or(false))
+        .map_err(|e| error_response(e, format))?;
 
     let mut store = state.store();
     let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
         rdm_core::ops::task::update_task(
-            s,
-            &project,
-            &task_slug,
-            status,
-            priority,
-            req.tags,
-            body,
-            None,
-            allow_empty_body,
+            s, &project, &task_slug, status, priority, tags, body, None,
         )
     })
     .map_err(|e| error_response(e, format))?;
@@ -1174,10 +1160,9 @@ mod tests {
             "done-task",
             Some(TaskStatus::Done),
             None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
         rdm_core::ops::task::create_task(
@@ -1196,10 +1181,9 @@ mod tests {
             "wontfix-task",
             Some(TaskStatus::WontFix),
             None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();

@@ -130,6 +130,13 @@ impl From<&Error> for ProblemDetail {
                 ),
                 instance: None,
             },
+            Error::ConflictingUpdate { field } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Unprocessable Content".to_string(),
+                status: 422,
+                detail: Some(format!("cannot set both '{field}' and 'clear_{field}'")),
+                instance: None,
+            },
             // Internal errors: no detail leak
             Error::Io(_)
             | Error::FrontmatterParse(_)

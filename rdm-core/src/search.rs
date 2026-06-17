@@ -7,8 +7,10 @@ use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use serde::Serialize;
 
+use std::str::FromStr;
+
 use crate::error::Result;
-use crate::model::{PhaseStatus, TaskStatus};
+use crate::model::{ParseError, PhaseStatus, TaskStatus};
 use crate::store::Store;
 
 /// The kind of plan item.
@@ -29,6 +31,23 @@ impl std::fmt::Display for ItemKind {
             ItemKind::Roadmap => write!(f, "roadmap"),
             ItemKind::Phase => write!(f, "phase"),
             ItemKind::Task => write!(f, "task"),
+        }
+    }
+}
+
+impl FromStr for ItemKind {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "roadmap" => Ok(ItemKind::Roadmap),
+            "phase" => Ok(ItemKind::Phase),
+            "task" => Ok(ItemKind::Task),
+            other => Err(ParseError::new(
+                "item kind",
+                other,
+                "roadmap, phase, or task",
+            )),
         }
     }
 }
@@ -67,6 +86,26 @@ impl ItemStatus {
             ItemStatus::Task(s) => s == status,
             ItemStatus::Phase(_) => false,
             ItemStatus::Either(_, t) => t == status,
+        }
+    }
+}
+
+impl FromStr for ItemStatus {
+    type Err = ParseError;
+
+    /// Parses a status string. A value valid for both phases and tasks yields
+    /// [`ItemStatus::Either`]; one valid for only a single kind yields the
+    /// corresponding variant.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match (PhaseStatus::from_str(s).ok(), TaskStatus::from_str(s).ok()) {
+            (Some(ps), Some(ts)) => Ok(ItemStatus::Either(ps, ts)),
+            (Some(ps), None) => Ok(ItemStatus::Phase(ps)),
+            (None, Some(ts)) => Ok(ItemStatus::Task(ts)),
+            (None, None) => Err(ParseError::new(
+                "status",
+                s,
+                "a phase status (not-started, in-progress, needs-review, reviewed, done, blocked, or wont-fix) or a task status (open, in-progress, needs-review, reviewed, done, or wont-fix)",
+            )),
         }
     }
 }
@@ -341,6 +380,37 @@ mod tests {
     use crate::model::{PhaseStatus, Priority, TaskStatus};
     use crate::store::MemoryStore;
 
+    #[test]
+    fn item_kind_from_str_round_trips_and_rejects_unknown() {
+        for kind in [ItemKind::Roadmap, ItemKind::Phase, ItemKind::Task] {
+            assert_eq!(kind.to_string().parse::<ItemKind>().unwrap(), kind);
+        }
+        let err = "bogus".parse::<ItemKind>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid item kind: 'bogus' (expected roadmap, phase, or task)"
+        );
+    }
+
+    #[test]
+    fn item_status_from_str_resolves_kind() {
+        // "done" is valid for both phases and tasks → kind-agnostic.
+        assert_eq!(
+            "done".parse::<ItemStatus>().unwrap(),
+            ItemStatus::Either(PhaseStatus::Done, TaskStatus::Done)
+        );
+        // "blocked" is phase-only; "open" is task-only.
+        assert_eq!(
+            "blocked".parse::<ItemStatus>().unwrap(),
+            ItemStatus::Phase(PhaseStatus::Blocked)
+        );
+        assert_eq!(
+            "open".parse::<ItemStatus>().unwrap(),
+            ItemStatus::Task(TaskStatus::Open)
+        );
+        assert!("nonsense".parse::<ItemStatus>().is_err());
+    }
+
     /// Sets up a store with sample data for testing.
     fn setup_test_store() -> MemoryStore {
         let mut store = MemoryStore::new();
@@ -392,10 +462,9 @@ mod tests {
             "widget-launch",
             "phase-1-design",
             Some(PhaseStatus::Done),
+            crate::ops::TagsUpdate::Keep,
+            crate::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
 
@@ -428,10 +497,9 @@ mod tests {
             "fix-login-bug",
             Some(TaskStatus::Done),
             None,
+            crate::ops::TagsUpdate::Keep,
+            crate::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
 
@@ -534,10 +602,9 @@ mod tests {
             "widget-launch",
             "phase-2-implementation",
             Some(PhaseStatus::NeedsReview),
+            crate::ops::TagsUpdate::Keep,
+            crate::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
 
@@ -565,10 +632,9 @@ mod tests {
             "add-search",
             Some(TaskStatus::Reviewed),
             None,
+            crate::ops::TagsUpdate::Keep,
+            crate::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
 
@@ -594,10 +660,9 @@ mod tests {
             "widget-launch",
             "phase-2-implementation",
             Some(PhaseStatus::NeedsReview),
+            crate::ops::TagsUpdate::Keep,
+            crate::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
         crate::ops::task::update_task(
@@ -606,10 +671,9 @@ mod tests {
             "add-search",
             Some(TaskStatus::NeedsReview),
             None,
+            crate::ops::TagsUpdate::Keep,
+            crate::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
 

@@ -52,10 +52,9 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         "api",
         "phase-1-design",
         Some(PhaseStatus::Done),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     rdm_core::ops::task::create_task(

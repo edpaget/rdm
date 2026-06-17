@@ -824,10 +824,9 @@ mod tests {
             "alpha",
             "phase-1-first",
             Some(PhaseStatus::Done),
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
 
@@ -1227,10 +1226,9 @@ mod tests {
             "t2",
             Some(TaskStatus::InProgress),
             None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
         create_task(
@@ -1249,10 +1247,9 @@ mod tests {
             "t3",
             Some(TaskStatus::Done),
             None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
         create_task(
@@ -1271,10 +1268,9 @@ mod tests {
             "t4",
             Some(TaskStatus::WontFix),
             None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
             None,
-            None,
-            None,
-            false,
         )
         .unwrap();
 

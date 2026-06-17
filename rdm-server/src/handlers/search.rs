@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::hal::{HalLink, HalResource};
 use crate::problem::ProblemDetail;
-use rdm_core::model::{PhaseStatus, TaskStatus};
 use rdm_core::search::{ItemKind, ItemStatus, SearchFilter, search};
 
 use crate::content_type::ResponseFormat;
@@ -48,30 +47,6 @@ struct SearchResultItem {
     score: u32,
 }
 
-/// Parses a kind string into an `ItemKind`.
-fn parse_kind(s: &str) -> Option<ItemKind> {
-    match s {
-        "roadmap" => Some(ItemKind::Roadmap),
-        "phase" => Some(ItemKind::Phase),
-        "task" => Some(ItemKind::Task),
-        _ => None,
-    }
-}
-
-/// Parses a status string into an `ItemStatus`.
-///
-/// Tries both phase and task status variants.
-fn parse_status(s: &str) -> Option<ItemStatus> {
-    // A status valid for both kinds becomes kind-agnostic so the `?status=`
-    // filter matches both phases and tasks.
-    match (s.parse::<PhaseStatus>().ok(), s.parse::<TaskStatus>().ok()) {
-        (Some(ps), Some(ts)) => Some(ItemStatus::Either(ps, ts)),
-        (Some(ps), None) => Some(ItemStatus::Phase(ps)),
-        (None, Some(ts)) => Some(ItemStatus::Task(ts)),
-        (None, None) => None,
-    }
-}
-
 /// Builds the detail page href for a search result.
 fn result_href(project: &str, kind: ItemKind, identifier: &str) -> String {
     match kind {
@@ -109,7 +84,7 @@ pub async fn search_items(
     };
 
     let kind_filter = match &params.kind {
-        Some(k) => match parse_kind(k) {
+        Some(k) => match k.parse::<ItemKind>().ok() {
             Some(kind) => Some(kind),
             None => {
                 return Err(problem_detail_into_response(ProblemDetail {
@@ -127,7 +102,7 @@ pub async fn search_items(
     };
 
     let status_filter = match &params.status {
-        Some(s) => match parse_status(s) {
+        Some(s) => match s.parse::<ItemStatus>().ok() {
             Some(status) => Some(status),
             None => {
                 return Err(problem_detail_into_response(ProblemDetail {

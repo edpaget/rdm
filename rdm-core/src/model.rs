@@ -5,6 +5,41 @@ use std::str::FromStr;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
+/// Error returned when a string cannot be parsed into one of the model enums.
+///
+/// Unlike a bare `String`, this implements [`std::error::Error`], so it
+/// composes with `?` and `anyhow` without a `.map_err(|e| anyhow!(e))` wrapper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseError {
+    kind: &'static str,
+    value: String,
+    expected: &'static str,
+}
+
+impl ParseError {
+    /// Creates a parse error for `kind` (e.g. `"priority"`) from the rejected
+    /// `value`, listing the `expected` accepted values.
+    pub(crate) fn new(kind: &'static str, value: &str, expected: &'static str) -> Self {
+        Self {
+            kind,
+            value: value.to_string(),
+            expected,
+        }
+    }
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "invalid {}: '{}' (expected {})",
+            self.kind, self.value, self.expected
+        )
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 /// Status of a roadmap phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -51,7 +86,7 @@ impl fmt::Display for PhaseStatus {
 }
 
 impl FromStr for PhaseStatus {
-    type Err = String;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
@@ -62,8 +97,10 @@ impl FromStr for PhaseStatus {
             "done" => Ok(PhaseStatus::Done),
             "blocked" => Ok(PhaseStatus::Blocked),
             "wont-fix" => Ok(PhaseStatus::WontFix),
-            other => Err(format!(
-                "invalid phase status: '{other}' (expected not-started, in-progress, needs-review, reviewed, done, blocked, or wont-fix)"
+            other => Err(ParseError::new(
+                "phase status",
+                other,
+                "not-started, in-progress, needs-review, reviewed, done, blocked, or wont-fix",
             )),
         }
     }
@@ -101,7 +138,7 @@ impl fmt::Display for TaskStatus {
 }
 
 impl FromStr for TaskStatus {
-    type Err = String;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
@@ -111,8 +148,10 @@ impl FromStr for TaskStatus {
             "reviewed" => Ok(TaskStatus::Reviewed),
             "done" => Ok(TaskStatus::Done),
             "wont-fix" => Ok(TaskStatus::WontFix),
-            other => Err(format!(
-                "invalid task status: '{other}' (expected open, in-progress, needs-review, reviewed, done, or wont-fix)"
+            other => Err(ParseError::new(
+                "task status",
+                other,
+                "open, in-progress, needs-review, reviewed, done, or wont-fix",
             )),
         }
     }
@@ -158,7 +197,7 @@ impl fmt::Display for Priority {
 }
 
 impl FromStr for Priority {
-    type Err = String;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
@@ -166,8 +205,10 @@ impl FromStr for Priority {
             "medium" => Ok(Priority::Medium),
             "high" => Ok(Priority::High),
             "critical" => Ok(Priority::Critical),
-            other => Err(format!(
-                "invalid priority: '{other}' (expected low, medium, high, or critical)"
+            other => Err(ParseError::new(
+                "priority",
+                other,
+                "low, medium, high, or critical",
             )),
         }
     }
@@ -183,7 +224,7 @@ impl fmt::Display for TaskStatusFilter {
 }
 
 impl FromStr for TaskStatusFilter {
-    type Err = String;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
@@ -212,15 +253,13 @@ impl fmt::Display for RoadmapSort {
 }
 
 impl FromStr for RoadmapSort {
-    type Err = String;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "alphabetical" => Ok(RoadmapSort::Alphabetical),
             "priority" => Ok(RoadmapSort::Priority),
-            other => Err(format!(
-                "invalid sort: '{other}' (expected alphabetical or priority)"
-            )),
+            other => Err(ParseError::new("sort", other, "alphabetical or priority")),
         }
     }
 }

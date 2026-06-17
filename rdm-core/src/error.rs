@@ -63,10 +63,19 @@ pub enum Error {
     /// backend that opted out of revision-scoped reads).
     HistoryUnavailable,
     /// An update tried to replace a non-empty body with an empty string
-    /// without an explicit opt-in. Callers must set the `allow_empty_body`
-    /// flag to confirm the clobber (the CLI exposes this as `--clear-body`,
-    /// the HTTP/MCP surfaces as `clear_body: true`).
+    /// without an explicit opt-in. Callers must use [`BodyUpdate::Clear`] to
+    /// confirm the clobber (the CLI exposes this as `--clear-body`, the
+    /// HTTP/MCP surfaces as `clear_body: true`).
+    ///
+    /// [`BodyUpdate::Clear`]: crate::ops::BodyUpdate::Clear
     BodyClobberRefused,
+    /// An update request set both a value and its `clear_*` flag for the same
+    /// field — for example `--body` together with `--clear-body`. The two are
+    /// contradictory; pass exactly one.
+    ConflictingUpdate {
+        /// The field name (`"body"`, `"priority"`, or `"tags"`).
+        field: String,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -147,6 +156,9 @@ impl std::fmt::Display for Error {
                     f,
                     "refusing to overwrite non-empty body with an empty value without explicit opt-in"
                 )
+            }
+            Error::ConflictingUpdate { field } => {
+                write!(f, "cannot set both '{field}' and 'clear_{field}'")
             }
         }
     }

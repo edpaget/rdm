@@ -31,11 +31,11 @@ pub fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatu
 
     match kind {
         Some(ItemKindArg::Phase) => {
-            let s: PhaseStatus = status.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
+            let s: PhaseStatus = status.parse()?;
             Ok(ItemStatus::Phase(s))
         }
         Some(ItemKindArg::Task) => {
-            let s: TaskStatus = status.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
+            let s: TaskStatus = status.parse()?;
             Ok(ItemStatus::Task(s))
         }
         Some(ItemKindArg::Roadmap) => {
@@ -315,10 +315,9 @@ pub fn apply_done_directives(
                         roadmap,
                         &stem,
                         Some(rdm_core::model::PhaseStatus::Done),
-                        None,
-                        None,
+                        rdm_core::ops::TagsUpdate::Keep,
+                        rdm_core::ops::BodyUpdate::Keep,
                         Some(sha.clone()),
-                        false,
                     )
                 }) {
                     Ok(_) => logger.log(
@@ -355,10 +354,9 @@ pub fn apply_done_directives(
                         slug,
                         Some(rdm_core::model::TaskStatus::Done),
                         None,
-                        None,
-                        None,
+                        rdm_core::ops::TagsUpdate::Keep,
+                        rdm_core::ops::BodyUpdate::Keep,
                         Some(sha.clone()),
-                        false,
                     )
                 }) {
                     Ok(_) => logger.log(

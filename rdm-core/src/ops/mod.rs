@@ -16,6 +16,11 @@ pub mod project;
 pub mod roadmap;
 /// Task operations: create, update, list, promote.
 pub mod task;
+/// Request types for the `update` operations (`BodyUpdate` / `TagsUpdate` /
+/// `PriorityUpdate`).
+pub mod update;
+
+pub use update::{BodyUpdate, PriorityUpdate, TagsUpdate};
 
 use crate::error::Result;
 use crate::store::Store;

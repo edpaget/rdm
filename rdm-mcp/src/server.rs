@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, RoadmapSort, TaskStatus};
+use rdm_core::ops::{BodyUpdate, PriorityUpdate, TagsUpdate};
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
@@ -490,14 +491,14 @@ impl RdmMcpServer {
         let sort = match &params.sort {
             Some(s) => match RoadmapSort::from_str(s) {
                 Ok(rs) => Some(rs),
-                Err(msg) => return err_text(msg),
+                Err(msg) => return err_text(msg.to_string()),
             },
             None => None,
         };
         let priority_filter = match &params.priority {
             Some(p) => match Priority::from_str(p) {
                 Ok(pr) => Some(pr),
-                Err(msg) => return err_text(msg),
+                Err(msg) => return err_text(msg.to_string()),
             },
             None => None,
         };
@@ -697,23 +698,17 @@ impl RdmMcpServer {
         self.maybe_auto_init();
         let store = self.store.lock().unwrap();
         let kind = match &params.kind {
-            Some(k) => match k.as_str() {
-                "roadmap" => Some(ItemKind::Roadmap),
-                "phase" => Some(ItemKind::Phase),
-                "task" => Some(ItemKind::Task),
-                other => {
-                    return err_text(format!(
-                        "Invalid kind: {other}. Expected: roadmap, phase, or task"
-                    ));
-                }
+            Some(k) => match k.parse::<ItemKind>() {
+                Ok(kind) => Some(kind),
+                Err(msg) => return err_text(msg.to_string()),
             },
             None => None,
         };
 
         let status = match &params.status {
-            Some(s) => match parse_item_status(s) {
+            Some(s) => match s.parse::<ItemStatus>() {
                 Ok(st) => Some(st),
-                Err(msg) => return err_text(msg),
+                Err(msg) => return err_text(msg.to_string()),
             },
             None => None,
         };
@@ -772,7 +767,7 @@ impl RdmMcpServer {
         let priority = match &params.priority {
             Some(p) => match Priority::from_str(p) {
                 Ok(pr) => Some(pr),
-                Err(msg) => return err_text(msg),
+                Err(msg) => return err_text(msg.to_string()),
             },
             None => None,
         };
@@ -810,38 +805,25 @@ impl RdmMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
 
-        if params.clear_priority.unwrap_or(false) && params.priority.is_some() {
-            return err_text("cannot set both 'priority' and 'clear_priority'".to_string());
-        }
-        if params.clear_tags.unwrap_or(false) && params.tags.is_some() {
-            return err_text("cannot set both 'tags' and 'clear_tags'".to_string());
-        }
-        if params.clear_body.unwrap_or(false) && params.body.is_some() {
-            return err_text("cannot set both 'body' and 'clear_body'".to_string());
-        }
-
-        let priority = if params.clear_priority.unwrap_or(false) {
-            Some(None)
-        } else {
-            match &params.priority {
-                Some(p) => match Priority::from_str(p) {
-                    Ok(pr) => Some(Some(pr)),
-                    Err(msg) => return err_text(msg),
-                },
-                None => None,
-            }
+        let body = match BodyUpdate::from_args(params.body, params.clear_body.unwrap_or(false)) {
+            Ok(b) => b,
+            Err(e) => return core_err(e),
         };
-
-        let tags = if params.clear_tags.unwrap_or(false) {
-            Some(Vec::new())
-        } else {
-            params.tags.clone()
+        let priority_val = match &params.priority {
+            Some(p) => match Priority::from_str(p) {
+                Ok(pr) => Some(pr),
+                Err(msg) => return err_text(msg.to_string()),
+            },
+            None => None,
         };
-
-        let (body, allow_empty_body) = if params.clear_body.unwrap_or(false) {
-            (Some(""), true)
-        } else {
-            (params.body.as_deref(), false)
+        let priority =
+            match PriorityUpdate::from_args(priority_val, params.clear_priority.unwrap_or(false)) {
+                Ok(p) => p,
+                Err(e) => return core_err(e),
+            };
+        let tags = match TagsUpdate::from_args(params.tags, params.clear_tags.unwrap_or(false)) {
+            Ok(t) => t,
+            Err(e) => return core_err(e),
         };
 
         let mut store = self.store.lock().unwrap();
@@ -853,7 +835,6 @@ impl RdmMcpServer {
                 body,
                 priority,
                 tags,
-                allow_empty_body,
             )
         }) {
             Ok(d) => d,
@@ -908,12 +889,14 @@ impl RdmMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
 
-        if params.clear_tags.unwrap_or(false) && params.tags.is_some() {
-            return err_text("cannot set both 'tags' and 'clear_tags'".to_string());
-        }
-        if params.clear_body.unwrap_or(false) && params.body.is_some() {
-            return err_text("cannot set both 'body' and 'clear_body'".to_string());
-        }
+        let body = match BodyUpdate::from_args(params.body, params.clear_body.unwrap_or(false)) {
+            Ok(b) => b,
+            Err(e) => return core_err(e),
+        };
+        let tags = match TagsUpdate::from_args(params.tags, params.clear_tags.unwrap_or(false)) {
+            Ok(t) => t,
+            Err(e) => return core_err(e),
+        };
 
         let mut store = self.store.lock().unwrap();
         let stem = match rdm_core::ops::phase::resolve_phase_stem(
@@ -929,21 +912,9 @@ impl RdmMcpServer {
         let status = match &params.status {
             Some(s) => match PhaseStatus::from_str(s) {
                 Ok(st) => Some(st),
-                Err(msg) => return err_text(msg),
+                Err(msg) => return err_text(msg.to_string()),
             },
             None => None,
-        };
-
-        let tags = if params.clear_tags.unwrap_or(false) {
-            Some(Vec::new())
-        } else {
-            params.tags.clone()
-        };
-
-        let (body, allow_empty_body) = if params.clear_body.unwrap_or(false) {
-            (Some(""), true)
-        } else {
-            (params.body.as_deref(), false)
         };
 
         let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
@@ -956,7 +927,6 @@ impl RdmMcpServer {
                 tags,
                 body,
                 None,
-                allow_empty_body,
             )
         }) {
             Ok(d) => d,
@@ -978,7 +948,7 @@ impl RdmMcpServer {
         let priority = match &params.priority {
             Some(p) => match Priority::from_str(p) {
                 Ok(pr) => pr,
-                Err(msg) => return err_text(msg),
+                Err(msg) => return err_text(msg.to_string()),
             },
             None => Priority::Medium,
         };
@@ -1011,13 +981,18 @@ impl RdmMcpServer {
         Parameters(params): Parameters<TaskUpdateParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
-        if params.clear_body.unwrap_or(false) && params.body.is_some() {
-            return err_text("cannot set both 'body' and 'clear_body'".to_string());
-        }
+        let body = match BodyUpdate::from_args(params.body, params.clear_body.unwrap_or(false)) {
+            Ok(b) => b,
+            Err(e) => return core_err(e),
+        };
+        let tags = match TagsUpdate::from_args(params.tags, false) {
+            Ok(t) => t,
+            Err(e) => return core_err(e),
+        };
         let status = match &params.status {
             Some(s) => match TaskStatus::from_str(s) {
                 Ok(st) => Some(st),
-                Err(msg) => return err_text(msg),
+                Err(msg) => return err_text(msg.to_string()),
             },
             None => None,
         };
@@ -1025,15 +1000,9 @@ impl RdmMcpServer {
         let priority = match &params.priority {
             Some(p) => match Priority::from_str(p) {
                 Ok(pr) => Some(pr),
-                Err(msg) => return err_text(msg),
+                Err(msg) => return err_text(msg.to_string()),
             },
             None => None,
-        };
-
-        let (body, allow_empty_body) = if params.clear_body.unwrap_or(false) {
-            (Some(""), true)
-        } else {
-            (params.body.as_deref(), false)
         };
 
         let mut store = self.store.lock().unwrap();
@@ -1044,10 +1013,9 @@ impl RdmMcpServer {
                 &params.task,
                 status,
                 priority,
-                params.tags,
+                tags,
                 body,
                 None,
-                allow_empty_body,
             )
         }) {
             Ok(d) => d,
@@ -1213,19 +1181,6 @@ impl RdmMcpServer {
 
 /// Parse a status string into an `ItemStatus`.
 ///
-/// A status valid for both kinds becomes kind-agnostic ([`ItemStatus::Either`])
-/// so the `search` tool matches both phases and tasks when no kind is given.
-fn parse_item_status(s: &str) -> Result<ItemStatus, String> {
-    match (PhaseStatus::from_str(s).ok(), TaskStatus::from_str(s).ok()) {
-        (Some(ps), Some(ts)) => Ok(ItemStatus::Either(ps, ts)),
-        (Some(ps), None) => Ok(ItemStatus::Phase(ps)),
-        (None, Some(ts)) => Ok(ItemStatus::Task(ts)),
-        (None, None) => Err(format!(
-            "Invalid status: {s}. Expected a phase status (not-started, in-progress, needs-review, reviewed, done, blocked, wont-fix) or task status (open, in-progress, needs-review, reviewed, done, wont-fix)"
-        )),
-    }
-}
-
 #[rmcp::tool_handler(router = Self::all_tools_router())]
 impl ServerHandler for RdmMcpServer {
     fn get_info(&self) -> ServerInfo {

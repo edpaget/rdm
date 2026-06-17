@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
+use rdm_core::ops::{BodyUpdate, TagsUpdate};
 
 use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
 use crate::paths;
@@ -161,11 +162,12 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
                 .context("failed to resolve phase")?;
-            let (body, allow_empty_body) = if clear_body {
-                (Some(String::new()), true)
+            let body = if clear_body {
+                BodyUpdate::Clear
             } else {
-                (resolve_body(body, no_edit)?, false)
+                BodyUpdate::from_args(resolve_body(body, no_edit)?, false)?
             };
+            let tags = TagsUpdate::from_args(tags, false)?;
             let doc = commit_mutation(
                 store,
                 &project,
@@ -174,15 +176,7 @@ pub fn run(
                 "failed to update phase",
                 |s| {
                     rdm_core::ops::phase::update_phase(
-                        s,
-                        &project,
-                        &roadmap,
-                        &stem,
-                        status,
-                        tags,
-                        body.as_deref(),
-                        commit,
-                        allow_empty_body,
+                        s, &project, &roadmap, &stem, status, tags, body, commit,
                     )
                 },
             )

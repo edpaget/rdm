@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
+use rdm_core::ops::{BodyUpdate, TagsUpdate};
 
 use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
 use crate::paths;
@@ -98,11 +99,12 @@ pub fn run(
             no_edit,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let (body, allow_empty_body) = if clear_body {
-                (Some(String::new()), true)
+            let body = if clear_body {
+                BodyUpdate::Clear
             } else {
-                (resolve_body(body, no_edit)?, false)
+                BodyUpdate::from_args(resolve_body(body, no_edit)?, false)?
             };
+            let tags = TagsUpdate::from_args(tags, false)?;
             let doc = commit_mutation(
                 store,
                 &project,
@@ -111,15 +113,7 @@ pub fn run(
                 "failed to update task",
                 |s| {
                     rdm_core::ops::task::update_task(
-                        s,
-                        &project,
-                        &slug,
-                        status,
-                        priority,
-                        tags,
-                        body.as_deref(),
-                        commit,
-                        allow_empty_body,
+                        s, &project, &slug, status, priority, tags, body, commit,
                     )
                 },
             )

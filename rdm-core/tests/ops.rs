@@ -290,10 +290,9 @@ fn update_roadmap_body_replaces_existing() {
         &mut store,
         "fbm",
         "two-way",
-        Some("Replaced.\n"),
-        None,
-        None,
-        false,
+        rdm_core::ops::BodyUpdate::Set("Replaced.\n".to_string()),
+        rdm_core::ops::PriorityUpdate::Keep,
+        rdm_core::ops::TagsUpdate::Keep,
     )
     .unwrap();
     assert_eq!(updated.body, "Replaced.\n");
@@ -318,7 +317,12 @@ fn update_roadmap_none_body_preserves_existing() {
     )
     .unwrap();
     let updated = rdm_core::ops::roadmap::update_roadmap(
-        &mut store, "fbm", "two-way", None, None, None, false,
+        &mut store,
+        "fbm",
+        "two-way",
+        rdm_core::ops::BodyUpdate::Keep,
+        rdm_core::ops::PriorityUpdate::Keep,
+        rdm_core::ops::TagsUpdate::Keep,
     )
     .unwrap();
     assert_eq!(updated.body, "Keep this.\n");
@@ -333,10 +337,9 @@ fn update_roadmap_not_found() {
         &mut store,
         "fbm",
         "nope",
-        Some("body"),
-        None,
-        None,
-        false,
+        rdm_core::ops::BodyUpdate::Set("body".to_string()),
+        rdm_core::ops::PriorityUpdate::Keep,
+        rdm_core::ops::TagsUpdate::Keep,
     );
     assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
 }
@@ -405,10 +408,9 @@ fn update_roadmap_priority() {
         &mut store,
         "fbm",
         "alpha",
-        None,
-        Some(Some(rdm_core::model::Priority::Critical)),
-        None,
-        false,
+        rdm_core::ops::BodyUpdate::Keep,
+        rdm_core::ops::PriorityUpdate::Set(rdm_core::model::Priority::Critical),
+        rdm_core::ops::TagsUpdate::Keep,
     )
     .unwrap();
     assert_eq!(
@@ -462,10 +464,9 @@ fn update_roadmap_replace_tags() {
         &mut store,
         "fbm",
         "alpha",
-        None,
-        None,
-        Some(vec!["new".to_string(), "fresh".to_string()]),
-        false,
+        rdm_core::ops::BodyUpdate::Keep,
+        rdm_core::ops::PriorityUpdate::Keep,
+        rdm_core::ops::TagsUpdate::Set(vec!["new".to_string(), "fresh".to_string()]),
     )
     .unwrap();
     assert_eq!(
@@ -493,10 +494,9 @@ fn update_roadmap_clear_tags() {
         &mut store,
         "fbm",
         "alpha",
-        None,
-        None,
-        Some(vec![]),
-        false,
+        rdm_core::ops::BodyUpdate::Keep,
+        rdm_core::ops::PriorityUpdate::Keep,
+        rdm_core::ops::TagsUpdate::Set(vec![]),
     )
     .unwrap();
     assert_eq!(doc.frontmatter.tags, None);
@@ -521,10 +521,9 @@ fn update_roadmap_clear_priority() {
         &mut store,
         "fbm",
         "alpha",
-        None,
-        Some(None),
-        None,
-        false,
+        rdm_core::ops::BodyUpdate::Keep,
+        rdm_core::ops::PriorityUpdate::Clear,
+        rdm_core::ops::TagsUpdate::Keep,
     )
     .unwrap();
     assert_eq!(doc.frontmatter.priority, None);
@@ -752,10 +751,9 @@ fn update_phase_replace_tags() {
         "two-way",
         "phase-1-core",
         None,
-        Some(vec!["new".to_string(), "fresh".to_string()]),
+        rdm_core::ops::TagsUpdate::Set(vec!["new".to_string(), "fresh".to_string()]),
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(
@@ -784,10 +782,9 @@ fn update_phase_clear_tags() {
         "two-way",
         "phase-1-core",
         None,
-        Some(vec![]),
+        rdm_core::ops::TagsUpdate::Set(vec![]),
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(doc.frontmatter.tags, None);
@@ -847,10 +844,9 @@ fn update_phase_to_done_sets_completed() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::Done),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
@@ -871,10 +867,9 @@ fn update_phase_to_done_with_commit_stores_sha() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::Done),
-        None,
-        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         Some("abc123".to_string()),
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
@@ -899,10 +894,9 @@ fn update_phase_from_done_clears_completed() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::Done),
-        None,
-        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         Some("abc123".to_string()),
-        false,
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -911,10 +905,9 @@ fn update_phase_from_done_clears_completed() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::InProgress);
@@ -942,10 +935,9 @@ fn update_phase_body_replaces_existing() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Set("Replaced body.\n".to_string()),
         None,
-        Some("Replaced body.\n"),
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.body, "Replaced body.\n");
@@ -974,10 +966,9 @@ fn update_phase_none_body_preserves_existing() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.body, "Keep this body.\n");
@@ -992,10 +983,9 @@ fn update_phase_not_found() {
         "two-way",
         "phase-99-nope",
         Some(PhaseStatus::Done),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     );
     assert!(matches!(result, Err(Error::PhaseNotFound(_))));
 }
@@ -1013,10 +1003,9 @@ fn update_phase_done_to_done_with_new_commit_updates_sha() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::Done),
-        None,
-        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         Some("abc123".to_string()),
-        false,
     )
     .unwrap();
     let first_completed = first.frontmatter.completed;
@@ -1027,10 +1016,9 @@ fn update_phase_done_to_done_with_new_commit_updates_sha() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::Done),
-        None,
-        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         Some("def456".to_string()),
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
@@ -1051,10 +1039,9 @@ fn update_phase_done_to_done_without_commit_is_noop() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::Done),
-        None,
-        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         Some("abc123".to_string()),
-        false,
     )
     .unwrap();
     let first_completed = first.frontmatter.completed;
@@ -1065,10 +1052,9 @@ fn update_phase_done_to_done_without_commit_is_noop() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::Done),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::Done);
@@ -1089,10 +1075,9 @@ fn update_phase_to_wont_fix_sets_completed() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::WontFix),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::WontFix);
@@ -1118,10 +1103,9 @@ fn update_phase_wont_fix_to_not_started_clears_completed() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::WontFix),
-        None,
-        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         Some("abc123".to_string()),
-        false,
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -1130,10 +1114,9 @@ fn update_phase_wont_fix_to_not_started_clears_completed() {
         "two-way",
         "phase-1-core",
         Some(PhaseStatus::NotStarted),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, PhaseStatus::NotStarted);
@@ -1412,10 +1395,9 @@ fn update_task_status() {
         "fix-bug",
         Some(TaskStatus::Done),
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, TaskStatus::Done);
@@ -1443,10 +1425,9 @@ fn update_task_priority() {
         "fix-bug",
         None,
         Some(Priority::Critical),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.priority, Priority::Critical);
@@ -1471,10 +1452,9 @@ fn update_task_tags() {
         "fix-bug",
         None,
         None,
-        Some(vec!["new-tag".to_string()]),
+        rdm_core::ops::TagsUpdate::Set(vec!["new-tag".to_string()]),
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.tags, Some(vec!["new-tag".to_string()]));
@@ -1499,10 +1479,9 @@ fn update_task_body_replaces_existing() {
         "fix-bug",
         None,
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Set("Replaced.\n".to_string()),
         None,
-        Some("Replaced.\n"),
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.body, "Replaced.\n");
@@ -1530,10 +1509,9 @@ fn update_task_none_body_preserves_existing() {
         "fix-bug",
         Some(TaskStatus::Done),
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.body, "Keep this.\n");
@@ -1548,10 +1526,9 @@ fn update_task_not_found() {
         "nope",
         Some(TaskStatus::Done),
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     );
     assert!(matches!(result, Err(Error::TaskNotFound(_))));
 }
@@ -1575,10 +1552,9 @@ fn update_task_done_sets_completed_and_commit() {
         "fix-bug",
         Some(TaskStatus::Done),
         None,
-        None,
-        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         Some("abc123".to_string()),
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, TaskStatus::Done);
@@ -1610,10 +1586,9 @@ fn update_task_done_sets_completed_without_commit() {
         "fix-bug",
         Some(TaskStatus::Done),
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.status, TaskStatus::Done);
@@ -1640,10 +1615,9 @@ fn update_task_idempotent_done_updates_commit() {
         "fix-bug",
         Some(TaskStatus::Done),
         None,
-        None,
-        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         Some("sha1".to_string()),
-        false,
     )
     .unwrap();
     let first_completed = first.frontmatter.completed;
@@ -1655,10 +1629,9 @@ fn update_task_idempotent_done_updates_commit() {
         "fix-bug",
         Some(TaskStatus::Done),
         None,
-        None,
-        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         Some("sha2".to_string()),
-        false,
     )
     .unwrap();
     assert_eq!(second.frontmatter.status, TaskStatus::Done);
@@ -1686,10 +1659,9 @@ fn update_task_reopen_clears_completed_and_commit() {
         "fix-bug",
         Some(TaskStatus::Done),
         None,
-        None,
-        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         Some("abc123".to_string()),
-        false,
     )
     .unwrap();
 
@@ -1700,10 +1672,9 @@ fn update_task_reopen_clears_completed_and_commit() {
         "fix-bug",
         Some(TaskStatus::InProgress),
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     assert_eq!(reopened.frontmatter.status, TaskStatus::InProgress);
@@ -2473,10 +2444,9 @@ fn generate_index_counts_wont_fix_in_done_count() {
         "alpha",
         "phase-1-core",
         Some(PhaseStatus::Done),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -2485,10 +2455,9 @@ fn generate_index_counts_wont_fix_in_done_count() {
         "alpha",
         "phase-2-extra",
         Some(PhaseStatus::WontFix),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     rdm_core::ops::index::generate_index(&mut store).unwrap();
@@ -2522,10 +2491,9 @@ fn needs_review_and_reviewed_round_trip_and_render_in_index() {
         "alpha",
         "phase-1-core",
         Some(PhaseStatus::NeedsReview),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     rdm_core::ops::task::create_task(
@@ -2544,10 +2512,9 @@ fn needs_review_and_reviewed_round_trip_and_render_in_index() {
         "ship-it",
         Some(TaskStatus::Reviewed),
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
 
@@ -2712,10 +2679,9 @@ fn archive_roadmap_moves_files() {
         "alpha",
         "phase-1-core",
         Some(PhaseStatus::Done),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
 
@@ -2781,10 +2747,9 @@ fn archive_roadmap_all_done_no_force_needed() {
         "alpha",
         "phase-1-core",
         Some(PhaseStatus::Done),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
 
@@ -2812,10 +2777,9 @@ fn archive_succeeds_with_mixed_done_and_wont_fix() {
         "alpha",
         "phase-1-core",
         Some(PhaseStatus::Done),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -2824,10 +2788,9 @@ fn archive_succeeds_with_mixed_done_and_wont_fix() {
         "alpha",
         "phase-2-skip",
         Some(PhaseStatus::WontFix),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
         None,
-        None,
-        None,
-        false,
     )
     .unwrap();
 
@@ -2975,10 +2938,9 @@ fn update_phase_empty_body_refused_when_existing_nonempty() {
         "two-way",
         "phase-1-core",
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Set(String::new()),
         None,
-        Some(""),
-        None,
-        false,
     );
     assert!(matches!(result, Err(Error::BodyClobberRefused)));
     let loaded = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
@@ -3011,10 +2973,9 @@ fn update_phase_empty_body_allowed_when_existing_empty() {
         "two-way",
         "phase-1-core",
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Set(String::new()),
         None,
-        Some(""),
-        None,
-        false,
     )
     .unwrap();
     assert!(updated.body.is_empty());
@@ -3046,10 +3007,9 @@ fn update_phase_empty_body_allowed_with_flag() {
         "two-way",
         "phase-1-core",
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Clear,
         None,
-        Some(""),
-        None,
-        true,
     )
     .unwrap();
     assert!(updated.body.is_empty());
@@ -3076,10 +3036,9 @@ fn update_task_empty_body_refused_when_existing_nonempty() {
         "fix-bug",
         None,
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Set(String::new()),
         None,
-        Some(""),
-        None,
-        false,
     );
     assert!(matches!(result, Err(Error::BodyClobberRefused)));
     let loaded = rdm_core::io::load_task(&store, "fbm", "fix-bug").unwrap();
@@ -3107,10 +3066,9 @@ fn update_task_empty_body_allowed_with_flag() {
         "fix-bug",
         None,
         None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Clear,
         None,
-        Some(""),
-        None,
-        true,
     )
     .unwrap();
     assert!(updated.body.is_empty());
@@ -3135,10 +3093,9 @@ fn update_roadmap_empty_body_refused_when_existing_nonempty() {
         &mut store,
         "fbm",
         "two-way",
-        Some(""),
-        None,
-        None,
-        false,
+        rdm_core::ops::BodyUpdate::Set(String::new()),
+        rdm_core::ops::PriorityUpdate::Keep,
+        rdm_core::ops::TagsUpdate::Keep,
     );
     assert!(matches!(result, Err(Error::BodyClobberRefused)));
     let loaded = rdm_core::io::load_roadmap(&store, "fbm", "two-way").unwrap();
@@ -3164,10 +3121,9 @@ fn update_roadmap_empty_body_allowed_with_flag() {
         &mut store,
         "fbm",
         "two-way",
-        Some(""),
-        None,
-        None,
-        true,
+        rdm_core::ops::BodyUpdate::Clear,
+        rdm_core::ops::PriorityUpdate::Keep,
+        rdm_core::ops::TagsUpdate::Keep,
     )
     .unwrap();
     assert!(updated.body.is_empty());

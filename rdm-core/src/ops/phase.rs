@@ -5,6 +5,7 @@ use chrono::Local;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus};
+use crate::ops::update::{BodyUpdate, TagsUpdate};
 use crate::store::{DirEntryKind, Store};
 
 /// Lists all phases in a roadmap, sorted by phase number.
@@ -121,18 +122,14 @@ pub fn create_phase(
 /// transitions to a non-terminal state, both `completed` and `commit` are
 /// cleared. When `status` is `None`, the existing status, `completed`, and
 /// `commit` are preserved.
-/// When `tags` is `Some(non_empty)`, replaces existing tags; `Some(empty)`
-/// clears tags; `None` preserves the existing value.
-/// When `body` is `Some`, replaces the existing body; `None` preserves it.
-/// When `body` is `Some("")` and the existing body is non-empty,
-/// `allow_empty_body` must be `true` or the call is rejected with
-/// [`Error::BodyClobberRefused`].
+/// When `tags`/`body` are `Keep`, the existing values are preserved; otherwise
+/// see [`TagsUpdate`] and [`BodyUpdate`].
 ///
 /// # Errors
 ///
 /// Returns [`Error::PhaseNotFound`] if the phase file doesn't exist,
-/// [`Error::BodyClobberRefused`] if `body` is `Some("")`, the existing body
-/// is non-empty, and `allow_empty_body` is `false`,
+/// [`Error::BodyClobberRefused`] if `body` is [`BodyUpdate::Set("")`](BodyUpdate::Set)
+/// over a non-empty body (use [`BodyUpdate::Clear`] to confirm),
 /// [`Error::Io`] if reading or writing fails, or
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
 /// existing phase file has invalid frontmatter.
@@ -143,10 +140,9 @@ pub fn update_phase(
     roadmap: &str,
     phase_stem: &str,
     status: Option<PhaseStatus>,
-    tags: Option<Vec<String>>,
-    body: Option<&str>,
+    tags: TagsUpdate,
+    body: BodyUpdate,
     commit: Option<String>,
-    allow_empty_body: bool,
 ) -> Result<Document<Phase>> {
     let path = crate::paths::phase_path(project, roadmap, phase_stem);
     if !store.exists(&path) {
@@ -171,15 +167,8 @@ pub fn update_phase(
             }
         }
     }
-    if let Some(t) = tags {
-        doc.frontmatter.tags = if t.is_empty() { None } else { Some(t) };
-    }
-    if let Some(b) = body {
-        if b.is_empty() && !doc.body.is_empty() && !allow_empty_body {
-            return Err(Error::BodyClobberRefused);
-        }
-        doc.body = b.to_string();
-    }
+    tags.apply(&mut doc.frontmatter.tags);
+    body.apply(&mut doc.body)?;
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
     Ok(doc)
 }

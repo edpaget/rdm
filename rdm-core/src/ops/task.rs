@@ -5,6 +5,7 @@ use chrono::Local;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus, Priority, Roadmap, Task, TaskStatus, TaskStatusFilter};
+use crate::ops::update::{BodyUpdate, TagsUpdate};
 use crate::store::{DirEntryKind, Store};
 
 /// Criteria for filtering a list of tasks.
@@ -141,16 +142,16 @@ pub fn list_tasks(store: &impl Store, project: &str) -> Result<Vec<(String, Docu
 
 /// Updates a task's status, priority, tags, and/or body.
 ///
-/// Only fields that are `Some(...)` are updated; others are left unchanged.
-/// When `body` is `Some("")` and the existing body is non-empty,
-/// `allow_empty_body` must be `true` or the call is rejected with
-/// [`Error::BodyClobberRefused`].
+/// `status`/`priority` of `None` and `tags`/`body` of `Keep` leave those
+/// fields unchanged; otherwise see [`TagsUpdate`] and [`BodyUpdate`]. A task's
+/// priority is required, so it is set-or-keep (`Option<Priority>`) rather than
+/// clearable.
 ///
 /// # Errors
 ///
 /// Returns [`Error::TaskNotFound`] if the task file doesn't exist,
-/// [`Error::BodyClobberRefused`] if `body` is `Some("")`, the existing body
-/// is non-empty, and `allow_empty_body` is `false`,
+/// [`Error::BodyClobberRefused`] if `body` is [`BodyUpdate::Set("")`](BodyUpdate::Set)
+/// over a non-empty body (use [`BodyUpdate::Clear`] to confirm),
 /// [`Error::Io`] if reading or writing fails, or
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
 /// existing task file has invalid frontmatter.
@@ -161,10 +162,9 @@ pub fn update_task(
     slug: &str,
     status: Option<TaskStatus>,
     priority: Option<Priority>,
-    tags: Option<Vec<String>>,
-    body: Option<&str>,
+    tags: TagsUpdate,
+    body: BodyUpdate,
     commit: Option<String>,
-    allow_empty_body: bool,
 ) -> Result<Document<Task>> {
     let path = crate::paths::task_path(project, slug);
     if !store.exists(&path) {
@@ -192,15 +192,8 @@ pub fn update_task(
     if let Some(p) = priority {
         doc.frontmatter.priority = p;
     }
-    if let Some(t) = tags {
-        doc.frontmatter.tags = if t.is_empty() { None } else { Some(t) };
-    }
-    if let Some(b) = body {
-        if b.is_empty() && !doc.body.is_empty() && !allow_empty_body {
-            return Err(Error::BodyClobberRefused);
-        }
-        doc.body = b.to_string();
-    }
+    tags.apply(&mut doc.frontmatter.tags);
+    body.apply(&mut doc.body)?;
     crate::io::write_task(store, project, slug, &doc)?;
     Ok(doc)
 }

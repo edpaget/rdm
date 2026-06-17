@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hal::{HalLink, HalResource};
 use rdm_core::model::{Phase, PhaseStatus};
+use rdm_core::ops::{BodyUpdate, TagsUpdate};
 use rdm_core::store::Store;
 
 use crate::content_type::ResponseFormat;
@@ -312,43 +313,16 @@ pub async fn update_phase(
         )
         .transpose()?;
 
-    if req.clear_tags.unwrap_or(false) && req.tags.is_some() {
-        return Err(validation_error(
-            "cannot set both 'tags' and 'clear_tags'".to_string(),
-        ));
-    }
-    let tags = if req.clear_tags.unwrap_or(false) {
-        Some(Vec::new())
-    } else {
-        req.tags.clone()
-    };
-
-    if req.clear_body.unwrap_or(false) && req.body.is_some() {
-        return Err(validation_error(
-            "cannot set both 'body' and 'clear_body'".to_string(),
-        ));
-    }
-    let (body, allow_empty_body) = if req.clear_body.unwrap_or(false) {
-        (Some(""), true)
-    } else {
-        (req.body.as_deref(), false)
-    };
+    let tags = TagsUpdate::from_args(req.tags, req.clear_tags.unwrap_or(false))
+        .map_err(|e| error_response(e, format))?;
+    let body = BodyUpdate::from_args(req.body, req.clear_body.unwrap_or(false))
+        .map_err(|e| error_response(e, format))?;
 
     let mut store = state.store();
     let stem = rdm_core::ops::phase::resolve_phase_stem(&store, &project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
     let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
-        rdm_core::ops::phase::update_phase(
-            s,
-            &project,
-            &roadmap,
-            &stem,
-            status,
-            tags,
-            body,
-            None,
-            allow_empty_body,
-        )
+        rdm_core::ops::phase::update_phase(s, &project, &roadmap, &stem, status, tags, body, None)
     })
     .map_err(|e| error_response(e, format))?;
 
