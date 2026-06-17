@@ -182,9 +182,13 @@ pub struct RemoveOptions {
     pub delete_branch: bool,
 }
 
-/// Discovers the project repo's top-level directory from `cwd`.
+/// Discovers the project repo's **main** working tree from `cwd`.
 ///
-/// Runs `git rev-parse --show-toplevel`.
+/// Runs `git rev-parse --show-toplevel` to confirm `cwd` is inside a working
+/// tree, then resolves the primary working tree via [`main_worktree`].
+/// Anchoring on the main working tree means `rdm worktree` invoked from inside a
+/// *linked* worktree still places new worktrees as siblings of the primary
+/// checkout rather than nesting them under the current worktree.
 ///
 /// # Errors
 ///
@@ -200,7 +204,27 @@ pub fn discover_project_repo(cwd: &Path) -> Result<PathBuf> {
     if path.is_empty() {
         return Err(WorktreeError::NotAGitRepo(cwd.to_path_buf()));
     }
-    Ok(PathBuf::from(path))
+    // From a linked worktree, `--show-toplevel` is that worktree's own root;
+    // anchor on the main working tree instead, falling back to the toplevel.
+    Ok(main_worktree(cwd).unwrap_or_else(|| PathBuf::from(path)))
+}
+
+/// Returns the path of the repository's main (primary) working tree, as listed
+/// first by `git worktree list --porcelain`.
+///
+/// Returns `None` on any failure so callers can fall back to the current
+/// top-level directory.
+fn main_worktree(cwd: &Path) -> Option<PathBuf> {
+    let output = run_git_at(cwd, &["worktree", "list", "--porcelain"]).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Git always lists the primary working tree first.
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree "))
+        .map(|rest| PathBuf::from(rest.trim()))
 }
 
 /// Computes the sibling worktree path for `item` relative to `repo_root`.

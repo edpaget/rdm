@@ -103,6 +103,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `rdm worktree add` run from inside a linked worktree now creates the new
+  worktree as a sibling of the main repo instead of nesting it under the current
+  worktree. Discovery resolves the repository's main working tree rather than the
+  current working tree's top-level.
 - Merge-conflict output now shows roadmap/phase context for conflicted phase
   files. Phase conflicts were previously misclassified as generic ("Other")
   paths because the classifier expected a layout the tool never writes, so the

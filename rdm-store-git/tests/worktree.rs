@@ -235,6 +235,56 @@ fn discover_project_repo_finds_toplevel() {
 }
 
 #[test]
+fn add_from_inside_linked_worktree_anchors_on_main_repo() {
+    let repo = init_project_repo();
+    // Create a linked worktree directly with git (not via rdm), checked out on a
+    // fresh branch, so `cwd` inside it would otherwise resolve to its own root.
+    let linked = repo.path().join("linked-wt");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            linked.to_str().unwrap(),
+            "-b",
+            "linked-branch",
+        ],
+    );
+
+    // The crux of the fix: discovery from inside the linked worktree must resolve
+    // the *main* working tree, not the linked worktree's own toplevel.
+    let discovered = worktree::discover_project_repo(&linked).unwrap();
+    assert_eq!(
+        discovered.canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap(),
+        "discovery from a linked worktree must anchor on the main repo"
+    );
+
+    // And `add` against that root must place the worktree as a sibling of the
+    // main repo, never nested under the linked worktree.
+    let item = task_item();
+    let info = worktree::add(&discovered, &item, &item.branch_name(), None).unwrap();
+    let parent = info.path.parent().unwrap();
+    let expected_parent = repo.path().parent().unwrap().join(format!(
+        "{}__worktrees",
+        repo.path().file_name().unwrap().to_string_lossy()
+    ));
+    assert_eq!(
+        parent.canonicalize().unwrap(),
+        expected_parent.canonicalize().unwrap(),
+        "worktree must be a sibling of the main repo"
+    );
+    assert!(
+        !info
+            .path
+            .canonicalize()
+            .unwrap()
+            .starts_with(linked.canonicalize().unwrap()),
+        "worktree must not be nested under the linked worktree"
+    );
+}
+
+#[test]
 fn discover_project_repo_errors_outside_git() {
     let dir = TempDir::new().unwrap();
     let err = worktree::discover_project_repo(dir.path()).unwrap_err();
