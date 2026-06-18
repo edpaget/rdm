@@ -2,7 +2,44 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::BootstrapSubcommand;
 use crate::paths;
+
+/// Dispatches the `rdm bootstrap` command: runs the `doctor` subcommand (and
+/// exits with its status code) or performs the clone/fast-forward.
+///
+/// # Errors
+///
+/// Returns an error if no `--plan-repo` is given for the clone path, or if the
+/// clone/fast-forward fails. The `doctor` subcommand never returns — it exits
+/// the process with its own status code.
+pub fn run_command(
+    plan_repo: Option<String>,
+    path: Option<PathBuf>,
+    branch: Option<String>,
+    init: bool,
+    token: Option<String>,
+    command: Option<BootstrapSubcommand>,
+) -> Result<()> {
+    match command {
+        Some(BootstrapSubcommand::Doctor {
+            plan_repo: doc_plan_repo,
+            token: doc_token,
+        }) => {
+            let exit_code = doctor(
+                doc_plan_repo.or(plan_repo).as_deref(),
+                doc_token.or(token).as_deref(),
+            );
+            std::process::exit(exit_code);
+        }
+        None => {
+            let url = plan_repo.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("--plan-repo is required (or pass a subcommand like `doctor`)")
+            })?;
+            run(url, path, branch, init, token.as_deref())
+        }
+    }
+}
 
 /// Runs the `rdm bootstrap` command.
 ///

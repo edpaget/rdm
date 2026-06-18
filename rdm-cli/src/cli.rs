@@ -1,0 +1,811 @@
+//! The clap command-line type tree for `rdm`.
+//!
+//! Holds the top-level [`Cli`] parser, the [`Command`] enum, every subcommand
+//! enum, and the small value-enum helpers ([`ItemKindArg`], [`OutputFormat`]).
+//! `main.rs` re-exports these (`pub(crate) use cli::*`) so command modules keep
+//! referring to `crate::RoadmapCommand`, `crate::OutputFormat`, etc.
+
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand, ValueEnum};
+use rdm_core::model::{PhaseStatus, Priority, RoadmapSort, TaskStatus, TaskStatusFilter};
+use rdm_core::search::ItemKind;
+
+#[derive(Parser)]
+#[command(name = "rdm", about = "Manage project roadmaps, phases, and tasks")]
+pub(crate) struct Cli {
+    /// Path to the plan repo root.
+    #[arg(long, env = "RDM_ROOT")]
+    pub root: Option<PathBuf>,
+
+    /// Suppress automatic INDEX.md regeneration after mutations.
+    #[arg(long, global = true)]
+    pub no_index: bool,
+
+    /// Defer git commits until an explicit `rdm commit`.
+    #[arg(long, global = true, env = "RDM_STAGE")]
+    pub stage: bool,
+
+    /// Output format (human, json, table, or markdown).
+    #[arg(long, global = true)]
+    pub format: Option<OutputFormat>,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum Command {
+    /// Initialize a new plan repo.
+    Init {
+        /// Set the default project in repo config and create its directory.
+        #[arg(long)]
+        default_project: Option<String>,
+        /// Set the default output format in global config.
+        #[arg(long)]
+        default_format: Option<String>,
+        /// Clone a remote plan repo instead of creating an empty one.
+        #[cfg(feature = "git")]
+        #[arg(long, conflicts_with = "default_project")]
+        remote: Option<String>,
+    },
+    /// Clone or fast-forward a plan repo into a target directory.
+    ///
+    /// Designed for session-start hooks and sandbox bootstrap scripts: safe to
+    /// re-run on every invocation. Clones on first run, fast-forwards on
+    /// subsequent runs.
+    #[cfg(feature = "git")]
+    Bootstrap {
+        /// Git URL of the plan repo to clone. Required unless a subcommand is
+        /// given (e.g. `rdm bootstrap doctor`).
+        #[arg(long)]
+        plan_repo: Option<String>,
+        /// Target directory for the clone.
+        ///
+        /// Defaults to `$XDG_DATA_HOME/rdm/plan-repo` (or `~/.local/share/rdm/plan-repo`).
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Branch to check out at clone time.
+        #[arg(long)]
+        branch: Option<String>,
+        /// If the cloned repo has no `rdm.toml`, run `rdm init` on it.
+        #[arg(long)]
+        init: bool,
+        /// Access token injected into an HTTPS clone URL. Read from
+        /// `RDM_PLAN_REPO_TOKEN` if not passed explicitly.
+        #[arg(long, env = "RDM_PLAN_REPO_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+        #[command(subcommand)]
+        command: Option<BootstrapSubcommand>,
+    },
+    /// View or modify configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+    /// Manage projects.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+    /// Manage roadmaps.
+    Roadmap {
+        #[command(subcommand)]
+        command: RoadmapCommand,
+    },
+    /// Manage phases.
+    Phase {
+        #[command(subcommand)]
+        command: PhaseCommand,
+    },
+    /// Manage tasks.
+    Task {
+        #[command(subcommand)]
+        command: TaskCommand,
+    },
+    /// Promote a task to a roadmap.
+    Promote {
+        /// Task slug to promote.
+        task_slug: String,
+        /// Roadmap slug for the new roadmap.
+        #[arg(long)]
+        roadmap_slug: String,
+        /// Project the task belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Generate INDEX.md from current repo state.
+    Index,
+    /// Generate agent configuration for AI coding assistants.
+    AgentConfig {
+        /// Target platform (claude, agents-md, cursor, copilot, pi).
+        #[arg(default_value = "agents-md")]
+        platform: String,
+        /// Project name to embed in generated examples.
+        #[arg(long)]
+        project: Option<String>,
+        /// Write to platform-conventional path within this directory.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Path to a principles/conventions file to reference in generated instructions.
+        #[arg(long)]
+        principles_file: Option<String>,
+        /// Generate Claude Code skill files instead of an instruction file.
+        #[arg(long)]
+        skills: bool,
+        /// Also write the auto-review hook (claude and pi; composable with `--skills`).
+        /// Claude: a Stop hook script registered in `.claude/settings.json`. Pi: a
+        /// `.pi/extensions/rdm-review.ts` extension (auto-discovered, fires on `agent_end`).
+        #[arg(long)]
+        hooks: bool,
+        /// Generate MCP-oriented instructions (referencing MCP tool names instead of CLI commands).
+        /// When combined with --out, also writes .mcp.json alongside.
+        #[arg(long)]
+        mcp: bool,
+        /// Write to the user-level config directory (e.g. ~/.claude/) instead of a project directory.
+        /// Mutually exclusive with --out.
+        #[arg(long, conflicts_with = "out")]
+        user: bool,
+    },
+    /// Describe the rdm data model (entities and their fields).
+    Describe {
+        /// Entity name to describe (project, roadmap, phase, task). Omit to list all.
+        entity: Option<String>,
+    },
+    /// Show a hierarchical tree of a project's roadmaps, phases, and tasks.
+    Tree {
+        /// Project to show the tree for.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Search across roadmaps, phases, and tasks.
+    Search {
+        /// The search query (fuzzy matched against titles and body content).
+        query: String,
+        /// Filter by item type.
+        #[arg(long = "type")]
+        kind: Option<ItemKindArg>,
+        /// Filter by status (e.g., done, in-progress, open).
+        #[arg(long)]
+        status: Option<String>,
+        /// Filter by project.
+        #[arg(long)]
+        project: Option<String>,
+        /// Filter by tag. Repeat to require multiple tags (AND).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Maximum number of results to return.
+        #[arg(long, default_value = "20")]
+        limit: usize,
+        /// Minimum score ratio (0.0–1.0). Results below this fraction of the top
+        /// score are dropped. Default: 0.25. Use 0 to disable.
+        #[arg(long, default_value = "0.25")]
+        min_score_ratio: f64,
+    },
+    /// Show uncommitted changes and sync status in the plan repo.
+    #[cfg(feature = "git")]
+    Status {
+        /// Fetch from the default remote before checking sync status.
+        #[arg(long)]
+        fetch: bool,
+    },
+    /// Commit staged changes to git.
+    #[cfg(feature = "git")]
+    Commit {
+        /// Commit message (auto-generated if omitted).
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+    /// Discard uncommitted changes, restoring the working directory to HEAD.
+    #[cfg(feature = "git")]
+    Discard {
+        /// Confirm the destructive operation.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List unresolved merge conflicts with rdm item context.
+    #[cfg(feature = "git")]
+    Conflicts,
+    /// Mark a conflicted file as resolved and auto-complete the merge when all are resolved.
+    #[cfg(feature = "git")]
+    Resolve {
+        /// Path of the file to mark as resolved.
+        file: String,
+    },
+    /// Manage git remotes.
+    #[cfg(feature = "git")]
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommand,
+    },
+    /// Manage the post-merge and post-commit git hooks.
+    #[cfg(feature = "git")]
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
+    /// Manage git worktrees keyed to plan items in the project (code) repo.
+    #[cfg(feature = "git")]
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeCommand,
+    },
+    /// Start the MCP server on stdin/stdout.
+    #[cfg(feature = "mcp")]
+    Mcp,
+    /// Start the rdm REST API server.
+    #[cfg(feature = "server")]
+    Serve {
+        /// Port to listen on.
+        #[arg(long, default_value = "3000")]
+        port: u16,
+        /// Address to bind to.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// Quick-filter chip to render on list pages.
+        ///
+        /// Format: `Label:tag` (e.g. `Bugs:bug`). Repeat to add more.
+        /// Overrides any `[server.quick_filters]` from `rdm.toml` and the
+        /// `RDM_SERVER_QUICK_FILTERS` env var.
+        #[arg(long = "quick-filter")]
+        quick_filter: Vec<String>,
+    },
+    /// List roadmaps and their progress.
+    List {
+        /// Project to list roadmaps for.
+        #[arg(long)]
+        project: Option<String>,
+        /// List all projects and roadmaps.
+        #[arg(long)]
+        all: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ProjectCommand {
+    /// Create a new project.
+    Create {
+        /// Project slug (used in directory names).
+        name: String,
+        /// Human-readable title.
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// Show project details.
+    Show {
+        /// Project slug.
+        name: String,
+    },
+    /// List all projects.
+    List,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RoadmapCommand {
+    /// Create a new roadmap.
+    Create {
+        /// Roadmap slug.
+        slug: String,
+        /// Human-readable title.
+        #[arg(long)]
+        title: Option<String>,
+        /// Project to create the roadmap in.
+        #[arg(long)]
+        project: Option<String>,
+        /// Priority level.
+        #[arg(long)]
+        priority: Option<Priority>,
+        /// Comma-separated tags.
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// Body content for the roadmap.
+        #[arg(long)]
+        body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
+    /// Show a roadmap and its phases.
+    Show {
+        /// Roadmap slug.
+        slug: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Suppress body content in output.
+        #[arg(long)]
+        no_body: bool,
+        /// Read the body as it was at a specific git revision.
+        #[arg(long)]
+        at: Option<String>,
+    },
+    /// Update a roadmap's priority and/or body.
+    Update {
+        /// Roadmap slug.
+        slug: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// New priority level.
+        #[arg(long, conflicts_with = "clear_priority")]
+        priority: Option<Priority>,
+        /// Remove the priority from this roadmap.
+        #[arg(long, conflicts_with = "priority")]
+        clear_priority: bool,
+        /// New comma-separated tags (replaces existing).
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// Body content for the roadmap.
+        #[arg(long, conflicts_with = "clear_body")]
+        body: Option<String>,
+        /// Clear an existing body (replace it with an empty string).
+        #[arg(long, conflicts_with = "body")]
+        clear_body: bool,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
+    /// List all roadmaps in a project.
+    List {
+        /// Project to list roadmaps for.
+        #[arg(long)]
+        project: Option<String>,
+        /// Show archived roadmaps instead of active ones.
+        #[arg(long)]
+        archived: bool,
+        /// Sort order (alphabetical or priority).
+        #[arg(long)]
+        sort: Option<RoadmapSort>,
+        /// Filter by priority level.
+        #[arg(long)]
+        priority: Option<Priority>,
+    },
+    /// Add a dependency on another roadmap.
+    Depend {
+        /// Roadmap slug that will depend on another.
+        slug: String,
+        /// The roadmap to depend on.
+        #[arg(long)]
+        on: String,
+        /// Project the roadmaps belong to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Remove a dependency on another roadmap.
+    Undepend {
+        /// Roadmap slug to remove a dependency from.
+        slug: String,
+        /// The dependency to remove.
+        #[arg(long)]
+        on: String,
+        /// Project the roadmaps belong to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Show the dependency graph for all roadmaps.
+    Deps {
+        /// Project to show dependencies for.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Delete a roadmap and all its phases.
+    Delete {
+        /// Roadmap slug to delete.
+        slug: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Confirm deletion (required).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Split a roadmap by extracting phases into a new roadmap.
+    Split {
+        /// Source roadmap slug.
+        slug: String,
+        /// Phase stems or numbers to extract.
+        #[arg(long, required = true, num_args = 1..)]
+        phases: Vec<String>,
+        /// Slug for the new roadmap.
+        #[arg(long)]
+        into: String,
+        /// Title for the new roadmap.
+        #[arg(long)]
+        title: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Add a dependency from the new roadmap on the source.
+        #[arg(long)]
+        depends_on: bool,
+    },
+    /// Archive a completed roadmap.
+    Archive {
+        /// Roadmap slug to archive.
+        slug: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Archive even if some phases are not done.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Restore an archived roadmap to active status.
+    Unarchive {
+        /// Roadmap slug to restore.
+        slug: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PhaseCommand {
+    /// Create a new phase in a roadmap.
+    Create {
+        /// Phase slug (appended to phase-N-).
+        slug: String,
+        /// Human-readable title.
+        #[arg(long)]
+        title: Option<String>,
+        /// Roadmap to add the phase to.
+        #[arg(long)]
+        roadmap: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Explicit phase number (auto-assigned if omitted).
+        #[arg(long)]
+        number: Option<u32>,
+        /// Comma-separated tags.
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// Body content for the phase.
+        #[arg(long)]
+        body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
+    /// List phases in a roadmap.
+    List {
+        /// Roadmap to list phases for.
+        #[arg(long)]
+        roadmap: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Show a phase.
+    Show {
+        /// Phase stem or number (e.g. phase-1-core or 1).
+        stem: String,
+        /// Roadmap the phase belongs to.
+        #[arg(long)]
+        roadmap: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Suppress body content in output.
+        #[arg(long)]
+        no_body: bool,
+        /// Read the body as it was at a specific git revision.
+        #[arg(long)]
+        at: Option<String>,
+    },
+    /// Update a phase's status and/or body.
+    Update {
+        /// Phase stem or number (e.g. phase-1-core or 1).
+        stem: String,
+        /// New status (omit to preserve existing).
+        #[arg(long)]
+        status: Option<PhaseStatus>,
+        /// Roadmap the phase belongs to.
+        #[arg(long)]
+        roadmap: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// New comma-separated tags (replaces existing).
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// Body content for the phase.
+        #[arg(long, conflicts_with = "clear_body")]
+        body: Option<String>,
+        /// Clear an existing body (replace it with an empty string).
+        #[arg(long, conflicts_with = "body")]
+        clear_body: bool,
+        /// Git commit SHA to associate with phase completion.
+        #[arg(long)]
+        commit: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
+    /// Remove a phase from a roadmap.
+    Remove {
+        /// Phase stem or number (e.g. phase-1-core or 1).
+        stem: String,
+        /// Roadmap the phase belongs to.
+        #[arg(long)]
+        roadmap: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum TaskCommand {
+    /// Create a new task.
+    Create {
+        /// Task slug.
+        slug: String,
+        /// Human-readable title.
+        #[arg(long)]
+        title: Option<String>,
+        /// Project to create the task in.
+        #[arg(long)]
+        project: Option<String>,
+        /// Priority level.
+        #[arg(long, default_value = "medium")]
+        priority: Priority,
+        /// Comma-separated tags.
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// Body content for the task.
+        #[arg(long)]
+        body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
+    /// Show a task.
+    Show {
+        /// Task slug.
+        slug: String,
+        /// Project the task belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Suppress body content in output.
+        #[arg(long)]
+        no_body: bool,
+        /// Read the body as it was at a specific git revision.
+        #[arg(long)]
+        at: Option<String>,
+    },
+    /// Update a task.
+    Update {
+        /// Task slug.
+        slug: String,
+        /// Project the task belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// New status.
+        #[arg(long)]
+        status: Option<TaskStatus>,
+        /// New priority.
+        #[arg(long)]
+        priority: Option<Priority>,
+        /// New comma-separated tags (replaces existing).
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// Body content for the task.
+        #[arg(long, conflicts_with = "clear_body")]
+        body: Option<String>,
+        /// Clear an existing body (replace it with an empty string).
+        #[arg(long, conflicts_with = "body")]
+        clear_body: bool,
+        /// Git commit SHA to associate with this task.
+        #[arg(long)]
+        commit: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
+    /// List tasks.
+    List {
+        /// Project to list tasks for.
+        #[arg(long)]
+        project: Option<String>,
+        /// Filter by status (open, in-progress, needs-review, reviewed, done, wont-fix, or all).
+        #[arg(long)]
+        status: Option<TaskStatusFilter>,
+        /// Filter by priority.
+        #[arg(long)]
+        priority: Option<Priority>,
+        /// Filter by tag.
+        #[arg(long)]
+        tag: Option<String>,
+    },
+}
+
+#[cfg(feature = "git")]
+#[derive(Subcommand)]
+pub(crate) enum RemoteCommand {
+    /// Add a new remote.
+    Add {
+        /// Remote name (e.g., "origin").
+        name: String,
+        /// Remote URL.
+        url: String,
+    },
+    /// Remove a remote.
+    Remove {
+        /// Remote name to remove.
+        name: String,
+    },
+    /// List all remotes.
+    List,
+    /// Fetch from a remote.
+    Fetch {
+        /// Remote name (defaults to the configured default remote).
+        name: Option<String>,
+    },
+    /// Push local commits to a remote.
+    Push {
+        /// Remote name (defaults to the configured default remote).
+        name: Option<String>,
+        /// Force push (overwrite remote history).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Pull (fetch + fast-forward merge) from a remote.
+    Pull {
+        /// Remote name (defaults to the configured default remote).
+        name: Option<String>,
+    },
+}
+
+#[cfg(feature = "git")]
+#[derive(Subcommand)]
+pub(crate) enum BootstrapSubcommand {
+    /// Diagnose a sandbox's readiness to bootstrap a plan repo.
+    ///
+    /// Checks whether the `rdm` binary is on `PATH`, whether a plan-repo
+    /// root is configured, whether a plan-repo URL and access token are
+    /// available, and — for GitHub HTTPS URLs — whether the token has the
+    /// required scopes. Does not clone.
+    Doctor {
+        /// Plan-repo URL (falls back to `RDM_PLAN_REPO`).
+        #[arg(long, env = "RDM_PLAN_REPO", hide_env_values = true)]
+        plan_repo: Option<String>,
+        /// Access token (falls back to `RDM_PLAN_REPO_TOKEN`).
+        #[arg(long, env = "RDM_PLAN_REPO_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+    },
+}
+
+#[cfg(feature = "git")]
+#[derive(Subcommand)]
+pub(crate) enum HookCommand {
+    /// Install the post-merge and post-commit git hooks in the current
+    /// directory's git repo.
+    Install {
+        /// Overwrite existing hooks.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove the rdm git hooks (post-merge and post-commit).
+    Uninstall,
+    /// Run post-merge logic: parse Done: directives and mark phases/tasks done.
+    PostMerge {
+        /// Scan commits since this ref (tag, SHA, branch) instead of the
+        /// default reflog anchor `HEAD@{1}`.
+        #[arg(long)]
+        since: Option<String>,
+    },
+    /// Run post-commit logic: on the default branch, parse Done: directives
+    /// from HEAD and mark phases/tasks done.
+    PostCommit,
+}
+
+#[cfg(feature = "git")]
+#[derive(Subcommand)]
+pub(crate) enum WorktreeCommand {
+    /// Create (or reuse) a worktree for a plan item.
+    ///
+    /// The item is `<roadmap>/<phase-stem-or-number>` or `task/<slug>`.
+    Add {
+        /// Plan item to key the worktree/branch to.
+        item: String,
+        /// Base ref to branch from (defaults to current HEAD).
+        #[arg(long)]
+        base: Option<String>,
+        /// Project to resolve the item against.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// List rdm-managed worktrees in the current project repo.
+    List,
+    /// Remove an rdm-managed worktree by item or path.
+    Remove {
+        /// Item (`<roadmap>/<phase-stem-or-number>` or `task/<slug>`) or
+        /// worktree path.
+        target: String,
+        /// Also delete the worktree's branch.
+        #[arg(long)]
+        delete_branch: bool,
+        /// Remove even if dirty (and force-delete the branch).
+        #[arg(long)]
+        force: bool,
+        /// Project to resolve a phase-number item against.
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ConfigCommand {
+    /// Get the resolved value of a config key.
+    Get {
+        /// Config key (e.g. default_project, default_format, stage, remote.default, root).
+        key: String,
+    },
+    /// Set a config key.
+    Set {
+        /// Config key to set.
+        key: String,
+        /// Value to set.
+        value: String,
+        /// Write to global config instead of repo config.
+        #[arg(long)]
+        global: bool,
+    },
+    /// List all config keys with their resolved values and sources.
+    List,
+}
+
+/// Item type argument for `--type` flag.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum ItemKindArg {
+    Roadmap,
+    Phase,
+    Task,
+}
+
+impl From<ItemKindArg> for ItemKind {
+    fn from(arg: ItemKindArg) -> Self {
+        match arg {
+            ItemKindArg::Roadmap => ItemKind::Roadmap,
+            ItemKindArg::Phase => ItemKind::Phase,
+            ItemKindArg::Task => ItemKind::Task,
+        }
+    }
+}
+
+/// Output format for command results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum OutputFormat {
+    #[value(alias = "text")]
+    Human,
+    Json,
+    Table,
+    Markdown,
+}
+
+impl std::str::FromStr for OutputFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "human" | "text" => Ok(Self::Human),
+            "json" => Ok(Self::Json),
+            "table" => Ok(Self::Table),
+            "markdown" => Ok(Self::Markdown),
+            _ => Err(format!("unknown format: {s}")),
+        }
+    }
+}
+
+impl std::fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Human => write!(f, "human"),
+            Self::Json => write!(f, "json"),
+            Self::Table => write!(f, "table"),
+            Self::Markdown => write!(f, "markdown"),
+        }
+    }
+}

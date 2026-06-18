@@ -151,36 +151,9 @@ pub fn run(
                 }
                 entries
             } else {
-                let roadmaps =
-                    rdm_core::ops::roadmap::list_roadmaps(store, &project, sort, priority)
-                        .context("failed to list roadmaps")?;
-                let mut entries = Vec::new();
-                for roadmap_doc in roadmaps {
-                    let slug = &roadmap_doc.frontmatter.roadmap;
-                    let phases = rdm_core::ops::phase::list_phases(store, &project, slug)
-                        .with_context(|| format!("failed to list phases for roadmap '{slug}'"))?;
-                    entries.push((roadmap_doc, phases));
-                }
-                entries
+                collect_entries(store, &project, sort, priority)?
             };
-            match format {
-                OutputFormat::Human => print!("{}", display::format_roadmap_list(&entries)),
-                OutputFormat::Table => print!("{}", table::format_roadmap_table(&entries)),
-                OutputFormat::Markdown => {
-                    print!("{}", display::format_roadmap_list_md(&entries))
-                }
-                OutputFormat::Json => {
-                    let summaries: Vec<_> = entries
-                        .iter()
-                        .map(|(doc, phases)| json::roadmap_summary_to_json(doc, phases))
-                        .collect();
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&summaries)
-                            .context("failed to serialize roadmaps")?
-                    );
-                }
-            }
+            print_entries(&entries, format)?;
             maybe_print_uncommitted_hint(store, staging);
         }
         RoadmapCommand::Depend { slug, on, project } => {
@@ -306,6 +279,64 @@ pub fn run(
                 |s| rdm_core::ops::roadmap::unarchive_roadmap(s, &project, &slug),
             )?;
             println!("Restored roadmap '{slug}' to project '{project}'");
+        }
+    }
+    Ok(())
+}
+
+/// Loads active roadmaps for a project, pairing each with its phases.
+///
+/// Shared by `rdm roadmap list` and the top-level `rdm list` so the
+/// load-roadmaps + per-roadmap load-phases loop lives in one place.
+///
+/// # Errors
+///
+/// Returns an error if the roadmaps cannot be listed or if any roadmap's
+/// phases cannot be loaded.
+pub(crate) fn collect_entries(
+    store: &AppStore,
+    project: &str,
+    sort: Option<rdm_core::model::RoadmapSort>,
+    priority: Option<rdm_core::model::Priority>,
+) -> Result<Vec<rdm_core::display::RoadmapWithPhases>> {
+    let roadmaps = rdm_core::ops::roadmap::list_roadmaps(store, project, sort, priority)
+        .context("failed to list roadmaps")?;
+    let mut entries = Vec::new();
+    for roadmap_doc in roadmaps {
+        let slug = &roadmap_doc.frontmatter.roadmap;
+        let phases = rdm_core::ops::phase::list_phases(store, project, slug)
+            .with_context(|| format!("failed to list phases for roadmap '{slug}'"))?;
+        entries.push((roadmap_doc, phases));
+    }
+    Ok(entries)
+}
+
+/// Renders roadmap entries for the Human/Table/Markdown formats.
+///
+/// JSON is intentionally not handled here: callers build summaries
+/// themselves so single-project and multi-project aggregates can differ.
+///
+/// # Errors
+///
+/// This function does not currently return an error; it returns `Result`
+/// for symmetry with [`collect_entries`] and forward compatibility.
+pub(crate) fn print_entries(
+    entries: &[rdm_core::display::RoadmapWithPhases],
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Human => print!("{}", display::format_roadmap_list(entries)),
+        OutputFormat::Table => print!("{}", table::format_roadmap_table(entries)),
+        OutputFormat::Markdown => print!("{}", display::format_roadmap_list_md(entries)),
+        OutputFormat::Json => {
+            let summaries: Vec<_> = entries
+                .iter()
+                .map(|(doc, phases)| json::roadmap_summary_to_json(doc, phases))
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&summaries).context("failed to serialize roadmaps")?
+            );
         }
     }
     Ok(())

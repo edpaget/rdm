@@ -10,20 +10,44 @@ use rdm_core::store::Store;
 use crate::paths;
 use crate::{AppStore, ItemKindArg, OutputFormat};
 
+pub mod agent_config;
 pub mod config;
+pub mod describe;
+pub mod index;
+pub mod init;
+pub mod list;
 pub mod phase;
 pub mod project;
+pub mod promote;
 pub mod roadmap;
+pub mod search;
 pub mod task;
+pub mod tree;
 
 #[cfg(feature = "git")]
 pub mod bootstrap;
+#[cfg(feature = "git")]
+pub mod commit;
+#[cfg(feature = "git")]
+pub mod conflicts;
+#[cfg(feature = "git")]
+pub mod discard;
 #[cfg(feature = "git")]
 pub mod hook;
 #[cfg(feature = "git")]
 pub mod remote;
 #[cfg(feature = "git")]
+pub mod resolve;
+#[cfg(feature = "git")]
+pub mod status;
+#[cfg(feature = "git")]
 pub mod worktree;
+
+#[cfg(feature = "mcp")]
+pub mod mcp;
+
+#[cfg(feature = "server")]
+pub mod serve;
 
 /// Parses a status string into an `ItemStatus`, using the `--type` hint if available.
 pub fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatus> {
