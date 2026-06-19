@@ -105,6 +105,20 @@ pub fn run(
                 BodyUpdate::from_args(resolve_body(body, no_edit)?, false)?
             };
             let tags = TagsUpdate::from_args(tags, false)?;
+            // Stamp the source-repo HEAD SHA when entering needs-review, so the
+            // review can later be scoped to the branch/worktree that produced
+            // it. No commit yet (unstamped) → fail open downstream.
+            #[cfg(feature = "git")]
+            let review_sha = if status == Some(rdm_core::model::TaskStatus::NeedsReview) {
+                rdm_store_git::head_commit_info_at(&std::env::current_dir()?)
+                    .ok()
+                    .flatten()
+                    .map(|c| c.sha)
+            } else {
+                None
+            };
+            #[cfg(not(feature = "git"))]
+            let review_sha = None;
             let doc = commit_mutation(
                 store,
                 &project,
@@ -113,7 +127,7 @@ pub fn run(
                 "failed to update task",
                 |s| {
                     rdm_core::ops::task::update_task(
-                        s, &project, &slug, status, priority, tags, body, commit,
+                        s, &project, &slug, status, priority, tags, body, commit, review_sha,
                     )
                 },
             )

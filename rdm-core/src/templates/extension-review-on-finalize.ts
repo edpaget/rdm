@@ -42,21 +42,20 @@ export default function (pi) {
   pi.on("agent_end", async (event, ctx) => {
     let pending = [];
     try {
-      // Query phases and tasks separately. `search --status needs-review` with no `--type`
-      // resolves the ambiguous status to a *phase* status (phases are tried first), so it
-      // never matches tasks — we must ask for each kind explicitly to catch any pending
-      // item. This mirrors the shell hook's two-query workaround.
-      for (const type of ["phase", "task"]) {
-        const result = await pi.exec(
-          "rdm",
-          ["search", "", "--status", "needs-review", "--type", type, "--format", "json"],
-          { timeout: 30000 },
-        );
-        const items = JSON.parse(result.stdout);
-        for (const item of items) {
-          if (item && item.identifier) {
-            pending.push(item.identifier);
-          }
+      // `rdm review pending` returns the needs-review phases AND tasks in scope for the
+      // current source-repo branch (stamped-and-reachable, or unstamped/fail-open). It is
+      // the single shared source of truth for the hook, this extension, and the rdm-review
+      // skill, so a session finishing one branch is never reprompted to review work
+      // finalized on another. This mirrors the shell hook.
+      const result = await pi.exec(
+        "rdm",
+        ["review", "pending", "--format", "json"],
+        { timeout: 30000 },
+      );
+      const items = JSON.parse(result.stdout);
+      for (const item of items) {
+        if (item && item.identifier) {
+          pending.push(item.identifier);
         }
       }
     } catch (err) {

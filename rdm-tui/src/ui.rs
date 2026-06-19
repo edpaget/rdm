@@ -652,6 +652,7 @@ let x = 1;
                     },
                     completed: None,
                     commit: None,
+                    review_sha: None,
                 },
                 body: String::new(),
             },

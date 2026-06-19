@@ -90,6 +90,7 @@ mod tests {
                 tags: None,
                 completed: Some(NaiveDate::from_ymd_opt(2026, 3, 13).unwrap()),
                 commit: None,
+                review_sha: None,
             },
             body: "## Context\n\nDetails.\n".to_string(),
         };
@@ -110,6 +111,7 @@ mod tests {
                 tags: None,
                 completed: None,
                 commit: None,
+                review_sha: None,
             },
             body: "Body text.\n".to_string(),
         };

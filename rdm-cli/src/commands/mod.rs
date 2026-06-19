@@ -39,6 +39,8 @@ pub mod remote;
 #[cfg(feature = "git")]
 pub mod resolve;
 #[cfg(feature = "git")]
+pub mod review;
+#[cfg(feature = "git")]
 pub mod status;
 #[cfg(feature = "git")]
 pub mod worktree;
@@ -342,6 +344,7 @@ pub fn apply_done_directives(
                         rdm_core::ops::TagsUpdate::Keep,
                         rdm_core::ops::BodyUpdate::Keep,
                         Some(sha.clone()),
+                        None,
                     )
                 }) {
                     Ok(_) => logger.log(
@@ -381,6 +384,7 @@ pub fn apply_done_directives(
                         rdm_core::ops::TagsUpdate::Keep,
                         rdm_core::ops::BodyUpdate::Keep,
                         Some(sha.clone()),
+                        None,
                     )
                 }) {
                     Ok(_) => logger.log(

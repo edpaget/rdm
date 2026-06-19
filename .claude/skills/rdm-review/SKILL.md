@@ -31,6 +31,8 @@ The review runs as a pipeline: **find → verify → filter → report → act �
    Extract the acceptance criteria, steps, and any other requirements from the body.
 4. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task. Note the diff size, which crates it touches, and whether it changes public API, `unsafe`, dependencies, or user-facing behavior — these drive which conditional agents you launch in step 2.
 
+> **Scope = `rdm review pending`.** `./target/debug/rdm review pending --project rdm` is the single shared source of truth for "what is in scope to review" — it lists the `needs-review` items whose source-repo SHA is reachable from the current HEAD (plus unstamped/legacy items, which fail open). The auto-review Stop hook keys off the same command, so the skill and the hook never disagree about scope. If you were invoked without explicit `$ARGUMENTS`, run it to discover what to review on this branch; an item finalized on another worktree's branch will not appear here.
+
 ### 2. Find — dispatch an adaptive review fleet (parallel)
 
 Scale the fleet to what the diff actually touches. Always run the **base** agents; add **conditional** agents only when the diff hits their surface. This keeps a 10-line phase cheap while a cross-cutting change still gets full coverage. Each agent is **read-only** — it reviews and reports, it never edits.

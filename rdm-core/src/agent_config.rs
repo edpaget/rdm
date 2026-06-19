@@ -1829,7 +1829,7 @@ mod tests {
         // Keeps the loop guard and the needs-review query approach.
         assert!(script.contains("stop_hook_active"));
         assert!(script.contains("needs-review"));
-        assert!(script.contains("rdm search"));
+        assert!(script.contains("rdm review pending"));
         // Generalized: no dev-binary path and no hard-coded project.
         assert!(
             !script.contains("--project"),

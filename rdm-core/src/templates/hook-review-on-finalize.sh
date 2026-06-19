@@ -5,17 +5,26 @@
 # rdm-review moves the item to `reviewed` (or any other status), the next stop finds
 # nothing pending and is allowed. `stop_hook_active` short-circuits the reprompt loop.
 #
+# Scope: `rdm review pending` only reports items whose stamped source-repo SHA is
+# reachable from the current HEAD (or that are unstamped — those fail open). This
+# keeps a session finishing branch A from being reprompted to review an item that
+# was finalized on branch B, whose diff isn't even checked out here. It is the
+# single shared source of truth for "what is in scope to review" — the rdm-review
+# skill consults the same command.
+#
 # Dependencies: POSIX `sh`, `grep`, and the `rdm` binary on PATH only (no `jq`).
 #
 # Project resolution follows the standard chain: `RDM_PROJECT` env var, then
-# `default_project` in `rdm.toml`. Set one of those so the `rdm search` calls below
-# resolve to the right project.
+# `default_project` in `rdm.toml`. Set one of those so the `rdm review pending` call
+# below resolves to the right project.
 #
 # Manual reproduction (from a directory with a configured plan repo):
-#   1. Put an item in needs-review, then BLOCK:
+#   1. Put an item in needs-review on THIS branch, then BLOCK:
 #        rdm task update <slug> --status needs-review --no-edit
 #        echo '{"stop_hook_active": false}' | CLAUDE_PROJECT_DIR="$PWD" .claude/hooks/rdm-review-on-finalize.sh
 #        # expect: {"decision":"block","reason":"..."} on stdout
+#      Cross-branch check: finalize an item on another branch, switch back here, then
+#      run the same BLOCK invocation — expect exit 0, no output (out of scope).
 #   2. ALLOW on stop_hook_active (loop prevention):
 #        echo '{"stop_hook_active": true}' | CLAUDE_PROJECT_DIR="$PWD" .claude/hooks/rdm-review-on-finalize.sh
 #        # expect: exit 0, no output
@@ -33,14 +42,13 @@ if printf '%s' "$input" | grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*t
   exit 0
 fi
 
-# Query phases and tasks separately. `search --status needs-review` with no `--type`
-# resolves the ambiguous status to a *phase* status (phases are tried first), so it never
-# matches tasks — we must ask for each kind explicitly to catch any pending item.
-# An empty search returns the literal `[]`; a pending item carries an "identifier" field.
-phases=$(rdm search "" --status needs-review --type phase --format json 2>/dev/null)
-tasks=$(rdm search "" --status needs-review --type task --format json 2>/dev/null)
+# `rdm review pending` returns the needs-review phases AND tasks that are in scope for
+# the current source-repo branch (stamped-and-reachable, or unstamped/fail-open). It is
+# the single shared source of truth for the hook and the rdm-review skill.
+# An empty result is the literal `[]`; a pending item carries an "identifier" field.
+pending=$(rdm review pending --format json 2>/dev/null)
 
-if printf '%s%s' "$phases" "$tasks" | grep -q '"identifier"'; then
+if printf '%s' "$pending" | grep -q '"identifier"'; then
   cat <<'EOF'
 {"decision":"block","reason":"There are rdm item(s) in `needs-review`. Before stopping, invoke the rdm-review skill on the needs-review item(s): categorize the findings — fix small issues inline, and file large ones as rdm tasks. If review passes, set the item's status to `reviewed` and write the `Done:` line in the commit message."}
 EOF

@@ -196,3 +196,30 @@ pub fn current_branch_at(path: &Path) -> Result<Option<String>> {
     let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok(full_ref.strip_prefix("refs/heads/").map(|s| s.to_string()))
 }
+
+/// Whether `sha` is an ancestor of (or equal to) HEAD in the repo at `path`.
+///
+/// Shells out to `git merge-base --is-ancestor <sha> HEAD`: exit code 0 means
+/// `sha` is reachable from HEAD (`Ok(true)`), exit code 1 means it is not
+/// (`Ok(false)`). Any other exit code (e.g. an unknown SHA, or HEAD being
+/// unborn) is treated as an error.
+///
+/// # Errors
+///
+/// Returns `Error::Git` if `path` is not inside a git repository, git is not
+/// installed, or the command fails for a reason other than a clean
+/// ancestor/not-ancestor determination (such as an invalid `sha`).
+pub fn is_ancestor_of_head_at(path: &Path, sha: &str) -> Result<bool> {
+    let output = run_git_at(path, &["merge-base", "--is-ancestor", sha, "HEAD"])?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(Error::Git(format!(
+                "git merge-base --is-ancestor failed: {}",
+                stderr.trim()
+            )))
+        }
+    }
+}

@@ -32,7 +32,7 @@ mod repo;
 
 pub use repo::{
     GitRepo, commit_messages_since_at, current_branch_at, discover_git_dir, discover_hooks_dir,
-    head_commit_info_at,
+    head_commit_info_at, is_ancestor_of_head_at,
 };
 
 /// The kind of change tracked for commit message generation.
@@ -1656,6 +1656,69 @@ mod tests {
             .commit_messages_since(Some("nonexistent-ref-abc123"))
             .unwrap();
         assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn is_ancestor_of_head_distinguishes_branches() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        // Base commit on the default branch.
+        store
+            .write(&RelPath::new("base.md").unwrap(), "base".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        let base_sha = store.git().head_commit_info().unwrap().unwrap().sha;
+
+        // Branch A: a commit reachable from the branch-A tip.
+        git_cmd()
+            .args(["checkout", "-b", "branch-a"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        store
+            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        let a_sha = store.git().head_commit_info().unwrap().unwrap().sha;
+
+        // Branch B (off base): its tip is NOT reachable from branch A's HEAD.
+        git_cmd()
+            .args(["checkout", "-b", "branch-b", &base_sha])
+            .current_dir(dir.path())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        store
+            .write(&RelPath::new("b.md").unwrap(), "b".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        let b_sha = store.git().head_commit_info().unwrap().unwrap().sha;
+
+        // Back on branch A.
+        git_cmd()
+            .args(["checkout", "branch-a"])
+            .current_dir(dir.path())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .unwrap();
+
+        // From branch A's HEAD: base and A's own tip are ancestors; B is not.
+        assert!(is_ancestor_of_head_at(dir.path(), &base_sha).unwrap());
+        assert!(is_ancestor_of_head_at(dir.path(), &a_sha).unwrap());
+        assert!(!is_ancestor_of_head_at(dir.path(), &b_sha).unwrap());
+    }
+
+    #[test]
+    fn is_ancestor_of_head_errors_on_unknown_sha() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let result = is_ancestor_of_head_at(dir.path(), "0000000000000000000000000000000000000000");
+        assert!(result.is_err());
     }
 
     #[test]

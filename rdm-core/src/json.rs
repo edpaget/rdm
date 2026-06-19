@@ -380,6 +380,7 @@ mod tests {
                     None
                 },
                 commit: None,
+                review_sha: None,
             },
             body: String::new(),
         }
@@ -411,6 +412,7 @@ mod tests {
                 tags: None,
                 completed: None,
                 commit: None,
+                review_sha: None,
             },
             body: String::new(),
         }

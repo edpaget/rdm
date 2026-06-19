@@ -100,6 +100,7 @@ pub fn create_task(
             tags,
             completed: None,
             commit: None,
+            review_sha: None,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -153,6 +154,12 @@ pub fn list_tasks(store: &impl Store, project: &str) -> Result<Vec<(String, Docu
 /// `completed` date and only updates `commit` if a new value is provided.
 /// Transitioning to a non-terminal status clears both `completed` and `commit`.
 ///
+/// The `review_sha` parameter stamps the source-repo HEAD SHA that produced
+/// the item. When `status` transitions to [`TaskStatus::NeedsReview`], the
+/// provided `review_sha` is stored on the task; any other status change clears
+/// it to `None`; when `status` is `None`, the existing `review_sha` is
+/// preserved.
+///
 /// # Errors
 ///
 /// Returns [`Error::TaskNotFound`] if the task file doesn't exist,
@@ -171,6 +178,7 @@ pub fn update_task(
     tags: TagsUpdate,
     body: BodyUpdate,
     commit: Option<String>,
+    review_sha: Option<String>,
 ) -> Result<Document<Task>> {
     let path = crate::paths::task_path(project, slug);
     if !store.exists(&path) {
@@ -193,6 +201,13 @@ pub fn update_task(
             } else {
                 doc.frontmatter.completed = None;
                 doc.frontmatter.commit = None;
+            }
+            // Stamp the source-repo SHA on entry to needs-review; clear it on
+            // any other transition so a stale discriminator never lingers.
+            if status == TaskStatus::NeedsReview {
+                doc.frontmatter.review_sha = review_sha;
+            } else {
+                doc.frontmatter.review_sha = None;
             }
         }
     }
@@ -268,6 +283,7 @@ pub fn promote_task(
             tags: task_doc.frontmatter.tags.clone(),
             completed: None,
             commit: None,
+            review_sha: None,
         },
         body: task_doc.body,
     };
@@ -297,6 +313,7 @@ mod tests {
             },
             completed: None,
             commit: None,
+            review_sha: None,
         }
     }
 

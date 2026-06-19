@@ -53,6 +53,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
         None,
+        None,
     )
     .unwrap();
     rdm_core::ops::task::create_task(

@@ -927,6 +927,7 @@ impl RdmMcpServer {
                 tags,
                 body,
                 None,
+                None,
             )
         }) {
             Ok(d) => d,
@@ -1015,6 +1016,7 @@ impl RdmMcpServer {
                 priority,
                 tags,
                 body,
+                None,
                 None,
             )
         }) {

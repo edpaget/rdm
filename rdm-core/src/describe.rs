@@ -396,6 +396,7 @@ mod tests {
             tags: Some(vec!["infra".to_string()]),
             completed: Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()),
             commit: Some("abc123".to_string()),
+            review_sha: None,
         };
         assert_fields_match(&sample);
     }
@@ -411,6 +412,7 @@ mod tests {
             tags: Some(vec!["tag1".to_string()]),
             completed: Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()),
             commit: Some("abc123".to_string()),
+            review_sha: None,
         };
         assert_fields_match(&sample);
     }

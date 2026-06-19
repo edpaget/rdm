@@ -302,6 +302,10 @@ pub struct Phase {
     /// Git commit SHA associated with phase completion, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// Source-repo HEAD SHA stamped when the item entered `needs-review`.
+    /// Used to scope review prompts to the branch/worktree that produced it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_sha: Option<String>,
 }
 
 impl Phase {
@@ -338,6 +342,10 @@ pub struct Task {
     /// Git commit SHA that completed this task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// Source-repo HEAD SHA stamped when the item entered `needs-review`.
+    /// Used to scope review prompts to the branch/worktree that produced it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_sha: Option<String>,
 }
 
 /// Frontmatter for a roadmap file.

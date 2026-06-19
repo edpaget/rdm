@@ -12,6 +12,8 @@ pub mod init;
 pub mod phase;
 /// Project operations: create, list.
 pub mod project;
+/// Review operations: enumerate items awaiting review.
+pub mod review;
 /// Roadmap operations: create, update, delete, list, archive, split, dependencies.
 pub mod roadmap;
 /// Task operations: create, update, list, promote.

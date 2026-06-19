@@ -339,6 +339,7 @@ mod tests {
                 tags: None,
                 completed: None,
                 commit: None,
+                review_sha: None,
             },
             body: "Phase body.".to_string(),
         };
@@ -371,6 +372,7 @@ mod tests {
                 tags: None,
                 completed: None,
                 commit: None,
+                review_sha: None,
             },
             body: "Task body.".to_string(),
         };
@@ -416,6 +418,7 @@ mod tests {
                 tags: None,
                 completed: None,
                 commit: None,
+                review_sha: None,
             },
             body: body.to_string(),
         };
@@ -433,6 +436,7 @@ mod tests {
                 tags: None,
                 completed: None,
                 commit: None,
+                review_sha: None,
             },
             body: body.to_string(),
         };

@@ -181,6 +181,76 @@ say "Pushing plan repo update to origin bare"
 ok "plan repo update visible in $PLAN_ORIGIN"
 
 # ----------------------------------------------------------------------------
+# Step 8: two-worktree needs-review scoping. The auto-review Stop hook must only
+# reprompt for items finalized on the *current* branch — an item finalized in a
+# sibling worktree (a different branch) is out of scope and must not block.
+# ----------------------------------------------------------------------------
+say "Two-worktree needs-review scoping (rdm review pending + Stop hook)"
+
+# Faithful env: rdm on PATH, plan repo + project resolved via RDM_ROOT/RDM_PROJECT
+# exactly as the generalized end-user hook template expects (no --root, no jq).
+HOOK_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/hook-review-on-finalize.sh"
+
+# A source repo with branch-a as the main worktree and branch-b as a sibling
+# linked worktree, each with a divergent commit so neither tip reaches the other.
+SRC2="$TMP/src2"
+git init --quiet -b main "$SRC2"
+( cd "$SRC2" && git commit --quiet --allow-empty -m "initial" \
+    && git checkout --quiet -b branch-a && git commit --quiet --allow-empty -m "work on a" )
+SRC2_WT_B="$TMP/src2-wt-b"
+( cd "$SRC2" && git worktree add --quiet -b branch-b "$SRC2_WT_B" main )
+( cd "$SRC2_WT_B" && git commit --quiet --allow-empty -m "work on b" )
+ok "source repo with branch-a (main worktree) and branch-b (sibling worktree)"
+
+# Two tasks; finalize one on each branch from that branch's worktree.
+XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$SANDBOX_PLAN" task create review-a \
+    --title "Review A" --no-edit --project verify >/dev/null
+XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$SANDBOX_PLAN" task create review-b \
+    --title "Review B" --no-edit --project verify >/dev/null
+( cd "$SRC2" && XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$SANDBOX_PLAN" \
+    task update review-a --status needs-review --no-edit --project verify >/dev/null )
+( cd "$SRC2_WT_B" && XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$SANDBOX_PLAN" \
+    task update review-b --status needs-review --no-edit --project verify >/dev/null )
+ok "review-a finalized on branch-a; review-b finalized on branch-b"
+
+# From branch-a: review-a is in scope, review-b (sibling branch) is not.
+PENDING_A=$(cd "$SRC2" && RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" \
+    "$RDM_BIN" review pending --format json)
+printf '%s' "$PENDING_A" | grep -q 'review-a' \
+    || { printf '%s\n' "$PENDING_A" >&2; fail "branch-a should see review-a"; }
+printf '%s' "$PENDING_A" | grep -q 'review-b' \
+    && { printf '%s\n' "$PENDING_A" >&2; fail "branch-a must NOT see review-b (sibling branch)"; }
+ok "branch-a review pending: review-a only"
+
+# From branch-b: the mirror — review-b in scope, review-a out of scope.
+PENDING_B=$(cd "$SRC2_WT_B" && RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" \
+    "$RDM_BIN" review pending --format json)
+printf '%s' "$PENDING_B" | grep -q 'review-b' \
+    || { printf '%s\n' "$PENDING_B" >&2; fail "branch-b should see review-b"; }
+printf '%s' "$PENDING_B" | grep -q 'review-a' \
+    && { printf '%s\n' "$PENDING_B" >&2; fail "branch-b must NOT see review-a (sibling branch)"; }
+ok "branch-b review pending: review-b only"
+
+# The actual Stop hook template: blocks on branch-a (in-scope item present)...
+HOOK_OUT_A=$(cd "$SRC2" && printf '%s' '{"stop_hook_active": false}' \
+    | RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" PATH="$SANDBOX_HOME/.local/bin:$PATH" \
+      sh "$HOOK_TEMPLATE")
+printf '%s' "$HOOK_OUT_A" | grep -q '"decision":"block"' \
+    || { printf '%s\n' "$HOOK_OUT_A" >&2; fail "Stop hook should block on branch-a"; }
+ok "Stop hook blocks on branch-a"
+
+# ...and does NOT block from a clean sibling worktree (branch-c off main) where
+# neither needs-review item is reachable.
+SRC2_WT_C="$TMP/src2-wt-c"
+( cd "$SRC2" && git worktree add --quiet -b branch-c "$SRC2_WT_C" main )
+HOOK_OUT_C=$(cd "$SRC2_WT_C" && printf '%s' '{"stop_hook_active": false}' \
+    | RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" PATH="$SANDBOX_HOME/.local/bin:$PATH" \
+      sh "$HOOK_TEMPLATE")
+[ -z "$HOOK_OUT_C" ] \
+    || { printf '%s\n' "$HOOK_OUT_C" >&2; fail "Stop hook must NOT block on unrelated branch-c"; }
+ok "Stop hook allows on unrelated branch-c (no in-scope items)"
+
+# ----------------------------------------------------------------------------
 # Done.
 # ----------------------------------------------------------------------------
 printf '\n\033[1;32mAll checks passed.\033[0m\n'

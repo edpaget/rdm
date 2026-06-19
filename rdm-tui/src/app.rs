@@ -827,6 +827,7 @@ mod tests {
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Keep,
             None,
+            None,
         )
         .unwrap();
 
@@ -1229,6 +1230,7 @@ mod tests {
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Keep,
             None,
+            None,
         )
         .unwrap();
         create_task(
@@ -1250,6 +1252,7 @@ mod tests {
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Keep,
             None,
+            None,
         )
         .unwrap();
         create_task(
@@ -1270,6 +1273,7 @@ mod tests {
             None,
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Keep,
+            None,
             None,
         )
         .unwrap();

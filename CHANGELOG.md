@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm review pending` lists the `needs-review` phases and tasks that are in
+  scope for the current source-repo branch — those whose source-repo SHA
+  (stamped when the item entered `needs-review`) is reachable from the current
+  HEAD, plus any unstamped/legacy items (which fail open). It is the single
+  shared source of truth for the auto-review Stop hook and the `rdm-review`
+  skill, so they never disagree about what to review. `--format json` emits an
+  array of `{kind, identifier, project, title}`; `--project` selects the
+  project. Available when built with the `git` feature.
+
 - The rdm MCP server now exposes worktree lifecycle tools — `rdm_worktree_add`,
   `rdm_worktree_list`, and `rdm_worktree_remove` — mirroring the `rdm worktree`
   CLI commands. They run against the project (code) repo discovered from the
@@ -109,6 +118,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The auto-review Stop hook (and the `rdm-review` skill) no longer misfire
+  across worktrees: an item finalized to `needs-review` on one branch no longer
+  reprompts a session finishing an unrelated branch, where that item's diff
+  isn't even checked out. The `needs-review` transition now stamps the
+  source-repo HEAD SHA, and `rdm review pending` scopes the prompt to items
+  reachable from the current HEAD (unstamped/legacy items still fail open).
 - Marking a task `wont-fix` now stamps a `completed` date (and records the
   optional commit SHA), matching the behavior of marking it `done`. Previously
   `wont-fix` tasks were left with no completion date.

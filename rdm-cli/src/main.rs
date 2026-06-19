@@ -217,6 +217,12 @@ fn run() -> Result<()> {
             commands::worktree::run(command, &root, &repo_config, staging, format)?;
         }
 
+        #[cfg(feature = "git")]
+        Command::Review { command } => {
+            let mut store = commands::make_store(&root, staging)?;
+            commands::review::run(command, &mut store, &repo_config, format)?;
+        }
+
         Command::List { project, all } => {
             commands::list::run(&root, &repo_config, staging, format, project, all)?
         }

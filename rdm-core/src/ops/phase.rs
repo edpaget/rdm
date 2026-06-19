@@ -100,6 +100,7 @@ pub fn create_phase(
             tags,
             completed: None,
             commit: None,
+            review_sha: None,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -122,6 +123,12 @@ pub fn create_phase(
 /// transitions to a non-terminal state, both `completed` and `commit` are
 /// cleared. When `status` is `None`, the existing status, `completed`, and
 /// `commit` are preserved.
+///
+/// The `review_sha` parameter stamps the source-repo HEAD SHA that produced
+/// the item. When `status` transitions to [`PhaseStatus::NeedsReview`], the
+/// provided `review_sha` is stored on the phase; any other status change clears
+/// it to `None`; when `status` is `None`, the existing `review_sha` is
+/// preserved.
 /// When `tags`/`body` are `Keep`, the existing values are preserved; otherwise
 /// see [`TagsUpdate`] and [`BodyUpdate`].
 ///
@@ -143,6 +150,7 @@ pub fn update_phase(
     tags: TagsUpdate,
     body: BodyUpdate,
     commit: Option<String>,
+    review_sha: Option<String>,
 ) -> Result<Document<Phase>> {
     let path = crate::paths::phase_path(project, roadmap, phase_stem);
     if !store.exists(&path) {
@@ -164,6 +172,13 @@ pub fn update_phase(
             } else {
                 doc.frontmatter.completed = None;
                 doc.frontmatter.commit = None;
+            }
+            // Stamp the source-repo SHA on entry to needs-review; clear it on
+            // any other transition so a stale discriminator never lingers.
+            if status == PhaseStatus::NeedsReview {
+                doc.frontmatter.review_sha = review_sha;
+            } else {
+                doc.frontmatter.review_sha = None;
             }
         }
     }

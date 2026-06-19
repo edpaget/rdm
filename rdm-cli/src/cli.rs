@@ -230,6 +230,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
+    /// Inspect items awaiting review.
+    #[cfg(feature = "git")]
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommand,
+    },
     /// Start the MCP server on stdin/stdout.
     #[cfg(feature = "mcp")]
     Mcp,
@@ -699,6 +705,23 @@ pub(crate) enum HookCommand {
     /// Run post-commit logic: on the default branch, parse Done: directives
     /// from HEAD and mark phases/tasks done.
     PostCommit,
+}
+
+#[cfg(feature = "git")]
+#[derive(Subcommand)]
+pub(crate) enum ReviewCommand {
+    /// List items in `needs-review` that are in scope for the current
+    /// source-repo HEAD.
+    ///
+    /// An item is in scope when its stamped source-repo SHA is reachable from
+    /// the current HEAD, or when it carries no stamp (legacy / finalized before
+    /// a commit existed — these fail open). This is the shared source of truth
+    /// for the review Stop hook and the `rdm-review` skill.
+    Pending {
+        /// Project to inspect.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[cfg(feature = "git")]
