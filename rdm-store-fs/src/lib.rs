@@ -11,16 +11,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use rdm_core::error::{Error, Result};
-use rdm_core::store::{DirEntry, DirEntryKind, RelPath, Store, VersionedStore};
-
-/// A staged entry: either a pending write or a pending delete.
-#[derive(Clone, Debug)]
-enum StagedEntry {
-    /// Content to be written on commit.
-    Write(String),
-    /// Marker for a pending deletion.
-    Delete,
-}
+use rdm_core::store::{
+    DirEntry, DirEntryKind, RelPath, StagedEntry, StagedOverlay, Store, VersionedStore,
+};
 
 /// A [`Store`] backed by the local filesystem with in-memory staging.
 ///
@@ -32,7 +25,7 @@ enum StagedEntry {
 #[derive(Clone, Debug)]
 pub struct FsStore {
     root: PathBuf,
-    staged: BTreeMap<String, StagedEntry>,
+    staged: StagedOverlay,
 }
 
 impl FsStore {
@@ -40,7 +33,7 @@ impl FsStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
-            staged: BTreeMap::new(),
+            staged: StagedOverlay::new(),
         }
     }
 
@@ -57,35 +50,18 @@ impl FsStore {
             self.root.join(path.as_str())
         }
     }
-
-    /// Checks whether a file exists on disk (ignoring staged state).
-    fn exists_on_disk(&self, path: &RelPath) -> bool {
-        self.resolve(path).exists()
-    }
 }
 
 impl Store for FsStore {
     fn read(&self, path: &RelPath) -> Result<String> {
-        let key = path.as_str();
-        // Check staged first (read-your-own-writes)
-        if let Some(entry) = self.staged.get(key) {
-            return match entry {
-                StagedEntry::Write(content) => Ok(content.clone()),
-                StagedEntry::Delete => Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("file not found: {key}"),
-                ))),
-            };
-        }
-        Ok(fs::read_to_string(self.resolve(path))?)
+        let full = self.resolve(path);
+        self.staged
+            .read(path.as_str(), || Ok(fs::read_to_string(&full)?))
     }
 
     fn exists(&self, path: &RelPath) -> bool {
-        let key = path.as_str();
-        if let Some(entry) = self.staged.get(key) {
-            return matches!(entry, StagedEntry::Write(_));
-        }
-        self.exists_on_disk(path)
+        let full = self.resolve(path);
+        self.staged.exists(path.as_str(), || full.exists())
     }
 
     fn list(&self, path: &RelPath) -> Result<Vec<DirEntry>> {
@@ -121,7 +97,7 @@ impl Store for FsStore {
         }
 
         // Apply staged changes
-        for (key, entry) in &self.staged {
+        for (key, entry) in self.staged.iter() {
             let suffix = if prefix.is_empty() {
                 key.as_str()
             } else if let Some(s) = key.strip_prefix(&prefix) {
@@ -207,25 +183,17 @@ impl Store for FsStore {
     }
 
     fn write(&mut self, path: &RelPath, content: String) -> Result<()> {
-        self.staged
-            .insert(path.as_str().to_string(), StagedEntry::Write(content));
+        self.staged.write(path.as_str(), content);
         Ok(())
     }
 
     fn delete(&mut self, path: &RelPath) -> Result<()> {
-        let key = path.as_str();
-        if !self.exists(path) {
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("file not found: {key}"),
-            )));
-        }
-        self.staged.insert(key.to_string(), StagedEntry::Delete);
-        Ok(())
+        let full = self.resolve(path);
+        self.staged.delete(path.as_str(), || full.exists())
     }
 
     fn commit(&mut self) -> Result<()> {
-        let staged = std::mem::take(&mut self.staged);
+        let staged = self.staged.drain();
         for (key, entry) in staged {
             let rel = if key.is_empty() {
                 RelPath::root()
@@ -265,7 +233,7 @@ impl Store for FsStore {
     }
 
     fn discard(&mut self) {
-        self.staged.clear();
+        self.staged.discard();
     }
 }
 

@@ -4,8 +4,10 @@
 //! filesystem, enabling in-memory backends for testing and future git backends.
 
 mod memory;
+mod overlay;
 
 pub use memory::MemoryStore;
+pub use overlay::{StagedEntry, StagedOverlay};
 
 use crate::error::{Error, Result};
 

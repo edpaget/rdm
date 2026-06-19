@@ -17,14 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::{Error, Result};
 
-use super::{DirEntry, DirEntryKind, RelPath, Store, VersionedStore};
-
-/// A staged entry: either a pending write or a pending delete.
-#[derive(Clone, Debug)]
-enum StagedEntry {
-    Write(String),
-    Delete,
-}
+use super::{DirEntry, DirEntryKind, RelPath, StagedEntry, StagedOverlay, Store, VersionedStore};
 
 /// An in-memory [`Store`] backed by `BTreeMap`s.
 ///
@@ -38,7 +31,7 @@ enum StagedEntry {
 #[derive(Clone, Debug)]
 pub struct MemoryStore {
     committed: BTreeMap<String, String>,
-    staged: BTreeMap<String, StagedEntry>,
+    staged: StagedOverlay,
     snapshots: BTreeMap<String, BTreeMap<String, String>>,
     head_counter: u64,
 }
@@ -51,7 +44,7 @@ impl MemoryStore {
         snapshots.insert("mem-0".to_string(), committed.clone());
         Self {
             committed,
-            staged: BTreeMap::new(),
+            staged: StagedOverlay::new(),
             snapshots,
             head_counter: 0,
         }
@@ -69,7 +62,7 @@ impl MemoryStore {
         snapshots.insert("mem-0".to_string(), committed.clone());
         Self {
             committed,
-            staged: BTreeMap::new(),
+            staged: StagedOverlay::new(),
             snapshots,
             head_counter: 0,
         }
@@ -102,30 +95,19 @@ impl Default for MemoryStore {
 impl Store for MemoryStore {
     fn read(&self, path: &RelPath) -> Result<String> {
         let key = path.as_str();
-        // Check staged first (read-your-own-writes)
-        if let Some(entry) = self.staged.get(key) {
-            return match entry {
-                StagedEntry::Write(content) => Ok(content.clone()),
-                StagedEntry::Delete => Err(Error::Io(std::io::Error::new(
+        self.staged.read(key, || {
+            self.committed.get(key).cloned().ok_or_else(|| {
+                Error::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("file not found: {key}"),
-                ))),
-            };
-        }
-        self.committed.get(key).cloned().ok_or_else(|| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("file not found: {key}"),
-            ))
+                ))
+            })
         })
     }
 
     fn exists(&self, path: &RelPath) -> bool {
         let key = path.as_str();
-        if let Some(entry) = self.staged.get(key) {
-            return matches!(entry, StagedEntry::Write(_));
-        }
-        self.committed.contains_key(key)
+        self.staged.exists(key, || self.committed.contains_key(key))
     }
 
     fn list(&self, path: &RelPath) -> Result<Vec<DirEntry>> {
@@ -140,7 +122,7 @@ impl Store for MemoryStore {
         for key in self.committed.keys() {
             effective_keys.insert(key.as_str());
         }
-        for (key, entry) in &self.staged {
+        for (key, entry) in self.staged.iter() {
             match entry {
                 StagedEntry::Write(_) => {
                     effective_keys.insert(key.as_str());
@@ -189,26 +171,17 @@ impl Store for MemoryStore {
     }
 
     fn write(&mut self, path: &RelPath, content: String) -> Result<()> {
-        self.staged
-            .insert(path.as_str().to_string(), StagedEntry::Write(content));
+        self.staged.write(path.as_str(), content);
         Ok(())
     }
 
     fn delete(&mut self, path: &RelPath) -> Result<()> {
         let key = path.as_str();
-        // Check if file exists (in staged or committed)
-        if !self.exists(path) {
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("file not found: {key}"),
-            )));
-        }
-        self.staged.insert(key.to_string(), StagedEntry::Delete);
-        Ok(())
+        self.staged.delete(key, || self.committed.contains_key(key))
     }
 
     fn commit(&mut self) -> Result<()> {
-        let staged = std::mem::take(&mut self.staged);
+        let staged = self.staged.drain();
         if staged.is_empty() {
             return Ok(());
         }
@@ -229,7 +202,7 @@ impl Store for MemoryStore {
     }
 
     fn discard(&mut self) {
-        self.staged.clear();
+        self.staged.discard();
     }
 }
 
