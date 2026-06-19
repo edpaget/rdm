@@ -1683,6 +1683,36 @@ fn update_task_reopen_clears_completed_and_commit() {
 }
 
 #[test]
+fn update_task_wont_fix_sets_completed() {
+    let mut store = setup_with_project();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        "Fix",
+        Priority::Low,
+        None,
+        None,
+    )
+    .unwrap();
+    let updated = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::WontFix),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        Some("sha-wf".to_string()),
+    )
+    .unwrap();
+    assert_eq!(updated.frontmatter.status, TaskStatus::WontFix);
+    // WontFix is terminal, so it must stamp a completed date and the commit.
+    assert!(updated.frontmatter.completed.is_some());
+    assert_eq!(updated.frontmatter.commit, Some("sha-wf".to_string()));
+}
+
+#[test]
 fn promote_task_to_roadmap() {
     let mut store = setup_with_project();
     let task = Document {

@@ -200,6 +200,21 @@ pub trait Store {
 
     /// Discards all staged changes without committing.
     fn discard(&mut self);
+
+    /// Returns the last-modified time of a committed file, if the backend
+    /// tracks one.
+    ///
+    /// The default implementation returns `Ok(None)`; history-less or
+    /// in-memory backends keep it. Filesystem-backed stores override it to
+    /// return the real on-disk mtime, and `Ok(None)` when the file is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend tracks mtimes but the lookup fails for
+    /// a reason other than the file being absent.
+    fn modified(&self, _path: &RelPath) -> Result<Option<std::time::SystemTime>> {
+        Ok(None)
+    }
 }
 
 /// A [`Store`] that also exposes read access to committed history.

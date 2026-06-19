@@ -74,10 +74,119 @@ pub fn format_top_level_index(projects: &[ProjectIndex]) -> String {
                 ]
             })
             .collect();
-        d.push(ast::Block::Table { headers, rows });
+        d.push(ast::Block::Table {
+            headers,
+            rows,
+            aligns: vec![],
+        });
     }
 
     d.to_string()
+}
+
+/// The INDEX progress label for a roadmap entry.
+///
+/// Like [`roadmap_progress_label`](crate::display::roadmap_progress_label) but
+/// with the INDEX-specific `not started` state for a roadmap that has phases
+/// but none done.
+fn index_progress_label(entry: &RoadmapIndexEntry) -> String {
+    if entry.done_count == 0 && entry.phase_count > 0 {
+        "not started".to_string()
+    } else {
+        crate::display::roadmap_progress_label(entry.done_count, entry.phase_count)
+    }
+}
+
+/// Pushes the roadmaps table (and dependency graph, if any) into `d`.
+///
+/// `roadmap_link` produces the link URL for each roadmap, letting the top-level
+/// and per-project indexes differ only in their link prefix.
+fn push_roadmaps_section(
+    d: &mut ast::Document,
+    roadmaps: &[RoadmapIndexEntry],
+    roadmap_link: impl Fn(&RoadmapIndexEntry) -> String,
+) {
+    if roadmaps.is_empty() {
+        d.paragraph("No roadmaps.");
+        return;
+    }
+    let headers = vec!["Roadmap", "Phases", "Progress", "Dependencies"]
+        .into_iter()
+        .map(|h| vec![ast::Inline::text(h)])
+        .collect();
+    let rows = roadmaps
+        .iter()
+        .map(|rm| {
+            let progress = index_progress_label(rm);
+            let deps = rm
+                .dependencies
+                .as_ref()
+                .map(|dep| dep.join(", "))
+                .unwrap_or_else(|| "\u{2014}".to_string());
+            let link_url = roadmap_link(rm);
+            vec![
+                vec![ast::Inline::link(&rm.slug, &link_url)],
+                vec![ast::Inline::Text(rm.phase_count.to_string())],
+                vec![ast::Inline::Text(progress)],
+                vec![ast::Inline::Text(deps)],
+            ]
+        })
+        .collect();
+    d.push(ast::Block::Table {
+        headers,
+        rows,
+        aligns: vec![],
+    });
+
+    // Dependency graph (only if any roadmap has deps)
+    let has_deps = roadmaps
+        .iter()
+        .any(|rm| rm.dependencies.as_ref().is_some_and(|dep| !dep.is_empty()));
+    if has_deps {
+        d.push(ast::Block::BlankLine);
+        d.heading(3, "Dependency Graph");
+        d.push(ast::Block::BlankLine);
+        let items = roadmaps
+            .iter()
+            .filter(|rm| rm.dependencies.as_ref().is_some_and(|dep| !dep.is_empty()))
+            .map(|rm| {
+                let deps = rm.dependencies.as_ref().unwrap();
+                vec![
+                    ast::Inline::bold(&rm.slug),
+                    ast::Inline::Text(format!(" \u{2192} {}", deps.join(", "))),
+                ]
+            })
+            .collect();
+        d.push(ast::Block::UnorderedList { items });
+    }
+}
+
+/// Pushes the tasks table into `d`.
+fn push_tasks_section(d: &mut ast::Document, tasks: &[(String, Document<Task>)]) {
+    if tasks.is_empty() {
+        d.paragraph("No tasks.");
+        return;
+    }
+    let headers = vec!["Task", "Priority", "Status"]
+        .into_iter()
+        .map(|h| vec![ast::Inline::text(h)])
+        .collect();
+    let rows = tasks
+        .iter()
+        .map(|(slug, doc)| {
+            let fm = &doc.frontmatter;
+            vec![
+                vec![ast::Inline::Text(slug.clone())],
+                vec![ast::Inline::Text(fm.priority.to_string())],
+                vec![ast::Inline::Text(fm.status.to_string())],
+            ]
+        })
+        .collect();
+    d.push(ast::Block::Table {
+        headers,
+        rows,
+        aligns: vec![],
+    });
 }
 
 /// Formats the plan index as a Markdown string.
@@ -97,92 +206,12 @@ pub fn format_index(projects: &[ProjectIndex]) -> String {
         d.heading(2, &format!("Project: {}", project.name));
         d.push(ast::Block::BlankLine);
 
-        // Roadmaps table
-        if project.roadmaps.is_empty() {
-            d.paragraph("No roadmaps.");
-        } else {
-            let headers = vec!["Roadmap", "Phases", "Progress", "Dependencies"]
-                .into_iter()
-                .map(|h| vec![ast::Inline::text(h)])
-                .collect();
-            let rows = project
-                .roadmaps
-                .iter()
-                .map(|rm| {
-                    let progress = if rm.phase_count == 0 {
-                        "no phases".to_string()
-                    } else if rm.done_count == 0 {
-                        "not started".to_string()
-                    } else if rm.done_count == rm.phase_count {
-                        "complete".to_string()
-                    } else {
-                        format!("{}/{} done", rm.done_count, rm.phase_count)
-                    };
-                    let deps = rm
-                        .dependencies
-                        .as_ref()
-                        .map(|dep| dep.join(", "))
-                        .unwrap_or_else(|| "\u{2014}".to_string());
-                    let link_url =
-                        format!("projects/{}/roadmaps/{}/roadmap.md", rm.project, rm.slug);
-                    vec![
-                        vec![ast::Inline::link(&rm.slug, &link_url)],
-                        vec![ast::Inline::Text(rm.phase_count.to_string())],
-                        vec![ast::Inline::Text(progress)],
-                        vec![ast::Inline::Text(deps)],
-                    ]
-                })
-                .collect();
-            d.push(ast::Block::Table { headers, rows });
+        push_roadmaps_section(&mut d, &project.roadmaps, |rm| {
+            format!("projects/{}/roadmaps/{}/roadmap.md", rm.project, rm.slug)
+        });
 
-            // Dependency graph (only if any roadmap has deps)
-            let has_deps = project
-                .roadmaps
-                .iter()
-                .any(|rm| rm.dependencies.as_ref().is_some_and(|dep| !dep.is_empty()));
-            if has_deps {
-                d.push(ast::Block::BlankLine);
-                d.heading(3, "Dependency Graph");
-                d.push(ast::Block::BlankLine);
-                let items = project
-                    .roadmaps
-                    .iter()
-                    .filter(|rm| rm.dependencies.as_ref().is_some_and(|dep| !dep.is_empty()))
-                    .map(|rm| {
-                        let deps = rm.dependencies.as_ref().unwrap();
-                        vec![
-                            ast::Inline::bold(&rm.slug),
-                            ast::Inline::Text(format!(" \u{2192} {}", deps.join(", "))),
-                        ]
-                    })
-                    .collect();
-                d.push(ast::Block::UnorderedList { items });
-            }
-        }
-
-        // Tasks table
         d.push(ast::Block::BlankLine);
-        if project.tasks.is_empty() {
-            d.paragraph("No tasks.");
-        } else {
-            let headers = vec!["Task", "Priority", "Status"]
-                .into_iter()
-                .map(|h| vec![ast::Inline::text(h)])
-                .collect();
-            let rows = project
-                .tasks
-                .iter()
-                .map(|(slug, doc)| {
-                    let fm = &doc.frontmatter;
-                    vec![
-                        vec![ast::Inline::Text(slug.clone())],
-                        vec![ast::Inline::Text(fm.priority.to_string())],
-                        vec![ast::Inline::Text(fm.status.to_string())],
-                    ]
-                })
-                .collect();
-            d.push(ast::Block::Table { headers, rows });
-        }
+        push_tasks_section(&mut d, &project.tasks);
     }
 
     d.to_string()
@@ -202,92 +231,13 @@ pub fn format_project_index(project: &ProjectIndex) -> String {
     ));
     d.push(ast::Block::BlankLine);
 
-    // Roadmaps table
-    if project.roadmaps.is_empty() {
-        d.paragraph("No roadmaps.");
-    } else {
-        let headers = vec!["Roadmap", "Phases", "Progress", "Dependencies"]
-            .into_iter()
-            .map(|h| vec![ast::Inline::text(h)])
-            .collect();
-        let rows = project
-            .roadmaps
-            .iter()
-            .map(|rm| {
-                let progress = if rm.phase_count == 0 {
-                    "no phases".to_string()
-                } else if rm.done_count == 0 {
-                    "not started".to_string()
-                } else if rm.done_count == rm.phase_count {
-                    "complete".to_string()
-                } else {
-                    format!("{}/{} done", rm.done_count, rm.phase_count)
-                };
-                let deps = rm
-                    .dependencies
-                    .as_ref()
-                    .map(|dep| dep.join(", "))
-                    .unwrap_or_else(|| "\u{2014}".to_string());
-                // Relative link — no projects/{name}/ prefix
-                let link_url = format!("roadmaps/{}/roadmap.md", rm.slug);
-                vec![
-                    vec![ast::Inline::link(&rm.slug, &link_url)],
-                    vec![ast::Inline::Text(rm.phase_count.to_string())],
-                    vec![ast::Inline::Text(progress)],
-                    vec![ast::Inline::Text(deps)],
-                ]
-            })
-            .collect();
-        d.push(ast::Block::Table { headers, rows });
+    // Relative link — no projects/{name}/ prefix
+    push_roadmaps_section(&mut d, &project.roadmaps, |rm| {
+        format!("roadmaps/{}/roadmap.md", rm.slug)
+    });
 
-        // Dependency graph (only if any roadmap has deps)
-        let has_deps = project
-            .roadmaps
-            .iter()
-            .any(|rm| rm.dependencies.as_ref().is_some_and(|dep| !dep.is_empty()));
-        if has_deps {
-            d.push(ast::Block::BlankLine);
-            d.heading(3, "Dependency Graph");
-            d.push(ast::Block::BlankLine);
-            let items = project
-                .roadmaps
-                .iter()
-                .filter(|rm| rm.dependencies.as_ref().is_some_and(|dep| !dep.is_empty()))
-                .map(|rm| {
-                    let deps = rm.dependencies.as_ref().unwrap();
-                    vec![
-                        ast::Inline::bold(&rm.slug),
-                        ast::Inline::Text(format!(" \u{2192} {}", deps.join(", "))),
-                    ]
-                })
-                .collect();
-            d.push(ast::Block::UnorderedList { items });
-        }
-    }
-
-    // Tasks table
     d.push(ast::Block::BlankLine);
-    if project.tasks.is_empty() {
-        d.paragraph("No tasks.");
-    } else {
-        let headers = vec!["Task", "Priority", "Status"]
-            .into_iter()
-            .map(|h| vec![ast::Inline::text(h)])
-            .collect();
-        let rows = project
-            .tasks
-            .iter()
-            .map(|(slug, doc)| {
-                let fm = &doc.frontmatter;
-                vec![
-                    vec![ast::Inline::Text(slug.clone())],
-                    vec![ast::Inline::Text(fm.priority.to_string())],
-                    vec![ast::Inline::Text(fm.status.to_string())],
-                ]
-            })
-            .collect();
-        d.push(ast::Block::Table { headers, rows });
-    }
+    push_tasks_section(&mut d, &project.tasks);
 
     d.to_string()
 }

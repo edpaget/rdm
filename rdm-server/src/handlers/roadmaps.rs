@@ -53,31 +53,7 @@ fn last_changed_date(
     roadmap: &str,
     phases: &[(String, Document<Phase>)],
 ) -> Option<String> {
-    let mut latest: Option<SystemTime> = None;
-
-    // Check roadmap.md itself
-    let root = store.root();
-    if let Ok(meta) =
-        std::fs::metadata(root.join(rdm_core::paths::roadmap_path(project, roadmap).as_str()))
-        && let Ok(modified) = meta.modified()
-    {
-        latest = Some(modified);
-    }
-
-    // Check each phase file
-    for (stem, _) in phases {
-        if let Ok(meta) = std::fs::metadata(
-            root.join(rdm_core::paths::phase_path(project, roadmap, stem).as_str()),
-        ) && let Ok(modified) = meta.modified()
-        {
-            latest = Some(match latest {
-                Some(prev) if prev >= modified => prev,
-                _ => modified,
-            });
-        }
-    }
-
-    latest.map(format_system_time)
+    rdm_core::ops::roadmap::last_modified(store, project, roadmap, phases).map(format_system_time)
 }
 
 /// Summary data for a roadmap in a collection.

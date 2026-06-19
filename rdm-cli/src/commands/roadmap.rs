@@ -74,14 +74,29 @@ pub fn run(
             }
             let revision = at.as_deref();
             match format {
-                OutputFormat::Human => print!(
-                    "{}",
-                    display::format_roadmap_summary(&roadmap_doc, &phases, revision)
-                ),
-                OutputFormat::Markdown => print!(
-                    "{}",
-                    display::format_roadmap_summary_md(&roadmap_doc, &phases, revision)
-                ),
+                OutputFormat::Human => {
+                    let mut out = display::format_roadmap_summary(&roadmap_doc, &phases, revision);
+                    if !phases.is_empty() {
+                        let rm = &roadmap_doc.frontmatter;
+                        out.push_str(&format!(
+                            "\nHint: rdm phase show <stem> --roadmap {} --project {}\n",
+                            rm.roadmap, rm.project
+                        ));
+                    }
+                    print!("{out}");
+                }
+                OutputFormat::Markdown => {
+                    let mut out =
+                        display::format_roadmap_summary_md(&roadmap_doc, &phases, revision);
+                    if !phases.is_empty() {
+                        let rm = &roadmap_doc.frontmatter;
+                        out.push_str(&format!(
+                            "\n> Hint: `rdm phase show <stem> --roadmap {} --project {}`\n",
+                            rm.roadmap, rm.project
+                        ));
+                    }
+                    print!("{out}");
+                }
                 OutputFormat::Json => {
                     let j = json::roadmap_to_json(&roadmap_doc, &phases, revision);
                     println!(

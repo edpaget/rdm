@@ -124,6 +124,17 @@ pub enum TaskStatus {
     WontFix,
 }
 
+impl TaskStatus {
+    /// Returns `true` for terminal states (`Done` or `WontFix`).
+    ///
+    /// Terminal states stamp a `completed` date on the task. Mirrors
+    /// [`PhaseStatus::is_terminal`].
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, TaskStatus::Done | TaskStatus::WontFix)
+    }
+}
+
 impl fmt::Display for TaskStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -385,6 +396,16 @@ mod tests {
         assert!(!PhaseStatus::NotStarted.is_terminal());
         assert!(!PhaseStatus::InProgress.is_terminal());
         assert!(!PhaseStatus::Blocked.is_terminal());
+    }
+
+    #[test]
+    fn task_status_is_terminal() {
+        assert!(TaskStatus::Done.is_terminal());
+        assert!(TaskStatus::WontFix.is_terminal());
+        assert!(!TaskStatus::Open.is_terminal());
+        assert!(!TaskStatus::InProgress.is_terminal());
+        assert!(!TaskStatus::NeedsReview.is_terminal());
+        assert!(!TaskStatus::Reviewed.is_terminal());
     }
 
     #[test]

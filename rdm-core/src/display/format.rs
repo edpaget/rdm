@@ -1,8 +1,12 @@
-/// Terminal formatting functions for roadmaps, phases, tasks, and search results.
+/// Terminal and Markdown formatting functions for roadmaps, phases, tasks, and
+/// search results.
 ///
-/// Pure functions — no I/O. These produce human-readable output strings
-/// for display in the CLI and MCP server.
+/// Pure functions — no I/O. Each view has a single `build_<view>` builder that
+/// constructs an [`ast::Document`], parameterized by a [`RenderFlavor`]; the
+/// public `format_<view>` / `format_<view>_md` entry points are thin wrappers
+/// that pick the flavor and render to a string.
 use crate::ast;
+use crate::display::truncate_snippet;
 use crate::document::Document;
 use crate::model::{Phase, Roadmap, Task};
 use crate::search::SearchResult;
@@ -10,69 +14,112 @@ use crate::search::SearchResult;
 /// A roadmap document paired with its phases (stem + phase document).
 pub type RoadmapWithPhases = (Document<Roadmap>, Vec<(String, Document<Phase>)>);
 
-/// Navigation context for prev/next phase hints.
-pub struct PhaseNav<'a> {
-    /// Stem of the previous phase, if any.
-    pub prev: Option<&'a str>,
-    /// Stem of the next phase, if any.
-    pub next: Option<&'a str>,
-    /// Parent roadmap slug.
-    pub roadmap: &'a str,
-    /// Project name.
-    pub project: &'a str,
+/// Which output dialect a builder renders.
+///
+/// The two flavors differ in metadata style (combined paragraphs vs.
+/// `- **bold:**` bullets), section headers (absent vs. `## Section`), table
+/// alignment (plain vs. right-aligned `#` column), and the roadmap-list
+/// progress wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderFlavor {
+    /// Human-readable terminal output.
+    Terminal,
+    /// Markdown output.
+    Markdown,
 }
 
-/// Formats a roadmap summary with a status table of its phases and optional body.
+/// Builds a `- **Label:** value` bullet item for a Markdown metadata list.
+fn meta_bullet(label: &str, value: &str) -> Vec<ast::Inline> {
+    vec![
+        ast::Inline::bold(&format!("{label}:")),
+        ast::Inline::text(&format!(" {value}")),
+    ]
+}
+
+/// Builds header cells from plain-text column labels.
+fn header_cells(labels: &[&str]) -> Vec<Vec<ast::Inline>> {
+    labels.iter().map(|h| vec![ast::Inline::text(h)]).collect()
+}
+
+/// Right-align the first (`#`) column in Markdown; plain in the terminal.
+fn first_col_right(flavor: RenderFlavor) -> Vec<ast::Alignment> {
+    match flavor {
+        RenderFlavor::Markdown => vec![ast::Alignment::Right],
+        RenderFlavor::Terminal => vec![],
+    }
+}
+
+/// Builds a roadmap summary document with a phase table and optional body.
 ///
-/// Displays the roadmap title, project/slug metadata, phase progress table,
-/// and any body content from the document. If the document body is non-empty,
-/// it is appended after the phase table (or "No phases yet." message).
-///
-/// When `project` is `Some`, a navigation hint is appended showing how to
-/// drill into individual phases. When `revision` is `Some`, a `Revision: <sha>`
-/// line is rendered near the top to signal a historical view.
-pub fn format_roadmap_summary(
+/// Shared between flavors: the optional-field presence checks, done-count,
+/// table rows, and body append. The metadata style, progress style, and table
+/// alignment branch on `flavor`. When `revision` is `Some`, a revision line is
+/// rendered near the top to signal a historical view.
+fn build_roadmap_summary(
     doc: &Document<Roadmap>,
     phases: &[(String, Document<Phase>)],
     revision: Option<&str>,
-) -> String {
+    flavor: RenderFlavor,
+) -> ast::Document {
     let roadmap = &doc.frontmatter;
+    let done_count = phases
+        .iter()
+        .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
+        .count();
+    let total = phases.len();
+
     let mut d = ast::Document::new();
     d.heading(1, &roadmap.title);
     d.push(ast::Block::BlankLine);
-    d.paragraph(&format!(
-        "Project: {}  Slug: {}",
-        roadmap.project, roadmap.roadmap
-    ));
-    if let Some(sha) = revision {
-        d.paragraph(&format!("Revision: {sha}"));
-    }
-    if let Some(priority) = roadmap.priority {
-        d.paragraph(&format!("Priority: {priority}"));
-    }
-    if let Some(tags) = &roadmap.tags {
-        d.paragraph(&format!("Tags: {}", tags.join(", ")));
+
+    match flavor {
+        RenderFlavor::Markdown => {
+            let mut items = vec![
+                meta_bullet("Project", &roadmap.project),
+                meta_bullet("Slug", &roadmap.roadmap),
+            ];
+            if let Some(sha) = revision {
+                items.push(meta_bullet("Revision", sha));
+            }
+            if let Some(priority) = roadmap.priority {
+                items.push(meta_bullet("Priority", &priority.to_string()));
+            }
+            if let Some(tags) = &roadmap.tags {
+                items.push(meta_bullet("Tags", &tags.join(", ")));
+            }
+            if !phases.is_empty() {
+                items.push(meta_bullet(
+                    "Progress",
+                    &format!("{done_count}/{total} phases done"),
+                ));
+            }
+            d.push(ast::Block::UnorderedList { items });
+        }
+        RenderFlavor::Terminal => {
+            d.paragraph(&format!(
+                "Project: {}  Slug: {}",
+                roadmap.project, roadmap.roadmap
+            ));
+            if let Some(sha) = revision {
+                d.paragraph(&format!("Revision: {sha}"));
+            }
+            if let Some(priority) = roadmap.priority {
+                d.paragraph(&format!("Priority: {priority}"));
+            }
+            if let Some(tags) = &roadmap.tags {
+                d.paragraph(&format!("Tags: {}", tags.join(", ")));
+            }
+            if !phases.is_empty() {
+                d.paragraph(&format!("Progress: {done_count}/{total} phases done"));
+            }
+        }
     }
 
     if phases.is_empty() {
         d.push(ast::Block::BlankLine);
         d.paragraph("No phases yet.");
     } else {
-        let done_count = phases
-            .iter()
-            .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
-            .count();
-        d.paragraph(&format!(
-            "Progress: {}/{} phases done",
-            done_count,
-            phases.len()
-        ));
         d.push(ast::Block::BlankLine);
-
-        let headers = vec!["#", "Phase", "Status"]
-            .into_iter()
-            .map(|h| vec![ast::Inline::text(h)])
-            .collect();
         let rows = phases
             .iter()
             .map(|(_, pd)| {
@@ -84,7 +131,11 @@ pub fn format_roadmap_summary(
                 ]
             })
             .collect();
-        d.push(ast::Block::Table { headers, rows });
+        d.push(ast::Block::Table {
+            headers: header_cells(&["#", "Phase", "Status"]),
+            rows,
+            aligns: first_col_right(flavor),
+        });
     }
 
     if !doc.body.is_empty() {
@@ -92,125 +143,292 @@ pub fn format_roadmap_summary(
         d.raw(&doc.body);
     }
 
-    if !phases.is_empty() {
-        d.push(ast::Block::BlankLine);
-        d.paragraph(&format!(
-            "Hint: rdm phase show <stem> --roadmap {} --project {}",
-            roadmap.roadmap, roadmap.project
-        ));
-    }
-    d.to_string()
+    d
 }
 
-/// Formats a single phase detail view with optional prev/next navigation.
+/// Formats a roadmap summary with a status table of its phases and optional body.
 ///
-/// When `revision` is `Some`, a `Revision: <sha>` line is rendered near
-/// the top of the output to signal a historical view.
-pub fn format_phase_detail(
-    stem: &str,
-    doc: &Document<Phase>,
-    nav: Option<&PhaseNav<'_>>,
+/// Displays the roadmap title, project/slug metadata, phase progress table,
+/// and any body content from the document. If the document body is non-empty,
+/// it is appended after the phase table (or "No phases yet." message).
+///
+/// When `revision` is `Some`, a `Revision: <sha>` line is rendered near the
+/// top to signal a historical view.
+pub fn format_roadmap_summary(
+    doc: &Document<Roadmap>,
+    phases: &[(String, Document<Phase>)],
     revision: Option<&str>,
 ) -> String {
+    build_roadmap_summary(doc, phases, revision, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a roadmap summary as Markdown with heading, bullet metadata, phase table, and body.
+///
+/// When `revision` is `Some`, a `- **Revision:** <sha>` bullet is rendered
+/// near the top of the output to signal a historical view.
+#[must_use]
+pub fn format_roadmap_summary_md(
+    doc: &Document<Roadmap>,
+    phases: &[(String, Document<Phase>)],
+    revision: Option<&str>,
+) -> String {
+    build_roadmap_summary(doc, phases, revision, RenderFlavor::Markdown).to_string()
+}
+
+/// Builds a single phase detail document.
+///
+/// Shared between flavors: the optional-field presence checks and body append.
+/// The metadata style branches on `flavor`. When `revision` is `Some`, a
+/// revision line is rendered near the top to signal a historical view.
+fn build_phase_detail(
+    stem: &str,
+    doc: &Document<Phase>,
+    revision: Option<&str>,
+    flavor: RenderFlavor,
+) -> ast::Document {
     let fm = &doc.frontmatter;
     let mut d = ast::Document::new();
     d.heading(1, &format!("Phase {}: {}", fm.phase, fm.title));
     d.push(ast::Block::BlankLine);
-    d.paragraph(&format!("Stem: {stem}"));
-    if let Some(sha) = revision {
-        d.paragraph(&format!("Revision: {sha}"));
+
+    match flavor {
+        RenderFlavor::Markdown => {
+            let mut items = vec![meta_bullet("Stem", stem)];
+            if let Some(sha) = revision {
+                items.push(meta_bullet("Revision", sha));
+            }
+            items.push(meta_bullet("Status", &fm.status.to_string()));
+            if let Some(date) = fm.completed {
+                items.push(meta_bullet("Completed", &date.to_string()));
+            }
+            if let Some(ref sha) = fm.commit {
+                items.push(meta_bullet("Commit", sha));
+            }
+            if let Some(tags) = &fm.tags {
+                items.push(meta_bullet("Tags", &tags.join(", ")));
+            }
+            d.push(ast::Block::UnorderedList { items });
+        }
+        RenderFlavor::Terminal => {
+            d.paragraph(&format!("Stem: {stem}"));
+            if let Some(sha) = revision {
+                d.paragraph(&format!("Revision: {sha}"));
+            }
+            d.paragraph(&format!("Status: {}", fm.status));
+            if let Some(date) = fm.completed {
+                d.paragraph(&format!("Completed: {date}"));
+            }
+            if let Some(ref sha) = fm.commit {
+                d.paragraph(&format!("Commit: {sha}"));
+            }
+            if let Some(tags) = &fm.tags {
+                d.paragraph(&format!("Tags: {}", tags.join(", ")));
+            }
+        }
     }
-    d.paragraph(&format!("Status: {}", fm.status));
-    if let Some(date) = fm.completed {
-        d.paragraph(&format!("Completed: {date}"));
-    }
-    if let Some(ref sha) = fm.commit {
-        d.paragraph(&format!("Commit: {sha}"));
-    }
-    if let Some(tags) = &fm.tags {
-        d.paragraph(&format!("Tags: {}", tags.join(", ")));
-    }
+
     if !doc.body.is_empty() {
         d.push(ast::Block::BlankLine);
         d.raw(&doc.body);
     }
-    if let Some(nav) = nav {
-        append_phase_nav(&mut d, nav);
-    }
-    d.to_string()
+
+    d
 }
 
-fn append_phase_nav(d: &mut ast::Document, nav: &PhaseNav<'_>) {
-    d.push(ast::Block::BlankLine);
-    if let Some(prev) = nav.prev {
-        d.paragraph(&format!(
-            "Prev: rdm phase show {prev} --roadmap {} --project {}",
-            nav.roadmap, nav.project
-        ));
+/// Formats a single phase detail view.
+///
+/// When `revision` is `Some`, a `Revision: <sha>` line is rendered near
+/// the top of the output to signal a historical view.
+pub fn format_phase_detail(stem: &str, doc: &Document<Phase>, revision: Option<&str>) -> String {
+    build_phase_detail(stem, doc, revision, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a single phase detail as Markdown with heading, bullet metadata, and body.
+///
+/// When `revision` is `Some`, a `- **Revision:** <sha>` bullet is rendered
+/// near the top of the output to signal a historical view.
+#[must_use]
+pub fn format_phase_detail_md(stem: &str, doc: &Document<Phase>, revision: Option<&str>) -> String {
+    build_phase_detail(stem, doc, revision, RenderFlavor::Markdown).to_string()
+}
+
+/// Builds a phase list document (table of number, title, status, stem).
+fn build_phase_list(phases: &[(String, Document<Phase>)], flavor: RenderFlavor) -> ast::Document {
+    let mut d = ast::Document::new();
+    if phases.is_empty() {
+        d.paragraph("No phases yet.");
+        return d;
     }
-    if let Some(next) = nav.next {
-        d.paragraph(&format!(
-            "Next: rdm phase show {next} --roadmap {} --project {}",
-            nav.roadmap, nav.project
-        ));
+    if flavor == RenderFlavor::Markdown {
+        d.heading(2, "Phases");
+        d.push(ast::Block::BlankLine);
     }
+    let rows = phases
+        .iter()
+        .map(|(stem, pd)| {
+            let fm = &pd.frontmatter;
+            vec![
+                vec![ast::Inline::Text(fm.phase.to_string())],
+                vec![ast::Inline::Text(fm.title.clone())],
+                vec![ast::Inline::Text(fm.status.to_string())],
+                vec![ast::Inline::Text(stem.clone())],
+            ]
+        })
+        .collect();
+    d.push(ast::Block::Table {
+        headers: header_cells(&["#", "Phase", "Status", "Stem"]),
+        rows,
+        aligns: first_col_right(flavor),
+    });
+    d
 }
 
 /// Formats a list of phases as a table with number, title, status, and stem.
 pub fn format_phase_list(phases: &[(String, Document<Phase>)]) -> String {
-    let mut doc = ast::Document::new();
-    if phases.is_empty() {
-        doc.paragraph("No phases yet.");
-    } else {
-        let headers = vec!["#", "Phase", "Status", "Stem"]
-            .into_iter()
-            .map(|h| vec![ast::Inline::text(h)])
-            .collect();
-        let rows = phases
-            .iter()
-            .map(|(stem, d)| {
-                let fm = &d.frontmatter;
-                vec![
-                    vec![ast::Inline::Text(fm.phase.to_string())],
-                    vec![ast::Inline::Text(fm.title.clone())],
-                    vec![ast::Inline::Text(fm.status.to_string())],
-                    vec![ast::Inline::Text(stem.clone())],
-                ]
-            })
-            .collect();
-        doc.push(ast::Block::Table { headers, rows });
+    build_phase_list(phases, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a list of phases as a Markdown table.
+#[must_use]
+pub fn format_phase_list_md(phases: &[(String, Document<Phase>)]) -> String {
+    build_phase_list(phases, RenderFlavor::Markdown).to_string()
+}
+
+/// Builds a roadmap list document.
+///
+/// The terminal flavor renders one progress paragraph per roadmap (keeping its
+/// distinct parenthesized `(N/M done)` / `(no phases)` wording); the Markdown
+/// flavor renders a table whose progress column uses
+/// [`roadmap_progress_label`](crate::display::roadmap_progress_label).
+fn build_roadmap_list(entries: &[RoadmapWithPhases], flavor: RenderFlavor) -> ast::Document {
+    let mut d = ast::Document::new();
+    if entries.is_empty() {
+        d.paragraph("No roadmaps found.");
+        return d;
     }
-    doc.to_string()
+    match flavor {
+        RenderFlavor::Terminal => {
+            for (roadmap_doc, phases) in entries {
+                let rm = &roadmap_doc.frontmatter;
+                let done = phases
+                    .iter()
+                    .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
+                    .count();
+                let total = phases.len();
+                let priority_tag = rm.priority.map(|p| format!(" [{p}]")).unwrap_or_default();
+                if total > 0 {
+                    d.paragraph(&format!(
+                        "{} — {} ({}/{} done){priority_tag}",
+                        rm.roadmap, rm.title, done, total
+                    ));
+                } else {
+                    d.paragraph(&format!(
+                        "{} — {} (no phases){priority_tag}",
+                        rm.roadmap, rm.title
+                    ));
+                }
+            }
+        }
+        RenderFlavor::Markdown => {
+            d.heading(2, "Roadmaps");
+            d.push(ast::Block::BlankLine);
+            let rows = entries
+                .iter()
+                .map(|(roadmap_doc, phases)| {
+                    let rm = &roadmap_doc.frontmatter;
+                    let done = phases
+                        .iter()
+                        .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
+                        .count();
+                    let progress = crate::display::roadmap_progress_label(done, phases.len());
+                    let priority = rm.priority.map(|p| p.to_string()).unwrap_or_default();
+                    vec![
+                        vec![ast::Inline::Text(rm.roadmap.clone())],
+                        vec![ast::Inline::Text(rm.title.clone())],
+                        vec![ast::Inline::Text(progress)],
+                        vec![ast::Inline::Text(priority)],
+                    ]
+                })
+                .collect();
+            d.push(ast::Block::Table {
+                headers: header_cells(&["Slug", "Title", "Progress", "Priority"]),
+                rows,
+                aligns: vec![],
+            });
+        }
+    }
+    d
 }
 
 /// Formats a list of roadmaps with progress summaries.
 pub fn format_roadmap_list(entries: &[RoadmapWithPhases]) -> String {
+    build_roadmap_list(entries, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a list of roadmaps as a Markdown table.
+#[must_use]
+pub fn format_roadmap_list_md(entries: &[RoadmapWithPhases]) -> String {
+    build_roadmap_list(entries, RenderFlavor::Markdown).to_string()
+}
+
+/// Builds a single task detail document.
+fn build_task_detail(
+    slug: &str,
+    doc: &Document<Task>,
+    revision: Option<&str>,
+    flavor: RenderFlavor,
+) -> ast::Document {
+    let fm = &doc.frontmatter;
     let mut d = ast::Document::new();
-    if entries.is_empty() {
-        d.paragraph("No roadmaps found.");
-    } else {
-        for (roadmap_doc, phases) in entries {
-            let rm = &roadmap_doc.frontmatter;
-            let done = phases
-                .iter()
-                .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
-                .count();
-            let total = phases.len();
-            let priority_tag = rm.priority.map(|p| format!(" [{p}]")).unwrap_or_default();
-            if total > 0 {
-                d.paragraph(&format!(
-                    "{} — {} ({}/{} done){priority_tag}",
-                    rm.roadmap, rm.title, done, total
-                ));
-            } else {
-                d.paragraph(&format!(
-                    "{} — {} (no phases){priority_tag}",
-                    rm.roadmap, rm.title
-                ));
+    d.heading(1, &fm.title);
+    d.push(ast::Block::BlankLine);
+
+    match flavor {
+        RenderFlavor::Markdown => {
+            let mut items = vec![meta_bullet("Slug", slug)];
+            if let Some(sha) = revision {
+                items.push(meta_bullet("Revision", sha));
+            }
+            items.push(meta_bullet("Status", &fm.status.to_string()));
+            items.push(meta_bullet("Priority", &fm.priority.to_string()));
+            items.push(meta_bullet("Created", &fm.created.to_string()));
+            if let Some(completed) = &fm.completed {
+                items.push(meta_bullet("Completed", &completed.to_string()));
+            }
+            if let Some(commit) = &fm.commit {
+                items.push(meta_bullet("Commit", commit));
+            }
+            if let Some(tags) = &fm.tags {
+                items.push(meta_bullet("Tags", &tags.join(", ")));
+            }
+            d.push(ast::Block::UnorderedList { items });
+        }
+        RenderFlavor::Terminal => {
+            d.paragraph(&format!("Slug: {slug}"));
+            if let Some(sha) = revision {
+                d.paragraph(&format!("Revision: {sha}"));
+            }
+            d.paragraph(&format!("Status: {}", fm.status));
+            d.paragraph(&format!("Priority: {}", fm.priority));
+            d.paragraph(&format!("Created: {}", fm.created));
+            if let Some(completed) = &fm.completed {
+                d.paragraph(&format!("Completed: {completed}"));
+            }
+            if let Some(commit) = &fm.commit {
+                d.paragraph(&format!("Commit: {commit}"));
+            }
+            if let Some(tags) = &fm.tags {
+                d.paragraph(&format!("Tags: {}", tags.join(", ")));
             }
         }
     }
-    d.to_string()
+
+    if !doc.body.is_empty() {
+        d.push(ast::Block::BlankLine);
+        d.raw(&doc.body);
+    }
+
+    d
 }
 
 /// Formats a single task detail view.
@@ -218,58 +436,58 @@ pub fn format_roadmap_list(entries: &[RoadmapWithPhases]) -> String {
 /// When `revision` is `Some`, a `Revision: <sha>` line is rendered near
 /// the top of the output to signal a historical view.
 pub fn format_task_detail(slug: &str, doc: &Document<Task>, revision: Option<&str>) -> String {
-    let fm = &doc.frontmatter;
+    build_task_detail(slug, doc, revision, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a single task detail as Markdown with heading, bullet metadata, and body.
+///
+/// When `revision` is `Some`, a `- **Revision:** <sha>` bullet is rendered
+/// near the top of the output to signal a historical view.
+#[must_use]
+pub fn format_task_detail_md(slug: &str, doc: &Document<Task>, revision: Option<&str>) -> String {
+    build_task_detail(slug, doc, revision, RenderFlavor::Markdown).to_string()
+}
+
+/// Builds a task list document (table of slug, title, status, priority).
+fn build_task_list(tasks: &[(String, Document<Task>)], flavor: RenderFlavor) -> ast::Document {
     let mut d = ast::Document::new();
-    d.heading(1, &fm.title);
-    d.push(ast::Block::BlankLine);
-    d.paragraph(&format!("Slug: {slug}"));
-    if let Some(sha) = revision {
-        d.paragraph(&format!("Revision: {sha}"));
+    if tasks.is_empty() {
+        d.paragraph("No tasks found.");
+        return d;
     }
-    d.paragraph(&format!("Status: {}", fm.status));
-    d.paragraph(&format!("Priority: {}", fm.priority));
-    d.paragraph(&format!("Created: {}", fm.created));
-    if let Some(completed) = &fm.completed {
-        d.paragraph(&format!("Completed: {completed}"));
-    }
-    if let Some(commit) = &fm.commit {
-        d.paragraph(&format!("Commit: {commit}"));
-    }
-    if let Some(tags) = &fm.tags {
-        d.paragraph(&format!("Tags: {}", tags.join(", ")));
-    }
-    if !doc.body.is_empty() {
+    if flavor == RenderFlavor::Markdown {
+        d.heading(2, "Tasks");
         d.push(ast::Block::BlankLine);
-        d.raw(&doc.body);
     }
-    d.to_string()
+    let rows = tasks
+        .iter()
+        .map(|(slug, td)| {
+            let fm = &td.frontmatter;
+            vec![
+                vec![ast::Inline::Text(slug.clone())],
+                vec![ast::Inline::Text(fm.title.clone())],
+                vec![ast::Inline::Text(fm.status.to_string())],
+                vec![ast::Inline::Text(fm.priority.to_string())],
+            ]
+        })
+        .collect();
+    d.push(ast::Block::Table {
+        headers: header_cells(&["Slug", "Title", "Status", "Priority"]),
+        rows,
+        aligns: vec![],
+    });
+    d
 }
 
 /// Formats a list of tasks as a table with slug, title, status, and priority columns.
 pub fn format_task_list(tasks: &[(String, Document<Task>)]) -> String {
-    let mut doc = ast::Document::new();
-    if tasks.is_empty() {
-        doc.paragraph("No tasks found.");
-    } else {
-        let headers = vec!["Slug", "Title", "Status", "Priority"]
-            .into_iter()
-            .map(|h| vec![ast::Inline::text(h)])
-            .collect();
-        let rows = tasks
-            .iter()
-            .map(|(slug, d)| {
-                let fm = &d.frontmatter;
-                vec![
-                    vec![ast::Inline::Text(slug.clone())],
-                    vec![ast::Inline::Text(fm.title.clone())],
-                    vec![ast::Inline::Text(fm.status.to_string())],
-                    vec![ast::Inline::Text(fm.priority.to_string())],
-                ]
-            })
-            .collect();
-        doc.push(ast::Block::Table { headers, rows });
-    }
-    doc.to_string()
+    build_task_list(tasks, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a list of tasks as a Markdown table.
+#[must_use]
+pub fn format_task_list_md(tasks: &[(String, Document<Task>)]) -> String {
+    build_task_list(tasks, RenderFlavor::Markdown).to_string()
 }
 
 /// Formats a dependency graph as a human-readable list.
@@ -289,17 +507,22 @@ pub fn format_dependency_graph(graph: &[(String, Vec<String>)]) -> String {
     d.to_string()
 }
 
-/// Formats search results as a ranked text table.
-#[must_use]
-pub fn format_search_results(results: &[SearchResult]) -> String {
+/// Builds a search results document.
+///
+/// The terminal flavor renders an empty document for no results (the CLI prints
+/// nothing); the Markdown flavor renders a `No results found.` line.
+fn build_search_results(results: &[SearchResult], flavor: RenderFlavor) -> ast::Document {
+    let mut d = ast::Document::new();
     if results.is_empty() {
-        return String::new();
+        if flavor == RenderFlavor::Markdown {
+            d.paragraph("No results found.");
+        }
+        return d;
     }
-
-    let headers = vec!["#", "Type", "Title", "Identifier", "Snippet"]
-        .into_iter()
-        .map(|h| vec![ast::Inline::text(h)])
-        .collect();
+    if flavor == RenderFlavor::Markdown {
+        d.heading(2, "Search Results");
+        d.push(ast::Block::BlankLine);
+    }
     let rows = results
         .iter()
         .enumerate()
@@ -314,264 +537,24 @@ pub fn format_search_results(results: &[SearchResult]) -> String {
             ]
         })
         .collect();
-
-    let mut d = ast::Document::new();
-    d.push(ast::Block::Table { headers, rows });
-    d.to_string()
+    d.push(ast::Block::Table {
+        headers: header_cells(&["#", "Type", "Title", "Identifier", "Snippet"]),
+        rows,
+        aligns: first_col_right(flavor),
+    });
+    d
 }
 
-/// Truncates a snippet to `max_len` characters, appending "..." if needed.
-fn truncate_snippet(s: &str, max_len: usize) -> String {
-    let trimmed = s.trim();
-    if trimmed.len() <= max_len {
-        return trimmed.to_string();
-    }
-    let mut end = max_len;
-    while end > 0 && !trimmed.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}...", &trimmed[..end])
-}
-
-/// Formats a roadmap summary as Markdown with heading, bullet metadata, phase table, and body.
-///
-/// When `revision` is `Some`, a `- **Revision:** <sha>` bullet is rendered
-/// near the top of the output to signal a historical view.
+/// Formats search results as a ranked text table.
 #[must_use]
-pub fn format_roadmap_summary_md(
-    doc: &Document<Roadmap>,
-    phases: &[(String, Document<Phase>)],
-    revision: Option<&str>,
-) -> String {
-    let roadmap = &doc.frontmatter;
-    let mut out = String::new();
-    out.push_str(&format!("# {}\n\n", roadmap.title));
-    out.push_str(&format!("- **Project:** {}\n", roadmap.project));
-    out.push_str(&format!("- **Slug:** {}\n", roadmap.roadmap));
-    if let Some(sha) = revision {
-        out.push_str(&format!("- **Revision:** {sha}\n"));
-    }
-    if let Some(priority) = roadmap.priority {
-        out.push_str(&format!("- **Priority:** {priority}\n"));
-    }
-    if let Some(tags) = &roadmap.tags {
-        out.push_str(&format!("- **Tags:** {}\n", tags.join(", ")));
-    }
-
-    if phases.is_empty() {
-        out.push_str("\nNo phases yet.\n");
-    } else {
-        let done_count = phases
-            .iter()
-            .filter(|(_, d)| d.frontmatter.status.is_terminal())
-            .count();
-        out.push_str(&format!(
-            "- **Progress:** {}/{} phases done\n",
-            done_count,
-            phases.len()
-        ));
-
-        out.push_str("\n| # | Phase | Status |\n");
-        out.push_str("|---:|-------|--------|\n");
-        for (_, d) in phases {
-            let fm = &d.frontmatter;
-            out.push_str(&format!(
-                "| {} | {} | {} |\n",
-                fm.phase, fm.title, fm.status
-            ));
-        }
-    }
-
-    if !doc.body.is_empty() {
-        out.push_str(&format!("\n{}", doc.body));
-    }
-
-    if !phases.is_empty() {
-        out.push_str(&format!(
-            "\n> Hint: `rdm phase show <stem> --roadmap {} --project {}`\n",
-            roadmap.roadmap, roadmap.project
-        ));
-    }
-    out
-}
-
-/// Formats a list of roadmaps as a Markdown table.
-#[must_use]
-pub fn format_roadmap_list_md(entries: &[RoadmapWithPhases]) -> String {
-    if entries.is_empty() {
-        return "No roadmaps found.\n".to_string();
-    }
-
-    let mut out = String::new();
-    out.push_str("## Roadmaps\n\n");
-    out.push_str("| Slug | Title | Progress | Priority |\n");
-    out.push_str("|------|-------|----------|----------|\n");
-    for (roadmap_doc, phases) in entries {
-        let rm = &roadmap_doc.frontmatter;
-        let done = phases
-            .iter()
-            .filter(|(_, doc)| doc.frontmatter.status.is_terminal())
-            .count();
-        let total = phases.len();
-        let progress = if total > 0 {
-            format!("{done}/{total} done")
-        } else {
-            "no phases".to_string()
-        };
-        let priority = rm.priority.map(|p| p.to_string()).unwrap_or_default();
-        out.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
-            rm.roadmap, rm.title, progress, priority
-        ));
-    }
-    out
-}
-
-/// Formats a single phase detail as Markdown with heading, bullet metadata, and body.
-///
-/// When `revision` is `Some`, a `- **Revision:** <sha>` bullet is rendered
-/// near the top of the output to signal a historical view.
-#[must_use]
-pub fn format_phase_detail_md(
-    stem: &str,
-    doc: &Document<Phase>,
-    nav: Option<&PhaseNav<'_>>,
-    revision: Option<&str>,
-) -> String {
-    let fm = &doc.frontmatter;
-    let mut out = String::new();
-    out.push_str(&format!("# Phase {}: {}\n\n", fm.phase, fm.title));
-    out.push_str(&format!("- **Stem:** {stem}\n"));
-    if let Some(sha) = revision {
-        out.push_str(&format!("- **Revision:** {sha}\n"));
-    }
-    out.push_str(&format!("- **Status:** {}\n", fm.status));
-    if let Some(date) = fm.completed {
-        out.push_str(&format!("- **Completed:** {date}\n"));
-    }
-    if let Some(ref sha) = fm.commit {
-        out.push_str(&format!("- **Commit:** {sha}\n"));
-    }
-    if let Some(tags) = &fm.tags {
-        out.push_str(&format!("- **Tags:** {}\n", tags.join(", ")));
-    }
-    if !doc.body.is_empty() {
-        out.push_str(&format!("\n{}", doc.body));
-    }
-    if let Some(nav) = nav {
-        out.push('\n');
-        if let Some(prev) = nav.prev {
-            out.push_str(&format!(
-                "> Prev: `rdm phase show {prev} --roadmap {} --project {}`\n",
-                nav.roadmap, nav.project
-            ));
-        }
-        if let Some(next) = nav.next {
-            out.push_str(&format!(
-                "> Next: `rdm phase show {next} --roadmap {} --project {}`\n",
-                nav.roadmap, nav.project
-            ));
-        }
-    }
-    out
-}
-
-/// Formats a list of phases as a Markdown table.
-#[must_use]
-pub fn format_phase_list_md(phases: &[(String, Document<Phase>)]) -> String {
-    if phases.is_empty() {
-        return "No phases yet.\n".to_string();
-    }
-
-    let mut out = String::new();
-    out.push_str("## Phases\n\n");
-    out.push_str("| # | Phase | Status | Stem |\n");
-    out.push_str("|---:|-------|--------|------|\n");
-    for (stem, doc) in phases {
-        let fm = &doc.frontmatter;
-        out.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
-            fm.phase, fm.title, fm.status, stem
-        ));
-    }
-    out
-}
-
-/// Formats a single task detail as Markdown with heading, bullet metadata, and body.
-///
-/// When `revision` is `Some`, a `- **Revision:** <sha>` bullet is rendered
-/// near the top of the output to signal a historical view.
-#[must_use]
-pub fn format_task_detail_md(slug: &str, doc: &Document<Task>, revision: Option<&str>) -> String {
-    let fm = &doc.frontmatter;
-    let mut out = String::new();
-    out.push_str(&format!("# {}\n\n", fm.title));
-    out.push_str(&format!("- **Slug:** {slug}\n"));
-    if let Some(sha) = revision {
-        out.push_str(&format!("- **Revision:** {sha}\n"));
-    }
-    out.push_str(&format!("- **Status:** {}\n", fm.status));
-    out.push_str(&format!("- **Priority:** {}\n", fm.priority));
-    out.push_str(&format!("- **Created:** {}\n", fm.created));
-    if let Some(completed) = &fm.completed {
-        out.push_str(&format!("- **Completed:** {completed}\n"));
-    }
-    if let Some(commit) = &fm.commit {
-        out.push_str(&format!("- **Commit:** {commit}\n"));
-    }
-    if let Some(tags) = &fm.tags {
-        out.push_str(&format!("- **Tags:** {}\n", tags.join(", ")));
-    }
-    if !doc.body.is_empty() {
-        out.push_str(&format!("\n{}", doc.body));
-    }
-    out
-}
-
-/// Formats a list of tasks as a Markdown table.
-#[must_use]
-pub fn format_task_list_md(tasks: &[(String, Document<Task>)]) -> String {
-    if tasks.is_empty() {
-        return "No tasks found.\n".to_string();
-    }
-
-    let mut out = String::new();
-    out.push_str("## Tasks\n\n");
-    out.push_str("| Slug | Title | Status | Priority |\n");
-    out.push_str("|------|-------|--------|----------|\n");
-    for (slug, doc) in tasks {
-        let fm = &doc.frontmatter;
-        out.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
-            slug, fm.title, fm.status, fm.priority
-        ));
-    }
-    out
+pub fn format_search_results(results: &[SearchResult]) -> String {
+    build_search_results(results, RenderFlavor::Terminal).to_string()
 }
 
 /// Formats search results as a Markdown table.
 #[must_use]
 pub fn format_search_results_md(results: &[SearchResult]) -> String {
-    if results.is_empty() {
-        return "No results found.\n".to_string();
-    }
-
-    let mut out = String::new();
-    out.push_str("## Search Results\n\n");
-    out.push_str("| # | Type | Title | Identifier | Snippet |\n");
-    out.push_str("|---:|------|-------|------------|---------|\n");
-    for (i, r) in results.iter().enumerate() {
-        let snippet = truncate_snippet(&r.snippet, 40);
-        out.push_str(&format!(
-            "| {} | {} | {} | {} | {} |\n",
-            i + 1,
-            r.kind,
-            r.title,
-            r.identifier,
-            snippet,
-        ));
-    }
-    out
+    build_search_results(results, RenderFlavor::Markdown).to_string()
 }
 
 #[cfg(test)]
@@ -731,7 +714,7 @@ mod tests {
     #[test]
     fn phase_detail_with_completed() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
-        let output = format_phase_detail("phase-1-core", &doc, None, None);
+        let output = format_phase_detail("phase-1-core", &doc, None);
         assert!(output.contains("# Phase 1: Core"));
         assert!(output.contains("Status: done"));
         assert!(output.contains("Completed: 2026-03-14"));
@@ -741,7 +724,7 @@ mod tests {
     #[test]
     fn phase_detail_without_completed() {
         let doc = make_phase_doc(2, "Service", PhaseStatus::NotStarted);
-        let output = format_phase_detail("phase-2-service", &doc, None, None);
+        let output = format_phase_detail("phase-2-service", &doc, None);
         assert!(output.contains("Status: not-started"));
         assert!(!output.contains("Completed:"));
     }
@@ -750,14 +733,14 @@ mod tests {
     fn phase_detail_with_tags() {
         let mut doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
         doc.frontmatter.tags = Some(vec!["infra".to_string(), "search".to_string()]);
-        let output = format_phase_detail("phase-1-core", &doc, None, None);
+        let output = format_phase_detail("phase-1-core", &doc, None);
         assert!(output.contains("Tags: infra, search"));
     }
 
     #[test]
     fn phase_detail_without_tags_omits_line() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
-        let output = format_phase_detail("phase-1-core", &doc, None, None);
+        let output = format_phase_detail("phase-1-core", &doc, None);
         assert!(!output.contains("Tags:"));
     }
 
@@ -983,7 +966,7 @@ mod tests {
     #[test]
     fn phase_detail_md_with_completed() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
-        let output = format_phase_detail_md("phase-1-core", &doc, None, None);
+        let output = format_phase_detail_md("phase-1-core", &doc, None);
         assert!(output.contains("# Phase 1: Core"));
         assert!(output.contains("- **Stem:** phase-1-core"));
         assert!(output.contains("- **Status:** done"));
@@ -993,7 +976,7 @@ mod tests {
     #[test]
     fn phase_detail_md_without_completed() {
         let doc = make_phase_doc(2, "Service", PhaseStatus::NotStarted);
-        let output = format_phase_detail_md("phase-2-service", &doc, None, None);
+        let output = format_phase_detail_md("phase-2-service", &doc, None);
         assert!(output.contains("- **Status:** not-started"));
         assert!(!output.contains("- **Completed:**"));
     }
@@ -1002,7 +985,7 @@ mod tests {
     fn phase_detail_md_with_body() {
         let mut doc = make_phase_doc(1, "Core", PhaseStatus::InProgress);
         doc.body = "Implementation details.\n".to_string();
-        let output = format_phase_detail_md("phase-1-core", &doc, None, None);
+        let output = format_phase_detail_md("phase-1-core", &doc, None);
         assert!(output.contains("Implementation details."));
     }
 
@@ -1010,14 +993,14 @@ mod tests {
     fn phase_detail_md_with_tags() {
         let mut doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
         doc.frontmatter.tags = Some(vec!["infra".to_string(), "search".to_string()]);
-        let output = format_phase_detail_md("phase-1-core", &doc, None, None);
+        let output = format_phase_detail_md("phase-1-core", &doc, None);
         assert!(output.contains("- **Tags:** infra, search"));
     }
 
     #[test]
     fn phase_detail_md_without_tags_omits_line() {
         let doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
-        let output = format_phase_detail_md("phase-1-core", &doc, None, None);
+        let output = format_phase_detail_md("phase-1-core", &doc, None);
         assert!(!output.contains("**Tags:**"));
     }
 
@@ -1110,6 +1093,27 @@ mod tests {
     }
 
     #[test]
+    fn roadmap_summary_omits_cli_hint() {
+        // CLI hint vocabulary now lives in the CLI command layer, not core.
+        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
+        let phases = vec![(
+            "phase-1-core".to_string(),
+            make_phase_doc(1, "Core", PhaseStatus::InProgress),
+        )];
+        assert!(!format_roadmap_summary(&doc, &phases, None).contains("Hint:"));
+        assert!(!format_roadmap_summary_md(&doc, &phases, None).contains("Hint:"));
+    }
+
+    #[test]
+    fn phase_detail_omits_cli_nav() {
+        // Prev/Next nav vocabulary now lives in the CLI command layer, not core.
+        let doc = make_phase_doc(2, "Service", PhaseStatus::InProgress);
+        assert!(!format_phase_detail("phase-2-service", &doc, None).contains("Prev:"));
+        assert!(!format_phase_detail("phase-2-service", &doc, None).contains("Next:"));
+        assert!(!format_phase_detail_md("phase-2-service", &doc, None).contains("Prev:"));
+    }
+
+    #[test]
     fn search_results_md_with_results() {
         let results = vec![SearchResult {
             kind: crate::search::ItemKind::Task,
@@ -1132,112 +1136,5 @@ mod tests {
     fn search_results_md_empty() {
         let output = format_search_results_md(&[]);
         assert_eq!(output, "No results found.\n");
-    }
-
-    // -- Navigation hint tests --
-
-    #[test]
-    fn roadmap_summary_includes_hint_when_phases_present() {
-        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
-        let phases = vec![(
-            "phase-1-core".to_string(),
-            make_phase_doc(1, "Core", PhaseStatus::InProgress),
-        )];
-        let output = format_roadmap_summary(&doc, &phases, None);
-        assert!(output.contains("Hint: rdm phase show <stem> --roadmap two-way --project fbm"));
-    }
-
-    #[test]
-    fn roadmap_summary_no_hint_when_no_phases() {
-        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
-        let output = format_roadmap_summary(&doc, &[], None);
-        assert!(!output.contains("Hint:"));
-    }
-
-    #[test]
-    fn roadmap_summary_md_includes_hint_when_phases_present() {
-        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
-        let phases = vec![(
-            "phase-1-core".to_string(),
-            make_phase_doc(1, "Core", PhaseStatus::InProgress),
-        )];
-        let output = format_roadmap_summary_md(&doc, &phases, None);
-        assert!(output.contains("Hint:"));
-        assert!(output.contains("--roadmap two-way --project fbm"));
-    }
-
-    #[test]
-    fn roadmap_summary_md_no_hint_when_no_phases() {
-        let doc = make_roadmap_doc("fbm", "two-way", "Two-Way Players");
-        let output = format_roadmap_summary_md(&doc, &[], None);
-        assert!(!output.contains("Hint:"));
-    }
-
-    #[test]
-    fn phase_detail_with_nav_prev_and_next() {
-        let doc = make_phase_doc(2, "Service", PhaseStatus::InProgress);
-        let nav = PhaseNav {
-            prev: Some("phase-1-core"),
-            next: Some("phase-3-ui"),
-            roadmap: "two-way",
-            project: "fbm",
-        };
-        let output = format_phase_detail("phase-2-service", &doc, Some(&nav), None);
-        assert!(
-            output.contains("Prev: rdm phase show phase-1-core --roadmap two-way --project fbm")
-        );
-        assert!(output.contains("Next: rdm phase show phase-3-ui --roadmap two-way --project fbm"));
-    }
-
-    #[test]
-    fn phase_detail_first_phase_no_prev() {
-        let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
-        let nav = PhaseNav {
-            prev: None,
-            next: Some("phase-2-service"),
-            roadmap: "two-way",
-            project: "fbm",
-        };
-        let output = format_phase_detail("phase-1-core", &doc, Some(&nav), None);
-        assert!(!output.contains("Prev:"));
-        assert!(output.contains("Next: rdm phase show phase-2-service"));
-    }
-
-    #[test]
-    fn phase_detail_last_phase_no_next() {
-        let doc = make_phase_doc(3, "UI", PhaseStatus::NotStarted);
-        let nav = PhaseNav {
-            prev: Some("phase-2-service"),
-            next: None,
-            roadmap: "two-way",
-            project: "fbm",
-        };
-        let output = format_phase_detail("phase-3-ui", &doc, Some(&nav), None);
-        assert!(output.contains("Prev: rdm phase show phase-2-service"));
-        assert!(!output.contains("Next:"));
-    }
-
-    #[test]
-    fn phase_detail_md_with_nav() {
-        let doc = make_phase_doc(2, "Service", PhaseStatus::InProgress);
-        let nav = PhaseNav {
-            prev: Some("phase-1-core"),
-            next: Some("phase-3-ui"),
-            roadmap: "two-way",
-            project: "fbm",
-        };
-        let output = format_phase_detail_md("phase-2-service", &doc, Some(&nav), None);
-        assert!(output.contains("> Prev:"));
-        assert!(output.contains("> Next:"));
-        assert!(output.contains("phase-1-core"));
-        assert!(output.contains("phase-3-ui"));
-    }
-
-    #[test]
-    fn phase_detail_no_nav_shows_no_hints() {
-        let doc = make_phase_doc(1, "Core", PhaseStatus::Done);
-        let output = format_phase_detail("phase-1-core", &doc, None, None);
-        assert!(!output.contains("Prev:"));
-        assert!(!output.contains("Next:"));
     }
 }

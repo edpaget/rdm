@@ -9,6 +9,46 @@ use crate::paths;
 use crate::table;
 use crate::{AppStore, OutputFormat, PhaseCommand};
 
+/// Builds the prev/next navigation footer for `phase show`.
+///
+/// A leading blank line is always emitted, followed by `Prev:`/`Next:` lines
+/// for whichever neighbors exist. With `markdown` true, the lines use a `> …`
+/// backtick blockquote. This CLI vocabulary deliberately lives here rather than
+/// in `rdm-core`, so MCP/server output does not inherit CLI hints.
+fn phase_nav_footer(
+    prev: Option<&str>,
+    next: Option<&str>,
+    roadmap: &str,
+    project: &str,
+    markdown: bool,
+) -> String {
+    let mut out = String::from("\n");
+    if markdown {
+        if let Some(prev) = prev {
+            out.push_str(&format!(
+                "> Prev: `rdm phase show {prev} --roadmap {roadmap} --project {project}`\n"
+            ));
+        }
+        if let Some(next) = next {
+            out.push_str(&format!(
+                "> Next: `rdm phase show {next} --roadmap {roadmap} --project {project}`\n"
+            ));
+        }
+    } else {
+        if let Some(prev) = prev {
+            out.push_str(&format!(
+                "Prev: rdm phase show {prev} --roadmap {roadmap} --project {project}\n"
+            ));
+        }
+        if let Some(next) = next {
+            out.push_str(&format!(
+                "Next: rdm phase show {next} --roadmap {roadmap} --project {project}\n"
+            ));
+        }
+    }
+    out
+}
+
 pub fn run(
     command: PhaseCommand,
     store: &mut AppStore,
@@ -112,24 +152,21 @@ pub fn run(
             });
             let next_stem = pos.and_then(|i| phases.get(i + 1).map(|(s, _)| s.as_str()));
 
-            let nav = display::PhaseNav {
-                prev: prev_stem,
-                next: next_stem,
-                roadmap: &roadmap,
-                project: &project,
-            };
-
             let revision = at.as_deref();
             match format {
-                OutputFormat::Human => print!(
-                    "{}",
-                    display::format_phase_detail(&stem, &doc, Some(&nav), revision)
-                ),
+                OutputFormat::Human => {
+                    let mut out = display::format_phase_detail(&stem, &doc, revision);
+                    out.push_str(&phase_nav_footer(
+                        prev_stem, next_stem, &roadmap, &project, false,
+                    ));
+                    print!("{out}");
+                }
                 OutputFormat::Markdown => {
-                    print!(
-                        "{}",
-                        display::format_phase_detail_md(&stem, &doc, Some(&nav), revision)
-                    )
+                    let mut out = display::format_phase_detail_md(&stem, &doc, revision);
+                    out.push_str(&phase_nav_footer(
+                        prev_stem, next_stem, &roadmap, &project, true,
+                    ));
+                    print!("{out}");
                 }
                 OutputFormat::Json => {
                     let j =

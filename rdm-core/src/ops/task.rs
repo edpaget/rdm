@@ -147,6 +147,12 @@ pub fn list_tasks(store: &impl Store, project: &str) -> Result<Vec<(String, Docu
 /// priority is required, so it is set-or-keep (`Option<Priority>`) rather than
 /// clearable.
 ///
+/// Setting a terminal status ([`TaskStatus::is_terminal`], i.e. `Done` or
+/// `WontFix`) stamps `completed` with today's date and stores the optional
+/// `commit` SHA. Re-setting the same terminal status preserves the existing
+/// `completed` date and only updates `commit` if a new value is provided.
+/// Transitioning to a non-terminal status clears both `completed` and `commit`.
+///
 /// # Errors
 ///
 /// Returns [`Error::TaskNotFound`] if the task file doesn't exist,
@@ -173,14 +179,15 @@ pub fn update_task(
 
     let mut doc = crate::io::load_task(store, project, slug)?;
     if let Some(status) = status {
-        if status == TaskStatus::Done && doc.frontmatter.status == TaskStatus::Done {
-            // Already done: only update commit if a new one is provided
+        if status.is_terminal() && doc.frontmatter.status == status {
+            // Already at this terminal state: only update commit if a new one
+            // is provided, preserving the existing completed date.
             if let Some(sha) = commit {
                 doc.frontmatter.commit = Some(sha);
             }
         } else {
             doc.frontmatter.status = status;
-            if status == TaskStatus::Done {
+            if status.is_terminal() {
                 doc.frontmatter.completed = Some(Local::now().date_naive());
                 doc.frontmatter.commit = commit;
             } else {

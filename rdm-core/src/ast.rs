@@ -75,6 +75,12 @@ pub enum Block {
         headers: Vec<Vec<Inline>>,
         /// Data rows, each a vector of cells containing inline content.
         rows: Vec<Vec<Vec<Inline>>>,
+        /// Per-column alignment for the separator row.
+        ///
+        /// Indexed by column. A shorter (or empty) vector defaults the
+        /// remaining columns to [`Alignment::None`], so `aligns: vec![]`
+        /// renders every column with a plain `---` separator.
+        aligns: Vec<Alignment>,
     },
     /// Unordered bullet list.
     UnorderedList {
@@ -87,6 +93,15 @@ pub enum Block {
     BlankLine,
     /// Raw content rendered as-is with no trailing newline.
     Raw(String),
+}
+
+/// Column alignment for a Markdown table separator row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alignment {
+    /// Default alignment, rendered as `---`.
+    None,
+    /// Right alignment, rendered as `---:`.
+    Right,
 }
 
 /// Inline-level Markdown elements.
@@ -168,7 +183,11 @@ impl fmt::Display for Block {
                 }
                 writeln!(f)
             }
-            Block::Table { headers, rows } => {
+            Block::Table {
+                headers,
+                rows,
+                aligns,
+            } => {
                 // Header row
                 write!(f, "|")?;
                 for header in headers {
@@ -179,10 +198,13 @@ impl fmt::Display for Block {
                     write!(f, " |")?;
                 }
                 writeln!(f)?;
-                // Separator row
+                // Separator row — per-column alignment, defaulting to None.
                 write!(f, "|")?;
-                for _ in headers {
-                    write!(f, "---|")?;
+                for i in 0..headers.len() {
+                    match aligns.get(i).copied().unwrap_or(Alignment::None) {
+                        Alignment::None => write!(f, "---|")?,
+                        Alignment::Right => write!(f, "---:|")?,
+                    }
                 }
                 writeln!(f)?;
                 // Data rows
@@ -310,8 +332,9 @@ mod tests {
                 vec![Inline::text("alpha")],
                 vec![Inline::bold("done")],
             ]],
+            aligns: vec![],
         };
-        if let Block::Table { headers, rows } = &table {
+        if let Block::Table { headers, rows, .. } = &table {
             assert_eq!(headers.len(), 2);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].len(), 2);
@@ -449,10 +472,24 @@ mod tests {
                 vec![vec![Inline::text("alpha")], vec![Inline::bold("done")]],
                 vec![vec![Inline::text("beta")], vec![Inline::text("open")]],
             ],
+            aligns: vec![],
         };
         assert_eq!(
             table.to_string(),
             "| Name | Status |\n|---|---|\n| alpha | **done** |\n| beta | open |\n"
+        );
+    }
+
+    #[test]
+    fn display_table_right_aligned_first_column() {
+        let table = Block::Table {
+            headers: vec![vec![Inline::text("#")], vec![Inline::text("Name")]],
+            rows: vec![vec![vec![Inline::text("1")], vec![Inline::text("alpha")]]],
+            aligns: vec![Alignment::Right],
+        };
+        assert_eq!(
+            table.to_string(),
+            "| # | Name |\n|---:|---|\n| 1 | alpha |\n"
         );
     }
 
@@ -501,6 +538,7 @@ mod tests {
         doc.push(Block::Table {
             headers: vec![vec![Inline::text("Col")]],
             rows: vec![vec![vec![Inline::text("val")]]],
+            aligns: vec![],
         });
         doc.push(Block::UnorderedList {
             items: vec![vec![Inline::text("one")], vec![Inline::text("two")]],

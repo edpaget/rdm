@@ -235,6 +235,14 @@ impl Store for FsStore {
     fn discard(&mut self) {
         self.staged.discard();
     }
+
+    fn modified(&self, path: &RelPath) -> Result<Option<std::time::SystemTime>> {
+        match fs::metadata(self.resolve(path)) {
+            Ok(meta) => Ok(meta.modified().ok()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Error::Io(e)),
+        }
+    }
 }
 
 /// `FsStore` has no notion of committed history, so both methods report

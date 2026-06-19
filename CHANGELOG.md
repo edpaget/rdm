@@ -100,9 +100,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `bypassPermissions` in a sandbox) so file edits and bash/tool calls don't
   block on prompts. The finalize contract is unchanged (commit on the branch,
   set `needs-review`); the branch is left for merge to main.
+- The MCP server and REST API no longer emit CLI-specific navigation hints
+  (`rdm phase show …`) in `roadmap show` / `phase show` output. These
+  `Hint:` / `Prev:` / `Next:` lines now live only in the `rdm` CLI, where the
+  output is unchanged. Markdown table separators (`--format markdown` and
+  generated `INDEX.md`) now render with fixed-width `---` / `---:` cells; column
+  alignment is unchanged.
 
 ### Fixed
 
+- Marking a task `wont-fix` now stamps a `completed` date (and records the
+  optional commit SHA), matching the behavior of marking it `done`. Previously
+  `wont-fix` tasks were left with no completion date.
 - `rdm worktree add` run from inside a linked worktree now creates the new
   worktree as a sibling of the main repo instead of nesting it under the current
   worktree. Discovery resolves the repository's main working tree rather than the

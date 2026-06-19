@@ -345,7 +345,7 @@ fn score_item(
     let snippet = if title_score >= body_score {
         title.to_string()
     } else {
-        extract_snippet(body, 80)
+        crate::display::truncate_snippet(body, 80)
     };
 
     Some(SearchResult {
@@ -357,21 +357,6 @@ fn score_item(
         score: best_score,
         tags: tags.map(|t| t.to_vec()),
     })
-}
-
-/// Extracts a snippet of approximately `max_len` characters from the body.
-fn extract_snippet(body: &str, max_len: usize) -> String {
-    let trimmed = body.trim();
-    if trimmed.len() <= max_len {
-        return trimmed.to_string();
-    }
-    // Find a char boundary at or before max_len
-    let mut end = max_len;
-    while end > 0 && !trimmed.is_char_boundary(end) {
-        end -= 1;
-    }
-    let truncated = &trimmed[..end];
-    format!("{truncated}...")
 }
 
 #[cfg(test)]

@@ -65,6 +65,39 @@ pub fn computed_status(phases: &[PhaseStatus]) -> RoadmapStatus {
     RoadmapStatus::NotStarted
 }
 
+/// Returns the most recent modification time across a roadmap's `roadmap.md`
+/// and each of its phase files, or `None` when the store does not track
+/// modification times (e.g. the in-memory or git backends) or none of the
+/// files exist.
+///
+/// Modification-time lookup errors are treated as "no information" and folded
+/// into `None`, matching the best-effort nature of a last-changed timestamp.
+#[must_use]
+pub fn last_modified(
+    store: &impl Store,
+    project: &str,
+    roadmap: &str,
+    phases: &[(String, Document<Phase>)],
+) -> Option<std::time::SystemTime> {
+    let mut latest = store
+        .modified(&crate::paths::roadmap_path(project, roadmap))
+        .ok()
+        .flatten();
+    for (stem, _) in phases {
+        if let Some(modified) = store
+            .modified(&crate::paths::phase_path(project, roadmap, stem))
+            .ok()
+            .flatten()
+        {
+            latest = Some(match latest {
+                Some(prev) if prev >= modified => prev,
+                _ => modified,
+            });
+        }
+    }
+    latest
+}
+
 /// Creates a new roadmap within a project.
 ///
 /// `body` sets the markdown body below the frontmatter. Pass `None` for
@@ -564,60 +597,11 @@ pub fn split_roadmap(
         }
     }
 
-    // Build target roadmap phases: renumber from 1
-    let mut target_phase_stems = Vec::new();
-    for (i, old_stem) in extracted.iter().enumerate() {
-        let new_number = (i + 1) as u32;
-        let phase_doc = crate::io::load_phase(store, project, source_slug, old_stem)?;
+    // Build target roadmap phases: renumber from 1.
+    let target_phase_stems = renumber_phases(store, project, source_slug, target_slug, &extracted)?;
 
-        // Derive the slug suffix (everything after "phase-N-")
-        let slug_suffix = old_stem.splitn(3, '-').nth(2).unwrap_or(old_stem);
-        let new_stem = format!("phase-{new_number}-{slug_suffix}");
-
-        let new_phase_doc = Document {
-            frontmatter: Phase {
-                phase: new_number,
-                ..phase_doc.frontmatter
-            },
-            body: phase_doc.body,
-        };
-
-        crate::io::write_phase(store, project, target_slug, &new_stem, &new_phase_doc)?;
-        // Delete from source
-        let old_path = crate::paths::phase_path(project, source_slug, old_stem);
-        store.delete(&old_path)?;
-
-        target_phase_stems.push(new_stem);
-    }
-
-    // Renumber remaining source phases from 1
-    let mut new_source_stems = Vec::new();
-    for (i, old_stem) in remaining.iter().enumerate() {
-        let new_number = (i + 1) as u32;
-        let phase_doc = crate::io::load_phase(store, project, source_slug, old_stem)?;
-
-        let slug_suffix = old_stem.splitn(3, '-').nth(2).unwrap_or(old_stem);
-        let new_stem = format!("phase-{new_number}-{slug_suffix}");
-
-        let new_phase_doc = Document {
-            frontmatter: Phase {
-                phase: new_number,
-                ..phase_doc.frontmatter
-            },
-            body: phase_doc.body,
-        };
-
-        if new_stem != *old_stem {
-            crate::io::write_phase(store, project, source_slug, &new_stem, &new_phase_doc)?;
-            let old_path = crate::paths::phase_path(project, source_slug, old_stem);
-            store.delete(&old_path)?;
-        } else {
-            // Same stem, just update the frontmatter number if needed
-            crate::io::write_phase(store, project, source_slug, &new_stem, &new_phase_doc)?;
-        }
-
-        new_source_stems.push(new_stem);
-    }
+    // Renumber remaining source phases from 1.
+    let new_source_stems = renumber_phases(store, project, source_slug, source_slug, &remaining)?;
 
     // Update source roadmap phases list
     let mut updated_source = source_doc;
@@ -649,6 +633,49 @@ pub fn split_roadmap(
 }
 
 // -- Private helpers --
+
+/// Renumbers `old_stems` from 1 and writes them under `dst_slug`, returning the
+/// new stems in order.
+///
+/// Each phase is loaded from `src_slug`, given the new number `i + 1`, and
+/// written to `dst_slug` with a `phase-{n}-{suffix}` stem (the suffix is
+/// preserved from the old stem). The old file is deleted unless it was just
+/// overwritten in place (same roadmap and unchanged stem).
+fn renumber_phases(
+    store: &mut impl Store,
+    project: &str,
+    src_slug: &str,
+    dst_slug: &str,
+    old_stems: &[String],
+) -> Result<Vec<String>> {
+    let mut new_stems = Vec::new();
+    for (i, old_stem) in old_stems.iter().enumerate() {
+        let new_number = (i + 1) as u32;
+        let phase_doc = crate::io::load_phase(store, project, src_slug, old_stem)?;
+
+        // Derive the slug suffix (everything after "phase-N-").
+        let slug_suffix = old_stem.splitn(3, '-').nth(2).unwrap_or(old_stem);
+        let new_stem = format!("phase-{new_number}-{slug_suffix}");
+
+        let new_phase_doc = Document {
+            frontmatter: Phase {
+                phase: new_number,
+                ..phase_doc.frontmatter
+            },
+            body: phase_doc.body,
+        };
+
+        crate::io::write_phase(store, project, dst_slug, &new_stem, &new_phase_doc)?;
+        // Delete the old file unless we just overwrote it in place.
+        if src_slug != dst_slug || new_stem != *old_stem {
+            let old_path = crate::paths::phase_path(project, src_slug, old_stem);
+            store.delete(&old_path)?;
+        }
+
+        new_stems.push(new_stem);
+    }
+    Ok(new_stems)
+}
 
 /// Recursively copies all files from `src` to `dst` in the store.
 fn copy_tree(store: &mut impl Store, src: &RelPath, dst: &RelPath) -> Result<()> {

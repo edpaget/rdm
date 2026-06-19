@@ -301,13 +301,7 @@ pub fn roadmap_summary_to_json(
         .iter()
         .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
         .count();
-    let progress = if total == 0 {
-        "no phases".to_string()
-    } else if done == total {
-        "complete".to_string()
-    } else {
-        format!("{done}/{total} done")
-    };
+    let progress = crate::display::roadmap_progress_label(done, total);
     RoadmapSummaryJson {
         slug: rm.roadmap.clone(),
         title: rm.title.clone(),
