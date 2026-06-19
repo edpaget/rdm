@@ -11,6 +11,10 @@ use tempfile::TempDir;
 fn rdm() -> Command {
     let mut cmd = Command::cargo_bin("rdm").unwrap();
     cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent");
+    // Keep tests hermetic: don't let an ambient RDM_PROJECT/RDM_ROOT (e.g. from
+    // .mise.toml during local runs) leak in and mask missing flags. CI has
+    // neither set, so tests that rely on them pass locally but fail in CI.
+    cmd.env_remove("RDM_PROJECT").env_remove("RDM_ROOT");
     cmd
 }
 
@@ -250,7 +254,7 @@ fn remove_guards_dirty_then_force() {
 
     // Dirty remove refused.
     worktree_cmd(&plan, &project)
-        .args(["remove", "task/fix-bug"])
+        .args(["remove", "task/fix-bug", "--project", "demo"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("uncommitted changes"));
@@ -258,7 +262,7 @@ fn remove_guards_dirty_then_force() {
 
     // Forced remove succeeds.
     worktree_cmd(&plan, &project)
-        .args(["remove", "task/fix-bug", "--force"])
+        .args(["remove", "task/fix-bug", "--force", "--project", "demo"])
         .assert()
         .success();
     assert!(!Path::new(&path).exists());
@@ -274,7 +278,13 @@ fn remove_delete_branch() {
         .assert()
         .success();
     worktree_cmd(&plan, &project)
-        .args(["remove", "task/fix-bug", "--delete-branch"])
+        .args([
+            "remove",
+            "task/fix-bug",
+            "--delete-branch",
+            "--project",
+            "demo",
+        ])
         .assert()
         .success();
 
