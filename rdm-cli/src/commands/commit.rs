@@ -12,7 +12,10 @@ use crate::commands;
 /// commit fails.
 pub fn run(root: &Path, staging: bool, message: Option<String>) -> Result<()> {
     let store = commands::make_store(root, staging)?;
-    let statuses = store.git_status().context("failed to get git status")?;
+    let statuses = store
+        .git()
+        .git_status()
+        .context("failed to get git status")?;
     if statuses.is_empty() {
         println!("Nothing to commit.");
     } else {
@@ -39,6 +42,7 @@ pub fn run(root: &Path, staging: bool, message: Option<String>) -> Result<()> {
             }
         });
         store
+            .git()
             .git_commit(&msg)
             .context("failed to create git commit")?;
         println!("Committed {} file(s).", statuses.len());

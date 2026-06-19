@@ -236,6 +236,7 @@ fn clone_fresh(
     rdm_core::ops::init::init_with_config(&mut store, rdm_core::config::Config::default())
         .context("failed to initialize cloned repo as a plan repo")?;
     store
+        .git()
         .git_commit("rdm: initialize plan repo via bootstrap --init")
         .context("failed to commit initial plan repo state")?;
     Ok(target.to_path_buf())
@@ -246,7 +247,10 @@ fn update_existing(target: &Path) -> Result<PathBuf> {
     let mut store =
         rdm_store_git::GitStore::new(target).context("failed to open existing plan repo")?;
 
-    let remotes = store.git_remote_list().context("failed to list remotes")?;
+    let remotes = store
+        .git()
+        .git_remote_list()
+        .context("failed to list remotes")?;
     let remote_name = remotes
         .iter()
         .find(|r| r.name == "origin")
@@ -265,6 +269,7 @@ fn update_existing(target: &Path) -> Result<PathBuf> {
         target.display()
     );
     match store
+        .git_mut()
         .git_pull(&remote_name)
         .context("failed to fast-forward plan repo")?
     {

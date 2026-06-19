@@ -259,7 +259,7 @@ pub fn maybe_print_uncommitted_hint(store: &AppStore, staging: bool) {
     if !staging {
         return;
     }
-    if let Ok(statuses) = store.git_status()
+    if let Ok(statuses) = store.git().git_status()
         && !statuses.is_empty()
     {
         println!(

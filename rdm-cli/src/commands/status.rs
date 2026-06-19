@@ -15,10 +15,12 @@ pub fn run(root: &Path, staging: bool, fetch: bool) -> Result<()> {
 
     // Check for merge in progress
     if store
+        .git()
         .git_is_merge_in_progress()
         .context("failed to check merge state")?
     {
         let unmerged = store
+            .git()
             .git_list_unmerged()
             .context("failed to list unmerged files")?;
         let count = unmerged.len();
@@ -34,7 +36,10 @@ pub fn run(root: &Path, staging: bool, fetch: bool) -> Result<()> {
         println!();
     }
 
-    let statuses = store.git_status().context("failed to get git status")?;
+    let statuses = store
+        .git()
+        .git_status()
+        .context("failed to get git status")?;
     if statuses.is_empty() {
         println!("No uncommitted changes.");
     } else {
@@ -61,10 +66,10 @@ pub fn run(root: &Path, staging: bool, fetch: bool) -> Result<()> {
         .and_then(|c| c.remote)
         .and_then(|r| r.default);
     if let Some(remote_name) = default_remote {
-        if fetch && let Err(e) = store.git_fetch(&remote_name) {
+        if fetch && let Err(e) = store.git_mut().git_fetch(&remote_name) {
             eprintln!("warning: fetch failed: {e}");
         }
-        match store.git_sync_status(&remote_name) {
+        match store.git().git_sync_status(&remote_name) {
             Ok(Some(sync)) => {
                 println!();
                 match (sync.ahead, sync.behind) {

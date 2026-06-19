@@ -17,17 +17,27 @@ pub fn run(root: &Path, staging: bool, force: bool) -> Result<()> {
     let mut store = commands::make_store(root, staging)?;
     // Abort merge if one is in progress
     if store
+        .git()
         .git_is_merge_in_progress()
         .context("failed to check merge state")?
     {
-        store.git_merge_abort().context("failed to abort merge")?;
+        store
+            .git_mut()
+            .git_merge_abort()
+            .context("failed to abort merge")?;
         println!("Aborted in-progress merge.");
     }
-    let statuses = store.git_status().context("failed to get git status")?;
+    let statuses = store
+        .git()
+        .git_status()
+        .context("failed to get git status")?;
     if statuses.is_empty() {
         println!("Nothing to discard.");
     } else {
-        store.git_discard().context("failed to discard changes")?;
+        store
+            .git()
+            .git_discard()
+            .context("failed to discard changes")?;
         println!("Discarded {} file(s).", statuses.len());
         for fs in &statuses {
             let prefix = match fs.change {

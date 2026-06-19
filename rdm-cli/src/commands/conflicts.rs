@@ -13,12 +13,14 @@ use crate::commands;
 pub fn run(root: &Path, staging: bool) -> Result<()> {
     let store = commands::make_store(root, staging)?;
     if !store
+        .git()
         .git_is_merge_in_progress()
         .context("failed to check merge state")?
     {
         println!("No merge in progress.");
     } else {
         let unmerged = store
+            .git()
             .git_list_unmerged()
             .context("failed to list unmerged files")?;
         if unmerged.is_empty() {

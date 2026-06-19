@@ -18,18 +18,23 @@ pub fn run(
     match command {
         RemoteCommand::Add { name, url } => {
             store
+                .git_mut()
                 .git_remote_add(&name, &url)
                 .context("failed to add remote")?;
             println!("Added remote '{name}' ({url})");
         }
         RemoteCommand::Remove { name } => {
             store
+                .git_mut()
                 .git_remote_remove(&name)
                 .context("failed to remove remote")?;
             println!("Removed remote '{name}'");
         }
         RemoteCommand::List => {
-            let remotes = store.git_remote_list().context("failed to list remotes")?;
+            let remotes = store
+                .git()
+                .git_remote_list()
+                .context("failed to list remotes")?;
             if remotes.is_empty() {
                 println!("No remotes configured.");
             } else {
@@ -41,13 +46,14 @@ pub fn run(
         RemoteCommand::Fetch { name } => {
             let remote_name = paths::resolve_remote_name(name, repo_config)?;
             store
+                .git_mut()
                 .git_fetch(&remote_name)
                 .context("failed to fetch from remote")?;
             println!("Fetched from '{remote_name}'.");
         }
         RemoteCommand::Push { name, force } => {
             let remote_name = paths::resolve_remote_name(name, repo_config)?;
-            let result = store.git_push(&remote_name, force)?;
+            let result = store.git_mut().git_push(&remote_name, force)?;
             if result.commits_pushed == 0 {
                 println!("Already up to date.");
             } else {
@@ -59,7 +65,7 @@ pub fn run(
         }
         RemoteCommand::Pull { name } => {
             let remote_name = paths::resolve_remote_name(name, repo_config)?;
-            let outcome = store.git_pull(&remote_name)?;
+            let outcome = store.git_mut().git_pull(&remote_name)?;
             match outcome {
                 rdm_store_git::PullOutcome::Success(result) => {
                     if !result.changed {

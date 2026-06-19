@@ -14,6 +14,7 @@ use crate::commands;
 pub fn run(root: &Path, staging: bool, file: String) -> Result<()> {
     let mut store = commands::make_store(root, staging)?;
     let result = store
+        .git_mut()
         .git_resolve_conflict(&file)
         .context("failed to resolve conflict")?;
     println!("Resolved: {}", result.path);

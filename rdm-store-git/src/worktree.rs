@@ -490,14 +490,7 @@ fn is_dirty(path: &Path) -> bool {
 /// Runs a git command in `path`, mapping a missing `git` binary to
 /// [`WorktreeError::GitMissing`].
 fn run_git_at(path: &Path, args: &[&str]) -> Result<Output> {
-    match std::process::Command::new("git")
-        .args(args)
-        .current_dir(path)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-    {
+    match crate::process::git_command(Some(path), args) {
         Ok(o) => Ok(o),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(WorktreeError::GitMissing),
         Err(e) => Err(WorktreeError::Git(format!("failed to run git: {e}"))),
