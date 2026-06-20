@@ -7,7 +7,9 @@ use chrono::NaiveDate;
 use serde::Serialize;
 
 use crate::document::Document;
-use crate::model::{Phase, PhaseStatus, Priority, Project, Roadmap, Task, TaskStatus};
+use crate::model::{
+    Difficulty, ModelTier, Phase, PhaseStatus, Priority, Project, Roadmap, Task, TaskStatus,
+};
 use crate::search::{ItemKind, SearchResult};
 
 // ---------------------------------------------------------------------------
@@ -62,6 +64,12 @@ pub struct PhaseJson {
     /// Git commit SHA associated with phase completion, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// Estimated difficulty of the phase, if assessed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<Difficulty>,
+    /// Model tier that should run the phase, if assigned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelTier>,
     /// Git revision the body was read from (only set when this view was
     /// requested at a specific historical SHA).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,6 +157,12 @@ pub struct PhaseSummaryJson {
     /// Tags for categorization.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// Estimated difficulty of the phase, if assessed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<Difficulty>,
+    /// Model tier that should run the phase, if assigned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelTier>,
 }
 
 /// Task summary for list output.
@@ -261,6 +275,8 @@ pub fn phase_to_json(
         tags: fm.tags.clone(),
         completed: fm.completed,
         commit: fm.commit.clone(),
+        difficulty: fm.difficulty,
+        model: fm.model,
         revision: revision.map(String::from),
         roadmap: roadmap.to_string(),
         prev_phase: prev.map(String::from),
@@ -322,6 +338,8 @@ pub fn phase_summary_to_json(stem: &str, doc: &Document<Phase>) -> PhaseSummaryJ
         title: fm.title.clone(),
         status: fm.status,
         tags: fm.tags.clone(),
+        difficulty: fm.difficulty,
+        model: fm.model,
     }
 }
 
@@ -381,6 +399,8 @@ mod tests {
                 },
                 commit: None,
                 review_sha: None,
+                difficulty: None,
+                model: None,
             },
             body: String::new(),
         }

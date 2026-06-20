@@ -198,6 +198,12 @@ fn build_phase_detail(
                 items.push(meta_bullet("Revision", sha));
             }
             items.push(meta_bullet("Status", &fm.status.to_string()));
+            if let Some(difficulty) = fm.difficulty {
+                items.push(meta_bullet("Difficulty", &difficulty.to_string()));
+            }
+            if let Some(model) = fm.model {
+                items.push(meta_bullet("Model", &model.to_string()));
+            }
             if let Some(date) = fm.completed {
                 items.push(meta_bullet("Completed", &date.to_string()));
             }
@@ -215,6 +221,12 @@ fn build_phase_detail(
                 d.paragraph(&format!("Revision: {sha}"));
             }
             d.paragraph(&format!("Status: {}", fm.status));
+            if let Some(difficulty) = fm.difficulty {
+                d.paragraph(&format!("Difficulty: {difficulty}"));
+            }
+            if let Some(model) = fm.model {
+                d.paragraph(&format!("Model: {model}"));
+            }
             if let Some(date) = fm.completed {
                 d.paragraph(&format!("Completed: {date}"));
             }
@@ -267,16 +279,26 @@ fn build_phase_list(phases: &[(String, Document<Phase>)], flavor: RenderFlavor) 
         .iter()
         .map(|(stem, pd)| {
             let fm = &pd.frontmatter;
+            let difficulty = fm
+                .difficulty
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let model = fm
+                .model
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| "-".to_string());
             vec![
                 vec![ast::Inline::Text(fm.phase.to_string())],
                 vec![ast::Inline::Text(fm.title.clone())],
                 vec![ast::Inline::Text(fm.status.to_string())],
+                vec![ast::Inline::Text(difficulty)],
+                vec![ast::Inline::Text(model)],
                 vec![ast::Inline::Text(stem.clone())],
             ]
         })
         .collect();
     d.push(ast::Block::Table {
-        headers: header_cells(&["#", "Phase", "Status", "Stem"]),
+        headers: header_cells(&["#", "Phase", "Status", "Difficulty", "Model", "Stem"]),
         rows,
         aligns: first_col_right(flavor),
     });
@@ -577,6 +599,8 @@ mod tests {
                 },
                 commit: None,
                 review_sha: None,
+                difficulty: None,
+                model: None,
             },
             body: String::new(),
         }
@@ -747,6 +771,39 @@ mod tests {
     }
 
     #[test]
+    fn phase_detail_with_difficulty_and_model() {
+        let mut doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
+        doc.frontmatter.difficulty = Some(crate::model::Difficulty::Hard);
+        doc.frontmatter.model = Some(crate::model::ModelTier::Large);
+        let output = format_phase_detail("phase-1-core", &doc, None);
+        assert!(output.contains("Difficulty: hard"));
+        assert!(output.contains("Model: large"));
+
+        let md = format_phase_detail_md("phase-1-core", &doc, None);
+        assert!(md.contains("- **Difficulty:** hard"));
+        assert!(md.contains("- **Model:** large"));
+    }
+
+    #[test]
+    fn phase_detail_without_difficulty_model_omits_lines() {
+        let doc = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
+        let output = format_phase_detail("phase-1-core", &doc, None);
+        assert!(!output.contains("Difficulty:"));
+        assert!(!output.contains("Model:"));
+    }
+
+    #[test]
+    fn phase_list_shows_difficulty_and_model() {
+        let mut core = make_phase_doc(1, "Core", PhaseStatus::NotStarted);
+        core.frontmatter.difficulty = Some(crate::model::Difficulty::Easy);
+        core.frontmatter.model = Some(crate::model::ModelTier::Small);
+        let phases = vec![("phase-1-core".to_string(), core)];
+        let output = format_phase_list(&phases);
+        assert!(output.contains("| # | Phase | Status | Difficulty | Model | Stem |"));
+        assert!(output.contains("| 1 | Core | not-started | easy | small | phase-1-core |"));
+    }
+
+    #[test]
     fn phase_list_with_entries() {
         let phases = vec![
             (
@@ -759,9 +816,9 @@ mod tests {
             ),
         ];
         let output = format_phase_list(&phases);
-        assert!(output.contains("| # | Phase | Status | Stem |"));
-        assert!(output.contains("| 1 | Core | done | phase-1-core |"));
-        assert!(output.contains("| 2 | Service | in-progress | phase-2-service |"));
+        assert!(output.contains("| # | Phase | Status | Difficulty | Model | Stem |"));
+        assert!(output.contains("| 1 | Core | done | - | - | phase-1-core |"));
+        assert!(output.contains("| 2 | Service | in-progress | - | - | phase-2-service |"));
     }
 
     #[test]
@@ -1021,8 +1078,8 @@ mod tests {
         let output = format_phase_list_md(&phases);
         assert!(output.contains("## Phases"));
         assert!(output.contains("|---:"));
-        assert!(output.contains("| 1 | Core | done | phase-1-core |"));
-        assert!(output.contains("| 2 | Service | in-progress | phase-2-service |"));
+        assert!(output.contains("| 1 | Core | done | - | - | phase-1-core |"));
+        assert!(output.contains("| 2 | Service | in-progress | - | - | phase-2-service |"));
     }
 
     #[test]

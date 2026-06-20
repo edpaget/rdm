@@ -5,7 +5,7 @@ use chrono::Local;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus};
-use crate::ops::update::{BodyUpdate, TagsUpdate};
+use crate::ops::update::{BodyUpdate, DifficultyUpdate, ModelTierUpdate, TagsUpdate};
 use crate::store::{DirEntryKind, Store};
 
 /// Lists all phases in a roadmap, sorted by phase number.
@@ -101,6 +101,8 @@ pub fn create_phase(
             completed: None,
             commit: None,
             review_sha: None,
+            difficulty: None,
+            model: None,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -184,6 +186,39 @@ pub fn update_phase(
     }
     tags.apply(&mut doc.frontmatter.tags);
     body.apply(&mut doc.body)?;
+    crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
+    Ok(doc)
+}
+
+/// Sets (or clears) a phase's difficulty and/or model-tier estimate.
+///
+/// This is the dedicated entry point for difficulty-aware model selection
+/// metadata, kept separate from [`update_phase`] so the status/tags/body
+/// signature stays untouched. `difficulty` and `model` each follow the
+/// keep/set/clear protocol via [`DifficultyUpdate`] and [`ModelTierUpdate`].
+///
+/// # Errors
+///
+/// Returns [`Error::PhaseNotFound`] if the phase file doesn't exist,
+/// [`Error::Io`] if reading or writing fails, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the existing
+/// phase file has invalid frontmatter.
+pub fn set_phase_estimate(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+    difficulty: DifficultyUpdate,
+    model: ModelTierUpdate,
+) -> Result<Document<Phase>> {
+    let path = crate::paths::phase_path(project, roadmap, phase_stem);
+    if !store.exists(&path) {
+        return Err(Error::PhaseNotFound(phase_stem.to_string()));
+    }
+
+    let mut doc = crate::io::load_phase(store, project, roadmap, phase_stem)?;
+    difficulty.apply(&mut doc.frontmatter.difficulty);
+    model.apply(&mut doc.frontmatter.model);
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
     Ok(doc)
 }

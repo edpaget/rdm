@@ -284,6 +284,8 @@ pub fn promote_task(
             completed: None,
             commit: None,
             review_sha: None,
+            difficulty: None,
+            model: None,
         },
         body: task_doc.body,
     };

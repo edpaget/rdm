@@ -91,6 +91,8 @@ mod tests {
                 completed: Some(NaiveDate::from_ymd_opt(2026, 3, 13).unwrap()),
                 commit: None,
                 review_sha: None,
+                difficulty: None,
+                model: None,
             },
             body: "## Context\n\nDetails.\n".to_string(),
         };
@@ -112,6 +114,8 @@ mod tests {
                 completed: None,
                 commit: None,
                 review_sha: None,
+                difficulty: None,
+                model: None,
             },
             body: "Body text.\n".to_string(),
         };

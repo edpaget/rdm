@@ -47,6 +47,8 @@ fn write_and_load_phase() {
             completed: Some(NaiveDate::from_ymd_opt(2026, 3, 13).unwrap()),
             commit: None,
             review_sha: None,
+            difficulty: None,
+            model: None,
         },
         body: "## Steps\n\n1. Do things.\n".to_string(),
     };
@@ -1094,6 +1096,90 @@ fn update_phase_not_found() {
         rdm_core::ops::BodyUpdate::Keep,
         None,
         None,
+    );
+    assert!(matches!(result, Err(Error::PhaseNotFound(_))));
+}
+
+#[test]
+fn set_phase_estimate_sets_and_persists_both() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+
+    let doc = rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Set(ModelTier::Large),
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(doc.frontmatter.model, Some(ModelTier::Large));
+
+    // Persisted to disk, not just returned.
+    let loaded = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    assert_eq!(loaded.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(loaded.frontmatter.model, Some(ModelTier::Large));
+}
+
+#[test]
+fn set_phase_estimate_clears_one_keeps_other() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Easy),
+        rdm_core::ops::ModelTierUpdate::Set(ModelTier::Small),
+    )
+    .unwrap();
+
+    // Clear difficulty, keep model — fields are independent.
+    let doc = rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Clear,
+        rdm_core::ops::ModelTierUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.difficulty, None);
+    assert_eq!(doc.frontmatter.model, Some(ModelTier::Small));
+
+    // Inverse: keep difficulty (now None), clear model.
+    let doc = rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Keep,
+        rdm_core::ops::ModelTierUpdate::Clear,
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.difficulty, None);
+    assert_eq!(doc.frontmatter.model, None);
+}
+
+#[test]
+fn set_phase_estimate_not_found() {
+    let mut store = setup_with_roadmap();
+    let result = rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-99-nope",
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Keep,
     );
     assert!(matches!(result, Err(Error::PhaseNotFound(_))));
 }

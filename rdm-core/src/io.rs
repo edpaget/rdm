@@ -340,6 +340,8 @@ mod tests {
                 completed: None,
                 commit: None,
                 review_sha: None,
+                difficulty: None,
+                model: None,
             },
             body: "Phase body.".to_string(),
         };
@@ -419,6 +421,8 @@ mod tests {
                 completed: None,
                 commit: None,
                 review_sha: None,
+                difficulty: None,
+                model: None,
             },
             body: body.to_string(),
         };

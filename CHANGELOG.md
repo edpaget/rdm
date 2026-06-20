@@ -28,6 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   array of `{kind, identifier, project, title}`; `--project` selects the
   project. Available when built with the `git` feature.
 
+- Phases now carry optional `difficulty` (`trivial` | `easy` | `moderate` |
+  `hard`) and `model` tier (`small` | `medium` | `large`) fields. Set them at
+  creation with `rdm phase create --difficulty <d> --model <m>` or later with
+  `rdm phase update --difficulty <d>` / `--model <m>` (and `--clear-difficulty`
+  / `--clear-model` to remove them). Both are surfaced in `rdm phase show` and
+  `rdm phase list` (text and JSON) and reported by `rdm describe phase`. These
+  fields are foundational metadata for upcoming difficulty-aware model
+  selection.
 - The rdm MCP server now exposes worktree lifecycle tools — `rdm_worktree_add`,
   `rdm_worktree_list`, and `rdm_worktree_remove` — mirroring the `rdm worktree`
   CLI commands. They run against the project (code) repo discovered from the

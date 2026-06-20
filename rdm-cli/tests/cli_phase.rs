@@ -320,13 +320,285 @@ fn phase_list() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("| # | Phase | Status | Stem |")
+            predicate::str::contains("| # | Phase | Status | Difficulty | Model | Stem |")
                 .and(predicate::str::contains(
-                    "| 1 | Core Valuation | not-started | phase-1-core |",
+                    "| 1 | Core Valuation | not-started | - | - | phase-1-core |",
                 ))
                 .and(predicate::str::contains(
-                    "| 2 | Keeper Service | not-started | phase-2-service |",
+                    "| 2 | Keeper Service | not-started | - | - | phase-2-service |",
                 )),
+        );
+}
+
+#[test]
+fn phase_create_with_difficulty_and_model() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--title",
+            "Core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--difficulty",
+            "hard",
+            "--model",
+            "large",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // Human show reflects both
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Difficulty: hard")
+                .and(predicate::str::contains("Model: large")),
+        );
+
+    // JSON show reflects both
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"difficulty\": \"hard\"")
+                .and(predicate::str::contains("\"model\": \"large\"")),
+        );
+}
+
+#[test]
+fn phase_update_sets_and_clears_difficulty_and_model() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    // Set both
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--difficulty",
+            "easy",
+            "--model",
+            "small",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Difficulty: easy")
+                .and(predicate::str::contains("Model: small")),
+        );
+
+    // Clear both
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--clear-difficulty",
+            "--clear-model",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Difficulty:")
+                .not()
+                .and(predicate::str::contains("Model:").not()),
+        );
+}
+
+#[test]
+fn phase_update_difficulty_conflicts_with_clear() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--difficulty",
+            "hard",
+            "--clear-difficulty",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn phase_update_model_conflicts_with_clear() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--model",
+            "large",
+            "--clear-model",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn phase_list_shows_difficulty_and_model_columns() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--title",
+            "Core Valuation",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--difficulty",
+            "moderate",
+            "--model",
+            "medium",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // Human list shows the populated columns
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["phase", "list", "--roadmap", "two-way", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("| # | Phase | Status | Difficulty | Model | Stem |").and(
+                predicate::str::contains(
+                    "| 1 | Core Valuation | not-started | moderate | medium | phase-1-core |",
+                ),
+            ),
+        );
+
+    // JSON list carries the fields
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "list",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"difficulty\": \"moderate\"")
+                .and(predicate::str::contains("\"model\": \"medium\"")),
         );
 }
 

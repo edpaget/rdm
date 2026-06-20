@@ -184,6 +184,95 @@ pub enum Priority {
     Critical,
 }
 
+/// Estimated difficulty of a roadmap phase.
+///
+/// Variants are ordered from lowest to highest:
+/// `Trivial < Easy < Moderate < Hard`. Phase 3's estimator maps a difficulty
+/// to a [`ModelTier`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Difficulty {
+    /// Trivial work (e.g. a one-line change).
+    Trivial,
+    /// Easy work.
+    Easy,
+    /// Moderate work.
+    Moderate,
+    /// Hard work.
+    Hard,
+}
+
+impl fmt::Display for Difficulty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Difficulty::Trivial => write!(f, "trivial"),
+            Difficulty::Easy => write!(f, "easy"),
+            Difficulty::Moderate => write!(f, "moderate"),
+            Difficulty::Hard => write!(f, "hard"),
+        }
+    }
+}
+
+impl FromStr for Difficulty {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "trivial" => Ok(Difficulty::Trivial),
+            "easy" => Ok(Difficulty::Easy),
+            "moderate" => Ok(Difficulty::Moderate),
+            "hard" => Ok(Difficulty::Hard),
+            other => Err(ParseError::new(
+                "difficulty",
+                other,
+                "trivial, easy, moderate, or hard",
+            )),
+        }
+    }
+}
+
+/// Model tier that should run a roadmap phase.
+///
+/// Variants are ordered from smallest to largest: `Small < Medium < Large`.
+/// A concrete tier→model-id mapping, if ever needed, is left to later config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelTier {
+    /// Small (cheapest, least capable) tier.
+    Small,
+    /// Medium tier.
+    Medium,
+    /// Large (most capable) tier.
+    Large,
+}
+
+impl fmt::Display for ModelTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModelTier::Small => write!(f, "small"),
+            ModelTier::Medium => write!(f, "medium"),
+            ModelTier::Large => write!(f, "large"),
+        }
+    }
+}
+
+impl FromStr for ModelTier {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "small" => Ok(ModelTier::Small),
+            "medium" => Ok(ModelTier::Medium),
+            "large" => Ok(ModelTier::Large),
+            other => Err(ParseError::new(
+                "model tier",
+                other,
+                "small, medium, or large",
+            )),
+        }
+    }
+}
+
 /// Filter value for task list status filtering.
 ///
 /// Wraps the special `"all"` keyword alongside real [`TaskStatus`] values,
@@ -306,6 +395,12 @@ pub struct Phase {
     /// Used to scope review prompts to the branch/worktree that produced it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_sha: Option<String>,
+    /// Estimated difficulty of the phase, if assessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<Difficulty>,
+    /// Model tier that should run the phase, if assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelTier>,
 }
 
 impl Phase {
@@ -459,6 +554,74 @@ mod tests {
     }
 
     #[test]
+    fn difficulty_display_from_str_round_trip() {
+        let variants = [
+            (Difficulty::Trivial, "trivial"),
+            (Difficulty::Easy, "easy"),
+            (Difficulty::Moderate, "moderate"),
+            (Difficulty::Hard, "hard"),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: Difficulty = expected.parse().unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn difficulty_from_str_invalid_is_matchable_parse_error() {
+        let err = "impossible".parse::<Difficulty>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid difficulty: 'impossible' (expected trivial, easy, moderate, or hard)"
+        );
+    }
+
+    #[test]
+    fn difficulty_ordering() {
+        assert!(Difficulty::Hard > Difficulty::Moderate);
+        assert!(Difficulty::Moderate > Difficulty::Easy);
+        assert!(Difficulty::Easy > Difficulty::Trivial);
+    }
+
+    #[test]
+    fn model_tier_display_from_str_round_trip() {
+        let variants = [
+            (ModelTier::Small, "small"),
+            (ModelTier::Medium, "medium"),
+            (ModelTier::Large, "large"),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: ModelTier = expected.parse().unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn model_tier_from_str_invalid_is_matchable_parse_error() {
+        let err = "xl".parse::<ModelTier>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid model tier: 'xl' (expected small, medium, or large)"
+        );
+    }
+
+    #[test]
+    fn model_tier_ordering() {
+        assert!(ModelTier::Large > ModelTier::Medium);
+        assert!(ModelTier::Medium > ModelTier::Small);
+    }
+
+    #[test]
+    fn difficulty_model_tier_yaml_round_trip() {
+        let yaml = serde_yaml::to_string(&Difficulty::Hard).unwrap();
+        assert_eq!(yaml.trim(), "hard");
+        let yaml = serde_yaml::to_string(&ModelTier::Large).unwrap();
+        assert_eq!(yaml.trim(), "large");
+    }
+
+    #[test]
     fn task_status_filter_all() {
         let f: TaskStatusFilter = "all".parse().unwrap();
         assert_eq!(f, TaskStatusFilter::All);
@@ -562,6 +725,57 @@ status: not-started
         assert_eq!(phase.status, PhaseStatus::NotStarted);
         assert_eq!(phase.completed, None);
         assert_eq!(phase.commit, None);
+    }
+
+    #[test]
+    fn phase_deserialize_missing_difficulty_and_model_is_none() {
+        let yaml = r#"
+phase: 2
+title: Keeper service threading
+status: not-started
+"#;
+        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(phase.difficulty, None);
+        assert_eq!(phase.model, None);
+    }
+
+    #[test]
+    fn phase_serialize_omits_none_difficulty_and_model() {
+        let phase = Phase {
+            phase: 1,
+            title: "Core".to_string(),
+            status: PhaseStatus::NotStarted,
+            tags: None,
+            completed: None,
+            commit: None,
+            review_sha: None,
+            difficulty: None,
+            model: None,
+        };
+        let yaml = serde_yaml::to_string(&phase).unwrap();
+        assert!(!yaml.contains("difficulty"));
+        assert!(!yaml.contains("model"));
+    }
+
+    #[test]
+    fn phase_round_trips_difficulty_and_model() {
+        let phase = Phase {
+            phase: 1,
+            title: "Core".to_string(),
+            status: PhaseStatus::NotStarted,
+            tags: None,
+            completed: None,
+            commit: None,
+            review_sha: None,
+            difficulty: Some(Difficulty::Hard),
+            model: Some(ModelTier::Large),
+        };
+        let yaml = serde_yaml::to_string(&phase).unwrap();
+        assert!(yaml.contains("difficulty: hard"));
+        assert!(yaml.contains("model: large"));
+        let parsed: Phase = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.difficulty, Some(Difficulty::Hard));
+        assert_eq!(parsed.model, Some(ModelTier::Large));
     }
 
     #[test]

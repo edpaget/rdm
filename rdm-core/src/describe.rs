@@ -177,6 +177,20 @@ impl Describe for crate::model::Phase {
                     enum_values: &[],
                     description: "Git commit SHA associated with phase completion, if any.",
                 },
+                FieldInfo {
+                    name: "difficulty",
+                    type_name: "enum",
+                    required: false,
+                    enum_values: &["trivial", "easy", "moderate", "hard"],
+                    description: "Estimated difficulty of the phase, if assessed.",
+                },
+                FieldInfo {
+                    name: "model",
+                    type_name: "enum",
+                    required: false,
+                    enum_values: &["small", "medium", "large"],
+                    description: "Model tier that should run the phase, if assigned.",
+                },
             ],
         }
     }
@@ -397,6 +411,8 @@ mod tests {
             completed: Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()),
             commit: Some("abc123".to_string()),
             review_sha: None,
+            difficulty: Some(crate::model::Difficulty::Hard),
+            model: Some(crate::model::ModelTier::Large),
         };
         assert_fields_match(&sample);
     }

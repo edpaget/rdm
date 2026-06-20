@@ -7,7 +7,7 @@
 //! matchable [`Error::ConflictingUpdate`].
 
 use crate::error::{Error, Result};
-use crate::model::Priority;
+use crate::model::{Difficulty, ModelTier, Priority};
 
 /// How an update should treat a document's markdown body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +149,86 @@ impl PriorityUpdate {
     }
 }
 
+/// How an update should treat a phase's optional difficulty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DifficultyUpdate {
+    /// Leave the existing difficulty unchanged.
+    Keep,
+    /// Set the difficulty to this value.
+    Set(Difficulty),
+    /// Clear the difficulty (set it to none).
+    Clear,
+}
+
+impl DifficultyUpdate {
+    /// Builds a [`DifficultyUpdate`] from a frontend's `difficulty` value and
+    /// `clear` flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConflictingUpdate`] if both `difficulty` and `clear`
+    /// are set.
+    pub fn from_args(difficulty: Option<Difficulty>, clear: bool) -> Result<Self> {
+        match (difficulty, clear) {
+            (Some(_), true) => Err(Error::ConflictingUpdate {
+                field: "difficulty".to_string(),
+            }),
+            (Some(d), false) => Ok(DifficultyUpdate::Set(d)),
+            (None, true) => Ok(DifficultyUpdate::Clear),
+            (None, false) => Ok(DifficultyUpdate::Keep),
+        }
+    }
+
+    /// Applies this update to a phase's optional `difficulty` in place.
+    pub(crate) fn apply(self, difficulty: &mut Option<Difficulty>) {
+        match self {
+            DifficultyUpdate::Keep => {}
+            DifficultyUpdate::Set(d) => *difficulty = Some(d),
+            DifficultyUpdate::Clear => *difficulty = None,
+        }
+    }
+}
+
+/// How an update should treat a phase's optional model tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelTierUpdate {
+    /// Leave the existing model tier unchanged.
+    Keep,
+    /// Set the model tier to this value.
+    Set(ModelTier),
+    /// Clear the model tier (set it to none).
+    Clear,
+}
+
+impl ModelTierUpdate {
+    /// Builds a [`ModelTierUpdate`] from a frontend's `model` value and
+    /// `clear` flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConflictingUpdate`] if both `model` and `clear` are
+    /// set.
+    pub fn from_args(model: Option<ModelTier>, clear: bool) -> Result<Self> {
+        match (model, clear) {
+            (Some(_), true) => Err(Error::ConflictingUpdate {
+                field: "model".to_string(),
+            }),
+            (Some(m), false) => Ok(ModelTierUpdate::Set(m)),
+            (None, true) => Ok(ModelTierUpdate::Clear),
+            (None, false) => Ok(ModelTierUpdate::Keep),
+        }
+    }
+
+    /// Applies this update to a phase's optional `model` in place.
+    pub(crate) fn apply(self, model: &mut Option<ModelTier>) {
+        match self {
+            ModelTierUpdate::Keep => {}
+            ModelTierUpdate::Set(m) => *model = Some(m),
+            ModelTierUpdate::Clear => *model = None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +264,54 @@ mod tests {
             "cannot set both 'priority' and 'clear_priority'"
         );
         assert!(matches!(err, Error::ConflictingUpdate { field } if field == "priority"));
+
+        let err = DifficultyUpdate::from_args(Some(Difficulty::Hard), true).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "cannot set both 'difficulty' and 'clear_difficulty'"
+        );
+        assert!(matches!(err, Error::ConflictingUpdate { field } if field == "difficulty"));
+
+        let err = ModelTierUpdate::from_args(Some(ModelTier::Large), true).unwrap_err();
+        assert_eq!(err.to_string(), "cannot set both 'model' and 'clear_model'");
+        assert!(matches!(err, Error::ConflictingUpdate { field } if field == "model"));
+    }
+
+    #[test]
+    fn difficulty_apply_arms() {
+        // Keep: leaves both Some and None untouched.
+        let mut d = Some(Difficulty::Hard);
+        DifficultyUpdate::Keep.apply(&mut d);
+        assert_eq!(d, Some(Difficulty::Hard));
+        let mut d = None;
+        DifficultyUpdate::Keep.apply(&mut d);
+        assert_eq!(d, None);
+
+        // Set: overwrites None and an existing value.
+        let mut d = None;
+        DifficultyUpdate::Set(Difficulty::Easy).apply(&mut d);
+        assert_eq!(d, Some(Difficulty::Easy));
+        DifficultyUpdate::Set(Difficulty::Moderate).apply(&mut d);
+        assert_eq!(d, Some(Difficulty::Moderate));
+
+        // Clear: drops an existing value.
+        DifficultyUpdate::Clear.apply(&mut d);
+        assert_eq!(d, None);
+    }
+
+    #[test]
+    fn model_tier_apply_arms() {
+        let mut m = Some(ModelTier::Large);
+        ModelTierUpdate::Keep.apply(&mut m);
+        assert_eq!(m, Some(ModelTier::Large));
+
+        let mut m = None;
+        ModelTierUpdate::Set(ModelTier::Small).apply(&mut m);
+        assert_eq!(m, Some(ModelTier::Small));
+        ModelTierUpdate::Set(ModelTier::Medium).apply(&mut m);
+        assert_eq!(m, Some(ModelTier::Medium));
+
+        ModelTierUpdate::Clear.apply(&mut m);
+        assert_eq!(m, None);
     }
 }

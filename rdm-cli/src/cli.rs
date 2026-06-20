@@ -8,7 +8,9 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use rdm_core::model::{PhaseStatus, Priority, RoadmapSort, TaskStatus, TaskStatusFilter};
+use rdm_core::model::{
+    Difficulty, ModelTier, PhaseStatus, Priority, RoadmapSort, TaskStatus, TaskStatusFilter,
+};
 use rdm_core::search::ItemKind;
 
 #[derive(Parser)]
@@ -467,6 +469,12 @@ pub(crate) enum PhaseCommand {
         /// Comma-separated tags.
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
+        /// Estimated difficulty (trivial, easy, moderate, hard).
+        #[arg(long)]
+        difficulty: Option<Difficulty>,
+        /// Model tier that should run the phase (small, medium, large).
+        #[arg(long)]
+        model: Option<ModelTier>,
         /// Body content for the phase.
         #[arg(long)]
         body: Option<String>,
@@ -516,6 +524,18 @@ pub(crate) enum PhaseCommand {
         /// New comma-separated tags (replaces existing).
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
+        /// New estimated difficulty (trivial, easy, moderate, hard).
+        #[arg(long, conflicts_with = "clear_difficulty")]
+        difficulty: Option<Difficulty>,
+        /// Remove the difficulty from this phase.
+        #[arg(long, conflicts_with = "difficulty")]
+        clear_difficulty: bool,
+        /// New model tier (small, medium, large).
+        #[arg(long, conflicts_with = "clear_model")]
+        model: Option<ModelTier>,
+        /// Remove the model tier from this phase.
+        #[arg(long, conflicts_with = "model")]
+        clear_model: bool,
         /// Body content for the phase.
         #[arg(long, conflicts_with = "clear_body")]
         body: Option<String>,

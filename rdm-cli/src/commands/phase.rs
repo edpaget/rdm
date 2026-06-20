@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
-use rdm_core::ops::{BodyUpdate, TagsUpdate};
+use rdm_core::ops::{BodyUpdate, DifficultyUpdate, ModelTierUpdate, TagsUpdate};
 
 use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
 use crate::paths;
@@ -65,12 +65,17 @@ pub fn run(
             project,
             number,
             tags,
+            difficulty,
+            model,
             body,
             no_edit,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
+            let difficulty_update = DifficultyUpdate::from_args(difficulty, false)?;
+            let model_update = ModelTierUpdate::from_args(model, false)?;
+            let has_estimate = difficulty.is_some() || model.is_some();
             let doc = commit_mutation(
                 store,
                 &project,
@@ -78,7 +83,7 @@ pub fn run(
                 staging,
                 "failed to create phase",
                 |s| {
-                    rdm_core::ops::phase::create_phase(
+                    let doc = rdm_core::ops::phase::create_phase(
                         s,
                         &project,
                         &roadmap,
@@ -87,7 +92,20 @@ pub fn run(
                         number,
                         body.as_deref(),
                         tags,
-                    )
+                    )?;
+                    if has_estimate {
+                        let stem = doc.frontmatter.stem(&slug);
+                        rdm_core::ops::phase::set_phase_estimate(
+                            s,
+                            &project,
+                            &roadmap,
+                            &stem,
+                            difficulty_update,
+                            model_update,
+                        )
+                    } else {
+                        Ok(doc)
+                    }
                 },
             )?;
             let stem = doc.frontmatter.stem(&slug);
@@ -188,6 +206,10 @@ pub fn run(
             roadmap,
             project,
             tags,
+            difficulty,
+            clear_difficulty,
+            model,
+            clear_model,
             body,
             clear_body,
             commit,
@@ -219,6 +241,10 @@ pub fn run(
             };
             #[cfg(not(feature = "git"))]
             let review_sha = None;
+            let difficulty_update = DifficultyUpdate::from_args(difficulty, clear_difficulty)?;
+            let model_update = ModelTierUpdate::from_args(model, clear_model)?;
+            let has_estimate = !matches!(difficulty_update, DifficultyUpdate::Keep)
+                || !matches!(model_update, ModelTierUpdate::Keep);
             let doc = commit_mutation(
                 store,
                 &project,
@@ -226,9 +252,21 @@ pub fn run(
                 staging,
                 "failed to update phase",
                 |s| {
-                    rdm_core::ops::phase::update_phase(
+                    let doc = rdm_core::ops::phase::update_phase(
                         s, &project, &roadmap, &stem, status, tags, body, commit, review_sha,
-                    )
+                    )?;
+                    if has_estimate {
+                        rdm_core::ops::phase::set_phase_estimate(
+                            s,
+                            &project,
+                            &roadmap,
+                            &stem,
+                            difficulty_update,
+                            model_update,
+                        )
+                    } else {
+                        Ok(doc)
+                    }
                 },
             )
             .map_err(map_body_clobber)?;
