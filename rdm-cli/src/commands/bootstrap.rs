@@ -236,8 +236,7 @@ fn clone_fresh(
     rdm_core::ops::init::init_with_config(&mut store, rdm_core::config::Config::default())
         .context("failed to initialize cloned repo as a plan repo")?;
     store
-        .git()
-        .git_commit("rdm: initialize plan repo via bootstrap --init")
+        .commit_now("rdm: initialize plan repo via bootstrap --init")
         .context("failed to commit initial plan repo state")?;
     Ok(target.to_path_buf())
 }

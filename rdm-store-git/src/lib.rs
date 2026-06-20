@@ -304,6 +304,21 @@ impl GitStore {
         &mut self.git
     }
 
+    /// Always creates a git commit from the current working-directory state,
+    /// regardless of staging mode.
+    ///
+    /// Use this when a commit MUST land — the hook handlers applying `Done:`
+    /// directives and `rdm bootstrap --init` seeding a fresh plan repo — as
+    /// opposed to [`Store::commit`], which honors staging mode and skips the
+    /// git commit while staging is enabled. No-op if the working tree already
+    /// matches HEAD.
+    ///
+    /// # Errors
+    /// Returns [`Error::Git`] if the commit cannot be created.
+    pub fn commit_now(&self, message: &str) -> Result<()> {
+        self.git.git_commit(message)
+    }
+
     /// Generates a commit message from the set of touched paths.
     fn commit_message(touched: &BTreeMap<String, ChangeKind>) -> String {
         let writes: Vec<&String> = touched
@@ -672,6 +687,48 @@ mod tests {
         let commit = head.peel_to_commit().unwrap();
         let msg = String::from_utf8_lossy(commit.message_raw_sloppy());
         assert_eq!(msg, "my custom message");
+    }
+
+    #[test]
+    fn commit_now_commits_even_in_staging_mode() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap().with_staging_mode(true);
+
+        // Seed an initial commit so HEAD exists (toggle staging off, write,
+        // commit, toggle back on).
+        store.staging_mode = false;
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store.staging_mode = true;
+
+        // Capture HEAD before staging a change.
+        let repo = gix::open(dir.path()).unwrap();
+        let head_before = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
+
+        // Stage a file: staging mode flushes to disk but creates no git commit.
+        store
+            .write(&RelPath::new("new.md").unwrap(), "new content".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        let head_after_stage = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
+        assert_eq!(
+            head_before, head_after_stage,
+            "staged commit must not move HEAD"
+        );
+
+        // commit_now must land a real commit regardless of staging mode.
+        store.commit_now("msg").unwrap();
+        let mut head = repo.head().unwrap();
+        let commit = head.peel_to_commit().unwrap();
+        assert_ne!(
+            head_before,
+            commit.id().detach(),
+            "commit_now must advance HEAD"
+        );
+        let msg = String::from_utf8_lossy(commit.message_raw_sloppy());
+        assert_eq!(msg, "msg");
     }
 
     #[test]

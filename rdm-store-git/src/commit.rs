@@ -201,9 +201,13 @@ impl GitRepo {
 
     /// Creates an explicit git commit with the given message.
     ///
-    /// This is intended for use in staging mode, where [`Store::commit`]
-    /// flushes to disk but skips the git commit. Calling this method creates
-    /// a commit from the current working directory state.
+    /// This is the low-level commit primitive. Prefer the blessed
+    /// caller-facing API [`GitStore::commit_now`], which delegates here, when
+    /// a commit must land regardless of staging mode (e.g. hook handlers
+    /// applying `Done:` directives or `rdm bootstrap --init`). Unlike
+    /// [`Store::commit`], which honors staging mode and skips the git commit
+    /// while staging is enabled, this always commits from the current working
+    /// directory state.
     ///
     /// Returns `Ok(())` if the working directory matches HEAD (no-op).
     ///
@@ -212,6 +216,7 @@ impl GitRepo {
     /// Returns `Error::Git` if the commit cannot be created.
     ///
     /// [`Store::commit`]: rdm_core::store::Store::commit
+    /// [`GitStore::commit_now`]: crate::GitStore::commit_now
     pub fn git_commit(&self, message: &str) -> Result<()> {
         let status = self.git_status()?;
         if status.is_empty() {
