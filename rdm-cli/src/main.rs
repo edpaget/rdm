@@ -226,6 +226,11 @@ fn run() -> Result<()> {
         Command::List { project, all } => {
             commands::list::run(&root, &repo_config, staging, format, project, all)?
         }
+
+        Command::Next { roadmap, project } => {
+            let mut store = commands::make_store(&root, staging)?;
+            commands::next::run(&mut store, &repo_config, format, roadmap, project)?;
+        }
     }
 
     Ok(())

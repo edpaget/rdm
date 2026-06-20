@@ -3561,3 +3561,201 @@ fn update_roadmap_empty_body_allowed_with_flag() {
     .unwrap();
     assert!(updated.body.is_empty());
 }
+
+// -- next_actionable tests --
+
+use rdm_core::ops::next::{NextActionable, next_actionable};
+
+/// Creates `count` phases in a roadmap, returning nothing. Phases are numbered
+/// 1..=count with stems `phase-N-pN`.
+fn make_phases(store: &mut MemoryStore, roadmap: &str, count: u32) {
+    for n in 1..=count {
+        rdm_core::ops::phase::create_phase(
+            store,
+            "fbm",
+            roadmap,
+            &format!("p{n}"),
+            &format!("Phase {n}"),
+            Some(n),
+            None,
+            None,
+        )
+        .unwrap();
+    }
+}
+
+fn set_status(store: &mut MemoryStore, roadmap: &str, stem: &str, status: PhaseStatus) {
+    rdm_core::ops::phase::update_phase(
+        store,
+        "fbm",
+        roadmap,
+        stem,
+        Some(status),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+    )
+    .unwrap();
+}
+
+#[test]
+fn next_actionable_fresh_roadmap_returns_phase_one() {
+    let mut store = setup_with_roadmap();
+    make_phases(&mut store, "two-way", 3);
+    let result = next_actionable(&store, "fbm", "two-way").unwrap();
+    match result {
+        NextActionable::Phase(p) => {
+            assert_eq!(p.number, 1);
+            assert_eq!(p.stem, "phase-1-p1");
+            assert_eq!(p.status, PhaseStatus::NotStarted);
+            assert_eq!(p.roadmap, "two-way");
+        }
+        other => panic!("expected Phase, got {other:?}"),
+    }
+}
+
+#[test]
+fn next_actionable_in_progress_outranks_later_not_started() {
+    let mut store = setup_with_roadmap();
+    make_phases(&mut store, "two-way", 3);
+    set_status(&mut store, "two-way", "phase-1-p1", PhaseStatus::Done);
+    set_status(&mut store, "two-way", "phase-2-p2", PhaseStatus::InProgress);
+    // phase 3 left not-started
+    let result = next_actionable(&store, "fbm", "two-way").unwrap();
+    match result {
+        NextActionable::Phase(p) => {
+            assert_eq!(p.number, 2);
+            assert_eq!(p.stem, "phase-2-p2");
+            assert_eq!(p.status, PhaseStatus::InProgress);
+        }
+        other => panic!("expected Phase 2, got {other:?}"),
+    }
+}
+
+#[test]
+fn next_actionable_all_terminal_returns_nothing() {
+    let mut store = setup_with_roadmap();
+    make_phases(&mut store, "two-way", 2);
+    set_status(&mut store, "two-way", "phase-1-p1", PhaseStatus::Done);
+    set_status(&mut store, "two-way", "phase-2-p2", PhaseStatus::WontFix);
+    let result = next_actionable(&store, "fbm", "two-way").unwrap();
+    assert_eq!(result, NextActionable::Nothing);
+}
+
+#[test]
+fn next_actionable_skips_non_actionable_non_terminal() {
+    let mut store = setup_with_roadmap();
+    make_phases(&mut store, "two-way", 3);
+    set_status(
+        &mut store,
+        "two-way",
+        "phase-1-p1",
+        PhaseStatus::NeedsReview,
+    );
+    set_status(&mut store, "two-way", "phase-2-p2", PhaseStatus::Reviewed);
+    set_status(&mut store, "two-way", "phase-3-p3", PhaseStatus::Blocked);
+    let result = next_actionable(&store, "fbm", "two-way").unwrap();
+    assert_eq!(result, NextActionable::Nothing);
+}
+
+#[test]
+fn next_actionable_reviewed_phase_is_skipped_for_later_not_started() {
+    let mut store = setup_with_roadmap();
+    make_phases(&mut store, "two-way", 2);
+    set_status(&mut store, "two-way", "phase-1-p1", PhaseStatus::Reviewed);
+    // phase 2 left not-started: a reviewed phase must not outrank it.
+    let result = next_actionable(&store, "fbm", "two-way").unwrap();
+    match result {
+        NextActionable::Phase(p) => {
+            assert_eq!(p.number, 2);
+            assert_eq!(p.status, PhaseStatus::NotStarted);
+        }
+        other => panic!("expected Phase 2, got {other:?}"),
+    }
+}
+
+#[test]
+fn next_actionable_unmet_dependency_blocks() {
+    let mut store = setup_with_roadmap();
+    make_phases(&mut store, "two-way", 1);
+    // A dependency roadmap with an open (not-started) phase.
+    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "dep", "Dep", None, None, None)
+        .unwrap();
+    make_phases(&mut store, "dep", 1);
+    rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "two-way", "dep").unwrap();
+
+    let result = next_actionable(&store, "fbm", "two-way").unwrap();
+    assert_eq!(
+        result,
+        NextActionable::BlockedOnDependencies {
+            unmet: vec!["dep".to_string()]
+        }
+    );
+}
+
+#[test]
+fn next_actionable_missing_dependency_roadmap_is_unmet() {
+    let mut store = setup_with_roadmap();
+    make_phases(&mut store, "two-way", 1);
+    // Point at a dependency roadmap that does not exist, by writing the
+    // dependency directly (add_dependency would reject a missing target).
+    let mut doc = rdm_core::io::load_roadmap(&store, "fbm", "two-way").unwrap();
+    doc.frontmatter.dependencies = Some(vec!["ghost".to_string()]);
+    rdm_core::io::write_roadmap(&mut store, "fbm", "two-way", &doc).unwrap();
+
+    let result = next_actionable(&store, "fbm", "two-way").unwrap();
+    assert_eq!(
+        result,
+        NextActionable::BlockedOnDependencies {
+            unmet: vec!["ghost".to_string()]
+        }
+    );
+}
+
+#[test]
+fn next_actionable_met_dependency_proceeds() {
+    let mut store = setup_with_roadmap();
+    make_phases(&mut store, "two-way", 1);
+    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "dep", "Dep", None, None, None)
+        .unwrap();
+    make_phases(&mut store, "dep", 1);
+    set_status(&mut store, "dep", "phase-1-p1", PhaseStatus::Done);
+    rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "two-way", "dep").unwrap();
+
+    let result = next_actionable(&store, "fbm", "two-way").unwrap();
+    match result {
+        NextActionable::Phase(p) => assert_eq!(p.number, 1),
+        other => panic!("expected Phase, got {other:?}"),
+    }
+}
+
+#[test]
+fn next_actionable_unknown_roadmap_errors() {
+    let store = setup_with_roadmap();
+    let result = next_actionable(&store, "fbm", "does-not-exist");
+    assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
+}
+
+#[test]
+fn next_actionable_carries_difficulty_and_model() {
+    let mut store = setup_with_roadmap();
+    make_phases(&mut store, "two-way", 1);
+    rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-p1",
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Set(ModelTier::Large),
+    )
+    .unwrap();
+    let result = next_actionable(&store, "fbm", "two-way").unwrap();
+    match result {
+        NextActionable::Phase(p) => {
+            assert_eq!(p.difficulty, Some(Difficulty::Hard));
+            assert_eq!(p.model, Some(ModelTier::Large));
+        }
+        other => panic!("expected Phase, got {other:?}"),
+    }
+}

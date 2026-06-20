@@ -28,6 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   array of `{kind, identifier, project, title}`; `--project` selects the
   project. Available when built with the `git` feature.
 
+- `rdm next --roadmap <slug>` prints the next actionable phase in a roadmap
+  (text and JSON): the lowest-numbered phase that is `not-started` or
+  `in-progress`, skipping phases under review, done, blocked, or won't-fix.
+  Roadmap dependencies are honored — if a dependency roadmap is not yet
+  complete, the command reports a distinct `blocked-on-dependencies` result
+  listing the unmet slugs; when nothing is actionable it reports `nothing`. All
+  three outcomes exit 0. `--roadmap` is required (scope is one roadmap at a
+  time; there is no project-wide scan).
 - Phases now carry optional `difficulty` (`trivial` | `easy` | `moderate` |
   `hard`) and `model` tier (`small` | `medium` | `large`) fields. Set them at
   creation with `rdm phase create --difficulty <d> --model <m>` or later with

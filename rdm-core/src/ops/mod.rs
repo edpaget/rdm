@@ -8,6 +8,8 @@
 pub mod index;
 /// Plan repo initialization.
 pub mod init;
+/// Next-actionable-phase selection for a single roadmap.
+pub mod next;
 /// Phase operations: list, create, update, remove, resolve.
 pub mod phase;
 /// Project operations: create, list.

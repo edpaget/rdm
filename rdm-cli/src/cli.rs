@@ -267,6 +267,15 @@ pub(crate) enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Show the next actionable phase in a roadmap.
+    Next {
+        /// Roadmap to resolve the next actionable phase for.
+        #[arg(long)]
+        roadmap: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
