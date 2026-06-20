@@ -6,6 +6,13 @@ use super::{run_post_commit_hook, run_post_merge_hook};
 use crate::HookCommand;
 
 pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
+    // Hooks are automated plumbing: the PostMerge / PostCommit arms below force
+    // staging off so the Done: status updates they apply always land as a
+    // commit, regardless of the user's resolved staging preference (--stage /
+    // RDM_STAGE / stage = true). Staging is a human "batch my edits" affordance
+    // that makes no sense for an automated hook — honoring it would leave the
+    // update written-but-uncommitted, silently losing the Done: directive.
+    let _ = staging;
     match command {
         HookCommand::Install { force } => {
             let cwd = std::env::current_dir().context("cannot determine current directory")?;
@@ -77,7 +84,7 @@ pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
         HookCommand::PostMerge { since } => {
             // Capture errors so we can log them, but never propagate — the hook
             // must always exit 0 to avoid blocking git.
-            if let Err(err) = run_post_merge_hook(root, staging, since.as_deref()) {
+            if let Err(err) = run_post_merge_hook(root, false, since.as_deref()) {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let logger = crate::hook_log::HookLogger::new(&cwd);
                 let msg = format!("{err:#}");
@@ -85,7 +92,7 @@ pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
             }
         }
         HookCommand::PostCommit => {
-            if let Err(err) = run_post_commit_hook(root, staging) {
+            if let Err(err) = run_post_commit_hook(root, false) {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let logger = crate::hook_log::HookLogger::new(&cwd);
                 let msg = format!("{err:#}");

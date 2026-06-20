@@ -770,6 +770,187 @@ fn hook_post_commit_marks_phase_done_on_default_branch() {
 }
 
 #[test]
+fn hook_post_commit_commits_even_when_staging_enabled() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    // We're on `main`. Create a commit with a Done: directive.
+    let dummy_path = project_dir.path().join("dummy.txt");
+    fs::write(&dummy_path, "trigger commit").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: land it\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    // Capture the plan repo's HEAD before running the hook.
+    let head_before = git_cmd()
+        .args(["rev-parse", "HEAD"])
+        .current_dir(plan_dir.path())
+        .output()
+        .unwrap();
+    let head_before = String::from_utf8_lossy(&head_before.stdout)
+        .trim()
+        .to_string();
+
+    // Run the hook with staging forced on via RDM_STAGE. The hook must override
+    // this and commit anyway, otherwise the Done: update is silently lost.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .env("RDM_STAGE", "true")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    // Phase is marked done.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"));
+
+    // A real commit landed: HEAD changed.
+    let head_after = git_cmd()
+        .args(["rev-parse", "HEAD"])
+        .current_dir(plan_dir.path())
+        .output()
+        .unwrap();
+    let head_after = String::from_utf8_lossy(&head_after.stdout)
+        .trim()
+        .to_string();
+    assert_ne!(
+        head_before, head_after,
+        "hook should have created a commit in the plan repo despite staging mode"
+    );
+
+    // Nothing left staged-but-uncommitted: the tree is clean.
+    let status = git_cmd()
+        .args(["status", "--porcelain"])
+        .current_dir(plan_dir.path())
+        .output()
+        .unwrap();
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status.trim().is_empty(),
+        "plan repo working tree should be clean after hook, got: {status:?}"
+    );
+}
+
+#[test]
+fn hook_post_merge_commits_even_when_staging_enabled() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    // Create a project commit with a Done: directive.
+    let dummy_path = project_dir.path().join("dummy.txt");
+    fs::write(&dummy_path, "trigger commit").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: merge stuff\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    // Capture the plan repo's HEAD before running the hook.
+    let head_before = git_cmd()
+        .args(["rev-parse", "HEAD"])
+        .current_dir(plan_dir.path())
+        .output()
+        .unwrap();
+    let head_before = String::from_utf8_lossy(&head_before.stdout)
+        .trim()
+        .to_string();
+
+    // Run the hook with staging forced on via RDM_STAGE. As with post-commit,
+    // the hook must override this and commit anyway.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .env("RDM_STAGE", "true")
+        .args(["hook", "post-merge"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    // Phase is marked done.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"));
+
+    // A real commit landed: HEAD changed, and the tree is left clean.
+    let head_after = git_cmd()
+        .args(["rev-parse", "HEAD"])
+        .current_dir(plan_dir.path())
+        .output()
+        .unwrap();
+    let head_after = String::from_utf8_lossy(&head_after.stdout)
+        .trim()
+        .to_string();
+    assert_ne!(
+        head_before, head_after,
+        "hook should have created a commit in the plan repo despite staging mode"
+    );
+
+    let status = git_cmd()
+        .args(["status", "--porcelain"])
+        .current_dir(plan_dir.path())
+        .output()
+        .unwrap();
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status.trim().is_empty(),
+        "plan repo working tree should be clean after hook, got: {status:?}"
+    );
+}
+
+#[test]
 fn hook_post_commit_skips_feature_branch() {
     let plan_dir = TempDir::new().unwrap();
     let project_dir = TempDir::new().unwrap();

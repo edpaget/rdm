@@ -120,6 +120,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `rdm hook post-commit` / `post-merge` now always commit the `Done:`
+  phase/task updates they apply, even when staging mode is enabled via
+  `--stage`, `RDM_STAGE`, or `stage = true` in `rdm.toml`. Previously the hook
+  inherited the resolved staging preference, so the update could be written to
+  disk without a commit and silently lost (leaving the plan repo dirty and the
+  `Done:` directive unapplied).
 - The auto-review Stop hook (and the `rdm-review` skill) no longer misfire
   across worktrees: an item finalized to `needs-review` on one branch no longer
   reprompts a session finishing an unrelated branch, where that item's diff
