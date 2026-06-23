@@ -231,6 +231,25 @@ impl FromStr for Difficulty {
     }
 }
 
+impl Difficulty {
+    /// Maps this difficulty to the model tier that should run the phase.
+    ///
+    /// This is the single source of truth for the difficulty→tier policy:
+    /// `Trivial`/`Easy` → [`ModelTier::Small`], `Moderate` →
+    /// [`ModelTier::Medium`], `Hard` → [`ModelTier::Large`]. It backs the
+    /// auto-derive in
+    /// [`set_phase_estimate`](crate::ops::phase::set_phase_estimate), which
+    /// fills the model tier when a difficulty is set without an explicit model.
+    #[must_use]
+    pub fn model_tier(self) -> ModelTier {
+        match self {
+            Difficulty::Trivial | Difficulty::Easy => ModelTier::Small,
+            Difficulty::Moderate => ModelTier::Medium,
+            Difficulty::Hard => ModelTier::Large,
+        }
+    }
+}
+
 /// Model tier that should run a roadmap phase.
 ///
 /// Variants are ordered from smallest to largest: `Small < Medium < Large`.
@@ -611,6 +630,14 @@ mod tests {
     fn model_tier_ordering() {
         assert!(ModelTier::Large > ModelTier::Medium);
         assert!(ModelTier::Medium > ModelTier::Small);
+    }
+
+    #[test]
+    fn difficulty_maps_to_model_tier() {
+        assert_eq!(Difficulty::Trivial.model_tier(), ModelTier::Small);
+        assert_eq!(Difficulty::Easy.model_tier(), ModelTier::Small);
+        assert_eq!(Difficulty::Moderate.model_tier(), ModelTier::Medium);
+        assert_eq!(Difficulty::Hard.model_tier(), ModelTier::Large);
     }
 
     #[test]

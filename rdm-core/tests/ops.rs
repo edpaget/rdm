@@ -1185,6 +1185,110 @@ fn set_phase_estimate_not_found() {
 }
 
 #[test]
+fn set_phase_estimate_difficulty_only_derives_model_tier() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+
+    // Difficulty set, model left untouched, none recorded yet → tier derived.
+    let doc = rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Moderate),
+        rdm_core::ops::ModelTierUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.difficulty, Some(Difficulty::Moderate));
+    assert_eq!(doc.frontmatter.model, Some(ModelTier::Medium));
+
+    // Persisted, not just returned.
+    let loaded = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    assert_eq!(loaded.frontmatter.model, Some(ModelTier::Medium));
+}
+
+#[test]
+fn set_phase_estimate_explicit_model_overrides_derive() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+
+    // Hard would derive Large, but an explicit Small wins.
+    let doc = rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Set(ModelTier::Small),
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(doc.frontmatter.model, Some(ModelTier::Small));
+}
+
+#[test]
+fn set_phase_estimate_preserves_existing_model_on_difficulty_change() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+
+    // Seed a human-set model tier.
+    rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Keep,
+        rdm_core::ops::ModelTierUpdate::Set(ModelTier::Small),
+    )
+    .unwrap();
+
+    // Setting difficulty alone must not clobber the existing model.
+    let doc = rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(doc.frontmatter.model, Some(ModelTier::Small));
+}
+
+#[test]
+fn set_phase_estimate_clear_model_prevents_derive() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+
+    // Explicitly clearing the model wins over the difficulty derive: setting a
+    // difficulty in the same call must NOT re-populate the just-cleared model.
+    let doc = rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Clear,
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(doc.frontmatter.model, None);
+}
+
+#[test]
 fn update_phase_done_to_done_with_new_commit_updates_sha() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(

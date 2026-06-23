@@ -289,7 +289,7 @@ fn agent_config_skills_requires_out() {
 }
 
 #[test]
-fn agent_config_skills_generates_four_files() {
+fn agent_config_skills_generates_five_files() {
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("agent-config")
@@ -299,13 +299,14 @@ fn agent_config_skills_generates_four_files() {
         .arg(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(4));
+        .stdout(predicate::str::contains("Wrote").count(5));
 
     let skills_dir = dir.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
     assert!(skills_dir.join("rdm-do/SKILL.md").exists());
     assert!(skills_dir.join("rdm-review/SKILL.md").exists());
     assert!(skills_dir.join("rdm-document/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-estimate/SKILL.md").exists());
 }
 
 #[test]
@@ -320,7 +321,13 @@ fn agent_config_skills_have_valid_frontmatter() {
         .assert()
         .success();
 
-    for name in &["rdm-roadmap", "rdm-do", "rdm-review", "rdm-document"] {
+    for name in &[
+        "rdm-roadmap",
+        "rdm-do",
+        "rdm-review",
+        "rdm-document",
+        "rdm-estimate",
+    ] {
         let path = dir.path().join(format!(".claude/skills/{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -349,7 +356,13 @@ fn agent_config_skills_embed_project_flag() {
         .assert()
         .success();
 
-    for name in &["rdm-roadmap", "rdm-do", "rdm-review", "rdm-document"] {
+    for name in &[
+        "rdm-roadmap",
+        "rdm-do",
+        "rdm-review",
+        "rdm-document",
+        "rdm-estimate",
+    ] {
         let path = dir.path().join(format!(".claude/skills/{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -606,13 +619,14 @@ fn agent_config_user_skills_writes_to_claude_skills() {
         .arg("--user")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(4));
+        .stdout(predicate::str::contains("Wrote").count(5));
 
     let skills_dir = home.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
     assert!(skills_dir.join("rdm-do/SKILL.md").exists());
     assert!(skills_dir.join("rdm-review/SKILL.md").exists());
     assert!(skills_dir.join("rdm-document/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-estimate/SKILL.md").exists());
 }
 
 // --hooks flag tests
@@ -916,7 +930,7 @@ fn agent_config_pi_user_writes_to_dot_pi_agent() {
 }
 
 #[test]
-fn agent_config_pi_skills_out_writes_four_files() {
+fn agent_config_pi_skills_out_writes_five_files() {
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("agent-config")
@@ -926,13 +940,14 @@ fn agent_config_pi_skills_out_writes_four_files() {
         .arg(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(4));
+        .stdout(predicate::str::contains("Wrote").count(5));
 
     let skills_dir = dir.path().join(".pi/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
     assert!(skills_dir.join("rdm-do/SKILL.md").exists());
     assert!(skills_dir.join("rdm-review/SKILL.md").exists());
     assert!(skills_dir.join("rdm-document/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-estimate/SKILL.md").exists());
 }
 
 #[test]
@@ -947,7 +962,13 @@ fn agent_config_pi_skills_have_valid_frontmatter() {
         .assert()
         .success();
 
-    for name in &["rdm-roadmap", "rdm-do", "rdm-review", "rdm-document"] {
+    for name in &[
+        "rdm-roadmap",
+        "rdm-do",
+        "rdm-review",
+        "rdm-document",
+        "rdm-estimate",
+    ] {
         let path = dir.path().join(format!(".pi/skills/{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -976,7 +997,13 @@ fn agent_config_pi_skills_embed_project_flag() {
         .assert()
         .success();
 
-    for name in &["rdm-roadmap", "rdm-do", "rdm-review", "rdm-document"] {
+    for name in &[
+        "rdm-roadmap",
+        "rdm-do",
+        "rdm-review",
+        "rdm-document",
+        "rdm-estimate",
+    ] {
         let path = dir.path().join(format!(".pi/skills/{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -997,13 +1024,14 @@ fn agent_config_pi_skills_user_writes_to_pi_agent_skills() {
         .arg("--user")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(4));
+        .stdout(predicate::str::contains("Wrote").count(5));
 
     let skills_dir = home.path().join(".pi/agent/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
     assert!(skills_dir.join("rdm-do/SKILL.md").exists());
     assert!(skills_dir.join("rdm-review/SKILL.md").exists());
     assert!(skills_dir.join("rdm-document/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-estimate/SKILL.md").exists());
 }
 
 #[test]

@@ -197,6 +197,16 @@ pub fn update_phase(
 /// signature stays untouched. `difficulty` and `model` each follow the
 /// keep/set/clear protocol via [`DifficultyUpdate`] and [`ModelTierUpdate`].
 ///
+/// # Model-tier auto-derive
+///
+/// The difficulty→tier mapping ([`model_tier`](crate::model::Difficulty::model_tier))
+/// is authoritative:
+/// when `difficulty` is [`DifficultyUpdate::Set`], `model` is
+/// [`ModelTierUpdate::Keep`], and no model is already recorded, the model tier
+/// is derived from the difficulty. An explicit [`ModelTierUpdate::Set`] or
+/// [`ModelTierUpdate::Clear`] always wins, and a previously set model is never
+/// overwritten by the derive — so a human override is respected.
+///
 /// # Errors
 ///
 /// Returns [`Error::PhaseNotFound`] if the phase file doesn't exist,
@@ -219,6 +229,14 @@ pub fn set_phase_estimate(
     let mut doc = crate::io::load_phase(store, project, roadmap, phase_stem)?;
     difficulty.apply(&mut doc.frontmatter.difficulty);
     model.apply(&mut doc.frontmatter.model);
+    // Auto-derive the model tier from the difficulty when the caller set a
+    // difficulty but left the model untouched and none is already recorded.
+    // An explicit Set/Clear model (applied above) or a pre-existing model wins.
+    if let (DifficultyUpdate::Set(d), ModelTierUpdate::Keep) = (difficulty, model)
+        && doc.frontmatter.model.is_none()
+    {
+        doc.frontmatter.model = Some(d.model_tier());
+    }
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
     Ok(doc)
 }

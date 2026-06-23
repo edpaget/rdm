@@ -28,6 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   array of `{kind, identifier, project, title}`; `--project` selects the
   project. Available when built with the `git` feature.
 
+- `rdm-estimate` agent skill (shipped by `rdm agent-config --skills`, in both
+  CLI and MCP variants). Given a roadmap slug or a single phase, it reads each
+  phase body, rates its difficulty (`trivial` | `easy` | `moderate` | `hard`)
+  with a one-line justification, records that note in the phase body, and sets
+  the difficulty via `rdm phase update` — the model tier is assigned
+  automatically from the difficulty. Phases that already have a difficulty are
+  skipped, so re-running is idempotent and never overwrites a human-set value;
+  clear a phase's difficulty to re-estimate it.
 - `rdm next --roadmap <slug>` prints the next actionable phase in a roadmap
   (text and JSON): the lowest-numbered phase that is `not-started` or
   `in-progress`, skipping phases under review, done, blocked, or won't-fix.
@@ -114,6 +122,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (AND), now shared by the CLI's `task list` and the TUI's task browser.
 ### Changed
 
+- `rdm phase update --difficulty <d>` now auto-derives `--model` from the
+  difficulty→tier mapping (`trivial`/`easy` → small, `moderate` → medium,
+  `hard` → large) when `--model` is omitted and no model is already set. An
+  explicit `--model` / `--clear-model` and any previously set model are
+  respected — the derive only fills an empty model.
 - Each plan-repo mutation (create/update/delete/promote/archive/split of a
   roadmap, phase, task, or project) now records a **single** git commit that
   bundles the entity change with the regenerated `INDEX.md`, instead of two

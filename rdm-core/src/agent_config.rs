@@ -257,7 +257,7 @@ pub struct SkillOptions {
 ///     principles_file: None,
 ///     mcp: false,
 /// });
-/// assert_eq!(skills.len(), 4);
+/// assert_eq!(skills.len(), 5);
 /// assert!(skills[0].content.contains("--project myproj"));
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
@@ -269,6 +269,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_do_mcp(&proj, principles_note.as_deref()),
             skill_review_mcp(&proj, principles_note.as_deref()),
             skill_document_mcp(&proj, principles_note.as_deref()),
+            skill_estimate_mcp(&proj, principles_note.as_deref()),
         ]
     } else {
         let proj_flag = proj_flag_str(opts.project.as_deref());
@@ -277,6 +278,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_do(&proj_flag, principles_note.as_deref()),
             skill_review(&proj_flag, principles_note.as_deref()),
             skill_document(&proj_flag, principles_note.as_deref()),
+            skill_estimate(&proj_flag, principles_note.as_deref()),
         ]
     }
 }
@@ -340,6 +342,18 @@ fn skill_review(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
         relative_path: "rdm-review/SKILL.md",
         content: render_skill(
             include_str!("templates/skill-review-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
+        ),
+    }
+}
+
+fn skill_estimate(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-estimate/SKILL.md",
+        content: render_skill(
+            include_str!("templates/skill-estimate-cli.md"),
             "{proj_flag}",
             proj_flag,
             principles_note,
@@ -478,6 +492,23 @@ fn skill_review_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_task_show", "rdm_task_show"),
                 ("t_task_update", "rdm_task_update"),
                 ("t_task_create", "rdm_task_create"),
+            ],
+        ),
+    }
+}
+
+fn skill_estimate_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-estimate/SKILL.md",
+        content: render_mcp_skill(
+            include_str!("templates/skill-estimate-mcp.md"),
+            proj,
+            principles_note,
+            &[
+                ("t_phase_list", "rdm_phase_list"),
+                ("t_phase_show", "rdm_phase_show"),
+                ("t_phase_update", "rdm_phase_update"),
+                ("t_roadmap_show", "rdm_roadmap_show"),
             ],
         ),
     }
@@ -1051,13 +1082,13 @@ mod tests {
     // --- Skill generation tests ---
 
     #[test]
-    fn generate_skills_returns_four_files() {
+    fn generate_skills_returns_five_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
-        assert_eq!(skills.len(), 4);
+        assert_eq!(skills.len(), 5);
     }
 
     #[test]
@@ -1071,6 +1102,20 @@ mod tests {
         assert_eq!(skills[1].relative_path, "rdm-do/SKILL.md");
         assert_eq!(skills[2].relative_path, "rdm-review/SKILL.md");
         assert_eq!(skills[3].relative_path, "rdm-document/SKILL.md");
+        assert_eq!(skills[4].relative_path, "rdm-estimate/SKILL.md");
+    }
+
+    #[test]
+    fn skill_estimate_names_itself_and_uses_phase_update() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[4].content;
+        assert!(content.contains("name: rdm-estimate"));
+        assert!(content.contains("rdm phase update"));
+        assert!(content.contains("--difficulty"));
     }
 
     #[test]
@@ -1630,13 +1675,13 @@ mod tests {
     // --- MCP skill generation tests ---
 
     #[test]
-    fn mcp_skills_returns_four_files() {
+    fn mcp_skills_returns_five_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: true,
         });
-        assert_eq!(skills.len(), 4);
+        assert_eq!(skills.len(), 5);
     }
 
     #[test]
@@ -1650,6 +1695,23 @@ mod tests {
         assert_eq!(skills[1].relative_path, "rdm-do/SKILL.md");
         assert_eq!(skills[2].relative_path, "rdm-review/SKILL.md");
         assert_eq!(skills[3].relative_path, "rdm-document/SKILL.md");
+        assert_eq!(skills[4].relative_path, "rdm-estimate/SKILL.md");
+    }
+
+    #[test]
+    fn mcp_skill_estimate_names_itself_and_uses_phase_update() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[4].content;
+        assert!(content.contains("name: rdm-estimate"));
+        assert!(content.contains("rdm_phase_update"));
+        // MCP skill must not list Bash in allowed-tools.
+        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
+        assert!(!frontmatter.contains("Bash"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
     }
 
     #[test]
