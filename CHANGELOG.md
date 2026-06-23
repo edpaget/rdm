@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `rdm-dispatch-phase` agent skill (shipped by `rdm agent-config --skills`, in
+  both CLI and MCP variants). It runs a single roadmap phase end-to-end in an
+  isolated worktree on the phase's assigned model tier and returns a structured
+  outcome (`reviewed` | `rework` | `escalated`) for an orchestrator to act on. A
+  fresh implementer subagent is seeded with only that phase's body and the repo,
+  drafts a tactical plan, and — because autopilot has no human to approve the
+  plan — a *separate*, lightweight reviewer gates the plan against the phase's
+  acceptance criteria, scope, and the core/cli/server separation before any code
+  is written, returning approve / revise / escalate. The plan gate is bounded
+  (one review pass plus at most one revise round); code review is delegated to
+  `rdm-review`, and a genuine AC/architecture ambiguity parks the phase as
+  `blocked` rather than guessing.
+
 ### Fixed
 
 - `rdm hook post-commit` / `post-merge` now always commit the `Done:`
