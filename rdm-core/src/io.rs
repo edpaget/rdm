@@ -342,6 +342,7 @@ mod tests {
                 review_sha: None,
                 difficulty: None,
                 model: None,
+                blocked_reason: None,
             },
             body: "Phase body.".to_string(),
         };
@@ -423,6 +424,7 @@ mod tests {
                 review_sha: None,
                 difficulty: None,
                 model: None,
+                blocked_reason: None,
             },
             body: body.to_string(),
         };

@@ -229,6 +229,46 @@ impl ModelTierUpdate {
     }
 }
 
+/// How an update should treat a phase's optional blocked reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReasonUpdate {
+    /// Leave the existing reason unchanged.
+    Keep,
+    /// Set the blocked reason to this value.
+    Set(String),
+    /// Clear the blocked reason (set it to none).
+    Clear,
+}
+
+impl ReasonUpdate {
+    /// Builds a [`ReasonUpdate`] from a frontend's `reason` value and `clear`
+    /// flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConflictingUpdate`] if both `reason` and `clear` are
+    /// set.
+    pub fn from_args(reason: Option<String>, clear: bool) -> Result<Self> {
+        match (reason, clear) {
+            (Some(_), true) => Err(Error::ConflictingUpdate {
+                field: "reason".to_string(),
+            }),
+            (Some(r), false) => Ok(ReasonUpdate::Set(r)),
+            (None, true) => Ok(ReasonUpdate::Clear),
+            (None, false) => Ok(ReasonUpdate::Keep),
+        }
+    }
+
+    /// Applies this update to a phase's optional `blocked_reason` in place.
+    pub(crate) fn apply(self, reason: &mut Option<String>) {
+        match self {
+            ReasonUpdate::Keep => {}
+            ReasonUpdate::Set(r) => *reason = Some(r),
+            ReasonUpdate::Clear => *reason = None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +315,51 @@ mod tests {
         let err = ModelTierUpdate::from_args(Some(ModelTier::Large), true).unwrap_err();
         assert_eq!(err.to_string(), "cannot set both 'model' and 'clear_model'");
         assert!(matches!(err, Error::ConflictingUpdate { field } if field == "model"));
+
+        let err = ReasonUpdate::from_args(Some("blocked on X".to_string()), true).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "cannot set both 'reason' and 'clear_reason'"
+        );
+        assert!(matches!(err, Error::ConflictingUpdate { field } if field == "reason"));
+    }
+
+    #[test]
+    fn reason_from_args_maps_each_combination() {
+        assert_eq!(
+            ReasonUpdate::from_args(None, false).unwrap(),
+            ReasonUpdate::Keep
+        );
+        assert_eq!(
+            ReasonUpdate::from_args(Some("ambiguous AC".to_string()), false).unwrap(),
+            ReasonUpdate::Set("ambiguous AC".to_string())
+        );
+        assert_eq!(
+            ReasonUpdate::from_args(None, true).unwrap(),
+            ReasonUpdate::Clear
+        );
+    }
+
+    #[test]
+    fn reason_apply_arms() {
+        // Keep: leaves both Some and None untouched.
+        let mut r = Some("blocked on X".to_string());
+        ReasonUpdate::Keep.apply(&mut r);
+        assert_eq!(r, Some("blocked on X".to_string()));
+        let mut r = None;
+        ReasonUpdate::Keep.apply(&mut r);
+        assert_eq!(r, None);
+
+        // Set: overwrites None and an existing value.
+        let mut r = None;
+        ReasonUpdate::Set("first".to_string()).apply(&mut r);
+        assert_eq!(r, Some("first".to_string()));
+        ReasonUpdate::Set("second".to_string()).apply(&mut r);
+        assert_eq!(r, Some("second".to_string()));
+
+        // Clear: drops an existing value.
+        ReasonUpdate::Clear.apply(&mut r);
+        assert_eq!(r, None);
     }
 
     #[test]

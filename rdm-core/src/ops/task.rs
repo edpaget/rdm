@@ -286,6 +286,7 @@ pub fn promote_task(
             review_sha: None,
             difficulty: None,
             model: None,
+            blocked_reason: None,
         },
         body: task_doc.body,
     };

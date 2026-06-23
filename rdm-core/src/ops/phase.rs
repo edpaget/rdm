@@ -5,7 +5,7 @@ use chrono::Local;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus};
-use crate::ops::update::{BodyUpdate, DifficultyUpdate, ModelTierUpdate, TagsUpdate};
+use crate::ops::update::{BodyUpdate, DifficultyUpdate, ModelTierUpdate, ReasonUpdate, TagsUpdate};
 use crate::store::{DirEntryKind, Store};
 
 /// Lists all phases in a roadmap, sorted by phase number.
@@ -103,6 +103,7 @@ pub fn create_phase(
             review_sha: None,
             difficulty: None,
             model: None,
+            blocked_reason: None,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -237,6 +238,41 @@ pub fn set_phase_estimate(
     {
         doc.frontmatter.model = Some(d.model_tier());
     }
+    crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
+    Ok(doc)
+}
+
+/// Sets (or clears) a phase's blocked reason — the escalation note recorded
+/// when a phase is parked as [`PhaseStatus::Blocked`].
+///
+/// Kept separate from [`update_phase`] (like [`set_phase_estimate`]) so the
+/// status/tags/body signature stays untouched. The reason follows the
+/// keep/set/clear protocol via [`ReasonUpdate`]: it is preserved across status
+/// transitions unless explicitly cleared, so resuming a blocked phase never
+/// loses the record of why it stalled. This function does not itself change the
+/// phase status — callers set `--status blocked` via [`update_phase`] and record
+/// the reason here in the same mutation.
+///
+/// # Errors
+///
+/// Returns [`Error::PhaseNotFound`] if the phase file doesn't exist,
+/// [`Error::Io`] if reading or writing fails, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the existing
+/// phase file has invalid frontmatter.
+pub fn set_phase_blocked_reason(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+    reason: ReasonUpdate,
+) -> Result<Document<Phase>> {
+    let path = crate::paths::phase_path(project, roadmap, phase_stem);
+    if !store.exists(&path) {
+        return Err(Error::PhaseNotFound(phase_stem.to_string()));
+    }
+
+    let mut doc = crate::io::load_phase(store, project, roadmap, phase_stem)?;
+    reason.apply(&mut doc.frontmatter.blocked_reason);
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
     Ok(doc)
 }

@@ -204,6 +204,9 @@ fn build_phase_detail(
             if let Some(model) = fm.model {
                 items.push(meta_bullet("Model", &model.to_string()));
             }
+            if let Some(reason) = &fm.blocked_reason {
+                items.push(meta_bullet("Blocked reason", reason));
+            }
             if let Some(date) = fm.completed {
                 items.push(meta_bullet("Completed", &date.to_string()));
             }
@@ -226,6 +229,9 @@ fn build_phase_detail(
             }
             if let Some(model) = fm.model {
                 d.paragraph(&format!("Model: {model}"));
+            }
+            if let Some(reason) = &fm.blocked_reason {
+                d.paragraph(&format!("Blocked reason: {reason}"));
             }
             if let Some(date) = fm.completed {
                 d.paragraph(&format!("Completed: {date}"));
@@ -601,6 +607,7 @@ mod tests {
                 review_sha: None,
                 difficulty: None,
                 model: None,
+                blocked_reason: None,
             },
             body: String::new(),
         }

@@ -551,6 +551,12 @@ pub(crate) enum PhaseCommand {
         /// Clear an existing body (replace it with an empty string).
         #[arg(long, conflicts_with = "body")]
         clear_body: bool,
+        /// Escalation reason to record when parking the phase as blocked.
+        #[arg(long, conflicts_with = "clear_reason")]
+        reason: Option<String>,
+        /// Remove the recorded blocked reason from this phase.
+        #[arg(long, conflicts_with = "reason")]
+        clear_reason: bool,
         /// Git commit SHA to associate with phase completion.
         #[arg(long)]
         commit: Option<String>,
@@ -747,6 +753,18 @@ pub(crate) enum ReviewCommand {
     /// a commit existed — these fail open). This is the shared source of truth
     /// for the review Stop hook and the `rdm-review` skill.
     Pending {
+        /// Project to inspect.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// List phases parked as `blocked` — the escalation queue awaiting a
+    /// human decision — with their recorded reasons.
+    ///
+    /// A blocked phase is one a dispatched run could not resolve on its own: an
+    /// ambiguous acceptance criterion, an architectural decision with no clear
+    /// default, an exhausted retry budget, or a hard external dependency. This
+    /// surfaces them all in one place so they can be answered in a batch.
+    Blocked {
         /// Project to inspect.
         #[arg(long)]
         project: Option<String>,

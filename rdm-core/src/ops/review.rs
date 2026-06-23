@@ -87,3 +87,59 @@ pub fn pending_review_items(store: &impl Store, project: &str) -> Result<Vec<Pen
 
     Ok(items)
 }
+
+/// A phase parked as `blocked` — an escalation awaiting a human decision.
+///
+/// `identifier` is the canonical `roadmap/stem` reference used by other rdm
+/// commands. `reason` is the escalation note recorded when the phase was
+/// blocked, or `None` if it was blocked without one (e.g. a legacy item or a
+/// status set directly).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BlockedPhaseItem {
+    /// Canonical reference: `roadmap/stem`.
+    pub identifier: String,
+    /// Project the phase belongs to.
+    pub project: String,
+    /// Human-readable title.
+    pub title: String,
+    /// The recorded escalation reason, if any.
+    pub reason: Option<String>,
+}
+
+/// Lists every phase in `project` whose status is `blocked`, with its recorded
+/// escalation reason.
+///
+/// This is the batch escalation queue: a single command surfaces every parked
+/// decision/blocker so a human can answer them together rather than being
+/// interrupted mid-run. Tasks are excluded — only phases (the unit of dispatch)
+/// carry a `blocked` status.
+///
+/// # Errors
+///
+/// Returns [`Error::ProjectNotFound`](crate::error::Error::ProjectNotFound) if
+/// the project doesn't exist, [`Error::Io`](crate::error::Error::Io) if a
+/// directory cannot be read, or
+/// [`Error::FrontmatterMissing`](crate::error::Error::FrontmatterMissing) /
+/// [`Error::FrontmatterParse`](crate::error::Error::FrontmatterParse) if any
+/// phase file has invalid frontmatter.
+pub fn blocked_phases(store: &impl Store, project: &str) -> Result<Vec<BlockedPhaseItem>> {
+    let mut items = Vec::new();
+
+    let roadmaps = crate::ops::roadmap::list_roadmaps(store, project, None, None)?;
+    for roadmap_doc in roadmaps {
+        let roadmap = &roadmap_doc.frontmatter.roadmap;
+        let phases = crate::ops::phase::list_phases(store, project, roadmap)?;
+        for (stem, doc) in phases {
+            if doc.frontmatter.status == PhaseStatus::Blocked {
+                items.push(BlockedPhaseItem {
+                    identifier: format!("{roadmap}/{stem}"),
+                    project: project.to_string(),
+                    title: doc.frontmatter.title,
+                    reason: doc.frontmatter.blocked_reason,
+                });
+            }
+        }
+    }
+
+    Ok(items)
+}

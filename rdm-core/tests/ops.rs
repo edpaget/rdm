@@ -49,6 +49,7 @@ fn write_and_load_phase() {
             review_sha: None,
             difficulty: None,
             model: None,
+            blocked_reason: None,
         },
         body: "## Steps\n\n1. Do things.\n".to_string(),
     };
@@ -1020,6 +1021,131 @@ fn update_phase_from_done_clears_completed() {
     assert_eq!(updated.frontmatter.status, PhaseStatus::InProgress);
     assert_eq!(updated.frontmatter.completed, None);
     assert_eq!(updated.frontmatter.commit, None);
+}
+
+#[test]
+fn blocked_reason_is_recorded_then_preserved_across_resume_then_clearable() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+
+    // Park the phase as blocked and record the escalation reason.
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::Blocked),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+    )
+    .unwrap();
+    let parked = rdm_core::ops::phase::set_phase_blocked_reason(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::ReasonUpdate::Set("AC 2 is ambiguous: which crate owns this?".to_string()),
+    )
+    .unwrap();
+    assert_eq!(parked.frontmatter.status, PhaseStatus::Blocked);
+    assert_eq!(
+        parked.frontmatter.blocked_reason.as_deref(),
+        Some("AC 2 is ambiguous: which crate owns this?")
+    );
+
+    // Resuming the phase must NOT lose the recorded reason — a plain status
+    // change leaves blocked_reason untouched.
+    let resumed = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(resumed.frontmatter.status, PhaseStatus::InProgress);
+    assert_eq!(
+        resumed.frontmatter.blocked_reason.as_deref(),
+        Some("AC 2 is ambiguous: which crate owns this?"),
+        "resuming a phase must preserve the recorded blocked reason"
+    );
+
+    // The reason can be explicitly cleared.
+    let cleared = rdm_core::ops::phase::set_phase_blocked_reason(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::ReasonUpdate::Clear,
+    )
+    .unwrap();
+    assert_eq!(cleared.frontmatter.blocked_reason, None);
+}
+
+#[test]
+fn blocked_phases_lists_only_parked_phases_with_reasons() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "core",
+        "Core",
+        Some(1),
+        None,
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "service",
+        "Service",
+        Some(2),
+        None,
+        None,
+    )
+    .unwrap();
+
+    // Block phase 1 with a reason; leave phase 2 not-started.
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::Blocked),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::set_phase_blocked_reason(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::ReasonUpdate::Set("needs an external credential".to_string()),
+    )
+    .unwrap();
+
+    let blocked = rdm_core::ops::review::blocked_phases(&store, "fbm").unwrap();
+    assert_eq!(blocked.len(), 1, "only the blocked phase should be listed");
+    assert_eq!(blocked[0].identifier, "two-way/phase-1-core");
+    assert_eq!(
+        blocked[0].reason.as_deref(),
+        Some("needs an external credential")
+    );
 }
 
 #[test]

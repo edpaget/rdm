@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
-use rdm_core::ops::{BodyUpdate, DifficultyUpdate, ModelTierUpdate, TagsUpdate};
+use rdm_core::ops::{BodyUpdate, DifficultyUpdate, ModelTierUpdate, ReasonUpdate, TagsUpdate};
 
 use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
 use crate::paths;
@@ -212,6 +212,8 @@ pub fn run(
             clear_model,
             body,
             clear_body,
+            reason,
+            clear_reason,
             commit,
             no_edit,
         } => {
@@ -243,8 +245,10 @@ pub fn run(
             let review_sha = None;
             let difficulty_update = DifficultyUpdate::from_args(difficulty, clear_difficulty)?;
             let model_update = ModelTierUpdate::from_args(model, clear_model)?;
+            let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
             let has_estimate = !matches!(difficulty_update, DifficultyUpdate::Keep)
                 || !matches!(model_update, ModelTierUpdate::Keep);
+            let has_reason = !matches!(reason_update, ReasonUpdate::Keep);
             let doc = commit_mutation(
                 store,
                 &project,
@@ -252,21 +256,29 @@ pub fn run(
                 staging,
                 "failed to update phase",
                 |s| {
-                    let doc = rdm_core::ops::phase::update_phase(
+                    let mut doc = rdm_core::ops::phase::update_phase(
                         s, &project, &roadmap, &stem, status, tags, body, commit, review_sha,
                     )?;
                     if has_estimate {
-                        rdm_core::ops::phase::set_phase_estimate(
+                        doc = rdm_core::ops::phase::set_phase_estimate(
                             s,
                             &project,
                             &roadmap,
                             &stem,
                             difficulty_update,
                             model_update,
-                        )
-                    } else {
-                        Ok(doc)
+                        )?;
                     }
+                    if has_reason {
+                        doc = rdm_core::ops::phase::set_phase_blocked_reason(
+                            s,
+                            &project,
+                            &roadmap,
+                            &stem,
+                            reason_update,
+                        )?;
+                    }
+                    Ok(doc)
                 },
             )
             .map_err(map_body_clobber)?;

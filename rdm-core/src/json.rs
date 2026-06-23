@@ -70,6 +70,9 @@ pub struct PhaseJson {
     /// Model tier that should run the phase, if assigned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelTier>,
+    /// Reason the phase was parked as `blocked` (an escalation note), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
     /// Git revision the body was read from (only set when this view was
     /// requested at a specific historical SHA).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -277,6 +280,7 @@ pub fn phase_to_json(
         commit: fm.commit.clone(),
         difficulty: fm.difficulty,
         model: fm.model,
+        blocked_reason: fm.blocked_reason.clone(),
         revision: revision.map(String::from),
         roadmap: roadmap.to_string(),
         prev_phase: prev.map(String::from),
@@ -401,6 +405,7 @@ mod tests {
                 review_sha: None,
                 difficulty: None,
                 model: None,
+                blocked_reason: None,
             },
             body: String::new(),
         }

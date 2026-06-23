@@ -60,14 +60,23 @@ Unlike interactive `rdm-do`, there is no human to approve the tactical plan befo
    It returns exactly one verdict:
    - **approve** — proceed to implement.
    - **revise** — concrete, bounded feedback. Apply it **once**: the implementer revises the plan a single time, then proceeds. Do **not** loop — there is at most one revise round.
-   - **escalate** — genuine AC ambiguity or an architectural decision with no clear default. Stop, set the phase to `blocked` (use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "blocked"`), and return the **escalated** outcome with the blocker in `findings`.
+   - **escalate** — genuine AC ambiguity or an architectural decision with no clear default. Stop and park the phase per the **escalation protocol** (see below): set the phase to `blocked` with a stage-tagged reason (use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "blocked", reason: "[plan] <the decision or ambiguity>"`), and return the **escalated** outcome with it in `findings`.
 
-   The gate is bounded: one review pass plus at most one revise round, then proceed or escalate. Never an unbounded critique loop.
+   The gate is bounded: one review pass plus at most one revise round, then proceed or escalate. Never an unbounded critique loop. Exhausting the single revise round without converging is itself a `plan`-stage escalation.
 6. **Implement:** on `approve` (or after the single accepted revision), the implementer subagent implements the approved plan inside the worktree and commits the changes. Do **not** emit a `Done:` line — that is owned by `rdm-review`.
 7. **Code review:** run the `rdm-review` skill on the result (`<slug> <phase>`). It owns the `needs-review` → `reviewed` gate and the `Done:` line. Map its verdict onto the outcome:
    - **pass** → `rdm-review` leaves the phase `reviewed` with a `Done:` line on the branch → return **reviewed**.
-   - **fail** → allow **one** bounded rework pass (the implementer addresses the review findings and re-runs `rdm-review`). If it still fails, `rdm-review` returns the phase to `in-progress` → return **rework**. Never loop indefinitely on rework.
+   - **fail (fixable defect)** → allow **one** bounded rework pass (the implementer addresses the review findings and re-runs `rdm-review`). If it still fails, `rdm-review` returns the phase to `in-progress` → return **rework**. Never loop indefinitely on rework.
+   - **fail (decision/blocker, not a defect)** → if review surfaces a genuine AC ambiguity or architectural decision rather than a fixable defect — or the single rework pass is exhausted without converging — park it as a `code`-stage escalation (use `rdm_phase_update` with `status: "blocked", reason: "[code] <the decision or ambiguity>"`) and return **escalated** instead of retrying.
 8. **Return the structured outcome** (the JSON above) as your final message.
+
+## Escalation protocol
+
+This skill follows the shared **escalation protocol** (`docs/escalation-protocol.md`) — the single definition the dispatch flow and the autonomous loop both apply. In short:
+
+- **Routine findings never escalate.** Bugs, missing tests, doc gaps — `rdm-review` fixes them inline or files a task. They never reach the user.
+- **Decisions/blockers escalate.** Ambiguous/untestable AC, an architectural decision with no clear default, an exhausted plan-revise or rework budget, or a hard blocker (missing dependency/credential, conflicting requirement).
+- **Park, don't interrupt.** On autopilot, record the escalation by setting the phase `blocked` with a stage-tagged `reason` (`[plan]` or `[code]`), then return the **escalated** outcome. The reason is preserved across a later resume. The user reviews the whole queue at once with the `rdm review blocked` command rather than being interrupted mid-run.
 
 ## Context isolation
 

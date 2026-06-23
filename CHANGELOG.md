@@ -20,6 +20,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (one review pass plus at most one revise round); code review is delegated to
   `rdm-review`, and a genuine AC/architecture ambiguity parks the phase as
   `blocked` rather than guessing.
+- A phase can now be parked as `blocked` with a recorded escalation reason.
+  `rdm phase update <phase> --status blocked --reason "<why>"` stores the reason
+  in the phase's frontmatter (`blocked_reason`); `--clear-reason` removes it. The
+  reason is shown by `rdm phase show` (human and `--format json`) and is
+  preserved across a later resume — moving a phase back to `in-progress` no
+  longer loses why it stalled. The MCP `rdm_phase_update` tool gains matching
+  `reason` / `clear_reason` parameters.
+- `rdm review blocked` lists every phase parked as `blocked` — the escalation
+  queue awaiting a human decision — with its recorded reason, so decisions can be
+  answered in a batch instead of interrupting a run mid-flight. `--format json`
+  emits an array of `{identifier, project, title, reason}`; `--project` selects
+  the project.
+- Escalation protocol documentation (`docs/escalation-protocol.md`): the single
+  shared definition of when an autonomous run interrupts a human versus parks a
+  decision. It distinguishes routine findings (never escalate; handled by
+  `rdm-review`) from decisions/blockers (escalate), tags each escalation with its
+  stage (`plan` vs `code`), specifies the plan-revise and rework-retry budget
+  triggers, and defines the auto-handle / park-as-blocked / raise-to-user
+  decision rule.
 
 ### Fixed
 

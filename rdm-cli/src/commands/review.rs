@@ -72,6 +72,42 @@ pub fn run(
                 }
             }
         }
+        ReviewCommand::Blocked { project } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            let items = rdm_core::ops::review::blocked_phases(store, &project)
+                .context("failed to list blocked phases")?;
+
+            match format {
+                OutputFormat::Json => {
+                    let arr: Vec<_> = items
+                        .iter()
+                        .map(|item| {
+                            serde_json::json!({
+                                "identifier": item.identifier,
+                                "project": item.project,
+                                "title": item.title,
+                                "reason": item.reason,
+                            })
+                        })
+                        .collect();
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&arr)
+                            .context("failed to serialize blocked phases")?
+                    );
+                }
+                _ => {
+                    if items.is_empty() {
+                        println!("No blocked phases.");
+                    } else {
+                        for item in &items {
+                            let reason = item.reason.as_deref().unwrap_or("(no reason recorded)");
+                            println!("phase {}  {}  — {}", item.identifier, item.title, reason);
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

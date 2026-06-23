@@ -1165,6 +1165,12 @@ mod tests {
         // Escalation parks the phase as blocked; it never writes a Done: line.
         assert!(content.contains("--status blocked"));
         assert!(!content.contains("Done: <roadmap-slug>/<phase-stem>"));
+        // Escalation follows the shared protocol: it references the protocol
+        // doc and records a stage-tagged reason via --reason when parking.
+        assert!(content.contains("docs/escalation-protocol.md"));
+        assert!(content.contains("--reason"));
+        assert!(content.contains("[plan]"));
+        assert!(content.contains("[code]"));
         // Dispatches subagents and isolates their context.
         assert!(content.contains("Agent"));
         assert!(content.contains("Context isolation"));
@@ -1788,6 +1794,12 @@ mod tests {
         assert!(content.contains("reviewed | rework | escalated"));
         assert!(content.contains("\"blocked\""));
         assert!(content.contains("rdm-review"));
+        // Escalation follows the shared protocol: references the protocol doc
+        // and records a stage-tagged reason via the MCP tool's `reason` param.
+        assert!(content.contains("docs/escalation-protocol.md"));
+        assert!(content.contains("reason:"));
+        assert!(content.contains("[plan]"));
+        assert!(content.contains("[code]"));
     }
 
     #[test]

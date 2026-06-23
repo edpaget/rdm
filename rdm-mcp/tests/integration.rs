@@ -692,6 +692,41 @@ fn phase_update() {
 }
 
 #[test]
+fn phase_update_records_blocked_reason() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Park the phase as blocked with a stage-tagged escalation reason.
+    let response = h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "1",
+            "status": "blocked",
+            "reason": "[plan] AC 2 is ambiguous about which crate owns parsing"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("[plan] AC 2 is ambiguous about which crate owns parsing"),
+        "Expected the blocked reason in update response: {text}"
+    );
+
+    // The reason persists and is surfaced by phase show.
+    let show = h.call_tool(
+        "rdm_phase_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "auth", "phase": "1"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("[plan] AC 2 is ambiguous about which crate owns parsing"),
+        "Expected the blocked reason in show response: {show_text}"
+    );
+}
+
+#[test]
 fn task_create() {
     let tmp = tempfile::TempDir::new().unwrap();
     setup_plan_repo(tmp.path());

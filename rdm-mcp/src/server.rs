@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use rdm_core::display;
 use rdm_core::model::{PhaseStatus, Priority, RoadmapSort, TaskStatus};
-use rdm_core::ops::{BodyUpdate, PriorityUpdate, TagsUpdate};
+use rdm_core::ops::{BodyUpdate, PriorityUpdate, ReasonUpdate, TagsUpdate};
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
@@ -199,6 +199,13 @@ struct PhaseUpdateParams {
     body: Option<String>,
     /// Set to true to clear the existing body (mutually exclusive with `body`).
     clear_body: Option<bool>,
+    /// Escalation reason to record when parking the phase as `blocked`. Prefix
+    /// with the stage that raised it: `[plan]` or `[code]`. Preserved across a
+    /// later resume; mutually exclusive with `clear_reason`.
+    reason: Option<String>,
+    /// Set to true to clear the recorded blocked reason (mutually exclusive
+    /// with `reason`).
+    clear_reason: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -897,6 +904,12 @@ impl RdmMcpServer {
             Ok(t) => t,
             Err(e) => return core_err(e),
         };
+        let reason_update =
+            match ReasonUpdate::from_args(params.reason, params.clear_reason.unwrap_or(false)) {
+                Ok(r) => r,
+                Err(e) => return core_err(e),
+            };
+        let has_reason = !matches!(reason_update, ReasonUpdate::Keep);
 
         let mut store = self.store.lock().unwrap();
         let stem = match rdm_core::ops::phase::resolve_phase_stem(
@@ -918,7 +931,7 @@ impl RdmMcpServer {
         };
 
         let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
-            rdm_core::ops::phase::update_phase(
+            let doc = rdm_core::ops::phase::update_phase(
                 s,
                 &params.project,
                 &params.roadmap,
@@ -928,7 +941,18 @@ impl RdmMcpServer {
                 body,
                 None,
                 None,
-            )
+            )?;
+            if has_reason {
+                rdm_core::ops::phase::set_phase_blocked_reason(
+                    s,
+                    &params.project,
+                    &params.roadmap,
+                    &stem,
+                    reason_update,
+                )
+            } else {
+                Ok(doc)
+            }
         }) {
             Ok(d) => d,
             Err(e) => return core_err(e),

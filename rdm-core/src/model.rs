@@ -420,6 +420,15 @@ pub struct Phase {
     /// Model tier that should run the phase, if assigned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelTier>,
+    /// Reason the phase was parked as `blocked` (an escalation note), if any.
+    ///
+    /// Recorded when a phase is set to [`PhaseStatus::Blocked`] so the blocker —
+    /// an ambiguous acceptance criterion, an architectural decision with no clear
+    /// default, an exhausted retry budget, or a hard external dependency — is
+    /// queryable and survives a later resume. Preserved across status changes
+    /// until explicitly cleared, so resuming a phase never loses why it stalled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
 }
 
 impl Phase {
@@ -778,10 +787,12 @@ status: not-started
             review_sha: None,
             difficulty: None,
             model: None,
+            blocked_reason: None,
         };
         let yaml = serde_yaml::to_string(&phase).unwrap();
         assert!(!yaml.contains("difficulty"));
         assert!(!yaml.contains("model"));
+        assert!(!yaml.contains("blocked_reason"));
     }
 
     #[test]
@@ -796,6 +807,7 @@ status: not-started
             review_sha: None,
             difficulty: Some(Difficulty::Hard),
             model: Some(ModelTier::Large),
+            blocked_reason: None,
         };
         let yaml = serde_yaml::to_string(&phase).unwrap();
         assert!(yaml.contains("difficulty: hard"));
@@ -803,6 +815,29 @@ status: not-started
         let parsed: Phase = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed.difficulty, Some(Difficulty::Hard));
         assert_eq!(parsed.model, Some(ModelTier::Large));
+    }
+
+    #[test]
+    fn phase_round_trips_blocked_reason() {
+        let phase = Phase {
+            phase: 1,
+            title: "Core".to_string(),
+            status: PhaseStatus::Blocked,
+            tags: None,
+            completed: None,
+            commit: None,
+            review_sha: None,
+            difficulty: None,
+            model: None,
+            blocked_reason: Some("ambiguous acceptance criterion".to_string()),
+        };
+        let yaml = serde_yaml::to_string(&phase).unwrap();
+        assert!(yaml.contains("blocked_reason: ambiguous acceptance criterion"));
+        let parsed: Phase = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            parsed.blocked_reason.as_deref(),
+            Some("ambiguous acceptance criterion")
+        );
     }
 
     #[test]

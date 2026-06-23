@@ -191,6 +191,13 @@ impl Describe for crate::model::Phase {
                     enum_values: &["small", "medium", "large"],
                     description: "Model tier that should run the phase, if assigned.",
                 },
+                FieldInfo {
+                    name: "blocked_reason",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Reason the phase was parked as blocked (an escalation note), if any.",
+                },
             ],
         }
     }
@@ -413,6 +420,7 @@ mod tests {
             review_sha: None,
             difficulty: Some(crate::model::Difficulty::Hard),
             model: Some(crate::model::ModelTier::Large),
+            blocked_reason: Some("ambiguous acceptance criterion".to_string()),
         };
         assert_fields_match(&sample);
     }

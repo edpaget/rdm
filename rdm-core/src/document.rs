@@ -93,6 +93,7 @@ mod tests {
                 review_sha: None,
                 difficulty: None,
                 model: None,
+                blocked_reason: None,
             },
             body: "## Context\n\nDetails.\n".to_string(),
         };
@@ -116,6 +117,7 @@ mod tests {
                 review_sha: None,
                 difficulty: None,
                 model: None,
+                blocked_reason: None,
             },
             body: "Body text.\n".to_string(),
         };

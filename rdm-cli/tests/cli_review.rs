@@ -250,6 +250,137 @@ fn pending_scopes_to_current_branch_and_fails_open() {
 }
 
 #[test]
+fn blocked_lists_parked_phases_with_recorded_reasons() {
+    let plan = init_plan_repo();
+
+    // Empty queue first: a clean message and an empty JSON array.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "blocked", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No blocked phases."));
+
+    // Park the phase as blocked and record an escalation reason in one update.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-build",
+            "--status",
+            "blocked",
+            "--reason",
+            "AC 2 is ambiguous about which crate owns parsing",
+            "--no-edit",
+            "--roadmap",
+            "roadmap-z",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // `phase show` surfaces the reason (queryable).
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-build",
+            "--no-body",
+            "--roadmap",
+            "roadmap-z",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Blocked reason: AC 2 is ambiguous about which crate owns parsing",
+        ));
+
+    // `review blocked` lists the parked phase with its reason (human output).
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "blocked", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("roadmap-z/phase-1-build"))
+        .stdout(predicate::str::contains(
+            "AC 2 is ambiguous about which crate owns parsing",
+        ));
+
+    // JSON output carries identifier, title, and reason.
+    let output = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "blocked", "--project", "demo", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["identifier"], "roadmap-z/phase-1-build");
+    assert_eq!(
+        arr[0]["reason"],
+        "AC 2 is ambiguous about which crate owns parsing"
+    );
+
+    // Resuming the phase preserves the recorded reason but drops it from the
+    // blocked queue (status is no longer blocked).
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-build",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--roadmap",
+            "roadmap-z",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-build",
+            "--no-body",
+            "--roadmap",
+            "roadmap-z",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Blocked reason: AC 2 is ambiguous about which crate owns parsing",
+        ));
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "blocked", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No blocked phases."));
+}
+
+#[test]
 fn pending_empty_lists_emit_clean_output() {
     let plan = init_plan_repo();
     let src = TempDir::new().unwrap();
