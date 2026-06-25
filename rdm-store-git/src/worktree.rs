@@ -154,6 +154,36 @@ impl ItemRef {
     pub fn dir_name(&self) -> String {
         self.branch_name().replace('/', "-")
     }
+
+    /// Inverts [`branch_name`](ItemRef::branch_name): parses a git branch name
+    /// back into the item it keys, or `None` when the branch does not follow the
+    /// `phase/<roadmap>/<stem>` or `task/<slug>` convention.
+    ///
+    /// This is the signal that lets [`current`] recognize a hand-made worktree —
+    /// or the main checkout sitting on an item branch — without a marker.
+    pub fn from_branch(branch: &str) -> Option<ItemRef> {
+        let branch = branch.trim();
+        if let Some(rest) = branch.strip_prefix("phase/") {
+            let (roadmap, stem) = rest.split_once('/')?;
+            if roadmap.is_empty() || stem.is_empty() {
+                return None;
+            }
+            Some(ItemRef::Phase {
+                roadmap: roadmap.to_string(),
+                stem: stem.to_string(),
+            })
+        } else if let Some(slug) = branch.strip_prefix("task/") {
+            let slug = slug.trim();
+            if slug.is_empty() {
+                return None;
+            }
+            Some(ItemRef::Task {
+                slug: slug.to_string(),
+            })
+        } else {
+            None
+        }
+    }
 }
 
 /// Information about an rdm-managed worktree.
@@ -171,6 +201,22 @@ pub struct WorktreeInfo {
     /// Whether the worktree has uncommitted changes. Populated by [`list`];
     /// always `false` from [`add`].
     pub dirty: bool,
+}
+
+/// The plan-item context of the current checkout, as reported by [`current`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentWorktree {
+    /// Canonical item reference (`<roadmap>/<stem>` or `task/<slug>`).
+    pub item: String,
+    /// The branch checked out in the current working tree.
+    pub branch: String,
+    /// Absolute path to the current working tree's top level.
+    pub path: PathBuf,
+    /// `true` when an `rdm-item` marker is present (an rdm-created worktree);
+    /// `false` when the item was inferred from the branch name alone — a
+    /// hand-made worktree, or the main checkout sitting on an item branch. In
+    /// both cases the item *is* recognized; the flag only distinguishes how.
+    pub rdm_managed: bool,
 }
 
 /// Options for [`remove`].
@@ -357,6 +403,63 @@ pub fn list(repo_root: &Path) -> Result<Vec<WorktreeInfo>> {
         });
     }
     Ok(infos)
+}
+
+/// Reports the plan item the checkout containing `cwd` corresponds to, if any.
+///
+/// Detection prefers the `rdm-item` marker written by [`add`]; failing that, it
+/// inverts the checked-out branch name via [`ItemRef::from_branch`]
+/// (`phase/<roadmap>/<stem>` or `task/<slug>`) so a hand-made worktree — or the
+/// main checkout sitting on an item branch — is still recognized. Returns
+/// `Ok(None)` when the checkout carries no marker and is not on an item branch
+/// (e.g. the main checkout on `main`).
+///
+/// Read-only: never mutates the repository. This is the detection primitive the
+/// `rdm-do` skill uses to decide whether to reuse the current worktree or create
+/// a new one.
+///
+/// # Errors
+///
+/// Returns [`WorktreeError::NotAGitRepo`] if `cwd` is not inside a git working
+/// tree, [`WorktreeError::GitMissing`] if `git` is not installed, or
+/// [`WorktreeError::Git`] if a git command fails.
+pub fn current(cwd: &Path) -> Result<Option<CurrentWorktree>> {
+    let output = run_git_at(cwd, &["rev-parse", "--show-toplevel"])?;
+    if !output.status.success() {
+        return Err(WorktreeError::NotAGitRepo(cwd.to_path_buf()));
+    }
+    let toplevel = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if toplevel.is_empty() {
+        return Err(WorktreeError::NotAGitRepo(cwd.to_path_buf()));
+    }
+    let toplevel = PathBuf::from(toplevel);
+
+    let branch =
+        crate::current_branch_at(&toplevel).map_err(|e| WorktreeError::Git(e.to_string()))?;
+
+    // Prefer the rdm marker (an rdm-created worktree).
+    if let Some((item, marker_branch)) = read_marker(&toplevel) {
+        return Ok(Some(CurrentWorktree {
+            item,
+            branch: branch.unwrap_or(marker_branch),
+            path: toplevel,
+            rdm_managed: true,
+        }));
+    }
+
+    // Fall back to inverting the branch-name convention.
+    if let Some(branch) = branch
+        && let Some(item) = ItemRef::from_branch(&branch)
+    {
+        return Ok(Some(CurrentWorktree {
+            item: item.canonical(),
+            branch,
+            path: toplevel,
+            rdm_managed: false,
+        }));
+    }
+
+    Ok(None)
 }
 
 /// Removes the rdm worktree identified by `target` (a canonical item ref or a
@@ -688,6 +791,47 @@ mod tests {
         assert_eq!(item.branch_name(), "task/fix-bug");
         assert_eq!(item.dir_name(), "task-fix-bug");
         assert_eq!(item.canonical(), "task/fix-bug");
+    }
+
+    #[test]
+    fn from_branch_inverts_phase_and_task() {
+        assert_eq!(
+            ItemRef::from_branch("phase/agent-worktree-runs/phase-1-foo"),
+            Some(ItemRef::Phase {
+                roadmap: "agent-worktree-runs".to_string(),
+                stem: "phase-1-foo".to_string(),
+            })
+        );
+        assert_eq!(
+            ItemRef::from_branch("task/fix-bug"),
+            Some(ItemRef::Task {
+                slug: "fix-bug".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn from_branch_roundtrips_branch_name() {
+        for item in [
+            ItemRef::Phase {
+                roadmap: "rm".to_string(),
+                stem: "phase-2-x".to_string(),
+            },
+            ItemRef::Task {
+                slug: "do-thing".to_string(),
+            },
+        ] {
+            assert_eq!(ItemRef::from_branch(&item.branch_name()), Some(item));
+        }
+    }
+
+    #[test]
+    fn from_branch_rejects_non_convention() {
+        assert_eq!(ItemRef::from_branch("main"), None);
+        assert_eq!(ItemRef::from_branch("feature/foo"), None);
+        // `phase/` with no stem segment.
+        assert_eq!(ItemRef::from_branch("phase/only-two"), None);
+        assert_eq!(ItemRef::from_branch("task/"), None);
     }
 
     #[test]

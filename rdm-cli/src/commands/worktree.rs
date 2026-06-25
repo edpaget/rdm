@@ -32,6 +32,7 @@ pub fn run(
             project,
         ),
         WorktreeCommand::List => list(format),
+        WorktreeCommand::Current => current(format),
         WorktreeCommand::Remove {
             target,
             delete_branch,
@@ -118,6 +119,38 @@ fn list(format: OutputFormat) -> Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn current(format: OutputFormat) -> Result<()> {
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let current = worktree::current(&cwd).map_err(map_err)?;
+
+    match format {
+        OutputFormat::Json => {
+            let json = match &current {
+                Some(c) => serde_json::json!({
+                    "item": c.item,
+                    "branch": c.branch,
+                    "path": c.path.display().to_string(),
+                    "rdm_managed": c.rdm_managed,
+                }),
+                None => serde_json::Value::Null,
+            };
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+        _ => match &current {
+            Some(c) => {
+                let inferred = if c.rdm_managed {
+                    ""
+                } else {
+                    "  (inferred from branch)"
+                };
+                println!("{}  {}  {}{}", c.item, c.branch, c.path.display(), inferred);
+            }
+            None => println!("Not in an rdm worktree."),
+        },
     }
     Ok(())
 }

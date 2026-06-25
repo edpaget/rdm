@@ -304,6 +304,7 @@ fn tools_list() {
         // these are always registered regardless of this test crate's features.
         "rdm_worktree_add",
         "rdm_worktree_list",
+        "rdm_worktree_current",
         "rdm_worktree_remove",
     ];
 

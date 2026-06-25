@@ -1168,6 +1168,29 @@ impl RdmMcpServer {
         ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
     }
 
+    /// Report the plan item the server's current checkout corresponds to.
+    #[rmcp::tool(
+        description = "Report the plan item the current checkout (the server's working directory) corresponds to: the rdm worktree marker if present, otherwise the item inferred from the branch name (`phase/<roadmap>/<stem>` or `task/<slug>`). Returns null when the checkout is on neither (e.g. the main checkout on `main`). Read-only.",
+        annotations(read_only_hint = true)
+    )]
+    async fn rdm_worktree_current(&self) -> Result<CallToolResult, ErrorData> {
+        let cwd = match std::env::current_dir() {
+            Ok(c) => c,
+            Err(e) => return err_text(format!("cannot determine current directory: {e}")),
+        };
+        let value = match rdm_store_git::worktree::current(&cwd) {
+            Ok(Some(c)) => serde_json::json!({
+                "item": c.item,
+                "branch": c.branch,
+                "path": c.path.display().to_string(),
+                "rdm_managed": c.rdm_managed,
+            }),
+            Ok(None) => serde_json::Value::Null,
+            Err(e) => return err_text(format!("{e}")),
+        };
+        ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
+    }
+
     /// Remove an rdm-managed git worktree from the project (code) repo.
     #[rmcp::tool(
         description = "Remove an rdm-managed git worktree (by plan item reference or filesystem path) from the project (code) repo. Refuses a dirty worktree unless `force`; `delete_branch` also drops the branch (refusing unmerged commits without `force`).",

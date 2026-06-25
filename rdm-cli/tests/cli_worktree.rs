@@ -147,6 +147,56 @@ fn add_prints_path_and_is_idempotent() {
 }
 
 #[test]
+fn current_reports_item_from_inside_worktree() {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    let assert = worktree_cmd(&plan, &project)
+        .args(["add", "task/fix-bug", "--project", "demo"])
+        .assert()
+        .success();
+    let wt_path = String::from_utf8_lossy(&assert.get_output().stdout)
+        .trim()
+        .to_string();
+
+    // `worktree current` run from INSIDE the created worktree reports the item.
+    let assert = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(&wt_path)
+        .args(["worktree", "current", "--format", "json"])
+        .assert()
+        .success();
+    let v: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json");
+    assert_eq!(v["item"], "task/fix-bug");
+    assert_eq!(v["branch"], "task/fix-bug");
+    assert_eq!(v["rdm_managed"], true);
+}
+
+#[test]
+fn current_is_null_from_main_checkout() {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    // Text: main checkout on `main` is not an item context.
+    worktree_cmd(&plan, &project)
+        .args(["current"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Not in an rdm worktree."));
+
+    // JSON: null, machine-clean.
+    let assert = worktree_cmd(&plan, &project)
+        .args(["current", "--format", "json"])
+        .assert()
+        .success();
+    let v: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json");
+    assert!(v.is_null(), "expected null, got {v}");
+}
+
+#[test]
 fn add_json_format_parses() {
     let plan = init_plan_repo();
     let project = init_project_repo();

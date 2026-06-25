@@ -43,6 +43,73 @@ fn task_item() -> ItemRef {
 }
 
 #[test]
+fn current_reports_rdm_worktree_via_marker() {
+    let repo = init_project_repo();
+    let item = task_item();
+    let info = worktree::add(repo.path(), &item, &item.branch_name(), None).unwrap();
+
+    let cur = worktree::current(&info.path)
+        .unwrap()
+        .expect("inside the rdm worktree");
+    assert_eq!(cur.item, "task/fix-bug");
+    assert_eq!(cur.branch, "task/fix-bug");
+    assert!(cur.rdm_managed, "marker present → rdm-managed");
+    assert_eq!(
+        cur.path.canonicalize().unwrap(),
+        info.path.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn current_infers_item_from_branch_without_marker() {
+    let repo = init_project_repo();
+    // Check out an item-convention branch in the MAIN checkout (no marker).
+    git(
+        repo.path(),
+        &["checkout", "-b", "phase/my-roadmap/phase-1-build"],
+    );
+
+    let cur = worktree::current(repo.path())
+        .unwrap()
+        .expect("on an item branch");
+    assert_eq!(cur.item, "my-roadmap/phase-1-build");
+    assert_eq!(cur.branch, "phase/my-roadmap/phase-1-build");
+    assert!(!cur.rdm_managed, "no marker → inferred from branch");
+}
+
+#[test]
+fn current_resolves_from_worktree_subdirectory() {
+    let repo = init_project_repo();
+    let item = task_item();
+    let info = worktree::add(repo.path(), &item, &item.branch_name(), None).unwrap();
+
+    // A nested subdirectory inside the worktree must still resolve the item —
+    // `current` reads the marker from the toplevel, not from `cwd`.
+    let subdir = info.path.join("src/nested");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let cur = worktree::current(&subdir)
+        .unwrap()
+        .expect("a subdir of the worktree still resolves the item");
+    assert_eq!(cur.item, "task/fix-bug");
+    assert!(cur.rdm_managed);
+    assert_eq!(
+        cur.path.canonicalize().unwrap(),
+        info.path.canonicalize().unwrap(),
+        "path is the worktree toplevel, not the subdir"
+    );
+}
+
+#[test]
+fn current_returns_none_on_main_checkout() {
+    let repo = init_project_repo();
+    assert!(
+        worktree::current(repo.path()).unwrap().is_none(),
+        "main checkout on `main` is not an item context"
+    );
+}
+
+#[test]
 fn add_creates_worktree_and_marker() {
     let repo = init_project_repo();
     let item = task_item();

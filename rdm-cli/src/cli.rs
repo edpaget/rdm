@@ -789,6 +789,16 @@ pub(crate) enum WorktreeCommand {
     },
     /// List rdm-managed worktrees in the current project repo.
     List,
+    /// Report the plan item the current checkout corresponds to.
+    ///
+    /// Detection prefers the rdm worktree marker; otherwise the item is inferred
+    /// from the branch name (`phase/<roadmap>/<stem>` or `task/<slug>`), so a
+    /// hand-made worktree or the main checkout sitting on an item branch is also
+    /// recognized. Prints "Not in an rdm worktree." (text) / `null` (JSON) and
+    /// exits 0 when the checkout is on neither — e.g. the main checkout on
+    /// `main`. The `rdm-do` skill uses this to decide whether to reuse the
+    /// current worktree or create a new one.
+    Current,
     /// Remove an rdm-managed worktree by item or path.
     Remove {
         /// Item (`<roadmap>/<phase-stem-or-number>` or `task/<slug>`) or

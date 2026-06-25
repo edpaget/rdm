@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm worktree current` reports the plan item the current checkout corresponds
+  to — the rdm worktree marker if present, otherwise the item inferred from the
+  branch name (`phase/<roadmap>/<stem>` or `task/<slug>`), so a hand-made
+  worktree or the main checkout sitting on an item branch is also recognized. It
+  prints `Not in an rdm worktree.` (text) / `null` (JSON) and exits 0 when the
+  checkout is on neither (e.g. the main checkout on `main`). Exposed as the
+  `rdm_worktree_current` MCP tool as well. This is the detection primitive the
+  `rdm-do` skill will use to reuse the current worktree instead of creating a
+  redundant nested one.
 - `rdm-dispatch-phase` agent skill (shipped by `rdm agent-config --skills`, in
   both CLI and MCP variants). It runs a single roadmap phase end-to-end in an
   isolated worktree on the phase's assigned model tier and returns a structured
