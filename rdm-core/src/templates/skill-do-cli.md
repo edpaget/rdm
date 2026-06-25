@@ -44,7 +44,12 @@ For unattended Claude Code runs (where no human is present to approve permission
 3. **Mark in-progress:**
    - phase: `rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> {proj_flag}`
    - task: `rdm task update <slug> --status in-progress --no-edit {proj_flag}`
-4. **Create an isolated worktree:** run `rdm worktree add <item> {proj_flag}`, where `<item>` is the same ref form used elsewhere (`<roadmap>/<phase-stem>` for a phase, `task/<slug>` for a task). `cd` into the path it prints and do the rest of the work in that worktree, so your changes are isolated from the live checkout.
+4. **Get into the item's isolated worktree.** `<item>` is the same ref form used elsewhere (`<roadmap>/<phase-stem>` for a phase, `task/<slug>` for a task). On some hosts (e.g. Claude Code) a plain `cd` into a sibling worktree does **not** persist across tool calls, which breaks any post-finalize hook that runs from the launch dir — so prefer your host's durable worktree-entry tool over `cd`. Run `rdm worktree current --format json` and branch on its `item`:
+   - **Match** (`item` == the target `<item>`): you are already in the right worktree. Reuse the current dir — skip `worktree add` and entry.
+   - **None** (output is `null` — you are in the main checkout or not in a worktree): run `rdm worktree add <item> {proj_flag}`, take the `path` it prints, then enter it with your host's durable worktree-entry tool — Claude Code: `EnterWorktree({path})`; if your host has none, `cd` into the path.
+   - **Mismatch** (`item` is a *different* item — you are in another item's worktree): interactive → **ask** the user whether to reuse the current worktree or create and enter the target's worktree; `--auto` → run `worktree add <item>`, enter it as above, and note that you moved to the target's worktree.
+
+   Do the rest of the work in that worktree, so your changes are isolated from the live checkout.
 5. **Enter plan mode** with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
    - Break the phase/task into concrete implementation steps based on its description and acceptance criteria.
    - Include a final step: "Review changes with user and finalize".

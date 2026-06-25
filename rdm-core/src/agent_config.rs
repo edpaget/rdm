@@ -1542,6 +1542,11 @@ mod tests {
         let content = &skills[1].content;
         // Work happens in an isolated worktree created via the worktree command...
         assert!(content.contains("worktree add"));
+        // ...detecting and reusing an existing worktree via `worktree current`...
+        assert!(content.contains("worktree current"));
+        // ...and moving the session in durably (Claude Code's EnterWorktree)
+        // rather than a non-persistent `cd`, so post-finalize hooks fire.
+        assert!(content.contains("EnterWorktree"));
         // ...and the skill supports a non-interactive run mode...
         assert!(content.contains("--auto"));
         // ...with unattended-permission guidance for Claude Code.

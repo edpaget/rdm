@@ -51,6 +51,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The `rdm-do` skill now detects whether it is already in the target item's
+  worktree (via `rdm worktree current`) and reuses it, and otherwise creates the
+  worktree and moves the session in with the host's durable worktree-entry tool
+  (Claude Code: `EnterWorktree`) instead of a `cd` that does not persist across
+  tool calls. This keeps the session in the worktree through finalize, so the
+  auto-review Stop hook fires without a manual step.
 - `rdm hook post-commit` / `post-merge` now always commit the `Done:`
   phase/task updates they apply, even when staging mode is enabled via
   `--stage`, `RDM_STAGE`, or `stage = true` in `rdm.toml`. Previously the hook

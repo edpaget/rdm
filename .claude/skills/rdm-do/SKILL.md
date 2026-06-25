@@ -10,6 +10,7 @@ allowed-tools:
   - Edit
   - EnterPlanMode
   - ExitPlanMode
+  - EnterWorktree
 ---
 
 Implement a roadmap phase or work on a task. One shared flow: find the target → mark in-progress → plan → execute → review with the user → finalize into `needs-review`.
@@ -47,14 +48,19 @@ For unattended Claude Code runs (where no human is present to approve permission
 4. **Mark in-progress:**
    - phase: `./target/debug/rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> --project rdm`
    - task: `./target/debug/rdm task update <slug> --status in-progress --no-edit --project rdm`
-5. **Create an isolated worktree:** run `./target/debug/rdm worktree add <item> --project rdm`, where `<item>` is the same ref form used elsewhere (`<roadmap>/<phase-stem>` for a phase, `task/<slug>` for a task). `cd` into the path it prints, run `cargo build` there, and use **that worktree's** `./target/debug/rdm` for all later rdm commands — this exercises your changes where you made them. Do the rest of the work in this worktree.
+5. **Get into the item's isolated worktree.** `<item>` is the same ref form used elsewhere (`<roadmap>/<phase-stem>` for a phase, `task/<slug>` for a task). A plain `cd` into a sibling worktree does **not** persist across tool calls in Claude Code (cwd resets each call), and the auto-review Stop hook runs from the launch dir — so you must move the session durably with `EnterWorktree`, not `cd`. Run `./target/debug/rdm worktree current --format json` and branch on its `item`:
+   - **Match** (`item` == the target `<item>`): you are already in the right worktree. Reuse the current dir — skip `worktree add` and `EnterWorktree`. Run `cargo build` here.
+   - **None** (output is `null` — you are in the main checkout or not in a worktree): run `./target/debug/rdm worktree add <item> --project rdm`, take the `path` it prints, then move the session in with `EnterWorktree({path})`.
+   - **Mismatch** (`item` is a *different* item — you are in another item's worktree): interactive → **ask** the user whether to reuse the current worktree or create and enter the target's worktree; `--auto` → run `worktree add <item>`, `EnterWorktree({path})`, and note that you moved to the target's worktree.
+
+   After entering, run `cargo build` in the worktree and use **that worktree's** `./target/debug/rdm` for all later rdm commands — this exercises your changes where you made them. Do the rest of the work in this worktree.
 6. **Enter plan mode** with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
    - Break the phase/task into concrete implementation steps based on its description and acceptance criteria.
    - Include a final step: "Review changes with user and finalize".
 7. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
 8. **Execute the plan**: implement each step, following the plan and any acceptance criteria.
 9. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
-10. **Finalize (new flow):** on user acceptance, commit the implementation changes, then transition the item to `needs-review`:
+10. **Finalize:** on user acceptance, commit the implementation changes, then transition the item to `needs-review`:
     - phase: `./target/debug/rdm phase update <phase> --status needs-review --no-edit --roadmap <slug> --project rdm`
     - task: `./target/debug/rdm task update <slug> --status needs-review --no-edit --project rdm`
 
