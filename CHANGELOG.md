@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm worktree add <roadmap-slug>` now accepts a bare roadmap reference and
+  creates (or idempotently reuses) a single worktree on a `roadmap/<slug>`
+  branch — one worktree per roadmap, shared by all its phases — at
+  `<repo>__worktrees/roadmap-<slug>`. `rdm worktree current` reports that
+  roadmap context (via marker or by inverting the `roadmap/<slug>` branch name),
+  and `rdm worktree remove` accepts the bare roadmap form too. Also exposed
+  through the `rdm_worktree_add` / `rdm_worktree_current` MCP tools. This is the
+  isolation unit for the one-worktree-per-roadmap rdm-do flow.
 - `rdm worktree current` reports the plan item the current checkout corresponds
   to — the rdm worktree marker if present, otherwise the item inferred from the
   branch name (`phase/<roadmap>/<stem>` or `task/<slug>`), so a hand-made

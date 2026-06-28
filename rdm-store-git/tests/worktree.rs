@@ -125,6 +125,66 @@ fn add_creates_worktree_and_marker() {
 }
 
 #[test]
+fn add_and_current_round_trip_a_roadmap_worktree() {
+    let repo = init_project_repo();
+    let item = ItemRef::parse("fix-worktree-review-firing").unwrap();
+    assert_eq!(
+        item,
+        ItemRef::Roadmap {
+            roadmap: "fix-worktree-review-firing".to_string()
+        }
+    );
+
+    let info = worktree::add(repo.path(), &item, &item.branch_name(), None).unwrap();
+    assert!(info.created);
+    assert_eq!(info.item, "fix-worktree-review-firing");
+    assert_eq!(info.branch, "roadmap/fix-worktree-review-firing");
+    // Directory follows the `roadmap-<slug>` convention.
+    assert!(
+        info.path.ends_with("roadmap-fix-worktree-review-firing"),
+        "unexpected worktree dir: {}",
+        info.path.display()
+    );
+
+    // `current` reports the roadmap via the marker.
+    let cur = worktree::current(&info.path)
+        .unwrap()
+        .expect("inside the roadmap worktree");
+    assert_eq!(cur.item, "fix-worktree-review-firing");
+    assert_eq!(cur.branch, "roadmap/fix-worktree-review-firing");
+    assert!(cur.rdm_managed, "marker present → rdm-managed");
+}
+
+#[test]
+fn add_roadmap_is_idempotent() {
+    let repo = init_project_repo();
+    let item = ItemRef::parse("fix-worktree-review-firing").unwrap();
+    let first = worktree::add(repo.path(), &item, &item.branch_name(), None).unwrap();
+    let second = worktree::add(repo.path(), &item, &item.branch_name(), None).unwrap();
+    assert!(first.created, "first add creates the worktree");
+    assert!(!second.created, "second add reuses it");
+    assert_eq!(
+        first.path.canonicalize().unwrap(),
+        second.path.canonicalize().unwrap()
+    );
+    assert_eq!(second.item, "fix-worktree-review-firing");
+    assert_eq!(second.branch, "roadmap/fix-worktree-review-firing");
+}
+
+#[test]
+fn current_infers_roadmap_from_branch_without_marker() {
+    let repo = init_project_repo();
+    // Main checkout sitting on a `roadmap/<slug>` branch, no marker.
+    git(repo.path(), &["checkout", "-b", "roadmap/my-roadmap"]);
+    let cur = worktree::current(repo.path())
+        .unwrap()
+        .expect("roadmap branch is recognized");
+    assert_eq!(cur.item, "my-roadmap");
+    assert_eq!(cur.branch, "roadmap/my-roadmap");
+    assert!(!cur.rdm_managed, "no marker → inferred from branch");
+}
+
+#[test]
 fn add_is_idempotent() {
     let repo = init_project_repo();
     let item = task_item();

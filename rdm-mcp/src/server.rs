@@ -286,7 +286,8 @@ struct ProjectCreateParams {
 struct WorktreeAddParams {
     /// The project name (used to validate the item against the plan repo).
     project: String,
-    /// The plan item: `<roadmap>/<phase-stem-or-number>` or `task/<slug>`.
+    /// The plan item: `<roadmap>/<phase-stem-or-number>`, `task/<slug>`, or a
+    /// bare `<roadmap>` (one worktree on `roadmap/<slug>` shared by its phases).
     item: String,
     /// Optional base ref to branch from (defaults to the current HEAD).
     base: Option<String>,
@@ -1093,7 +1094,7 @@ impl RdmMcpServer {
 impl RdmMcpServer {
     /// Create (or idempotently reuse) an isolated git worktree for a plan item.
     #[rmcp::tool(
-        description = "Create (or idempotently reuse) an isolated git worktree and branch in the project (code) repo for a plan item (`<roadmap>/<phase-stem-or-number>` or `task/<slug>`). Runs against the repo discovered from the server's working directory and refuses to run inside the plan repo. Returns the item, branch, path, and whether it was newly created.",
+        description = "Create (or idempotently reuse) an isolated git worktree and branch in the project (code) repo for a plan item (`<roadmap>/<phase-stem-or-number>`, `task/<slug>`, or a bare `<roadmap>` for one worktree on `roadmap/<slug>` shared by all its phases). Runs against the repo discovered from the server's working directory and refuses to run inside the plan repo. Returns the item, branch, path, and whether it was newly created.",
         annotations(read_only_hint = false)
     )]
     async fn rdm_worktree_add(
@@ -1170,7 +1171,7 @@ impl RdmMcpServer {
 
     /// Report the plan item the server's current checkout corresponds to.
     #[rmcp::tool(
-        description = "Report the plan item the current checkout (the server's working directory) corresponds to: the rdm worktree marker if present, otherwise the item inferred from the branch name (`phase/<roadmap>/<stem>` or `task/<slug>`). Returns null when the checkout is on neither (e.g. the main checkout on `main`). Read-only.",
+        description = "Report the plan item the current checkout (the server's working directory) corresponds to: the rdm worktree marker if present, otherwise the item inferred from the branch name (`phase/<roadmap>/<stem>`, `task/<slug>`, or `roadmap/<slug>`). Returns null when the checkout is on neither (e.g. the main checkout on `main`). Read-only.",
         annotations(read_only_hint = true)
     )]
     async fn rdm_worktree_current(&self) -> Result<CallToolResult, ErrorData> {

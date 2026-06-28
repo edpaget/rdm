@@ -776,7 +776,8 @@ pub(crate) enum ReviewCommand {
 pub(crate) enum WorktreeCommand {
     /// Create (or reuse) a worktree for a plan item.
     ///
-    /// The item is `<roadmap>/<phase-stem-or-number>` or `task/<slug>`.
+    /// The item is `<roadmap>/<phase-stem-or-number>`, `task/<slug>`, or a bare
+    /// `<roadmap>` (one worktree on `roadmap/<slug>` shared by all its phases).
     Add {
         /// Plan item to key the worktree/branch to.
         item: String,
@@ -792,7 +793,8 @@ pub(crate) enum WorktreeCommand {
     /// Report the plan item the current checkout corresponds to.
     ///
     /// Detection prefers the rdm worktree marker; otherwise the item is inferred
-    /// from the branch name (`phase/<roadmap>/<stem>` or `task/<slug>`), so a
+    /// from the branch name (`phase/<roadmap>/<stem>`, `task/<slug>`, or
+    /// `roadmap/<slug>`), so a
     /// hand-made worktree or the main checkout sitting on an item branch is also
     /// recognized. Prints "Not in an rdm worktree." (text) / `null` (JSON) and
     /// exits 0 when the checkout is on neither — e.g. the main checkout on
@@ -801,8 +803,8 @@ pub(crate) enum WorktreeCommand {
     Current,
     /// Remove an rdm-managed worktree by item or path.
     Remove {
-        /// Item (`<roadmap>/<phase-stem-or-number>` or `task/<slug>`) or
-        /// worktree path.
+        /// Item (`<roadmap>/<phase-stem-or-number>`, `task/<slug>`, or
+        /// `<roadmap>`) or worktree path.
         target: String,
         /// Also delete the worktree's branch.
         #[arg(long)]

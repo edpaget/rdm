@@ -82,6 +82,8 @@ pub type Result<T> = std::result::Result<T, WorktreeError>;
 ///
 /// - `<roadmap>/<phase-stem-or-number>` → [`ItemRef::Phase`]
 /// - `task/<slug>` → [`ItemRef::Task`] (`task` is a reserved roadmap prefix)
+/// - `<roadmap>` (no `/`) → [`ItemRef::Roadmap`] — the whole roadmap, one
+///   worktree shared by all its phases
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ItemRef {
     /// A roadmap phase.
@@ -96,28 +98,40 @@ pub enum ItemRef {
         /// The task slug.
         slug: String,
     },
+    /// A whole roadmap — keys the single worktree all of its phases share.
+    Roadmap {
+        /// The roadmap slug.
+        roadmap: String,
+    },
 }
 
 impl ItemRef {
-    /// Parses an item reference of the form `<roadmap>/<phase>` or
-    /// `task/<slug>`.
+    /// Parses an item reference of the form `<roadmap>/<phase>`, `task/<slug>`,
+    /// or a bare `<roadmap>` (no `/`, keying the whole roadmap).
     ///
     /// # Errors
     ///
-    /// Returns [`WorktreeError::NotFound`] if the input has no `/` separator or
-    /// either side is empty.
+    /// Returns [`WorktreeError::NotFound`] if the input is empty or, when a `/`
+    /// is present, either side is empty.
     pub fn parse(s: &str) -> Result<ItemRef> {
         let s = s.trim();
         let Some((left, right)) = s.split_once('/') else {
-            return Err(WorktreeError::NotFound(format!(
-                "'{s}' is not a valid item — use <roadmap>/<phase> or task/<slug>"
-            )));
+            // No separator → the whole roadmap. Existence is validated later by
+            // `resolve_item`.
+            if s.is_empty() {
+                return Err(WorktreeError::NotFound(
+                    "empty item — use <roadmap>, <roadmap>/<phase>, or task/<slug>".to_string(),
+                ));
+            }
+            return Ok(ItemRef::Roadmap {
+                roadmap: s.to_string(),
+            });
         };
         let left = left.trim();
         let right = right.trim();
         if left.is_empty() || right.is_empty() {
             return Err(WorktreeError::NotFound(format!(
-                "'{s}' is not a valid item — use <roadmap>/<phase> or task/<slug>"
+                "'{s}' is not a valid item — use <roadmap>, <roadmap>/<phase>, or task/<slug>"
             )));
         }
         if left.eq_ignore_ascii_case("task") {
@@ -132,21 +146,25 @@ impl ItemRef {
         }
     }
 
-    /// Returns the canonical item string (`<roadmap>/<stem>` or `task/<slug>`).
+    /// Returns the canonical item string (`<roadmap>/<stem>`, `task/<slug>`, or
+    /// a bare `<roadmap>`).
     pub fn canonical(&self) -> String {
         match self {
             ItemRef::Phase { roadmap, stem } => format!("{roadmap}/{stem}"),
             ItemRef::Task { slug } => format!("task/{slug}"),
+            ItemRef::Roadmap { roadmap } => roadmap.clone(),
         }
     }
 
     /// Returns the git branch name for this item.
     ///
-    /// Phases map to `phase/<roadmap>/<stem>`; tasks to `task/<slug>`.
+    /// Phases map to `phase/<roadmap>/<stem>`; tasks to `task/<slug>`; whole
+    /// roadmaps to `roadmap/<slug>`.
     pub fn branch_name(&self) -> String {
         match self {
             ItemRef::Phase { roadmap, stem } => format!("phase/{roadmap}/{stem}"),
             ItemRef::Task { slug } => format!("task/{slug}"),
+            ItemRef::Roadmap { roadmap } => format!("roadmap/{roadmap}"),
         }
     }
 
@@ -157,7 +175,7 @@ impl ItemRef {
 
     /// Inverts [`branch_name`](ItemRef::branch_name): parses a git branch name
     /// back into the item it keys, or `None` when the branch does not follow the
-    /// `phase/<roadmap>/<stem>` or `task/<slug>` convention.
+    /// `phase/<roadmap>/<stem>`, `task/<slug>`, or `roadmap/<slug>` convention.
     ///
     /// This is the signal that lets [`current`] recognize a hand-made worktree —
     /// or the main checkout sitting on an item branch — without a marker.
@@ -180,6 +198,14 @@ impl ItemRef {
             Some(ItemRef::Task {
                 slug: slug.to_string(),
             })
+        } else if let Some(roadmap) = branch.strip_prefix("roadmap/") {
+            let roadmap = roadmap.trim();
+            if roadmap.is_empty() {
+                return None;
+            }
+            Some(ItemRef::Roadmap {
+                roadmap: roadmap.to_string(),
+            })
         } else {
             None
         }
@@ -189,7 +215,8 @@ impl ItemRef {
 /// Information about an rdm-managed worktree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeInfo {
-    /// The canonical item reference (`<roadmap>/<stem>` or `task/<slug>`).
+    /// The canonical item reference (`<roadmap>/<stem>`, `task/<slug>`, or a
+    /// bare `<roadmap>`).
     pub item: String,
     /// The git branch checked out in the worktree.
     pub branch: String,
@@ -206,7 +233,8 @@ pub struct WorktreeInfo {
 /// The plan-item context of the current checkout, as reported by [`current`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurrentWorktree {
-    /// Canonical item reference (`<roadmap>/<stem>` or `task/<slug>`).
+    /// Canonical item reference (`<roadmap>/<stem>`, `task/<slug>`, or a bare
+    /// `<roadmap>`).
     pub item: String,
     /// The branch checked out in the current working tree.
     pub branch: String,
@@ -409,8 +437,9 @@ pub fn list(repo_root: &Path) -> Result<Vec<WorktreeInfo>> {
 ///
 /// Detection prefers the `rdm-item` marker written by [`add`]; failing that, it
 /// inverts the checked-out branch name via [`ItemRef::from_branch`]
-/// (`phase/<roadmap>/<stem>` or `task/<slug>`) so a hand-made worktree — or the
-/// main checkout sitting on an item branch — is still recognized. Returns
+/// (`phase/<roadmap>/<stem>`, `task/<slug>`, or `roadmap/<slug>`) so a hand-made
+/// worktree — or the main checkout sitting on an item branch — is still
+/// recognized. Returns
 /// `Ok(None)` when the checkout carries no marker and is not on an item branch
 /// (e.g. the main checkout on `main`).
 ///
@@ -650,6 +679,14 @@ pub fn resolve_item(
             })?;
             Ok(ItemRef::Task { slug })
         }
+        ItemRef::Roadmap { roadmap } => {
+            rdm_core::io::load_roadmap(store, project, &roadmap).map_err(|_| {
+                WorktreeError::NotFound(format!(
+                    "roadmap '{roadmap}' not found — check `rdm roadmap list`"
+                ))
+            })?;
+            Ok(ItemRef::Roadmap { roadmap })
+        }
     }
 }
 
@@ -750,17 +787,34 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_no_slash() {
-        assert!(matches!(
-            ItemRef::parse("no-slash"),
-            Err(WorktreeError::NotFound(_))
-        ));
+    fn parse_bare_slug_is_roadmap() {
+        // A reference with no `/` keys the whole roadmap (one worktree per
+        // roadmap). Existence is validated later by `resolve_item`.
+        assert_eq!(
+            ItemRef::parse("fix-worktree-review-firing").unwrap(),
+            ItemRef::Roadmap {
+                roadmap: "fix-worktree-review-firing".to_string(),
+            }
+        );
     }
 
     #[test]
     fn parse_rejects_empty_side() {
         assert!(ItemRef::parse("foo/").is_err());
         assert!(ItemRef::parse("/bar").is_err());
+    }
+
+    #[test]
+    fn parse_rejects_empty_input() {
+        // An empty (or whitespace-only) ref is not a roadmap — it errors.
+        assert!(matches!(
+            ItemRef::parse(""),
+            Err(WorktreeError::NotFound(_))
+        ));
+        assert!(matches!(
+            ItemRef::parse("   "),
+            Err(WorktreeError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -791,6 +845,16 @@ mod tests {
         assert_eq!(item.branch_name(), "task/fix-bug");
         assert_eq!(item.dir_name(), "task-fix-bug");
         assert_eq!(item.canonical(), "task/fix-bug");
+    }
+
+    #[test]
+    fn roadmap_branch_and_dir_names() {
+        let item = ItemRef::Roadmap {
+            roadmap: "fix-worktree-review-firing".to_string(),
+        };
+        assert_eq!(item.branch_name(), "roadmap/fix-worktree-review-firing");
+        assert_eq!(item.dir_name(), "roadmap-fix-worktree-review-firing");
+        assert_eq!(item.canonical(), "fix-worktree-review-firing");
     }
 
     #[test]
@@ -826,12 +890,32 @@ mod tests {
     }
 
     #[test]
+    fn from_branch_inverts_roadmap() {
+        assert_eq!(
+            ItemRef::from_branch("roadmap/fix-worktree-review-firing"),
+            Some(ItemRef::Roadmap {
+                roadmap: "fix-worktree-review-firing".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn from_branch_roadmap_roundtrips() {
+        let item = ItemRef::Roadmap {
+            roadmap: "my-roadmap".to_string(),
+        };
+        assert_eq!(ItemRef::from_branch(&item.branch_name()), Some(item));
+    }
+
+    #[test]
     fn from_branch_rejects_non_convention() {
         assert_eq!(ItemRef::from_branch("main"), None);
         assert_eq!(ItemRef::from_branch("feature/foo"), None);
         // `phase/` with no stem segment.
         assert_eq!(ItemRef::from_branch("phase/only-two"), None);
         assert_eq!(ItemRef::from_branch("task/"), None);
+        // `roadmap/` with no slug.
+        assert_eq!(ItemRef::from_branch("roadmap/"), None);
     }
 
     #[test]
@@ -900,6 +984,21 @@ mod tests {
                 stem: "phase-2-do-thing".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn resolve_item_validates_roadmap() {
+        let (_dir, store) = plan_fixture();
+        assert_eq!(
+            resolve_item(&store, "proj", "my-roadmap").unwrap(),
+            ItemRef::Roadmap {
+                roadmap: "my-roadmap".to_string(),
+            }
+        );
+        assert!(matches!(
+            resolve_item(&store, "proj", "no-such-roadmap"),
+            Err(WorktreeError::NotFound(_))
+        ));
     }
 
     #[test]
