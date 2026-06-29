@@ -24,17 +24,37 @@ pub fn run(
             let items = rdm_core::ops::review::pending_review_items(store, &project)
                 .context("failed to list pending-review items")?;
 
-            // Scope to the current source-repo HEAD: keep items whose stamped
-            // SHA is reachable from HEAD, and keep unstamped items (fail open).
-            // Reachability errors (e.g. unknown SHA, unborn HEAD) also fail
-            // open so a transient git state never hides work from review.
+            // Scope by *identity*: keep items whose stamped `review_branch`
+            // equals the firing checkout's current branch. This keeps roadmaps
+            // exactly isolated (roadmap A's trigger can never pick up roadmap
+            // B's items) while tolerating a trigger that fires from somewhere
+            // other than the worktree.
             let cwd = std::env::current_dir().context("failed to read current directory")?;
+            let current_branch = rdm_git::current_branch_at(&cwd).ok().flatten();
+            // SHA-reachability fallback: keep an item whose stamped sha is
+            // reachable from HEAD, keep unstamped items, and fail open on any
+            // git error — a transient git state must never hide work from review.
+            let sha_reachable = |item: &PendingReviewItem| match &item.review_sha {
+                None => true,
+                Some(sha) => rdm_git::is_ancestor_of_head_at(&cwd, sha).unwrap_or(true),
+            };
             let in_scope: Vec<PendingReviewItem> = items
                 .into_iter()
-                .filter(|item| match &item.review_sha {
-                    None => true,
-                    Some(sha) => rdm_store_git::is_ancestor_of_head_at(&cwd, sha).unwrap_or(true),
-                })
+                .filter(
+                    |item| match (&item.review_branch, current_branch.as_deref()) {
+                        // A branch is checked out and the item is branch-stamped:
+                        // exact identity match keeps roadmaps perfectly isolated.
+                        (Some(branch), Some(cur)) => cur == branch.as_str(),
+                        // Branch-stamped, but the firing checkout has no resolvable
+                        // branch (detached HEAD, a non-repo cwd, or git unavailable):
+                        // identity can't be compared, so fall back to SHA reachability
+                        // and fail open rather than hiding stamped work.
+                        (Some(_), None) => sha_reachable(item),
+                        // Legacy item with no stamped branch: SHA-reachability fallback
+                        // so nothing pre-stamp is ever dropped.
+                        (None, _) => sha_reachable(item),
+                    },
+                )
                 .collect();
 
             match format {
@@ -47,6 +67,7 @@ pub fn run(
                                 "identifier": item.identifier,
                                 "project": item.project,
                                 "title": item.title,
+                                "branch": item.review_branch,
                             })
                         })
                         .collect();

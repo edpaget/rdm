@@ -22,18 +22,16 @@ use rdm_core::store::{DirEntry, RelPath, Store, VersionedStore};
 use rdm_store_fs::FsStore;
 
 pub mod error;
-pub mod worktree;
 
 mod commit;
 mod merge;
-mod process;
 mod remote;
 mod repo;
 
-pub use repo::{
-    GitRepo, commit_messages_since_at, current_branch_at, discover_git_dir, discover_hooks_dir,
-    head_commit_info_at, is_ancestor_of_head_at,
-};
+/// HEAD/commit info, re-exported from [`rdm_git`] as the return type of
+/// [`GitRepo::head_commit_info`] / [`GitRepo::commit_messages_since`].
+pub use rdm_git::HeadCommitInfo;
+pub use repo::GitRepo;
 
 /// The kind of change tracked for commit message generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,15 +60,6 @@ pub struct FileStatus {
     pub path: String,
     /// The kind of change detected.
     pub change: FileChange,
-}
-
-/// Information about the HEAD commit.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeadCommitInfo {
-    /// The full commit SHA.
-    pub sha: String,
-    /// The raw commit message.
-    pub message: String,
 }
 
 /// Information about a configured git remote.
@@ -263,7 +252,7 @@ impl GitStore {
         }
         args.push(url);
         args.push(&root_str);
-        let output = repo::run_git(&args)?;
+        let output = rdm_git::run_git(&args)?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(Error::Git(format!("git clone failed: {}", stderr.trim())));
@@ -1659,69 +1648,6 @@ mod tests {
     }
 
     #[test]
-    fn is_ancestor_of_head_distinguishes_branches() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        // Base commit on the default branch.
-        store
-            .write(&RelPath::new("base.md").unwrap(), "base".to_string())
-            .unwrap();
-        store.commit().unwrap();
-        let base_sha = store.git().head_commit_info().unwrap().unwrap().sha;
-
-        // Branch A: a commit reachable from the branch-A tip.
-        git_cmd()
-            .args(["checkout", "-b", "branch-a"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        store
-            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
-            .unwrap();
-        store.commit().unwrap();
-        let a_sha = store.git().head_commit_info().unwrap().unwrap().sha;
-
-        // Branch B (off base): its tip is NOT reachable from branch A's HEAD.
-        git_cmd()
-            .args(["checkout", "-b", "branch-b", &base_sha])
-            .current_dir(dir.path())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .unwrap();
-        store
-            .write(&RelPath::new("b.md").unwrap(), "b".to_string())
-            .unwrap();
-        store.commit().unwrap();
-        let b_sha = store.git().head_commit_info().unwrap().unwrap().sha;
-
-        // Back on branch A.
-        git_cmd()
-            .args(["checkout", "branch-a"])
-            .current_dir(dir.path())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .unwrap();
-
-        // From branch A's HEAD: base and A's own tip are ancestors; B is not.
-        assert!(is_ancestor_of_head_at(dir.path(), &base_sha).unwrap());
-        assert!(is_ancestor_of_head_at(dir.path(), &a_sha).unwrap());
-        assert!(!is_ancestor_of_head_at(dir.path(), &b_sha).unwrap());
-    }
-
-    #[test]
-    fn is_ancestor_of_head_errors_on_unknown_sha() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        store
-            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        let result = is_ancestor_of_head_at(dir.path(), "0000000000000000000000000000000000000000");
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn list_unmerged_empty_when_clean() {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
@@ -1732,95 +1658,6 @@ mod tests {
 
         let unmerged = store.git().git_list_unmerged().unwrap();
         assert!(unmerged.is_empty());
-    }
-
-    #[test]
-    fn discover_git_dir_finds_repo() {
-        let dir = TempDir::new().unwrap();
-        gix::init(dir.path()).unwrap();
-        let git_dir = discover_git_dir(dir.path()).unwrap();
-        assert!(git_dir.ends_with(".git"));
-    }
-
-    #[test]
-    fn discover_git_dir_from_subdir() {
-        let dir = TempDir::new().unwrap();
-        gix::init(dir.path()).unwrap();
-        let sub = dir.path().join("a/b");
-        std::fs::create_dir_all(&sub).unwrap();
-        let git_dir = discover_git_dir(&sub).unwrap();
-        assert!(git_dir.ends_with(".git"));
-    }
-
-    #[test]
-    fn discover_git_dir_errors_for_non_repo() {
-        let dir = TempDir::new().unwrap();
-        assert!(discover_git_dir(dir.path()).is_err());
-    }
-
-    #[test]
-    fn head_commit_info_at_returns_none_for_empty_repo() {
-        let dir = TempDir::new().unwrap();
-        gix::init(dir.path()).unwrap();
-        let info = head_commit_info_at(dir.path()).unwrap();
-        assert!(info.is_none());
-    }
-
-    #[test]
-    fn head_commit_info_at_reads_commit() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        store
-            .write(&RelPath::new("file.md").unwrap(), "content".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        let info = head_commit_info_at(dir.path()).unwrap().unwrap();
-        assert!(!info.sha.is_empty());
-        assert!(!info.message.is_empty());
-    }
-
-    #[test]
-    fn commit_messages_since_at_returns_commits() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        store
-            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        git_cmd()
-            .args(["tag", "anchor"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-
-        store
-            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
-            .unwrap();
-        store.commit().unwrap();
-        store
-            .write(&RelPath::new("b.md").unwrap(), "b".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        let commits = commit_messages_since_at(dir.path(), Some("anchor")).unwrap();
-        assert_eq!(commits.len(), 2);
-        assert!(commits[0].message.contains("b.md"));
-        assert!(commits[1].message.contains("a.md"));
-    }
-
-    #[test]
-    fn commit_messages_since_at_empty_range() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        store
-            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        let commits = commit_messages_since_at(dir.path(), Some("HEAD")).unwrap();
-        assert!(commits.is_empty());
     }
 
     // -- clone_remote tests --

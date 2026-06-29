@@ -1,9 +1,9 @@
-//! Integration tests for `rdm_store_git::worktree` against real temp git repos.
+//! Integration tests for `rdm_git::worktree` against real temp git repos.
 
 use std::path::Path;
 use std::process::Command;
 
-use rdm_store_git::worktree::{self, ItemRef, RemoveOptions};
+use rdm_git::worktree::{self, ItemRef, RemoveOptions};
 use tempfile::TempDir;
 
 /// Run a git command in `dir` with isolated identity/env, asserting success.

@@ -942,6 +942,7 @@ impl RdmMcpServer {
                 body,
                 None,
                 None,
+                None,
             )?;
             if has_reason {
                 rdm_core::ops::phase::set_phase_blocked_reason(
@@ -1043,6 +1044,7 @@ impl RdmMcpServer {
                 body,
                 None,
                 None,
+                None,
             )
         }) {
             Ok(d) => d,
@@ -1106,27 +1108,23 @@ impl RdmMcpServer {
             Ok(c) => c,
             Err(e) => return err_text(format!("cannot determine current directory: {e}")),
         };
-        let repo =
-            match rdm_store_git::worktree::discover_distinct_project_repo(&cwd, &self.plan_root) {
-                Ok(r) => r,
-                Err(e) => return err_text(format!("{e}")),
-            };
+        let repo = match rdm_git::worktree::discover_distinct_project_repo(&cwd, &self.plan_root) {
+            Ok(r) => r,
+            Err(e) => return err_text(format!("{e}")),
+        };
         let item = {
             let store = self.store.lock().unwrap();
-            match rdm_store_git::worktree::resolve_item(&*store, &params.project, &params.item) {
+            match rdm_git::worktree::resolve_item(&*store, &params.project, &params.item) {
                 Ok(i) => i,
                 Err(e) => return err_text(format!("{e}")),
             }
         };
-        let info = match rdm_store_git::worktree::add(
-            &repo,
-            &item,
-            &item.branch_name(),
-            params.base.as_deref(),
-        ) {
-            Ok(i) => i,
-            Err(e) => return err_text(format!("{e}")),
-        };
+        let info =
+            match rdm_git::worktree::add(&repo, &item, &item.branch_name(), params.base.as_deref())
+            {
+                Ok(i) => i,
+                Err(e) => return err_text(format!("{e}")),
+            };
         let value = serde_json::json!({
             "item": info.item,
             "branch": info.branch,
@@ -1146,11 +1144,11 @@ impl RdmMcpServer {
             Ok(c) => c,
             Err(e) => return err_text(format!("cannot determine current directory: {e}")),
         };
-        let repo = match rdm_store_git::worktree::discover_project_repo(&cwd) {
+        let repo = match rdm_git::worktree::discover_project_repo(&cwd) {
             Ok(r) => r,
             Err(e) => return err_text(format!("{e}")),
         };
-        let worktrees = match rdm_store_git::worktree::list(&repo) {
+        let worktrees = match rdm_git::worktree::list(&repo) {
             Ok(w) => w,
             Err(e) => return err_text(format!("{e}")),
         };
@@ -1179,7 +1177,7 @@ impl RdmMcpServer {
             Ok(c) => c,
             Err(e) => return err_text(format!("cannot determine current directory: {e}")),
         };
-        let value = match rdm_store_git::worktree::current(&cwd) {
+        let value = match rdm_git::worktree::current(&cwd) {
             Ok(Some(c)) => serde_json::json!({
                 "item": c.item,
                 "branch": c.branch,
@@ -1206,19 +1204,19 @@ impl RdmMcpServer {
             Ok(c) => c,
             Err(e) => return err_text(format!("cannot determine current directory: {e}")),
         };
-        let repo = match rdm_store_git::worktree::discover_project_repo(&cwd) {
+        let repo = match rdm_git::worktree::discover_project_repo(&cwd) {
             Ok(r) => r,
             Err(e) => return err_text(format!("{e}")),
         };
         let resolved = {
             let store = self.store.lock().unwrap();
             let project = params.project.as_deref().unwrap_or("");
-            rdm_store_git::worktree::resolve_target(&*store, project, &params.target)
+            rdm_git::worktree::resolve_target(&*store, project, &params.target)
         };
-        match rdm_store_git::worktree::remove(
+        match rdm_git::worktree::remove(
             &repo,
             &resolved,
-            rdm_store_git::worktree::RemoveOptions {
+            rdm_git::worktree::RemoveOptions {
                 force: params.force.unwrap_or(false),
                 delete_branch: params.delete_branch.unwrap_or(false),
             },

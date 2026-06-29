@@ -101,6 +101,7 @@ pub fn create_task(
             completed: None,
             commit: None,
             review_sha: None,
+            review_branch: None,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -159,6 +160,9 @@ pub fn list_tasks(store: &impl Store, project: &str) -> Result<Vec<(String, Docu
 /// provided `review_sha` is stored on the task; any other status change clears
 /// it to `None`; when `status` is `None`, the existing `review_sha` is
 /// preserved.
+/// The `review_branch` parameter mirrors `review_sha`: the branch name of the
+/// checkout that produced the review, stamped and cleared in lockstep so
+/// `review pending` can scope by branch identity.
 ///
 /// # Errors
 ///
@@ -179,6 +183,7 @@ pub fn update_task(
     body: BodyUpdate,
     commit: Option<String>,
     review_sha: Option<String>,
+    review_branch: Option<String>,
 ) -> Result<Document<Task>> {
     let path = crate::paths::task_path(project, slug);
     if !store.exists(&path) {
@@ -206,8 +211,10 @@ pub fn update_task(
             // any other transition so a stale discriminator never lingers.
             if status == TaskStatus::NeedsReview {
                 doc.frontmatter.review_sha = review_sha;
+                doc.frontmatter.review_branch = review_branch;
             } else {
                 doc.frontmatter.review_sha = None;
+                doc.frontmatter.review_branch = None;
             }
         }
     }
@@ -284,6 +291,7 @@ pub fn promote_task(
             completed: None,
             commit: None,
             review_sha: None,
+            review_branch: None,
             difficulty: None,
             model: None,
             blocked_reason: None,
@@ -317,6 +325,7 @@ mod tests {
             completed: None,
             commit: None,
             review_sha: None,
+            review_branch: None,
         }
     }
 

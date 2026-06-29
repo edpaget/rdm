@@ -101,6 +101,7 @@ pub fn create_phase(
             completed: None,
             commit: None,
             review_sha: None,
+            review_branch: None,
             difficulty: None,
             model: None,
             blocked_reason: None,
@@ -132,6 +133,9 @@ pub fn create_phase(
 /// provided `review_sha` is stored on the phase; any other status change clears
 /// it to `None`; when `status` is `None`, the existing `review_sha` is
 /// preserved.
+/// The `review_branch` parameter mirrors `review_sha`: the branch name of the
+/// checkout that produced the review, stamped and cleared in lockstep so
+/// `review pending` can scope by branch identity.
 /// When `tags`/`body` are `Keep`, the existing values are preserved; otherwise
 /// see [`TagsUpdate`] and [`BodyUpdate`].
 ///
@@ -154,6 +158,7 @@ pub fn update_phase(
     body: BodyUpdate,
     commit: Option<String>,
     review_sha: Option<String>,
+    review_branch: Option<String>,
 ) -> Result<Document<Phase>> {
     let path = crate::paths::phase_path(project, roadmap, phase_stem);
     if !store.exists(&path) {
@@ -180,8 +185,10 @@ pub fn update_phase(
             // any other transition so a stale discriminator never lingers.
             if status == PhaseStatus::NeedsReview {
                 doc.frontmatter.review_sha = review_sha;
+                doc.frontmatter.review_branch = review_branch;
             } else {
                 doc.frontmatter.review_sha = None;
+                doc.frontmatter.review_branch = None;
             }
         }
     }

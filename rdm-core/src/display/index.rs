@@ -265,6 +265,7 @@ mod tests {
                 completed: None,
                 commit: None,
                 review_sha: None,
+                review_branch: None,
             },
             body: String::new(),
         }

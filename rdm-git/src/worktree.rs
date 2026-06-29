@@ -2,10 +2,10 @@
 //!
 //! These helpers operate on the git repository rdm is invoked in (the project
 //! or "code" repo), keeping worktrees and branches keyed to plan items. They
-//! are deliberately separate from the plan-repo [`GitStore`](crate::GitStore):
-//! every function shells out to `git` "at" a path via [`run_git_at`], mirroring
-//! the existing project-repo helpers in [`crate`] (`discover_git_dir`,
-//! `current_branch_at`, …).
+//! are deliberately separate from the plan-repo `GitStore` (in `rdm-store-git`):
+//! every function shells out to `git` "at" a path, mirroring the repo-agnostic
+//! inspection helpers in [`crate`] ([`discover_git_dir`](crate::discover_git_dir),
+//! [`current_branch_at`](crate::current_branch_at), …).
 //!
 //! An rdm-managed worktree is identified by a marker file `rdm-item` written
 //! into the worktree's private admin directory (`$GIT_DIR/worktrees/<name>/`).
@@ -259,7 +259,7 @@ pub struct RemoveOptions {
 /// Discovers the project repo's **main** working tree from `cwd`.
 ///
 /// Runs `git rev-parse --show-toplevel` to confirm `cwd` is inside a working
-/// tree, then resolves the primary working tree via [`main_worktree`].
+/// tree, then resolves the primary working tree via `main_worktree`.
 /// Anchoring on the main working tree means `rdm worktree` invoked from inside a
 /// *linked* worktree still places new worktrees as siblings of the primary
 /// checkout rather than nesting them under the current worktree.

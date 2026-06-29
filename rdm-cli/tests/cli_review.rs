@@ -149,6 +149,28 @@ fn finalize_phase(plan: &TempDir, cwd: &Path, roadmap: &str, stem: &str) {
         .success();
 }
 
+/// Runs `rdm review pending --format json` with the command's CWD set to `cwd`
+/// (which determines source-repo branch/reachability) and returns the in-scope
+/// identifiers.
+fn pending_ids(plan: &TempDir, cwd: &Path) -> Vec<String> {
+    let output = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(cwd)
+        .args(["review", "pending", "--project", "demo", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    json.as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["identifier"].as_str().unwrap().to_string())
+        .collect()
+}
+
 #[test]
 fn pending_scopes_to_current_branch_and_fails_open() {
     let plan = init_plan_repo();
@@ -247,6 +269,190 @@ fn pending_scopes_to_current_branch_and_fails_open() {
         .stdout(predicate::str::contains("roadmap-z/phase-1-build"))
         .stdout(predicate::str::contains("item-y"))
         .stdout(predicate::str::contains("item-x").not());
+}
+
+#[test]
+fn pending_scopes_by_branch_identity_and_falls_back_to_reachability() {
+    let plan = init_plan_repo();
+
+    // A second roadmap so cross-roadmap isolation is exercised: roadmap-z's
+    // trigger must never pick up roadmap-w's item stamped a different branch.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "roadmap",
+            "create",
+            "roadmap-w",
+            "--title",
+            "Roadmap W",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "create",
+            "build",
+            "--title",
+            "Build",
+            "--number",
+            "1",
+            "--no-edit",
+            "--roadmap",
+            "roadmap-w",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // Source repo: a base commit on main, then two divergent branches.
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "main"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "initial"]);
+
+    // Legacy item: finalize at a *detached* HEAD on the base commit. A detached
+    // HEAD stamps `review_sha` (the commit) but no `review_branch`, simulating a
+    // pre-stamp item that must survive via the reachability fallback.
+    git(src.path(), &["checkout", "--detach"]);
+    finalize_task(&plan, src.path(), "legacy");
+
+    git(src.path(), &["checkout", "main"]);
+    git(src.path(), &["checkout", "-b", "branch-a"]);
+    fs::write(src.path().join("a.txt"), "a").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work on a"]);
+
+    git(src.path(), &["checkout", "main"]);
+    git(src.path(), &["checkout", "-b", "branch-b"]);
+    fs::write(src.path().join("b.txt"), "b").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work on b"]);
+
+    // roadmap-w's phase is finalized on branch B (stamps branch-b).
+    git(src.path(), &["checkout", "branch-b"]);
+    finalize_phase(&plan, src.path(), "roadmap-w", "phase-1-build");
+
+    // roadmap-z's phase is finalized on branch A (stamps branch-a).
+    git(src.path(), &["checkout", "branch-a"]);
+    finalize_phase(&plan, src.path(), "roadmap-z", "phase-1-build");
+
+    // From branch A: keep only branch-a items plus the reachability-fallback
+    // legacy. roadmap-w's phase (stamped branch-b) is excluded — exact roadmap
+    // isolation. The legacy item's base commit is an ancestor of branch-a, so
+    // the SHA fallback keeps it.
+    let output = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(src.path())
+        .args(["review", "pending", "--project", "demo", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let entries = json.as_array().unwrap();
+    let ids: Vec<&str> = entries
+        .iter()
+        .map(|i| i["identifier"].as_str().unwrap())
+        .collect();
+
+    assert!(
+        ids.contains(&"roadmap-z/phase-1-build"),
+        "branch-a phase must be in scope: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"legacy"),
+        "legacy item must survive via reachability fallback: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"roadmap-w/phase-1-build"),
+        "roadmap-w phase stamped branch-b must be excluded (roadmap isolation): {ids:?}"
+    );
+
+    // The JSON exposes the stamped branch for the phase-6 skill to consume.
+    let phase_item = entries
+        .iter()
+        .find(|i| i["identifier"] == "roadmap-z/phase-1-build")
+        .expect("phase item present");
+    assert_eq!(phase_item["branch"], "branch-a");
+    // The fallback legacy item carries a null branch.
+    let legacy_item = entries
+        .iter()
+        .find(|i| i["identifier"] == "legacy")
+        .expect("legacy item present");
+    assert!(legacy_item["branch"].is_null());
+}
+
+#[test]
+fn pending_excludes_legacy_item_whose_sha_is_unreachable() {
+    // The legacy (no-branch) fallback must DROP an item whose stamped sha is not
+    // reachable from the current HEAD — the mirror of the keep direction, and the
+    // guard against cross-branch contamination for pre-stamp items.
+    let plan = init_plan_repo();
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "main"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "initial"]);
+
+    git(src.path(), &["checkout", "-b", "branch-a"]);
+    fs::write(src.path().join("a.txt"), "a").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work on a"]);
+
+    // Divergent branch-b, then finalize `legacy` at a DETACHED HEAD on branch-b's
+    // tip: review_branch = None (detached), review_sha = a commit NOT reachable
+    // from branch-a.
+    git(src.path(), &["checkout", "main"]);
+    git(src.path(), &["checkout", "-b", "branch-b"]);
+    fs::write(src.path().join("b.txt"), "b").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work on b"]);
+    git(src.path(), &["checkout", "--detach"]);
+    finalize_task(&plan, src.path(), "legacy");
+
+    // From branch-a, the legacy item's stamped sha is unreachable → excluded.
+    git(src.path(), &["checkout", "branch-a"]);
+    let ids = pending_ids(&plan, src.path());
+    assert!(
+        !ids.contains(&"legacy".to_string()),
+        "legacy item stamped an unreachable sha must be excluded: {ids:?}"
+    );
+}
+
+#[test]
+fn pending_keeps_branch_stamped_items_when_branch_unresolvable() {
+    // When the firing checkout has no resolvable branch (here: a non-git CWD, the
+    // same path git-unavailable takes), a branch-stamped item must FAIL OPEN via
+    // SHA reachability rather than being silently hidden. Regression guard: a
+    // trigger firing from the wrong place must over-report, never drop work.
+    let plan = init_plan_repo();
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "branch-a"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "initial"]);
+    // Stamp item-x with review_branch=branch-a (and a sha) by finalizing here.
+    finalize_task(&plan, src.path(), "item-x");
+
+    // Evaluate `review pending` from a directory that is not a git repo at all:
+    // current branch is unresolvable and reachability errors → fail open.
+    let nongit = TempDir::new().unwrap();
+    let ids = pending_ids(&plan, nongit.path());
+    assert!(
+        ids.contains(&"item-x".to_string()),
+        "branch-stamped item must fail open when the branch is unresolvable: {ids:?}"
+    );
 }
 
 #[test]

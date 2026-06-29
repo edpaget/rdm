@@ -347,7 +347,7 @@ pub async fn update_task(
     let mut store = state.store();
     let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
         rdm_core::ops::task::update_task(
-            s, &project, &task_slug, status, priority, tags, body, None, None,
+            s, &project, &task_slug, status, priority, tags, body, None, None, None,
         )
     })
     .map_err(|e| error_response(e, format))?;
@@ -1164,6 +1164,7 @@ mod tests {
             rdm_core::ops::BodyUpdate::Keep,
             None,
             None,
+            None,
         )
         .unwrap();
         rdm_core::ops::task::create_task(
@@ -1184,6 +1185,7 @@ mod tests {
             None,
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
         )

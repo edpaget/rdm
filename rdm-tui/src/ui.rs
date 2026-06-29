@@ -653,6 +653,7 @@ let x = 1;
                     completed: None,
                     commit: None,
                     review_sha: None,
+                    review_branch: None,
                 },
                 body: String::new(),
             },

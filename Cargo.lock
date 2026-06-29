@@ -2866,6 +2866,7 @@ dependencies = [
  "is-terminal",
  "predicates",
  "rdm-core",
+ "rdm-git",
  "rdm-mcp",
  "rdm-server",
  "rdm-store-fs",
@@ -2890,11 +2891,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdm-git"
+version = "0.1.0"
+dependencies = [
+ "gix",
+ "rdm-core",
+ "rdm-store-fs",
+ "tempfile",
+]
+
+[[package]]
 name = "rdm-mcp"
 version = "0.13.0"
 dependencies = [
  "anyhow",
  "rdm-core",
+ "rdm-git",
  "rdm-store-fs",
  "rdm-store-git",
  "rmcp",
@@ -2941,6 +2953,7 @@ version = "0.1.0"
 dependencies = [
  "gix",
  "rdm-core",
+ "rdm-git",
  "rdm-store-fs",
  "tempfile",
 ]

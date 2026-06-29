@@ -110,7 +110,7 @@ pub fn run(
             // it. No commit yet (unstamped) → fail open downstream.
             #[cfg(feature = "git")]
             let review_sha = if status == Some(rdm_core::model::TaskStatus::NeedsReview) {
-                rdm_store_git::head_commit_info_at(&std::env::current_dir()?)
+                rdm_git::head_commit_info_at(&std::env::current_dir()?)
                     .ok()
                     .flatten()
                     .map(|c| c.sha)
@@ -119,6 +119,18 @@ pub fn run(
             };
             #[cfg(not(feature = "git"))]
             let review_sha = None;
+            // Also stamp the firing checkout's branch so `review pending` can
+            // scope by identity rather than by SHA reachability alone.
+            #[cfg(feature = "git")]
+            let review_branch = if status == Some(rdm_core::model::TaskStatus::NeedsReview) {
+                rdm_git::current_branch_at(&std::env::current_dir()?)
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            #[cfg(not(feature = "git"))]
+            let review_branch = None;
             let doc = commit_mutation(
                 store,
                 &project,
@@ -127,7 +139,16 @@ pub fn run(
                 "failed to update task",
                 |s| {
                     rdm_core::ops::task::update_task(
-                        s, &project, &slug, status, priority, tags, body, commit, review_sha,
+                        s,
+                        &project,
+                        &slug,
+                        status,
+                        priority,
+                        tags,
+                        body,
+                        commit,
+                        review_sha,
+                        review_branch,
                     )
                 },
             )

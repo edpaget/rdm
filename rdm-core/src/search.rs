@@ -451,6 +451,7 @@ mod tests {
             crate::ops::BodyUpdate::Keep,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -485,6 +486,7 @@ mod tests {
             None,
             crate::ops::TagsUpdate::Keep,
             crate::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
         )
@@ -593,6 +595,7 @@ mod tests {
             crate::ops::BodyUpdate::Keep,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -624,6 +627,7 @@ mod tests {
             crate::ops::BodyUpdate::Keep,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -653,6 +657,7 @@ mod tests {
             crate::ops::BodyUpdate::Keep,
             None,
             None,
+            None,
         )
         .unwrap();
         crate::ops::task::update_task(
@@ -663,6 +668,7 @@ mod tests {
             None,
             crate::ops::TagsUpdate::Keep,
             crate::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
         )

@@ -580,6 +580,7 @@ mod tests {
             rdm_core::ops::BodyUpdate::Keep,
             None,
             None,
+            None,
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();
@@ -623,6 +624,7 @@ mod tests {
             Some(PhaseStatus::Done),
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
         )

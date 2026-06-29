@@ -418,6 +418,7 @@ mod tests {
             completed: Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()),
             commit: Some("abc123".to_string()),
             review_sha: None,
+            review_branch: None,
             difficulty: Some(crate::model::Difficulty::Hard),
             model: Some(crate::model::ModelTier::Large),
             blocked_reason: Some("ambiguous acceptance criterion".to_string()),
@@ -437,6 +438,7 @@ mod tests {
             completed: Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()),
             commit: Some("abc123".to_string()),
             review_sha: None,
+            review_branch: None,
         };
         assert_fields_match(&sample);
     }

@@ -403,6 +403,7 @@ mod tests {
                 },
                 commit: None,
                 review_sha: None,
+                review_branch: None,
                 difficulty: None,
                 model: None,
                 blocked_reason: None,
@@ -438,6 +439,7 @@ mod tests {
                 completed: None,
                 commit: None,
                 review_sha: None,
+                review_branch: None,
             },
             body: String::new(),
         }

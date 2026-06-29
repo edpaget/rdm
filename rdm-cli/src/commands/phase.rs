@@ -234,7 +234,7 @@ pub fn run(
             // it. No commit yet (unstamped) → fail open downstream.
             #[cfg(feature = "git")]
             let review_sha = if status == Some(rdm_core::model::PhaseStatus::NeedsReview) {
-                rdm_store_git::head_commit_info_at(&std::env::current_dir()?)
+                rdm_git::head_commit_info_at(&std::env::current_dir()?)
                     .ok()
                     .flatten()
                     .map(|c| c.sha)
@@ -243,6 +243,18 @@ pub fn run(
             };
             #[cfg(not(feature = "git"))]
             let review_sha = None;
+            // Also stamp the firing checkout's branch so `review pending` can
+            // scope by identity rather than by SHA reachability alone.
+            #[cfg(feature = "git")]
+            let review_branch = if status == Some(rdm_core::model::PhaseStatus::NeedsReview) {
+                rdm_git::current_branch_at(&std::env::current_dir()?)
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            #[cfg(not(feature = "git"))]
+            let review_branch = None;
             let difficulty_update = DifficultyUpdate::from_args(difficulty, clear_difficulty)?;
             let model_update = ModelTierUpdate::from_args(model, clear_model)?;
             let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
@@ -257,7 +269,16 @@ pub fn run(
                 "failed to update phase",
                 |s| {
                     let mut doc = rdm_core::ops::phase::update_phase(
-                        s, &project, &roadmap, &stem, status, tags, body, commit, review_sha,
+                        s,
+                        &project,
+                        &roadmap,
+                        &stem,
+                        status,
+                        tags,
+                        body,
+                        commit,
+                        review_sha,
+                        review_branch,
                     )?;
                     if has_estimate {
                         doc = rdm_core::ops::phase::set_phase_estimate(

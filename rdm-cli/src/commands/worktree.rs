@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rdm_store_git::worktree::{self, RemoveOptions, WorktreeError, WorktreeInfo};
+use rdm_git::worktree::{self, RemoveOptions, WorktreeError, WorktreeInfo};
 
 use crate::OutputFormat;
 use crate::WorktreeCommand;

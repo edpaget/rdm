@@ -1,5 +1,5 @@
 [workspace]
-members = ["rdm-core", "rdm-cli", "rdm-server", "rdm-store-fs", "rdm-store-git", "rdm-mcp", "rdm-tui"]
+members = ["rdm-core", "rdm-cli", "rdm-server", "rdm-store-fs", "rdm-git", "rdm-store-git", "rdm-mcp", "rdm-tui"]
 resolver = "2"
 
 [workspace.package]

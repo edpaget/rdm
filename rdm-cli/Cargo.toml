@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 rdm-core = { path = "../rdm-core" }
 rdm-store-fs = { path = "../rdm-store-fs" }
+rdm-git = { path = "../rdm-git", optional = true }
 rdm-store-git = { path = "../rdm-store-git", optional = true }
 rdm-server = { path = "../rdm-server", optional = true }
 rdm-mcp = { path = "../rdm-mcp", optional = true }
@@ -31,7 +32,7 @@ axum = { workspace = true, optional = true }
 
 [features]
 default = ["server", "git", "mcp"]
-git = ["dep:rdm-store-git", "rdm-mcp?/git"]
+git = ["dep:rdm-git", "dep:rdm-store-git", "rdm-mcp?/git"]
 server = ["dep:rdm-server", "dep:tokio", "dep:axum"]
 mcp = ["dep:rdm-mcp", "dep:tokio"]
 

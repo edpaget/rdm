@@ -414,6 +414,11 @@ pub struct Phase {
     /// Used to scope review prompts to the branch/worktree that produced it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_sha: Option<String>,
+    /// Branch name of the checkout that produced the review, stamped when the
+    /// item entered `needs-review`. Lets `review pending` scope by identity (the
+    /// firing checkout's branch) rather than by SHA reachability alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_branch: Option<String>,
     /// Estimated difficulty of the phase, if assessed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub difficulty: Option<Difficulty>,
@@ -469,6 +474,11 @@ pub struct Task {
     /// Used to scope review prompts to the branch/worktree that produced it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_sha: Option<String>,
+    /// Branch name of the checkout that produced the review, stamped when the
+    /// item entered `needs-review`. Lets `review pending` scope by identity (the
+    /// firing checkout's branch) rather than by SHA reachability alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_branch: Option<String>,
 }
 
 /// Frontmatter for a roadmap file.
@@ -785,6 +795,7 @@ status: not-started
             completed: None,
             commit: None,
             review_sha: None,
+            review_branch: None,
             difficulty: None,
             model: None,
             blocked_reason: None,
@@ -805,6 +816,7 @@ status: not-started
             completed: None,
             commit: None,
             review_sha: None,
+            review_branch: None,
             difficulty: Some(Difficulty::Hard),
             model: Some(ModelTier::Large),
             blocked_reason: None,
@@ -827,6 +839,7 @@ status: not-started
             completed: None,
             commit: None,
             review_sha: None,
+            review_branch: None,
             difficulty: None,
             model: None,
             blocked_reason: Some("ambiguous acceptance criterion".to_string()),

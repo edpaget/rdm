@@ -35,14 +35,21 @@ pub struct PendingReviewItem {
     pub title: String,
     /// Source-repo HEAD SHA stamped at the `needs-review` transition, if any.
     pub review_sha: Option<String>,
+    /// Branch name of the checkout that produced the review, stamped at the
+    /// `needs-review` transition, or `None` for legacy / pre-stamp items.
+    /// Callers scope by identity (matching this against the firing checkout's
+    /// current branch); legacy items fall back to `review_sha` reachability.
+    pub review_branch: Option<String>,
 }
 
 /// Lists every phase and task in `project` whose status is `needs-review`.
 ///
 /// Phases are reported with identifier `roadmap/stem`; tasks with their slug.
-/// Each item carries its stamped `review_sha` (if any) so callers can scope the
-/// list to the source-repo branch that produced it. Git is intentionally not
-/// consulted here — reachability filtering belongs to the caller (the CLI).
+/// Each item carries its stamped `review_branch` and `review_sha` (if any) so
+/// callers can scope the list to the checkout that produced it — by branch
+/// identity, falling back to SHA reachability for legacy items. Git is
+/// intentionally not consulted here — that filtering belongs to the caller
+/// (the CLI).
 ///
 /// # Errors
 ///
@@ -67,6 +74,7 @@ pub fn pending_review_items(store: &impl Store, project: &str) -> Result<Vec<Pen
                     project: project.to_string(),
                     title: doc.frontmatter.title,
                     review_sha: doc.frontmatter.review_sha,
+                    review_branch: doc.frontmatter.review_branch,
                 });
             }
         }
@@ -81,6 +89,7 @@ pub fn pending_review_items(store: &impl Store, project: &str) -> Result<Vec<Pen
                 project: project.to_string(),
                 title: doc.frontmatter.title,
                 review_sha: doc.frontmatter.review_sha,
+                review_branch: doc.frontmatter.review_branch,
             });
         }
     }

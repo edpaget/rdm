@@ -23,7 +23,7 @@ impl GitRepo {
     ///
     /// Returns `Error::Git` if the repository state cannot be read.
     pub fn head_commit_info(&self) -> Result<Option<HeadCommitInfo>> {
-        crate::repo::head_commit_info_at(&self.root)
+        rdm_git::head_commit_info_at(&self.root)
     }
 
     /// Returns commit info for all commits in a range.
@@ -42,7 +42,7 @@ impl GitRepo {
     ///
     /// Returns `Error::Git` if the git command cannot be executed.
     pub fn commit_messages_since(&self, since_ref: Option<&str>) -> Result<Vec<HeadCommitInfo>> {
-        crate::repo::commit_messages_since_at(&self.root, since_ref)
+        rdm_git::commit_messages_since_at(&self.root, since_ref)
     }
 
     /// Returns the name of the remote's default branch.

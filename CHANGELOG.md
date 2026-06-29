@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Finalizing a phase or task into `needs-review` now also stamps the branch of
+  the checkout that produced it (`review_branch`), and `rdm review pending`
+  scopes the queue to the current checkout's branch: it keeps only items whose
+  stamped branch matches, so a roadmap's review trigger can never pick up
+  another roadmap's items even when it fires from a different checkout. Legacy
+  items finalized before this change carry no branch and fall back to the
+  previous SHA-reachability behavior (fail open), so nothing pre-stamp is
+  dropped. The `rdm review pending --format json` output now includes a
+  `branch` field.
+
 ### Added
 
 - `rdm worktree add <roadmap-slug>` now accepts a bare roadmap reference and

@@ -15,7 +15,7 @@ impl GitRepo {
     ///
     /// Returns `Error::Git` if `git` is not installed or the command fails.
     pub fn current_branch_name(&self) -> Result<Option<String>> {
-        crate::repo::current_branch_at(&self.root)
+        rdm_git::current_branch_at(&self.root)
     }
 
     /// Lists all configured git remotes with their fetch URLs.

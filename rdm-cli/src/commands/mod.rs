@@ -346,6 +346,7 @@ pub fn apply_done_directives(
                         rdm_core::ops::BodyUpdate::Keep,
                         Some(sha.clone()),
                         None,
+                        None,
                     )
                 }) {
                     Ok(_) => logger.log(
@@ -385,6 +386,7 @@ pub fn apply_done_directives(
                         rdm_core::ops::TagsUpdate::Keep,
                         rdm_core::ops::BodyUpdate::Keep,
                         Some(sha.clone()),
+                        None,
                         None,
                     )
                 }) {
@@ -443,7 +445,7 @@ pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> R
         ],
     );
 
-    let commits = match rdm_store_git::commit_messages_since_at(&cwd, since) {
+    let commits = match rdm_git::commit_messages_since_at(&cwd, since) {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("{e}");
@@ -504,7 +506,7 @@ pub fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
     );
 
     // Only run on the default branch.
-    let current_branch = match rdm_store_git::current_branch_at(&cwd) {
+    let current_branch = match rdm_git::current_branch_at(&cwd) {
         Ok(b) => b,
         Err(e) => {
             let msg = format!("{e}");
@@ -529,7 +531,7 @@ pub fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
         }
     }
 
-    let commit = match rdm_store_git::head_commit_info_at(&cwd) {
+    let commit = match rdm_git::head_commit_info_at(&cwd) {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("{e}");

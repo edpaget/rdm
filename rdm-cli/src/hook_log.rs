@@ -25,7 +25,7 @@ impl HookLogger {
     pub fn new(cwd: &Path) -> Self {
         #[cfg(feature = "git")]
         {
-            let path = rdm_store_git::discover_git_dir(cwd)
+            let path = rdm_git::discover_git_dir(cwd)
                 .ok()
                 .map(|git_dir| git_dir.join("rdm-hook.log"));
             Self { path }
