@@ -41,4 +41,4 @@ assert_cmd = "2"
 predicates = "3"
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-gix = { version = "0.84", default-features = false, features = ["basic", "sha1"] }
+gix = { version = "0.85", default-features = false, features = ["basic", "sha1"] }
