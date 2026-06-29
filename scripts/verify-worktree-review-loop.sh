@@ -63,7 +63,10 @@ export GIT_COMMITTER_NAME="verify-bot"
 export GIT_COMMITTER_EMAIL="verify@example.invalid"
 
 say() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
-fail() { printf '\n\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
+fail() {
+    printf '\n\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2
+    exit 1
+}
 ok() { printf '\033[1;32m[ OK ]\033[0m %s\n' "$*"; }
 
 # Hermetic HOME + XDG so neither `rdm` writes nor git's global-config lookup
@@ -94,8 +97,8 @@ pending_json() (
 # payload, with rdm on PATH and plan/project resolved via env.
 run_stop_hook() (
     cd "$1"
-    printf '%s' '{"stop_hook_active": false}' \
-        | RDM_ROOT="$PLAN" RDM_PROJECT="verify" PATH="$HOOK_PATH" sh "$HOOK_TEMPLATE"
+    printf '%s' '{"stop_hook_active": false}' |
+        RDM_ROOT="$PLAN" RDM_PROJECT="verify" PATH="$HOOK_PATH" sh "$HOOK_TEMPLATE"
 )
 
 # ----------------------------------------------------------------------------
@@ -125,7 +128,7 @@ ok "plan repo seeded with alpha/phase-1-work and beta/phase-1-work"
 say "Creating source repo with an initial commit on main"
 
 git init --quiet -b main "$SRC"
-( cd "$SRC" && git commit --quiet --allow-empty -m "chore: initial" )
+(cd "$SRC" && git commit --quiet --allow-empty -m "chore: initial")
 ok "source repo on main with a base commit"
 
 # ----------------------------------------------------------------------------
@@ -138,10 +141,10 @@ WT_ALPHA=$(cd "$SRC" && "$RDM_BIN" --root "$PLAN" worktree add alpha --project v
 WT_BETA=$(cd "$SRC" && "$RDM_BIN" --root "$PLAN" worktree add beta --project verify)
 [ -d "$WT_ALPHA" ] || fail "alpha worktree path not created: $WT_ALPHA"
 [ -d "$WT_BETA" ] || fail "beta worktree path not created: $WT_BETA"
-[ "$(cd "$WT_ALPHA" && git rev-parse --abbrev-ref HEAD)" = "roadmap/alpha" ] \
-    || fail "alpha worktree is not on branch roadmap/alpha"
-[ "$(cd "$WT_BETA" && git rev-parse --abbrev-ref HEAD)" = "roadmap/beta" ] \
-    || fail "beta worktree is not on branch roadmap/beta"
+[ "$(cd "$WT_ALPHA" && git rev-parse --abbrev-ref HEAD)" = "roadmap/alpha" ] ||
+    fail "alpha worktree is not on branch roadmap/alpha"
+[ "$(cd "$WT_BETA" && git rev-parse --abbrev-ref HEAD)" = "roadmap/beta" ] ||
+    fail "beta worktree is not on branch roadmap/beta"
 ok "roadmap/alpha → $WT_ALPHA"
 ok "roadmap/beta  → $WT_BETA"
 
@@ -152,12 +155,12 @@ ok "roadmap/beta  → $WT_BETA"
 # ----------------------------------------------------------------------------
 say "Implementing in place and finalizing each phase to needs-review"
 
-( cd "$WT_ALPHA" && git commit --quiet --allow-empty -m "feat: alpha phase 1 work" )
-( cd "$WT_ALPHA" && "$RDM_BIN" --root "$PLAN" phase update phase-1-work \
-    --status needs-review --no-edit --roadmap alpha --project verify >/dev/null )
-( cd "$WT_BETA" && git commit --quiet --allow-empty -m "feat: beta phase 1 work" )
-( cd "$WT_BETA" && "$RDM_BIN" --root "$PLAN" phase update phase-1-work \
-    --status needs-review --no-edit --roadmap beta --project verify >/dev/null )
+(cd "$WT_ALPHA" && git commit --quiet --allow-empty -m "feat: alpha phase 1 work")
+(cd "$WT_ALPHA" && "$RDM_BIN" --root "$PLAN" phase update phase-1-work \
+    --status needs-review --no-edit --roadmap alpha --project verify >/dev/null)
+(cd "$WT_BETA" && git commit --quiet --allow-empty -m "feat: beta phase 1 work")
+(cd "$WT_BETA" && "$RDM_BIN" --root "$PLAN" phase update phase-1-work \
+    --status needs-review --no-edit --roadmap beta --project verify >/dev/null)
 ok "alpha finalized on roadmap/alpha; beta finalized on roadmap/beta"
 
 # ============================================================================
@@ -172,23 +175,41 @@ ok "alpha finalized on roadmap/alpha; beta finalized on roadmap/beta"
 say "Case A: Claude Stop hook blocks from each roadmap worktree, scoped to that roadmap"
 
 HOOK_A=$(run_stop_hook "$WT_ALPHA")
-printf '%s' "$HOOK_A" | grep -q '"decision":"block"' \
-    || { printf '%s\n' "$HOOK_A" >&2; fail "A: Stop hook should block from the alpha worktree"; }
+printf '%s' "$HOOK_A" | grep -q '"decision":"block"' ||
+    {
+        printf '%s\n' "$HOOK_A" >&2
+        fail "A: Stop hook should block from the alpha worktree"
+    }
 DATA_A=$(pending_json "$WT_ALPHA")
-printf '%s' "$DATA_A" | grep -q 'alpha/phase-1-work' \
-    || { printf '%s\n' "$DATA_A" >&2; fail "A: alpha worktree's hook data must concern alpha"; }
-printf '%s' "$DATA_A" | grep -q 'beta/phase-1-work' \
-    && { printf '%s\n' "$DATA_A" >&2; fail "A: alpha worktree's hook data must NOT mention beta"; }
+printf '%s' "$DATA_A" | grep -q 'alpha/phase-1-work' ||
+    {
+        printf '%s\n' "$DATA_A" >&2
+        fail "A: alpha worktree's hook data must concern alpha"
+    }
+printf '%s' "$DATA_A" | grep -q 'beta/phase-1-work' &&
+    {
+        printf '%s\n' "$DATA_A" >&2
+        fail "A: alpha worktree's hook data must NOT mention beta"
+    }
 ok "A: alpha worktree → block, scoped to alpha (silent about beta)"
 
 HOOK_B=$(run_stop_hook "$WT_BETA")
-printf '%s' "$HOOK_B" | grep -q '"decision":"block"' \
-    || { printf '%s\n' "$HOOK_B" >&2; fail "A: Stop hook should block from the beta worktree"; }
+printf '%s' "$HOOK_B" | grep -q '"decision":"block"' ||
+    {
+        printf '%s\n' "$HOOK_B" >&2
+        fail "A: Stop hook should block from the beta worktree"
+    }
 DATA_B=$(pending_json "$WT_BETA")
-printf '%s' "$DATA_B" | grep -q 'beta/phase-1-work' \
-    || { printf '%s\n' "$DATA_B" >&2; fail "A: beta worktree's hook data must concern beta"; }
-printf '%s' "$DATA_B" | grep -q 'alpha/phase-1-work' \
-    && { printf '%s\n' "$DATA_B" >&2; fail "A: beta worktree's hook data must NOT mention alpha"; }
+printf '%s' "$DATA_B" | grep -q 'beta/phase-1-work' ||
+    {
+        printf '%s\n' "$DATA_B" >&2
+        fail "A: beta worktree's hook data must concern beta"
+    }
+printf '%s' "$DATA_B" | grep -q 'alpha/phase-1-work' &&
+    {
+        printf '%s\n' "$DATA_B" >&2
+        fail "A: beta worktree's hook data must NOT mention alpha"
+    }
 ok "A: beta worktree → block, scoped to beta (silent about alpha)"
 
 # ============================================================================
@@ -204,24 +225,45 @@ ok "A: beta worktree → block, scoped to beta (silent about alpha)"
 say "Case B: Pi agent_end contract injects for the current roadmap only"
 
 PI_A=$(pending_json "$WT_ALPHA")
-printf '%s' "$PI_A" | grep -q '"identifier": "alpha/phase-1-work"' \
-    || { printf '%s\n' "$PI_A" >&2; fail "B: alpha pending JSON must carry alpha's identifier"; }
-printf '%s' "$PI_A" | grep -q '"branch": "roadmap/alpha"' \
-    || { printf '%s\n' "$PI_A" >&2; fail "B: alpha pending item must stamp branch roadmap/alpha"; }
-printf '%s' "$PI_A" | grep -q 'beta/phase-1-work' \
-    && { printf '%s\n' "$PI_A" >&2; fail "B: alpha pending JSON must carry no beta identifier"; }
+printf '%s' "$PI_A" | grep -q '"identifier": "alpha/phase-1-work"' ||
+    {
+        printf '%s\n' "$PI_A" >&2
+        fail "B: alpha pending JSON must carry alpha's identifier"
+    }
+printf '%s' "$PI_A" | grep -q '"branch": "roadmap/alpha"' ||
+    {
+        printf '%s\n' "$PI_A" >&2
+        fail "B: alpha pending item must stamp branch roadmap/alpha"
+    }
+printf '%s' "$PI_A" | grep -q 'beta/phase-1-work' &&
+    {
+        printf '%s\n' "$PI_A" >&2
+        fail "B: alpha pending JSON must carry no beta identifier"
+    }
 # Contract: a non-empty identifier list ⇒ the extension injects (for alpha only).
-printf '%s' "$PI_A" | grep -q '"identifier"' \
-    || { printf '%s\n' "$PI_A" >&2; fail "B: extension would not inject — no identifier present"; }
+printf '%s' "$PI_A" | grep -q '"identifier"' ||
+    {
+        printf '%s\n' "$PI_A" >&2
+        fail "B: extension would not inject — no identifier present"
+    }
 ok "B: alpha agent_end → inject for alpha only"
 
 PI_B=$(pending_json "$WT_BETA")
-printf '%s' "$PI_B" | grep -q '"identifier": "beta/phase-1-work"' \
-    || { printf '%s\n' "$PI_B" >&2; fail "B: beta pending JSON must carry beta's identifier"; }
-printf '%s' "$PI_B" | grep -q '"branch": "roadmap/beta"' \
-    || { printf '%s\n' "$PI_B" >&2; fail "B: beta pending item must stamp branch roadmap/beta"; }
-printf '%s' "$PI_B" | grep -q 'alpha/phase-1-work' \
-    && { printf '%s\n' "$PI_B" >&2; fail "B: beta pending JSON must carry no alpha identifier"; }
+printf '%s' "$PI_B" | grep -q '"identifier": "beta/phase-1-work"' ||
+    {
+        printf '%s\n' "$PI_B" >&2
+        fail "B: beta pending JSON must carry beta's identifier"
+    }
+printf '%s' "$PI_B" | grep -q '"branch": "roadmap/beta"' ||
+    {
+        printf '%s\n' "$PI_B" >&2
+        fail "B: beta pending item must stamp branch roadmap/beta"
+    }
+printf '%s' "$PI_B" | grep -q 'alpha/phase-1-work' &&
+    {
+        printf '%s\n' "$PI_B" >&2
+        fail "B: beta pending JSON must carry no alpha identifier"
+    }
 ok "B: beta agent_end → inject for beta only"
 
 # ============================================================================
@@ -234,20 +276,38 @@ ok "B: beta agent_end → inject for beta only"
 say "Case C: ISOLATION — each roadmap worktree sees only its own roadmap"
 
 ISO_A=$(pending_json "$WT_ALPHA")
-printf '%s' "$ISO_A" | grep -q 'alpha/phase-1-work' \
-    || { printf '%s\n' "$ISO_A" >&2; fail "C: alpha worktree must list alpha"; }
-printf '%s' "$ISO_A" | grep -q '"branch": "roadmap/alpha"' \
-    || { printf '%s\n' "$ISO_A" >&2; fail "C: alpha's item must carry branch roadmap/alpha"; }
-printf '%s' "$ISO_A" | grep -q 'beta/phase-1-work' \
-    && { printf '%s\n' "$ISO_A" >&2; fail "C: alpha worktree must NOT list beta"; }
+printf '%s' "$ISO_A" | grep -q 'alpha/phase-1-work' ||
+    {
+        printf '%s\n' "$ISO_A" >&2
+        fail "C: alpha worktree must list alpha"
+    }
+printf '%s' "$ISO_A" | grep -q '"branch": "roadmap/alpha"' ||
+    {
+        printf '%s\n' "$ISO_A" >&2
+        fail "C: alpha's item must carry branch roadmap/alpha"
+    }
+printf '%s' "$ISO_A" | grep -q 'beta/phase-1-work' &&
+    {
+        printf '%s\n' "$ISO_A" >&2
+        fail "C: alpha worktree must NOT list beta"
+    }
 
 ISO_B=$(pending_json "$WT_BETA")
-printf '%s' "$ISO_B" | grep -q 'beta/phase-1-work' \
-    || { printf '%s\n' "$ISO_B" >&2; fail "C: beta worktree must list beta"; }
-printf '%s' "$ISO_B" | grep -q '"branch": "roadmap/beta"' \
-    || { printf '%s\n' "$ISO_B" >&2; fail "C: beta's item must carry branch roadmap/beta"; }
-printf '%s' "$ISO_B" | grep -q 'alpha/phase-1-work' \
-    && { printf '%s\n' "$ISO_B" >&2; fail "C: beta worktree must NOT list alpha"; }
+printf '%s' "$ISO_B" | grep -q 'beta/phase-1-work' ||
+    {
+        printf '%s\n' "$ISO_B" >&2
+        fail "C: beta worktree must list beta"
+    }
+printf '%s' "$ISO_B" | grep -q '"branch": "roadmap/beta"' ||
+    {
+        printf '%s\n' "$ISO_B" >&2
+        fail "C: beta's item must carry branch roadmap/beta"
+    }
+printf '%s' "$ISO_B" | grep -q 'alpha/phase-1-work' &&
+    {
+        printf '%s\n' "$ISO_B" >&2
+        fail "C: beta worktree must NOT list alpha"
+    }
 ok "C: alpha⇒alpha-only and beta⇒beta-only, branches match"
 
 # ============================================================================
@@ -262,25 +322,37 @@ ok "C: alpha⇒alpha-only and beta⇒beta-only, branches match"
 say "Case D: trigger from main never misfires; branch-gone stays clean"
 
 HOOK_MAIN=$(run_stop_hook "$SRC")
-[ -z "$HOOK_MAIN" ] \
-    || { printf '%s\n' "$HOOK_MAIN" >&2; fail "D: Stop hook must NOT block from main"; }
+[ -z "$HOOK_MAIN" ] ||
+    {
+        printf '%s\n' "$HOOK_MAIN" >&2
+        fail "D: Stop hook must NOT block from main"
+    }
 PENDING_MAIN=$(pending_json "$SRC")
-printf '%s' "$PENDING_MAIN" | grep -q '"identifier"' \
-    && { printf '%s\n' "$PENDING_MAIN" >&2; fail "D: main checkout must see no pending items"; }
+printf '%s' "$PENDING_MAIN" | grep -q '"identifier"' &&
+    {
+        printf '%s\n' "$PENDING_MAIN" >&2
+        fail "D: main checkout must see no pending items"
+    }
 ok "D: main checkout → no block, empty pending (roadmap items scoped out)"
 
 # Branch-gone: tear down the alpha worktree + delete its branch.
-( cd "$SRC" && git worktree remove "$WT_ALPHA" && git branch -D roadmap/alpha >/dev/null )
+(cd "$SRC" && git worktree remove "$WT_ALPHA" && git branch -D roadmap/alpha >/dev/null)
 [ ! -d "$WT_ALPHA" ] || fail "D: alpha worktree should be gone after removal"
 
 set +e
 PENDING_GONE=$(pending_json "$SRC")
 rc=$?
 set -e
-[ "$rc" -eq 0 ] \
-    || { printf '%s\n' "$PENDING_GONE" >&2; fail "D: review pending crashed after branch removal (rc=$rc)"; }
-printf '%s' "$PENDING_GONE" | grep -q '"identifier"' \
-    && { printf '%s\n' "$PENDING_GONE" >&2; fail "D: main must stay silent after branch removal"; }
+[ "$rc" -eq 0 ] ||
+    {
+        printf '%s\n' "$PENDING_GONE" >&2
+        fail "D: review pending crashed after branch removal (rc=$rc)"
+    }
+printf '%s' "$PENDING_GONE" | grep -q '"identifier"' &&
+    {
+        printf '%s\n' "$PENDING_GONE" >&2
+        fail "D: main must stay silent after branch removal"
+    }
 ok "D: after worktree+branch removal, review pending from main exits cleanly and silent"
 
 # ----------------------------------------------------------------------------

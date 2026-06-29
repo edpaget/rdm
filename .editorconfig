@@ -1,0 +1,9 @@
+# EditorConfig — single source of truth for shfmt (hk builtin + CI check).
+# Scoped to shell only; Rust formatting stays owned by rustfmt.
+root = true
+
+# Equivalent to `shfmt -i 4 -ci`: 4-space indent, indent case labels.
+[*.sh]
+indent_style = space
+indent_size = 4
+switch_case_indent = true

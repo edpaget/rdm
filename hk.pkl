@@ -1,0 +1,36 @@
+amends "package://github.com/jdx/hk/releases/download/v1.45.0/hk@1.45.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.45.0/hk@1.45.0#/Builtins.pkl"
+
+// Linters mirror the Rust gates in CI and add shell lint/format.
+// shellcheck honors .shellcheckrc; shfmt honors .editorconfig ([*.sh] block).
+local linters = new Mapping<String, Step> {
+    ["cargo_fmt"] = Builtins.cargo_fmt
+    // Custom (not Builtins.cargo_clippy): the builtin omits `-D warnings`, which
+    // CLAUDE.md mandates and the prior hook enforced. Self-contained so the gate
+    // does not depend on RUSTFLAGS being present in the committer's environment.
+    ["cargo_clippy"] {
+        glob = "**/*.rs"
+        check = "cargo clippy --workspace --all-targets -- -D warnings"
+        exclusive = true
+    }
+    // No cargo_nextest builtin — custom step matching CLAUDE.md's test command.
+    // No workspace_indicator: run the whole workspace suite once (not per crate).
+    ["cargo_nextest"] {
+        glob = "**/*.rs"
+        check = "cargo nextest run"
+        exclusive = true
+    }
+    ["shellcheck"] = Builtins.shellcheck
+    ["shfmt"] = Builtins.shfmt
+}
+
+// Check-only (no `fix`/`stash`) for parity with `cargo fmt --check`: the gate
+// reports problems but never rewrites files out from under a commit.
+hooks {
+    ["pre-commit"] {
+        steps = linters
+    }
+    ["check"] {
+        steps = linters
+    }
+}

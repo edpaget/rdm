@@ -30,14 +30,33 @@ jobs:
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
 
+      - name: Set up mise
+        uses: jdx/mise-action@v2
+        with:
+          install: false
+
       - name: Check formatting
         run: cargo fmt --check
 
       - name: Lint
         run: cargo clippy -- -D warnings
 
+      - name: Shell lint (shellcheck)
+        run: mise exec shellcheck -- shellcheck $(git ls-files '*.sh')
+
+      - name: Shell format check (shfmt)
+        run: mise exec shfmt -- shfmt -d $(git ls-files '*.sh')
+
       - name: Test
         run: cargo nextest run
+
+      - name: Shell harnesses
+        run: |
+          cargo build
+          for f in scripts/verify-*.sh; do
+            echo "== $f"
+            bash "$f"
+          done
 
       - name: Build (release)
         run: cargo build --release

@@ -39,7 +39,10 @@ export GIT_COMMITTER_NAME="verify-bot"
 export GIT_COMMITTER_EMAIL="verify@example.invalid"
 
 say() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
-fail() { printf '\n\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
+fail() {
+    printf '\n\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2
+    exit 1
+}
 ok() { printf '\033[1;32m[ OK ]\033[0m %s\n' "$*"; }
 
 # ----------------------------------------------------------------------------
@@ -96,8 +99,11 @@ if [ "$rc" -ne 0 ]; then
     fail "SessionStart.sh exited $rc"
 fi
 
-grep -q "Plan repo ready" "$RUN_SANDBOX_LOG" \
-    || { cat "$RUN_SANDBOX_LOG" >&2; fail "SessionStart.sh did not print 'Plan repo ready'"; }
+grep -q "Plan repo ready" "$RUN_SANDBOX_LOG" ||
+    {
+        cat "$RUN_SANDBOX_LOG" >&2
+        fail "SessionStart.sh did not print 'Plan repo ready'"
+    }
 ok "SessionStart.sh ran and reported success"
 
 SANDBOX_PLAN="$SANDBOX_XDG_DATA/rdm/plan-repo"
@@ -110,14 +116,14 @@ ok "plan repo cloned into $SANDBOX_PLAN"
 say "Reading seeded roadmap and phase from inside the sandbox"
 
 if ! env HOME="$SANDBOX_HOME" XDG_CONFIG_HOME="$SANDBOX_XDG_CONFIG" XDG_DATA_HOME="$SANDBOX_XDG_DATA" \
-        "$RDM_BIN" roadmap list --project verify | grep -q verify-demo; then
+    "$RDM_BIN" roadmap list --project verify | grep -q verify-demo; then
     fail "roadmap 'verify-demo' not visible in sandbox"
 fi
 ok "rdm roadmap list sees verify-demo"
 
 if ! env HOME="$SANDBOX_HOME" XDG_CONFIG_HOME="$SANDBOX_XDG_CONFIG" XDG_DATA_HOME="$SANDBOX_XDG_DATA" \
-        "$RDM_BIN" phase show phase-1-ping --roadmap verify-demo --project verify --no-body --format json \
-        | grep -q '"status": "not-started"'; then
+    "$RDM_BIN" phase show phase-1-ping --roadmap verify-demo --project verify --no-body --format json |
+    grep -q '"status": "not-started"'; then
     fail "seeded phase not found or not in 'not-started' state"
 fi
 ok "rdm phase show reports not-started"
@@ -133,7 +139,7 @@ git init --quiet "$SOURCE"
 (
     cd "$SOURCE"
     git commit --quiet --allow-empty -m "chore: initial"
-    echo "hello" > feature.txt
+    echo "hello" >feature.txt
     git add feature.txt
     git commit --quiet -m "feat: implement ping
 
@@ -165,10 +171,16 @@ say "Confirming phase flipped to done with source commit SHA"
 PHASE_JSON=$(env HOME="$SANDBOX_HOME" XDG_CONFIG_HOME="$SANDBOX_XDG_CONFIG" XDG_DATA_HOME="$SANDBOX_XDG_DATA" \
     "$RDM_BIN" phase show phase-1-ping --roadmap verify-demo --project verify --no-body --format json)
 
-echo "$PHASE_JSON" | grep -q '"status": "done"' \
-    || { echo "$PHASE_JSON" >&2; fail "phase did not flip to done"; }
-echo "$PHASE_JSON" | grep -q "$SOURCE_SHA" \
-    || { echo "$PHASE_JSON" >&2; fail "phase did not record source commit SHA $SOURCE_SHA"; }
+echo "$PHASE_JSON" | grep -q '"status": "done"' ||
+    {
+        echo "$PHASE_JSON" >&2
+        fail "phase did not flip to done"
+    }
+echo "$PHASE_JSON" | grep -q "$SOURCE_SHA" ||
+    {
+        echo "$PHASE_JSON" >&2
+        fail "phase did not record source commit SHA $SOURCE_SHA"
+    }
 ok "phase 'done' with commit $SOURCE_SHA"
 
 # ----------------------------------------------------------------------------
@@ -195,11 +207,11 @@ HOOK_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/hook-review-on-finalize.sh"
 # linked worktree, each with a divergent commit so neither tip reaches the other.
 SRC2="$TMP/src2"
 git init --quiet -b main "$SRC2"
-( cd "$SRC2" && git commit --quiet --allow-empty -m "initial" \
-    && git checkout --quiet -b branch-a && git commit --quiet --allow-empty -m "work on a" )
+(cd "$SRC2" && git commit --quiet --allow-empty -m "initial" &&
+    git checkout --quiet -b branch-a && git commit --quiet --allow-empty -m "work on a")
 SRC2_WT_B="$TMP/src2-wt-b"
-( cd "$SRC2" && git worktree add --quiet -b branch-b "$SRC2_WT_B" main )
-( cd "$SRC2_WT_B" && git commit --quiet --allow-empty -m "work on b" )
+(cd "$SRC2" && git worktree add --quiet -b branch-b "$SRC2_WT_B" main)
+(cd "$SRC2_WT_B" && git commit --quiet --allow-empty -m "work on b")
 ok "source repo with branch-a (main worktree) and branch-b (sibling worktree)"
 
 # Two tasks; finalize one on each branch from that branch's worktree.
@@ -207,47 +219,65 @@ XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$SANDBOX_PLAN" task create review
     --title "Review A" --no-edit --project verify >/dev/null
 XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$SANDBOX_PLAN" task create review-b \
     --title "Review B" --no-edit --project verify >/dev/null
-( cd "$SRC2" && XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$SANDBOX_PLAN" \
-    task update review-a --status needs-review --no-edit --project verify >/dev/null )
-( cd "$SRC2_WT_B" && XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$SANDBOX_PLAN" \
-    task update review-b --status needs-review --no-edit --project verify >/dev/null )
+(cd "$SRC2" && XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$SANDBOX_PLAN" \
+    task update review-a --status needs-review --no-edit --project verify >/dev/null)
+(cd "$SRC2_WT_B" && XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$SANDBOX_PLAN" \
+    task update review-b --status needs-review --no-edit --project verify >/dev/null)
 ok "review-a finalized on branch-a; review-b finalized on branch-b"
 
 # From branch-a: review-a is in scope, review-b (sibling branch) is not.
 PENDING_A=$(cd "$SRC2" && RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" \
     "$RDM_BIN" review pending --format json)
-printf '%s' "$PENDING_A" | grep -q 'review-a' \
-    || { printf '%s\n' "$PENDING_A" >&2; fail "branch-a should see review-a"; }
-printf '%s' "$PENDING_A" | grep -q 'review-b' \
-    && { printf '%s\n' "$PENDING_A" >&2; fail "branch-a must NOT see review-b (sibling branch)"; }
+printf '%s' "$PENDING_A" | grep -q 'review-a' ||
+    {
+        printf '%s\n' "$PENDING_A" >&2
+        fail "branch-a should see review-a"
+    }
+printf '%s' "$PENDING_A" | grep -q 'review-b' &&
+    {
+        printf '%s\n' "$PENDING_A" >&2
+        fail "branch-a must NOT see review-b (sibling branch)"
+    }
 ok "branch-a review pending: review-a only"
 
 # From branch-b: the mirror — review-b in scope, review-a out of scope.
 PENDING_B=$(cd "$SRC2_WT_B" && RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" \
     "$RDM_BIN" review pending --format json)
-printf '%s' "$PENDING_B" | grep -q 'review-b' \
-    || { printf '%s\n' "$PENDING_B" >&2; fail "branch-b should see review-b"; }
-printf '%s' "$PENDING_B" | grep -q 'review-a' \
-    && { printf '%s\n' "$PENDING_B" >&2; fail "branch-b must NOT see review-a (sibling branch)"; }
+printf '%s' "$PENDING_B" | grep -q 'review-b' ||
+    {
+        printf '%s\n' "$PENDING_B" >&2
+        fail "branch-b should see review-b"
+    }
+printf '%s' "$PENDING_B" | grep -q 'review-a' &&
+    {
+        printf '%s\n' "$PENDING_B" >&2
+        fail "branch-b must NOT see review-a (sibling branch)"
+    }
 ok "branch-b review pending: review-b only"
 
 # The actual Stop hook template: blocks on branch-a (in-scope item present)...
-HOOK_OUT_A=$(cd "$SRC2" && printf '%s' '{"stop_hook_active": false}' \
-    | RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" PATH="$SANDBOX_HOME/.local/bin:$PATH" \
-      sh "$HOOK_TEMPLATE")
-printf '%s' "$HOOK_OUT_A" | grep -q '"decision":"block"' \
-    || { printf '%s\n' "$HOOK_OUT_A" >&2; fail "Stop hook should block on branch-a"; }
+HOOK_OUT_A=$(cd "$SRC2" && printf '%s' '{"stop_hook_active": false}' |
+    RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" PATH="$SANDBOX_HOME/.local/bin:$PATH" \
+        sh "$HOOK_TEMPLATE")
+printf '%s' "$HOOK_OUT_A" | grep -q '"decision":"block"' ||
+    {
+        printf '%s\n' "$HOOK_OUT_A" >&2
+        fail "Stop hook should block on branch-a"
+    }
 ok "Stop hook blocks on branch-a"
 
 # ...and does NOT block from a clean sibling worktree (branch-c off main) where
 # neither needs-review item is reachable.
 SRC2_WT_C="$TMP/src2-wt-c"
-( cd "$SRC2" && git worktree add --quiet -b branch-c "$SRC2_WT_C" main )
-HOOK_OUT_C=$(cd "$SRC2_WT_C" && printf '%s' '{"stop_hook_active": false}' \
-    | RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" PATH="$SANDBOX_HOME/.local/bin:$PATH" \
-      sh "$HOOK_TEMPLATE")
-[ -z "$HOOK_OUT_C" ] \
-    || { printf '%s\n' "$HOOK_OUT_C" >&2; fail "Stop hook must NOT block on unrelated branch-c"; }
+(cd "$SRC2" && git worktree add --quiet -b branch-c "$SRC2_WT_C" main)
+HOOK_OUT_C=$(cd "$SRC2_WT_C" && printf '%s' '{"stop_hook_active": false}' |
+    RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" PATH="$SANDBOX_HOME/.local/bin:$PATH" \
+        sh "$HOOK_TEMPLATE")
+[ -z "$HOOK_OUT_C" ] ||
+    {
+        printf '%s\n' "$HOOK_OUT_C" >&2
+        fail "Stop hook must NOT block on unrelated branch-c"
+    }
 ok "Stop hook allows on unrelated branch-c (no in-scope items)"
 
 # ----------------------------------------------------------------------------

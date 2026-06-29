@@ -1,0 +1,6 @@
+# ShellCheck configuration — shared by local (mise-pinned) and CI shellcheck.
+# severity=warning is the meaningful bar; our scripts already pass at -S style.
+severity=warning
+
+# Do not follow `source`d files; our scripts are self-contained procedures.
+external-sources=false

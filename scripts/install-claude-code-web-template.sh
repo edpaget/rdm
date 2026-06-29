@@ -21,10 +21,24 @@ YES=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --force) FORCE=1; YES=1; shift ;;
-        --yes)   YES=1; shift ;;
-        -h|--help) usage; exit 0 ;;
-        --*) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
+        --force)
+            FORCE=1
+            YES=1
+            shift
+            ;;
+        --yes)
+            YES=1
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --*)
+            echo "error: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
         *)
             if [ -n "$TARGET" ]; then
                 echo "error: unexpected extra argument: $1" >&2
@@ -87,8 +101,9 @@ install_one() {
             printf "  overwrite %s? [y/N] " "$rel"
             read -r answer
             case "$answer" in
-                y|Y|yes|YES)
-                    : ;;
+                y | Y | yes | YES)
+                    :
+                    ;;
                 *)
                     SKIPPED_USER=$((SKIPPED_USER + 1))
                     return 0
@@ -114,12 +129,12 @@ echo "Installing template into $TARGET"
 # shell (pipelines spawn subshells, which would drop our counter mutations).
 tmpfile=$(mktemp)
 trap 'rm -f "$tmpfile"' EXIT INT HUP TERM
-( cd "$SRC" && find . -type f ) > "$tmpfile"
+(cd "$SRC" && find . -type f) >"$tmpfile"
 
 while IFS= read -r rel <&3; do
     rel=${rel#./}
     install_one "$SRC/$rel" "$rel"
-done 3< "$tmpfile"
+done 3<"$tmpfile"
 
 echo
 echo "Summary: $COPIED copied, $OVERWROTE overwritten, $SKIPPED_IDENTICAL identical, $SKIPPED_USER skipped by user"

@@ -99,13 +99,14 @@ Use `cargo deny` for license and advisory checks. Run it in CI.
 
 ### Pre-commit
 
-The pre-commit hook lives in `.githooks/` and is shared via the repo. New clones need to configure the hooks path:
+The pre-commit hook lives in `.githooks/` and is shared via the repo. New clones need to configure the hooks path and provision the toolchain:
 
 ```bash
-git config core.hooksPath .githooks
+git config core.hooksPath .githooks   # point git at the shared hooks
+mise install                          # provision hk + shellcheck + shfmt + cargo tools
 ```
 
-Runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo nextest run`.
+`.githooks/pre-commit` is a thin shim that delegates to [`hk`](https://hk.jdx.dev/) (`exec hk run pre-commit`); the gate itself is declared in `hk.pkl`. It runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo nextest run`, plus `shellcheck` and `shfmt` over staged shell scripts (`.shellcheckrc` and `.editorconfig` are the shared config). It is check-only — it never rewrites files. `post-commit` / `post-merge` (the rdm `Done:`-convention hooks below) are left untouched.
 
 ### Post-merge & post-commit: `Done:` convention
 
@@ -147,7 +148,10 @@ All of the following must pass before merging:
 cargo fmt --check
 cargo clippy -- -D warnings
 cargo test
-cargo deny check        # license & advisory audit
+cargo deny check                          # license & advisory audit
+shellcheck $(git ls-files '*.sh')         # shell lint
+shfmt -d $(git ls-files '*.sh')           # shell format check
+for f in scripts/verify-*.sh; do bash "$f"; done   # shell integration harnesses
 ```
 
 ## Dogfooding

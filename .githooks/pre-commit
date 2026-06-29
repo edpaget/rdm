@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
+# Pre-commit gate is owned by hk (see hk.pkl): cargo fmt/clippy/nextest plus
+# shellcheck + shfmt, scoped to staged files. post-commit / post-merge are the
+# rdm `Done:`-convention dogfooding hooks and are intentionally left untouched.
 set -e
 
-echo "Running pre-commit checks..."
+if ! command -v hk >/dev/null 2>&1; then
+    echo "error: 'hk' not found on PATH — the pre-commit gate needs it." >&2
+    echo "       Run 'mise install' to provision hk (and the rest of the toolchain)." >&2
+    exit 1
+fi
 
-echo "  cargo fmt --check"
-cargo fmt --check
-
-echo "  cargo clippy -- -D warnings"
-cargo clippy -- -D warnings
-
-echo "  cargo nextest run"
-cargo nextest run
-
-echo "All pre-commit checks passed."
+exec hk run pre-commit

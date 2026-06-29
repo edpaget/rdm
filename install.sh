@@ -31,16 +31,22 @@ usage() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --version)
-            [ $# -ge 2 ] || { echo "error: --version requires a tag" >&2; exit 2; }
+            [ $# -ge 2 ] || {
+                echo "error: --version requires a tag" >&2
+                exit 2
+            }
             VERSION="$2"
             shift 2
             ;;
         --dir)
-            [ $# -ge 2 ] || { echo "error: --dir requires a path" >&2; exit 2; }
+            [ $# -ge 2 ] || {
+                echo "error: --dir requires a path" >&2
+                exit 2
+            }
             DIR="$2"
             shift 2
             ;;
-        --help|-h)
+        --help | -h)
             usage
             exit 0
             ;;

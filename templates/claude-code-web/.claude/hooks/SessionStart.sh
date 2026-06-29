@@ -28,8 +28,8 @@ if ! command -v rdm >/dev/null 2>&1; then
     echo "[rdm hook] rdm not found on PATH; installing to $INSTALL_DIR"
     mkdir -p "$INSTALL_DIR"
     curl --proto '=https' --tlsv1.2 -fsSL \
-        https://github.com/edpaget/rdm/releases/latest/download/install.sh \
-        | sh -s -- --dir "$INSTALL_DIR"
+        https://github.com/edpaget/rdm/releases/latest/download/install.sh |
+        sh -s -- --dir "$INSTALL_DIR"
     PATH="$INSTALL_DIR:$PATH"
     export PATH
 fi
@@ -44,9 +44,9 @@ BOOTSTRAP_OUTPUT=$(rdm bootstrap $BOOTSTRAP_ARGS)
 echo "$BOOTSTRAP_OUTPUT"
 
 RDM_ROOT_RESOLVED=$(
-    echo "$BOOTSTRAP_OUTPUT" \
-        | sed -n 's/^Plan repo ready at //p' \
-        | head -n1
+    echo "$BOOTSTRAP_OUTPUT" |
+        sed -n 's/^Plan repo ready at //p' |
+        head -n1
 )
 if [ -z "$RDM_ROOT_RESOLVED" ]; then
     echo "[rdm hook] could not parse RDM_ROOT from bootstrap output; continuing." >&2

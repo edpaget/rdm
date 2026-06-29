@@ -42,7 +42,7 @@ input=$(cat)
 # This is a deliberate grep heuristic (no jq by design); the Stop payload is emitted by
 # Claude Code, so a substring match on the field is sufficient and safe here.
 if printf '%s' "$input" | grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true'; then
-  exit 0
+    exit 0
 fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
@@ -50,9 +50,9 @@ RDM="$PROJECT_DIR/target/debug/rdm"
 
 # Build the dev binary if it is missing. Fail open on build failure.
 if [ ! -x "$RDM" ]; then
-  if ! (cd "$PROJECT_DIR" && cargo build) >/dev/null 2>&1; then
-    exit 0
-  fi
+    if ! (cd "$PROJECT_DIR" && cargo build) >/dev/null 2>&1; then
+        exit 0
+    fi
 fi
 
 # `rdm review pending` returns the needs-review phases AND tasks that are in scope for
@@ -62,10 +62,10 @@ fi
 pending=$("$RDM" review pending --project rdm --format json 2>/dev/null)
 
 if printf '%s' "$pending" | grep -q '"identifier"'; then
-  cat <<'EOF'
+    cat <<'EOF'
 {"decision":"block","reason":"There are rdm item(s) in `needs-review` for project rdm. Before stopping, invoke the rdm-review skill on the needs-review item(s): categorize the findings — fix small issues inline, and file large ones as rdm tasks. If review passes, set the item's status to `reviewed` and write the `Done:` line in the commit message."}
 EOF
-  exit 0
+    exit 0
 fi
 
 exit 0

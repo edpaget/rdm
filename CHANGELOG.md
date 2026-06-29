@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- _Development:_ the shared `.githooks/pre-commit` gate is now driven by
+  [`hk`](https://hk.jdx.dev/) (declared in `hk.pkl`, provisioned by `mise
+  install`) instead of a hand-rolled cargo script. The repo's shell scripts are
+  now linted (`shellcheck`) and formatted (`shfmt`, 4-space / indented case via
+  `.editorconfig`) the same way Rust is, enforced in both pre-commit and CI. CI
+  additionally runs the `scripts/verify-*.sh` integration harnesses (on pushes
+  to `main` and on pull requests). `post-commit` / `post-merge` (the rdm `Done:`
+  hooks) are unchanged.
 - The `rdm-dispatch-phase` agent skill now targets **one worktree per roadmap**,
   reused across phases: step 3 creates (or idempotently reuses) the roadmap's
   shared `roadmap/<slug>` worktree via `rdm worktree add <slug>` instead of a

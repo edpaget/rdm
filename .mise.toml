@@ -4,6 +4,10 @@ rust = "1.94"
 "cargo:cargo-nextest" = "latest"
 "cargo:cargo-watch" = "latest"
 "cargo:cargo-dist" = "latest"
+hk = "1.45"
+pkl = "latest"
+shellcheck = "latest"
+shfmt = "latest"
 
 [env]
 RUSTFLAGS = "-D warnings"
