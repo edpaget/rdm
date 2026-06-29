@@ -1634,6 +1634,92 @@ mod tests {
     }
 
     #[test]
+    fn skill_review_dispatches_adaptive_fleet() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("fleet"));
+        assert!(content.contains("AC Compliance"));
+        assert!(content.contains("Correctness"));
+        // Conditional agents are gated on per-agent triggers.
+        assert!(content.contains("trigger"));
+        // The fleet agents review without editing.
+        assert!(content.contains("read-only"));
+    }
+
+    #[test]
+    fn skill_review_has_refute_pass() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("refute"));
+        assert!(content.contains("confirmed | refuted | uncertain"));
+        // Finder is never the verifier.
+        assert!(content.contains("finder is never the verifier"));
+        // Post-verification confidence filter threshold.
+        assert!(content.contains("below 70"));
+    }
+
+    #[test]
+    fn skill_review_acts_only_on_verified() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("only on verified"));
+        assert!(content.contains("Never fix or file an unverified"));
+    }
+
+    #[test]
+    fn skill_review_mcp_dispatches_adaptive_fleet() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("fleet"));
+        assert!(content.contains("AC Compliance"));
+        assert!(content.contains("Correctness"));
+        assert!(content.contains("trigger"));
+        assert!(content.contains("read-only"));
+    }
+
+    #[test]
+    fn skill_review_mcp_has_refute_pass() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("refute"));
+        assert!(content.contains("confirmed | refuted | uncertain"));
+        assert!(content.contains("finder is never the verifier"));
+        assert!(content.contains("below 70"));
+    }
+
+    #[test]
+    fn skill_review_mcp_acts_only_on_verified() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("only on verified"));
+        assert!(content.contains("Never fix or file an unverified"));
+    }
+
+    #[test]
     fn skill_document_contains_rdm_commands() {
         let skills = generate_skills(&SkillOptions {
             project: None,

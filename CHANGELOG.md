@@ -38,6 +38,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it) and bounded `--plan-only` / `--max-phases` dry-run modes. See
   [`docs/autonomous-loop.md`](docs/autonomous-loop.md).
 
+### Changed
+
+- The `rdm-review` skill emitted by `rdm agent-config` now runs the full
+  **find → verify → filter → report → act → gate** pipeline: an adaptive review
+  fleet (base AC-compliance + correctness agents, plus conditional agents gated
+  on what the diff touches), a per-finding adversarial refute/verify pass where
+  the agent that finds an issue is never the one that confirms it, and a
+  confidence filter that drops refuted or low-confidence findings before
+  anything is fixed or filed. This brings the generated skill to parity with the
+  in-repo dogfooding `rdm-review` skill (previously it shipped an older
+  fixed-two-agent find → report → act flow). Both the CLI and MCP flavors are
+  updated.
+
 ## [0.14.0] - 2026-06-29
 
 ### Changed
