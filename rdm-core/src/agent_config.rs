@@ -1148,8 +1148,11 @@ mod tests {
         });
         let content = &skills[5].content;
         assert!(content.contains("name: rdm-dispatch-phase"));
-        // Runs the inner flow in an isolated worktree on the assigned model tier.
-        assert!(content.contains("rdm worktree add"));
+        // One worktree per roadmap, reused across phases — created with the bare
+        // roadmap ref, not a per-phase `<slug>/<phase-stem>` worktree.
+        assert!(content.contains("rdm worktree add <slug>"));
+        assert!(content.contains("roadmap worktree"));
+        assert!(!content.contains("worktree add <slug>/<phase-stem>"));
         assert!(content.contains("model tier"));
         // Structured outcome with the three documented values.
         assert!(content.contains("reviewed | rework | escalated"));
@@ -1805,6 +1808,10 @@ mod tests {
         assert!(content.contains("rdm_worktree_add"));
         assert!(content.contains("rdm_phase_show"));
         assert!(content.contains("rdm_phase_update"));
+        // One worktree per roadmap: the worktree-add tool gets the bare roadmap ref,
+        // not a per-phase `<slug>/<phase-stem>` item.
+        assert!(content.contains("item: \"<slug>\""));
+        assert!(!content.contains("item: \"<slug>/<phase-stem>\""));
         let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
         assert!(frontmatter.contains("mcp__rdm__rdm_worktree_add"));
         assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));

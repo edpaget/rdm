@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The `rdm-dispatch-phase` agent skill now targets **one worktree per roadmap**,
+  reused across phases: step 3 creates (or idempotently reuses) the roadmap's
+  shared `roadmap/<slug>` worktree via `rdm worktree add <slug>` instead of a
+  per-phase `<slug>/<phase-stem>` worktree, so an autonomous roadmap run no
+  longer spins up a fresh worktree for every phase. The auto-review Stop hook
+  and Pi extension are unchanged in behavior but now document the one-worktree
+  model (they fire from the roadmap worktree on the `roadmap/<slug>` branch, so
+  the branch-scoped review filter resolves exactly that roadmap's items), and
+  the README worktree docs cover roadmap-scoped worktrees.
 - Finalizing a phase or task into `needs-review` now also stamps the branch of
   the checkout that produced it (`review_branch`), and `rdm review pending`
   scopes the queue to the current checkout's branch: it keeps only items whose

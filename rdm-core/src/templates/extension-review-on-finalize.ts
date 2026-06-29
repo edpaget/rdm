@@ -22,6 +22,11 @@
 // item(s), which mitigates this; a later `agent_end` (after more work) re-checks and will
 // re-prompt if any remain.
 //
+// One-worktree-per-roadmap model: Pi cannot move its own cwd, so the Pi session runs in
+// place in the roadmap worktree (or on the `roadmap/<slug>` branch). `agent_end` therefore
+// fires against the stamped roadmap branch, and the branch-scoped `rdm review pending`
+// filter resolves exactly that roadmap's tree — no per-phase worktree, no nested move.
+//
 // `rdm` is invoked on PATH without an explicit project flag — project resolution follows
 // the standard chain (`RDM_PROJECT` env var, then `default_project` in `rdm.toml`).
 //

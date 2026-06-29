@@ -225,9 +225,12 @@ The hooks parse `Done:` directives for both phases (`Done: <roadmap>/<phase>`) a
 
 ## Worktrees
 
-`rdm worktree` manages git worktrees in your **project (code) repo** — the git repo you invoke rdm from — keyed to plan items. It lets you (or an agent harness) spin up an isolated checkout per phase or task without depending on the harness's own worktree support. These commands operate on the project repo discovered from the current directory, **not** the plan repo (`RDM_ROOT`); running them from inside the plan repo is refused.
+`rdm worktree` manages git worktrees in your **project (code) repo** — the git repo you invoke rdm from — keyed to plan items. It lets you (or an agent harness) spin up an isolated checkout per roadmap, phase, or task without depending on the harness's own worktree support. These commands operate on the project repo discovered from the current directory, **not** the plan repo (`RDM_ROOT`); running them from inside the plan repo is refused.
 
 ```bash
+# Create (or reuse) one worktree per roadmap, shared by its phases — prints the path
+rdm worktree add my-roadmap --project fbm
+
 # Create (or reuse) a worktree for a phase — prints the worktree path
 rdm worktree add my-roadmap/phase-1-indexing --project fbm
 
@@ -249,7 +252,7 @@ rdm worktree remove my-roadmap/phase-1-indexing --delete-branch
 rdm worktree remove /path/to/worktree --force
 ```
 
-**Branch naming:** phases use `phase/<roadmap>/<stem>`; tasks use `task/<slug>`.
+**Branch naming:** roadmaps use `roadmap/<slug>`; phases use `phase/<roadmap>/<stem>`; tasks use `task/<slug>`.
 
 **Location:** worktrees are created as siblings of the project repo under `<parent>/<repo-name>__worktrees/<branch-with-slashes-as-dashes>` (e.g. `../myrepo__worktrees/phase-my-roadmap-phase-1-indexing`).
 

@@ -12,6 +12,12 @@
 # single shared source of truth for "what is in scope to review" — the rdm-review
 # skill consults the same command.
 #
+# One-worktree-per-roadmap model: this hook fires from the roadmap worktree's cwd
+# while it sits on the `roadmap/<slug>` branch. Every phase of the roadmap is
+# finalized in place on that same branch, so the branch-scoped filter resolves
+# exactly the roadmap's stamped, in-scope items — no per-phase worktree and no
+# nested-move assumption.
+#
 # Dependencies: POSIX `sh`, `grep`, and the rdm binary only (no `jq`).
 #
 # Manual reproduction (from repo root):

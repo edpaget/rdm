@@ -1,6 +1,6 @@
 ---
 name: rdm-dispatch-phase
-description: Dispatch a single rdm phase end-to-end in an isolated worktree on its assigned model tier — plan, independently review the plan, implement, then code-review — and return a structured outcome
+description: Dispatch a single rdm phase end-to-end in the roadmap's shared worktree on its assigned model tier — plan, independently review the plan, implement, then code-review — and return a structured outcome
 allowed-tools:
   - Read
   - Glob
@@ -15,7 +15,7 @@ allowed-tools:
   - {t_task_create}
 ---
 
-Run **one** rdm phase to completion in isolation, then report a structured outcome. This is the per-phase unit of autonomous execution: a fresh subagent implements the phase seeded with **only that phase's context**, in its own worktree, on the model tier chosen during estimation. An orchestrator (the autonomous roadmap loop) calls this skill repeatedly, once per phase.
+Run **one** rdm phase to completion, then report a structured outcome. This is the per-phase unit of autonomous execution: a fresh subagent implements the phase seeded with **only that phase's context**, on the model tier chosen during estimation. The orchestrator (the autonomous roadmap loop) calls this skill repeatedly, once per phase — and every phase of the roadmap is implemented **in place in the same worktree**, the roadmap's shared `roadmap/<slug>` worktree, reused across phases rather than created fresh per phase.
 
 Unlike interactive `rdm-do`, there is no human to approve the tactical plan before code is written. This skill replaces that gate with a *lightweight, automated second opinion*: a **separate** agent reviews the plan against the phase's acceptance criteria before any code is written. Validating the plan (the intermediate artifact) is far cheaper than reworking code, and the reviewer must be independent — the planner never grades its own plan.
 {principles}
@@ -26,7 +26,7 @@ Unlike interactive `rdm-do`, there is no human to approve the tactical plan befo
 - `roadmap` — roadmap slug.
 - `phase` — phase stem or number.
 - `model tier` — read from the phase record (see step 2); the implementer subagent runs on this tier.
-- `worktree path` — created or located in step 3.
+- `worktree path` — the roadmap worktree, created or reused in step 3.
 
 **Output** — a structured outcome you print as the final result, so the orchestrator can act on it:
 
@@ -48,8 +48,8 @@ Unlike interactive `rdm-do`, there is no human to approve the tactical plan befo
 
 1. **Parse `$ARGUMENTS`** as `<roadmap-slug> <phase>` (stem or number). This skill is non-interactive: it never waits for human approval. Launch unattended runs with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so file edits and rdm tool calls don't block on prompts.
 2. **Read the phase and its model tier:** use `rdm_phase_show` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>"`. Capture the full body (context, steps, acceptance criteria) and the assigned **model** tier (also visible via `rdm_phase_list` with `project: {proj_param}, roadmap: "<slug>"`). The body captured here is the **only** phase context you pass downstream — do not pass roadmap-wide or conversation context.
-3. **Create/locate the worktree and mark in-progress:**
-   - Use the `{t_worktree_add}` MCP tool with `project: {proj_param}, item: "<slug>/<phase-stem>"`. It is idempotent and returns the worktree `path` and `branch`; `cd` into that path (or open it) before editing files. Run the MCP server from your project (code) repo — the tool refuses to run inside the plan repo.
+3. **Create/locate the roadmap worktree and mark in-progress:**
+   - Use the `{t_worktree_add}` MCP tool with `project: {proj_param}, item: "<slug>"` — the **roadmap** ref (not `<slug>/<phase-stem>`). It is idempotent and returns the worktree `path` and `branch`: the first phase creates the `roadmap/<slug>` worktree; every later phase of the same roadmap reuses it. `cd` into that path (or open it) before editing files. Run the MCP server from your project (code) repo — the tool refuses to run inside the plan repo.
    - Use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`.
 4. **Plan (implementer subagent):** dispatch an implementer subagent with the `Agent` tool, running on the phase's **model tier** (pass it as the agent's model). Seed it with **only** the phase body from step 2 and the repo — *not* this orchestrator's accumulated context. Ask it to produce a concrete tactical plan: the implementation steps that satisfy every acceptance criterion, the crates/files it will touch, and the tests it will add. Have it return the plan only — no code yet.
 5. **Plan gate (separate reviewer subagent):** dispatch a *different*, lightweight plan-review subagent with the `Agent` tool. Give it the phase body and the proposed plan — and nothing else. It checks the plan against:
