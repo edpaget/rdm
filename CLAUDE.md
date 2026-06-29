@@ -161,6 +161,7 @@ For sessions running in a sandboxed Claude Code web environment (no local plan r
 - Setup: `scripts/install-claude-code-web-template.sh <target-source-repo>` — drops in a `SessionStart` hook that clones the plan repo into the sandbox on every session start.
 - Full setup, credentials, and troubleshooting: `docs/claude-code-web.md`.
 - Regression harness: `bash scripts/verify-claude-code-web-loop.sh` — stands up a hermetic simulation of the bootstrap → Done: → plan-repo-update loop using temp dirs. Run it after touching the template, `rdm bootstrap`, or `rdm hook post-commit`.
+- Cross-host worktree-review harness: `bash scripts/verify-worktree-review-loop.sh` — hermetic do → finalize → trigger → review regression for the one-worktree-per-roadmap model, asserting roadmap isolation across the Claude Stop hook and Pi `agent_end` host paths. Run it after touching the worktree/review-trigger model (`rdm worktree`, the branch-scoped `rdm review pending` filter, needs-review stamping, or the hook/extension templates).
 
 ### *** DEVELOPMENT BUILD REQUIREMENT ***
 

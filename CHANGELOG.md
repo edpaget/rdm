@@ -29,6 +29,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A cross-host worktree-review regression harness,
+  `scripts/verify-worktree-review-loop.sh`. It drives the full
+  do → finalize → trigger → review loop for the one-worktree-per-roadmap model
+  across two roadmaps in hermetic temp dirs and asserts roadmap isolation — a
+  roadmap's review trigger fires that roadmap's review and stays silent about
+  the other — across both supported host paths (the Claude Stop hook template
+  and the Pi `agent_end` contract), including that a trigger from the `main`
+  checkout never misfires for an in-flight roadmap review.
 - `rdm worktree add <roadmap-slug>` now accepts a bare roadmap reference and
   creates (or idempotently reuses) a single worktree on a `roadmap/<slug>`
   branch — one worktree per roadmap, shared by all its phases — at
