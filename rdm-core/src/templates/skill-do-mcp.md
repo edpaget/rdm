@@ -16,6 +16,7 @@ allowed-tools:
   - {t_task_show}
   - {t_task_update}
   - {t_task_create}
+  - {t_worktree_current}
   - {t_worktree_add}
 ---
 
@@ -30,7 +31,7 @@ Implement a roadmap phase or work on a task. One shared flow: find the target �
 
 For unattended Claude Code runs (where no human is present to approve permission prompts), launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so file edits and rdm tool calls don't block on prompts.
 
-This skill does its work in an isolated git worktree, created via the `{t_worktree_add}` MCP tool after marking the item in-progress (see the "Create an isolated worktree" step). That keeps the live checkout untouched while you implement.
+This skill does its work in an isolated git worktree — **one worktree per roadmap**, with every phase implemented in place in it. It detects the current worktree with `{t_worktree_current}` and creates/reuses the roadmap worktree with `{t_worktree_add}` after marking the item in-progress (see the "Get into the roadmap's worktree" step). That keeps the live checkout untouched while you implement, and because the model never re-enters, a plain `cd`/open into the returned path is all any host needs.
 
 ## Argument forms
 
@@ -51,11 +52,14 @@ This skill does its work in an isolated git worktree, created via the `{t_worktr
 3. **Mark in-progress:**
    - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`
    - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "in-progress"`
-4. **Create an isolated worktree:** use the `{t_worktree_add}` MCP tool to create (or idempotently reuse) a dedicated git worktree and branch for the item, then do all implementation work inside it. Pass the item reference form:
-   - phase: `project: {proj_param}, item: "<slug>/<phase-stem>"`
-   - task: `project: {proj_param}, item: "task/<slug>"`
+4. **Get into the roadmap's worktree (one worktree per roadmap, work in place):** each roadmap gets a *single* worktree on branch `roadmap/<slug>`, and **every phase of that roadmap is implemented in place in it**, so entry happens at most **once** (the first phase, from the main checkout) and the session never re-enters or nests. Use `{t_worktree_current}` and compare the current worktree's roadmap to the target `<slug>`. (`{t_worktree_current}` reports `item` = the roadmap slug for a roadmap worktree, or `<roadmap>/<stem>` for a legacy per-phase worktree — compare the roadmap portion against `<slug>`.)
+   - **Match** (current worktree's roadmap == `<slug>`): you are already in the target roadmap's worktree → **work in place**. Skip `{t_worktree_add}` and entry. This is the common case for every phase after the first.
+   - **None** (output is `null` — main checkout or not in a worktree): ensure the roadmap worktree exists by calling `{t_worktree_add}` with `project: {proj_param}, item: "<slug>"` (idempotent — reuses it if present). Take the returned `path` and `cd` into / open it **once** before editing files. The model never re-enters, so a plain `cd`/open is all any MCP host needs — fully correct, no special worktree-entry tool required.
+   - **Mismatch** (current worktree's roadmap is a *different* roadmap): interactive → **ask** the user whether to switch to the target roadmap's worktree; `--auto` → switch to it — call `{t_worktree_add}` with `item: "<slug>"`, then `cd`/open the returned `path` (or instruct a relaunch there).
 
-   The tool returns the worktree `path` and `branch`; `cd` into that path (or open it) before editing files. Run the MCP server from your project (code) repo — the tool refuses to run inside the plan repo.
+   **Tasks keep their own per-task worktree.** For the task flow, call `{t_worktree_add}` with `project: {proj_param}, item: "task/<slug>"` and `cd`/open the returned `path`.
+
+   Run the MCP server from your project (code) repo — `{t_worktree_add}` refuses to run inside the plan repo.
 5. **Enter plan mode** with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
    - Break the phase/task into concrete implementation steps based on its description and acceptance criteria.
    - Include a final step: "Review changes with user and finalize".

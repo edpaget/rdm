@@ -472,6 +472,7 @@ fn skill_do_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_task_show", "rdm_task_show"),
                 ("t_task_update", "rdm_task_update"),
                 ("t_task_create", "rdm_task_create"),
+                ("t_worktree_current", "rdm_worktree_current"),
                 ("t_worktree_add", "rdm_worktree_add"),
             ],
         ),
@@ -1540,13 +1541,28 @@ mod tests {
             mcp: false,
         });
         let content = &skills[1].content;
-        // Work happens in an isolated worktree created via the worktree command...
-        assert!(content.contains("worktree add"));
-        // ...detecting and reusing an existing worktree via `worktree current`...
+        // Work happens in one worktree per roadmap, created via the roadmap-scoped
+        // worktree command (not a per-phase ref)...
+        assert!(content.contains("worktree add <slug>"));
+        // ...detecting the current worktree's roadmap via `worktree current`...
         assert!(content.contains("worktree current"));
-        // ...and moving the session in durably (Claude Code's EnterWorktree)
-        // rather than a non-persistent `cd`, so post-finalize hooks fire.
+        // ...and following the Match/None/Mismatch in-place flow.
+        assert!(content.contains("**Match**"));
+        assert!(content.contains("**None**"));
+        assert!(content.contains("**Mismatch**"));
+        assert!(content.contains("work in place"));
+        // EnterWorktree is a one-time convenience, NOT a correctness dependency:
+        // non-Claude hosts have a working cd/launch entry path.
         assert!(content.contains("EnterWorktree"));
+        assert!(content.contains("not** a correctness dependency"));
+        assert!(content.contains("cd`/launch"));
+        // Tasks keep their own per-task worktree.
+        assert!(content.contains("worktree add task/<slug>"));
+        // The Mismatch branch pins the relaunch entry path and the reason
+        // EnterWorktree cannot be used from inside another worktree — so a
+        // regression that dropped/inverted this caveat would fail, not pass.
+        assert!(content.contains("relaunch"));
+        assert!(content.contains(".claude/worktrees/"));
         // ...and the skill supports a non-interactive run mode...
         assert!(content.contains("--auto"));
         // ...with unattended-permission guidance for Claude Code.
@@ -1950,11 +1966,23 @@ mod tests {
         // The MCP variant supports the interactive/non-interactive run modes...
         assert!(content.contains("--auto"));
         assert!(content.contains("Run modes"));
-        // ...and now drives an isolated worktree via the MCP worktree tool
-        // (not Bash) — the body references it and the allowed-tools frontmatter
-        // lists the resolved tool name.
+        // ...and drives the one-worktree-per-roadmap, work-in-place flow via the
+        // MCP worktree tools (not Bash, no EnterWorktree): it detects the current
+        // worktree with rdm_worktree_current and creates/reuses the roadmap
+        // worktree with rdm_worktree_add, following Match/None/Mismatch.
+        assert!(content.contains("rdm_worktree_current"));
         assert!(content.contains("rdm_worktree_add"));
+        assert!(content.contains("**Match**"));
+        assert!(content.contains("**None**"));
+        assert!(content.contains("**Mismatch**"));
+        assert!(content.contains("work in place"));
+        // The roadmap-scoped item ref is used, plus the per-task ref for tasks.
+        assert!(content.contains("item: \"<slug>\""));
+        assert!(content.contains("item: \"task/<slug>\""));
+        // MCP hosts cd/open the returned path — EnterWorktree is not used here.
+        assert!(!content.contains("EnterWorktree"));
         let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
+        assert!(frontmatter.contains("mcp__rdm__rdm_worktree_current"));
         assert!(frontmatter.contains("mcp__rdm__rdm_worktree_add"));
     }
 

@@ -69,14 +69,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   triggers, and defines the auto-handle / park-as-blocked / raise-to-user
   decision rule.
 
+### Changed
+
+- The `rdm-do` skill now uses a **one-worktree-per-roadmap, work-in-place**
+  model. A roadmap gets a single worktree (`roadmap/<slug>` branch) and every
+  phase is implemented in place in it: the skill reads `rdm worktree current`,
+  compares the current worktree's roadmap to the target, and **works in place**
+  on a match (the common case for every phase after the first), creates/enters
+  the roadmap worktree once from the main checkout on a miss, or switches on a
+  mismatch (interactively asking, or automatically under `--auto`). Because entry
+  happens at most once and the session never re-enters or nests, `EnterWorktree`
+  is now a one-time convenience rather than a correctness dependency — non-Claude
+  hosts (Pi, web, MCP) get a fully correct entry path via plain `cd`/launch. The
+  MCP variant additionally renders the `rdm_worktree_current` tool. Tasks keep
+  their existing per-task worktree.
+
 ### Fixed
 
-- The `rdm-do` skill now detects whether it is already in the target item's
-  worktree (via `rdm worktree current`) and reuses it, and otherwise creates the
-  worktree and moves the session in with the host's durable worktree-entry tool
-  (Claude Code: `EnterWorktree`) instead of a `cd` that does not persist across
-  tool calls. This keeps the session in the worktree through finalize, so the
-  auto-review Stop hook fires without a manual step.
 - `rdm hook post-commit` / `post-merge` now always commit the `Done:`
   phase/task updates they apply, even when staging mode is enabled via
   `--stage`, `RDM_STAGE`, or `stage = true` in `rdm.toml`. Previously the hook
