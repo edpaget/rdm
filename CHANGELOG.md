@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `rdm-autopilot` agent skill (shipped by `rdm agent-config --skills`, in both
+  CLI and MCP variants). It drives **one named roadmap** from `not-started` to
+  `reviewed` unattended: each iteration asks `rdm next` for the next actionable
+  phase, estimates it (`rdm-estimate`) if needed, dispatches it on its model
+  tier through `rdm-dispatch-phase` (plan gate, implementation, `rdm-review`),
+  interprets the `reviewed`/`rework`/`escalated` outcome, and advances —
+  parking a phase `blocked` when its rework budget is exhausted so the loop
+  steps past it. Decisions and blockers are **batched, not raised mid-run**
+  (review them with `rdm review blocked`), and the run is bounded by a global
+  step budget. Opt-in `--land` (default OFF — `main` is never touched without
+  it) and bounded `--plan-only` / `--max-phases` dry-run modes. See
+  [`docs/autonomous-loop.md`](docs/autonomous-loop.md).
+
 ## [0.14.0] - 2026-06-29
 
 ### Changed

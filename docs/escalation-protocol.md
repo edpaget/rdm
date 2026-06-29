@@ -3,7 +3,8 @@
 This is the **single shared definition** of when an autonomous run interrupts a
 human and how it records what it could not decide. It is referenced by the
 `rdm-dispatch-phase` skill (the plan gate and the code-review stage) and by the
-autonomous roadmap loop, so every consumer applies one rule.
+autonomous roadmap loop ([`rdm-autopilot`](./autonomous-loop.md)), so every
+consumer applies one rule.
 
 Autonomy is only useful if the human is interrupted for the *right* things.
 `rdm-review` already absorbs routine code findings, so those must never reach

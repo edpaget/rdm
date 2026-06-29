@@ -257,7 +257,7 @@ pub struct SkillOptions {
 ///     principles_file: None,
 ///     mcp: false,
 /// });
-/// assert_eq!(skills.len(), 6);
+/// assert_eq!(skills.len(), 7);
 /// assert!(skills[0].content.contains("--project myproj"));
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
@@ -271,6 +271,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_document_mcp(&proj, principles_note.as_deref()),
             skill_estimate_mcp(&proj, principles_note.as_deref()),
             skill_dispatch_phase_mcp(&proj, principles_note.as_deref()),
+            skill_autopilot_mcp(&proj, principles_note.as_deref()),
         ]
     } else {
         let proj_flag = proj_flag_str(opts.project.as_deref());
@@ -281,6 +282,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_document(&proj_flag, principles_note.as_deref()),
             skill_estimate(&proj_flag, principles_note.as_deref()),
             skill_dispatch_phase(&proj_flag, principles_note.as_deref()),
+            skill_autopilot(&proj_flag, principles_note.as_deref()),
         ]
     }
 }
@@ -368,6 +370,18 @@ fn skill_dispatch_phase(proj_flag: &str, principles_note: Option<&str>) -> Skill
         relative_path: "rdm-dispatch-phase/SKILL.md",
         content: render_skill(
             include_str!("templates/skill-dispatch-phase-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
+        ),
+    }
+}
+
+fn skill_autopilot(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-autopilot/SKILL.md",
+        content: render_skill(
+            include_str!("templates/skill-autopilot-cli.md"),
             "{proj_flag}",
             proj_flag,
             principles_note,
@@ -542,6 +556,23 @@ fn skill_dispatch_phase_mcp(proj: &str, principles_note: Option<&str>) -> SkillF
                 ("t_phase_update", "rdm_phase_update"),
                 ("t_worktree_add", "rdm_worktree_add"),
                 ("t_task_create", "rdm_task_create"),
+            ],
+        ),
+    }
+}
+
+fn skill_autopilot_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-autopilot/SKILL.md",
+        content: render_mcp_skill(
+            include_str!("templates/skill-autopilot-mcp.md"),
+            proj,
+            principles_note,
+            &[
+                ("t_next", "rdm_next"),
+                ("t_phase_list", "rdm_phase_list"),
+                ("t_phase_show", "rdm_phase_show"),
+                ("t_phase_update", "rdm_phase_update"),
             ],
         ),
     }
@@ -1115,13 +1146,13 @@ mod tests {
     // --- Skill generation tests ---
 
     #[test]
-    fn generate_skills_returns_six_files() {
+    fn generate_skills_returns_seven_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
-        assert_eq!(skills.len(), 6);
+        assert_eq!(skills.len(), 7);
     }
 
     #[test]
@@ -1137,6 +1168,57 @@ mod tests {
         assert_eq!(skills[3].relative_path, "rdm-document/SKILL.md");
         assert_eq!(skills[4].relative_path, "rdm-estimate/SKILL.md");
         assert_eq!(skills[5].relative_path, "rdm-dispatch-phase/SKILL.md");
+        assert_eq!(skills[6].relative_path, "rdm-autopilot/SKILL.md");
+    }
+
+    #[test]
+    fn skill_autopilot_documents_loop_and_budgets() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[6].content;
+        assert!(content.contains("name: rdm-autopilot"));
+        // Drives one named roadmap; the slug is required and the loop never roams.
+        assert!(content.contains("required roadmap slug"));
+        assert!(content.contains("never roams to another roadmap"));
+        // The loop driver / termination oracle is `rdm next`.
+        assert!(content.contains("rdm next --roadmap <slug> --format json"));
+        assert!(content.contains("blocked-on-dependencies"));
+        // Composes the per-phase skills rather than re-implementing them.
+        assert!(content.contains("rdm-dispatch-phase"));
+        assert!(content.contains("rdm-estimate"));
+        // Interprets the three dispatch outcomes.
+        assert!(content.contains("reviewed | rework | escalated"));
+        assert!(content.contains("**reviewed**"));
+        assert!(content.contains("**rework**"));
+        assert!(content.contains("**escalated**"));
+        // Rework budget exhaustion parks the phase as a `code`-stage escalation.
+        assert!(content.contains("--status blocked"));
+        assert!(content.contains("[code]"));
+        // Bounded run: global step budget + stop conditions + always-on summary.
+        assert!(content.contains("Global step budget"));
+        assert!(content.contains("Stop the loop"));
+        assert!(content.contains("Summary"));
+        // Escalation rule is owned by the shared protocol, not redefined here;
+        // the batch queue is surfaced via `rdm review blocked`.
+        assert!(content.contains("docs/escalation-protocol.md"));
+        assert!(content.contains("rdm review blocked"));
+        // Opt-in landing leaves `main` untouched by default.
+        assert!(content.contains("--land"));
+        assert!(content.contains("Default OFF"));
+        assert!(content.contains("never touched"));
+        // Dry-run / bounded modes.
+        assert!(content.contains("--plan-only"));
+        assert!(content.contains("--max-phases"));
+        // Active driver vs the passive needs-review safety net.
+        assert!(content.contains("active driver"));
+        assert!(content.contains("passive safety net"));
+        // Never writes a Done: line by hand.
+        assert!(!content.contains("Done: <roadmap-slug>/<phase-stem>"));
+        // Unattended-permission guidance.
+        assert!(content.contains("--permission-mode auto"));
     }
 
     #[test]
@@ -1770,13 +1852,13 @@ mod tests {
     // --- MCP skill generation tests ---
 
     #[test]
-    fn mcp_skills_returns_six_files() {
+    fn mcp_skills_returns_seven_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: true,
         });
-        assert_eq!(skills.len(), 6);
+        assert_eq!(skills.len(), 7);
     }
 
     #[test]
@@ -1792,6 +1874,51 @@ mod tests {
         assert_eq!(skills[3].relative_path, "rdm-document/SKILL.md");
         assert_eq!(skills[4].relative_path, "rdm-estimate/SKILL.md");
         assert_eq!(skills[5].relative_path, "rdm-dispatch-phase/SKILL.md");
+        assert_eq!(skills[6].relative_path, "rdm-autopilot/SKILL.md");
+    }
+
+    #[test]
+    fn mcp_skill_autopilot_uses_mcp_tools() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[6].content;
+        assert!(content.contains("name: rdm-autopilot"));
+        // Drives one named roadmap; the slug is required and the loop never roams.
+        assert!(content.contains("required roadmap slug"));
+        assert!(content.contains("never roams to another roadmap"));
+        // The loop driver is the MCP `rdm_next` tool, named in body and frontmatter.
+        assert!(content.contains("rdm_next"));
+        assert!(content.contains("blocked-on-dependencies"));
+        // Composes the per-phase skills.
+        assert!(content.contains("rdm-dispatch-phase"));
+        assert!(content.contains("rdm-estimate"));
+        // Interprets the three dispatch outcomes.
+        assert!(content.contains("reviewed | rework | escalated"));
+        assert!(content.contains("**reviewed**"));
+        assert!(content.contains("**rework**"));
+        assert!(content.contains("**escalated**"));
+        // Rework exhaustion parks the phase blocked via the MCP update tool.
+        assert!(content.contains("rdm_phase_update"));
+        assert!(content.contains("status: \"blocked\""));
+        assert!(content.contains("[code]"));
+        // Bounded run + summary + shared escalation protocol + batch queue.
+        assert!(content.contains("Global step budget"));
+        assert!(content.contains("Summary"));
+        assert!(content.contains("docs/escalation-protocol.md"));
+        assert!(content.contains("rdm review blocked"));
+        // Opt-in landing, dry-run / bounded modes.
+        assert!(content.contains("--land"));
+        assert!(content.contains("Default OFF"));
+        assert!(content.contains("--plan-only"));
+        assert!(content.contains("--max-phases"));
+        // MCP variant: Bash-free frontmatter, mcp__rdm__ tools resolved.
+        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
+        assert!(!frontmatter.contains("  - Bash"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_next"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
     }
 
     #[test]
