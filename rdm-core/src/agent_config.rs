@@ -257,7 +257,7 @@ pub struct SkillOptions {
 ///     principles_file: None,
 ///     mcp: false,
 /// });
-/// assert_eq!(skills.len(), 7);
+/// assert_eq!(skills.len(), 8);
 /// assert!(skills[0].content.contains("--project myproj"));
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
@@ -272,6 +272,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_estimate_mcp(&proj, principles_note.as_deref()),
             skill_dispatch_phase_mcp(&proj, principles_note.as_deref()),
             skill_autopilot_mcp(&proj, principles_note.as_deref()),
+            skill_land_mcp(&proj, principles_note.as_deref()),
         ]
     } else {
         let proj_flag = proj_flag_str(opts.project.as_deref());
@@ -283,6 +284,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_estimate(&proj_flag, principles_note.as_deref()),
             skill_dispatch_phase(&proj_flag, principles_note.as_deref()),
             skill_autopilot(&proj_flag, principles_note.as_deref()),
+            skill_land(&proj_flag, principles_note.as_deref()),
         ]
     }
 }
@@ -382,6 +384,18 @@ fn skill_autopilot(proj_flag: &str, principles_note: Option<&str>) -> SkillFile 
         relative_path: "rdm-autopilot/SKILL.md",
         content: render_skill(
             include_str!("templates/skill-autopilot-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
+        ),
+    }
+}
+
+fn skill_land(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-land/SKILL.md",
+        content: render_skill(
+            include_str!("templates/skill-land-cli.md"),
             "{proj_flag}",
             proj_flag,
             principles_note,
@@ -573,6 +587,25 @@ fn skill_autopilot_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_phase_list", "rdm_phase_list"),
                 ("t_phase_show", "rdm_phase_show"),
                 ("t_phase_update", "rdm_phase_update"),
+            ],
+        ),
+    }
+}
+
+fn skill_land_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-land/SKILL.md",
+        content: render_mcp_skill(
+            include_str!("templates/skill-land-mcp.md"),
+            proj,
+            principles_note,
+            &[
+                ("t_phase_show", "rdm_phase_show"),
+                ("t_phase_update", "rdm_phase_update"),
+                ("t_task_show", "rdm_task_show"),
+                ("t_task_update", "rdm_task_update"),
+                ("t_worktree_current", "rdm_worktree_current"),
+                ("t_worktree_remove", "rdm_worktree_remove"),
             ],
         ),
     }
@@ -1146,13 +1179,13 @@ mod tests {
     // --- Skill generation tests ---
 
     #[test]
-    fn generate_skills_returns_seven_files() {
+    fn generate_skills_returns_eight_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
-        assert_eq!(skills.len(), 7);
+        assert_eq!(skills.len(), 8);
     }
 
     #[test]
@@ -1169,6 +1202,46 @@ mod tests {
         assert_eq!(skills[4].relative_path, "rdm-estimate/SKILL.md");
         assert_eq!(skills[5].relative_path, "rdm-dispatch-phase/SKILL.md");
         assert_eq!(skills[6].relative_path, "rdm-autopilot/SKILL.md");
+        assert_eq!(skills[7].relative_path, "rdm-land/SKILL.md");
+    }
+
+    #[test]
+    fn skill_land_documents_landing_and_safety() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[7].content;
+        assert!(content.contains("name: rdm-land"));
+        // Item ref comes from $ARGUMENTS.
+        assert!(content.contains("$ARGUMENTS"));
+        assert!(content.contains("item ref"));
+        // Linear history via rebase + fast-forward merge, no merge commit.
+        assert!(content.contains("merge --ff-only"));
+        assert!(content.contains("linear history"));
+        assert!(content.contains("rebase"));
+        assert!(content.contains("no merge commit"));
+        // Preconditions: reviewed, the Done: line, the CI-equivalent checks.
+        assert!(content.contains("reviewed"));
+        assert!(content.contains("Done:"));
+        assert!(content.contains("cargo fmt --check"));
+        assert!(content.contains("cargo clippy -- -D warnings"));
+        assert!(content.contains("cargo nextest run"));
+        // Abort-and-escalate on conflict/failure per the shared protocol; never force.
+        assert!(content.contains("git rebase --abort"));
+        assert!(content.contains("docs/escalation-protocol.md"));
+        assert!(content.contains("never force"));
+        // Post-commit flips reviewed -> done; idempotent fallback exists.
+        assert!(content.contains("reviewed → done"));
+        assert!(content.contains("post-commit"));
+        assert!(content.contains("--status done --commit"));
+        // Cleanup: single remove + batch prune.
+        assert!(content.contains("rdm worktree remove <item> --delete-branch"));
+        assert!(content.contains("rdm worktree prune"));
+        // Safety posture: explicit/opt-in only, never auto-lands.
+        assert!(content.contains("never auto-lands"));
+        assert!(content.contains("--land"));
     }
 
     #[test]
@@ -1852,13 +1925,13 @@ mod tests {
     // --- MCP skill generation tests ---
 
     #[test]
-    fn mcp_skills_returns_seven_files() {
+    fn mcp_skills_returns_eight_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: true,
         });
-        assert_eq!(skills.len(), 7);
+        assert_eq!(skills.len(), 8);
     }
 
     #[test]
@@ -1875,6 +1948,42 @@ mod tests {
         assert_eq!(skills[4].relative_path, "rdm-estimate/SKILL.md");
         assert_eq!(skills[5].relative_path, "rdm-dispatch-phase/SKILL.md");
         assert_eq!(skills[6].relative_path, "rdm-autopilot/SKILL.md");
+        assert_eq!(skills[7].relative_path, "rdm-land/SKILL.md");
+    }
+
+    #[test]
+    fn mcp_skill_land_uses_mcp_tools() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[7].content;
+        assert!(content.contains("name: rdm-land"));
+        assert!(content.contains("$ARGUMENTS"));
+        // Same landing contract as the CLI variant.
+        assert!(content.contains("merge --ff-only"));
+        assert!(content.contains("linear history"));
+        assert!(content.contains("reviewed"));
+        assert!(content.contains("Done:"));
+        assert!(content.contains("reviewed → done"));
+        assert!(content.contains("git rebase --abort"));
+        assert!(content.contains("docs/escalation-protocol.md"));
+        assert!(content.contains("never auto-lands"));
+        // Status reads/updates and single-worktree cleanup go through MCP tools.
+        assert!(content.contains("rdm_phase_show"));
+        assert!(content.contains("rdm_phase_update"));
+        assert!(content.contains("rdm_worktree_remove"));
+        // Batch prune has no MCP tool this phase — delegated as the CLI command.
+        assert!(content.contains("rdm worktree prune"));
+        // The git landing is delegated to a Bash-capable subagent via Agent.
+        assert!(content.contains("Agent"));
+        assert!(content.contains("subagent"));
+        // MCP variant: Bash-free frontmatter, mcp__rdm__ tools resolved.
+        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
+        assert!(!frontmatter.contains("  - Bash"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_phase_show"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_worktree_remove"));
     }
 
     #[test]

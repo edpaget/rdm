@@ -12,7 +12,7 @@ the earlier phases rather than re-implementing them:
   gate → implement → `rdm-review`) and returns a structured outcome.
 
 The skill is emitted by `rdm agent-config --skills` in both CLI and MCP
-variants, alongside the other six skills:
+variants, alongside the other seven skills:
 
 ```bash
 rdm agent-config claude --skills --project <proj> --out .
@@ -109,9 +109,9 @@ The loop stops when **any** of these holds:
   `rdm-dispatch-phase`'s plan gate and stop before implementation. Cheap plan
   vetting across a roadmap without writing any code.
 - `--land` (opt-in, **default OFF**) — after the roadmap reaches `reviewed`,
-  invoke `rdm-land` (the landing skill, phase 7) to land the work. Without it,
-  autopilot **never touches `main`**; it leaves every reviewed phase on the
-  `roadmap/<slug>` branch for a human to land.
+  invoke the [`rdm-land`](./landing.md) skill to land the work to `main` with
+  linear history. Without it, autopilot **never touches `main`**; it leaves every
+  reviewed phase on the `roadmap/<slug>` branch for a human to land.
 
 Because the run is unattended, launch it with `--permission-mode auto` (or
 `bypassPermissions` in a sandbox) so worktree edits, commands, and dispatched
@@ -142,4 +142,5 @@ only via the dispatched `rdm-review`, never by hand.
 
 See also [`docs/escalation-protocol.md`](./escalation-protocol.md) for the
 shared rule on what escalates, what retries, and how parked escalations are
-recorded and resumed.
+recorded and resumed, and [`docs/landing.md`](./landing.md) for the landing tail
+(`rdm-land` + `rdm worktree prune`) that integrates reviewed work into `main`.

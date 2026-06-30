@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rdm_git::worktree::{self, RemoveOptions, WorktreeError, WorktreeInfo};
+use rdm_git::worktree::{
+    self, PruneAction, PruneOptions, RemoveOptions, WorktreeError, WorktreeInfo,
+};
 
 use crate::OutputFormat;
 use crate::WorktreeCommand;
@@ -45,6 +47,21 @@ pub fn run(
             &target,
             delete_branch,
             force,
+            project,
+        ),
+        WorktreeCommand::Prune {
+            project,
+            delete_branch,
+            force,
+            dry_run,
+        } => prune(
+            root,
+            repo_config,
+            staging,
+            format,
+            delete_branch,
+            force,
+            dry_run,
             project,
         ),
     }
@@ -181,6 +198,108 @@ fn remove(
     .map_err(map_err)?;
     println!("Removed worktree for {target}");
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prune(
+    root: &Path,
+    repo_config: &rdm_core::config::Config,
+    staging: bool,
+    format: OutputFormat,
+    delete_branch: bool,
+    force: bool,
+    dry_run: bool,
+    project: Option<String>,
+) -> Result<()> {
+    let project = paths::resolve_project(project, repo_config)?;
+    let store = commands::make_store(root, staging)?;
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let repo = worktree::discover_project_repo(&cwd).map_err(map_err)?;
+    let results = worktree::prune(
+        &repo,
+        &store,
+        &project,
+        PruneOptions {
+            delete_branch,
+            force,
+            dry_run,
+        },
+    )
+    .map_err(map_err)?;
+
+    let removed = results
+        .iter()
+        .filter(|r| matches!(r.action, PruneAction::Removed))
+        .count();
+    let would = results
+        .iter()
+        .filter(|r| matches!(r.action, PruneAction::WouldRemove))
+        .count();
+    let skipped = results
+        .iter()
+        .filter(|r| matches!(r.action, PruneAction::SkippedDirty))
+        .count();
+    let failed = results
+        .iter()
+        .filter(|r| matches!(r.action, PruneAction::Failed(_)))
+        .count();
+
+    match format {
+        OutputFormat::Json => {
+            let arr: Vec<_> = results
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "item": r.item,
+                        "branch": r.branch,
+                        "path": r.path.display().to_string(),
+                        "action": action_str(&r.action),
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "results": arr,
+                    "removed": removed,
+                    "would_remove": would,
+                    "skipped_dirty": skipped,
+                    "failed": failed,
+                }))?
+            );
+        }
+        _ => {
+            if results.is_empty() {
+                println!("No done worktrees to prune.");
+            } else {
+                for r in &results {
+                    let note = match &r.action {
+                        PruneAction::Removed => "removed".to_string(),
+                        PruneAction::WouldRemove => "would remove".to_string(),
+                        PruneAction::SkippedDirty => "skipped (dirty — pass --force)".to_string(),
+                        PruneAction::Failed(e) => format!("failed: {e}"),
+                    };
+                    println!("{}  {}  {}", r.item, r.path.display(), note);
+                }
+                if dry_run {
+                    println!("{would} would be removed, {skipped} skipped (dirty).");
+                } else {
+                    println!("{removed} removed, {skipped} skipped (dirty), {failed} failed.");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Maps a [`PruneAction`] to its stable JSON discriminator.
+fn action_str(action: &PruneAction) -> &'static str {
+    match action {
+        PruneAction::Removed => "removed",
+        PruneAction::WouldRemove => "would-remove",
+        PruneAction::SkippedDirty => "skipped-dirty",
+        PruneAction::Failed(_) => "failed",
+    }
 }
 
 fn format_table(worktrees: &[WorktreeInfo]) -> String {

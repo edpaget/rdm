@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm worktree prune` removes every worktree whose plan item is already `done`
+  in one command. Resolves each rdm-managed worktree's item status (phase, task,
+  or whole roadmap) and removes the done ones; dirty worktrees are skipped unless
+  `--force`, `--delete-branch` also deletes their merged branches, and
+  `--dry-run` reports what would be removed without changing anything. See
+  [`docs/landing.md`](docs/landing.md).
+- `rdm agent-config --skills` now emits an `rdm-land` skill (CLI and MCP
+  variants) that lands a `reviewed` item to `main` with **linear history**
+  (rebase onto `main`, then `git merge --ff-only` — never a merge commit),
+  re-running the CI-equivalent checks on the rebased branch first. The
+  fast-forward flips the item to `done` via the existing post-commit hook, and
+  the skill then cleans up the worktree (`rdm worktree remove --delete-branch`,
+  or `rdm worktree prune` for batch cleanup). On rebase conflict or failing
+  checks it aborts cleanly and escalates per `docs/escalation-protocol.md`
+  instead of force-merging. Landing runs only on explicit invocation (or
+  autopilot's opt-in `--land`); it never auto-lands. See
+  [`docs/landing.md`](docs/landing.md).
 - `rdm-autopilot` agent skill (shipped by `rdm agent-config --skills`, in both
   CLI and MCP variants). It drives **one named roadmap** from `not-started` to
   `reviewed` unattended: each iteration asks `rdm next` for the next actionable

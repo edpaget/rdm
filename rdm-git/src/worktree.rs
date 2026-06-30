@@ -256,6 +256,136 @@ pub struct RemoveOptions {
     pub delete_branch: bool,
 }
 
+/// Options for [`prune`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PruneOptions {
+    /// Also delete each pruned worktree's branch.
+    pub delete_branch: bool,
+    /// Remove (and force-delete the branch of) even a dirty worktree.
+    pub force: bool,
+    /// Report what would be removed without removing anything.
+    pub dry_run: bool,
+}
+
+/// What [`prune`] did (or would do) for a single candidate worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PruneAction {
+    /// The worktree was removed.
+    Removed,
+    /// `dry_run` was set; the worktree is a candidate but was left in place.
+    WouldRemove,
+    /// The worktree was dirty and `force` was not set, so it was skipped.
+    SkippedDirty,
+    /// Removal was attempted but failed; carries the error message.
+    Failed(String),
+}
+
+/// The outcome of [`prune`] for one done-item worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PruneResult {
+    /// The canonical item reference the worktree keys to.
+    pub item: String,
+    /// The git branch the worktree had checked out.
+    pub branch: String,
+    /// The path of the worktree.
+    pub path: PathBuf,
+    /// What happened to it.
+    pub action: PruneAction,
+}
+
+/// Returns whether the plan item named by the canonical `item` string resolves
+/// to a `done` status against the plan `store`.
+///
+/// A phase is done when its frontmatter status is [`rdm_core::model::PhaseStatus::Done`];
+/// a task when its status is [`rdm_core::model::TaskStatus::Done`]; a bare roadmap when
+/// every one of its phases is terminal
+/// ([`rdm_core::ops::roadmap::computed_status`] == [`rdm_core::ops::roadmap::RoadmapStatus::Done`]).
+/// Any item that fails to parse, does not exist, or cannot be read is treated as
+/// not-done (returns `false`), so a worktree is never pruned on a read error.
+fn item_is_done(store: &impl rdm_core::store::Store, project: &str, item: &str) -> bool {
+    let Ok(parsed) = ItemRef::parse(item) else {
+        return false;
+    };
+    match parsed {
+        ItemRef::Phase { roadmap, stem } => {
+            rdm_core::io::load_phase(store, project, &roadmap, &stem)
+                .map(|d| d.frontmatter.status == rdm_core::model::PhaseStatus::Done)
+                .unwrap_or(false)
+        }
+        ItemRef::Task { slug } => rdm_core::io::load_task(store, project, &slug)
+            .map(|d| d.frontmatter.status == rdm_core::model::TaskStatus::Done)
+            .unwrap_or(false),
+        ItemRef::Roadmap { roadmap } => {
+            match rdm_core::ops::phase::list_phases(store, project, &roadmap) {
+                Ok(phases) => {
+                    let statuses: Vec<_> =
+                        phases.iter().map(|(_, d)| d.frontmatter.status).collect();
+                    rdm_core::ops::roadmap::computed_status(&statuses)
+                        == rdm_core::ops::roadmap::RoadmapStatus::Done
+                }
+                Err(_) => false,
+            }
+        }
+    }
+}
+
+/// Removes every rdm worktree whose plan item is already `done`, in one pass.
+///
+/// Enumerates [`list`], keeps only worktrees whose `item` resolves to a `done`
+/// status against the plan `store` (via the private `item_is_done` helper), and for each such
+/// candidate: skips it as [`PruneAction::SkippedDirty`] if it is dirty and
+/// `opts.force` is unset; records [`PruneAction::WouldRemove`] without touching
+/// it when `opts.dry_run` is set; otherwise [`remove`]s it (honoring
+/// `opts.delete_branch` / `opts.force`) and maps the outcome to
+/// [`PruneAction::Removed`] or [`PruneAction::Failed`]. Non-done worktrees are
+/// not candidates and are omitted from the returned vector entirely.
+///
+/// A single worktree's removal failure is captured in its [`PruneResult`]
+/// rather than aborting the whole batch.
+///
+/// # Errors
+///
+/// Returns [`WorktreeError::Git`] if `git worktree list` fails, or
+/// [`WorktreeError::GitMissing`] if `git` is not installed.
+pub fn prune(
+    repo_root: &Path,
+    store: &impl rdm_core::store::Store,
+    project: &str,
+    opts: PruneOptions,
+) -> Result<Vec<PruneResult>> {
+    let worktrees = list(repo_root)?;
+    let mut results = Vec::new();
+    for wt in worktrees {
+        if !item_is_done(store, project, &wt.item) {
+            continue;
+        }
+        let action = if wt.dirty && !opts.force {
+            PruneAction::SkippedDirty
+        } else if opts.dry_run {
+            PruneAction::WouldRemove
+        } else {
+            match remove(
+                repo_root,
+                &wt.item,
+                RemoveOptions {
+                    force: opts.force,
+                    delete_branch: opts.delete_branch,
+                },
+            ) {
+                Ok(()) => PruneAction::Removed,
+                Err(e) => PruneAction::Failed(e.to_string()),
+            }
+        };
+        results.push(PruneResult {
+            item: wt.item,
+            branch: wt.branch,
+            path: wt.path,
+            action,
+        });
+    }
+    Ok(results)
+}
+
 /// Discovers the project repo's **main** working tree from `cwd`.
 ///
 /// Runs `git rev-parse --show-toplevel` to confirm `cwd` is inside a working
@@ -1056,6 +1186,321 @@ mod tests {
             resolve_target(&store, "proj", "my-roadmap/99"),
             "my-roadmap/99"
         );
+    }
+
+    // ---------- prune ----------
+
+    fn git_available() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Builds a plan store with `my-roadmap` carrying a done phase (number 1,
+    /// stem `phase-1-done-phase`) and an open phase (number 2, stem
+    /// `phase-2-open-phase`), plus a project git repo (nested under a tempdir so
+    /// its sibling `__worktrees` dir is cleaned up). Returns
+    /// `(plan_dir, repo_root, store, repo_parent)`; keep both tempdirs alive.
+    fn prune_fixture() -> (
+        tempfile::TempDir,
+        PathBuf,
+        rdm_store_fs::FsStore,
+        tempfile::TempDir,
+    ) {
+        let plan_dir = tempfile::tempdir().unwrap();
+        let mut store = rdm_store_fs::FsStore::new(plan_dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "proj", "Proj").unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            "proj",
+            "my-roadmap",
+            "My Roadmap",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "proj",
+            "my-roadmap",
+            "done-phase",
+            "Done Phase",
+            Some(1),
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "proj",
+            "my-roadmap",
+            "open-phase",
+            "Open Phase",
+            Some(2),
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::update_phase(
+            &mut store,
+            "proj",
+            "my-roadmap",
+            "phase-1-done-phase",
+            Some(rdm_core::model::PhaseStatus::Done),
+            rdm_core::ops::update::TagsUpdate::Keep,
+            rdm_core::ops::update::BodyUpdate::Keep,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let repo_parent = tempfile::tempdir().unwrap();
+        let repo = repo_parent.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        run_git(&repo, &["init", "-b", "main"]);
+        std::fs::write(repo.join("README.md"), "# project").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+
+        (plan_dir, repo, store, repo_parent)
+    }
+
+    fn done_item() -> ItemRef {
+        ItemRef::Phase {
+            roadmap: "my-roadmap".to_string(),
+            stem: "phase-1-done-phase".to_string(),
+        }
+    }
+
+    fn open_item() -> ItemRef {
+        ItemRef::Phase {
+            roadmap: "my-roadmap".to_string(),
+            stem: "phase-2-open-phase".to_string(),
+        }
+    }
+
+    #[test]
+    fn prune_removes_done_keeps_open() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, store, _parent) = prune_fixture();
+        let done = done_item();
+        let open = open_item();
+        add(&repo, &done, &done.branch_name(), None).unwrap();
+        add(&repo, &open, &open.branch_name(), None).unwrap();
+
+        let results = prune(&repo, &store, "proj", PruneOptions::default()).unwrap();
+        // Only the done worktree is a candidate, and it was removed.
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].item, done.canonical());
+        assert_eq!(results[0].action, PruneAction::Removed);
+
+        // The open worktree survives; the done one is gone.
+        let remaining = list(&repo).unwrap();
+        let items: Vec<&str> = remaining.iter().map(|w| w.item.as_str()).collect();
+        assert!(items.contains(&open.canonical().as_str()));
+        assert!(!items.contains(&done.canonical().as_str()));
+    }
+
+    #[test]
+    fn prune_skips_dirty_done_without_force() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, store, _parent) = prune_fixture();
+        let done = done_item();
+        let info = add(&repo, &done, &done.branch_name(), None).unwrap();
+        std::fs::write(info.path.join("scratch.txt"), "wip").unwrap();
+
+        let results = prune(&repo, &store, "proj", PruneOptions::default()).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action, PruneAction::SkippedDirty);
+        // Still present.
+        assert_eq!(list(&repo).unwrap().len(), 1);
+
+        // With --force it is removed.
+        let results = prune(
+            &repo,
+            &store,
+            "proj",
+            PruneOptions {
+                force: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results[0].action, PruneAction::Removed);
+        assert!(list(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn prune_dry_run_removes_nothing() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, store, _parent) = prune_fixture();
+        let done = done_item();
+        add(&repo, &done, &done.branch_name(), None).unwrap();
+
+        let results = prune(
+            &repo,
+            &store,
+            "proj",
+            PruneOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action, PruneAction::WouldRemove);
+        // Nothing was actually removed.
+        assert_eq!(list(&repo).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn prune_resolves_roadmap_and_task_arms() {
+        if !git_available() {
+            return;
+        }
+        // The shipping model is one worktree per roadmap (ItemRef::Roadmap) plus
+        // per-task worktrees (ItemRef::Task), so exercise those resolver arms of
+        // `item_is_done` end-to-end through `prune` — not just the Phase arm.
+        let (_plan, repo, mut store, _parent) = prune_fixture();
+
+        // A second roadmap whose only phase is done → roadmap resolves to Done.
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            "proj",
+            "done-roadmap",
+            "Done Roadmap",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            "proj",
+            "done-roadmap",
+            "only",
+            "Only Phase",
+            Some(1),
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::phase::update_phase(
+            &mut store,
+            "proj",
+            "done-roadmap",
+            "phase-1-only",
+            Some(rdm_core::model::PhaseStatus::Done),
+            rdm_core::ops::update::TagsUpdate::Keep,
+            rdm_core::ops::update::BodyUpdate::Keep,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // A done task and an open task.
+        rdm_core::ops::task::create_task(
+            &mut store,
+            "proj",
+            "done-task",
+            "Done Task",
+            rdm_core::model::Priority::Medium,
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::task::update_task(
+            &mut store,
+            "proj",
+            "done-task",
+            Some(rdm_core::model::TaskStatus::Done),
+            None,
+            rdm_core::ops::update::TagsUpdate::Keep,
+            rdm_core::ops::update::BodyUpdate::Keep,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        rdm_core::ops::task::create_task(
+            &mut store,
+            "proj",
+            "open-task",
+            "Open Task",
+            rdm_core::model::Priority::Medium,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Worktrees: a done & a not-done roadmap, a done & an open task.
+        // `my-roadmap` (from the fixture) has one done + one open phase → not done.
+        let done_rm = ItemRef::Roadmap {
+            roadmap: "done-roadmap".to_string(),
+        };
+        let open_rm = ItemRef::Roadmap {
+            roadmap: "my-roadmap".to_string(),
+        };
+        let done_tk = ItemRef::Task {
+            slug: "done-task".to_string(),
+        };
+        let open_tk = ItemRef::Task {
+            slug: "open-task".to_string(),
+        };
+        for item in [&done_rm, &open_rm, &done_tk, &open_tk] {
+            add(&repo, item, &item.branch_name(), None).unwrap();
+        }
+
+        let results = prune(&repo, &store, "proj", PruneOptions::default()).unwrap();
+        let removed: Vec<&str> = results
+            .iter()
+            .filter(|r| r.action == PruneAction::Removed)
+            .map(|r| r.item.as_str())
+            .collect();
+        // Only the done roadmap and done task are candidates, and both removed.
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&"done-roadmap"));
+        assert!(removed.contains(&"task/done-task"));
+
+        // The not-done roadmap and open task survive.
+        let remaining = list(&repo).unwrap();
+        let items: Vec<&str> = remaining.iter().map(|w| w.item.as_str()).collect();
+        assert!(items.contains(&"my-roadmap"));
+        assert!(items.contains(&"task/open-task"));
+        assert!(!items.contains(&"done-roadmap"));
+        assert!(!items.contains(&"task/done-task"));
     }
 
     #[test]

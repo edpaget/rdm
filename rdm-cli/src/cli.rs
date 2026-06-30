@@ -816,6 +816,26 @@ pub(crate) enum WorktreeCommand {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Remove every worktree whose plan item is already `done`, in one pass.
+    ///
+    /// Enumerates rdm-managed worktrees, keeps only those whose item resolves to
+    /// a `done` status, and removes them. Dirty worktrees are skipped unless
+    /// `--force`; `--delete-branch` also deletes each pruned branch; `--dry-run`
+    /// reports what would be removed without removing anything.
+    Prune {
+        /// Project to resolve worktree items against.
+        #[arg(long)]
+        project: Option<String>,
+        /// Also delete each pruned worktree's branch.
+        #[arg(long)]
+        delete_branch: bool,
+        /// Prune even dirty worktrees (and force-delete their branches).
+        #[arg(long)]
+        force: bool,
+        /// Report what would be pruned without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]

@@ -369,6 +369,75 @@ fn remove_by_phase_number() {
 }
 
 #[test]
+fn prune_removes_done_keeps_open() {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    // Add a second phase and mark phase 1 done.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "create",
+            "bar",
+            "--title",
+            "Phase Two",
+            "--number",
+            "2",
+            "--no-edit",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-foo",
+            "--status",
+            "done",
+            "--no-edit",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // Stand up a worktree for each phase.
+    worktree_cmd(&plan, &project)
+        .args(["add", "my-roadmap/phase-1-foo", "--project", "demo"])
+        .assert()
+        .success();
+    worktree_cmd(&plan, &project)
+        .args(["add", "my-roadmap/phase-2-bar", "--project", "demo"])
+        .assert()
+        .success();
+
+    // Batch prune removes only the done phase's worktree.
+    worktree_cmd(&plan, &project)
+        .args(["prune", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("phase-1-foo"));
+
+    // The done one is gone; the open one remains.
+    worktree_cmd(&plan, &project)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("phase-2-bar"))
+        .stdout(predicate::str::contains("phase-1-foo").not());
+}
+
+#[test]
 fn not_a_git_repo_errors() {
     let plan = init_plan_repo();
     // A non-git directory as CWD.

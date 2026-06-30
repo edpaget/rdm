@@ -27,7 +27,7 @@ This skill is non-interactive. Launch unattended runs with `--permission-mode au
 
 - `--max-phases N` — bounded run: dispatch at most `N` phases this pass, then stop and summarize. Use it to take a roadmap a few phases at a time.
 - `--plan-only` — dry-run the planning half: for each phase run `rdm-dispatch-phase` only through its **plan gate**, then stop before implementation. Cheap plan vetting across the roadmap without writing code.
-- `--land` — opt-in. After the roadmap reaches `reviewed`, invoke `rdm-land` (the landing skill, phase 7 — a future skill) to land the work. **Default OFF**: without `--land`, autopilot never touches `main`; it leaves every reviewed phase on the `roadmap/<slug>` branch for a human to land.
+- `--land` — opt-in. After the roadmap reaches `reviewed`, invoke the `rdm-land` skill to land the work to `main` with linear history (rebase + `merge --ff-only`). **Default OFF**: without `--land`, autopilot never touches `main`; it leaves every reviewed phase on the `roadmap/<slug>` branch for a human to land.
 
 ## Loop
 
