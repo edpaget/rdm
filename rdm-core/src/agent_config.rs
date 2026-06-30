@@ -2358,6 +2358,8 @@ mod tests {
         assert!(script.contains("stop_hook_active"));
         assert!(script.contains("needs-review"));
         assert!(script.contains("rdm review pending"));
+        // Refreshes stale stamps before checking scope.
+        assert!(script.contains("rdm review restamp"));
         // Generalized: no dev-binary path and no hard-coded project.
         assert!(
             !script.contains("--project"),
@@ -2469,6 +2471,9 @@ mod tests {
         assert!(script.contains("pi.exec"));
         assert!(script.contains("sendUserMessage"));
         assert!(script.contains("export default"));
+        // Refreshes stale stamps before checking scope.
+        assert!(script.contains("review"));
+        assert!(script.contains("restamp"));
         // Generalized: no dev-binary path and no hard-coded project.
         assert!(
             !script.contains("--project"),

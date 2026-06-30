@@ -47,11 +47,20 @@ export default function (pi) {
   pi.on("agent_end", async (event, ctx) => {
     let pending = [];
     try {
+      // Refresh any stale stamp first (fail-open): re-point review_sha/review_branch at
+      // the current HEAD/branch so a commit amended or rebased while an item is still
+      // needs-review doesn't go stale and silently drop out of scope. Idempotent, so
+      // running it on every agent_end is cheap. Mirrors the shell hook.
+      try {
+        await pi.exec("rdm", ["review", "restamp"], { timeout: 30000 });
+      } catch (_) {
+        // Fail open: a restamp error must never block the pending check below.
+      }
       // `rdm review pending` returns the needs-review phases AND tasks in scope for the
-      // current source-repo branch (stamped-and-reachable, or unstamped/fail-open). It is
-      // the single shared source of truth for the hook, this extension, and the rdm-review
-      // skill, so a session finishing one branch is never reprompted to review work
-      // finalized on another. This mirrors the shell hook.
+      // current source-repo branch (branch-identity, with a SHA-reachability fallback for
+      // legacy/unstamped items). It is the single shared source of truth for the hook,
+      // this extension, and the rdm-review skill, so a session finishing one branch is
+      // never reprompted to review work finalized on another. This mirrors the shell hook.
       const result = await pi.exec(
         "rdm",
         ["review", "pending", "--format", "json"],

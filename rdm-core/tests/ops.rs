@@ -962,6 +962,55 @@ fn update_phase_leaving_needs_review_clears_review_sha() {
 }
 
 #[test]
+fn update_phase_already_needs_review_restamps_on_reapply() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+    // Initial finalize stamps sha1 / branch-a.
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::NeedsReview),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        Some("sha1".to_string()),
+        Some("branch-a".to_string()),
+    )
+    .unwrap();
+    // Re-applying NeedsReview while already in that status OVERWRITES the
+    // stamp — this is the refresh path rdm review restamp depends on.
+    let updated = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::NeedsReview),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        Some("sha2".to_string()),
+        Some("branch-b".to_string()),
+    )
+    .unwrap();
+    assert_eq!(updated.frontmatter.review_sha, Some("sha2".to_string()));
+    assert_eq!(
+        updated.frontmatter.review_branch,
+        Some("branch-b".to_string())
+    );
+    let loaded = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    assert_eq!(loaded.frontmatter.review_sha, Some("sha2".to_string()));
+    assert_eq!(
+        loaded.frontmatter.review_branch,
+        Some("branch-b".to_string())
+    );
+}
+
+#[test]
 fn update_phase_status_none_preserves_review_sha() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
@@ -2252,6 +2301,59 @@ fn update_task_leaving_needs_review_clears_review_sha() {
     )
     .unwrap();
     assert_eq!(updated.frontmatter.review_sha, None);
+}
+
+#[test]
+fn update_task_already_needs_review_restamps_on_reapply() {
+    let mut store = setup_with_project();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        "Fix",
+        Priority::Low,
+        None,
+        None,
+    )
+    .unwrap();
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::NeedsReview),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        Some("sha1".to_string()),
+        Some("branch-a".to_string()),
+    )
+    .unwrap();
+    // Re-applying NeedsReview overwrites the stamp (the restamp refresh path).
+    let updated = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::NeedsReview),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        Some("sha2".to_string()),
+        Some("branch-b".to_string()),
+    )
+    .unwrap();
+    assert_eq!(updated.frontmatter.review_sha, Some("sha2".to_string()));
+    assert_eq!(
+        updated.frontmatter.review_branch,
+        Some("branch-b".to_string())
+    );
+    let loaded = rdm_core::io::load_task(&store, "fbm", "fix-bug").unwrap();
+    assert_eq!(loaded.frontmatter.review_sha, Some("sha2".to_string()));
+    assert_eq!(
+        loaded.frontmatter.review_branch,
+        Some("branch-b".to_string())
+    );
 }
 
 #[test]

@@ -93,6 +93,13 @@ pending_json() (
     RDM_ROOT="$PLAN" RDM_PROJECT="verify" "$RDM_BIN" review pending --format json
 )
 
+# Convenience: `rdm review restamp --format json` from a given cwd, plan/project
+# resolved via env exactly as the host triggers resolve them.
+restamp_json() (
+    cd "$1"
+    RDM_ROOT="$PLAN" RDM_PROJECT="verify" "$RDM_BIN" review restamp --format json
+)
+
 # Convenience: the real Stop hook template from a given cwd, fed a fresh-stop
 # payload, with rdm on PATH and plan/project resolved via env.
 run_stop_hook() (
@@ -354,6 +361,52 @@ printf '%s' "$PENDING_GONE" | grep -q '"identifier"' &&
         fail "D: main must stay silent after branch removal"
     }
 ok "D: after worktree+branch removal, review pending from main exits cleanly and silent"
+
+# ============================================================================
+# Case E: amend-after-finalize restamp.
+#
+# Amending (or rebasing) the implementation commit while an item is still
+# needs-review orphans the stamped review_sha. `rdm review restamp` — which the
+# Stop hook runs fail-open before every scope check — re-points the stamp at the
+# new HEAD so the item stays in scope. We use the still-live beta worktree.
+# ============================================================================
+say "Case E: amend after finalize → restamp refreshes the stamp, hook still blocks"
+
+SHA_BEFORE=$(cd "$WT_BETA" && git rev-parse HEAD)
+# Amend the implementation commit while beta/phase-1-work is still needs-review.
+(cd "$WT_BETA" && git commit --quiet --amend --allow-empty -m "feat: beta phase 1 work (amended)")
+SHA_AFTER=$(cd "$WT_BETA" && git rev-parse HEAD)
+[ "$SHA_BEFORE" != "$SHA_AFTER" ] || fail "E: amend must move HEAD"
+
+# Explicit restamp refreshes beta's stamp to the new HEAD (JSON exposes "sha").
+RESTAMP_E=$(restamp_json "$WT_BETA")
+printf '%s' "$RESTAMP_E" | grep -q '"identifier": "beta/phase-1-work"' ||
+    {
+        printf '%s\n' "$RESTAMP_E" >&2
+        fail "E: restamp must report beta/phase-1-work as refreshed"
+    }
+printf '%s' "$RESTAMP_E" | grep -q "\"sha\": \"$SHA_AFTER\"" ||
+    {
+        printf '%s\n' "$RESTAMP_E" >&2
+        fail "E: restamp must re-point the stamp at the amended HEAD ($SHA_AFTER)"
+    }
+
+# Idempotent: a second restamp with no intervening commit is a no-op.
+RESTAMP_E2=$(restamp_json "$WT_BETA")
+printf '%s' "$RESTAMP_E2" | grep -q '"identifier"' &&
+    {
+        printf '%s\n' "$RESTAMP_E2" >&2
+        fail "E: second restamp must be a no-op (idempotent)"
+    }
+
+# End-to-end: the real Stop hook (restamp + pending) still blocks post-amend.
+HOOK_E=$(run_stop_hook "$WT_BETA")
+printf '%s' "$HOOK_E" | grep -q '"decision":"block"' ||
+    {
+        printf '%s\n' "$HOOK_E" >&2
+        fail "E: Stop hook must still block from beta worktree after amend"
+    }
+ok "E: amend → restamp refreshes to new HEAD, idempotent, hook still blocks"
 
 # ----------------------------------------------------------------------------
 # Done.

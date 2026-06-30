@@ -430,6 +430,321 @@ fn pending_excludes_legacy_item_whose_sha_is_unreachable() {
     );
 }
 
+/// Returns the current HEAD SHA of the git repo at `dir`.
+fn head_sha(dir: &Path) -> String {
+    let out = git(dir, &["rev-parse", "HEAD"]);
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Runs `rdm review restamp --format json` with CWD set to `cwd` (which
+/// determines the source-repo HEAD/branch used to refresh stamps) and returns
+/// the parsed array of restamped entries.
+fn restamp_entries(plan: &TempDir, cwd: &Path) -> Vec<Value> {
+    let output = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(cwd)
+        .args(["review", "restamp", "--project", "demo", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    json.as_array().unwrap().clone()
+}
+
+/// Runs `rdm review restamp` (default text format) with CWD set to `cwd` and
+/// returns the raw stdout.
+fn restamp_text(plan: &TempDir, cwd: &Path) -> String {
+    let output = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(cwd)
+        .args(["review", "restamp", "--project", "demo"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(output).unwrap()
+}
+
+/// Returns the stamped branch for a single pending item identifier, or `None`
+/// if the item is absent or carries a null branch.
+fn pending_branch(plan: &TempDir, cwd: &Path, identifier: &str) -> Option<String> {
+    let output = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(cwd)
+        .args(["review", "pending", "--project", "demo", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    json.as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["identifier"] == identifier)
+        .and_then(|i| i["branch"].as_str().map(str::to_string))
+}
+
+#[test]
+fn restamp_refreshes_stale_review_sha_after_amend() {
+    // Finalize a phase on branch-a (stamps sha1), then amend the commit so HEAD
+    // moves to sha2. `rdm review restamp` must refresh the stamp to the new HEAD.
+    let plan = init_plan_repo();
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "branch-a"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work"]);
+
+    finalize_phase(&plan, src.path(), "roadmap-z", "phase-1-build");
+    let sha1 = head_sha(src.path());
+
+    // Amend the implementation commit while the phase is still needs-review.
+    fs::write(src.path().join("more.txt"), "more").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "--amend", "-m", "work amended"]);
+    let sha2 = head_sha(src.path());
+    assert_ne!(sha1, sha2, "amend must move HEAD");
+
+    let entries = restamp_entries(&plan, src.path());
+    let entry = entries
+        .iter()
+        .find(|e| e["identifier"] == "roadmap-z/phase-1-build")
+        .expect("phase must be restamped");
+    assert_eq!(entry["sha"], sha2, "stamp must refresh to the new HEAD");
+    assert_eq!(entry["branch"], "branch-a");
+}
+
+#[test]
+fn restamp_is_idempotent_when_nothing_changed() {
+    // A second restamp with no intervening commit must report nothing (no
+    // spurious plan-repo writes / commit churn).
+    let plan = init_plan_repo();
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "branch-a"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work"]);
+
+    finalize_phase(&plan, src.path(), "roadmap-z", "phase-1-build");
+
+    // First restamp may or may not change anything (the finalize already stamped
+    // the current HEAD/branch); the SECOND restamp must be a no-op.
+    let _ = restamp_entries(&plan, src.path());
+    let entries = restamp_entries(&plan, src.path());
+    assert!(
+        entries.is_empty(),
+        "restamp with no intervening commit must be a no-op: {entries:?}"
+    );
+}
+
+#[test]
+fn restamp_upgrades_legacy_detached_item_with_branch_stamp() {
+    // An item finalized at a detached HEAD carries no review_branch (a legacy /
+    // fallback-only item). Restamping from the branch whose tip it sits on must
+    // upgrade it with a branch stamp, which then survives a later amend.
+    let plan = init_plan_repo();
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "branch-a"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work"]);
+
+    // Finalize at a detached HEAD on branch-a's tip: review_branch = None.
+    git(src.path(), &["checkout", "--detach"]);
+    finalize_task(&plan, src.path(), "item-x");
+    assert!(
+        pending_branch(&plan, src.path(), "item-x").is_none(),
+        "detached finalize must leave review_branch null"
+    );
+
+    // From branch-a (item in scope via SHA reachability), restamp upgrades it.
+    git(src.path(), &["checkout", "branch-a"]);
+    let entries = restamp_entries(&plan, src.path());
+    let entry = entries
+        .iter()
+        .find(|e| e["identifier"] == "item-x")
+        .expect("legacy item must be restamped");
+    assert_eq!(entry["branch"], "branch-a");
+    assert_eq!(
+        pending_branch(&plan, src.path(), "item-x").as_deref(),
+        Some("branch-a"),
+        "item must now carry a branch stamp"
+    );
+
+    // The branch stamp now protects the item across an amend (branch identity,
+    // not SHA reachability) — closing the original staleness gap.
+    fs::write(src.path().join("more.txt"), "more").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "--amend", "-m", "work amended"]);
+    let ids = pending_ids(&plan, src.path());
+    assert!(
+        ids.contains(&"item-x".to_string()),
+        "branch-stamped item must survive an amend: {ids:?}"
+    );
+}
+
+#[test]
+fn restamp_never_touches_out_of_scope_items() {
+    // Restamping from branch-a must never touch an item stamped for branch-b
+    // (roadmap isolation), mirroring the pending-scoping guarantee.
+    let plan = init_plan_repo();
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "main"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "initial"]);
+
+    git(src.path(), &["checkout", "-b", "branch-a"]);
+    fs::write(src.path().join("a.txt"), "a").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work on a"]);
+
+    git(src.path(), &["checkout", "main"]);
+    git(src.path(), &["checkout", "-b", "branch-b"]);
+    fs::write(src.path().join("b.txt"), "b").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work on b"]);
+
+    // roadmap-z/phase-1-build finalized on branch-b; item-x finalized on branch-a.
+    git(src.path(), &["checkout", "branch-b"]);
+    finalize_phase(&plan, src.path(), "roadmap-z", "phase-1-build");
+    git(src.path(), &["checkout", "branch-a"]);
+    finalize_task(&plan, src.path(), "item-x");
+
+    // Make item-x genuinely STALE: an extra commit on branch-a after finalizing
+    // it, so restamp actually refreshes it (otherwise the idempotency guard would
+    // skip it and the test would pass vacuously with an empty output for BOTH).
+    fs::write(src.path().join("a2.txt"), "a2").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "more on a"]);
+
+    // Restamp from branch-a: item-x is in scope and stale → refreshed; the
+    // branch-b phase is out of scope → never touched. Proves real isolation:
+    // one side touched, the other not.
+    let entries = restamp_entries(&plan, src.path());
+    let ids: Vec<&str> = entries
+        .iter()
+        .map(|e| e["identifier"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&"item-x"),
+        "in-scope stale item-x must be restamped: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"roadmap-z/phase-1-build"),
+        "out-of-scope branch-b phase must never be restamped from branch-a: {ids:?}"
+    );
+}
+
+#[test]
+fn restamp_from_detached_head_preserves_branch_stamp() {
+    // Regression: restamp from a detached HEAD (unresolvable branch) whose HEAD is
+    // still SHA-reachable from the item's stamp must NOT downgrade an already
+    // branch-stamped item to review_branch = None. Otherwise a sibling branch
+    // sharing history would pick it up via the SHA-reachability fallback — the
+    // exact cross-branch leakage branch-identity scoping exists to prevent.
+    let plan = init_plan_repo();
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "branch-a"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work"]);
+
+    // Finalize item-x on branch-a (resolvable) → stamps review_branch = branch-a.
+    finalize_task(&plan, src.path(), "item-x");
+    assert_eq!(
+        pending_branch(&plan, src.path(), "item-x").as_deref(),
+        Some("branch-a"),
+        "finalize on branch-a must stamp branch-a"
+    );
+
+    // Detach HEAD at that same commit and restamp. The branch stamp must survive.
+    git(src.path(), &["checkout", "--detach"]);
+    let _ = restamp_entries(&plan, src.path());
+    assert_eq!(
+        pending_branch(&plan, src.path(), "item-x").as_deref(),
+        Some("branch-a"),
+        "detached restamp must NOT downgrade the branch stamp to null"
+    );
+
+    // A sibling branch created from the same commit must NOT see item-x via
+    // pending — branch identity (branch-a) still excludes it from branch-c.
+    git(src.path(), &["checkout", "-b", "branch-c"]);
+    let ids = pending_ids(&plan, src.path());
+    assert!(
+        !ids.contains(&"item-x".to_string()),
+        "sibling branch-c must not pick up branch-a's item: {ids:?}"
+    );
+}
+
+#[test]
+fn restamp_fails_open_when_head_unresolvable() {
+    // Run restamp from a non-git directory (HEAD unresolvable): it must exit 0
+    // and report nothing, pinning the advertised fail-open contract for the hook.
+    let plan = init_plan_repo();
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "branch-a"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work"]);
+    finalize_task(&plan, src.path(), "item-x");
+
+    // A non-git CWD: head_commit_info_at returns None → restamp is a no-op.
+    let nongit = TempDir::new().unwrap();
+    let entries = restamp_entries(&plan, nongit.path());
+    assert!(
+        entries.is_empty(),
+        "restamp from a non-git dir must restamp nothing: {entries:?}"
+    );
+    // Text format confirms the human-readable no-op message and exit 0.
+    let text = restamp_text(&plan, nongit.path());
+    assert!(
+        text.contains("Nothing to restamp."),
+        "fail-open restamp must report nothing: {text:?}"
+    );
+}
+
+#[test]
+fn restamp_text_format_reports_noop_and_refresh() {
+    // The human-readable output: "Nothing to restamp." on a no-op, and a
+    // "restamped <kind> <identifier> -> <sha>" line after a genuine refresh.
+    let plan = init_plan_repo();
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "branch-a"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "work"]);
+
+    finalize_task(&plan, src.path(), "item-x");
+
+    // No-op: finalize already stamped the current HEAD/branch (drain any change
+    // first), so the next call reports nothing.
+    let _ = restamp_text(&plan, src.path());
+    let noop = restamp_text(&plan, src.path());
+    assert!(
+        noop.contains("Nothing to restamp."),
+        "no-op restamp must print the nothing message: {noop:?}"
+    );
+
+    // Genuine refresh: amend so HEAD moves, then the line names the item + sha.
+    fs::write(src.path().join("more.txt"), "more").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "--amend", "-m", "work amended"]);
+    let sha = head_sha(src.path());
+    let refreshed = restamp_text(&plan, src.path());
+    assert!(
+        refreshed.contains(&format!("restamped task item-x -> {sha}")),
+        "refresh must print the restamped line with the new sha: {refreshed:?}"
+    );
+}
+
 #[test]
 fn pending_keeps_branch_stamped_items_when_branch_unresolvable() {
     // When the firing checkout has no resolvable branch (here: a non-git CWD, the

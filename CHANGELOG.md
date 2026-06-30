@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm review restamp` refreshes `review_sha`/`review_branch` on every in-scope
+  `needs-review` item to the current source-repo HEAD and branch. Run it after
+  amending or rebasing a commit while an item is still `needs-review`: the
+  original stamp would otherwise point at a now-dangling commit and the item
+  could silently drop out of `rdm review pending` scope (via the
+  SHA-reachability fallback), suppressing the auto-review reprompt. Scope
+  matches `review pending` exactly, and it is idempotent (items already stamped
+  at the current HEAD/branch are left untouched). The Claude Stop hook, the Pi
+  `agent_end` extension, the generated `hook-review-on-finalize.sh` template,
+  and the shipped `.claude/hooks/rdm-review-on-finalize.sh` now call it
+  automatically before checking `review pending`, so this self-heals
+  transparently in the normal finalize → review loop.
+
 - `rdm worktree prune` removes every worktree whose plan item is already `done`
   in one command. Resolves each rdm-managed worktree's item status (phase, task,
   or whole roadmap) and removes the done ones; dirty worktrees are skipped unless

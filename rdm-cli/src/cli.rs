@@ -746,13 +746,34 @@ pub(crate) enum HookCommand {
 #[derive(Subcommand)]
 pub(crate) enum ReviewCommand {
     /// List items in `needs-review` that are in scope for the current
-    /// source-repo HEAD.
+    /// source-repo checkout.
     ///
-    /// An item is in scope when its stamped source-repo SHA is reachable from
-    /// the current HEAD, or when it carries no stamp (legacy / finalized before
-    /// a commit existed — these fail open). This is the shared source of truth
-    /// for the review Stop hook and the `rdm-review` skill.
+    /// Scope is decided by *branch identity* first: an item is in scope when its
+    /// stamped `review_branch` equals the current checkout's branch (keeping
+    /// roadmaps exactly isolated). When the item carries no branch stamp
+    /// (legacy / pre-stamp) or the current checkout has no resolvable branch
+    /// (detached HEAD, a non-repo cwd, or git unavailable), it falls back to SHA
+    /// reachability — keeping items whose stamped `review_sha` is reachable from
+    /// HEAD, and failing open on any git error so work is never silently hidden.
+    /// This is the shared source of truth for the review Stop hook and the
+    /// `rdm-review` skill.
     Pending {
+        /// Project to inspect.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Refresh `review_sha`/`review_branch` on every in-scope `needs-review`
+    /// item to the current source-repo HEAD and branch.
+    ///
+    /// Run this after amending or rebasing a commit while an item is still
+    /// `needs-review`: the original stamp would otherwise point at a now-dangling
+    /// commit and the item could silently drop out of [`Pending`](Self::Pending)
+    /// scope (via the SHA-reachability fallback). Scope matches `review pending`
+    /// exactly, so it only ever touches items this checkout already owns. It is
+    /// idempotent — items already stamped at the current HEAD/branch are left
+    /// untouched (no plan-repo write). The review Stop hook calls this
+    /// automatically before checking scope, so it normally runs transparently.
+    Restamp {
         /// Project to inspect.
         #[arg(long)]
         project: Option<String>,

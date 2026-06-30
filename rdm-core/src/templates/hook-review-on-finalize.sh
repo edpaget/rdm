@@ -5,12 +5,18 @@
 # rdm-review moves the item to `reviewed` (or any other status), the next stop finds
 # nothing pending and is allowed. `stop_hook_active` short-circuits the reprompt loop.
 #
-# Scope: `rdm review pending` only reports items whose stamped source-repo SHA is
-# reachable from the current HEAD (or that are unstamped — those fail open). This
-# keeps a session finishing branch A from being reprompted to review an item that
-# was finalized on branch B, whose diff isn't even checked out here. It is the
-# single shared source of truth for "what is in scope to review" — the rdm-review
-# skill consults the same command.
+# Scope: `rdm review pending` reports the needs-review items in scope for this
+# checkout — by branch identity (the item's stamped `review_branch` equals the
+# current branch), falling back to SHA reachability for legacy/unstamped items or
+# an unresolvable branch (fail open). This keeps a session finishing branch A from
+# being reprompted to review an item finalized on branch B, whose diff isn't even
+# checked out here. It is the single shared source of truth for "what is in scope
+# to review" — the rdm-review skill consults the same command.
+#
+# Stale-stamp refresh: `rdm review restamp` runs first (fail-open) so that a commit
+# amended or rebased while an item is still needs-review re-points its stamp at the
+# current HEAD/branch instead of going stale and silently dropping out of scope. It
+# is idempotent (no-op when nothing moved), so calling it every turn is cheap.
 #
 # One-worktree-per-roadmap model: this hook fires from the roadmap worktree's cwd
 # while it sits on the `roadmap/<slug>` branch. Every phase of the roadmap is
@@ -47,6 +53,10 @@ input=$(cat)
 if printf '%s' "$input" | grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true'; then
     exit 0
 fi
+
+# Refresh any stale stamp first (fail-open): re-point review_sha/review_branch at the
+# current HEAD/branch so an amended/rebased commit doesn't drop the item out of scope.
+rdm review restamp >/dev/null 2>&1 || true
 
 # `rdm review pending` returns the needs-review phases AND tasks that are in scope for
 # the current source-repo branch (stamped-and-reachable, or unstamped/fail-open). It is

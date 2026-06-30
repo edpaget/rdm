@@ -136,6 +136,11 @@ pub fn create_phase(
 /// The `review_branch` parameter mirrors `review_sha`: the branch name of the
 /// checkout that produced the review, stamped and cleared in lockstep so
 /// `review pending` can scope by branch identity.
+/// Re-applying [`PhaseStatus::NeedsReview`] while the phase is already in that
+/// status re-stamps `review_sha`/`review_branch` to the newly provided values
+/// (rather than preserving the existing ones the way `status: None` does) —
+/// this is the refresh path `rdm review restamp` uses to keep a stamp from
+/// going stale after a commit is amended or rebased mid-review.
 /// When `tags`/`body` are `Keep`, the existing values are preserved; otherwise
 /// see [`TagsUpdate`] and [`BodyUpdate`].
 ///

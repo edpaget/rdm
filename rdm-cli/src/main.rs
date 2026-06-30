@@ -220,7 +220,14 @@ fn run() -> Result<()> {
         #[cfg(feature = "git")]
         Command::Review { command } => {
             let mut store = commands::make_store(&root, staging)?;
-            commands::review::run(command, &mut store, &repo_config, format)?;
+            commands::review::run(
+                command,
+                &mut store,
+                &repo_config,
+                format,
+                cli.no_index,
+                staging,
+            )?;
         }
 
         Command::List { project, all } => {
