@@ -103,11 +103,11 @@ For each finding, state how it was handled (fixed-inline / filed-as-task `<slug>
 
 This skill owns the `needs-review` → `reviewed` gate.
 
-- **Pass** (clean, or clean after small fixes): set the item to `reviewed`, then amend a `Done:` line into the branch commit so the merge-to-main hook flips it to `done` later.
+- **Pass** (clean, or clean after small fixes): set the item to `reviewed`, then amend a `Done:` line into the branch commit — this completes the deferred `Done:` directive from the rdm-do (or rdm-dispatch-phase) finalize step, not a contradiction of it — so the merge-to-main hook flips it to `done` later.
   ```bash
   rdm phase update <phase> --status reviewed --no-edit --roadmap <slug> {proj_flag}
   # or: rdm task update <slug> --status reviewed --no-edit {proj_flag}
-  git commit --amend   # add the Done: line to the branch commit message
+  git commit --amend   # add the Done: line (completing the finalize step's deferred directive)
   ```
   The `Done:` line is `Done: <roadmap-slug>/<phase-stem>` (phase) or `Done: task/<slug>` (task), using the exact slugs/stems from the rdm commands above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
 - **Rework** (FAIL — substantial changes needed): return the item to `in-progress` and write **no** `Done:` line.

@@ -123,11 +123,11 @@ For each finding, state how it was handled (fixed-inline / filed-as-task `<slug>
 
 This skill owns the `needs-review` → `reviewed` gate.
 
-- **Pass / Pass with concerns** (verdict PASS or PASS WITH CONCERNS — clean, or clean after small fixes, with no blocking findings): set the item to `reviewed`, then amend a `Done:` line into the branch commit so the merge-to-main hook flips it to `done` later. Recorded concerns do not block this transition.
+- **Pass / Pass with concerns** (verdict PASS or PASS WITH CONCERNS — clean, or clean after small fixes, with no blocking findings): set the item to `reviewed`, then amend a `Done:` line into the branch commit — this completes the deferred `Done:` directive from the rdm-do (or rdm-dispatch-phase) finalize step, not a contradiction of it — so the merge-to-main hook flips it to `done` later. Recorded concerns do not block this transition.
   ```bash
   ./target/debug/rdm phase update <phase> --status reviewed --no-edit --roadmap <slug> --project rdm
   # or: ./target/debug/rdm task update <slug> --status reviewed --no-edit --project rdm
-  git commit --amend   # add the Done: line to the branch commit message
+  git commit --amend   # add the Done: line (completing the finalize step's deferred directive)
   ```
   The `Done:` line is `Done: <roadmap-slug>/<phase-stem>` (phase) or `Done: task/<slug>` (task), using the exact slugs/stems from the rdm commands above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
 - **Blocked** (verdict BLOCKED — one or more surviving blocking findings): do NOT advance to `reviewed` and write **no** `Done:` line. The transition depends on the item kind, because tasks have no `blocked` status:

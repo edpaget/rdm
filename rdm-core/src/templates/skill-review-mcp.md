@@ -104,10 +104,10 @@ For each finding, state how it was handled (fixed-inline / filed-as-task `<slug>
 
 This skill owns the `needs-review` → `reviewed` gate.
 
-- **Pass** (clean, or clean after small fixes): set the item to `reviewed`, then amend a `Done:` line into the branch commit so the merge-to-main hook flips it to `done` later.
+- **Pass** (clean, or clean after small fixes): set the item to `reviewed`, then amend a `Done:` line into the branch commit — this completes the deferred `Done:` directive from the rdm-do (or rdm-dispatch-phase) finalize step, not a contradiction of it — so the merge-to-main hook flips it to `done` later.
   - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "reviewed"`
   - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "reviewed"`
-  - then `git commit --amend` to add the `Done:` line to the branch commit message: `Done: <roadmap-slug>/<phase-stem>` (phase) or `Done: task/<slug>` (task), using the exact slugs/stems from the rdm tools above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
+  - then `git commit --amend` to add the `Done:` line to the branch commit message, completing the finalize step's deferred directive: `Done: <roadmap-slug>/<phase-stem>` (phase) or `Done: task/<slug>` (task), using the exact slugs/stems from the rdm tools above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
 - **Rework** (FAIL — substantial changes needed): return the item to `in-progress` and write **no** `Done:` line.
   - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`
   - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "in-progress"`

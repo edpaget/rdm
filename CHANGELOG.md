@@ -53,6 +53,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The `rdm-do`, `rdm-review`, and `rdm-dispatch-phase` skills emitted by `rdm
+  agent-config` (CLI and MCP variants) now describe the split `Done:` line as a
+  single deferred two-stage protocol. The finalize step says the `Done:` line is
+  withheld _YET_ because `rdm-review` adds it on a passing review, and the review
+  gate's `git commit --amend` step says it is _completing_ that deferred
+  directive — so neither stage reads as contradicting the other. This stops
+  auto-mode agent permission classifiers from denying the review-time amend as a
+  violation of the finalize-time "no `Done:` line" instruction.
 - The `rdm-review` skill emitted by `rdm agent-config` now runs the full
   **find → verify → filter → report → act → gate** pipeline: an adaptive review
   fleet (base AC-compliance + correctness agents, plus conditional agents gated
