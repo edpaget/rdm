@@ -131,6 +131,25 @@ pub fn run(
             };
             #[cfg(not(feature = "git"))]
             let review_branch = None;
+            // Data-integrity guard: warn (non-blocking) when a task reaches
+            // needs-review with no committed diff beyond the default branch.
+            // Tasks have no sibling phases, so they always use this baseline.
+            #[cfg(feature = "git")]
+            let needs_review_warning: Option<String> = review_sha.as_deref().and_then(|sha| {
+                let default_branch = repo_config.default_branch.as_deref().unwrap_or("main");
+                if review_branch.as_deref() == Some(default_branch) {
+                    return None;
+                }
+                let cwd = std::env::current_dir().ok()?;
+                match rdm_git::is_ancestor_of_branch_at(&cwd, default_branch, sha) {
+                    Ok(true) => Some(format!(
+                        "warning: task '{slug}' is now needs-review, but HEAD has no commits beyond '{default_branch}' — there may be nothing to review. Confirm this task's work was committed before finalizing."
+                    )),
+                    _ => None,
+                }
+            });
+            #[cfg(not(feature = "git"))]
+            let needs_review_warning: Option<String> = None;
             let doc = commit_mutation(
                 store,
                 &project,
@@ -157,6 +176,9 @@ pub fn run(
                 "Updated task '{slug}' → status: {}, priority: {}",
                 doc.frontmatter.status, doc.frontmatter.priority
             );
+            if let Some(warning) = needs_review_warning {
+                eprintln!("{warning}");
+            }
         }
         TaskCommand::List {
             project,

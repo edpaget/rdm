@@ -49,6 +49,131 @@ fn phase_nav_footer(
     out
 }
 
+/// Builds the empty-finalize data-integrity warning for a phase entering
+/// `needs-review`, or `None` when HEAD carries a reviewable diff.
+///
+/// `review_sha` is the source-repo HEAD SHA being stamped, `review_branch` the
+/// firing checkout's branch (if resolvable), and `default_branch` the configured
+/// trunk. The check runs against the source repo discovered from the current
+/// working directory.
+///
+/// Baseline selection:
+/// - If the firing checkout is on `default_branch`, the check is skipped (a diff
+///   "vs trunk" is degenerate there).
+/// - Otherwise, the **nearest prior finalized sibling phase** in the same
+///   roadmap is the baseline. rdm's one-worktree-per-roadmap model shares a
+///   long-lived `roadmap/<slug>` branch that is never an ancestor of the default
+///   branch, so once an earlier phase lands a commit the branch is permanently a
+///   non-ancestor of trunk — making the default-branch baseline useless for
+///   phases 2..N. The sibling is selected by **recency**, not phase number: among
+///   all other stamped siblings (any phase number, not just lower ones) whose
+///   recorded SHA (`review_sha`, falling back to `commit`) is reachable from
+///   HEAD, the baseline is the one every other reachable candidate is an
+///   ancestor of — i.e. the most-recently-finalized sibling. This matters under
+///   out-of-order finalize: e.g. finalizing phase-3 before phase-2 means
+///   phase-3's commit, not phase-1's, is the true nearest-prior baseline for
+///   phase-2. If HEAD has not advanced past that sibling's commit (`review_sha
+///   == sibling_sha`), nothing new was committed for this phase and we warn.
+///   (Known limitation: an unrelated intervening commit on the shared roadmap
+///   branch — e.g. a concurrent phase's work — can still suppress the warning,
+///   since "any new commit since the baseline" is only a proxy for "this phase
+///   produced a diff.")
+/// - When there is no prior stamped sibling (the first finalized phase of a
+///   roadmap), we fall back to the default-branch baseline: warn when HEAD has
+///   no commits beyond `default_branch`.
+///
+/// Fails open (returns `None`, no warning) on any git error or when the working
+/// directory cannot be read, so a transient git state never produces a false
+/// positive.
+#[cfg(feature = "git")]
+fn empty_finalize_warning(
+    store: &AppStore,
+    project: &str,
+    roadmap: &str,
+    current_stem: &str,
+    review_sha: &str,
+    review_branch: Option<&str>,
+    default_branch: &str,
+) -> Option<String> {
+    // On the default branch itself, "diff vs trunk" is degenerate — skip.
+    if review_branch == Some(default_branch) {
+        return None;
+    }
+    let cwd = std::env::current_dir().ok()?;
+
+    let phases = rdm_core::ops::phase::list_phases(store, project, roadmap).ok()?;
+
+    // Gather every OTHER stamped sibling's SHA (any phase number — finalize
+    // order is not phase-number order) that is reachable from HEAD. Any git
+    // error comparing reachability fails the whole check open.
+    let mut candidates: Vec<String> = Vec::new();
+    for (stem, doc) in &phases {
+        if stem == current_stem {
+            continue;
+        }
+        let Some(sha) = doc
+            .frontmatter
+            .review_sha
+            .clone()
+            .or_else(|| doc.frontmatter.commit.clone())
+        else {
+            continue;
+        };
+        match rdm_git::is_ancestor_of_head_at(&cwd, &sha) {
+            Ok(true) => {
+                if !candidates.contains(&sha) {
+                    candidates.push(sha);
+                }
+            }
+            Ok(false) => {}
+            Err(_) => return None,
+        }
+    }
+
+    // Among the reachable candidates, the nearest-prior one (most recently
+    // finalized) is the candidate every OTHER candidate is an ancestor of —
+    // i.e. no other candidate is its descendant. Pairwise ancestor checks fail
+    // the whole check open on any git error.
+    let mut prior_sibling_sha: Option<String> = None;
+    'outer: for candidate in &candidates {
+        for other in &candidates {
+            if other == candidate {
+                continue;
+            }
+            match rdm_git::is_ancestor_at(&cwd, other, candidate) {
+                Ok(true) => {}
+                Ok(false) => continue 'outer,
+                Err(_) => return None,
+            }
+        }
+        prior_sibling_sha = Some(candidate.clone());
+        break;
+    }
+
+    if let Some(sibling_sha) = prior_sibling_sha {
+        // HEAD has not advanced past the previous phase's commit → no new work.
+        // (Known limitation: an unrelated intervening commit on the shared
+        // roadmap branch — e.g. a concurrent phase's work — can suppress this
+        // warning, since "any new commit since the baseline" is only a proxy
+        // for "this phase produced a diff.")
+        if review_sha == sibling_sha {
+            return Some(format!(
+                "warning: phase '{current_stem}' is now needs-review, but HEAD has no new commit since the previous finalized phase — there may be nothing to review. Confirm this phase's work was committed before finalizing."
+            ));
+        }
+        return None;
+    }
+
+    // First finalized phase of the roadmap: fall back to the default-branch
+    // baseline.
+    match rdm_git::is_ancestor_of_branch_at(&cwd, default_branch, review_sha) {
+        Ok(true) => Some(format!(
+            "warning: phase '{current_stem}' is now needs-review, but HEAD has no commits beyond '{default_branch}' — there may be nothing to review. Confirm this phase's work was committed before finalizing."
+        )),
+        _ => None,
+    }
+}
+
 pub fn run(
     command: PhaseCommand,
     store: &mut AppStore,
@@ -255,6 +380,25 @@ pub fn run(
             };
             #[cfg(not(feature = "git"))]
             let review_branch = None;
+            // Data-integrity guard: if a phase reaches needs-review with no
+            // committed diff worth reviewing, it would strand in review state
+            // with nothing to review. Compute a non-blocking warning here (the
+            // transition still proceeds).
+            #[cfg(feature = "git")]
+            let needs_review_warning: Option<String> = review_sha.as_deref().and_then(|sha| {
+                let default_branch = repo_config.default_branch.as_deref().unwrap_or("main");
+                empty_finalize_warning(
+                    store,
+                    &project,
+                    &roadmap,
+                    &stem,
+                    sha,
+                    review_branch.as_deref(),
+                    default_branch,
+                )
+            });
+            #[cfg(not(feature = "git"))]
+            let needs_review_warning: Option<String> = None;
             let difficulty_update = DifficultyUpdate::from_args(difficulty, clear_difficulty)?;
             let model_update = ModelTierUpdate::from_args(model, clear_model)?;
             let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
@@ -304,6 +448,9 @@ pub fn run(
             )
             .map_err(map_body_clobber)?;
             println!("Updated '{stem}' → {}", doc.frontmatter.status);
+            if let Some(warning) = needs_review_warning {
+                eprintln!("{warning}");
+            }
         }
         PhaseCommand::Remove {
             stem,

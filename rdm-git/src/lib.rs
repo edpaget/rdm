@@ -243,6 +243,43 @@ pub fn is_ancestor_of_branch_at(path: &Path, branch: &str, sha: &str) -> Result<
     }
 }
 
+/// Whether `ancestor_sha` is an ancestor of (or equal to) `descendant_sha` in
+/// the repo at `path`.
+///
+/// Like [`is_ancestor_of_head_at`] and [`is_ancestor_of_branch_at`], but
+/// compares two arbitrary commits directly rather than HEAD or a named
+/// branch. Used to rank candidate baseline commits by recency: among several
+/// reachable candidates, the nearest-prior one is the one every other
+/// candidate is an ancestor of.
+///
+/// Shells out to `git merge-base --is-ancestor <ancestor_sha> <descendant_sha>`:
+/// exit code 0 means `ancestor_sha` is reachable from `descendant_sha`
+/// (`Ok(true)`), exit code 1 means it is not (`Ok(false)`). Any other exit
+/// code (e.g. an unknown SHA) is treated as an error.
+///
+/// # Errors
+///
+/// Returns [`Error::Git`] if `path` is not inside a git repository, git is not
+/// installed, or the command fails for a reason other than a clean
+/// ancestor/not-ancestor determination (such as an invalid SHA).
+pub fn is_ancestor_at(path: &Path, ancestor_sha: &str, descendant_sha: &str) -> Result<bool> {
+    let output = run_git_at(
+        path,
+        &["merge-base", "--is-ancestor", ancestor_sha, descendant_sha],
+    )?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(Error::Git(format!(
+                "git merge-base --is-ancestor failed: {}",
+                stderr.trim()
+            )))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,6 +383,31 @@ mod tests {
         let sha = commit_file(dir.path(), "init.md", "init");
 
         let result = is_ancestor_of_branch_at(dir.path(), "no-such-branch", &sha);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_ancestor_at_compares_two_commits_directly() {
+        let dir = init_repo();
+        let base_sha = commit_file(dir.path(), "base.md", "base");
+        let a_sha = commit_file(dir.path(), "a.md", "a");
+        let c_sha = commit_file(dir.path(), "c.md", "c");
+
+        // base is an ancestor of both later commits; a later commit is not an
+        // ancestor of an earlier one.
+        assert!(is_ancestor_at(dir.path(), &base_sha, &a_sha).unwrap());
+        assert!(is_ancestor_at(dir.path(), &a_sha, &c_sha).unwrap());
+        assert!(!is_ancestor_at(dir.path(), &c_sha, &a_sha).unwrap());
+        // A commit is its own ancestor.
+        assert!(is_ancestor_at(dir.path(), &a_sha, &a_sha).unwrap());
+    }
+
+    #[test]
+    fn is_ancestor_at_errors_on_unknown_sha() {
+        let dir = init_repo();
+        let sha = commit_file(dir.path(), "init.md", "init");
+
+        let result = is_ancestor_at(dir.path(), "0000000000000000000000000000000000000000", &sha);
         assert!(result.is_err());
     }
 

@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `phase update`/`task update --status needs-review` now warns on stderr when
+  HEAD carries no committed changes worth reviewing, surfacing items that would
+  otherwise be silently stranded in `needs-review` with nothing to review. For a
+  phase, the baseline is the previous finalized phase in the same roadmap (so the
+  long-lived `roadmap/<slug>` branch in the one-worktree-per-roadmap model is
+  handled correctly): it warns when HEAD has not advanced past that phase's
+  committed work. For the first phase of a roadmap and for standalone tasks, the
+  baseline is the configured `default_branch`: it warns when HEAD has no commits
+  beyond it. The transition is not blocked and the check fails open on any git
+  error — this is a non-destructive data-integrity nicety, not a gate.
+
 - `rdm review restamp` refreshes `review_sha`/`review_branch` on every in-scope
   `needs-review` item to the current source-repo HEAD and branch. Run it after
   amending or rebasing a commit while an item is still `needs-review`: the
