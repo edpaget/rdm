@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `roadmap update`, `phase update`, and `task update` now accept `--title
+  <TITLE>` to rename an item in place. Only the frontmatter title changes — the
+  slug (for roadmaps/tasks) and the stem/number (for phases) are never touched,
+  and `INDEX.md` is regenerated as part of the same mutation. An empty or
+  whitespace-only `--title` is rejected with an actionable error (titles are
+  required and cannot be cleared); omit `--title` to leave the existing title
+  unchanged.
+
 - A regression harness for the auto-review Stop hook loop,
   `scripts/verify-auto-review-hook-loop.sh`. It drives the real hook scripts
   end-to-end in hermetic temp dirs and asserts all four contract states against

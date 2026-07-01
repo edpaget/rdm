@@ -457,6 +457,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
 
@@ -498,6 +499,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
 
@@ -605,6 +607,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
 
@@ -637,6 +640,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
 
@@ -667,6 +671,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
         crate::ops::task::update_task(
@@ -680,6 +685,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
 

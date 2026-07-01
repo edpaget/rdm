@@ -130,6 +130,13 @@ impl From<&Error> for ProblemDetail {
                 ),
                 instance: None,
             },
+            Error::EmptyTitle => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some("title cannot be empty or whitespace-only".to_string()),
+                instance: None,
+            },
             Error::ConflictingUpdate { field } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Unprocessable Content".to_string(),

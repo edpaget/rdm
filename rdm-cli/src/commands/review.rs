@@ -181,6 +181,7 @@ pub fn run(
                                         None,
                                         Some(sha),
                                         branch,
+                                        rdm_core::ops::TitleUpdate::Keep,
                                     )
                                 },
                             )?;
@@ -207,6 +208,7 @@ pub fn run(
                                         None,
                                         Some(sha),
                                         branch,
+                                        rdm_core::ops::TitleUpdate::Keep,
                                     )
                                 },
                             )?;

@@ -66,6 +66,58 @@ impl BodyUpdate {
     }
 }
 
+/// How an update should treat a document's required `title`.
+///
+/// Unlike [`BodyUpdate`], there is no `Clear` variant: a title is required on
+/// roadmaps, phases, and tasks and so can never be emptied. The rename is
+/// applied in place — the slug/stem/number that identifies the document is
+/// never touched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TitleUpdate {
+    /// Leave the existing title unchanged.
+    Keep,
+    /// Replace the title with this value. An empty or whitespace-only string is
+    /// rejected with [`Error::EmptyTitle`]; otherwise the value is stored
+    /// verbatim (matching how the `create` ops record titles).
+    Set(String),
+}
+
+impl TitleUpdate {
+    /// Builds a [`TitleUpdate`] from a frontend's optional `title` value.
+    ///
+    /// `Some(t)` → [`Set`](TitleUpdate::Set); `None` → [`Keep`](TitleUpdate::Keep).
+    /// Infallible: unlike the body/tags/priority protocols there is no competing
+    /// `clear_title` flag, so there is nothing to reject here — an empty value is
+    /// caught later by [`apply`](TitleUpdate::apply).
+    #[must_use]
+    pub fn from_args(title: Option<String>) -> Self {
+        match title {
+            Some(t) => TitleUpdate::Set(t),
+            None => TitleUpdate::Keep,
+        }
+    }
+
+    /// Applies this update to a document's `title` in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::EmptyTitle`] when [`Set`](TitleUpdate::Set) carries an
+    /// empty or whitespace-only string — titles are required and cannot be
+    /// cleared.
+    pub(crate) fn apply(self, title: &mut String) -> Result<()> {
+        match self {
+            TitleUpdate::Keep => {}
+            TitleUpdate::Set(new) => {
+                if new.trim().is_empty() {
+                    return Err(Error::EmptyTitle);
+                }
+                *title = new;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// How an update should treat a document's tags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TagsUpdate {
@@ -324,6 +376,55 @@ mod tests {
             "cannot set both 'reason' and 'clear_reason'"
         );
         assert!(matches!(err, Error::ConflictingUpdate { field } if field == "reason"));
+    }
+
+    #[test]
+    fn title_from_args_maps_each_combination() {
+        assert_eq!(TitleUpdate::from_args(None), TitleUpdate::Keep);
+        assert_eq!(
+            TitleUpdate::from_args(Some("New Title".to_string())),
+            TitleUpdate::Set("New Title".to_string())
+        );
+    }
+
+    #[test]
+    fn title_apply_keep_leaves_existing_untouched() {
+        let mut t = "Original".to_string();
+        TitleUpdate::Keep.apply(&mut t).unwrap();
+        assert_eq!(t, "Original");
+    }
+
+    #[test]
+    fn title_apply_set_overwrites_existing_verbatim() {
+        let mut t = "Original".to_string();
+        // Surrounding whitespace is preserved verbatim (only the emptiness check trims).
+        TitleUpdate::Set("  Renamed  ".to_string())
+            .apply(&mut t)
+            .unwrap();
+        assert_eq!(t, "  Renamed  ");
+    }
+
+    #[test]
+    fn title_apply_rejects_empty_string() {
+        let mut t = "Original".to_string();
+        let err = TitleUpdate::Set(String::new()).apply(&mut t).unwrap_err();
+        assert!(matches!(err, Error::EmptyTitle));
+        // Hard reject: the existing title is left untouched.
+        assert_eq!(t, "Original");
+    }
+
+    #[test]
+    fn title_apply_rejects_whitespace_only() {
+        let mut t = "Original".to_string();
+        let err = TitleUpdate::Set("   \t\n".to_string())
+            .apply(&mut t)
+            .unwrap_err();
+        assert!(matches!(err, Error::EmptyTitle));
+        assert_eq!(
+            err.to_string(),
+            "title cannot be empty or whitespace-only — pass a non-empty --title (omit --title to leave the existing title unchanged)"
+        );
+        assert_eq!(t, "Original");
     }
 
     #[test]

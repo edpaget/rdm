@@ -336,13 +336,16 @@ pub(crate) enum RoadmapCommand {
         #[arg(long)]
         at: Option<String>,
     },
-    /// Update a roadmap's priority and/or body.
+    /// Update a roadmap's title, priority, tags, and/or body.
     Update {
         /// Roadmap slug.
         slug: String,
         /// Project the roadmap belongs to.
         #[arg(long)]
         project: Option<String>,
+        /// New title (renames the roadmap in place; the slug is unchanged).
+        #[arg(long)]
+        title: Option<String>,
         /// New priority level.
         #[arg(long, conflicts_with = "clear_priority")]
         priority: Option<Priority>,
@@ -517,13 +520,16 @@ pub(crate) enum PhaseCommand {
         #[arg(long)]
         at: Option<String>,
     },
-    /// Update a phase's status and/or body.
+    /// Update a phase's status, title, and/or body.
     Update {
         /// Phase stem or number (e.g. phase-1-core or 1).
         stem: String,
         /// New status (omit to preserve existing).
         #[arg(long)]
         status: Option<PhaseStatus>,
+        /// New title (renames the phase in place; the stem/number is unchanged).
+        #[arg(long)]
+        title: Option<String>,
         /// Roadmap the phase belongs to.
         #[arg(long)]
         roadmap: String,
@@ -623,6 +629,9 @@ pub(crate) enum TaskCommand {
         /// Project the task belongs to.
         #[arg(long)]
         project: Option<String>,
+        /// New title (renames the task in place; the slug is unchanged).
+        #[arg(long)]
+        title: Option<String>,
         /// New status.
         #[arg(long)]
         status: Option<TaskStatus>,

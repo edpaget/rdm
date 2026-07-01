@@ -845,6 +845,7 @@ impl RdmMcpServer {
                 body,
                 priority,
                 tags,
+                rdm_core::ops::TitleUpdate::Keep,
             )
         }) {
             Ok(d) => d,
@@ -948,6 +949,7 @@ impl RdmMcpServer {
                 None,
                 None,
                 None,
+                rdm_core::ops::TitleUpdate::Keep,
             )?;
             if has_reason {
                 rdm_core::ops::phase::set_phase_blocked_reason(
@@ -1052,6 +1054,7 @@ impl RdmMcpServer {
                 None,
                 None,
                 None,
+                rdm_core::ops::TitleUpdate::Keep,
             )
         }) {
             Ok(d) => d,

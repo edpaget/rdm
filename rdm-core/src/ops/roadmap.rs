@@ -5,7 +5,7 @@ use std::fmt;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus, Priority, Roadmap, RoadmapSort};
-use crate::ops::update::{BodyUpdate, PriorityUpdate, TagsUpdate};
+use crate::ops::update::{BodyUpdate, PriorityUpdate, TagsUpdate, TitleUpdate};
 use crate::store::{DirEntryKind, RelPath, Store};
 
 /// Overall status of a roadmap, aggregated from its phase statuses.
@@ -163,14 +163,18 @@ pub fn create_roadmap(store: &mut impl Store, req: CreateRoadmap<'_>) -> Result<
     Ok(doc)
 }
 
-/// Updates a roadmap's body, priority, and/or tags.
+/// Updates a roadmap's title, body, priority, and/or tags.
 ///
-/// Each field is described by a request type: [`BodyUpdate`], [`PriorityUpdate`],
-/// and [`TagsUpdate`], whose `Keep` variants leave the field unchanged.
+/// Each field is described by a request type: [`TitleUpdate`], [`BodyUpdate`],
+/// [`PriorityUpdate`], and [`TagsUpdate`], whose `Keep` variants leave the field
+/// unchanged. A [`TitleUpdate::Set`] renames the roadmap in place — the `slug`
+/// that identifies it is never changed.
 ///
 /// # Errors
 ///
 /// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
+/// [`Error::EmptyTitle`] if `title` is [`TitleUpdate::Set`] with an empty or
+/// whitespace-only value,
 /// [`Error::BodyClobberRefused`] if `body` is [`BodyUpdate::Set("")`](BodyUpdate::Set)
 /// over a non-empty body (use [`BodyUpdate::Clear`] to confirm),
 /// [`Error::Io`] if reading or writing fails, or
@@ -183,6 +187,7 @@ pub fn update_roadmap(
     body: BodyUpdate,
     priority: PriorityUpdate,
     tags: TagsUpdate,
+    title: TitleUpdate,
 ) -> Result<Document<Roadmap>> {
     let path = crate::paths::roadmap_path(project, slug);
     if !store.exists(&path) {
@@ -190,6 +195,7 @@ pub fn update_roadmap(
     }
 
     let mut doc = crate::io::load_roadmap(store, project, slug)?;
+    title.apply(&mut doc.frontmatter.title)?;
     body.apply(&mut doc.body)?;
     priority.apply(&mut doc.frontmatter.priority);
     tags.apply(&mut doc.frontmatter.tags);

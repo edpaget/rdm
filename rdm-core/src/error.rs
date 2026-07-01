@@ -69,6 +69,11 @@ pub enum Error {
     ///
     /// [`BodyUpdate::Clear`]: crate::ops::BodyUpdate::Clear
     BodyClobberRefused,
+    /// A title update carried an empty or whitespace-only value. Titles are
+    /// required and cannot be cleared; callers must pass a non-empty title (or
+    /// omit the update to leave the existing title unchanged). The CLI exposes
+    /// this as `--title`.
+    EmptyTitle,
     /// An update request set both a value and its `clear_*` flag for the same
     /// field — for example `--body` together with `--clear-body`. The two are
     /// contradictory; pass exactly one.
@@ -170,6 +175,12 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "refusing to overwrite non-empty body with an empty value without explicit opt-in"
+                )
+            }
+            Error::EmptyTitle => {
+                write!(
+                    f,
+                    "title cannot be empty or whitespace-only — pass a non-empty --title (omit --title to leave the existing title unchanged)"
                 )
             }
             Error::ConflictingUpdate { field } => {

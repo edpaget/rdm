@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
-use rdm_core::ops::{BodyUpdate, TagsUpdate};
+use rdm_core::ops::{BodyUpdate, TagsUpdate, TitleUpdate};
 
 use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
 use crate::paths;
@@ -92,6 +92,7 @@ pub fn run(
         TaskCommand::Update {
             slug,
             project,
+            title,
             status,
             priority,
             tags,
@@ -101,6 +102,7 @@ pub fn run(
             no_edit,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
+            let title = TitleUpdate::from_args(title);
             let body = if clear_body {
                 BodyUpdate::Clear
             } else {
@@ -170,6 +172,7 @@ pub fn run(
                         commit,
                         review_sha,
                         review_branch,
+                        title,
                     )
                 },
             )

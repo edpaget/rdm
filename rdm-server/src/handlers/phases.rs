@@ -326,7 +326,17 @@ pub async fn update_phase(
         .map_err(|e| error_response(e, format))?;
     let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
         rdm_core::ops::phase::update_phase(
-            s, &project, &roadmap, &stem, status, tags, body, None, None, None,
+            s,
+            &project,
+            &roadmap,
+            &stem,
+            status,
+            tags,
+            body,
+            None,
+            None,
+            None,
+            rdm_core::ops::TitleUpdate::Keep,
         )
     })
     .map_err(|e| error_response(e, format))?;

@@ -347,6 +347,7 @@ pub fn apply_done_directives(
                         Some(sha.clone()),
                         None,
                         None,
+                        rdm_core::ops::TitleUpdate::Keep,
                     )
                 }) {
                     Ok(_) => logger.log(
@@ -388,6 +389,7 @@ pub fn apply_done_directives(
                         Some(sha.clone()),
                         None,
                         None,
+                        rdm_core::ops::TitleUpdate::Keep,
                     )
                 }) {
                     Ok(_) => logger.log(

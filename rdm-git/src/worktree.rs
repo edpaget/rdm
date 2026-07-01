@@ -1429,6 +1429,7 @@ mod tests {
             None,
             None,
             None,
+            rdm_core::ops::update::TitleUpdate::Keep,
         )
         .unwrap();
 
@@ -1581,6 +1582,7 @@ mod tests {
             None,
             None,
             None,
+            rdm_core::ops::update::TitleUpdate::Keep,
         )
         .unwrap();
 
@@ -1607,6 +1609,7 @@ mod tests {
             None,
             None,
             None,
+            rdm_core::ops::update::TitleUpdate::Keep,
         )
         .unwrap();
         rdm_core::ops::task::create_task(

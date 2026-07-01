@@ -489,7 +489,15 @@ pub async fn update_roadmap(
 
     let mut store = state.store();
     let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
-        rdm_core::ops::roadmap::update_roadmap(s, &project, &roadmap, body, priority, tags)
+        rdm_core::ops::roadmap::update_roadmap(
+            s,
+            &project,
+            &roadmap,
+            body,
+            priority,
+            tags,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
     })
     .map_err(|e| error_response(e, format))?;
 
@@ -585,6 +593,7 @@ mod tests {
             None,
             None,
             None,
+            rdm_core::ops::TitleUpdate::Keep,
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();
@@ -632,6 +641,7 @@ mod tests {
             None,
             None,
             None,
+            rdm_core::ops::TitleUpdate::Keep,
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();

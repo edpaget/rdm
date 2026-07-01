@@ -2,7 +2,9 @@ use anyhow::{Context, Result, bail};
 use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
-use rdm_core::ops::{BodyUpdate, DifficultyUpdate, ModelTierUpdate, ReasonUpdate, TagsUpdate};
+use rdm_core::ops::{
+    BodyUpdate, DifficultyUpdate, ModelTierUpdate, ReasonUpdate, TagsUpdate, TitleUpdate,
+};
 
 use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
 use crate::paths;
@@ -318,6 +320,7 @@ pub fn run(
         PhaseCommand::Update {
             stem,
             status,
+            title,
             roadmap,
             project,
             tags,
@@ -389,6 +392,7 @@ pub fn run(
             });
             #[cfg(not(feature = "git"))]
             let needs_review_warning: Option<String> = None;
+            let title_update = TitleUpdate::from_args(title);
             let difficulty_update = DifficultyUpdate::from_args(difficulty, clear_difficulty)?;
             let model_update = ModelTierUpdate::from_args(model, clear_model)?;
             let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
@@ -413,6 +417,7 @@ pub fn run(
                         review_branch,
                         difficulty_update,
                         model_update,
+                        title_update,
                     )?;
                     if has_reason {
                         doc = rdm_core::ops::phase::set_phase_blocked_reason(

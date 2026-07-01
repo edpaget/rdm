@@ -5,7 +5,7 @@ use chrono::Local;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus, Priority, Roadmap, Task, TaskStatus, TaskStatusFilter};
-use crate::ops::update::{BodyUpdate, TagsUpdate};
+use crate::ops::update::{BodyUpdate, TagsUpdate, TitleUpdate};
 use crate::store::{DirEntryKind, Store};
 
 /// Criteria for filtering a list of tasks.
@@ -204,9 +204,14 @@ pub fn list_tasks(store: &impl Store, project: &str) -> Result<Vec<(String, Docu
 /// this is the refresh path `rdm review restamp` uses to keep a stamp from
 /// going stale after a commit is amended or rebased mid-review.
 ///
+/// A [`TitleUpdate::Set`] renames the task in place — the `slug` that
+/// identifies it is never changed; [`TitleUpdate::Keep`] leaves it unchanged.
+///
 /// # Errors
 ///
 /// Returns [`Error::TaskNotFound`] if the task file doesn't exist,
+/// [`Error::EmptyTitle`] if `title` is [`TitleUpdate::Set`] with an empty or
+/// whitespace-only value,
 /// [`Error::BodyClobberRefused`] if `body` is [`BodyUpdate::Set("")`](BodyUpdate::Set)
 /// over a non-empty body (use [`BodyUpdate::Clear`] to confirm),
 /// [`Error::Io`] if reading or writing fails, or
@@ -224,6 +229,7 @@ pub fn update_task(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    title: TitleUpdate,
 ) -> Result<Document<Task>> {
     let path = crate::paths::task_path(project, slug);
     if !store.exists(&path) {
@@ -231,6 +237,7 @@ pub fn update_task(
     }
 
     let mut doc = crate::io::load_task(store, project, slug)?;
+    title.apply(&mut doc.frontmatter.title)?;
     if let Some(status) = status {
         if status.is_terminal() && doc.frontmatter.status == status {
             // Already at this terminal state: only update commit if a new one

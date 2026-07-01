@@ -994,3 +994,93 @@ fn task_update_clear_body_conflicts_with_body_flag() {
         .assert()
         .failure();
 }
+
+#[test]
+fn task_update_title_renames_in_place() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Old Task Title",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--title",
+            "New Task Title",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    // New title reflected via `show`; slug unchanged.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "fix-bug", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("New Task Title").and(predicate::str::contains("fix-bug")),
+        );
+}
+
+#[test]
+fn task_update_empty_title_rejected() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Keep Task Title",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--title",
+            "\t",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("title cannot be empty"));
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "fix-bug", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Keep Task Title"));
+}

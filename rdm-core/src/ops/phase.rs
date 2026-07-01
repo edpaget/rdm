@@ -5,7 +5,9 @@ use chrono::Local;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus};
-use crate::ops::update::{BodyUpdate, DifficultyUpdate, ModelTierUpdate, ReasonUpdate, TagsUpdate};
+use crate::ops::update::{
+    BodyUpdate, DifficultyUpdate, ModelTierUpdate, ReasonUpdate, TagsUpdate, TitleUpdate,
+};
 use crate::store::{DirEntryKind, Store};
 
 /// Lists all phases in a roadmap, sorted by phase number.
@@ -180,12 +182,16 @@ pub fn create_phase(store: &mut impl Store, req: CreatePhase<'_>) -> Result<Docu
 /// (rather than preserving the existing ones the way `status: None` does) —
 /// this is the refresh path `rdm review restamp` uses to keep a stamp from
 /// going stale after a commit is amended or rebased mid-review.
-/// When `tags`/`body` are `Keep`, the existing values are preserved; otherwise
-/// see [`TagsUpdate`] and [`BodyUpdate`].
+/// When `tags`/`body`/`title` are `Keep`, the existing values are preserved;
+/// otherwise see [`TagsUpdate`], [`BodyUpdate`], and [`TitleUpdate`]. A
+/// [`TitleUpdate::Set`] renames the phase in place — its stem and number are
+/// never changed.
 ///
 /// # Errors
 ///
 /// Returns [`Error::PhaseNotFound`] if the phase file doesn't exist,
+/// [`Error::EmptyTitle`] if `title` is [`TitleUpdate::Set`] with an empty or
+/// whitespace-only value,
 /// [`Error::BodyClobberRefused`] if `body` is [`BodyUpdate::Set("")`](BodyUpdate::Set)
 /// over a non-empty body (use [`BodyUpdate::Clear`] to confirm),
 /// [`Error::Io`] if reading or writing fails, or
@@ -203,6 +209,7 @@ pub fn update_phase(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    title: TitleUpdate,
 ) -> Result<Document<Phase>> {
     let path = crate::paths::phase_path(project, roadmap, phase_stem);
     if !store.exists(&path) {
@@ -218,6 +225,7 @@ pub fn update_phase(
         commit,
         review_sha,
         review_branch,
+        title,
     )?;
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
     Ok(doc)
@@ -234,9 +242,11 @@ pub fn update_phase(
 ///
 /// # Errors
 ///
-/// Returns [`Error::BodyClobberRefused`] when `body` is
-/// [`BodyUpdate::Set("")`](BodyUpdate::Set) over a non-empty body (use
+/// Returns [`Error::EmptyTitle`] when `title` is [`TitleUpdate::Set`] with an
+/// empty or whitespace-only value, or [`Error::BodyClobberRefused`] when `body`
+/// is [`BodyUpdate::Set("")`](BodyUpdate::Set) over a non-empty body (use
 /// [`BodyUpdate::Clear`] to confirm).
+#[allow(clippy::too_many_arguments)]
 fn apply_phase_update(
     doc: &mut Document<Phase>,
     status: Option<PhaseStatus>,
@@ -245,6 +255,7 @@ fn apply_phase_update(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    title: TitleUpdate,
 ) -> Result<()> {
     if let Some(status) = status {
         if status.is_terminal() && doc.frontmatter.status == status {
@@ -272,6 +283,7 @@ fn apply_phase_update(
             }
         }
     }
+    title.apply(&mut doc.frontmatter.title)?;
     tags.apply(&mut doc.frontmatter.tags);
     body.apply(&mut doc.body)?;
     Ok(())
@@ -294,6 +306,8 @@ fn apply_phase_update(
 /// # Errors
 ///
 /// Returns [`Error::PhaseNotFound`] if the phase file doesn't exist,
+/// [`Error::EmptyTitle`] if `title` is [`TitleUpdate::Set`] with an empty or
+/// whitespace-only value,
 /// [`Error::BodyClobberRefused`] if `body` is [`BodyUpdate::Set("")`](BodyUpdate::Set)
 /// over a non-empty body (use [`BodyUpdate::Clear`] to confirm),
 /// [`Error::Io`] if reading or writing fails, or
@@ -313,6 +327,7 @@ pub fn update_phase_with_estimate(
     review_branch: Option<String>,
     difficulty: DifficultyUpdate,
     model: ModelTierUpdate,
+    title: TitleUpdate,
 ) -> Result<Document<Phase>> {
     let path = crate::paths::phase_path(project, roadmap, phase_stem);
     if !store.exists(&path) {
@@ -328,6 +343,7 @@ pub fn update_phase_with_estimate(
         commit,
         review_sha,
         review_branch,
+        title,
     )?;
     apply_phase_estimate(&mut doc, difficulty, model);
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;

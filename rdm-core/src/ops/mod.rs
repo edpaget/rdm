@@ -20,8 +20,9 @@ pub mod review;
 pub mod roadmap;
 /// Task operations: create, update, list, promote.
 pub mod task;
-/// Request types for the `update` operations (`BodyUpdate` / `TagsUpdate` /
-/// `PriorityUpdate` / `DifficultyUpdate` / `ModelTierUpdate` / `ReasonUpdate`).
+/// Request types for the `update` operations (`BodyUpdate` / `TitleUpdate` /
+/// `TagsUpdate` / `PriorityUpdate` / `DifficultyUpdate` / `ModelTierUpdate` /
+/// `ReasonUpdate`).
 pub mod update;
 
 pub use phase::CreatePhase;
@@ -29,6 +30,7 @@ pub use roadmap::CreateRoadmap;
 pub use task::CreateTask;
 pub use update::{
     BodyUpdate, DifficultyUpdate, ModelTierUpdate, PriorityUpdate, ReasonUpdate, TagsUpdate,
+    TitleUpdate,
 };
 
 use crate::error::Result;

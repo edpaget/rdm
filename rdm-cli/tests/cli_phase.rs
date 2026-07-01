@@ -1681,3 +1681,88 @@ fn phase_update_clear_body_conflicts_with_body_flag() {
         .assert()
         .failure();
 }
+
+#[test]
+fn phase_update_title_renames_in_place() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Old Phase Title");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--title",
+            "New Phase Title",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    // New title reflected via `show`; stem/number unchanged.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("New Phase Title")
+                .and(predicate::str::contains("phase-1-core")),
+        );
+}
+
+#[test]
+fn phase_update_empty_title_rejected() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Keep This Title");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--title",
+            "   ",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("title cannot be empty"));
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Keep This Title"));
+}
