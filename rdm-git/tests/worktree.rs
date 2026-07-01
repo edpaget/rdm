@@ -608,3 +608,85 @@ fn remove_non_rdm_worktree_by_path_errors() {
     .unwrap_err();
     assert!(matches!(err, worktree::WorktreeError::NotRdmWorktree(_)));
 }
+
+/// Regression/characterization test: `worktree::add` + `worktree::remove`
+/// against the parent (canonical) repo must never mutate that repo's own
+/// `core.bare` setting, its tracked/committed tree, or leave stray dirt in
+/// its working tree. rdm's worktree tooling only ever runs `git worktree
+/// add`/`remove`/`branch` — it should never touch `core.bare` or run any
+/// destructive operation against the parent repo itself. This pins that
+/// already-correct behavior so a future change can't silently regress it.
+#[test]
+fn add_remove_does_not_mutate_parent_core_bare_or_tree() {
+    let repo = init_project_repo();
+
+    // Baseline: parent repo is a normal (non-bare) repo with a clean tree.
+    let bare_before = git(repo.path(), &["config", "--get", "core.bare"]);
+    let bare_before = String::from_utf8_lossy(&bare_before.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(bare_before, "false", "fixture repo must start non-bare");
+
+    let is_bare_before = git(repo.path(), &["rev-parse", "--is-bare-repository"]);
+    let is_bare_before = String::from_utf8_lossy(&is_bare_before.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(is_bare_before, "false");
+
+    let status_before = git(repo.path(), &["status", "--porcelain"]);
+    assert!(
+        status_before.stdout.is_empty(),
+        "fixture repo must start clean"
+    );
+
+    let head_before = git(repo.path(), &["rev-parse", "HEAD"]);
+    let head_before = String::from_utf8_lossy(&head_before.stdout)
+        .trim()
+        .to_string();
+
+    // Exercise the full add/remove lifecycle.
+    let item = task_item();
+    let info = worktree::add(repo.path(), &item, &item.branch_name(), None).unwrap();
+    assert!(info.created);
+    worktree::remove(repo.path(), "task/fix-bug", RemoveOptions::default()).unwrap();
+    assert!(worktree::list(repo.path()).unwrap().is_empty());
+
+    // The parent repo's bare-ness must be completely unchanged.
+    let bare_after = git(repo.path(), &["config", "--get", "core.bare"]);
+    let bare_after = String::from_utf8_lossy(&bare_after.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        bare_after, bare_before,
+        "core.bare must not be mutated by add/remove"
+    );
+    assert_eq!(bare_after, "false");
+
+    let is_bare_after = git(repo.path(), &["rev-parse", "--is-bare-repository"]);
+    let is_bare_after = String::from_utf8_lossy(&is_bare_after.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        is_bare_after, is_bare_before,
+        "is-bare-repository must not flip"
+    );
+
+    // The parent repo's working tree must still be clean (no spurious dirt
+    // left behind by the worktree add/remove lifecycle).
+    let status_after = git(repo.path(), &["status", "--porcelain"]);
+    assert!(
+        status_after.stdout.is_empty(),
+        "parent working tree must remain clean after add+remove, got: {}",
+        String::from_utf8_lossy(&status_after.stdout)
+    );
+
+    // HEAD (the tracked/committed tree) must be untouched.
+    let head_after = git(repo.path(), &["rev-parse", "HEAD"]);
+    let head_after = String::from_utf8_lossy(&head_after.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        head_after, head_before,
+        "HEAD must be unchanged by add/remove of an unrelated item worktree"
+    );
+}
