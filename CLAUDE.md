@@ -166,6 +166,7 @@ For sessions running in a sandboxed Claude Code web environment (no local plan r
 - Full setup, credentials, and troubleshooting: `docs/claude-code-web.md`.
 - Regression harness: `bash scripts/verify-claude-code-web-loop.sh` — stands up a hermetic simulation of the bootstrap → Done: → plan-repo-update loop using temp dirs. Run it after touching the template, `rdm bootstrap`, or `rdm hook post-commit`.
 - Cross-host worktree-review harness: `bash scripts/verify-worktree-review-loop.sh` — hermetic do → finalize → trigger → review regression for the one-worktree-per-roadmap model, asserting roadmap isolation across the Claude Stop hook and Pi `agent_end` host paths. Run it after touching the worktree/review-trigger model (`rdm worktree`, the branch-scoped `rdm review pending` filter, needs-review stamping, or the hook/extension templates).
+- Auto-review Stop hook harness: `bash scripts/verify-auto-review-hook-loop.sh` — hermetic FIRE / OUT-OF-SCOPE / LOOP-GUARD / CLEARED regression driving the real `.claude/hooks/rdm-review-on-finalize.sh` (all four states) plus the shipped `rdm-core/src/templates/hook-review-on-finalize.sh` loop-guard and reviewed-cleared cases, against the Claude Code Stop payload contract. Run it after touching either hook script, `rdm review pending`/`restamp`, or `--project`/root resolution.
 
 ### *** DEVELOPMENT BUILD REQUIREMENT ***
 

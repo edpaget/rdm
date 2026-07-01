@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A regression harness for the auto-review Stop hook loop,
+  `scripts/verify-auto-review-hook-loop.sh`. It drives the real hook scripts
+  end-to-end in hermetic temp dirs and asserts all four contract states against
+  the concrete `.claude/hooks/rdm-review-on-finalize.sh` — fires
+  `{"decision":"block",...}` when an item is `needs-review` on the current
+  branch, stays silent on an unrelated branch, stays silent under the
+  `stop_hook_active` loop guard, and stays silent once the item is `reviewed` —
+  plus the shipped `rdm-core/src/templates/hook-review-on-finalize.sh`'s
+  previously-untested loop-guard and reviewed-cleared cases. Auto-picked-up by
+  the existing `scripts/verify-*.sh` CI glob.
+
 - `phase update`/`task update --status needs-review` now warns on stderr when
   HEAD carries no committed changes worth reviewing, surfacing items that would
   otherwise be silently stranded in `needs-review` with nothing to review. For a
