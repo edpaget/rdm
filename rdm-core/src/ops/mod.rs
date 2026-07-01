@@ -24,6 +24,9 @@ pub mod task;
 /// `PriorityUpdate` / `DifficultyUpdate` / `ModelTierUpdate` / `ReasonUpdate`).
 pub mod update;
 
+pub use phase::CreatePhase;
+pub use roadmap::CreateRoadmap;
+pub use task::CreateTask;
 pub use update::{
     BodyUpdate, DifficultyUpdate, ModelTierUpdate, PriorityUpdate, ReasonUpdate, TagsUpdate,
 };

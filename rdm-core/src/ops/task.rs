@@ -62,10 +62,45 @@ pub fn filter_tasks(
         .collect()
 }
 
+/// Request describing a new task to create.
+///
+/// Only `project`, `slug`, and `title` are required for a minimal task; the
+/// remaining fields default via [`Default`]. The default `priority` is
+/// [`Priority::Medium`], matching the conventional mid-priority for new work, so
+/// callers can write `CreateTask { project, slug, title, ..Default::default() }`.
+#[derive(Debug, Clone)]
+pub struct CreateTask<'a> {
+    /// Project the task belongs to.
+    pub project: &'a str,
+    /// Slug (file name) for the new task.
+    pub slug: &'a str,
+    /// Human-readable title.
+    pub title: &'a str,
+    /// Priority level. Required; defaults to [`Priority::Medium`].
+    pub priority: Priority,
+    /// Optional tags for categorization.
+    pub tags: Option<Vec<String>>,
+    /// Markdown body below the frontmatter. `None` yields an empty body.
+    pub body: Option<&'a str>,
+}
+
+impl Default for CreateTask<'_> {
+    fn default() -> Self {
+        CreateTask {
+            project: "",
+            slug: "",
+            title: "",
+            priority: Priority::Medium,
+            tags: None,
+            body: None,
+        }
+    }
+}
+
 /// Creates a new task within a project.
 ///
-/// `body` sets the markdown body below the frontmatter. Pass `None` for
-/// an empty body.
+/// See [`CreateTask`] for the field semantics: `body` of `None` yields an empty
+/// body and `priority` defaults to [`Priority::Medium`].
 ///
 /// # Errors
 ///
@@ -73,15 +108,15 @@ pub fn filter_tasks(
 /// [`Error::DuplicateSlug`] if a task with the same slug already exists,
 /// [`Error::Io`] if file creation fails, or
 /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
-pub fn create_task(
-    store: &mut impl Store,
-    project: &str,
-    slug: &str,
-    title: &str,
-    priority: Priority,
-    tags: Option<Vec<String>>,
-    body: Option<&str>,
-) -> Result<Document<Task>> {
+pub fn create_task(store: &mut impl Store, req: CreateTask<'_>) -> Result<Document<Task>> {
+    let CreateTask {
+        project,
+        slug,
+        title,
+        priority,
+        tags,
+        body,
+    } = req;
     if !store.exists(&crate::paths::project_md_path(project)) {
         return Err(Error::ProjectNotFound(project.to_string()));
     }

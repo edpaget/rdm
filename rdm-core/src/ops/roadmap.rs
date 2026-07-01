@@ -98,11 +98,31 @@ pub fn last_modified(
     latest
 }
 
+/// Request describing a new roadmap to create.
+///
+/// Only `project`, `slug`, and `title` are meaningful for a minimal roadmap;
+/// the remaining fields default to empty via [`Default`], so callers can write
+/// `CreateRoadmap { project, slug, title, ..Default::default() }`.
+#[derive(Debug, Clone, Default)]
+pub struct CreateRoadmap<'a> {
+    /// Project the roadmap belongs to.
+    pub project: &'a str,
+    /// Slug (directory name) for the new roadmap.
+    pub slug: &'a str,
+    /// Human-readable title.
+    pub title: &'a str,
+    /// Markdown body below the frontmatter. `None` yields an empty body.
+    pub body: Option<&'a str>,
+    /// Optional priority level.
+    pub priority: Option<Priority>,
+    /// Optional tags for categorization.
+    pub tags: Option<Vec<String>>,
+}
+
 /// Creates a new roadmap within a project.
 ///
-/// `body` sets the markdown body below the frontmatter. Pass `None` for
-/// an empty body. `priority` sets an optional priority level. `tags`
-/// sets optional tags for categorization.
+/// See [`CreateRoadmap`] for the field semantics: `body` of `None` yields an
+/// empty body, and `priority`/`tags` are optional metadata.
 ///
 /// # Errors
 ///
@@ -110,15 +130,15 @@ pub fn last_modified(
 /// [`Error::DuplicateSlug`] if the roadmap already exists,
 /// [`Error::Io`] if file creation fails, or
 /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
-pub fn create_roadmap(
-    store: &mut impl Store,
-    project: &str,
-    slug: &str,
-    title: &str,
-    body: Option<&str>,
-    priority: Option<Priority>,
-    tags: Option<Vec<String>>,
-) -> Result<Document<Roadmap>> {
+pub fn create_roadmap(store: &mut impl Store, req: CreateRoadmap<'_>) -> Result<Document<Roadmap>> {
+    let CreateRoadmap {
+        project,
+        slug,
+        title,
+        body,
+        priority,
+        tags,
+    } = req;
     if !store.exists(&crate::paths::project_md_path(project)) {
         return Err(Error::ProjectNotFound(project.to_string()));
     }

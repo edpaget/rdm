@@ -41,12 +41,14 @@ pub fn run(
                 |s| {
                     rdm_core::ops::roadmap::create_roadmap(
                         s,
-                        &project,
-                        &slug,
-                        title,
-                        body.as_deref(),
-                        priority,
-                        tags,
+                        rdm_core::ops::roadmap::CreateRoadmap {
+                            project: &project,
+                            slug: &slug,
+                            title,
+                            body: body.as_deref(),
+                            priority,
+                            tags,
+                        },
                     )
                 },
             )?;

@@ -247,13 +247,16 @@ pub async fn create_phase(
     let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
         rdm_core::ops::phase::create_phase(
             s,
-            &project,
-            &roadmap,
-            &req.slug,
-            &req.title,
-            req.number,
-            req.body.as_deref(),
-            req.tags.clone(),
+            rdm_core::ops::phase::CreatePhase {
+                project: &project,
+                roadmap: &roadmap,
+                slug: &req.slug,
+                title: &req.title,
+                number: req.number,
+                body: req.body.as_deref(),
+                tags: req.tags.clone(),
+                ..Default::default()
+            },
         )
     })
     .map_err(|e| error_response(e, format))?;
@@ -366,40 +369,50 @@ mod tests {
         rdm_core::ops::init::init(&mut store).unwrap();
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
         rdm_core::ops::roadmap::create_roadmap(
-            &mut store, "demo", "alpha", "Alpha", None, None, None,
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "alpha",
+                title: "Alpha",
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "alpha",
-            "first",
-            "First",
-            Some(1),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "first",
+                title: "First",
+                number: Some(1),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "alpha",
-            "second",
-            "Second",
-            Some(2),
-            Some("## Details\n\nSome **bold** text.\n"),
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "second",
+                title: "Second",
+                number: Some(2),
+                body: Some("## Details\n\nSome **bold** text.\n"),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "alpha",
-            "third",
-            "Third",
-            Some(3),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "third",
+                title: "Third",
+                number: Some(3),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();
@@ -916,29 +929,39 @@ mod tests {
         rdm_core::ops::init::init(&mut store).unwrap();
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
         rdm_core::ops::roadmap::create_roadmap(
-            &mut store, "demo", "alpha", "Alpha", None, None, None,
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "alpha",
+                title: "Alpha",
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "alpha",
-            "tagged",
-            "Tagged",
-            Some(1),
-            None,
-            Some(vec!["bug".to_string(), "ui".to_string()]),
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "tagged",
+                title: "Tagged",
+                number: Some(1),
+                body: None,
+                tags: Some(vec!["bug".to_string(), "ui".to_string()]),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "alpha",
-            "untagged",
-            "Untagged",
-            Some(2),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "untagged",
+                title: "Untagged",
+                number: Some(2),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();

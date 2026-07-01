@@ -14,34 +14,37 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
     rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "demo",
-        "api",
-        "API Roadmap",
-        None,
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "demo",
+            slug: "api",
+            title: "API Roadmap",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "demo",
-        "api",
-        "design",
-        "Design Phase",
-        Some(1),
-        Some("Details."),
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "demo",
+            roadmap: "api",
+            slug: "design",
+            title: "Design Phase",
+            number: Some(1),
+            body: Some("Details."),
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "demo",
-        "api",
-        "build",
-        "Build Phase",
-        Some(2),
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "demo",
+            roadmap: "api",
+            slug: "build",
+            title: "Build Phase",
+            number: Some(2),
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -59,12 +62,14 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
     .unwrap();
     rdm_core::ops::task::create_task(
         &mut store,
-        "demo",
-        "bug-1",
-        "Fix Bug One",
-        Priority::High,
-        Some(vec!["bug".to_string()]),
-        Some("Bug body."),
+        rdm_core::ops::task::CreateTask {
+            project: "demo",
+            slug: "bug-1",
+            title: "Fix Bug One",
+            priority: Priority::High,
+            tags: Some(vec!["bug".to_string()]),
+            body: Some("Bug body."),
+        },
     )
     .unwrap();
 

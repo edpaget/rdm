@@ -207,43 +207,49 @@ mod tests {
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
         rdm_core::ops::roadmap::create_roadmap(
             &mut store,
-            "demo",
-            "widget-launch",
-            "Widget Launch",
-            Some("Launch widgets."),
-            None,
-            None,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "widget-launch",
+                title: "Widget Launch",
+                body: Some("Launch widgets."),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "widget-launch",
-            "design",
-            "Design the Widget",
-            Some(1),
-            Some("Create mockups and wireframes."),
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "widget-launch",
+                slug: "design",
+                title: "Design the Widget",
+                number: Some(1),
+                body: Some("Create mockups and wireframes."),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::task::create_task(
             &mut store,
-            "demo",
-            "fix-login",
-            "Fix Login Bug",
-            Priority::High,
-            None,
-            Some("Users cannot log in with special characters."),
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug: "fix-login",
+                title: "Fix Login Bug",
+                priority: Priority::High,
+                tags: None,
+                body: Some("Users cannot log in with special characters."),
+            },
         )
         .unwrap();
         rdm_core::ops::task::create_task(
             &mut store,
-            "demo",
-            "add-search",
-            "Add Search Feature",
-            Priority::Medium,
-            None,
-            None,
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug: "add-search",
+                title: "Add Search Feature",
+                priority: Priority::Medium,
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();

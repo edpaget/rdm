@@ -274,12 +274,14 @@ pub async fn create_task(
     let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
         rdm_core::ops::task::create_task(
             s,
-            &project,
-            &req.slug,
-            &req.title,
-            req.priority,
-            req.tags,
-            req.body.as_deref(),
+            rdm_core::ops::task::CreateTask {
+                project: &project,
+                slug: &req.slug,
+                title: &req.title,
+                priority: req.priority,
+                tags: req.tags,
+                body: req.body.as_deref(),
+            },
         )
     })
     .map_err(|e| error_response(e, format))?;
@@ -430,22 +432,25 @@ mod tests {
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
         rdm_core::ops::task::create_task(
             &mut store,
-            "demo",
-            "bug-fix",
-            "Fix the Bug",
-            Priority::High,
-            Some(vec!["bug".to_string()]),
-            Some("Bug details.\n"),
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug: "bug-fix",
+                title: "Fix the Bug",
+                priority: Priority::High,
+                tags: Some(vec!["bug".to_string()]),
+                body: Some("Bug details.\n"),
+            },
         )
         .unwrap();
         rdm_core::ops::task::create_task(
             &mut store,
-            "demo",
-            "feature",
-            "New Feature",
-            Priority::Low,
-            None,
-            None,
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug: "feature",
+                title: "New Feature",
+                priority: Priority::Low,
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();
@@ -1136,22 +1141,24 @@ mod tests {
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
         rdm_core::ops::task::create_task(
             &mut store,
-            "demo",
-            "open-task",
-            "Open Task",
-            Priority::Medium,
-            None,
-            None,
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug: "open-task",
+                title: "Open Task",
+                priority: Priority::Medium,
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::task::create_task(
             &mut store,
-            "demo",
-            "done-task",
-            "Done Task",
-            Priority::Medium,
-            None,
-            None,
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug: "done-task",
+                title: "Done Task",
+                priority: Priority::Medium,
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::task::update_task(
@@ -1169,12 +1176,13 @@ mod tests {
         .unwrap();
         rdm_core::ops::task::create_task(
             &mut store,
-            "demo",
-            "wontfix-task",
-            "Wont Fix Task",
-            Priority::Low,
-            None,
-            None,
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug: "wontfix-task",
+                title: "Wont Fix Task",
+                priority: Priority::Low,
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::task::update_task(

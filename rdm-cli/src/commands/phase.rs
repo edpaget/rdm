@@ -207,17 +207,19 @@ pub fn run(
                 staging,
                 "failed to create phase",
                 |s| {
-                    rdm_core::ops::phase::create_phase_with_estimate(
+                    rdm_core::ops::phase::create_phase(
                         s,
-                        &project,
-                        &roadmap,
-                        &slug,
-                        title,
-                        number,
-                        body.as_deref(),
-                        tags,
-                        difficulty_update,
-                        model_update,
+                        rdm_core::ops::phase::CreatePhase {
+                            project: &project,
+                            roadmap: &roadmap,
+                            slug: &slug,
+                            title,
+                            number,
+                            body: body.as_deref(),
+                            tags,
+                            difficulty: difficulty_update,
+                            model: model_update,
+                        },
                     )
                 },
             )?;

@@ -150,9 +150,10 @@ impl PriorityUpdate {
 }
 
 /// How an update should treat a phase's optional difficulty.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DifficultyUpdate {
     /// Leave the existing difficulty unchanged.
+    #[default]
     Keep,
     /// Set the difficulty to this value.
     Set(Difficulty),
@@ -190,9 +191,10 @@ impl DifficultyUpdate {
 }
 
 /// How an update should treat a phase's optional model tier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelTierUpdate {
     /// Leave the existing model tier unchanged.
+    #[default]
     Keep,
     /// Set the model tier to this value.
     Set(ModelTier),

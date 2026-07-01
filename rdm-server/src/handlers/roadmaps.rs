@@ -422,12 +422,14 @@ pub async fn create_roadmap(
     let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
         rdm_core::ops::roadmap::create_roadmap(
             s,
-            &project,
-            &req.slug,
-            &req.title,
-            req.body.as_deref(),
-            priority,
-            req.tags.clone(),
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: &project,
+                slug: &req.slug,
+                title: &req.title,
+                body: req.body.as_deref(),
+                priority,
+                tags: req.tags.clone(),
+            },
         )
     })
     .map_err(|e| error_response(e, format))?;
@@ -540,34 +542,36 @@ mod tests {
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
         rdm_core::ops::roadmap::create_roadmap(
             &mut store,
-            "demo",
-            "alpha",
-            "Alpha Roadmap",
-            None,
-            None,
-            None,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "alpha",
+                title: "Alpha Roadmap",
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "alpha",
-            "first",
-            "First Phase",
-            Some(1),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "first",
+                title: "First Phase",
+                number: Some(1),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "alpha",
-            "second",
-            "Second Phase",
-            Some(2),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "second",
+                title: "Second Phase",
+                number: Some(2),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::update_phase(
@@ -597,23 +601,24 @@ mod tests {
         let mut store = rdm_store_fs::FsStore::new(dir.path());
         rdm_core::ops::roadmap::create_roadmap(
             &mut store,
-            "demo",
-            "beta",
-            "Beta Roadmap",
-            None,
-            None,
-            None,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "beta",
+                title: "Beta Roadmap",
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "beta",
-            "only",
-            "Only Phase",
-            Some(1),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "beta",
+                slug: "only",
+                title: "Only Phase",
+                number: Some(1),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::update_phase(
@@ -1040,23 +1045,26 @@ mod tests {
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
         rdm_core::ops::roadmap::create_roadmap(
             &mut store,
-            "demo",
-            "alpha",
-            "Alpha Roadmap",
-            None,
-            Some(rdm_core::model::Priority::High),
-            None,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "alpha",
+                title: "Alpha Roadmap",
+                body: None,
+                priority: Some(rdm_core::model::Priority::High),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "alpha",
-            "first",
-            "First Phase",
-            Some(1),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "first",
+                title: "First Phase",
+                number: Some(1),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();
@@ -1205,55 +1213,62 @@ mod tests {
         rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
         rdm_core::ops::roadmap::create_roadmap(
             &mut store,
-            "demo",
-            "tagged",
-            "Tagged Roadmap",
-            None,
-            None,
-            Some(vec!["foo".to_string(), "bar".to_string()]),
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "tagged",
+                title: "Tagged Roadmap",
+                body: None,
+                priority: None,
+                tags: Some(vec!["foo".to_string(), "bar".to_string()]),
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "tagged",
-            "first",
-            "First",
-            Some(1),
-            None,
-            Some(vec!["foo".to_string()]),
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "tagged",
+                slug: "first",
+                title: "First",
+                number: Some(1),
+                body: None,
+                tags: Some(vec!["foo".to_string()]),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "tagged",
-            "second",
-            "Second",
-            Some(2),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "tagged",
+                slug: "second",
+                title: "Second",
+                number: Some(2),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::roadmap::create_roadmap(
             &mut store,
-            "demo",
-            "untagged-rm",
-            "Untagged Roadmap",
-            None,
-            None,
-            None,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "untagged-rm",
+                title: "Untagged Roadmap",
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "demo",
-            "untagged-rm",
-            "only",
-            "Only",
-            Some(1),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "untagged-rm",
+                slug: "only",
+                title: "Only",
+                number: Some(1),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::store::Store::commit(&mut store).unwrap();

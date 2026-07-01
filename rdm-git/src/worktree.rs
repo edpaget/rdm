@@ -1220,33 +1220,35 @@ mod tests {
         rdm_core::ops::project::create_project(&mut store, "proj", "Proj").unwrap();
         rdm_core::ops::roadmap::create_roadmap(
             &mut store,
-            "proj",
-            "my-roadmap",
-            "My Roadmap",
-            None,
-            None,
-            None,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "proj",
+                slug: "my-roadmap",
+                title: "My Roadmap",
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "proj",
-            "my-roadmap",
-            "do-thing",
-            "Do Thing",
-            Some(2),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "proj",
+                roadmap: "my-roadmap",
+                slug: "do-thing",
+                title: "Do Thing",
+                number: Some(2),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::task::create_task(
             &mut store,
-            "proj",
-            "fix-bug",
-            "Fix Bug",
-            rdm_core::model::Priority::Medium,
-            None,
-            None,
+            rdm_core::ops::task::CreateTask {
+                project: "proj",
+                slug: "fix-bug",
+                title: "Fix Bug",
+                priority: rdm_core::model::Priority::Medium,
+                ..Default::default()
+            },
         )
         .unwrap();
         (dir, store)
@@ -1384,34 +1386,36 @@ mod tests {
         rdm_core::ops::project::create_project(&mut store, "proj", "Proj").unwrap();
         rdm_core::ops::roadmap::create_roadmap(
             &mut store,
-            "proj",
-            "my-roadmap",
-            "My Roadmap",
-            None,
-            None,
-            None,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "proj",
+                slug: "my-roadmap",
+                title: "My Roadmap",
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "proj",
-            "my-roadmap",
-            "done-phase",
-            "Done Phase",
-            Some(1),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "proj",
+                roadmap: "my-roadmap",
+                slug: "done-phase",
+                title: "Done Phase",
+                number: Some(1),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "proj",
-            "my-roadmap",
-            "open-phase",
-            "Open Phase",
-            Some(2),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "proj",
+                roadmap: "my-roadmap",
+                slug: "open-phase",
+                title: "Open Phase",
+                number: Some(2),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::update_phase(
@@ -1546,23 +1550,24 @@ mod tests {
         // A second roadmap whose only phase is done → roadmap resolves to Done.
         rdm_core::ops::roadmap::create_roadmap(
             &mut store,
-            "proj",
-            "done-roadmap",
-            "Done Roadmap",
-            None,
-            None,
-            None,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "proj",
+                slug: "done-roadmap",
+                title: "Done Roadmap",
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::create_phase(
             &mut store,
-            "proj",
-            "done-roadmap",
-            "only",
-            "Only Phase",
-            Some(1),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "proj",
+                roadmap: "done-roadmap",
+                slug: "only",
+                title: "Only Phase",
+                number: Some(1),
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::phase::update_phase(
@@ -1582,12 +1587,13 @@ mod tests {
         // A done task and an open task.
         rdm_core::ops::task::create_task(
             &mut store,
-            "proj",
-            "done-task",
-            "Done Task",
-            rdm_core::model::Priority::Medium,
-            None,
-            None,
+            rdm_core::ops::task::CreateTask {
+                project: "proj",
+                slug: "done-task",
+                title: "Done Task",
+                priority: rdm_core::model::Priority::Medium,
+                ..Default::default()
+            },
         )
         .unwrap();
         rdm_core::ops::task::update_task(
@@ -1605,12 +1611,13 @@ mod tests {
         .unwrap();
         rdm_core::ops::task::create_task(
             &mut store,
-            "proj",
-            "open-task",
-            "Open Task",
-            rdm_core::model::Priority::Medium,
-            None,
-            None,
+            rdm_core::ops::task::CreateTask {
+                project: "proj",
+                slug: "open-task",
+                title: "Open Task",
+                priority: rdm_core::model::Priority::Medium,
+                ..Default::default()
+            },
         )
         .unwrap();
 

@@ -407,36 +407,41 @@ mod tests {
         // Create a roadmap with body
         crate::ops::roadmap::create_roadmap(
             &mut store,
-            "acme",
-            "widget-launch",
-            "Widget Launch",
-            Some("Launch the new widget product line."),
-            None,
-            None,
+            crate::ops::roadmap::CreateRoadmap {
+                project: "acme",
+                slug: "widget-launch",
+                title: "Widget Launch",
+                body: Some("Launch the new widget product line."),
+                ..Default::default()
+            },
         )
         .unwrap();
 
         // Create phases
         crate::ops::phase::create_phase(
             &mut store,
-            "acme",
-            "widget-launch",
-            "design",
-            "Design the Widget",
-            Some(1),
-            Some("Create mockups and wireframes for the widget."),
-            None,
+            crate::ops::phase::CreatePhase {
+                project: "acme",
+                roadmap: "widget-launch",
+                slug: "design",
+                title: "Design the Widget",
+                number: Some(1),
+                body: Some("Create mockups and wireframes for the widget."),
+                ..Default::default()
+            },
         )
         .unwrap();
         crate::ops::phase::create_phase(
             &mut store,
-            "acme",
-            "widget-launch",
-            "implementation",
-            "Implement the Widget",
-            Some(2),
-            Some("Build the widget according to the design specifications."),
-            None,
+            crate::ops::phase::CreatePhase {
+                project: "acme",
+                roadmap: "widget-launch",
+                slug: "implementation",
+                title: "Implement the Widget",
+                number: Some(2),
+                body: Some("Build the widget according to the design specifications."),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -458,22 +463,26 @@ mod tests {
         // Create tasks
         crate::ops::task::create_task(
             &mut store,
-            "acme",
-            "fix-login-bug",
-            "Fix Login Bug",
-            Priority::Medium,
-            None,
-            Some("Users cannot log in when password contains special characters."),
+            crate::ops::task::CreateTask {
+                project: "acme",
+                slug: "fix-login-bug",
+                title: "Fix Login Bug",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Users cannot log in when password contains special characters."),
+            },
         )
         .unwrap();
         crate::ops::task::create_task(
             &mut store,
-            "acme",
-            "add-search",
-            "Add Search Feature",
-            Priority::Medium,
-            None,
-            Some("Implement full-text search across all content."),
+            crate::ops::task::CreateTask {
+                project: "acme",
+                slug: "add-search",
+                title: "Add Search Feature",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Implement full-text search across all content."),
+            },
         )
         .unwrap();
 
@@ -721,12 +730,14 @@ mod tests {
         crate::ops::project::create_project(&mut store, "other", "Other Project").unwrap();
         crate::ops::task::create_task(
             &mut store,
-            "other",
-            "other-task",
-            "Other Task",
-            Priority::Medium,
-            None,
-            Some("Something else."),
+            crate::ops::task::CreateTask {
+                project: "other",
+                slug: "other-task",
+                title: "Other Task",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Something else."),
+            },
         )
         .unwrap();
 
@@ -782,23 +793,26 @@ mod tests {
         // One task with a title that exactly matches the query
         crate::ops::task::create_task(
             &mut store,
-            "p",
-            "exact-match",
-            "authentication",
-            Priority::Medium,
-            None,
-            None,
+            crate::ops::task::CreateTask {
+                project: "p",
+                slug: "exact-match",
+                title: "authentication",
+                priority: Priority::Medium,
+                ..Default::default()
+            },
         )
         .unwrap();
         // Another task whose body vaguely matches (low score)
         crate::ops::task::create_task(
             &mut store,
-            "p",
-            "vague-match",
-            "Unrelated Topic",
-            Priority::Medium,
-            None,
-            Some("This has nothing to do with anything but mentions auth once."),
+            crate::ops::task::CreateTask {
+                project: "p",
+                slug: "vague-match",
+                title: "Unrelated Topic",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("This has nothing to do with anything but mentions auth once."),
+            },
         )
         .unwrap();
 
@@ -918,77 +932,89 @@ mod tests {
 
         crate::ops::roadmap::create_roadmap(
             &mut store,
-            "p",
-            "rust-cleanup",
-            "Rust Cleanup",
-            None,
-            None,
-            Some(vec!["refactor".to_string(), "rust".to_string()]),
+            crate::ops::roadmap::CreateRoadmap {
+                project: "p",
+                slug: "rust-cleanup",
+                title: "Rust Cleanup",
+                body: None,
+                priority: None,
+                tags: Some(vec!["refactor".to_string(), "rust".to_string()]),
+            },
         )
         .unwrap();
         crate::ops::phase::create_phase(
             &mut store,
-            "p",
-            "rust-cleanup",
-            "fmt",
-            "Rust Fmt",
-            Some(1),
-            None,
-            Some(vec!["refactor".to_string()]),
+            crate::ops::phase::CreatePhase {
+                project: "p",
+                roadmap: "rust-cleanup",
+                slug: "fmt",
+                title: "Rust Fmt",
+                number: Some(1),
+                body: None,
+                tags: Some(vec!["refactor".to_string()]),
+                ..Default::default()
+            },
         )
         .unwrap();
         crate::ops::phase::create_phase(
             &mut store,
-            "p",
-            "rust-cleanup",
-            "clippy",
-            "Rust Clippy",
-            Some(2),
-            None,
-            Some(vec!["refactor".to_string(), "lint".to_string()]),
+            crate::ops::phase::CreatePhase {
+                project: "p",
+                roadmap: "rust-cleanup",
+                slug: "clippy",
+                title: "Rust Clippy",
+                number: Some(2),
+                body: None,
+                tags: Some(vec!["refactor".to_string(), "lint".to_string()]),
+                ..Default::default()
+            },
         )
         .unwrap();
 
         crate::ops::roadmap::create_roadmap(
             &mut store,
-            "p",
-            "untagged-roadmap",
-            "Untagged Roadmap",
-            None,
-            None,
-            None,
+            crate::ops::roadmap::CreateRoadmap {
+                project: "p",
+                slug: "untagged-roadmap",
+                title: "Untagged Roadmap",
+                ..Default::default()
+            },
         )
         .unwrap();
         crate::ops::phase::create_phase(
             &mut store,
-            "p",
-            "untagged-roadmap",
-            "phase",
-            "Untagged Phase",
-            Some(1),
-            None,
-            None,
+            crate::ops::phase::CreatePhase {
+                project: "p",
+                roadmap: "untagged-roadmap",
+                slug: "phase",
+                title: "Untagged Phase",
+                number: Some(1),
+                ..Default::default()
+            },
         )
         .unwrap();
 
         crate::ops::task::create_task(
             &mut store,
-            "p",
-            "bug-fix",
-            "Bug Fix Task",
-            Priority::Medium,
-            Some(vec!["bug".to_string(), "refactor".to_string()]),
-            None,
+            crate::ops::task::CreateTask {
+                project: "p",
+                slug: "bug-fix",
+                title: "Bug Fix Task",
+                priority: Priority::Medium,
+                tags: Some(vec!["bug".to_string(), "refactor".to_string()]),
+                ..Default::default()
+            },
         )
         .unwrap();
         crate::ops::task::create_task(
             &mut store,
-            "p",
-            "untagged-task",
-            "Untagged Task",
-            Priority::Medium,
-            None,
-            None,
+            crate::ops::task::CreateTask {
+                project: "p",
+                slug: "untagged-task",
+                title: "Untagged Task",
+                priority: Priority::Medium,
+                ..Default::default()
+            },
         )
         .unwrap();
 

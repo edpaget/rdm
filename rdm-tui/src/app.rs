@@ -788,34 +788,37 @@ mod tests {
 
         create_roadmap(
             &mut store,
-            "demo",
-            "alpha",
-            "Alpha",
-            Some("Alpha body."),
-            None,
-            None,
+            rdm_core::ops::CreateRoadmap {
+                project: "demo",
+                slug: "alpha",
+                title: "Alpha",
+                body: Some("Alpha body."),
+                ..Default::default()
+            },
         )
         .unwrap();
         create_phase(
             &mut store,
-            "demo",
-            "alpha",
-            "first",
-            "First",
-            Some(1),
-            None,
-            None,
+            rdm_core::ops::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "first",
+                title: "First",
+                number: Some(1),
+                ..Default::default()
+            },
         )
         .unwrap();
         create_phase(
             &mut store,
-            "demo",
-            "alpha",
-            "second",
-            "Second",
-            Some(2),
-            None,
-            None,
+            rdm_core::ops::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "second",
+                title: "Second",
+                number: Some(2),
+                ..Default::default()
+            },
         )
         .unwrap();
         update_phase(
@@ -832,16 +835,26 @@ mod tests {
         )
         .unwrap();
 
-        create_roadmap(&mut store, "demo", "beta", "Beta", None, None, None).unwrap();
+        create_roadmap(
+            &mut store,
+            rdm_core::ops::CreateRoadmap {
+                project: "demo",
+                slug: "beta",
+                title: "Beta",
+                ..Default::default()
+            },
+        )
+        .unwrap();
         create_phase(
             &mut store,
-            "demo",
-            "beta",
-            "only",
-            "Only",
-            Some(1),
-            None,
-            None,
+            rdm_core::ops::CreatePhase {
+                project: "demo",
+                roadmap: "beta",
+                slug: "only",
+                title: "Only",
+                number: Some(1),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -1204,22 +1217,26 @@ mod tests {
 
         create_task(
             &mut store,
-            "demo",
-            "t1",
-            "Task one",
-            Priority::Medium,
-            Some(vec!["bug".to_string()]),
-            Some("Body of t1."),
+            rdm_core::ops::CreateTask {
+                project: "demo",
+                slug: "t1",
+                title: "Task one",
+                priority: Priority::Medium,
+                tags: Some(vec!["bug".to_string()]),
+                body: Some("Body of t1."),
+            },
         )
         .unwrap();
         create_task(
             &mut store,
-            "demo",
-            "t2",
-            "Task two",
-            Priority::High,
-            Some(vec!["ui".to_string()]),
-            None,
+            rdm_core::ops::CreateTask {
+                project: "demo",
+                slug: "t2",
+                title: "Task two",
+                priority: Priority::High,
+                tags: Some(vec!["ui".to_string()]),
+                ..Default::default()
+            },
         )
         .unwrap();
         update_task(
@@ -1237,12 +1254,14 @@ mod tests {
         .unwrap();
         create_task(
             &mut store,
-            "demo",
-            "t3",
-            "Task three",
-            Priority::Low,
-            Some(vec!["bug".to_string(), "ui".to_string()]),
-            None,
+            rdm_core::ops::CreateTask {
+                project: "demo",
+                slug: "t3",
+                title: "Task three",
+                priority: Priority::Low,
+                tags: Some(vec!["bug".to_string(), "ui".to_string()]),
+                ..Default::default()
+            },
         )
         .unwrap();
         update_task(
@@ -1260,12 +1279,13 @@ mod tests {
         .unwrap();
         create_task(
             &mut store,
-            "demo",
-            "t4",
-            "Task four",
-            Priority::Medium,
-            None,
-            None,
+            rdm_core::ops::CreateTask {
+                project: "demo",
+                slug: "t4",
+                title: "Task four",
+                priority: Priority::Medium,
+                ..Default::default()
+            },
         )
         .unwrap();
         update_task(

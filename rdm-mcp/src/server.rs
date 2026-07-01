@@ -783,12 +783,14 @@ impl RdmMcpServer {
         let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
             rdm_core::ops::roadmap::create_roadmap(
                 s,
-                &params.project,
-                &params.slug,
-                &params.title,
-                params.body.as_deref(),
-                priority,
-                params.tags.clone(),
+                rdm_core::ops::roadmap::CreateRoadmap {
+                    project: &params.project,
+                    slug: &params.slug,
+                    title: &params.title,
+                    body: params.body.as_deref(),
+                    priority,
+                    tags: params.tags.clone(),
+                },
             )
         }) {
             Ok(d) => d,
@@ -870,13 +872,16 @@ impl RdmMcpServer {
         let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
             rdm_core::ops::phase::create_phase(
                 s,
-                &params.project,
-                &params.roadmap,
-                &params.slug,
-                &params.title,
-                params.number,
-                params.body.as_deref(),
-                params.tags.clone(),
+                rdm_core::ops::phase::CreatePhase {
+                    project: &params.project,
+                    roadmap: &params.roadmap,
+                    slug: &params.slug,
+                    title: &params.title,
+                    number: params.number,
+                    body: params.body.as_deref(),
+                    tags: params.tags.clone(),
+                    ..Default::default()
+                },
             )
         }) {
             Ok(d) => d,
@@ -984,12 +989,14 @@ impl RdmMcpServer {
         let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
             rdm_core::ops::task::create_task(
                 s,
-                &params.project,
-                &params.slug,
-                &params.title,
-                priority,
-                params.tags,
-                params.body.as_deref(),
+                rdm_core::ops::task::CreateTask {
+                    project: &params.project,
+                    slug: &params.slug,
+                    title: &params.title,
+                    priority,
+                    tags: params.tags,
+                    body: params.body.as_deref(),
+                },
             )
         }) {
             Ok(d) => d,

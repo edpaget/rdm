@@ -207,12 +207,12 @@ fn create_roadmap_success() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     let doc = rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "two-way",
-        "Two-Way Players",
-        None,
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way Players",
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(doc.frontmatter.project, "fbm");
@@ -233,12 +233,13 @@ fn create_roadmap_with_body() {
     let body = "# Description\n\nA roadmap for two-way players.\n";
     let doc = rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "two-way",
-        "Two-Way Players",
-        Some(body),
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way Players",
+            body: Some(body),
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(doc.body, body);
@@ -252,7 +253,13 @@ fn create_roadmap_project_not_found() {
     let mut store = MemoryStore::new();
     rdm_core::ops::init::init(&mut store).unwrap();
     let result = rdm_core::ops::roadmap::create_roadmap(
-        &mut store, "nope", "slug", "Title", None, None, None,
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "nope",
+            slug: "slug",
+            title: "Title",
+            ..Default::default()
+        },
     );
     assert!(matches!(result, Err(Error::ProjectNotFound(_))));
 }
@@ -264,16 +271,22 @@ fn create_roadmap_duplicate() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "two-way",
-        "Two-Way Players",
-        None,
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way Players",
+            ..Default::default()
+        },
     )
     .unwrap();
     let result = rdm_core::ops::roadmap::create_roadmap(
-        &mut store, "fbm", "two-way", "Dup", None, None, None,
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Dup",
+            ..Default::default()
+        },
     );
     assert!(matches!(result, Err(Error::DuplicateSlug(_))));
 }
@@ -285,12 +298,13 @@ fn update_roadmap_body_replaces_existing() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "two-way",
-        "Two-Way",
-        Some("Original.\n"),
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way",
+            body: Some("Original.\n"),
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::roadmap::update_roadmap(
@@ -315,12 +329,13 @@ fn update_roadmap_none_body_preserves_existing() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "two-way",
-        "Two-Way",
-        Some("Keep this.\n"),
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way",
+            body: Some("Keep this.\n"),
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::roadmap::update_roadmap(
@@ -356,10 +371,26 @@ fn list_roadmaps_sorted() {
     let mut store = MemoryStore::new();
     rdm_core::ops::init::init(&mut store).unwrap();
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "zzz-road", "Z", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "aaa-road", "A", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "zzz-road",
+            title: "Z",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "aaa-road",
+            title: "A",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let roadmaps = rdm_core::ops::roadmap::list_roadmaps(&store, "fbm", None, None).unwrap();
     assert_eq!(roadmaps.len(), 2);
     assert_eq!(roadmaps[0].frontmatter.roadmap, "aaa-road");
@@ -390,12 +421,14 @@ fn create_roadmap_with_priority() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     let doc = rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "urgent",
-        "Urgent Fix",
-        None,
-        Some(rdm_core::model::Priority::High),
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "urgent",
+            title: "Urgent Fix",
+            body: None,
+            priority: Some(rdm_core::model::Priority::High),
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(
@@ -409,8 +442,16 @@ fn update_roadmap_priority() {
     let mut store = MemoryStore::new();
     rdm_core::ops::init::init(&mut store).unwrap();
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let doc = rdm_core::ops::roadmap::update_roadmap(
         &mut store,
         "fbm",
@@ -433,12 +474,14 @@ fn create_roadmap_with_tags() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     let doc = rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "tagged",
-        "Tagged",
-        None,
-        None,
-        Some(vec!["api".to_string(), "mcp".to_string()]),
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "tagged",
+            title: "Tagged",
+            body: None,
+            priority: None,
+            tags: Some(vec!["api".to_string(), "mcp".to_string()]),
+        },
     )
     .unwrap();
     assert_eq!(
@@ -459,12 +502,14 @@ fn update_roadmap_replace_tags() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "alpha",
-        "Alpha",
-        None,
-        None,
-        Some(vec!["old".to_string()]),
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            body: None,
+            priority: None,
+            tags: Some(vec!["old".to_string()]),
+        },
     )
     .unwrap();
     let doc = rdm_core::ops::roadmap::update_roadmap(
@@ -489,12 +534,14 @@ fn update_roadmap_clear_tags() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "alpha",
-        "Alpha",
-        None,
-        None,
-        Some(vec!["keep-me".to_string()]),
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            body: None,
+            priority: None,
+            tags: Some(vec!["keep-me".to_string()]),
+        },
     )
     .unwrap();
     let doc = rdm_core::ops::roadmap::update_roadmap(
@@ -516,12 +563,14 @@ fn update_roadmap_clear_priority() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "alpha",
-        "Alpha",
-        None,
-        Some(rdm_core::model::Priority::High),
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            body: None,
+            priority: Some(rdm_core::model::Priority::High),
+            ..Default::default()
+        },
     )
     .unwrap();
     let doc = rdm_core::ops::roadmap::update_roadmap(
@@ -543,26 +592,38 @@ fn list_roadmaps_sort_by_priority() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "low-pri",
-        "Low",
-        None,
-        Some(rdm_core::model::Priority::Low),
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "low-pri",
+            title: "Low",
+            body: None,
+            priority: Some(rdm_core::model::Priority::Low),
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "high-pri",
-        "High",
-        None,
-        Some(rdm_core::model::Priority::High),
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "high-pri",
+            title: "High",
+            body: None,
+            priority: Some(rdm_core::model::Priority::High),
+            ..Default::default()
+        },
     )
     .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "no-pri", "None", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "no-pri",
+            title: "None",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let roadmaps = rdm_core::ops::roadmap::list_roadmaps(
         &store,
         "fbm",
@@ -583,26 +644,38 @@ fn list_roadmaps_filter_by_priority() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "alpha",
-        "Alpha",
-        None,
-        Some(rdm_core::model::Priority::High),
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            body: None,
+            priority: Some(rdm_core::model::Priority::High),
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "beta",
-        "Beta",
-        None,
-        Some(rdm_core::model::Priority::Low),
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            body: None,
+            priority: Some(rdm_core::model::Priority::Low),
+            ..Default::default()
+        },
     )
     .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "gamma", "Gamma", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "gamma",
+            title: "Gamma",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let roadmaps = rdm_core::ops::roadmap::list_roadmaps(
         &store,
         "fbm",
@@ -622,12 +695,12 @@ fn setup_with_roadmap() -> MemoryStore {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "two-way",
-        "Two-Way Players",
-        None,
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way Players",
+            ..Default::default()
+        },
     )
     .unwrap();
     store
@@ -638,13 +711,13 @@ fn create_phase_auto_number() {
     let mut store = setup_with_roadmap();
     let doc = rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core Valuation",
-        None,
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core Valuation",
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(doc.frontmatter.phase, 1);
@@ -652,13 +725,13 @@ fn create_phase_auto_number() {
 
     let doc2 = rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "service",
-        "Keeper Service",
-        None,
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "service",
+            title: "Keeper Service",
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(doc2.frontmatter.phase, 2);
@@ -676,13 +749,14 @@ fn create_phase_explicit_number() {
     let mut store = setup_with_roadmap();
     let doc = rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        Some(5),
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: Some(5),
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(doc.frontmatter.phase, 5);
@@ -698,13 +772,15 @@ fn create_phase_with_body() {
     let body = "## Acceptance Criteria\n\n- [ ] Criterion one\n- [ ] Criterion two\n";
     let doc = rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        None,
-        Some(body),
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: None,
+            body: Some(body),
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(doc.body, body);
@@ -718,13 +794,16 @@ fn create_phase_with_tags() {
     let mut store = setup_with_roadmap();
     let doc = rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        None,
-        None,
-        Some(vec!["infra".to_string(), "search".to_string()]),
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: None,
+            body: None,
+            tags: Some(vec!["infra".to_string(), "search".to_string()]),
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(
@@ -743,13 +822,16 @@ fn update_phase_replace_tags() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        None,
-        None,
-        Some(vec!["old".to_string()]),
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: None,
+            body: None,
+            tags: Some(vec!["old".to_string()]),
+            ..Default::default()
+        },
     )
     .unwrap();
     let doc = rdm_core::ops::phase::update_phase(
@@ -776,13 +858,16 @@ fn update_phase_clear_tags() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        None,
-        None,
-        Some(vec!["drop-me".to_string()]),
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: None,
+            body: None,
+            tags: Some(vec!["drop-me".to_string()]),
+            ..Default::default()
+        },
     )
     .unwrap();
     let doc = rdm_core::ops::phase::update_phase(
@@ -806,8 +891,16 @@ fn create_phase_roadmap_not_found() {
     let mut store = MemoryStore::new();
     rdm_core::ops::init::init(&mut store).unwrap();
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
-    let result =
-        rdm_core::ops::phase::create_phase(&mut store, "fbm", "nope", "s", "T", None, None, None);
+    let result = rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "nope",
+            slug: "s",
+            title: "T",
+            ..Default::default()
+        },
+    );
     assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
 }
 
@@ -816,24 +909,26 @@ fn list_phases_sorted() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        Some(2),
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: Some(2),
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "service",
-        "Service",
-        Some(1),
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "service",
+            title: "Service",
+            number: Some(1),
+            ..Default::default()
+        },
     )
     .unwrap();
     let phases = rdm_core::ops::phase::list_phases(&store, "fbm", "two-way").unwrap();
@@ -846,7 +941,14 @@ fn list_phases_sorted() {
 fn update_phase_to_done_sets_completed() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -871,7 +973,14 @@ fn update_phase_to_done_sets_completed() {
 fn update_phase_to_done_with_commit_stores_sha() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -900,7 +1009,14 @@ fn update_phase_to_done_with_commit_stores_sha() {
 fn update_phase_to_needs_review_stamps_review_sha() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -928,7 +1044,14 @@ fn update_phase_to_needs_review_stamps_review_sha() {
 fn update_phase_leaving_needs_review_clears_review_sha() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -965,7 +1088,14 @@ fn update_phase_leaving_needs_review_clears_review_sha() {
 fn update_phase_already_needs_review_restamps_on_reapply() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     // Initial finalize stamps sha1 / branch-a.
@@ -1014,7 +1144,14 @@ fn update_phase_already_needs_review_restamps_on_reapply() {
 fn update_phase_status_none_preserves_review_sha() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -1055,7 +1192,14 @@ fn update_phase_status_none_preserves_review_sha() {
 fn update_phase_to_needs_review_stamps_review_branch() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -1088,7 +1232,14 @@ fn update_phase_to_needs_review_stamps_review_branch() {
 fn update_phase_leaving_needs_review_clears_review_branch() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -1125,7 +1276,14 @@ fn update_phase_leaving_needs_review_clears_review_branch() {
 fn update_phase_from_done_clears_completed() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -1163,7 +1321,14 @@ fn update_phase_from_done_clears_completed() {
 fn blocked_reason_is_recorded_then_preserved_across_resume_then_clearable() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -1234,24 +1399,26 @@ fn blocked_phases_lists_only_parked_phases_with_reasons() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        Some(1),
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: Some(1),
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "service",
-        "Service",
-        Some(2),
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "service",
+            title: "Service",
+            number: Some(2),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -1292,13 +1459,15 @@ fn update_phase_body_replaces_existing() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        None,
-        Some("Original body.\n"),
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: None,
+            body: Some("Original body.\n"),
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -1325,13 +1494,15 @@ fn update_phase_none_body_preserves_existing() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        None,
-        Some("Keep this body.\n"),
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: None,
+            body: Some("Keep this body.\n"),
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -1372,7 +1543,14 @@ fn update_phase_not_found() {
 fn set_phase_estimate_sets_and_persists_both() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -1398,7 +1576,14 @@ fn set_phase_estimate_sets_and_persists_both() {
 fn set_phase_estimate_clears_one_keeps_other() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::set_phase_estimate(
@@ -1456,7 +1641,14 @@ fn set_phase_estimate_not_found() {
 fn set_phase_estimate_difficulty_only_derives_model_tier() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -1482,7 +1674,14 @@ fn set_phase_estimate_difficulty_only_derives_model_tier() {
 fn set_phase_estimate_explicit_model_overrides_derive() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -1504,7 +1703,14 @@ fn set_phase_estimate_explicit_model_overrides_derive() {
 fn set_phase_estimate_preserves_existing_model_on_difficulty_change() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -1537,7 +1743,14 @@ fn set_phase_estimate_preserves_existing_model_on_difficulty_change() {
 fn set_phase_estimate_clear_model_prevents_derive() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -1560,7 +1773,14 @@ fn set_phase_estimate_clear_model_prevents_derive() {
 fn update_phase_done_to_done_with_new_commit_updates_sha() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     let first = rdm_core::ops::phase::update_phase(
@@ -1600,7 +1820,14 @@ fn update_phase_done_to_done_with_new_commit_updates_sha() {
 fn update_phase_done_to_done_without_commit_is_noop() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     let first = rdm_core::ops::phase::update_phase(
@@ -1640,7 +1867,14 @@ fn update_phase_done_to_done_without_commit_is_noop() {
 fn update_phase_to_wont_fix_sets_completed() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -1670,7 +1904,14 @@ fn update_phase_to_wont_fix_sets_completed() {
 fn update_phase_wont_fix_to_not_started_clears_completed() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -1709,24 +1950,26 @@ fn resolve_by_number() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        Some(1),
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: Some(1),
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "service",
-        "Service",
-        Some(2),
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "service",
+            title: "Service",
+            number: Some(2),
+            ..Default::default()
+        },
     )
     .unwrap();
     let stem = rdm_core::ops::phase::resolve_phase_stem(&store, "fbm", "two-way", "2").unwrap();
@@ -1746,13 +1989,14 @@ fn resolve_number_not_found() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        Some(1),
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: Some(1),
+            ..Default::default()
+        },
     )
     .unwrap();
     let result = rdm_core::ops::phase::resolve_phase_stem(&store, "fbm", "two-way", "99");
@@ -1765,7 +2009,14 @@ fn resolve_number_not_found() {
 fn remove_phase_deletes_file() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     let path = rdm_core::paths::phase_path("fbm", "two-way", "phase-1-core");
@@ -1779,11 +2030,25 @@ fn remove_phase_deletes_file() {
 fn remove_phase_updates_roadmap() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "service", "Service", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "service",
+            title: "Service",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -1807,11 +2072,25 @@ fn pending_review_items_lists_phases_and_tasks_in_needs_review() {
     let mut store = setup_with_roadmap();
     // Two phases: one needs-review (stamped), one in-progress (excluded).
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "svc", "Service", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "svc",
+            title: "Service",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -1829,10 +2108,28 @@ fn pending_review_items_lists_phases_and_tasks_in_needs_review() {
     .unwrap();
 
     // Two tasks: one needs-review (unstamped), one open (excluded).
-    rdm_core::ops::task::create_task(&mut store, "fbm", "t1", "T1", Priority::Low, None, None)
-        .unwrap();
-    rdm_core::ops::task::create_task(&mut store, "fbm", "t2", "T2", Priority::Low, None, None)
-        .unwrap();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "t1",
+            title: "T1",
+            priority: Priority::Low,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "t2",
+            title: "T2",
+            priority: Priority::Low,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     rdm_core::ops::task::update_task(
         &mut store,
         "fbm",
@@ -1881,12 +2178,13 @@ fn create_task_success() {
     let mut store = setup_with_project();
     let doc = rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix the bug",
-        Priority::High,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix the bug",
+            priority: Priority::High,
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(doc.frontmatter.title, "Fix the bug");
@@ -1900,16 +2198,37 @@ fn create_task_success() {
 }
 
 #[test]
+fn create_task_default_priority_is_medium() {
+    // CreateTask has a hand-written Default (Priority has no Default derive); omitting
+    // `priority` must fall back to Medium. Pins that default so a future change to the
+    // impl can't silently alter it.
+    let mut store = setup_with_project();
+    let doc = rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "no-priority",
+            title: "No explicit priority",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.priority, Priority::Medium);
+}
+
+#[test]
 fn create_task_with_tags() {
     let mut store = setup_with_project();
     let doc = rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix the bug",
-        Priority::High,
-        Some(vec!["bug".to_string(), "urgent".to_string()]),
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix the bug",
+            priority: Priority::High,
+            tags: Some(vec!["bug".to_string(), "urgent".to_string()]),
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(
@@ -1924,12 +2243,14 @@ fn create_task_with_body() {
     let body = "## Notes\n\nSome detailed task notes.\n";
     let doc = rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::High,
-        None,
-        Some(body),
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::High,
+            tags: None,
+            body: Some(body),
+        },
     )
     .unwrap();
     assert_eq!(doc.body, body);
@@ -1944,12 +2265,13 @@ fn create_task_project_not_found() {
     rdm_core::ops::init::init(&mut store).unwrap();
     let result = rdm_core::ops::task::create_task(
         &mut store,
-        "nope",
-        "slug",
-        "Title",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "nope",
+            slug: "slug",
+            title: "Title",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     );
     assert!(matches!(result, Err(Error::ProjectNotFound(_))));
 }
@@ -1959,22 +2281,24 @@ fn create_task_duplicate() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     let result = rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Dup",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Dup",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     );
     assert!(matches!(result, Err(Error::DuplicateSlug(_))));
 }
@@ -1984,22 +2308,24 @@ fn list_tasks_sorted() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "zzz-task",
-        "Z",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "zzz-task",
+            title: "Z",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "aaa-task",
-        "A",
-        Priority::High,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "aaa-task",
+            title: "A",
+            priority: Priority::High,
+            ..Default::default()
+        },
     )
     .unwrap();
     let tasks = rdm_core::ops::task::list_tasks(&store, "fbm").unwrap();
@@ -2028,12 +2354,13 @@ fn update_task_status() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -2060,12 +2387,13 @@ fn update_task_priority() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -2089,12 +2417,13 @@ fn update_task_tags() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -2118,12 +2447,14 @@ fn update_task_body_replaces_existing() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        Some("Original.\n"),
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            tags: None,
+            body: Some("Original.\n"),
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -2150,12 +2481,14 @@ fn update_task_none_body_preserves_existing() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        Some("Keep this.\n"),
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            tags: None,
+            body: Some("Keep this.\n"),
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -2197,12 +2530,13 @@ fn update_task_done_sets_completed_and_commit() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -2233,12 +2567,13 @@ fn update_task_to_needs_review_stamps_review_sha() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -2266,12 +2601,13 @@ fn update_task_leaving_needs_review_clears_review_sha() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::task::update_task(
@@ -2308,12 +2644,13 @@ fn update_task_already_needs_review_restamps_on_reapply() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::task::update_task(
@@ -2361,12 +2698,13 @@ fn update_task_status_none_preserves_review_sha() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::task::update_task(
@@ -2407,12 +2745,13 @@ fn update_task_to_needs_review_stamps_review_branch() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -2446,12 +2785,13 @@ fn update_task_leaving_needs_review_clears_review_branch() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::task::update_task(
@@ -2489,12 +2829,13 @@ fn update_task_done_sets_completed_without_commit() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -2520,12 +2861,13 @@ fn update_task_idempotent_done_updates_commit() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     let first = rdm_core::ops::task::update_task(
@@ -2568,12 +2910,13 @@ fn update_task_reopen_clears_completed_and_commit() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::task::update_task(
@@ -2614,12 +2957,13 @@ fn update_task_wont_fix_sets_completed() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -2701,22 +3045,23 @@ fn promote_task_duplicate_roadmap() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "my-task",
-        "Task",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "my-task",
+            title: "Task",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "existing-rm",
-        "Existing",
-        None,
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "existing-rm",
+            title: "Existing",
+            ..Default::default()
+        },
     )
     .unwrap();
     let result = rdm_core::ops::task::promote_task(&mut store, "fbm", "my-task", "existing-rm");
@@ -2728,10 +3073,26 @@ fn promote_task_duplicate_roadmap() {
 #[test]
 fn add_dependency_success() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let doc = rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "beta", "alpha").unwrap();
     assert_eq!(
@@ -2750,12 +3111,36 @@ fn add_dependency_success() {
 #[test]
 fn add_dependency_multiple() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "gamma", "Gamma", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "gamma",
+            title: "Gamma",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "gamma", "alpha").unwrap();
     let doc = rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "gamma", "beta").unwrap();
@@ -2768,10 +3153,26 @@ fn add_dependency_multiple() {
 #[test]
 fn add_dependency_duplicate_is_noop() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "beta", "alpha").unwrap();
     let doc = rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "beta", "alpha").unwrap();
@@ -2784,8 +3185,16 @@ fn add_dependency_duplicate_is_noop() {
 #[test]
 fn add_dependency_self_cycle() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let result = rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "alpha", "alpha");
     assert!(matches!(result, Err(Error::CyclicDependency(_))));
@@ -2794,10 +3203,26 @@ fn add_dependency_self_cycle() {
 #[test]
 fn add_dependency_direct_cycle() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "beta", "alpha").unwrap();
     let result = rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "alpha", "beta");
@@ -2807,12 +3232,36 @@ fn add_dependency_direct_cycle() {
 #[test]
 fn add_dependency_transitive_cycle() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "gamma", "Gamma", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "gamma",
+            title: "Gamma",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "beta", "alpha").unwrap();
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "gamma", "beta").unwrap();
@@ -2824,8 +3273,16 @@ fn add_dependency_transitive_cycle() {
 #[test]
 fn add_dependency_target_not_found() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let result = rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "alpha", "nonexistent");
     assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
@@ -2834,8 +3291,16 @@ fn add_dependency_target_not_found() {
 #[test]
 fn add_dependency_source_not_found() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let result = rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "nonexistent", "alpha");
     assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
@@ -2844,10 +3309,26 @@ fn add_dependency_source_not_found() {
 #[test]
 fn remove_dependency_success() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "beta", "alpha").unwrap();
     let doc =
@@ -2861,8 +3342,16 @@ fn remove_dependency_success() {
 #[test]
 fn remove_dependency_not_present_is_noop() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let doc = rdm_core::ops::roadmap::remove_dependency(&mut store, "fbm", "alpha", "nonexistent")
         .unwrap();
@@ -2872,12 +3361,36 @@ fn remove_dependency_not_present_is_noop() {
 #[test]
 fn remove_dependency_preserves_others() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "gamma", "Gamma", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "gamma",
+            title: "Gamma",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "gamma", "alpha").unwrap();
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "gamma", "beta").unwrap();
@@ -2889,12 +3402,36 @@ fn remove_dependency_preserves_others() {
 #[test]
 fn dependency_graph_returns_entries() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "gamma", "Gamma", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "gamma",
+            title: "Gamma",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "beta", "alpha").unwrap();
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "gamma", "alpha").unwrap();
@@ -2912,8 +3449,16 @@ fn dependency_graph_returns_entries() {
 #[test]
 fn dependency_graph_empty() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let graph = rdm_core::ops::roadmap::dependency_graph(&store, "fbm").unwrap();
     assert!(graph.is_empty());
 }
@@ -2923,10 +3468,25 @@ fn dependency_graph_empty() {
 #[test]
 fn delete_roadmap_removes_files() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -2947,12 +3507,36 @@ fn delete_roadmap_not_found() {
 #[test]
 fn delete_roadmap_cleans_up_dependencies() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "gamma", "Gamma", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "gamma",
+            title: "Gamma",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "beta", "alpha").unwrap();
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "gamma", "alpha").unwrap();
@@ -2975,10 +3559,26 @@ fn delete_roadmap_cleans_up_dependencies() {
 #[test]
 fn delete_roadmap_not_in_list() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::delete_roadmap(&mut store, "fbm", "alpha").unwrap();
 
@@ -2996,42 +3596,56 @@ fn setup_with_four_phases() -> MemoryStore {
     let mut store = setup_with_project();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "big-rm",
-        "Big Roadmap",
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-    rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "big-rm", "design", "Design", None, None, None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "big-rm",
+            title: "Big Roadmap",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "big-rm",
-        "impl",
-        "Implementation",
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-    rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "big-rm", "test", "Testing", None, None, None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "big-rm",
+            slug: "design",
+            title: "Design",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "big-rm",
-        "deploy",
-        "Deployment",
-        None,
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "big-rm",
+            slug: "impl",
+            title: "Implementation",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "big-rm",
+            slug: "test",
+            title: "Testing",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "big-rm",
+            slug: "deploy",
+            title: "Deployment",
+            ..Default::default()
+        },
     )
     .unwrap();
     store
@@ -3157,7 +3771,13 @@ fn split_roadmap_with_dependency() {
 fn split_roadmap_target_exists() {
     let mut store = setup_with_four_phases();
     rdm_core::ops::roadmap::create_roadmap(
-        &mut store, "fbm", "existing", "Existing", None, None, None,
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "existing",
+            title: "Existing",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -3284,16 +3904,23 @@ fn generate_index_creates_file() {
     let mut store = setup_with_project();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "alpha",
-        "Alpha Roadmap",
-        None,
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha Roadmap",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::index::generate_index(&mut store).unwrap();
@@ -3310,8 +3937,16 @@ fn generate_index_creates_file() {
 #[test]
 fn generate_index_idempotent() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     rdm_core::ops::index::generate_index(&mut store).unwrap();
     let first = store.read(&rdm_core::paths::index_path()).unwrap();
     rdm_core::ops::index::generate_index(&mut store).unwrap();
@@ -3333,32 +3968,35 @@ fn generate_index_task_priority_ordering_in_project_index() {
     let mut store = setup_with_project();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "low-task",
-        "Low",
-        Priority::Low,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "low-task",
+            title: "Low",
+            priority: Priority::Low,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "crit-task",
-        "Critical",
-        Priority::Critical,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "crit-task",
+            title: "Critical",
+            priority: Priority::Critical,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "high-task",
-        "High",
-        Priority::High,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "high-task",
+            title: "High",
+            priority: Priority::High,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::index::generate_index(&mut store).unwrap();
@@ -3383,20 +4021,34 @@ fn generate_index_counts_wont_fix_in_done_count() {
     let mut store = setup_with_project();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "alpha",
-        "Alpha Roadmap",
-        None,
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha Roadmap",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "extra", "Extra", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "extra",
+            title: "Extra",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -3438,16 +4090,23 @@ fn needs_review_and_reviewed_round_trip_and_render_in_index() {
     let mut store = setup_with_project();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "alpha",
-        "Alpha Roadmap",
-        None,
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha Roadmap",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -3465,12 +4124,13 @@ fn needs_review_and_reviewed_round_trip_and_render_in_index() {
     .unwrap();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "ship-it",
-        "Ship It",
-        Priority::Medium,
-        None,
-        None,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "ship-it",
+            title: "Ship It",
+            priority: Priority::Medium,
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::task::update_task(
@@ -3517,16 +4177,23 @@ fn generate_project_index_creates_file() {
     let mut store = setup_with_project();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "alpha",
-        "Alpha Roadmap",
-        None,
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha Roadmap",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::index::generate_project_index(&mut store, "fbm").unwrap();
@@ -3546,10 +4213,26 @@ fn generate_index_for_project_only_writes_targeted_project() {
     rdm_core::ops::init::init(&mut store).unwrap();
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::project::create_project(&mut store, "acme", "ACME").unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "acme", "beta", "Beta", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "acme",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::index::generate_index_for_project(&mut store, "fbm").unwrap();
 
@@ -3587,7 +4270,15 @@ fn mutate_regenerates_index_and_commits_once() {
     let before = store.head_sha().unwrap();
 
     let doc = rdm_core::ops::mutate(&mut store, "fbm", |s| {
-        rdm_core::ops::roadmap::create_roadmap(s, "fbm", "alpha", "Alpha", None, None, None)
+        rdm_core::ops::roadmap::create_roadmap(
+            s,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "fbm",
+                slug: "alpha",
+                title: "Alpha",
+                ..Default::default()
+            },
+        )
     })
     .unwrap();
     assert_eq!(doc.frontmatter.roadmap, "alpha");
@@ -3615,8 +4306,16 @@ fn mutate_regenerates_index_and_commits_once() {
 #[test]
 fn generate_index_writes_project_index() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     rdm_core::ops::index::generate_index(&mut store).unwrap();
 
     // Root index should exist
@@ -3636,10 +4335,25 @@ fn generate_index_writes_project_index() {
 #[test]
 fn archive_roadmap_moves_files() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -3674,10 +4388,25 @@ fn archive_roadmap_not_found() {
 #[test]
 fn archive_roadmap_rejects_incomplete_phases() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -3691,10 +4420,25 @@ fn archive_roadmap_rejects_incomplete_phases() {
 #[test]
 fn archive_roadmap_force_overrides_check() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -3706,10 +4450,25 @@ fn archive_roadmap_force_overrides_check() {
 #[test]
 fn archive_roadmap_all_done_no_force_needed() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -3734,14 +4493,36 @@ fn archive_roadmap_all_done_no_force_needed() {
 #[test]
 fn archive_succeeds_with_mixed_done_and_wont_fix() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "skip", "Skip", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "skip",
+            title: "Skip",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::update_phase(
@@ -3779,12 +4560,36 @@ fn archive_succeeds_with_mixed_done_and_wont_fix() {
 #[test]
 fn archive_roadmap_cleans_up_dependencies() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "gamma", "Gamma", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "gamma",
+            title: "Gamma",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "beta", "alpha").unwrap();
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "gamma", "alpha").unwrap();
@@ -3807,10 +4612,26 @@ fn archive_roadmap_cleans_up_dependencies() {
 #[test]
 fn archive_roadmap_not_in_active_list() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "beta", "Beta", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "beta",
+            title: "Beta",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::archive_roadmap(&mut store, "fbm", "alpha", true).unwrap();
 
@@ -3825,8 +4646,16 @@ fn archive_roadmap_not_in_active_list() {
 #[test]
 fn list_archived_roadmaps_returns_archived() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     rdm_core::ops::roadmap::archive_roadmap(&mut store, "fbm", "alpha", true).unwrap();
 
@@ -3845,10 +4674,25 @@ fn list_archived_roadmaps_empty() {
 #[test]
 fn unarchive_roadmap_restores_files() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -3870,18 +4714,41 @@ fn unarchive_roadmap_not_found() {
 #[test]
 fn unarchive_roadmap_duplicate_slug() {
     let mut store = setup_with_project();
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "alpha", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
     rdm_core::ops::roadmap::archive_roadmap(&mut store, "fbm", "alpha", true).unwrap();
 
     // Create a new active roadmap with the same slug
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "alpha", "Alpha 2", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha 2",
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let result = rdm_core::ops::roadmap::unarchive_roadmap(&mut store, "fbm", "alpha");
     assert!(matches!(result, Err(Error::DuplicateSlug(ref s)) if s == "alpha"));
@@ -3895,18 +4762,26 @@ fn update_phase_empty_body_refused_when_existing_nonempty() {
     rdm_core::ops::init::init(&mut store).unwrap();
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
-        &mut store, "fbm", "two-way", "Two-Way", None, None, None,
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        Some(1),
-        Some("Existing body."),
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: Some(1),
+            body: Some("Existing body."),
+            ..Default::default()
+        },
     )
     .unwrap();
     let result = rdm_core::ops::phase::update_phase(
@@ -3932,18 +4807,25 @@ fn update_phase_empty_body_allowed_when_existing_empty() {
     rdm_core::ops::init::init(&mut store).unwrap();
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
-        &mut store, "fbm", "two-way", "Two-Way", None, None, None,
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        Some(1),
-        None,
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: Some(1),
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -3968,18 +4850,26 @@ fn update_phase_empty_body_allowed_with_flag() {
     rdm_core::ops::init::init(&mut store).unwrap();
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
-        &mut store, "fbm", "two-way", "Two-Way", None, None, None,
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        Some(1),
-        Some("Existing body."),
-        None,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: Some(1),
+            body: Some("Existing body."),
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::phase::update_phase(
@@ -4005,12 +4895,14 @@ fn update_task_empty_body_refused_when_existing_nonempty() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix Bug",
-        rdm_core::model::Priority::Medium,
-        None,
-        Some("Existing body."),
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix Bug",
+            priority: rdm_core::model::Priority::Medium,
+            tags: None,
+            body: Some("Existing body."),
+        },
     )
     .unwrap();
     let result = rdm_core::ops::task::update_task(
@@ -4037,12 +4929,14 @@ fn update_task_empty_body_allowed_with_flag() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::task::create_task(
         &mut store,
-        "fbm",
-        "fix-bug",
-        "Fix Bug",
-        rdm_core::model::Priority::Medium,
-        None,
-        Some("Existing body."),
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix Bug",
+            priority: rdm_core::model::Priority::Medium,
+            tags: None,
+            body: Some("Existing body."),
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::task::update_task(
@@ -4068,12 +4962,13 @@ fn update_roadmap_empty_body_refused_when_existing_nonempty() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "two-way",
-        "Two-Way",
-        Some("Existing body."),
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way",
+            body: Some("Existing body."),
+            ..Default::default()
+        },
     )
     .unwrap();
     let result = rdm_core::ops::roadmap::update_roadmap(
@@ -4096,12 +4991,13 @@ fn update_roadmap_empty_body_allowed_with_flag() {
     rdm_core::ops::project::create_project(&mut store, "fbm", "FBM").unwrap();
     rdm_core::ops::roadmap::create_roadmap(
         &mut store,
-        "fbm",
-        "two-way",
-        "Two-Way",
-        Some("Existing body."),
-        None,
-        None,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "two-way",
+            title: "Two-Way",
+            body: Some("Existing body."),
+            ..Default::default()
+        },
     )
     .unwrap();
     let updated = rdm_core::ops::roadmap::update_roadmap(
@@ -4126,13 +5022,14 @@ fn make_phases(store: &mut MemoryStore, roadmap: &str, count: u32) {
     for n in 1..=count {
         rdm_core::ops::phase::create_phase(
             store,
-            "fbm",
-            roadmap,
-            &format!("p{n}"),
-            &format!("Phase {n}"),
-            Some(n),
-            None,
-            None,
+            rdm_core::ops::phase::CreatePhase {
+                project: "fbm",
+                roadmap,
+                slug: &format!("p{n}"),
+                title: &format!("Phase {n}"),
+                number: Some(n),
+                ..Default::default()
+            },
         )
         .unwrap();
     }
@@ -4235,8 +5132,16 @@ fn next_actionable_unmet_dependency_blocks() {
     let mut store = setup_with_roadmap();
     make_phases(&mut store, "two-way", 1);
     // A dependency roadmap with an open (not-started) phase.
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "dep", "Dep", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "dep",
+            title: "Dep",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     make_phases(&mut store, "dep", 1);
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "two-way", "dep").unwrap();
 
@@ -4272,8 +5177,16 @@ fn next_actionable_missing_dependency_roadmap_is_unmet() {
 fn next_actionable_met_dependency_proceeds() {
     let mut store = setup_with_roadmap();
     make_phases(&mut store, "two-way", 1);
-    rdm_core::ops::roadmap::create_roadmap(&mut store, "fbm", "dep", "Dep", None, None, None)
-        .unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "dep",
+            title: "Dep",
+            ..Default::default()
+        },
+    )
+    .unwrap();
     make_phases(&mut store, "dep", 1);
     set_status(&mut store, "dep", "phase-1-p1", PhaseStatus::Done);
     rdm_core::ops::roadmap::add_dependency(&mut store, "fbm", "two-way", "dep").unwrap();
@@ -4320,17 +5233,19 @@ fn next_actionable_carries_difficulty_and_model() {
 #[test]
 fn create_phase_with_estimate_applies_estimate_in_one_op() {
     let mut store = setup_with_roadmap();
-    let doc = rdm_core::ops::phase::create_phase_with_estimate(
+    let doc = rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core Valuation",
-        None,
-        Some("Body text."),
-        Some(vec!["audit".to_string()]),
-        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
-        rdm_core::ops::ModelTierUpdate::Keep,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core Valuation",
+            number: None,
+            body: Some("Body text."),
+            tags: Some(vec!["audit".to_string()]),
+            difficulty: rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -4353,17 +5268,19 @@ fn create_phase_with_estimate_applies_estimate_in_one_op() {
 fn create_phase_with_estimate_explicit_model_wins_over_derive() {
     let mut store = setup_with_roadmap();
     // Hard would derive Large, but an explicit Small wins.
-    let doc = rdm_core::ops::phase::create_phase_with_estimate(
+    let doc = rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core",
-        None,
-        None,
-        None,
-        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
-        rdm_core::ops::ModelTierUpdate::Set(ModelTier::Small),
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            number: None,
+            body: None,
+            tags: None,
+            difficulty: rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+            model: rdm_core::ops::ModelTierUpdate::Set(ModelTier::Small),
+        },
     )
     .unwrap();
     assert_eq!(doc.frontmatter.difficulty, Some(Difficulty::Hard));
@@ -4373,17 +5290,18 @@ fn create_phase_with_estimate_explicit_model_wins_over_derive() {
 #[test]
 fn create_phase_with_estimate_keep_keep_matches_plain_create() {
     let mut store = setup_with_roadmap();
-    let doc = rdm_core::ops::phase::create_phase_with_estimate(
+    let doc = rdm_core::ops::phase::create_phase(
         &mut store,
-        "fbm",
-        "two-way",
-        "core",
-        "Core Valuation",
-        None,
-        Some("Body text."),
-        Some(vec!["audit".to_string()]),
-        rdm_core::ops::DifficultyUpdate::Keep,
-        rdm_core::ops::ModelTierUpdate::Keep,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core Valuation",
+            number: None,
+            body: Some("Body text."),
+            tags: Some(vec!["audit".to_string()]),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -4400,7 +5318,14 @@ fn create_phase_with_estimate_keep_keep_matches_plain_create() {
 fn update_phase_with_estimate_applies_status_review_and_estimate_in_one_op() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -4451,11 +5376,25 @@ fn update_phase_with_estimate_keep_keep_matches_plain_update() {
     // update_phase_with_estimate(Keep, Keep) to the other with the same args.
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "svc", "Service", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "svc",
+            title: "Service",
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -4570,7 +5509,14 @@ impl Store for CountingStore {
 fn update_phase_with_estimate_writes_phase_file_exactly_once() {
     let mut store = CountingStore::new(setup_with_roadmap());
     rdm_core::ops::phase::create_phase(
-        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
     )
     .unwrap();
 

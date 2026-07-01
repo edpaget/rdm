@@ -47,56 +47,48 @@ pub fn list_phases(
     Ok(phases)
 }
 
-/// Creates a new phase within a roadmap.
+/// Request describing a new phase to create.
 ///
-/// If `phase_number` is `None`, auto-assigns the next number.
-/// `body` sets the markdown body below the frontmatter. Pass `None` for
-/// an empty body. `tags` sets optional tags for categorization.
+/// Only `project`, `roadmap`, `slug`, and `title` are required for a minimal
+/// phase; the remaining fields default via [`Default`] (`number` auto-assigns,
+/// `body`/`tags` are empty, and `difficulty`/`model` default to
+/// [`DifficultyUpdate::Keep`]/[`ModelTierUpdate::Keep`]), so callers can write
+/// `CreatePhase { project, roadmap, slug, title, ..Default::default() }`.
 ///
-/// # Errors
-///
-/// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
-/// [`Error::DuplicateSlug`] if a phase with the same stem already exists,
-/// [`Error::Io`] if file creation fails, or
-/// [`Error::FrontmatterParse`] if frontmatter serialization fails.
-#[allow(clippy::too_many_arguments)]
-pub fn create_phase(
-    store: &mut impl Store,
-    project: &str,
-    roadmap: &str,
-    slug: &str,
-    title: &str,
-    phase_number: Option<u32>,
-    body: Option<&str>,
-    tags: Option<Vec<String>>,
-) -> Result<Document<Phase>> {
-    create_phase_inner(
-        store,
-        project,
-        roadmap,
-        slug,
-        title,
-        phase_number,
-        body,
-        tags,
-        DifficultyUpdate::Keep,
-        ModelTierUpdate::Keep,
-    )
+/// When `difficulty` and `model` are left at their `Keep` defaults, creation is
+/// identical to a plain phase create; setting them applies a difficulty/model
+/// estimate (including the difficulty→tier auto-derive documented on
+/// [`set_phase_estimate`]) as part of the same single write.
+#[derive(Debug, Clone, Default)]
+pub struct CreatePhase<'a> {
+    /// Project the phase's roadmap belongs to.
+    pub project: &'a str,
+    /// Roadmap the phase belongs to.
+    pub roadmap: &'a str,
+    /// Slug suffix for the phase stem (`phase-{number}-{slug}`).
+    pub slug: &'a str,
+    /// Human-readable title.
+    pub title: &'a str,
+    /// Explicit phase number. `None` auto-assigns the next number.
+    pub number: Option<u32>,
+    /// Markdown body below the frontmatter. `None` yields an empty body.
+    pub body: Option<&'a str>,
+    /// Optional tags for categorization.
+    pub tags: Option<Vec<String>>,
+    /// Difficulty estimate to apply on creation.
+    pub difficulty: DifficultyUpdate,
+    /// Model-tier estimate to apply on creation.
+    pub model: ModelTierUpdate,
 }
 
-/// Creates a new phase within a roadmap, applying a difficulty/model estimate
-/// as part of the same single write.
+/// Creates a new phase within a roadmap.
 ///
-/// This is the consolidated entry point behind the CLI's `phase create`: it
-/// composes phase creation with [`set_phase_estimate`]'s difficulty/model logic
-/// (including the same difficulty→tier auto-derive) so the phase file is written
-/// once with the estimate already applied, rather than created and then
-/// re-loaded and re-written. Passing [`DifficultyUpdate::Keep`] and
-/// [`ModelTierUpdate::Keep`] makes this behaviorally identical to
-/// [`create_phase`].
-///
-/// See [`create_phase`] for the numbering/body/tags behavior and
-/// [`set_phase_estimate`] for the model-tier auto-derive rules.
+/// See [`CreatePhase`] for the field semantics: if `number` is `None` the next
+/// phase number is auto-assigned, `body` of `None` yields an empty body, and
+/// `difficulty`/`model` apply an estimate in the same single write (leaving them
+/// at their [`DifficultyUpdate::Keep`]/[`ModelTierUpdate::Keep`] defaults is
+/// behaviorally identical to a plain create). The difficulty→tier auto-derive
+/// follows the rule documented on [`set_phase_estimate`].
 ///
 /// # Errors
 ///
@@ -104,50 +96,18 @@ pub fn create_phase(
 /// [`Error::DuplicateSlug`] if a phase with the same stem already exists,
 /// [`Error::Io`] if file creation fails, or
 /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
-#[allow(clippy::too_many_arguments)]
-pub fn create_phase_with_estimate(
-    store: &mut impl Store,
-    project: &str,
-    roadmap: &str,
-    slug: &str,
-    title: &str,
-    phase_number: Option<u32>,
-    body: Option<&str>,
-    tags: Option<Vec<String>>,
-    difficulty: DifficultyUpdate,
-    model: ModelTierUpdate,
-) -> Result<Document<Phase>> {
-    create_phase_inner(
-        store,
+pub fn create_phase(store: &mut impl Store, req: CreatePhase<'_>) -> Result<Document<Phase>> {
+    let CreatePhase {
         project,
         roadmap,
         slug,
         title,
-        phase_number,
+        number: phase_number,
         body,
         tags,
         difficulty,
         model,
-    )
-}
-
-/// Shared implementation for [`create_phase`] and
-/// [`create_phase_with_estimate`]: builds the phase document once, applies the
-/// difficulty/model estimate in memory, and writes the phase file (and the
-/// roadmap's phases list) a single time.
-#[allow(clippy::too_many_arguments)]
-fn create_phase_inner(
-    store: &mut impl Store,
-    project: &str,
-    roadmap: &str,
-    slug: &str,
-    title: &str,
-    phase_number: Option<u32>,
-    body: Option<&str>,
-    tags: Option<Vec<String>>,
-    difficulty: DifficultyUpdate,
-    model: ModelTierUpdate,
-) -> Result<Document<Phase>> {
+    } = req;
     let roadmap_file = crate::paths::roadmap_path(project, roadmap);
     if !store.exists(&roadmap_file) {
         return Err(Error::RoadmapNotFound(roadmap.to_string()));
@@ -420,7 +380,7 @@ pub fn set_phase_estimate(
 /// memory, performing no I/O.
 ///
 /// This is the I/O-free core of [`set_phase_estimate`]; it exists so that
-/// [`create_phase_with_estimate`] and [`update_phase_with_estimate`] can apply
+/// [`create_phase`] and [`update_phase_with_estimate`] can apply
 /// the estimate as part of their single write. The difficulty→tier auto-derive
 /// rule is exactly the one documented on [`set_phase_estimate`]: when
 /// `difficulty` is [`DifficultyUpdate::Set`], `model` is

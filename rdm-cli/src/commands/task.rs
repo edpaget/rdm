@@ -39,12 +39,14 @@ pub fn run(
                 |s| {
                     rdm_core::ops::task::create_task(
                         s,
-                        &project,
-                        &slug,
-                        title,
-                        priority,
-                        tags,
-                        body.as_deref(),
+                        rdm_core::ops::task::CreateTask {
+                            project: &project,
+                            slug: &slug,
+                            title,
+                            priority,
+                            tags,
+                            body: body.as_deref(),
+                        },
                     )
                 },
             )?;
