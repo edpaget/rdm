@@ -146,7 +146,10 @@ impl From<&Error> for ProblemDetail {
             | Error::ConfigSerialize(_)
             | Error::InvalidPath(_)
             | Error::InvalidConfigValue { .. }
-            | Error::Git(_) => ProblemDetail {
+            | Error::Git(_)
+            | Error::RootNotDetermined
+            | Error::HomeNotSet { .. }
+            | Error::PathResolutionFailed { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Internal Server Error".to_string(),
                 status: 500,

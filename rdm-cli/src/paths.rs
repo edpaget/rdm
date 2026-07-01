@@ -5,44 +5,23 @@ use rdm_core::config::{ConfigSource, GLOBAL_ONLY_KEYS, GlobalConfig, KNOWN_KEYS,
 
 /// Returns the path to the global config file.
 ///
-/// Resolution: `$XDG_CONFIG_HOME/rdm/config.toml` or `~/.config/rdm/config.toml`.
-/// Returns `None` if `$HOME` is not set.
+/// Delegates to [`rdm_core::root::global_config_path`].
 pub fn global_config_path() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        Some(PathBuf::from(xdg).join("rdm").join("config.toml"))
-    } else {
-        std::env::var("HOME").ok().map(|home| {
-            PathBuf::from(home)
-                .join(".config")
-                .join("rdm")
-                .join("config.toml")
-        })
-    }
+    rdm_core::root::global_config_path()
 }
 
 /// Returns the default data directory for plan repos.
 ///
-/// Resolution: `$XDG_DATA_HOME/rdm` or `~/.local/share/rdm`.
-/// Returns `None` if `$HOME` is not set.
+/// Delegates to [`rdm_core::root::default_data_dir`].
 pub fn default_data_dir() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        Some(PathBuf::from(xdg).join("rdm"))
-    } else {
-        std::env::var("HOME")
-            .ok()
-            .map(|home| PathBuf::from(home).join(".local").join("share").join("rdm"))
-    }
+    rdm_core::root::default_data_dir()
 }
 
 /// Loads the global config from disk, returning `Default` if the file is missing.
+///
+/// Delegates to [`rdm_core::root::load_global_config`].
 pub fn load_global_config() -> GlobalConfig {
-    let Some(path) = global_config_path() else {
-        return GlobalConfig::default();
-    };
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return GlobalConfig::default();
-    };
-    GlobalConfig::from_toml(&contents).unwrap_or_default()
+    rdm_core::root::load_global_config()
 }
 
 /// Resolves the plan repo root using the priority chain:
@@ -51,24 +30,19 @@ pub fn load_global_config() -> GlobalConfig {
 /// 2. `root` field in global config
 /// 3. XDG data dir (`$XDG_DATA_HOME/rdm` or `~/.local/share/rdm`)
 ///
+/// Delegates the chain to [`rdm_core::root::resolve_root`].
+///
 /// # Errors
 ///
 /// Returns an error if no root can be determined (e.g. `$HOME` is not set
 /// and no explicit root was provided).
 pub fn resolve_root(cli_root: Option<PathBuf>, global: &GlobalConfig) -> Result<PathBuf> {
-    if let Some(root) = cli_root {
-        return Ok(root);
-    }
-    if let Some(root) = &global.root {
-        return Ok(root.clone());
-    }
-    if let Some(data_dir) = default_data_dir() {
-        return Ok(data_dir);
-    }
-    bail!(
-        "cannot determine plan repo location — set --root, RDM_ROOT, \
-         or add root to ~/.config/rdm/config.toml"
-    )
+    rdm_core::root::resolve_root(cli_root, global).map_err(|_| {
+        anyhow::anyhow!(
+            "cannot determine plan repo location — set --root, RDM_ROOT, \
+             or add root to ~/.config/rdm/config.toml"
+        )
+    })
 }
 
 /// Resolves whether staging mode is active.
@@ -350,63 +324,19 @@ fn parse_bool(s: &str) -> Result<bool> {
 
 /// Expands `~` and resolves `.`/`..` in a path.
 ///
+/// Delegates to [`rdm_core::root::expand_root`].
+///
 /// # Errors
 ///
 /// Returns an error if `~` is used but `$HOME` is not set, or if the path
 /// cannot be made absolute.
 pub fn expand_root(path: PathBuf) -> Result<PathBuf> {
-    let path = if let Ok(rest) = path.strip_prefix("~") {
-        let home = std::env::var("HOME").context("~ used in path but $HOME is not set")?;
-        PathBuf::from(home).join(rest)
-    } else {
-        path
-    };
-    let abs = std::path::absolute(&path)
-        .with_context(|| format!("failed to resolve path: {}", path.display()))?;
-    let mut normalized = PathBuf::new();
-    for component in abs.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                normalized.pop();
-            }
-            std::path::Component::CurDir => {}
-            c => normalized.push(c),
-        }
-    }
-    Ok(normalized)
+    Ok(rdm_core::root::expand_root(path)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn resolve_root_flag_wins() {
-        let global = GlobalConfig {
-            root: Some(PathBuf::from("/global/root")),
-            ..Default::default()
-        };
-        let result = resolve_root(Some(PathBuf::from("/flag/root")), &global).unwrap();
-        assert_eq!(result, PathBuf::from("/flag/root"));
-    }
-
-    #[test]
-    fn resolve_root_global_config_wins() {
-        let global = GlobalConfig {
-            root: Some(PathBuf::from("/global/root")),
-            ..Default::default()
-        };
-        let result = resolve_root(None, &global).unwrap();
-        assert_eq!(result, PathBuf::from("/global/root"));
-    }
-
-    #[test]
-    fn resolve_root_xdg_fallback() {
-        let global = GlobalConfig::default();
-        // As long as HOME is set, we get the XDG data dir fallback
-        let result = resolve_root(None, &global).unwrap();
-        assert!(result.to_string_lossy().ends_with("/rdm"));
-    }
 
     #[test]
     fn resolve_staging_flag_wins() {
@@ -564,18 +494,5 @@ mod tests {
         let global = GlobalConfig::default();
         let resolved = resolve_config_value("default_project", &repo, &global);
         assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn expand_root_tilde_expands_to_home() {
-        let home = std::env::var("HOME").unwrap();
-        let result = expand_root(PathBuf::from("~")).unwrap();
-        assert_eq!(result, PathBuf::from(&home));
-    }
-
-    #[test]
-    fn expand_root_absolute_path_unchanged() {
-        let result = expand_root(PathBuf::from("/tmp/plans")).unwrap();
-        assert_eq!(result, PathBuf::from("/tmp/plans"));
     }
 }

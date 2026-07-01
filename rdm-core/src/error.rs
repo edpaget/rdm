@@ -76,6 +76,21 @@ pub enum Error {
         /// The field name (`"body"`, `"priority"`, or `"tags"`).
         field: String,
     },
+    /// The plan repo root could not be determined from any source in the
+    /// priority chain (explicit override, global config `root`, XDG data dir).
+    RootNotDetermined,
+    /// `~` was used in a path but `$HOME` is not set.
+    HomeNotSet {
+        /// The underlying error from reading the `HOME` environment variable.
+        source: std::env::VarError,
+    },
+    /// Failed to resolve a path to an absolute, normalized form.
+    PathResolutionFailed {
+        /// The path that could not be resolved.
+        path: std::path::PathBuf,
+        /// The underlying I/O error from [`std::path::absolute`].
+        source: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -160,6 +175,19 @@ impl std::fmt::Display for Error {
             Error::ConflictingUpdate { field } => {
                 write!(f, "cannot set both '{field}' and 'clear_{field}'")
             }
+            Error::RootNotDetermined => {
+                write!(
+                    f,
+                    "cannot determine plan repo location — set RDM_ROOT, \
+                     or add root to ~/.config/rdm/config.toml"
+                )
+            }
+            Error::HomeNotSet { .. } => {
+                write!(f, "~ used in path but $HOME is not set")
+            }
+            Error::PathResolutionFailed { path, .. } => {
+                write!(f, "failed to resolve path: {}", path.display())
+            }
         }
     }
 }
@@ -171,6 +199,8 @@ impl std::error::Error for Error {
             Error::FrontmatterParse(e) => Some(e),
             Error::ConfigParse(e) => Some(e),
             Error::ConfigSerialize(e) => Some(e),
+            Error::PathResolutionFailed { source, .. } => Some(source),
+            Error::HomeNotSet { source } => Some(source),
             _ => None,
         }
     }

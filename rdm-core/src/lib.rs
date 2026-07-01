@@ -32,6 +32,9 @@ pub mod model;
 pub mod ops;
 /// Path builders for plan repo layout.
 pub mod paths;
+/// Plan repo root resolution: locating the plan repo directory and expanding
+/// path shorthand (`~`, `.`, `..`).
+pub mod root;
 /// Fuzzy search across plan repo content (roadmaps, phases, and tasks).
 pub mod search;
 /// Storage abstraction layer for plan repo data.
