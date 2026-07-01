@@ -200,7 +200,6 @@ pub fn run(
             let body = resolve_body(body, no_edit)?;
             let difficulty_update = DifficultyUpdate::from_args(difficulty, false)?;
             let model_update = ModelTierUpdate::from_args(model, false)?;
-            let has_estimate = difficulty.is_some() || model.is_some();
             let doc = commit_mutation(
                 store,
                 &project,
@@ -208,7 +207,7 @@ pub fn run(
                 staging,
                 "failed to create phase",
                 |s| {
-                    let doc = rdm_core::ops::phase::create_phase(
+                    rdm_core::ops::phase::create_phase_with_estimate(
                         s,
                         &project,
                         &roadmap,
@@ -217,20 +216,9 @@ pub fn run(
                         number,
                         body.as_deref(),
                         tags,
-                    )?;
-                    if has_estimate {
-                        let stem = doc.frontmatter.stem(&slug);
-                        rdm_core::ops::phase::set_phase_estimate(
-                            s,
-                            &project,
-                            &roadmap,
-                            &stem,
-                            difficulty_update,
-                            model_update,
-                        )
-                    } else {
-                        Ok(doc)
-                    }
+                        difficulty_update,
+                        model_update,
+                    )
                 },
             )?;
             let stem = doc.frontmatter.stem(&slug);
@@ -402,8 +390,6 @@ pub fn run(
             let difficulty_update = DifficultyUpdate::from_args(difficulty, clear_difficulty)?;
             let model_update = ModelTierUpdate::from_args(model, clear_model)?;
             let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
-            let has_estimate = !matches!(difficulty_update, DifficultyUpdate::Keep)
-                || !matches!(model_update, ModelTierUpdate::Keep);
             let has_reason = !matches!(reason_update, ReasonUpdate::Keep);
             let doc = commit_mutation(
                 store,
@@ -412,7 +398,7 @@ pub fn run(
                 staging,
                 "failed to update phase",
                 |s| {
-                    let mut doc = rdm_core::ops::phase::update_phase(
+                    let mut doc = rdm_core::ops::phase::update_phase_with_estimate(
                         s,
                         &project,
                         &roadmap,
@@ -423,17 +409,9 @@ pub fn run(
                         commit,
                         review_sha,
                         review_branch,
+                        difficulty_update,
+                        model_update,
                     )?;
-                    if has_estimate {
-                        doc = rdm_core::ops::phase::set_phase_estimate(
-                            s,
-                            &project,
-                            &roadmap,
-                            &stem,
-                            difficulty_update,
-                            model_update,
-                        )?;
-                    }
                     if has_reason {
                         doc = rdm_core::ops::phase::set_phase_blocked_reason(
                             s,

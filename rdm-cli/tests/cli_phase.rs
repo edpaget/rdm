@@ -487,6 +487,59 @@ fn phase_update_sets_and_clears_difficulty_and_model() {
 }
 
 #[test]
+fn phase_update_status_and_estimate_in_one_invocation() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    // Status + estimate in a single invocation (the consolidated single-write
+    // path). stdout still reports the status transition unchanged.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--status",
+            "in-progress",
+            "--difficulty",
+            "hard",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Updated 'phase-1-core' → in-progress",
+        ));
+
+    // Both the status change and the estimate (hard → derived large) landed.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Status: in-progress")
+                .and(predicate::str::contains("Difficulty: hard"))
+                .and(predicate::str::contains("Model: large")),
+        );
+}
+
+#[test]
 fn phase_update_difficulty_conflicts_with_clear() {
     let dir = TempDir::new().unwrap();
     init_with_roadmap(&dir);

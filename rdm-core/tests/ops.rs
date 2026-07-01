@@ -4314,3 +4314,291 @@ fn next_actionable_carries_difficulty_and_model() {
         other => panic!("expected Phase, got {other:?}"),
     }
 }
+
+// -- Consolidated single-write create/update-with-estimate entry points --
+
+#[test]
+fn create_phase_with_estimate_applies_estimate_in_one_op() {
+    let mut store = setup_with_roadmap();
+    let doc = rdm_core::ops::phase::create_phase_with_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "core",
+        "Core Valuation",
+        None,
+        Some("Body text."),
+        Some(vec!["audit".to_string()]),
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Keep,
+    )
+    .unwrap();
+
+    // Estimate applied (Hard → Large via auto-derive) alongside the base fields.
+    assert_eq!(doc.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(doc.frontmatter.model, Some(ModelTier::Large));
+    assert_eq!(doc.frontmatter.status, PhaseStatus::NotStarted);
+    assert_eq!(doc.frontmatter.title, "Core Valuation");
+    assert_eq!(doc.frontmatter.tags, Some(vec!["audit".to_string()]));
+    assert_eq!(doc.body, "Body text.");
+
+    // Persisted to disk in the same op, not just returned.
+    let loaded = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    assert_eq!(loaded.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(loaded.frontmatter.model, Some(ModelTier::Large));
+    assert_eq!(loaded.frontmatter.status, PhaseStatus::NotStarted);
+}
+
+#[test]
+fn create_phase_with_estimate_explicit_model_wins_over_derive() {
+    let mut store = setup_with_roadmap();
+    // Hard would derive Large, but an explicit Small wins.
+    let doc = rdm_core::ops::phase::create_phase_with_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "core",
+        "Core",
+        None,
+        None,
+        None,
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Set(ModelTier::Small),
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(doc.frontmatter.model, Some(ModelTier::Small));
+}
+
+#[test]
+fn create_phase_with_estimate_keep_keep_matches_plain_create() {
+    let mut store = setup_with_roadmap();
+    let doc = rdm_core::ops::phase::create_phase_with_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "core",
+        "Core Valuation",
+        None,
+        Some("Body text."),
+        Some(vec!["audit".to_string()]),
+        rdm_core::ops::DifficultyUpdate::Keep,
+        rdm_core::ops::ModelTierUpdate::Keep,
+    )
+    .unwrap();
+
+    // Behaviorally identical to plain create_phase: no estimate recorded.
+    assert_eq!(doc.frontmatter.difficulty, None);
+    assert_eq!(doc.frontmatter.model, None);
+    assert_eq!(doc.frontmatter.status, PhaseStatus::NotStarted);
+    assert_eq!(doc.frontmatter.title, "Core Valuation");
+    assert_eq!(doc.frontmatter.tags, Some(vec!["audit".to_string()]));
+    assert_eq!(doc.body, "Body text.");
+}
+
+#[test]
+fn update_phase_with_estimate_applies_status_review_and_estimate_in_one_op() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+
+    let doc = rdm_core::ops::phase::update_phase_with_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::NeedsReview),
+        rdm_core::ops::TagsUpdate::Set(vec!["reviewed".to_string()]),
+        rdm_core::ops::BodyUpdate::Set("Updated body.".to_string()),
+        None,
+        Some("abc123".to_string()),
+        Some("roadmap/two-way".to_string()),
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Keep,
+    )
+    .unwrap();
+
+    // Status + review stamp (from update_phase logic).
+    assert_eq!(doc.frontmatter.status, PhaseStatus::NeedsReview);
+    assert_eq!(doc.frontmatter.review_sha, Some("abc123".to_string()));
+    assert_eq!(
+        doc.frontmatter.review_branch,
+        Some("roadmap/two-way".to_string())
+    );
+    // NeedsReview is non-terminal: completed/commit cleared, matching update_phase.
+    assert_eq!(doc.frontmatter.completed, None);
+    assert_eq!(doc.frontmatter.commit, None);
+    // Tags + body applied.
+    assert_eq!(doc.frontmatter.tags, Some(vec!["reviewed".to_string()]));
+    assert_eq!(doc.body, "Updated body.");
+    // Estimate applied in the same op (Hard → Large via auto-derive).
+    assert_eq!(doc.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(doc.frontmatter.model, Some(ModelTier::Large));
+
+    // Persisted, not just returned.
+    let loaded = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    assert_eq!(loaded.frontmatter.status, PhaseStatus::NeedsReview);
+    assert_eq!(loaded.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(loaded.frontmatter.model, Some(ModelTier::Large));
+    assert_eq!(loaded.frontmatter.review_sha, Some("abc123".to_string()));
+}
+
+#[test]
+fn update_phase_with_estimate_keep_keep_matches_plain_update() {
+    // Two identical phases; apply plain update_phase to one and
+    // update_phase_with_estimate(Keep, Keep) to the other with the same args.
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "svc", "Service", None, None, None,
+    )
+    .unwrap();
+
+    let plain = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Set(vec!["x".to_string()]),
+        rdm_core::ops::BodyUpdate::Set("Body.".to_string()),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let consolidated = rdm_core::ops::phase::update_phase_with_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-2-svc",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Set(vec!["x".to_string()]),
+        rdm_core::ops::BodyUpdate::Set("Body.".to_string()),
+        None,
+        None,
+        None,
+        rdm_core::ops::DifficultyUpdate::Keep,
+        rdm_core::ops::ModelTierUpdate::Keep,
+    )
+    .unwrap();
+
+    // Same status/tags/body/estimate outcome (modulo phase number/title/stem).
+    assert_eq!(consolidated.frontmatter.status, plain.frontmatter.status);
+    assert_eq!(consolidated.frontmatter.tags, plain.frontmatter.tags);
+    assert_eq!(consolidated.body, plain.body);
+    assert_eq!(
+        consolidated.frontmatter.difficulty,
+        plain.frontmatter.difficulty
+    );
+    assert_eq!(consolidated.frontmatter.model, plain.frontmatter.model);
+    assert_eq!(
+        consolidated.frontmatter.completed,
+        plain.frontmatter.completed
+    );
+    assert_eq!(consolidated.frontmatter.commit, plain.frontmatter.commit);
+}
+
+/// A [`Store`] wrapper that records every `write` path, so tests can assert the
+/// number of writes a single op performs. Delegates all other behavior to an
+/// inner [`MemoryStore`].
+struct CountingStore {
+    inner: MemoryStore,
+    writes: Vec<String>,
+}
+
+impl CountingStore {
+    fn new(inner: MemoryStore) -> Self {
+        Self {
+            inner,
+            writes: Vec::new(),
+        }
+    }
+
+    /// Number of `write` calls recorded for paths whose string contains
+    /// `needle`.
+    fn writes_matching(&self, needle: &str) -> usize {
+        self.writes.iter().filter(|p| p.contains(needle)).count()
+    }
+}
+
+impl Store for CountingStore {
+    fn read(&self, path: &rdm_core::store::RelPath) -> rdm_core::error::Result<String> {
+        self.inner.read(path)
+    }
+
+    fn exists(&self, path: &rdm_core::store::RelPath) -> bool {
+        self.inner.exists(path)
+    }
+
+    fn list(
+        &self,
+        path: &rdm_core::store::RelPath,
+    ) -> rdm_core::error::Result<Vec<rdm_core::store::DirEntry>> {
+        self.inner.list(path)
+    }
+
+    fn write(
+        &mut self,
+        path: &rdm_core::store::RelPath,
+        content: String,
+    ) -> rdm_core::error::Result<()> {
+        self.writes.push(path.as_str().to_string());
+        self.inner.write(path, content)
+    }
+
+    fn delete(&mut self, path: &rdm_core::store::RelPath) -> rdm_core::error::Result<()> {
+        self.inner.delete(path)
+    }
+
+    fn commit(&mut self) -> rdm_core::error::Result<()> {
+        self.inner.commit()
+    }
+
+    fn discard(&mut self) {
+        self.inner.discard();
+    }
+}
+
+#[test]
+fn update_phase_with_estimate_writes_phase_file_exactly_once() {
+    let mut store = CountingStore::new(setup_with_roadmap());
+    rdm_core::ops::phase::create_phase(
+        &mut store, "fbm", "two-way", "core", "Core", None, None, None,
+    )
+    .unwrap();
+
+    // Reset the write log so we only measure the update-with-estimate op.
+    store.writes.clear();
+
+    rdm_core::ops::phase::update_phase_with_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Keep,
+    )
+    .unwrap();
+
+    // Exactly ONE write to the phase file — the whole point of the consolidation
+    // (the old two-op composition wrote it twice: update_phase + set_phase_estimate).
+    assert_eq!(
+        store.writes_matching("phase-1-core"),
+        1,
+        "update_phase_with_estimate must write the phase file exactly once; writes: {:?}",
+        store.writes
+    );
+}

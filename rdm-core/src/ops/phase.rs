@@ -70,6 +70,84 @@ pub fn create_phase(
     body: Option<&str>,
     tags: Option<Vec<String>>,
 ) -> Result<Document<Phase>> {
+    create_phase_inner(
+        store,
+        project,
+        roadmap,
+        slug,
+        title,
+        phase_number,
+        body,
+        tags,
+        DifficultyUpdate::Keep,
+        ModelTierUpdate::Keep,
+    )
+}
+
+/// Creates a new phase within a roadmap, applying a difficulty/model estimate
+/// as part of the same single write.
+///
+/// This is the consolidated entry point behind the CLI's `phase create`: it
+/// composes phase creation with [`set_phase_estimate`]'s difficulty/model logic
+/// (including the same difficulty→tier auto-derive) so the phase file is written
+/// once with the estimate already applied, rather than created and then
+/// re-loaded and re-written. Passing [`DifficultyUpdate::Keep`] and
+/// [`ModelTierUpdate::Keep`] makes this behaviorally identical to
+/// [`create_phase`].
+///
+/// See [`create_phase`] for the numbering/body/tags behavior and
+/// [`set_phase_estimate`] for the model-tier auto-derive rules.
+///
+/// # Errors
+///
+/// Returns [`Error::RoadmapNotFound`] if the roadmap doesn't exist,
+/// [`Error::DuplicateSlug`] if a phase with the same stem already exists,
+/// [`Error::Io`] if file creation fails, or
+/// [`Error::FrontmatterParse`] if frontmatter serialization fails.
+#[allow(clippy::too_many_arguments)]
+pub fn create_phase_with_estimate(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    slug: &str,
+    title: &str,
+    phase_number: Option<u32>,
+    body: Option<&str>,
+    tags: Option<Vec<String>>,
+    difficulty: DifficultyUpdate,
+    model: ModelTierUpdate,
+) -> Result<Document<Phase>> {
+    create_phase_inner(
+        store,
+        project,
+        roadmap,
+        slug,
+        title,
+        phase_number,
+        body,
+        tags,
+        difficulty,
+        model,
+    )
+}
+
+/// Shared implementation for [`create_phase`] and
+/// [`create_phase_with_estimate`]: builds the phase document once, applies the
+/// difficulty/model estimate in memory, and writes the phase file (and the
+/// roadmap's phases list) a single time.
+#[allow(clippy::too_many_arguments)]
+fn create_phase_inner(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    slug: &str,
+    title: &str,
+    phase_number: Option<u32>,
+    body: Option<&str>,
+    tags: Option<Vec<String>>,
+    difficulty: DifficultyUpdate,
+    model: ModelTierUpdate,
+) -> Result<Document<Phase>> {
     let roadmap_file = crate::paths::roadmap_path(project, roadmap);
     if !store.exists(&roadmap_file) {
         return Err(Error::RoadmapNotFound(roadmap.to_string()));
@@ -92,7 +170,7 @@ pub fn create_phase(
         return Err(Error::DuplicateSlug(stem));
     }
 
-    let doc = Document {
+    let mut doc = Document {
         frontmatter: Phase {
             phase: number,
             title: title.to_string(),
@@ -108,6 +186,7 @@ pub fn create_phase(
         },
         body: body.unwrap_or_default().to_string(),
     };
+    apply_phase_estimate(&mut doc, difficulty, model);
     crate::io::write_phase(store, project, roadmap, &stem, &doc)?;
 
     // Update roadmap's phases list
@@ -171,6 +250,42 @@ pub fn update_phase(
     }
 
     let mut doc = crate::io::load_phase(store, project, roadmap, phase_stem)?;
+    apply_phase_update(
+        &mut doc,
+        status,
+        tags,
+        body,
+        commit,
+        review_sha,
+        review_branch,
+    )?;
+    crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
+    Ok(doc)
+}
+
+/// Applies a status/tags/body/commit/review update to an already-loaded phase
+/// document in memory, performing no I/O.
+///
+/// This is the I/O-free core of [`update_phase`]; it exists so that
+/// [`update_phase_with_estimate`] can compose it with
+/// [`apply_phase_estimate`] under a single load+write. The status/terminal,
+/// `completed`, `commit`, and `review_sha`/`review_branch` semantics are exactly
+/// those documented on [`update_phase`].
+///
+/// # Errors
+///
+/// Returns [`Error::BodyClobberRefused`] when `body` is
+/// [`BodyUpdate::Set("")`](BodyUpdate::Set) over a non-empty body (use
+/// [`BodyUpdate::Clear`] to confirm).
+fn apply_phase_update(
+    doc: &mut Document<Phase>,
+    status: Option<PhaseStatus>,
+    tags: TagsUpdate,
+    body: BodyUpdate,
+    commit: Option<String>,
+    review_sha: Option<String>,
+    review_branch: Option<String>,
+) -> Result<()> {
     if let Some(status) = status {
         if status.is_terminal() && doc.frontmatter.status == status {
             // Already at this terminal state: only update commit if a new one is provided
@@ -199,6 +314,62 @@ pub fn update_phase(
     }
     tags.apply(&mut doc.frontmatter.tags);
     body.apply(&mut doc.body)?;
+    Ok(())
+}
+
+/// Applies a status/tags/body/commit/review update **and** a difficulty/model
+/// estimate to a phase in a single load+write.
+///
+/// This is the consolidated entry point behind the CLI's `phase update`: it
+/// composes [`update_phase`]'s status/tags/body/review logic with
+/// [`set_phase_estimate`]'s difficulty/model logic (including the same
+/// difficulty→tier auto-derive) so the phase file is read once and written
+/// once, rather than re-loaded and re-written for the estimate. Passing
+/// [`DifficultyUpdate::Keep`] and [`ModelTierUpdate::Keep`] makes this
+/// behaviorally identical to [`update_phase`].
+///
+/// See [`update_phase`] for the status/`completed`/`commit`/`review_sha` rules
+/// and [`set_phase_estimate`] for the model-tier auto-derive rules.
+///
+/// # Errors
+///
+/// Returns [`Error::PhaseNotFound`] if the phase file doesn't exist,
+/// [`Error::BodyClobberRefused`] if `body` is [`BodyUpdate::Set("")`](BodyUpdate::Set)
+/// over a non-empty body (use [`BodyUpdate::Clear`] to confirm),
+/// [`Error::Io`] if reading or writing fails, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the existing
+/// phase file has invalid frontmatter.
+#[allow(clippy::too_many_arguments)]
+pub fn update_phase_with_estimate(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+    status: Option<PhaseStatus>,
+    tags: TagsUpdate,
+    body: BodyUpdate,
+    commit: Option<String>,
+    review_sha: Option<String>,
+    review_branch: Option<String>,
+    difficulty: DifficultyUpdate,
+    model: ModelTierUpdate,
+) -> Result<Document<Phase>> {
+    let path = crate::paths::phase_path(project, roadmap, phase_stem);
+    if !store.exists(&path) {
+        return Err(Error::PhaseNotFound(phase_stem.to_string()));
+    }
+
+    let mut doc = crate::io::load_phase(store, project, roadmap, phase_stem)?;
+    apply_phase_update(
+        &mut doc,
+        status,
+        tags,
+        body,
+        commit,
+        review_sha,
+        review_branch,
+    )?;
+    apply_phase_estimate(&mut doc, difficulty, model);
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
     Ok(doc)
 }
@@ -240,6 +411,27 @@ pub fn set_phase_estimate(
     }
 
     let mut doc = crate::io::load_phase(store, project, roadmap, phase_stem)?;
+    apply_phase_estimate(&mut doc, difficulty, model);
+    crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
+    Ok(doc)
+}
+
+/// Applies a difficulty/model estimate to an already-loaded phase document in
+/// memory, performing no I/O.
+///
+/// This is the I/O-free core of [`set_phase_estimate`]; it exists so that
+/// [`create_phase_with_estimate`] and [`update_phase_with_estimate`] can apply
+/// the estimate as part of their single write. The difficulty→tier auto-derive
+/// rule is exactly the one documented on [`set_phase_estimate`]: when
+/// `difficulty` is [`DifficultyUpdate::Set`], `model` is
+/// [`ModelTierUpdate::Keep`], and no model is already recorded, the model tier
+/// is derived from the difficulty; an explicit model or a pre-existing model
+/// always wins.
+fn apply_phase_estimate(
+    doc: &mut Document<Phase>,
+    difficulty: DifficultyUpdate,
+    model: ModelTierUpdate,
+) {
     difficulty.apply(&mut doc.frontmatter.difficulty);
     model.apply(&mut doc.frontmatter.model);
     // Auto-derive the model tier from the difficulty when the caller set a
@@ -250,8 +442,6 @@ pub fn set_phase_estimate(
     {
         doc.frontmatter.model = Some(d.model_tier());
     }
-    crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
-    Ok(doc)
 }
 
 /// Sets (or clears) a phase's blocked reason — the escalation note recorded
