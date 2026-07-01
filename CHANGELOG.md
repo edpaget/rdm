@@ -6,8 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.15.0] - 2026-07-01
-
 ### Added
 
 - `roadmap update`, `phase update`, and `task update` now accept `--title
@@ -17,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   whitespace-only `--title` is rejected with an actionable error (titles are
   required and cannot be cleared); omit `--title` to leave the existing title
   unchanged.
+
+## [0.15.0] - 2026-07-01
+
+### Added
 
 - A regression harness for the auto-review Stop hook loop,
   `scripts/verify-auto-review-hook-loop.sh`. It drives the real hook scripts
