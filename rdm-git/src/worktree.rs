@@ -29,6 +29,12 @@ pub enum WorktreeError {
     IsPlanRepo(PathBuf),
     /// The `git` executable could not be found.
     GitMissing,
+    /// The working directory to run git in does not exist or is not a directory.
+    ///
+    /// Distinguished from [`GitMissing`](WorktreeError::GitMissing) so an invalid
+    /// or stale working directory is reported actionably instead of being
+    /// misclassified as a missing git installation.
+    NoSuchDirectory(PathBuf),
     /// The worktree at this path has uncommitted changes.
     Dirty(PathBuf),
     /// The branch has commits not merged into HEAD and was not force-deleted.
@@ -55,6 +61,11 @@ impl std::fmt::Display for WorktreeError {
             WorktreeError::GitMissing => {
                 write!(f, "git is not installed — install git to use worktrees")
             }
+            WorktreeError::NoSuchDirectory(p) => write!(
+                f,
+                "directory does not exist: {} — run rdm from inside your project checkout",
+                p.display()
+            ),
             WorktreeError::Dirty(p) => write!(
                 f,
                 "worktree has uncommitted changes: {} — commit/stash them or pass --force",
@@ -359,7 +370,9 @@ fn item_is_done(store: &impl rdm_core::store::Store, project: &str, item: &str) 
 /// # Errors
 ///
 /// Returns [`WorktreeError::Git`] if `git worktree list` fails, or
-/// [`WorktreeError::GitMissing`] if `git` is not installed.
+/// [`WorktreeError::GitMissing`] if `git` is not installed. Propagates
+/// [`WorktreeError::NoSuchDirectory`] from the [`list`] pass if `repo_root` does
+/// not exist (or is not a directory).
 pub fn prune(
     repo_root: &Path,
     store: &impl rdm_core::store::Store,
@@ -420,23 +433,44 @@ pub fn prune(
 /// *linked* worktree still places new worktrees as siblings of the primary
 /// checkout rather than nesting them under the current worktree.
 ///
+/// When the canonical repo is **bare** (no working tree of its own),
+/// `--show-toplevel` fails; this falls back to `--is-bare-repository` +
+/// `--absolute-git-dir` and anchors on the bare git dir, so worktree operations
+/// work both from a linked worktree of a bare repo and from inside the bare dir
+/// itself.
+///
 /// # Errors
 ///
 /// Returns [`WorktreeError::NotAGitRepo`] if `cwd` is not inside a git
-/// repository, [`WorktreeError::GitMissing`] if `git` is not installed, or
-/// [`WorktreeError::Git`] if the `git` process cannot be spawned.
+/// repository (and is not a bare repository), [`WorktreeError::GitMissing`] if
+/// `git` is not installed, [`WorktreeError::NoSuchDirectory`] if `cwd` does not
+/// exist, or [`WorktreeError::Git`] if the `git` process cannot be spawned.
 pub fn discover_project_repo(cwd: &Path) -> Result<PathBuf> {
     let output = run_git_at(cwd, &["rev-parse", "--show-toplevel"])?;
-    if !output.status.success() {
-        return Err(WorktreeError::NotAGitRepo(cwd.to_path_buf()));
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            // From a linked worktree, `--show-toplevel` is that worktree's own
+            // root; anchor on the main working tree instead, falling back to the
+            // toplevel. For a bare-canonical repo the first `git worktree list`
+            // entry is the bare dir itself — exactly the dir we run git in.
+            return Ok(main_worktree(cwd).unwrap_or_else(|| PathBuf::from(path)));
+        }
     }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        return Err(WorktreeError::NotAGitRepo(cwd.to_path_buf()));
+    // `--show-toplevel` fails inside a *bare* repository (no working tree).
+    // Detect that case and anchor on the bare git dir so worktree ops still work
+    // when the canonical repo is bare.
+    let is_bare = run_git_at(cwd, &["rev-parse", "--is-bare-repository"])?;
+    if is_bare.status.success() && String::from_utf8_lossy(&is_bare.stdout).trim() == "true" {
+        let git_dir = run_git_at(cwd, &["rev-parse", "--absolute-git-dir"])?;
+        if git_dir.status.success() {
+            let dir = String::from_utf8_lossy(&git_dir.stdout).trim().to_string();
+            if !dir.is_empty() {
+                return Ok(PathBuf::from(dir));
+            }
+        }
     }
-    // From a linked worktree, `--show-toplevel` is that worktree's own root;
-    // anchor on the main working tree instead, falling back to the toplevel.
-    Ok(main_worktree(cwd).unwrap_or_else(|| PathBuf::from(path)))
+    Err(WorktreeError::NotAGitRepo(cwd.to_path_buf()))
 }
 
 /// Returns the path of the repository's main (primary) working tree, as listed
@@ -461,14 +495,32 @@ fn main_worktree(cwd: &Path) -> Option<PathBuf> {
 ///
 /// `<parent-of-repo>/<repo-dir-name>__worktrees/<branch-with-slashes-as-dashes>`.
 ///
+/// A bare canonical repo's directory usually carries a `.git`/`.bare` suffix (or
+/// is literally `.bare`); the suffix is stripped so siblings are named after the
+/// project, not the git dir. If stripping empties the name (the `<repo>/.bare`
+/// layout), the anchor falls back to the parent directory's name.
+///
 /// The `unwrap_or` fallbacks guard the degenerate case of a repo at the
 /// filesystem root (no parent / no file name); they never trigger for a real
 /// project checkout.
 fn worktree_path(repo_root: &Path, item: &ItemRef) -> PathBuf {
-    let repo_name = repo_root
+    let raw_name = repo_root
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "repo".to_string());
+    let stem = raw_name
+        .strip_suffix(".git")
+        .or_else(|| raw_name.strip_suffix(".bare"))
+        .unwrap_or(raw_name.as_str());
+    let repo_name = if stem.is_empty() {
+        repo_root
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "repo".to_string())
+    } else {
+        stem.to_string()
+    };
     let parent = repo_root.parent().unwrap_or(repo_root);
     parent
         .join(format!("{repo_name}__worktrees"))
@@ -485,8 +537,9 @@ fn worktree_path(repo_root: &Path, item: &ItemRef) -> PathBuf {
 /// # Errors
 ///
 /// Returns [`WorktreeError::Git`] if any git command fails or the marker
-/// cannot be written, or [`WorktreeError::GitMissing`] if `git` is not
-/// installed. Also propagates errors from the [`list`] call used for the
+/// cannot be written, [`WorktreeError::GitMissing`] if `git` is not installed,
+/// or [`WorktreeError::NoSuchDirectory`] if `repo_root` does not exist (or is
+/// not a directory). Also propagates errors from the [`list`] call used for the
 /// idempotency check.
 pub fn add(
     repo_root: &Path,
@@ -554,8 +607,10 @@ pub fn add(
 ///
 /// # Errors
 ///
-/// Returns [`WorktreeError::Git`] if `git worktree list` fails, or
-/// [`WorktreeError::GitMissing`] if `git` is not installed.
+/// Returns [`WorktreeError::Git`] if `git worktree list` fails,
+/// [`WorktreeError::GitMissing`] if `git` is not installed, or
+/// [`WorktreeError::NoSuchDirectory`] if `repo_root` does not exist (or is not a
+/// directory).
 pub fn list(repo_root: &Path) -> Result<Vec<WorktreeInfo>> {
     let output = run_git_at(repo_root, &["worktree", "list", "--porcelain"])?;
     if !output.status.success() {
@@ -606,9 +661,15 @@ pub fn list(repo_root: &Path) -> Result<Vec<WorktreeInfo>> {
 /// # Errors
 ///
 /// Returns [`WorktreeError::NotAGitRepo`] if `cwd` is not inside a git working
-/// tree, [`WorktreeError::GitMissing`] if `git` is not installed, or
-/// [`WorktreeError::Git`] if a git command fails.
+/// tree, [`WorktreeError::GitMissing`] if `git` is not installed,
+/// [`WorktreeError::NoSuchDirectory`] if `cwd` does not exist (or is not a
+/// directory), or [`WorktreeError::Git`] if a git command fails.
 pub fn current(cwd: &Path) -> Result<Option<CurrentWorktree>> {
+    // NOTE: unlike `discover_project_repo`, `current` is intentionally NOT
+    // bare-repo aware — it reports the checkout `cwd` sits in, so from inside a
+    // bare dir (no working tree) it returns `NotAGitRepo`. That case is out of
+    // this phase's AC scope (add/list/remove only); from a linked worktree it
+    // works. Tracked as a follow-up task.
     let output = run_git_at(cwd, &["rev-parse", "--show-toplevel"])?;
     if !output.status.success() {
         return Err(WorktreeError::NotAGitRepo(cwd.to_path_buf()));
@@ -660,7 +721,9 @@ pub fn current(cwd: &Path) -> Result<Option<CurrentWorktree>> {
 /// [`WorktreeError::NotRdmWorktree`] if `target` resolves to a worktree without
 /// a marker, [`WorktreeError::Dirty`] if the worktree is dirty and `force` is
 /// not set, [`WorktreeError::UnmergedBranch`] if the branch is unmerged and
-/// `force` is not set, or [`WorktreeError::Git`] on a git failure.
+/// `force` is not set, [`WorktreeError::Git`] on a git failure, or
+/// [`WorktreeError::NoSuchDirectory`] if `repo_root` does not exist (or is not a
+/// directory).
 pub fn remove(repo_root: &Path, target: &str, opts: RemoveOptions) -> Result<()> {
     let worktrees = list(repo_root)?;
     let target_path = Path::new(target);
@@ -800,11 +863,23 @@ fn is_dirty(path: &Path) -> bool {
 }
 
 /// Runs a git command in `path`, mapping a missing `git` binary to
-/// [`WorktreeError::GitMissing`].
+/// [`WorktreeError::GitMissing`] and a missing/invalid working directory to
+/// [`WorktreeError::NoSuchDirectory`].
 fn run_git_at(path: &Path, args: &[&str]) -> Result<Output> {
     match crate::process::git_command(Some(path), args) {
         Ok(o) => Ok(o),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(WorktreeError::GitMissing),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // ENOENT from spawning is ambiguous: it means either the `git` binary
+            // is absent OR the working directory does not exist / is not a
+            // directory. Disambiguate with `is_dir` so an invalid cwd is reported
+            // actionably rather than as a missing git install. (`exists()` is
+            // insufficient — a cwd that is a *file* also yields NotFound.)
+            if !path.is_dir() {
+                Err(WorktreeError::NoSuchDirectory(path.to_path_buf()))
+            } else {
+                Err(WorktreeError::GitMissing)
+            }
+        }
         Err(e) => Err(WorktreeError::Git(format!("failed to run git: {e}"))),
     }
 }
@@ -1107,6 +1182,25 @@ mod tests {
         assert_eq!(
             path,
             PathBuf::from("/home/me/Projects/rdm__worktrees/task-fix-bug")
+        );
+    }
+
+    #[test]
+    fn worktree_path_strips_git_suffix() {
+        let item = ItemRef::Task {
+            slug: "fix-bug".to_string(),
+        };
+        // A bare canonical repo `<name>.git`: the `.git` suffix is stripped so the
+        // sibling anchor is named after the project, not the git dir.
+        assert_eq!(
+            worktree_path(Path::new("/p/canonical.git"), &item),
+            PathBuf::from("/p/canonical__worktrees/task-fix-bug")
+        );
+        // The `<repo>/.bare` layout: stripping `.bare` empties the name, so the
+        // anchor falls back to the parent directory's name (`foo`), never empty.
+        assert_eq!(
+            worktree_path(Path::new("/p/foo/.bare"), &item),
+            PathBuf::from("/p/foo/foo__worktrees/task-fix-bug")
         );
     }
 

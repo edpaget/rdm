@@ -86,6 +86,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   kept (…)` note in the text summary.
 - `rdm worktree prune` now reports a worktree that became dirty between the
   initial scan and its removal as `skipped-dirty` rather than `failed`.
+- `rdm worktree add`/`list`/`remove` now work when the project's canonical repo
+  is **bare** (no working tree of its own) — whether invoked from a linked
+  worktree of the bare repo or from inside the bare directory itself. Previously
+  every subcommand failed with "not inside a git repository". Sibling worktrees
+  are placed under `<parent>/<repo-name>__worktrees/`, with any `.git`/`.bare`
+  suffix stripped from the anchor name so the layout matches the normal-repo
+  case.
+- `rdm worktree` commands run against a working directory that does not exist (or
+  is not a directory) now report an actionable "directory does not exist" error
+  instead of the misleading "git is not installed".
 
 ### Changed
 

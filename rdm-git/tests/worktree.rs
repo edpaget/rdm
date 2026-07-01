@@ -38,6 +38,41 @@ fn init_project_repo() -> TempDir {
     dir
 }
 
+/// Create a *bare* canonical repo with one linked worktree beside it, modeling
+/// the setup where the project's canonical repo has no working tree of its own.
+///
+/// Returns `(tempdir, bare_dir, linked_worktree)`; keep the tempdir alive for
+/// the duration of the test.
+fn init_bare_canonical() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = TempDir::new().unwrap();
+    // Seed a normal repo with one commit so the bare clone has a HEAD.
+    let seed = dir.path().join("seed");
+    std::fs::create_dir(&seed).unwrap();
+    git(&seed, &["init", "-b", "main"]);
+    std::fs::write(seed.join("README.md"), "# project").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-m", "initial commit"]);
+
+    let bare = dir.path().join("canonical.git");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "--bare",
+            seed.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+
+    let linked = dir.path().join("wt-feature");
+    git(
+        &bare,
+        &["worktree", "add", linked.to_str().unwrap(), "-b", "feature"],
+    );
+
+    (dir, bare, linked)
+}
+
 fn task_item() -> ItemRef {
     ItemRef::parse("task/fix-bug").unwrap()
 }
@@ -409,6 +444,110 @@ fn add_from_inside_linked_worktree_anchors_on_main_repo() {
             .starts_with(linked.canonicalize().unwrap()),
         "worktree must not be nested under the linked worktree"
     );
+}
+
+#[test]
+fn add_list_remove_from_linked_worktree_of_bare_canonical() {
+    let (_dir, bare, linked) = init_bare_canonical();
+
+    // Discovery from inside a linked worktree of a bare canonical repo must
+    // anchor on the bare dir (the directory we can run `git worktree` in).
+    let repo = worktree::discover_project_repo(&linked).unwrap();
+    assert_eq!(
+        repo.canonicalize().unwrap(),
+        bare.canonicalize().unwrap(),
+        "discovery must anchor on the bare canonical repo"
+    );
+
+    let item = task_item();
+    let info = worktree::add(&repo, &item, &item.branch_name(), None).unwrap();
+    assert!(info.created);
+    assert!(info.path.exists(), "worktree dir should exist");
+    // The bare dir's `.git` suffix must not leak into the sibling worktree path.
+    assert!(
+        !info.path.to_string_lossy().contains(".git__worktrees"),
+        "sibling worktree path must not contain a .git segment: {}",
+        info.path.display()
+    );
+    let parent = info.path.parent().unwrap();
+    assert_eq!(
+        parent.file_name().unwrap().to_string_lossy(),
+        "canonical__worktrees",
+        "anchor name must strip the .git suffix"
+    );
+
+    let listed = worktree::list(&repo).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].item, "task/fix-bug");
+
+    worktree::remove(&repo, "task/fix-bug", RemoveOptions::default()).unwrap();
+    assert!(worktree::list(&repo).unwrap().is_empty());
+}
+
+#[test]
+fn add_list_remove_from_inside_bare_dir() {
+    let (_dir, bare, _linked) = init_bare_canonical();
+
+    // Discovery invoked from inside the bare dir itself (no working tree) must
+    // still resolve the repo rather than failing with "not a git repository".
+    let repo = worktree::discover_project_repo(&bare).unwrap();
+    assert_eq!(
+        repo.canonicalize().unwrap(),
+        bare.canonicalize().unwrap(),
+        "discovery from inside the bare dir must return the bare dir"
+    );
+
+    let item = task_item();
+    let info = worktree::add(&repo, &item, &item.branch_name(), None).unwrap();
+    assert!(info.created);
+    assert!(info.path.exists());
+
+    let listed = worktree::list(&repo).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].item, "task/fix-bug");
+
+    worktree::remove(&repo, "task/fix-bug", RemoveOptions::default()).unwrap();
+    assert!(worktree::list(&repo).unwrap().is_empty());
+}
+
+#[test]
+fn nonexistent_cwd_reports_actionable_error_not_git_missing() {
+    let dir = TempDir::new().unwrap();
+    let missing = dir.path().join("no-such-subdir");
+    // Running a git command against a directory that does not exist yields ENOENT
+    // from the spawn — the same error kind as a missing `git` binary. It must be
+    // reported actionably, not misclassified as "git is not installed".
+    let err = worktree::list(&missing).unwrap_err();
+    assert!(
+        !matches!(err, worktree::WorktreeError::GitMissing),
+        "a missing cwd must not be misreported as a missing git install"
+    );
+    assert!(
+        matches!(err, worktree::WorktreeError::NoSuchDirectory(_)),
+        "expected NoSuchDirectory, got {err:?}"
+    );
+    assert!(err.to_string().contains("does not exist"));
+}
+
+#[test]
+fn file_as_cwd_reports_no_such_directory() {
+    let dir = TempDir::new().unwrap();
+    // A path that exists but is a FILE, not a directory. Spawning git with it as
+    // the cwd yields ENOENT — the same error kind as a missing `git` binary and a
+    // missing directory. This pins the `is_dir()` discriminator: `exists()` alone
+    // would misclassify a file-as-cwd as GitMissing.
+    let file = dir.path().join("not-a-dir");
+    std::fs::write(&file, "regular file").unwrap();
+    let err = worktree::list(&file).unwrap_err();
+    assert!(
+        !matches!(err, worktree::WorktreeError::GitMissing),
+        "a file used as cwd must not be misreported as a missing git install"
+    );
+    assert!(
+        matches!(err, worktree::WorktreeError::NoSuchDirectory(_)),
+        "expected NoSuchDirectory, got {err:?}"
+    );
+    assert!(err.to_string().contains("does not exist"));
 }
 
 #[test]
