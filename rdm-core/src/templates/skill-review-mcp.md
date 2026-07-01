@@ -67,6 +67,12 @@ Decide triggers from the `git diff` and file list in step 1. When in doubt about
 
 The AC agent additionally returns the per-criterion PASS/FAIL/PARTIAL table. Calibrate for signal: **one strong finding beats five weak ones.** Do not report pure style/formatting nitpicks unless they violate an explicit project rule.
 
+**Severity scale** (this drives the overall verdict in step 5):
+
+- `blocking` — the implementation must not advance to `reviewed` as-is: a logic error, an unmet acceptance criterion, or a mandatory process violation (e.g. a missing required changelog entry). Any single surviving blocking finding forces the overall verdict to **BLOCKED**.
+- `concern` — does not block merging but must be recorded; yields **PASS WITH CONCERNS** when no blockers exist.
+- `suggestion` — minor optional improvement (subject to the confidence filter; never blocks).
+
 ### 3. Verify — per-finding refute pass (parallel)
 
 For every finding with `severity` of blocking or concern (and every AC FAIL/PARTIAL verdict), dispatch a **fresh** `Agent` whose job is to **refute** it. The refute agent:
@@ -89,7 +95,14 @@ Run these concurrently. The finder is never the verifier. Suggestions may skip v
 Present a single structured report:
 - The AC table: each criterion with PASS / FAIL / PARTIAL and evidence.
 - Surviving findings grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation.
-- An overall verdict: **PASS**, **PASS WITH CONCERNS**, or **FAIL**.
+- An overall verdict: **PASS**, **PASS WITH CONCERNS**, **BLOCKED**, or **FAIL**.
+
+**Determine the overall verdict in this strict order — the first matching rule wins:**
+
+1. **BLOCKED** — if **any** surviving finding has `severity: blocking`. A single blocking finding always escalates the whole review to BLOCKED; it can never be downgraded to "pass with concerns".
+2. **FAIL** — else if the AC table contains any FAIL or PARTIAL criterion (acceptance criteria are the contract).
+3. **PASS WITH CONCERNS** — else if any surviving finding has `severity: concern` (non-blocking concerns exist, but no blockers and all AC pass).
+4. **PASS** — else (no blocking findings, no AC failures, no concerns).
 
 ### 6. Act — only on verified findings
 
@@ -104,11 +117,14 @@ For each finding, state how it was handled (fixed-inline / filed-as-task `<slug>
 
 This skill owns the `needs-review` → `reviewed` gate.
 
-- **Pass** (clean, or clean after small fixes): set the item to `reviewed`, then amend a `Done:` line into the branch commit — this completes the deferred `Done:` directive from the rdm-do (or rdm-dispatch-phase) finalize step, not a contradiction of it — so the merge-to-main hook flips it to `done` later.
+- **Pass / Pass with concerns** (verdict PASS or PASS WITH CONCERNS — clean, or clean after small fixes, with no blocking findings): set the item to `reviewed`, then amend a `Done:` line into the branch commit — this completes the deferred `Done:` directive from the rdm-do (or rdm-dispatch-phase) finalize step, not a contradiction of it — so the merge-to-main hook flips it to `done` later. Recorded concerns do not block this transition.
   - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "reviewed"`
   - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "reviewed"`
   - then `git commit --amend` to add the `Done:` line to the branch commit message, completing the finalize step's deferred directive: `Done: <roadmap-slug>/<phase-stem>` (phase) or `Done: task/<slug>` (task), using the exact slugs/stems from the rdm tools above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
-- **Rework** (FAIL — substantial changes needed): return the item to `in-progress` and write **no** `Done:` line.
+- **Blocked** (verdict BLOCKED — one or more surviving blocking findings): do NOT advance to `reviewed` and write **no** `Done:` line. The transition depends on the item kind, because tasks have no `blocked` status:
+  - **Phase**: set it to `blocked` with the escalation reason (use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "blocked"`), so the blocked-phase queue surfaces it for a human decision.
+  - **Task**: tasks support only `open | in-progress | done | wont-fix`, so there is no `blocked` status. Return the task to `in-progress` instead (use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "in-progress"`), and state clearly in the report that review found **blocking** findings and the work is **not done** (this is not a clean rework — the blockers must be resolved before re-review).
+- **Rework** (verdict FAIL — acceptance criteria unmet, substantial changes needed): return the item to `in-progress` and write **no** `Done:` line.
   - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`
   - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "in-progress"`
 
@@ -118,7 +134,7 @@ This skill owns the `needs-review` → `reviewed` gate.
 - Provide specific evidence (file:line, test name) for every finding.
 - **No finding is surfaced, fixed, or filed until a separate refute agent has confirmed it.** The finder never grades its own work.
 - Filter hard: drop refuted findings and anything below 70 confidence. One strong finding beats five weak ones.
-- Distinguish blocking issues (FAIL) from minor concerns (PASS WITH CONCERNS).
+- Distinguish blocking issues from minor concerns: any surviving `blocking` finding forces the overall verdict to **BLOCKED** (never "pass with concerns"); unmet acceptance criteria yield **FAIL**; non-blocking concerns with no blockers and all AC passing yield **PASS WITH CONCERNS**.
 - The dispatched sub-agents only review and report — they never modify code. The orchestrator (this skill) applies small fixes, and only after verification.
 - Never fix large changes inline — file them as tasks.
 - If AC are missing or vague, note this as a finding rather than guessing intent.

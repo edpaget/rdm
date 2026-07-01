@@ -93,6 +93,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in-repo dogfooding `rdm-review` skill (previously it shipped an older
   fixed-two-agent find → report → act flow). Both the CLI and MCP flavors are
   updated.
+- The `rdm-review` skill emitted by `rdm agent-config` now escalates a review to
+  a **BLOCKED** verdict when any surviving finding is `blocking`, matching the
+  in-repo skill. It adds an explicit severity scale, a strict verdict-order
+  (BLOCKED → FAIL → PASS WITH CONCERNS → PASS), and a gate that routes a BLOCKED
+  phase to `blocked` and a BLOCKED task to `in-progress` (tasks have no `blocked`
+  status) instead of silently downgrading blockers to "pass with concerns". Both
+  the CLI and MCP flavors are updated.
 
 ## [0.14.0] - 2026-06-29
 

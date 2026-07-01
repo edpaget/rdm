@@ -1720,6 +1720,40 @@ mod tests {
     }
 
     #[test]
+    fn skill_review_has_blocked_verdict() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[2].content;
+        // Severity scale drives the verdict.
+        assert!(content.contains("Severity scale"));
+        // BLOCKED is one of the four verdicts and has a strict determination order.
+        assert!(content.contains("**BLOCKED**"));
+        assert!(content.contains("the first matching rule wins"));
+        // Gate handles BLOCKED per item kind (phase → blocked, task → in-progress).
+        assert!(content.contains("--status blocked"));
+        assert!(content.contains("tasks have no `blocked` status"));
+    }
+
+    #[test]
+    fn skill_review_mcp_has_blocked_verdict() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("Severity scale"));
+        assert!(content.contains("**BLOCKED**"));
+        assert!(content.contains("the first matching rule wins"));
+        // MCP gate uses the tool call with status "blocked" for phases.
+        assert!(content.contains("status: \"blocked\""));
+        assert!(content.contains("tasks have no `blocked` status"));
+    }
+
+    #[test]
     fn skill_document_contains_rdm_commands() {
         let skills = generate_skills(&SkillOptions {
             project: None,
