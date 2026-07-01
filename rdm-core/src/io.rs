@@ -99,6 +99,49 @@ pub fn load_task(store: &impl Store, project: &str, task_slug: &str) -> Result<D
     Document::parse(&content)
 }
 
+/// Loads and parses an archived roadmap document from the store.
+///
+/// # Errors
+///
+/// Returns [`Error::RoadmapNotFound`] if the archived roadmap file does not
+/// exist, [`Error::Io`] on read failure, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+/// YAML is invalid.
+pub fn load_archived_roadmap(
+    store: &impl Store,
+    project: &str,
+    roadmap: &str,
+) -> Result<Document<Roadmap>> {
+    let path = crate::paths::archived_roadmap_path(project, roadmap);
+    if !store.exists(&path) {
+        return Err(Error::RoadmapNotFound(roadmap.to_string()));
+    }
+    let content = store.read(&path)?;
+    Document::parse(&content)
+}
+
+/// Loads and parses a phase document within an archived roadmap.
+///
+/// # Errors
+///
+/// Returns [`Error::PhaseNotFound`] if the archived phase file does not
+/// exist, [`Error::Io`] on read failure, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+/// YAML is invalid.
+pub fn load_archived_phase(
+    store: &impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+) -> Result<Document<Phase>> {
+    let path = crate::paths::archived_phase_path(project, roadmap, phase_stem);
+    if !store.exists(&path) {
+        return Err(Error::PhaseNotFound(phase_stem.to_string()));
+    }
+    let content = store.read(&path)?;
+    Document::parse(&content)
+}
+
 /// Loads a roadmap document with its body read at a specific git revision.
 ///
 /// Metadata (frontmatter) reflects the current state, but the body is the
@@ -393,6 +436,75 @@ mod tests {
         assert!(matches!(
             load_task(&store, "test", "nonexistent"),
             Err(Error::TaskNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn load_archived_roadmap_returns_parsed_roadmap() {
+        let mut store = setup_store();
+        let doc = Document {
+            frontmatter: Roadmap {
+                project: "test".to_string(),
+                roadmap: "alpha".to_string(),
+                title: "Alpha".to_string(),
+                phases: vec![],
+                dependencies: None,
+                priority: None,
+                tags: None,
+            },
+            body: "Archived roadmap body.".to_string(),
+        };
+        let path = crate::paths::archived_roadmap_path("test", "alpha");
+        store.write(&path, doc.render().unwrap()).unwrap();
+
+        let loaded = load_archived_roadmap(&store, "test", "alpha").unwrap();
+        assert_eq!(loaded.frontmatter.title, "Alpha");
+        assert_eq!(loaded.body, "Archived roadmap body.\n");
+    }
+
+    #[test]
+    fn load_archived_roadmap_not_found() {
+        let store = setup_store();
+        assert!(matches!(
+            load_archived_roadmap(&store, "test", "nonexistent"),
+            Err(Error::RoadmapNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn load_archived_phase_returns_parsed_phase() {
+        let mut store = setup_store();
+        let doc = Document {
+            frontmatter: Phase {
+                phase: 1,
+                title: "Phase One".to_string(),
+                status: PhaseStatus::Done,
+                tags: None,
+                completed: None,
+                commit: None,
+                review_sha: None,
+                review_branch: None,
+                difficulty: None,
+                model: None,
+                blocked_reason: None,
+            },
+            body: "Archived phase body.".to_string(),
+        };
+        let path = crate::paths::archived_phase_path("test", "alpha", "phase-1-one");
+        store.write(&path, doc.render().unwrap()).unwrap();
+
+        let loaded = load_archived_phase(&store, "test", "alpha", "phase-1-one").unwrap();
+        assert_eq!(loaded.frontmatter.title, "Phase One");
+        assert_eq!(loaded.frontmatter.phase, 1);
+        assert_eq!(loaded.body, "Archived phase body.\n");
+    }
+
+    #[test]
+    fn load_archived_phase_not_found() {
+        let store = setup_store();
+        assert!(matches!(
+            load_archived_phase(&store, "test", "alpha", "phase-99-nope"),
+            Err(Error::PhaseNotFound(_))
         ));
     }
 

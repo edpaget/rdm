@@ -82,6 +82,14 @@ pub fn archived_roadmap_path(project: &str, roadmap: &str) -> RelPath {
     .expect("valid path")
 }
 
+/// Returns the path to a phase file within an archived roadmap directory.
+pub fn archived_phase_path(project: &str, roadmap: &str, phase_stem: &str) -> RelPath {
+    RelPath::new(&format!(
+        "projects/{project}/archive/roadmaps/{roadmap}/{phase_stem}.md"
+    ))
+    .expect("valid path")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +182,14 @@ mod tests {
         assert_eq!(
             archived_roadmap_path("fbm", "alpha").as_str(),
             "projects/fbm/archive/roadmaps/alpha/roadmap.md"
+        );
+    }
+
+    #[test]
+    fn archived_phase_path_is_correct() {
+        assert_eq!(
+            archived_phase_path("fbm", "alpha", "phase-1-one").as_str(),
+            "projects/fbm/archive/roadmaps/alpha/phase-1-one.md"
         );
     }
 }

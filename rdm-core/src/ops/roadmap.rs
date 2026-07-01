@@ -477,8 +477,7 @@ pub fn list_archived_roadmaps(store: &impl Store, project: &str) -> Result<Vec<D
         if !store.exists(&path) {
             continue;
         }
-        let content = store.read(&path)?;
-        let doc: Document<Roadmap> = Document::parse(&content)?;
+        let doc = crate::io::load_archived_roadmap(store, project, &slug)?;
         roadmaps.push(doc);
     }
     Ok(roadmaps)
@@ -512,9 +511,7 @@ pub fn list_archived_phases(
             continue;
         }
         let stem = entry.name.trim_end_matches(".md").to_string();
-        let path = dir.join(&entry.name).expect("valid path");
-        let content = store.read(&path)?;
-        let doc: Document<Phase> = Document::parse(&content)?;
+        let doc = crate::io::load_archived_phase(store, project, roadmap, &stem)?;
         phases.push((stem, doc));
     }
     phases.sort_by_key(|(_, doc)| doc.frontmatter.phase);

@@ -4672,6 +4672,55 @@ fn list_archived_roadmaps_empty() {
 }
 
 #[test]
+fn list_archived_phases_returns_archived_phases() {
+    let mut store = setup_with_project();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "polish",
+            title: "Polish",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    rdm_core::ops::roadmap::archive_roadmap(&mut store, "fbm", "alpha", true).unwrap();
+
+    let phases = rdm_core::ops::roadmap::list_archived_phases(&store, "fbm", "alpha").unwrap();
+    assert_eq!(phases.len(), 2);
+    // Sorted by phase number.
+    assert_eq!(phases[0].0, "phase-1-core");
+    assert_eq!(phases[0].1.frontmatter.phase, 1);
+    assert_eq!(phases[0].1.frontmatter.title, "Core");
+    assert_eq!(phases[1].0, "phase-2-polish");
+    assert_eq!(phases[1].1.frontmatter.phase, 2);
+    assert_eq!(phases[1].1.frontmatter.title, "Polish");
+}
+
+#[test]
 fn unarchive_roadmap_restores_files() {
     let mut store = setup_with_project();
     rdm_core::ops::roadmap::create_roadmap(
