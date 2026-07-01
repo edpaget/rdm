@@ -73,6 +73,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it) and bounded `--plan-only` / `--max-phases` dry-run modes. See
   [`docs/autonomous-loop.md`](docs/autonomous-loop.md).
 
+### Fixed
+
+- `rdm worktree prune --delete-branch` now reports partial success when a done
+  item's worktree is removed but its branch is retained because the branch is not
+  merged into HEAD (and `--force` was not passed). Previously the whole operation
+  was reported as `failed` even though the worktree removal succeeded, so the
+  `removed`/`failed` counts misled and the orphaned branch could not be
+  re-cleaned by a later prune. There is now a distinct `removed-branch-kept`
+  action with a per-result `reason`, a top-level `branch_kept` count in
+  `--format json`, and a matching `N branch kept` figure and `removed, branch
+  kept (…)` note in the text summary.
+- `rdm worktree prune` now reports a worktree that became dirty between the
+  initial scan and its removal as `skipped-dirty` rather than `failed`.
+
 ### Changed
 
 - The `rdm-do`, `rdm-review`, and `rdm-dispatch-phase` skills emitted by `rdm

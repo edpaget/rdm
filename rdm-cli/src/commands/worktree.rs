@@ -239,6 +239,10 @@ fn prune(
         .iter()
         .filter(|r| matches!(r.action, PruneAction::SkippedDirty))
         .count();
+    let branch_kept = results
+        .iter()
+        .filter(|r| matches!(r.action, PruneAction::RemovedBranchKept { .. }))
+        .count();
     let failed = results
         .iter()
         .filter(|r| matches!(r.action, PruneAction::Failed(_)))
@@ -249,12 +253,19 @@ fn prune(
             let arr: Vec<_> = results
                 .iter()
                 .map(|r| {
-                    serde_json::json!({
+                    let mut obj = serde_json::json!({
                         "item": r.item,
                         "branch": r.branch,
                         "path": r.path.display().to_string(),
                         "action": action_str(&r.action),
-                    })
+                    });
+                    // Surface the retention reason per-result for the
+                    // removed-branch-kept action so JSON is as informative as the
+                    // text note; absent for every other action.
+                    if let PruneAction::RemovedBranchKept { reason } = &r.action {
+                        obj["reason"] = serde_json::Value::String(reason.clone());
+                    }
+                    obj
                 })
                 .collect();
             println!(
@@ -264,6 +275,7 @@ fn prune(
                     "removed": removed,
                     "would_remove": would,
                     "skipped_dirty": skipped,
+                    "branch_kept": branch_kept,
                     "failed": failed,
                 }))?
             );
@@ -277,6 +289,9 @@ fn prune(
                         PruneAction::Removed => "removed".to_string(),
                         PruneAction::WouldRemove => "would remove".to_string(),
                         PruneAction::SkippedDirty => "skipped (dirty — pass --force)".to_string(),
+                        PruneAction::RemovedBranchKept { reason } => {
+                            format!("removed, branch kept ({reason})")
+                        }
                         PruneAction::Failed(e) => format!("failed: {e}"),
                     };
                     println!("{}  {}  {}", r.item, r.path.display(), note);
@@ -284,7 +299,9 @@ fn prune(
                 if dry_run {
                     println!("{would} would be removed, {skipped} skipped (dirty).");
                 } else {
-                    println!("{removed} removed, {skipped} skipped (dirty), {failed} failed.");
+                    println!(
+                        "{removed} removed, {branch_kept} branch kept, {skipped} skipped (dirty), {failed} failed."
+                    );
                 }
             }
         }
@@ -298,6 +315,7 @@ fn action_str(action: &PruneAction) -> &'static str {
         PruneAction::Removed => "removed",
         PruneAction::WouldRemove => "would-remove",
         PruneAction::SkippedDirty => "skipped-dirty",
+        PruneAction::RemovedBranchKept { .. } => "removed-branch-kept",
         PruneAction::Failed(_) => "failed",
     }
 }

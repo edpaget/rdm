@@ -437,6 +437,106 @@ fn prune_removes_done_keeps_open() {
         .stdout(predicate::str::contains("phase-1-foo").not());
 }
 
+/// Stands up a done-phase worktree carrying an unmerged commit on its branch,
+/// then returns `(plan, project)`. The done phase is `phase-1-foo` / branch
+/// `phase/my-roadmap/phase-1-foo`.
+fn setup_done_worktree_with_unmerged_branch() -> (TempDir, TempDir) {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-foo",
+            "--status",
+            "done",
+            "--no-edit",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    let assert = worktree_cmd(&plan, &project)
+        .args(["add", "my-roadmap/phase-1-foo", "--project", "demo"])
+        .assert()
+        .success();
+    let wt_path = String::from_utf8_lossy(&assert.get_output().stdout)
+        .trim()
+        .to_string();
+
+    // Unmerged commit on the worktree's branch → `git branch -d` will refuse.
+    fs::write(Path::new(&wt_path).join("feature.txt"), "work").unwrap();
+    git(Path::new(&wt_path), &["add", "."]);
+    git(Path::new(&wt_path), &["commit", "-m", "feature work"]);
+
+    (plan, project)
+}
+
+#[test]
+fn prune_reports_branch_kept_for_unmerged() {
+    let (plan, project) = setup_done_worktree_with_unmerged_branch();
+
+    // Prune with --delete-branch (force off): worktree removed, branch retained.
+    worktree_cmd(&plan, &project)
+        .args(["prune", "--delete-branch", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("branch kept"))
+        .stdout(predicate::str::contains("1 branch kept"));
+
+    // The worktree is gone...
+    worktree_cmd(&plan, &project)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("phase-1-foo").not());
+
+    // ...but the branch survives.
+    let out = std::process::Command::new("git")
+        .args(["branch", "--list", "phase/my-roadmap/phase-1-foo"])
+        .current_dir(project.path())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        "unmerged branch should be retained"
+    );
+}
+
+#[test]
+fn prune_json_reports_branch_kept() {
+    let (plan, project) = setup_done_worktree_with_unmerged_branch();
+
+    let assert = worktree_cmd(&plan, &project)
+        .args([
+            "prune",
+            "--delete-branch",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    assert_eq!(json["branch_kept"], 1);
+    assert_eq!(json["removed"], 0);
+    assert_eq!(json["results"][0]["action"], "removed-branch-kept");
+    let reason = json["results"][0]["reason"].as_str().unwrap();
+    assert!(!reason.is_empty(), "per-result reason should be present");
+}
+
 #[test]
 fn not_a_git_repo_errors() {
     let plan = init_plan_repo();

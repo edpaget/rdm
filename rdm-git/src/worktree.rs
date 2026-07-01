@@ -276,6 +276,14 @@ pub enum PruneAction {
     WouldRemove,
     /// The worktree was dirty and `force` was not set, so it was skipped.
     SkippedDirty,
+    /// The worktree was removed, but its branch was retained because it is not
+    /// merged into HEAD (branch deletion was requested without `force`). The
+    /// worktree removal itself succeeded — this is a partial success, not a
+    /// failure. Carries a human-readable `reason` naming the retained branch.
+    RemovedBranchKept {
+        /// Why the branch was kept (e.g. `branch '<name>' not merged into HEAD`).
+        reason: String,
+    },
     /// Removal was attempted but failed; carries the error message.
     Failed(String),
 }
@@ -335,10 +343,15 @@ fn item_is_done(store: &impl rdm_core::store::Store, project: &str, item: &str) 
 /// status against the plan `store` (via the private `item_is_done` helper), and for each such
 /// candidate: skips it as [`PruneAction::SkippedDirty`] if it is dirty and
 /// `opts.force` is unset; records [`PruneAction::WouldRemove`] without touching
-/// it when `opts.dry_run` is set; otherwise [`remove`]s it (honoring
-/// `opts.delete_branch` / `opts.force`) and maps the outcome to
-/// [`PruneAction::Removed`] or [`PruneAction::Failed`]. Non-done worktrees are
-/// not candidates and are omitted from the returned vector entirely.
+/// it when `opts.dry_run` is set; otherwise removes it (via the internal
+/// `remove_info`, reusing this single [`list`] pass rather than re-scanning)
+/// honoring `opts.delete_branch` / `opts.force`, and maps the outcome:
+/// [`PruneAction::Removed`] on full success; [`PruneAction::RemovedBranchKept`]
+/// when the worktree was removed but its unmerged branch was retained
+/// ([`WorktreeError::UnmergedBranch`], force off); [`PruneAction::SkippedDirty`]
+/// if it went dirty between the scan and removal; [`PruneAction::Failed`] on any
+/// other error. Non-done worktrees are not candidates and are omitted from the
+/// returned vector entirely.
 ///
 /// A single worktree's removal failure is captured in its [`PruneResult`]
 /// rather than aborting the whole batch.
@@ -364,15 +377,28 @@ pub fn prune(
         } else if opts.dry_run {
             PruneAction::WouldRemove
         } else {
-            match remove(
+            match remove_info(
                 repo_root,
-                &wt.item,
+                &wt,
                 RemoveOptions {
                     force: opts.force,
                     delete_branch: opts.delete_branch,
                 },
             ) {
                 Ok(()) => PruneAction::Removed,
+                // The worktree WAS removed; only the unmerged-branch cleanup was
+                // declined. Report the partial success distinctly so counts stay
+                // accurate and the orphaned branch is visible.
+                Err(WorktreeError::UnmergedBranch(b)) => PruneAction::RemovedBranchKept {
+                    reason: format!("branch '{b}' not merged into HEAD — pass --force to delete"),
+                },
+                // The worktree went dirty between the scan and removal: treat it
+                // like the scan-time dirty skip, not an opaque failure.
+                Err(WorktreeError::Dirty(_)) => PruneAction::SkippedDirty,
+                // NOTE: a branch-delete failure for any OTHER reason (e.g. a raw
+                // Git error) still maps to Failed even though the worktree was
+                // removed — a narrower latent misreport class intentionally left
+                // out of this phase's scope.
                 Err(e) => PruneAction::Failed(e.to_string()),
             }
         };
@@ -663,7 +689,31 @@ pub fn remove(repo_root: &Path, target: &str, opts: RemoveOptions) -> Result<()>
         }
     };
 
-    if info.dirty && !opts.force {
+    remove_info(repo_root, info, opts)
+}
+
+/// Removes an already-resolved worktree, given its [`WorktreeInfo`].
+///
+/// This is the removal primitive shared by [`remove`] (which resolves a target
+/// string to a `WorktreeInfo` first) and [`prune`] (which passes each candidate
+/// straight from its single [`list`] pass, avoiding an O(n²) re-scan). It
+/// re-checks dirtiness against `info.path` at removal time rather than trusting
+/// the possibly-stale `info.dirty` from an earlier scan, narrowing the
+/// time-of-check/time-of-use window and letting callers categorize a worktree
+/// that went dirty since the scan as dirty rather than as an opaque failure.
+///
+/// Refuses a dirty worktree unless `opts.force`. When `opts.delete_branch` is
+/// set, deletes the branch afterward (`git branch -d`, escalating to `-D` when
+/// `opts.force`).
+///
+/// # Errors
+///
+/// Returns [`WorktreeError::Dirty`] if the worktree is dirty and `force` is not
+/// set, [`WorktreeError::UnmergedBranch`] if the branch is unmerged and `force`
+/// is not set (raised only *after* the worktree itself was successfully
+/// removed — a partial success), or [`WorktreeError::Git`] on a git failure.
+fn remove_info(repo_root: &Path, info: &WorktreeInfo, opts: RemoveOptions) -> Result<()> {
+    if is_dirty(&info.path) && !opts.force {
         return Err(WorktreeError::Dirty(info.path.clone()));
     }
 
@@ -1501,6 +1551,82 @@ mod tests {
         assert!(items.contains(&"task/open-task"));
         assert!(!items.contains(&"done-roadmap"));
         assert!(!items.contains(&"task/done-task"));
+    }
+
+    #[test]
+    fn prune_removes_worktree_keeps_unmerged_branch() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, store, _parent) = prune_fixture();
+        let done = done_item();
+        let info = add(&repo, &done, &done.branch_name(), None).unwrap();
+
+        // Make an unmerged commit on the worktree's branch so `git branch -d`
+        // (force off) will refuse it after the worktree is removed.
+        std::fs::write(info.path.join("feature.txt"), "work").unwrap();
+        run_git(&info.path, &["add", "."]);
+        run_git(&info.path, &["commit", "-m", "feature work"]);
+
+        let results = prune(
+            &repo,
+            &store,
+            "proj",
+            PruneOptions {
+                delete_branch: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        // Partial success: worktree removed, branch retained (unmerged).
+        match &results[0].action {
+            PruneAction::RemovedBranchKept { reason } => {
+                assert!(!reason.is_empty(), "reason should explain the retention");
+            }
+            other => panic!("expected RemovedBranchKept, got {other:?}"),
+        }
+
+        // The worktree is gone from the list, so a later prune can't re-clean it.
+        assert!(list(&repo).unwrap().is_empty());
+
+        // The branch survives — it was not deleted.
+        let out = std::process::Command::new("git")
+            .args(["branch", "--list", &done.branch_name()])
+            .current_dir(&repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+            "unmerged branch should be retained"
+        );
+    }
+
+    #[test]
+    fn remove_info_rechecks_dirty_returns_dirty() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let done = done_item();
+        add(&repo, &done, &done.branch_name(), None).unwrap();
+
+        // Re-resolve the worktree via `list`, then dirty it *after* that scan.
+        let info = list(&repo)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.item == done.canonical())
+            .unwrap();
+        std::fs::write(info.path.join("scratch.txt"), "wip").unwrap();
+
+        // `remove_info` must re-check dirtiness at removal time (not trust the
+        // stale `info.dirty` from the scan) and refuse without force.
+        let err = remove_info(&repo, &info, RemoveOptions::default()).unwrap_err();
+        assert!(matches!(err, WorktreeError::Dirty(_)));
+        assert_eq!(list(&repo).unwrap().len(), 1, "worktree must survive");
     }
 
     #[test]
