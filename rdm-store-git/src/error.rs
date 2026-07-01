@@ -3,7 +3,7 @@
 //! These errors arise from the remote/merge porcelain methods on
 //! [`GitStore`](crate::GitStore) (`git_remote_add`, `git_push`, `git_pull`,
 //! `git_resolve_conflict`, …). They are deliberately self-contained in
-//! `rdm-store-git`, mirroring [`worktree::WorktreeError`](crate::worktree::WorktreeError):
+//! `rdm-store-git`, mirroring `rdm-git`'s `WorktreeError`:
 //! the porcelain methods are not part of the [`Store`](rdm_core::store::Store)
 //! trait, so they do not belong in `rdm-core`'s error enum, which a
 //! filesystem-only build would otherwise compile in but never produce.

@@ -6,8 +6,8 @@
 //! can generate meaningful commit messages.
 //!
 //! All git logic — low-level plumbing and high-level porcelain — lives on the
-//! [`GitRepo`] collaborator (see the [`repo`], [`commit`], [`remote`], and
-//! [`merge`] modules). `GitStore` is a thin adapter composing an `FsStore`
+//! [`GitRepo`] collaborator (see the `repo`, `commit`, `remote`, and
+//! `merge` modules). `GitStore` is a thin adapter composing an `FsStore`
 //! with a `GitRepo`, exposing the git capability via [`GitStore::git`] and
 //! [`GitStore::git_mut`].
 
