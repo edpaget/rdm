@@ -868,19 +868,24 @@ fn is_dirty(path: &Path) -> bool {
 fn run_git_at(path: &Path, args: &[&str]) -> Result<Output> {
     match crate::process::git_command(Some(path), args) {
         Ok(o) => Ok(o),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // ENOENT from spawning is ambiguous: it means either the `git` binary
-            // is absent OR the working directory does not exist / is not a
-            // directory. Disambiguate with `is_dir` so an invalid cwd is reported
-            // actionably rather than as a missing git install. (`exists()` is
-            // insufficient — a cwd that is a *file* also yields NotFound.)
+        Err(e) => {
+            // A spawn failure against an invalid working directory is reported
+            // differently per platform, so disambiguate by inspecting the path
+            // itself rather than the errno. A nonexistent cwd is ENOENT
+            // (`NotFound`) everywhere; a cwd that is a *file* surfaces as
+            // `NotFound` on macOS but `NotADirectory` (errno 20) on Linux. In
+            // either case `is_dir` is false, so an invalid cwd is always
+            // reported actionably rather than as a missing git install.
+            // (`exists()` is insufficient — a file cwd exists but is not a dir.)
             if !path.is_dir() {
                 Err(WorktreeError::NoSuchDirectory(path.to_path_buf()))
-            } else {
+            } else if e.kind() == std::io::ErrorKind::NotFound {
+                // Real directory, but `git` itself could not be spawned.
                 Err(WorktreeError::GitMissing)
+            } else {
+                Err(WorktreeError::Git(format!("failed to run git: {e}")))
             }
         }
-        Err(e) => Err(WorktreeError::Git(format!("failed to run git: {e}"))),
     }
 }
 
