@@ -16,6 +16,8 @@ pub mod phase;
 pub mod project;
 /// Review operations: enumerate items awaiting review.
 pub mod review;
+/// Review-document operations: list stored reviews.
+pub mod reviews;
 /// Roadmap operations: create, update, delete, list, archive, split, dependencies.
 pub mod roadmap;
 /// Task operations: create, update, list, promote.

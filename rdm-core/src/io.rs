@@ -7,7 +7,7 @@
 use crate::config::Config;
 use crate::document::Document;
 use crate::error::{Error, Result};
-use crate::model::{Phase, Project, Roadmap, Task};
+use crate::model::{Phase, Project, Review, Roadmap, Task};
 use crate::store::{Store, VersionedStore};
 
 /// Loads and parses `rdm.toml` from the plan repo root.
@@ -94,6 +94,27 @@ pub fn load_task(store: &impl Store, project: &str, task_slug: &str) -> Result<D
     let path = crate::paths::task_path(project, task_slug);
     if !store.exists(&path) {
         return Err(Error::TaskNotFound(task_slug.to_string()));
+    }
+    let content = store.read(&path)?;
+    Document::parse(&content)
+}
+
+/// Loads and parses a review document from the store.
+///
+/// Parsing never validates the review's target: a review whose target
+/// roadmap/phase/task has been renamed or deleted (a dangling target) still
+/// loads successfully.
+///
+/// # Errors
+///
+/// Returns [`Error::ReviewNotFound`] if the review file does not exist,
+/// [`Error::Io`] on read failure, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+/// YAML is invalid.
+pub fn load_review(store: &impl Store, project: &str, review_id: &str) -> Result<Document<Review>> {
+    let path = crate::paths::review_path(project, review_id);
+    if !store.exists(&path) {
+        return Err(Error::ReviewNotFound(review_id.to_string()));
     }
     let content = store.read(&path)?;
     Document::parse(&content)
@@ -280,6 +301,24 @@ pub fn write_task(
     Ok(())
 }
 
+/// Writes a review document to the store.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if writing fails, or
+/// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
+pub fn write_review(
+    store: &mut impl Store,
+    project: &str,
+    review_id: &str,
+    doc: &Document<Review>,
+) -> Result<()> {
+    let path = crate::paths::review_path(project, review_id);
+    let content = doc.render()?;
+    store.write(&path, content)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +475,61 @@ mod tests {
         assert!(matches!(
             load_task(&store, "test", "nonexistent"),
             Err(Error::TaskNotFound(_))
+        ));
+    }
+
+    fn sample_review(id: &str) -> Document<crate::model::Review> {
+        use crate::model::{
+            Anchor, Review, ReviewComment, ReviewCommentStatus, ReviewState, ReviewTarget, Verdict,
+        };
+        use chrono::TimeZone;
+        Document {
+            frontmatter: Review {
+                id: id.to_string(),
+                author: "ed".to_string(),
+                target: ReviewTarget::Phase {
+                    roadmap: "alpha".to_string(),
+                    stem: "phase-1-one".to_string(),
+                },
+                state: ReviewState::Submitted,
+                verdict: Some(Verdict::RequestChanges),
+                created: chrono::Utc.with_ymd_and_hms(2026, 7, 1, 14, 30, 0).unwrap(),
+                submitted: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 1, 14, 55, 0).unwrap()),
+                created_commit: Some("a1b2c3d".to_string()),
+                comments: vec![ReviewComment {
+                    id: 1,
+                    doc: None,
+                    status: ReviewCommentStatus::Open,
+                    applied_commit: None,
+                    anchor: Some(Anchor::TextQuote {
+                        quote: "quoted".to_string(),
+                        prefix: "before ".to_string(),
+                        suffix: " after".to_string(),
+                    }),
+                    body: "Tighten this.".to_string(),
+                    reply: None,
+                }],
+            },
+            body: "Review summary.".to_string(),
+        }
+    }
+
+    #[test]
+    fn write_and_load_review_round_trip() {
+        let mut store = setup_store();
+        let doc = sample_review("2026-07-01-1430-a1b2");
+        write_review(&mut store, "test", "2026-07-01-1430-a1b2", &doc).unwrap();
+        let loaded = load_review(&store, "test", "2026-07-01-1430-a1b2").unwrap();
+        assert_eq!(loaded.frontmatter, doc.frontmatter);
+        assert_eq!(loaded.body, "Review summary.\n");
+    }
+
+    #[test]
+    fn load_review_not_found() {
+        let store = setup_store();
+        assert!(matches!(
+            load_review(&store, "test", "nonexistent"),
+            Err(Error::ReviewNotFound(_))
         ));
     }
 

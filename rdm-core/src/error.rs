@@ -21,6 +21,8 @@ pub enum Error {
     PhaseNotFound(String),
     /// The specified task was not found.
     TaskNotFound(String),
+    /// The specified review was not found.
+    ReviewNotFound(String),
     /// A slug already exists.
     DuplicateSlug(String),
     /// Adding a dependency would create a cycle.
@@ -128,6 +130,9 @@ impl std::fmt::Display for Error {
             }
             Error::TaskNotFound(name) => {
                 write!(f, "task not found: {name}")
+            }
+            Error::ReviewNotFound(id) => {
+                write!(f, "review not found: {id}")
             }
             Error::DuplicateSlug(slug) => {
                 write!(f, "'{slug}' already exists — choose a different name")

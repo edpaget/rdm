@@ -56,6 +56,13 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("task not found: {name}")),
                 instance: None,
             },
+            Error::ReviewNotFound(id) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Not Found".to_string(),
+                status: 404,
+                detail: Some(format!("review not found: {id}")),
+                instance: None,
+            },
             Error::DuplicateSlug(slug) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),

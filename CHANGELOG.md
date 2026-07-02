@@ -47,6 +47,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A foundational Review data model in `rdm-core`. Reviews of a roadmap, phase,
+  or task are stored as markdown files under a project's `reviews/` directory
+  (`reviews/<id>.md`) with the review summary as the body and all metadata —
+  state, verdict, timestamps, and the full list of inline comments — in the
+  frontmatter. Comments can be anchored to a quoted span of the target's body
+  (text-quote anchors with surrounding context), and anchor types this build
+  does not recognize round-trip losslessly, so an older rdm never corrupts
+  reviews written by a newer one. This is groundwork only: reviews can be
+  written, loaded, and listed through the core library, with no CLI or API
+  surface yet.
+
 - `roadmap update`, `phase update`, and `task update` now accept `--title
   <TITLE>` to rename an item in place. Only the frontmatter title changes — the
   slug (for roadmaps/tasks) and the stem/number (for phases) are never touched,

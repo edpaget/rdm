@@ -2,7 +2,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Error returned when a string cannot be parsed into one of the model enums.
@@ -501,6 +501,355 @@ pub struct Roadmap {
     /// Optional tags for categorization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+}
+
+/// Lifecycle state of a review.
+///
+/// A review starts as a `draft`, becomes `submitted` when the reviewer
+/// finalizes it (stamping a [`Verdict`]), and ends as `addressed` (every
+/// comment resolved) or `dismissed` (closed without being acted on).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewState {
+    /// The review is being written and has not been submitted.
+    Draft,
+    /// The review has been submitted with a verdict.
+    Submitted,
+    /// Every comment has been resolved and the review is closed.
+    Addressed,
+    /// The review was closed without being acted on.
+    Dismissed,
+}
+
+impl fmt::Display for ReviewState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReviewState::Draft => write!(f, "draft"),
+            ReviewState::Submitted => write!(f, "submitted"),
+            ReviewState::Addressed => write!(f, "addressed"),
+            ReviewState::Dismissed => write!(f, "dismissed"),
+        }
+    }
+}
+
+impl FromStr for ReviewState {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "draft" => Ok(ReviewState::Draft),
+            "submitted" => Ok(ReviewState::Submitted),
+            "addressed" => Ok(ReviewState::Addressed),
+            "dismissed" => Ok(ReviewState::Dismissed),
+            other => Err(ParseError::new(
+                "review state",
+                other,
+                "draft, submitted, addressed, or dismissed",
+            )),
+        }
+    }
+}
+
+/// Overall verdict a reviewer attaches when submitting a review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Verdict {
+    /// The target is approved as-is.
+    Approve,
+    /// Changes are requested before the target can be accepted.
+    RequestChanges,
+    /// Neutral feedback with no approval or rejection.
+    Comment,
+}
+
+impl fmt::Display for Verdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Verdict::Approve => write!(f, "approve"),
+            Verdict::RequestChanges => write!(f, "request-changes"),
+            Verdict::Comment => write!(f, "comment"),
+        }
+    }
+}
+
+impl FromStr for Verdict {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "approve" => Ok(Verdict::Approve),
+            "request-changes" => Ok(Verdict::RequestChanges),
+            "comment" => Ok(Verdict::Comment),
+            other => Err(ParseError::new(
+                "verdict",
+                other,
+                "approve, request-changes, or comment",
+            )),
+        }
+    }
+}
+
+/// Resolution status of a single review comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewCommentStatus {
+    /// The comment has not been acted on yet.
+    Open,
+    /// The comment has been addressed (see
+    /// [`ReviewComment::applied_commit`]).
+    Addressed,
+    /// The comment was closed without a change.
+    WontFix,
+}
+
+impl fmt::Display for ReviewCommentStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReviewCommentStatus::Open => write!(f, "open"),
+            ReviewCommentStatus::Addressed => write!(f, "addressed"),
+            ReviewCommentStatus::WontFix => write!(f, "wont-fix"),
+        }
+    }
+}
+
+impl FromStr for ReviewCommentStatus {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(ReviewCommentStatus::Open),
+            "addressed" => Ok(ReviewCommentStatus::Addressed),
+            "wont-fix" => Ok(ReviewCommentStatus::WontFix),
+            other => Err(ParseError::new(
+                "review comment status",
+                other,
+                "open, addressed, or wont-fix",
+            )),
+        }
+    }
+}
+
+/// The plan item a review targets.
+///
+/// Serialized as a tagged mapping keyed on `kind` (`roadmap` | `phase` |
+/// `task`). Target existence is deliberately **not** validated at parse
+/// time — a review whose target has been renamed or deleted (a dangling
+/// target) still loads, so renames never corrupt the review store.
+/// Existence is checked when a review is *created*, by the operations
+/// layer (a later phase).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ReviewTarget {
+    /// A whole roadmap.
+    Roadmap {
+        /// Roadmap slug.
+        roadmap: String,
+    },
+    /// A single phase within a roadmap.
+    Phase {
+        /// Roadmap slug the phase belongs to.
+        roadmap: String,
+        /// Phase file stem (e.g. `phase-1-design`).
+        stem: String,
+    },
+    /// A standalone task.
+    Task {
+        /// Task slug.
+        slug: String,
+    },
+}
+
+/// Kind of document a [`CommentDoc`] points at.
+///
+/// Only `phase` is meaningful today: a roadmap review may scope a comment
+/// to one of the roadmap's phases. Modeled as an enum so future kinds are
+/// non-breaking additions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CommentDocKind {
+    /// A roadmap phase.
+    Phase,
+}
+
+/// Document scope for a comment within a multi-document review.
+///
+/// A roadmap review may point an individual comment at one of the
+/// roadmap's phases rather than at the roadmap body itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentDoc {
+    /// The kind of document the comment points at.
+    pub kind: CommentDocKind,
+    /// File stem of the document (e.g. `phase-1-design`).
+    pub stem: String,
+}
+
+/// Location a review comment is anchored to within the target's body.
+///
+/// Serialized as a tagged union keyed on `anchor_type`. Only `text-quote`
+/// is modeled today; any other `anchor_type` written by a newer rdm
+/// round-trips losslessly as [`Anchor::Unknown`], so an older binary never
+/// corrupts reviews it does not fully understand. Future variants
+/// (`line-range`, `heading-path`, `ast-node`) are non-breaking structural
+/// additions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Anchor {
+    /// A quoted span of the target's body, disambiguated by surrounding
+    /// context (the [W3C text-quote selector](https://www.w3.org/TR/annotation-model/#text-quote-selector)
+    /// approach).
+    TextQuote {
+        /// The exact quoted text the comment refers to.
+        quote: String,
+        /// Up to ~32 characters immediately before the quote, to
+        /// disambiguate duplicate occurrences.
+        prefix: String,
+        /// Up to ~32 characters immediately after the quote.
+        suffix: String,
+    },
+    /// An anchor whose `anchor_type` this build does not recognize.
+    ///
+    /// The full original YAML mapping (including the `anchor_type` key) is
+    /// preserved verbatim in `raw` and re-emitted on serialization, so no
+    /// data is lost when re-writing the review file.
+    Unknown {
+        /// The unrecognized `anchor_type` discriminator.
+        anchor_type: String,
+        /// The complete original mapping, preserved for lossless
+        /// round-tripping.
+        raw: serde_yaml::Value,
+    },
+}
+
+impl Serialize for Anchor {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Anchor::TextQuote {
+                quote,
+                prefix,
+                suffix,
+            } => {
+                #[derive(Serialize)]
+                struct TextQuoteFields<'a> {
+                    anchor_type: &'static str,
+                    quote: &'a str,
+                    prefix: &'a str,
+                    suffix: &'a str,
+                }
+                TextQuoteFields {
+                    anchor_type: "text-quote",
+                    quote,
+                    prefix,
+                    suffix,
+                }
+                .serialize(serializer)
+            }
+            // Re-emit the original mapping verbatim (it already carries its
+            // own `anchor_type` key).
+            Anchor::Unknown { raw, .. } => raw.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Anchor {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        // Buffer the whole mapping first so an unrecognized variant can be
+        // preserved verbatim.
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        let anchor_type = match value.get("anchor_type") {
+            None => return Err(D::Error::missing_field("anchor_type")),
+            Some(v) => v
+                .as_str()
+                .ok_or_else(|| D::Error::custom("anchor_type must be a string"))?
+                .to_string(),
+        };
+        match anchor_type.as_str() {
+            "text-quote" => {
+                #[derive(Deserialize)]
+                struct TextQuoteFields {
+                    quote: String,
+                    prefix: String,
+                    suffix: String,
+                }
+                let fields: TextQuoteFields =
+                    serde_yaml::from_value(value).map_err(D::Error::custom)?;
+                Ok(Anchor::TextQuote {
+                    quote: fields.quote,
+                    prefix: fields.prefix,
+                    suffix: fields.suffix,
+                })
+            }
+            _ => Ok(Anchor::Unknown {
+                anchor_type,
+                raw: value,
+            }),
+        }
+    }
+}
+
+/// A single inline comment within a [`Review`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewComment {
+    /// Ordinal identifier, unique within the review.
+    pub id: u32,
+    /// Optional document scope: a roadmap review may point this comment at
+    /// one of the roadmap's phases. `None` targets the review's own target
+    /// document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<CommentDoc>,
+    /// Resolution status of the comment.
+    pub status: ReviewCommentStatus,
+    /// Commit SHA recorded when `status` moved to
+    /// [`ReviewCommentStatus::Addressed`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_commit: Option<String>,
+    /// Where in the target body the comment points. `None` means a
+    /// whole-document comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<Anchor>,
+    /// The comment text (Markdown).
+    pub body: String,
+    /// Agent note set when the comment is addressed or needs clarification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
+}
+
+/// Frontmatter for a review file (`reviews/<id>.md`).
+///
+/// The file body below the frontmatter is the overall review summary; all
+/// metadata — including the full comment list — lives in the frontmatter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Review {
+    /// Timestamp-based identifier, unique within the project (e.g.
+    /// `2026-07-01-1430-a1b2`); also the file stem.
+    pub id: String,
+    /// Who authored the review — a free-form string (email, agent name,
+    /// etc.).
+    pub author: String,
+    /// The plan item under review.
+    pub target: ReviewTarget,
+    /// Lifecycle state of the review.
+    pub state: ReviewState,
+    /// Verdict stamped on submit; absent while the review is a draft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<Verdict>,
+    /// When the review was started.
+    pub created: DateTime<Utc>,
+    /// When the review was submitted; absent on drafts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted: Option<DateTime<Utc>>,
+    /// Plan-repo HEAD when the review started — the version of the target
+    /// the reviewer saw. Optional so files from older formats still load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_commit: Option<String>,
+    /// The inline comments attached to this review.
+    pub comments: Vec<ReviewComment>,
 }
 
 #[cfg(test)]
@@ -1063,5 +1412,242 @@ title: Fantasy Baseball Manager
         let date = NaiveDate::from_ymd_opt(2026, 3, 14).unwrap();
         let yaml = serde_yaml::to_string(&date).unwrap();
         assert_eq!(yaml.trim(), "2026-03-14");
+    }
+
+    // -- Review model tests --
+
+    #[test]
+    fn review_state_display_from_str_round_trip() {
+        let variants = [
+            (ReviewState::Draft, "draft"),
+            (ReviewState::Submitted, "submitted"),
+            (ReviewState::Addressed, "addressed"),
+            (ReviewState::Dismissed, "dismissed"),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: ReviewState = expected.parse().unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn review_state_from_str_invalid() {
+        let err = "pending".parse::<ReviewState>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid review state: 'pending' (expected draft, submitted, addressed, or dismissed)"
+        );
+    }
+
+    #[test]
+    fn review_state_yaml_round_trip() {
+        let variants = [
+            (ReviewState::Draft, "draft"),
+            (ReviewState::Submitted, "submitted"),
+            (ReviewState::Addressed, "addressed"),
+            (ReviewState::Dismissed, "dismissed"),
+        ];
+        for (variant, expected_yaml) in variants {
+            let yaml = serde_yaml::to_string(&variant).unwrap();
+            assert_eq!(yaml.trim(), expected_yaml);
+            let parsed: ReviewState = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn verdict_display_from_str_round_trip() {
+        let variants = [
+            (Verdict::Approve, "approve"),
+            (Verdict::RequestChanges, "request-changes"),
+            (Verdict::Comment, "comment"),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: Verdict = expected.parse().unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn verdict_from_str_invalid() {
+        let err = "reject".parse::<Verdict>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid verdict: 'reject' (expected approve, request-changes, or comment)"
+        );
+    }
+
+    #[test]
+    fn verdict_yaml_round_trip() {
+        let variants = [
+            (Verdict::Approve, "approve"),
+            (Verdict::RequestChanges, "request-changes"),
+            (Verdict::Comment, "comment"),
+        ];
+        for (variant, expected_yaml) in variants {
+            let yaml = serde_yaml::to_string(&variant).unwrap();
+            assert_eq!(yaml.trim(), expected_yaml);
+            let parsed: Verdict = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn review_comment_status_display_from_str_round_trip() {
+        let variants = [
+            (ReviewCommentStatus::Open, "open"),
+            (ReviewCommentStatus::Addressed, "addressed"),
+            (ReviewCommentStatus::WontFix, "wont-fix"),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: ReviewCommentStatus = expected.parse().unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn review_comment_status_from_str_invalid() {
+        let err = "resolved".parse::<ReviewCommentStatus>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid review comment status: 'resolved' (expected open, addressed, or wont-fix)"
+        );
+    }
+
+    #[test]
+    fn review_comment_status_yaml_round_trip() {
+        let variants = [
+            (ReviewCommentStatus::Open, "open"),
+            (ReviewCommentStatus::Addressed, "addressed"),
+            (ReviewCommentStatus::WontFix, "wont-fix"),
+        ];
+        for (variant, expected_yaml) in variants {
+            let yaml = serde_yaml::to_string(&variant).unwrap();
+            assert_eq!(yaml.trim(), expected_yaml);
+            let parsed: ReviewCommentStatus = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn comment_doc_round_trip() {
+        let yaml = "kind: phase\nstem: phase-1-design\n";
+        let doc: CommentDoc = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(doc.kind, CommentDocKind::Phase);
+        assert_eq!(doc.stem, "phase-1-design");
+        let serialized = serde_yaml::to_string(&doc).unwrap();
+        let parsed: CommentDoc = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(parsed, doc);
+    }
+
+    #[test]
+    fn review_target_roadmap_round_trip() {
+        let target = ReviewTarget::Roadmap {
+            roadmap: "auth".to_string(),
+        };
+        let yaml = serde_yaml::to_string(&target).unwrap();
+        assert!(yaml.contains("kind: roadmap"));
+        assert!(yaml.contains("roadmap: auth"));
+        let parsed: ReviewTarget = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, target);
+    }
+
+    #[test]
+    fn review_target_phase_round_trip() {
+        let target = ReviewTarget::Phase {
+            roadmap: "auth".to_string(),
+            stem: "phase-1-design".to_string(),
+        };
+        let yaml = serde_yaml::to_string(&target).unwrap();
+        assert!(yaml.contains("kind: phase"));
+        assert!(yaml.contains("roadmap: auth"));
+        assert!(yaml.contains("stem: phase-1-design"));
+        let parsed: ReviewTarget = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, target);
+    }
+
+    #[test]
+    fn review_target_task_round_trip() {
+        let target = ReviewTarget::Task {
+            slug: "fix-login".to_string(),
+        };
+        let yaml = serde_yaml::to_string(&target).unwrap();
+        assert!(yaml.contains("kind: task"));
+        assert!(yaml.contains("slug: fix-login"));
+        let parsed: ReviewTarget = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, target);
+    }
+
+    #[test]
+    fn anchor_text_quote_round_trip() {
+        let anchor = Anchor::TextQuote {
+            quote: "## Acceptance Criteria".to_string(),
+            prefix: "right?\n\n".to_string(),
+            suffix: "\n\n- [ ] Criterion".to_string(),
+        };
+        let yaml = serde_yaml::to_string(&anchor).unwrap();
+        assert!(yaml.contains("anchor_type: text-quote"));
+        assert!(yaml.contains("quote:"));
+        assert!(yaml.contains("prefix:"));
+        assert!(yaml.contains("suffix:"));
+        let parsed: Anchor = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, anchor);
+    }
+
+    #[test]
+    fn anchor_unknown_type_preserves_raw_yaml() {
+        let yaml = "anchor_type: line-range\nstart: 3\nend: 7\nextra: keep-me\n";
+        let parsed: Anchor = serde_yaml::from_str(yaml).unwrap();
+        match &parsed {
+            Anchor::Unknown { anchor_type, raw } => {
+                assert_eq!(anchor_type, "line-range");
+                assert_eq!(
+                    raw.get("anchor_type").and_then(serde_yaml::Value::as_str),
+                    Some("line-range")
+                );
+                assert_eq!(
+                    raw.get("start").and_then(serde_yaml::Value::as_i64),
+                    Some(3)
+                );
+                assert_eq!(raw.get("end").and_then(serde_yaml::Value::as_i64), Some(7));
+                assert_eq!(
+                    raw.get("extra").and_then(serde_yaml::Value::as_str),
+                    Some("keep-me")
+                );
+            }
+            other => panic!("expected Anchor::Unknown, got {other:?}"),
+        }
+        // Serializing an Unknown anchor re-emits the original mapping verbatim.
+        let reserialized = serde_yaml::to_string(&parsed).unwrap();
+        let reparsed: Anchor = serde_yaml::from_str(&reserialized).unwrap();
+        assert_eq!(reparsed, parsed);
+    }
+
+    #[test]
+    fn anchor_missing_anchor_type_is_error() {
+        let yaml = "quote: some text\nprefix: a\nsuffix: b\n";
+        let err = serde_yaml::from_str::<Anchor>(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("anchor_type"),
+            "error should mention the missing field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn anchor_non_string_anchor_type_is_type_error_not_missing() {
+        let yaml = "anchor_type: 5\nquote: some text\nprefix: a\nsuffix: b\n";
+        let err = serde_yaml::from_str::<Anchor>(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("anchor_type must be a string"),
+            "error should say the field has the wrong type, got: {msg}"
+        );
+        assert!(
+            !msg.contains("missing field"),
+            "a present-but-mistyped field must not be reported as missing, got: {msg}"
+        );
     }
 }

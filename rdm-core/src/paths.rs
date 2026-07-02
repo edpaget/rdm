@@ -64,6 +64,16 @@ pub fn task_path(project: &str, task_slug: &str) -> RelPath {
     RelPath::new(&format!("projects/{project}/tasks/{task_slug}.md")).expect("valid path")
 }
 
+/// Returns the path to a project's reviews directory.
+pub fn reviews_dir(project: &str) -> RelPath {
+    RelPath::new(&format!("projects/{project}/reviews")).expect("valid path")
+}
+
+/// Returns the path to a review file.
+pub fn review_path(project: &str, review_id: &str) -> RelPath {
+    RelPath::new(&format!("projects/{project}/reviews/{review_id}.md")).expect("valid path")
+}
+
 /// Returns the path to a project's archived roadmaps directory.
 pub fn archived_roadmaps_dir(project: &str) -> RelPath {
     RelPath::new(&format!("projects/{project}/archive/roadmaps")).expect("valid path")
@@ -158,6 +168,19 @@ mod tests {
         assert_eq!(
             task_path("fbm", "fix-barrel-nulls").as_str(),
             "projects/fbm/tasks/fix-barrel-nulls.md"
+        );
+    }
+
+    #[test]
+    fn reviews_dir_is_correct() {
+        assert_eq!(reviews_dir("fbm").as_str(), "projects/fbm/reviews");
+    }
+
+    #[test]
+    fn review_path_is_correct() {
+        assert_eq!(
+            review_path("fbm", "2026-07-01-1430-a1b2").as_str(),
+            "projects/fbm/reviews/2026-07-01-1430-a1b2.md"
         );
     }
 

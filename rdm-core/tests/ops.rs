@@ -5927,3 +5927,67 @@ fn update_task_keep_title_preserves_existing() {
     let loaded = rdm_core::io::load_task(&store, "fbm", "fix-bug").unwrap();
     assert_eq!(loaded.frontmatter.title, "Fix the bug");
 }
+
+// -- Review model write/load tests --
+
+fn sample_review_doc(id: &str) -> Document<Review> {
+    use chrono::TimeZone;
+    Document {
+        frontmatter: Review {
+            id: id.to_string(),
+            author: "ed".to_string(),
+            target: ReviewTarget::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-1-design".to_string(),
+            },
+            state: ReviewState::Submitted,
+            verdict: Some(Verdict::RequestChanges),
+            created: chrono::Utc.with_ymd_and_hms(2026, 7, 1, 14, 30, 0).unwrap(),
+            submitted: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 1, 14, 55, 0).unwrap()),
+            created_commit: Some("a1b2c3d".to_string()),
+            comments: vec![ReviewComment {
+                id: 1,
+                doc: None,
+                status: ReviewCommentStatus::Open,
+                applied_commit: None,
+                anchor: Some(Anchor::TextQuote {
+                    quote: "## Acceptance Criteria".to_string(),
+                    prefix: "right?\n\n".to_string(),
+                    suffix: "\n\n- [ ] Criterion".to_string(),
+                }),
+                body: "Tighten this section.".to_string(),
+                reply: None,
+            }],
+        },
+        body: "Overall review summary.".to_string(),
+    }
+}
+
+#[test]
+fn write_and_load_review() {
+    let mut store = setup_with_project();
+    let doc = sample_review_doc("2026-07-01-1430-a1b2");
+    rdm_core::io::write_review(&mut store, "fbm", "2026-07-01-1430-a1b2", &doc).unwrap();
+    let loaded = rdm_core::io::load_review(&store, "fbm", "2026-07-01-1430-a1b2").unwrap();
+    assert_eq!(loaded.frontmatter, doc.frontmatter);
+    assert_eq!(loaded.body, "Overall review summary.\n");
+}
+
+#[test]
+fn list_reviews_returns_sorted() {
+    let mut store = setup_with_project();
+    for id in [
+        "2026-07-01-1430-zz99",
+        "2026-06-30-0900-aa11",
+        "2026-07-01-0800-mm55",
+    ] {
+        let doc = sample_review_doc(id);
+        rdm_core::io::write_review(&mut store, "fbm", id, &doc).unwrap();
+    }
+    let reviews = rdm_core::ops::reviews::list_reviews(&store, "fbm").unwrap();
+    assert_eq!(reviews.len(), 3);
+    assert_eq!(reviews[0].0, "2026-06-30-0900-aa11");
+    assert_eq!(reviews[1].0, "2026-07-01-0800-mm55");
+    assert_eq!(reviews[2].0, "2026-07-01-1430-zz99");
+    assert_eq!(reviews[0].1.frontmatter.id, "2026-06-30-0900-aa11");
+}
