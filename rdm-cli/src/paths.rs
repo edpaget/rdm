@@ -88,6 +88,35 @@ fn resolve_project_inner(
     )
 }
 
+/// Resolves the review author. Priority: `--author` flag →
+/// `RDM_REVIEW_AUTHOR` env var → `$USER` / `$USERNAME`.
+///
+/// # Errors
+///
+/// Returns an error when none of the sources yield a non-empty value.
+pub fn resolve_review_author(flag: Option<String>) -> Result<String> {
+    resolve_review_author_inner(
+        flag,
+        std::env::var("RDM_REVIEW_AUTHOR").ok(),
+        std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .ok(),
+    )
+}
+
+fn resolve_review_author_inner(
+    flag: Option<String>,
+    env_author: Option<String>,
+    os_user: Option<String>,
+) -> Result<String> {
+    for candidate in [flag, env_author, os_user].into_iter().flatten() {
+        if !candidate.trim().is_empty() {
+            return Ok(candidate);
+        }
+    }
+    bail!("cannot determine review author — pass --author <name> or set RDM_REVIEW_AUTHOR")
+}
+
 /// Resolves a remote name from an explicit argument or config.
 ///
 /// The `config` should already have global defaults merged via
@@ -494,5 +523,36 @@ mod tests {
         let global = GlobalConfig::default();
         let resolved = resolve_config_value("default_project", &repo, &global);
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn resolve_review_author_priority_chain() {
+        // Flag wins over env and OS user.
+        let author = resolve_review_author_inner(
+            Some("flag".to_string()),
+            Some("env".to_string()),
+            Some("os".to_string()),
+        )
+        .unwrap();
+        assert_eq!(author, "flag");
+        // Env wins over OS user.
+        let author =
+            resolve_review_author_inner(None, Some("env".to_string()), Some("os".to_string()))
+                .unwrap();
+        assert_eq!(author, "env");
+        // OS user is the last fallback.
+        let author = resolve_review_author_inner(None, None, Some("os".to_string())).unwrap();
+        assert_eq!(author, "os");
+        // Empty/whitespace values are skipped, not returned.
+        let author = resolve_review_author_inner(
+            Some("  ".to_string()),
+            Some(String::new()),
+            Some("os".to_string()),
+        )
+        .unwrap();
+        assert_eq!(author, "os");
+        // Nothing available → actionable error.
+        let err = resolve_review_author_inner(None, None, None).unwrap_err();
+        assert!(err.to_string().contains("--author"));
     }
 }

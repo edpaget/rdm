@@ -5,10 +5,11 @@
 /// constructs an [`ast::Document`], parameterized by a [`RenderFlavor`]; the
 /// public `format_<view>` / `format_<view>_md` entry points are thin wrappers
 /// that pick the flavor and render to a string.
+use crate::anchor::{Resolution, ResolvedComment};
 use crate::ast;
 use crate::display::truncate_snippet;
 use crate::document::Document;
-use crate::model::{Phase, Roadmap, Task};
+use crate::model::{Phase, Review, Roadmap, Task};
 use crate::search::SearchResult;
 
 /// A roadmap document paired with its phases (stem + phase document).
@@ -583,6 +584,204 @@ pub fn format_search_results(results: &[SearchResult]) -> String {
 #[must_use]
 pub fn format_search_results_md(results: &[SearchResult]) -> String {
     build_search_results(results, RenderFlavor::Markdown).to_string()
+}
+
+/// One-word resolution label for a comment's anchor state.
+fn resolution_label(resolved: &ResolvedComment) -> &'static str {
+    match &resolved.resolution {
+        Resolution::Original { drifted: false, .. } | Resolution::Current { .. } => "resolved",
+        Resolution::Original { drifted: true, .. } => "drifted",
+        Resolution::Unresolved => "unresolved",
+    }
+}
+
+/// Builds a review detail document: metadata, summary body, and each comment
+/// with its anchor quote, resolution state, status, and reply.
+///
+/// `resolutions` is parallel to `doc.frontmatter.comments` (the caller's
+/// single resolution pass, shared with the JSON renderer); a comment without
+/// an entry renders as unresolved.
+fn build_review_detail(
+    id: &str,
+    doc: &Document<Review>,
+    resolutions: &[ResolvedComment],
+    flavor: RenderFlavor,
+) -> ast::Document {
+    let fm = &doc.frontmatter;
+    let mut d = ast::Document::new();
+    d.heading(1, &format!("Review {id}"));
+    d.push(ast::Block::BlankLine);
+
+    let verdict = fm.verdict.map(|v| v.to_string());
+    match flavor {
+        RenderFlavor::Markdown => {
+            let mut items = vec![
+                meta_bullet("Target", &fm.target.label()),
+                meta_bullet("State", &fm.state.to_string()),
+                meta_bullet("Author", &fm.author),
+                meta_bullet("Created", &fm.created.to_string()),
+            ];
+            if let Some(v) = &verdict {
+                items.push(meta_bullet("Verdict", v));
+            }
+            if let Some(submitted) = &fm.submitted {
+                items.push(meta_bullet("Submitted", &submitted.to_string()));
+            }
+            if let Some(sha) = &fm.created_commit {
+                items.push(meta_bullet("Created commit", sha));
+            }
+            d.push(ast::Block::UnorderedList { items });
+        }
+        RenderFlavor::Terminal => {
+            d.paragraph(&format!("Target: {}", fm.target.label()));
+            d.paragraph(&format!("State: {}", fm.state));
+            d.paragraph(&format!("Author: {}", fm.author));
+            d.paragraph(&format!("Created: {}", fm.created));
+            if let Some(v) = &verdict {
+                d.paragraph(&format!("Verdict: {v}"));
+            }
+            if let Some(submitted) = &fm.submitted {
+                d.paragraph(&format!("Submitted: {submitted}"));
+            }
+            if let Some(sha) = &fm.created_commit {
+                d.paragraph(&format!("Created commit: {sha}"));
+            }
+        }
+    }
+
+    if !doc.body.is_empty() {
+        d.push(ast::Block::BlankLine);
+        d.raw(&doc.body);
+    }
+
+    if !fm.comments.is_empty() {
+        d.push(ast::Block::BlankLine);
+        match flavor {
+            RenderFlavor::Markdown => d.heading(2, "Comments"),
+            RenderFlavor::Terminal => d.paragraph("Comments:"),
+        }
+        let unresolved = ResolvedComment {
+            resolution: Resolution::Unresolved,
+            quote: None,
+        };
+        for (i, comment) in fm.comments.iter().enumerate() {
+            let resolved = resolutions.get(i).unwrap_or(&unresolved);
+            d.push(ast::Block::BlankLine);
+            let mut head = format!(
+                "Comment {} — {} ({})",
+                comment.id,
+                comment.status,
+                resolution_label(resolved)
+            );
+            if let Some(doc_scope) = &comment.doc {
+                head.push_str(&format!(" [doc: phase/{}]", doc_scope.stem));
+            }
+            match flavor {
+                RenderFlavor::Markdown => d.heading(3, &head),
+                RenderFlavor::Terminal => d.paragraph(&head),
+            }
+            if let Some(quote) = &resolved.quote {
+                match flavor {
+                    RenderFlavor::Markdown => {
+                        d.raw(&format!("> {}", quote.replace('\n', "\n> ")));
+                    }
+                    RenderFlavor::Terminal => {
+                        d.paragraph(&format!("  > {}", quote.replace('\n', "\n  > ")));
+                    }
+                }
+            }
+            if !comment.body.is_empty() {
+                d.paragraph(&comment.body);
+            }
+            if let Some(sha) = &comment.applied_commit {
+                d.paragraph(&format!("Applied commit: {sha}"));
+            }
+            if let Some(reply) = &comment.reply {
+                d.paragraph(&format!("Reply: {reply}"));
+            }
+        }
+    }
+
+    d
+}
+
+/// Formats a single review detail view for the terminal.
+#[must_use]
+pub fn format_review_detail(
+    id: &str,
+    doc: &Document<Review>,
+    resolutions: &[ResolvedComment],
+) -> String {
+    build_review_detail(id, doc, resolutions, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a single review detail view as Markdown.
+#[must_use]
+pub fn format_review_detail_md(
+    id: &str,
+    doc: &Document<Review>,
+    resolutions: &[ResolvedComment],
+) -> String {
+    build_review_detail(id, doc, resolutions, RenderFlavor::Markdown).to_string()
+}
+
+/// Builds a review list document (table of id, target, state, verdict,
+/// author, and open/total comment counts).
+fn build_review_list(
+    reviews: &[(String, Document<Review>)],
+    flavor: RenderFlavor,
+) -> ast::Document {
+    let mut d = ast::Document::new();
+    if reviews.is_empty() {
+        d.paragraph("No reviews found.");
+        return d;
+    }
+    if flavor == RenderFlavor::Markdown {
+        d.heading(2, "Reviews");
+        d.push(ast::Block::BlankLine);
+    }
+    let rows = reviews
+        .iter()
+        .map(|(id, rd)| {
+            let fm = &rd.frontmatter;
+            let open = fm
+                .comments
+                .iter()
+                .filter(|c| !c.status.is_terminal())
+                .count();
+            vec![
+                vec![ast::Inline::Text(id.clone())],
+                vec![ast::Inline::Text(fm.target.label())],
+                vec![ast::Inline::Text(fm.state.to_string())],
+                vec![ast::Inline::Text(
+                    fm.verdict.map(|v| v.to_string()).unwrap_or_default(),
+                )],
+                vec![ast::Inline::Text(fm.author.clone())],
+                vec![ast::Inline::Text(format!(
+                    "{open}/{} open",
+                    fm.comments.len()
+                ))],
+            ]
+        })
+        .collect();
+    d.push(ast::Block::Table {
+        headers: header_cells(&["Id", "Target", "State", "Verdict", "Author", "Comments"]),
+        rows,
+        aligns: vec![],
+    });
+    d
+}
+
+/// Formats a list of reviews as a table for the terminal.
+#[must_use]
+pub fn format_review_list(reviews: &[(String, Document<Review>)]) -> String {
+    build_review_list(reviews, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a list of reviews as a Markdown table.
+#[must_use]
+pub fn format_review_list_md(reviews: &[(String, Document<Review>)]) -> String {
+    build_review_list(reviews, RenderFlavor::Markdown).to_string()
 }
 
 #[cfg(test)]
@@ -1204,5 +1403,162 @@ mod tests {
     fn search_results_md_empty() {
         let output = format_search_results_md(&[]);
         assert_eq!(output, "No results found.\n");
+    }
+
+    // -- review detail / list rendering --
+
+    use crate::model::{
+        Anchor, CommentDoc, CommentDocKind, Review, ReviewComment, ReviewCommentStatus,
+        ReviewState, ReviewTarget, Verdict,
+    };
+    use chrono::{TimeZone, Utc};
+
+    /// A submitted review with two comments: #1 is doc-scoped, addressed
+    /// with an applied commit and reply; #2 is open with a multiline quote.
+    fn make_review_doc() -> Document<Review> {
+        Document {
+            frontmatter: Review {
+                id: "2026-07-01-1430-a1b2".to_string(),
+                author: "ed".to_string(),
+                target: ReviewTarget::Roadmap {
+                    roadmap: "alpha".to_string(),
+                },
+                state: ReviewState::Submitted,
+                verdict: Some(Verdict::RequestChanges),
+                created: Utc.with_ymd_and_hms(2026, 7, 1, 14, 30, 0).unwrap(),
+                submitted: Some(Utc.with_ymd_and_hms(2026, 7, 1, 14, 55, 0).unwrap()),
+                created_commit: Some("abc123".to_string()),
+                comments: vec![
+                    ReviewComment {
+                        id: 1,
+                        doc: Some(CommentDoc {
+                            kind: CommentDocKind::Phase,
+                            stem: "phase-2-ops".to_string(),
+                        }),
+                        status: ReviewCommentStatus::Addressed,
+                        applied_commit: Some("f00dfeed".to_string()),
+                        anchor: Some(Anchor::TextQuote {
+                            quote: "the span".to_string(),
+                            prefix: "before ".to_string(),
+                            suffix: " after".to_string(),
+                        }),
+                        body: "Tighten this.".to_string(),
+                        reply: Some("Done in f00dfeed.".to_string()),
+                    },
+                    ReviewComment {
+                        id: 2,
+                        doc: None,
+                        status: ReviewCommentStatus::Open,
+                        applied_commit: None,
+                        anchor: Some(Anchor::TextQuote {
+                            quote: "line one\nline two".to_string(),
+                            prefix: String::new(),
+                            suffix: String::new(),
+                        }),
+                        body: "Spans two lines.".to_string(),
+                        reply: None,
+                    },
+                ],
+            },
+            body: "Overall summary.".to_string(),
+        }
+    }
+
+    /// Resolutions parallel to [`make_review_doc`]'s comments: #1 resolved
+    /// in the original body, #2 drifted.
+    fn make_resolutions() -> Vec<ResolvedComment> {
+        vec![
+            ResolvedComment {
+                resolution: Resolution::Original {
+                    range: 7..15,
+                    drifted: false,
+                },
+                quote: Some("the span".to_string()),
+            },
+            ResolvedComment {
+                resolution: Resolution::Original {
+                    range: 20..37,
+                    drifted: true,
+                },
+                quote: Some("line one\nline two".to_string()),
+            },
+        ]
+    }
+
+    #[test]
+    fn review_detail_terminal_renders_labels_scope_and_resolution() {
+        let doc = make_review_doc();
+        let output = format_review_detail("2026-07-01-1430-a1b2", &doc, &make_resolutions());
+        assert!(output.contains("Target: roadmap/alpha"), "{output}");
+        assert!(output.contains("State: submitted"), "{output}");
+        assert!(output.contains("Verdict: request-changes"), "{output}");
+        assert!(output.contains("Created commit: abc123"), "{output}");
+        assert!(output.contains("Overall summary."), "{output}");
+        // Comment 1: resolved, doc-scoped, addressed with commit + reply.
+        assert!(
+            output.contains("Comment 1 — addressed (resolved) [doc: phase/phase-2-ops]"),
+            "{output}"
+        );
+        assert!(output.contains("  > the span"), "{output}");
+        assert!(output.contains("Applied commit: f00dfeed"), "{output}");
+        assert!(output.contains("Reply: Done in f00dfeed."), "{output}");
+        // Comment 2: drifted, with continuation-indented multiline quote.
+        assert!(output.contains("Comment 2 — open (drifted)"), "{output}");
+        assert!(output.contains("  > line one\n  > line two"), "{output}");
+    }
+
+    #[test]
+    fn review_detail_unresolved_label_when_resolution_missing() {
+        let doc = make_review_doc();
+        // No resolutions supplied at all: every comment renders unresolved.
+        let output = format_review_detail("id", &doc, &[]);
+        assert!(
+            output.contains("Comment 1 — addressed (unresolved)"),
+            "{output}"
+        );
+        assert!(output.contains("Comment 2 — open (unresolved)"), "{output}");
+    }
+
+    #[test]
+    fn review_detail_md_renders_bullets_headings_and_blockquote() {
+        let doc = make_review_doc();
+        let output = format_review_detail_md("2026-07-01-1430-a1b2", &doc, &make_resolutions());
+        assert!(output.contains("# Review 2026-07-01-1430-a1b2"), "{output}");
+        assert!(output.contains("**Target:** roadmap/alpha"), "{output}");
+        assert!(output.contains("**Verdict:** request-changes"), "{output}");
+        assert!(
+            output.contains("### Comment 1 — addressed (resolved) [doc: phase/phase-2-ops]"),
+            "{output}"
+        );
+        // Multiline quotes keep the blockquote marker on every line.
+        assert!(output.contains("> line one\n> line two"), "{output}");
+        assert!(output.contains("Applied commit: f00dfeed"), "{output}");
+        assert!(output.contains("Reply: Done in f00dfeed."), "{output}");
+    }
+
+    #[test]
+    fn review_list_renders_row_fields_and_open_counts() {
+        let reviews = vec![("2026-07-01-1430-a1b2".to_string(), make_review_doc())];
+        for output in [
+            format_review_list(&reviews),
+            format_review_list_md(&reviews),
+        ] {
+            assert!(output.contains("Id"), "{output}");
+            assert!(output.contains("Target"), "{output}");
+            assert!(output.contains("2026-07-01-1430-a1b2"), "{output}");
+            assert!(output.contains("roadmap/alpha"), "{output}");
+            assert!(output.contains("submitted"), "{output}");
+            assert!(output.contains("request-changes"), "{output}");
+            assert!(output.contains("ed"), "{output}");
+            // One of the two comments is still open.
+            assert!(output.contains("1/2 open"), "{output}");
+        }
+        assert!(format_review_list_md(&reviews).contains("## Reviews"));
+    }
+
+    #[test]
+    fn review_list_empty_message() {
+        assert_eq!(format_review_list(&[]), "No reviews found.\n");
+        assert_eq!(format_review_list_md(&[]), "No reviews found.\n");
     }
 }

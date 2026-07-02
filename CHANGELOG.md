@@ -47,6 +47,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The full review-authoring loop is now available on the CLI, joining the
+  existing needs-review queue commands under `rdm review` (whose `--help`
+  now groups the two families): `start --on <kind>/<id>` creates a draft
+  review of a roadmap, phase (`phase/<roadmap>/<stem-or-number>`), or task;
+  `comment <id>` appends a comment — with `--quote "<text>"` the quoted
+  text is located in the document **as of the review's `created_commit`**
+  and a text-quote anchor (with ~32 chars of surrounding context) is
+  derived automatically, an ambiguous quote fails with a 1-based occurrence
+  list to disambiguate via `--occurrence <n>`, and `--doc
+  phase/<stem-or-number>` scopes a roadmap-review comment to one of its
+  phases; `submit <id> --verdict approve|request-changes|comment` finalizes
+  the draft (optionally replacing the summary with `--body`); `list`
+  filters by `--on`/`--state`/`--verdict`/`--author`; `show <id>` renders
+  the summary and each comment with its anchor quote and resolution state
+  (resolved / drifted / unresolved), with `--no-body` to suppress bodies;
+  `update <id>` records comment resolutions (`--comment <n> --status
+  addressed|wont-fix [--applied-commit <sha>] [--reply "..."]`) and closes
+  the review (`--state addressed|dismissed`), validated by the lifecycle
+  state machine; `delete <id>` removes drafts (submitted reviews require
+  `--force`); and `requests` is the agent work queue (submitted reviews
+  requesting changes). `--format json` on `list`, `show`, and `requests`
+  includes each comment's full anchor and its resolution (with the quoted
+  text and whether the range indexes the original or current body), so
+  agents need no second call. All review mutations respect staging mode and
+  the `--project`/`RDM_PROJECT`/`default_project` resolution chain.
+
+- `rdm search` now indexes reviews: summaries and comment bodies are
+  searchable, and `--type review` narrows results to them. `rdm describe
+  review` documents the review entity, and `rdm agent-config` output
+  teaches agents the new review commands.
+
 - Anchored review comments can now be located within a target's body and
   re-located after the body is edited: exact-quote matching with
   prefix/suffix disambiguation for repeated text, and a fuzzy context

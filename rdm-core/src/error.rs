@@ -69,6 +69,41 @@ pub enum Error {
         /// How many comments are still open.
         open_count: usize,
     },
+    /// A review target reference did not match `roadmap/<slug>`,
+    /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+    InvalidReviewTargetRef(String),
+    /// A comment document reference did not match `phase/<stem-or-number>`.
+    InvalidCommentDocRef(String),
+    /// The quoted text for a new comment anchor was not found in the
+    /// document body it was searched against.
+    QuoteNotFound {
+        /// The quote that was searched for.
+        quote: String,
+        /// The commit the searched body was read at (`None` when the
+        /// current body was used).
+        commit: Option<String>,
+    },
+    /// The quoted text for a new comment anchor occurred more than once and
+    /// no occurrence selector was given.
+    QuoteAmbiguous {
+        /// The quote that was searched for.
+        quote: String,
+        /// The commit the searched body was read at (`None` when the
+        /// current body was used).
+        commit: Option<String>,
+        /// Every occurrence of the quote, with surrounding context, so the
+        /// caller can pick one by its 1-based position.
+        occurrences: Vec<crate::anchor::QuoteOccurrence>,
+    },
+    /// The requested quote occurrence is outside the range of matches found.
+    QuoteOccurrenceOutOfRange {
+        /// The quote that was searched for.
+        quote: String,
+        /// The 1-based occurrence that was requested.
+        occurrence: usize,
+        /// How many occurrences actually exist.
+        available: usize,
+    },
     /// A slug already exists.
     DuplicateSlug(String),
     /// Adding a dependency would create a cycle.
@@ -242,6 +277,59 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "review '{review_id}' has {open_count} open comment(s) — resolve them (addressed or wont-fix) before marking the review addressed"
+                )
+            }
+            Error::InvalidReviewTargetRef(reference) => {
+                write!(
+                    f,
+                    "invalid review target '{reference}' — expected roadmap/<slug>, phase/<roadmap-slug>/<stem-or-number>, or task/<slug>"
+                )
+            }
+            Error::InvalidCommentDocRef(reference) => {
+                write!(
+                    f,
+                    "invalid comment doc '{reference}' — expected phase/<stem-or-number>"
+                )
+            }
+            Error::QuoteNotFound { quote, commit } => match commit {
+                Some(sha) => write!(
+                    f,
+                    "quote {quote:?} not found in the document as of the review's created commit ({sha}) — the document may have changed since the review started; view that version with `--at {sha}`, or start a fresh review to comment on the current text"
+                ),
+                None => write!(
+                    f,
+                    "quote {quote:?} not found in the current document — check the exact text (including punctuation and whitespace), or omit --quote for a whole-document comment"
+                ),
+            },
+            Error::QuoteAmbiguous {
+                quote,
+                commit,
+                occurrences,
+            } => {
+                let where_ = match commit {
+                    Some(sha) => {
+                        format!("the document as of the review's created commit ({sha})")
+                    }
+                    None => "the current document".to_string(),
+                };
+                writeln!(
+                    f,
+                    "quote {quote:?} occurs {} times in {where_} — pass --occurrence <n> (1-based) to pick one:",
+                    occurrences.len()
+                )?;
+                for occ in occurrences {
+                    writeln!(f, "  {}: {}", occ.occurrence, occ.context)?;
+                }
+                Ok(())
+            }
+            Error::QuoteOccurrenceOutOfRange {
+                quote,
+                occurrence,
+                available,
+            } => {
+                write!(
+                    f,
+                    "--occurrence {occurrence} is out of range for quote {quote:?} — only {available} occurrence(s) found (valid: 1..={available})"
                 )
             }
             Error::DuplicateSlug(slug) => {

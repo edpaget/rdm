@@ -60,6 +60,9 @@ fn result_href(project: &str, kind: ItemKind, identifier: &str) -> String {
             }
         }
         ItemKind::Task => format!("/projects/{project}/tasks/{identifier}"),
+        // No review detail page exists yet; this is the conventional slot
+        // one would live at.
+        ItemKind::Review => format!("/projects/{project}/reviews/{identifier}"),
     }
 }
 

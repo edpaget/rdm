@@ -1,5 +1,7 @@
 use rdm_core::display::RoadmapWithPhases;
 use rdm_core::document::Document;
+#[cfg(feature = "git")]
+use rdm_core::model::Review;
 use rdm_core::model::{Phase, Task};
 use rdm_core::search::SearchResult;
 use tabled::builder::Builder;
@@ -74,6 +76,36 @@ pub fn format_task_table(tasks: &[(String, Document<Task>)]) -> String {
     build_table(["Slug", "Title", "Status", "Priority"], rows)
 }
 
+#[cfg(feature = "git")]
+pub fn format_review_table(reviews: &[(String, Document<Review>)]) -> String {
+    if reviews.is_empty() {
+        return "No reviews found.\n".to_string();
+    }
+    let rows = reviews
+        .iter()
+        .map(|(id, doc)| {
+            let fm = &doc.frontmatter;
+            let open = fm
+                .comments
+                .iter()
+                .filter(|c| !c.status.is_terminal())
+                .count();
+            [
+                id.clone(),
+                fm.target.label(),
+                fm.state.to_string(),
+                fm.verdict.map(|v| v.to_string()).unwrap_or_default(),
+                fm.author.clone(),
+                format!("{open}/{} open", fm.comments.len()),
+            ]
+        })
+        .collect();
+    build_table(
+        ["Id", "Target", "State", "Verdict", "Author", "Comments"],
+        rows,
+    )
+}
+
 pub fn format_search_table(results: &[SearchResult]) -> String {
     if results.is_empty() {
         return "No results found.\n".to_string();
@@ -105,4 +137,77 @@ pub fn build_table<const N: usize>(headers: [&str; N], rows: Vec<[String; N]>) -
         .with(Style::rounded())
         .with(Width::truncate(terminal_width()).priority(Priority::max(false)));
     format!("{table}\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use rdm_core::model::{
+        Review, ReviewComment, ReviewCommentStatus, ReviewState, ReviewTarget, Verdict,
+    };
+
+    fn review_doc() -> (String, Document<Review>) {
+        let doc = Document {
+            frontmatter: Review {
+                id: "rev-1".to_string(),
+                author: "ed".to_string(),
+                target: ReviewTarget::Task {
+                    slug: "fix-login".to_string(),
+                },
+                state: ReviewState::Submitted,
+                verdict: Some(Verdict::RequestChanges),
+                created: chrono::Utc.with_ymd_and_hms(2026, 7, 2, 12, 0, 0).unwrap(),
+                submitted: None,
+                created_commit: None,
+                comments: vec![
+                    ReviewComment {
+                        id: 1,
+                        doc: None,
+                        status: ReviewCommentStatus::Open,
+                        applied_commit: None,
+                        anchor: None,
+                        body: "Tighten this.".to_string(),
+                        reply: None,
+                    },
+                    ReviewComment {
+                        id: 2,
+                        doc: None,
+                        status: ReviewCommentStatus::Addressed,
+                        applied_commit: None,
+                        anchor: None,
+                        body: "Handled.".to_string(),
+                        reply: None,
+                    },
+                ],
+            },
+            body: String::new(),
+        };
+        ("rev-1".to_string(), doc)
+    }
+
+    #[test]
+    fn review_table_renders_headers_and_row_fields() {
+        let out = format_review_table(&[review_doc()]);
+        for header in ["Id", "Target", "State", "Verdict", "Author", "Comments"] {
+            assert!(out.contains(header), "missing header {header:?} in:\n{out}");
+        }
+        assert!(out.contains("rev-1"), "missing id in:\n{out}");
+        assert!(out.contains("task/fix-login"), "missing target in:\n{out}");
+        assert!(out.contains("submitted"), "missing state in:\n{out}");
+        assert!(
+            out.contains("request-changes"),
+            "missing verdict in:\n{out}"
+        );
+        assert!(out.contains("ed"), "missing author in:\n{out}");
+        assert!(
+            out.contains("1/2 open"),
+            "missing open/total comment count in:\n{out}"
+        );
+    }
+
+    #[test]
+    fn review_table_empty_prints_placeholder() {
+        assert_eq!(format_review_table(&[]), "No reviews found.\n");
+    }
 }

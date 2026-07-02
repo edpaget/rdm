@@ -68,6 +68,11 @@ pub fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatu
         Some(ItemKindArg::Roadmap) => {
             bail!("roadmaps do not have a status — remove --status or change --type")
         }
+        Some(ItemKindArg::Review) => {
+            bail!(
+                "reviews do not use --status in search — filter with `rdm review list --state <state>` (or --verdict) instead"
+            )
+        }
         None => {
             // Try both; a status valid for both kinds becomes kind-agnostic.
             match (

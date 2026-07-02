@@ -1,13 +1,18 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use rdm_core::anchor::ResolvedComment;
 use rdm_core::config::Config;
-use rdm_core::model::{PhaseStatus, TaskStatus};
+use rdm_core::document::Document;
+use rdm_core::model::{PhaseStatus, Review, ReviewState, ReviewTarget, TaskStatus};
 use rdm_core::ops::review::{PendingReviewItem, PendingReviewKind};
+use rdm_core::ops::reviews::{AddComment, CreateReview, ReviewFilter, UpdateComment};
 use rdm_core::ops::{BodyUpdate, TagsUpdate};
+use rdm_core::{display, json};
 
-use super::commit_mutation;
+use super::{commit_mutation, maybe_print_uncommitted_hint, resolve_body};
 use crate::paths;
+use crate::table;
 use crate::{AppStore, OutputFormat, ReviewCommand};
 
 /// Filters `items` to those in scope for the checkout rooted at `cwd`.
@@ -291,8 +296,420 @@ pub fn run(
                 }
             }
         }
+        ReviewCommand::Start {
+            on,
+            author,
+            project,
+            body,
+            no_edit,
+        } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            let author = paths::resolve_review_author(author)?;
+            let body = resolve_body(body, no_edit)?;
+            let target = rdm_core::ops::reviews::parse_review_target_ref(store, &project, &on)
+                .context("failed to resolve review target")?;
+            let doc = commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to start review",
+                |s| {
+                    rdm_core::ops::reviews::create_review(
+                        s,
+                        CreateReview {
+                            project: &project,
+                            author: &author,
+                            target: target.clone(),
+                            body: body.as_deref(),
+                        },
+                    )
+                },
+            )?;
+            let id = doc.frontmatter.id.clone();
+            match format {
+                OutputFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json::review_to_json(&id, &doc, &[]))
+                        .context("failed to serialize review")?
+                ),
+                _ => println!(
+                    "Started review '{id}' on {} (draft)",
+                    doc.frontmatter.target.label()
+                ),
+            }
+        }
+        ReviewCommand::Comment {
+            review_id,
+            quote,
+            occurrence,
+            doc,
+            body,
+            no_edit,
+            project,
+        } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            let review_doc = rdm_core::ops::reviews::get_review(store, &project, &review_id)
+                .context("failed to load review")?;
+            // Fail early with core's lifecycle error so a submitted review
+            // rejects the comment before any quote-derivation work.
+            if review_doc.frontmatter.state != ReviewState::Draft {
+                return Err(anyhow::Error::new(rdm_core::error::Error::ReviewNotDraft(
+                    review_id.clone(),
+                )));
+            }
+            let doc_scope = match &doc {
+                None => None,
+                Some(reference) => match &review_doc.frontmatter.target {
+                    ReviewTarget::Roadmap { roadmap } => Some(
+                        rdm_core::ops::reviews::parse_comment_doc_ref(
+                            store, &project, roadmap, reference,
+                        )
+                        .context("failed to resolve --doc")?,
+                    ),
+                    _ => {
+                        return Err(anyhow::Error::new(
+                            rdm_core::error::Error::CommentDocNotApplicable,
+                        ));
+                    }
+                },
+            };
+            let anchor = match &quote {
+                Some(q) => {
+                    let (target_body, at) = rdm_core::anchor::body_for_comment(
+                        store,
+                        &project,
+                        &review_doc.frontmatter,
+                        doc_scope.as_ref(),
+                    )
+                    .context("failed to load the document the quote anchors into")?;
+                    Some(rdm_core::anchor::derive_text_quote(
+                        &target_body,
+                        q,
+                        occurrence,
+                        at.as_deref(),
+                    )?)
+                }
+                None => None,
+            };
+            let Some(body) = resolve_body(body, no_edit)?.filter(|b| !b.trim().is_empty()) else {
+                bail!(
+                    "comment body must not be empty — pass --body <text> or pipe content via stdin"
+                );
+            };
+            let updated = commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to add comment",
+                |s| {
+                    rdm_core::ops::reviews::add_comment(
+                        s,
+                        AddComment {
+                            project: &project,
+                            review_id: &review_id,
+                            body: &body,
+                            doc: doc_scope,
+                            anchor,
+                        },
+                    )
+                },
+            )?;
+            let comment_id = updated
+                .frontmatter
+                .comments
+                .last()
+                .map(|c| c.id)
+                .unwrap_or_default();
+            println!("Added comment {comment_id} to review '{review_id}'");
+        }
+        ReviewCommand::Submit {
+            review_id,
+            verdict,
+            body,
+            no_edit,
+            project,
+        } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            // A blank --body (empty or whitespace-only) is never persisted
+            // as the summary. Against an existing non-empty summary it is
+            // refused (the anti-clobber convention); otherwise it is
+            // treated as "no summary given". The trim stays confined to
+            // this call site (and the comment arm) instead of living in
+            // `BodyUpdate::apply`, whose exact-emptiness semantics other
+            // entities (task/phase/roadmap update) already depend on.
+            let raw_body = resolve_body(body, no_edit)?;
+            let blank_body_given = raw_body.as_deref().is_some_and(|b| b.trim().is_empty());
+            let body = raw_body.filter(|b| !b.trim().is_empty());
+            if blank_body_given {
+                let existing = rdm_core::ops::reviews::get_review(store, &project, &review_id)
+                    .context("failed to load review")?;
+                if !existing.body.trim().is_empty() {
+                    bail!(
+                        "refusing to replace the review's non-empty summary with a blank --body — pass non-empty text, or omit --body to keep the existing summary"
+                    );
+                }
+            }
+            let doc = commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to submit review",
+                |s| {
+                    if let Some(b) = &body {
+                        rdm_core::ops::reviews::set_summary(
+                            s,
+                            &project,
+                            &review_id,
+                            BodyUpdate::Set(b.clone()),
+                        )?;
+                    }
+                    rdm_core::ops::reviews::submit_review(s, &project, &review_id, Some(verdict))
+                },
+            )
+            .map_err(|e| map_blank_summary(e, blank_body_given))?;
+            println!(
+                "Submitted review '{review_id}' with verdict {}",
+                doc.frontmatter
+                    .verdict
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            );
+        }
+        ReviewCommand::List {
+            on,
+            state,
+            verdict,
+            author,
+            project,
+        } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            let target = match &on {
+                Some(reference) => Some(
+                    rdm_core::ops::reviews::parse_review_target_ref(store, &project, reference)
+                        .context("failed to resolve --on target")?,
+                ),
+                None => None,
+            };
+            let reviews = rdm_core::ops::reviews::list_reviews(store, &project)
+                .context("failed to list reviews")?;
+            let filtered = rdm_core::ops::reviews::filter_reviews(
+                reviews,
+                &ReviewFilter {
+                    target,
+                    state,
+                    verdict,
+                    author,
+                },
+            );
+            render_review_list(store, &project, &filtered, format, staging)?;
+        }
+        ReviewCommand::Requests { project } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            let reviews = rdm_core::ops::reviews::list_reviews(store, &project)
+                .context("failed to list reviews")?;
+            let filtered = rdm_core::ops::reviews::filter_reviews(
+                reviews,
+                &ReviewFilter {
+                    state: Some(ReviewState::Submitted),
+                    verdict: Some(rdm_core::model::Verdict::RequestChanges),
+                    ..Default::default()
+                },
+            );
+            render_review_list(store, &project, &filtered, format, staging)?;
+        }
+        ReviewCommand::Show {
+            review_id,
+            no_body,
+            project,
+        } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            let mut doc = rdm_core::ops::reviews::get_review(store, &project, &review_id)
+                .context("failed to load review")?;
+            let resolutions = resolve_all(store, &project, &doc);
+            if no_body {
+                doc.body = String::new();
+                for comment in &mut doc.frontmatter.comments {
+                    comment.body = String::new();
+                }
+            }
+            match format {
+                OutputFormat::Human => print!(
+                    "{}",
+                    display::format_review_detail(&review_id, &doc, &resolutions)
+                ),
+                OutputFormat::Markdown => print!(
+                    "{}",
+                    display::format_review_detail_md(&review_id, &doc, &resolutions)
+                ),
+                OutputFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json::review_to_json(
+                        &review_id,
+                        &doc,
+                        &resolutions
+                    ))
+                    .context("failed to serialize review")?
+                ),
+                OutputFormat::Table => bail!(
+                    "--format table is not supported for 'review show'; use --format human, --format json, --format markdown, or omit --format"
+                ),
+            }
+            maybe_print_uncommitted_hint(store, staging);
+        }
+        ReviewCommand::Update {
+            review_id,
+            state,
+            comment,
+            status,
+            applied_commit,
+            reply,
+            project,
+        } => {
+            if state.is_none() && comment.is_none() {
+                bail!(
+                    "nothing to update — pass --state <addressed|dismissed> and/or --comment <n> with --status/--applied-commit/--reply"
+                );
+            }
+            if let Some(comment_id) = comment
+                && status.is_none()
+                && applied_commit.is_none()
+                && reply.is_none()
+            {
+                bail!(
+                    "pass at least one of --status, --applied-commit, or --reply with --comment {comment_id}"
+                );
+            }
+            let project = paths::resolve_project(project, repo_config)?;
+            let doc = commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to update review",
+                |s| {
+                    if let Some(comment_id) = comment {
+                        rdm_core::ops::reviews::update_comment(
+                            s,
+                            UpdateComment {
+                                project: &project,
+                                review_id: &review_id,
+                                comment_id,
+                                status,
+                                applied_commit: applied_commit.as_deref(),
+                                reply: reply.as_deref(),
+                                ..Default::default()
+                            },
+                        )?;
+                    }
+                    match state {
+                        Some(transition) => rdm_core::ops::reviews::update_review(
+                            s,
+                            &project,
+                            &review_id,
+                            transition.into(),
+                        ),
+                        None => rdm_core::ops::reviews::get_review(s, &project, &review_id),
+                    }
+                },
+            )?;
+            println!(
+                "Updated review '{review_id}' → state: {}",
+                doc.frontmatter.state
+            );
+        }
+        ReviewCommand::Delete {
+            review_id,
+            force,
+            project,
+        } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            commit_mutation(
+                store,
+                &project,
+                no_index,
+                staging,
+                "failed to delete review",
+                |s| rdm_core::ops::reviews::delete_review(s, &project, &review_id, force),
+            )
+            .map_err(map_delete_not_draft)?;
+            println!("Deleted review '{review_id}' from project '{project}'");
+        }
     }
     Ok(())
+}
+
+/// Runs the shared resolution pass: one
+/// [`resolve_comment`](rdm_core::anchor::resolve_comment) per comment, in
+/// comment order. The same slice feeds the JSON, human, and markdown
+/// renderers.
+fn resolve_all(store: &AppStore, project: &str, doc: &Document<Review>) -> Vec<ResolvedComment> {
+    doc.frontmatter
+        .comments
+        .iter()
+        .map(|c| rdm_core::anchor::resolve_comment(store, project, &doc.frontmatter, c))
+        .collect()
+}
+
+/// Renders a filtered review list in the requested format.
+fn render_review_list(
+    store: &AppStore,
+    project: &str,
+    reviews: &[(String, Document<Review>)],
+    format: OutputFormat,
+    staging: bool,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => {
+            let arr: Vec<_> = reviews
+                .iter()
+                .map(|(id, doc)| {
+                    let resolutions = resolve_all(store, project, doc);
+                    json::review_to_json(id, doc, &resolutions)
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&arr).context("failed to serialize reviews")?
+            );
+        }
+        OutputFormat::Table => print!("{}", table::format_review_table(reviews)),
+        OutputFormat::Markdown => print!("{}", display::format_review_list_md(reviews)),
+        OutputFormat::Human => print!("{}", display::format_review_list(reviews)),
+    }
+    maybe_print_uncommitted_hint(store, staging);
+    Ok(())
+}
+
+/// Maps [`rdm_core::error::Error::ReviewEmpty`] into a message that names
+/// `--body` when the user *did* pass one but it was whitespace-only (and
+/// therefore treated as no summary) — otherwise the core message would
+/// gaslight them with "no summary".
+fn map_blank_summary(err: anyhow::Error, blank_body_given: bool) -> anyhow::Error {
+    if blank_body_given
+        && let Some(rdm_core::error::Error::ReviewEmpty(id)) =
+            err.downcast_ref::<rdm_core::error::Error>()
+    {
+        return anyhow::anyhow!(
+            "review '{id}' has no comments, and the --body you passed is blank — pass non-empty summary text to --body (or add a comment first)"
+        );
+    }
+    err
+}
+
+/// Maps [`rdm_core::error::Error::ReviewNotDraft`] from a delete into a
+/// message that names `--force` (the generic draft-state message doesn't).
+fn map_delete_not_draft(err: anyhow::Error) -> anyhow::Error {
+    if let Some(rdm_core::error::Error::ReviewNotDraft(id)) =
+        err.downcast_ref::<rdm_core::error::Error>()
+    {
+        return anyhow::anyhow!(
+            "review '{id}' has been submitted and is part of the record — pass --force to delete it anyway"
+        );
+    }
+    err
 }
 
 /// Lowercase label for a pending-review item's kind.

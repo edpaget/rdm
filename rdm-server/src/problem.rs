@@ -154,6 +154,20 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("review '{id}' has no comments and no summary")),
                 instance: None,
             },
+            // Review target/doc reference and quote-anchor derivation errors
+            // are caller mistakes; the core Display text is already
+            // actionable (it names the searched commit and remediation).
+            Error::InvalidReviewTargetRef(_)
+            | Error::InvalidCommentDocRef(_)
+            | Error::QuoteNotFound { .. }
+            | Error::QuoteAmbiguous { .. }
+            | Error::QuoteOccurrenceOutOfRange { .. } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
             Error::DuplicateSlug(slug) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),

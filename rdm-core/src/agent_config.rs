@@ -1001,6 +1001,27 @@ mod tests {
     }
 
     #[test]
+    fn cli_instructions_teach_document_reviews() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: Some("myproj".to_string()),
+            principles_file: None,
+            mcp: false,
+        });
+        assert!(content.contains("## Document reviews"));
+        assert!(content.contains("rdm review start --on task/<slug>"));
+        assert!(content.contains("rdm review submit <review-id> --verdict request-changes"));
+        assert!(content.contains("--occurrence <n>"));
+        assert!(content.contains("--type review"));
+        // Drifted-range semantics are spelled out for agents (JSON ranges
+        // index the created_commit body).
+        assert!(content.contains("drifted"));
+        assert!(content.contains("created_commit"));
+        // The project flag is substituted into the review commands too.
+        assert!(content.contains("rdm review requests --project myproj"));
+    }
+
+    #[test]
     fn generate_without_project_name() {
         let content = generate_agent_config(&AgentConfigOptions {
             platform: Platform::AgentsMd,

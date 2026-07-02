@@ -229,6 +229,23 @@ Always pass `--no-edit` to prevent the CLI from opening an interactive editor (w
 ./target/debug/rdm task update <slug> --status done --no-edit --project rdm
 ```
 
+### Document reviews
+
+Structured feedback on a roadmap, phase, or task document, with comments anchored to quoted text. Lifecycle: `draft` → `submitted` (verdict: `approve` | `request-changes` | `comment`) → `addressed` | `dismissed`. Targets are `roadmap/<slug>`, `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+
+```bash
+./target/debug/rdm review start --on task/<slug> --no-edit --project rdm            # start a draft; prints the review id
+./target/debug/rdm review comment <review-id> --quote "exact text" --body "Feedback." --no-edit --project rdm
+./target/debug/rdm review submit <review-id> --verdict request-changes --no-edit --project rdm
+./target/debug/rdm review requests --project rdm                                    # agent queue: submitted + request-changes
+./target/debug/rdm review show <review-id> --format json --project rdm              # anchors + resolution states in one call
+./target/debug/rdm review update <review-id> --comment 1 --status addressed --applied-commit <sha> --reply "Fixed." --project rdm
+./target/debug/rdm review update <review-id> --state addressed --project rdm        # close once every comment is resolved
+./target/debug/rdm review list --state submitted --project rdm                      # filter by --on/--state/--verdict/--author
+```
+
+`--quote` must match the document text exactly; it is located in the document **as of the review's `created_commit`**, so it stays valid after later edits. An ambiguous quote fails with a 1-based occurrence list — re-run with `--occurrence <n>`. On a roadmap review, `--doc phase/<stem-or-number>` scopes a comment to one of the roadmap's phases. `rdm search <query> --type review --project rdm` matches review summaries and comment bodies.
+
 ### Creating items
 
 Always pass `--no-edit` to suppress the interactive editor.

@@ -18,7 +18,8 @@ fn describe_lists_all_entities() {
         .stdout(predicate::str::contains("project"))
         .stdout(predicate::str::contains("roadmap"))
         .stdout(predicate::str::contains("phase"))
-        .stdout(predicate::str::contains("task"));
+        .stdout(predicate::str::contains("task"))
+        .stdout(predicate::str::contains("review"));
 }
 
 #[test]
@@ -42,7 +43,9 @@ fn describe_unknown_entity_errors() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown entity 'foo'"))
-        .stderr(predicate::str::contains("project, roadmap, phase, task"));
+        .stderr(predicate::str::contains(
+            "project, roadmap, phase, task, review",
+        ));
 }
 
 #[test]
@@ -54,9 +57,9 @@ fn describe_json_format() {
     assert!(output.status.success());
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     let arr = json.as_array().unwrap();
-    assert_eq!(arr.len(), 4);
+    assert_eq!(arr.len(), 5);
     let names: Vec<&str> = arr.iter().map(|e| e["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["project", "roadmap", "phase", "task"]);
+    assert_eq!(names, vec!["project", "roadmap", "phase", "task", "review"]);
 }
 
 #[test]
@@ -104,4 +107,21 @@ fn describe_entity_markdown_format() {
         .success()
         .stdout(predicate::str::contains("## task"))
         .stdout(predicate::str::contains("| Field |"));
+}
+
+#[test]
+fn describe_review_entity_shows_lifecycle_fields() {
+    rdm()
+        .args(["describe", "review"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state"))
+        .stdout(predicate::str::contains(
+            "draft, submitted, addressed, dismissed",
+        ))
+        .stdout(predicate::str::contains(
+            "approve, request-changes, comment",
+        ))
+        .stdout(predicate::str::contains("created_commit"))
+        .stdout(predicate::str::contains("comments"));
 }

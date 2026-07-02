@@ -23,6 +23,8 @@ pub enum ItemKind {
     Phase,
     /// A standalone task.
     Task,
+    /// A document review.
+    Review,
 }
 
 impl std::fmt::Display for ItemKind {
@@ -31,6 +33,7 @@ impl std::fmt::Display for ItemKind {
             ItemKind::Roadmap => write!(f, "roadmap"),
             ItemKind::Phase => write!(f, "phase"),
             ItemKind::Task => write!(f, "task"),
+            ItemKind::Review => write!(f, "review"),
         }
     }
 }
@@ -43,10 +46,11 @@ impl FromStr for ItemKind {
             "roadmap" => Ok(ItemKind::Roadmap),
             "phase" => Ok(ItemKind::Phase),
             "task" => Ok(ItemKind::Task),
+            "review" => Ok(ItemKind::Review),
             other => Err(ParseError::new(
                 "item kind",
                 other,
-                "roadmap, phase, or task",
+                "roadmap, phase, task, or review",
             )),
         }
     }
@@ -296,6 +300,46 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                 }
             }
         }
+
+        // Search reviews. Their searchable text is the summary body plus
+        // every comment body, so a match inside a comment surfaces the
+        // review. Reviews carry no tags and their lifecycle states are not
+        // part of the phase/task `ItemStatus` vocabulary, so both a status
+        // filter and a tag filter skip them (mirroring how roadmaps skip
+        // status filters); narrow reviews with `rdm review list
+        // --state/--verdict` instead.
+        if (filter.kind.is_none() || filter.kind == Some(ItemKind::Review))
+            && filter.status.is_none()
+            && required_tags.is_empty()
+            && let Ok(reviews) = crate::ops::reviews::list_reviews(store, project)
+        {
+            for (id, review_doc) in &reviews {
+                let title = format!("review of {}", review_doc.frontmatter.target.label());
+                let text: String = std::iter::once(review_doc.body.as_str())
+                    .chain(
+                        review_doc
+                            .frontmatter
+                            .comments
+                            .iter()
+                            .map(|c| c.body.as_str()),
+                    )
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                if let Some(result) = score_item(
+                    &pattern,
+                    &mut matcher,
+                    &mut buf,
+                    ItemKind::Review,
+                    id,
+                    project,
+                    &title,
+                    &text,
+                    None,
+                ) {
+                    results.push(result);
+                }
+            }
+        }
     }
 
     results.sort_by(|a, b| b.score.cmp(&a.score));
@@ -367,13 +411,18 @@ mod tests {
 
     #[test]
     fn item_kind_from_str_round_trips_and_rejects_unknown() {
-        for kind in [ItemKind::Roadmap, ItemKind::Phase, ItemKind::Task] {
+        for kind in [
+            ItemKind::Roadmap,
+            ItemKind::Phase,
+            ItemKind::Task,
+            ItemKind::Review,
+        ] {
             assert_eq!(kind.to_string().parse::<ItemKind>().unwrap(), kind);
         }
         let err = "bogus".parse::<ItemKind>().unwrap_err();
         assert_eq!(
             err.to_string(),
-            "invalid item kind: 'bogus' (expected roadmap, phase, or task)"
+            "invalid item kind: 'bogus' (expected roadmap, phase, task, or review)"
         );
     }
 
@@ -1215,6 +1264,126 @@ mod tests {
             phase_result.identifier.starts_with("widget-launch/"),
             "Phase identifier should start with roadmap slug, got: {}",
             phase_result.identifier
+        );
+    }
+
+    // -- review search --
+
+    /// Adds a review of `fix-login-bug` with a distinctive summary and one
+    /// distinctive comment body, returning its id.
+    fn add_review(store: &mut MemoryStore) -> String {
+        let doc = crate::ops::reviews::create_review(
+            store,
+            crate::ops::reviews::CreateReview {
+                project: "acme",
+                author: "ed",
+                target: crate::model::ReviewTarget::Task {
+                    slug: "fix-login-bug".to_string(),
+                },
+                body: Some("Summary mentions zanzibar explicitly."),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        crate::ops::reviews::add_comment(
+            store,
+            crate::ops::reviews::AddComment {
+                project: "acme",
+                review_id: &id,
+                body: "Comment mentions quokka explicitly.",
+                doc: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn search_matches_review_summary_body() {
+        let mut store = setup_test_store();
+        let id = add_review(&mut store);
+        let filter = SearchFilter {
+            kind: Some(ItemKind::Review),
+            ..Default::default()
+        };
+        let results = search(&store, "zanzibar", &filter).unwrap();
+        assert_eq!(results.len(), 1, "expected one review hit: {results:?}");
+        assert_eq!(results[0].kind, ItemKind::Review);
+        assert_eq!(results[0].identifier, id);
+        assert_eq!(results[0].title, "review of task/fix-login-bug");
+    }
+
+    #[test]
+    fn search_matches_review_comment_body() {
+        let mut store = setup_test_store();
+        let id = add_review(&mut store);
+        let filter = SearchFilter {
+            kind: Some(ItemKind::Review),
+            ..Default::default()
+        };
+        let results = search(&store, "quokka", &filter).unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "comment bodies must be searchable: {results:?}"
+        );
+        assert_eq!(results[0].identifier, id);
+    }
+
+    #[test]
+    fn search_review_kind_filter_excludes_other_kinds() {
+        let mut store = setup_test_store();
+        add_review(&mut store);
+        let filter = SearchFilter {
+            kind: Some(ItemKind::Review),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        // "widget" matches roadmap/phase content but no review text.
+        let results = search(&store, "widget", &filter).unwrap();
+        assert!(
+            results.iter().all(|r| r.kind == ItemKind::Review),
+            "kind filter must keep only reviews: {results:?}"
+        );
+    }
+
+    #[test]
+    fn search_reviews_appear_in_unfiltered_results() {
+        let mut store = setup_test_store();
+        add_review(&mut store);
+        let results = search(&store, "zanzibar", &SearchFilter::default()).unwrap();
+        assert!(
+            results.iter().any(|r| r.kind == ItemKind::Review),
+            "reviews must be indexed without a kind filter too: {results:?}"
+        );
+    }
+
+    #[test]
+    fn search_reviews_skipped_when_status_or_tag_filter_active() {
+        let mut store = setup_test_store();
+        add_review(&mut store);
+        // A status filter uses phase/task vocabulary — reviews are skipped.
+        let filter = SearchFilter {
+            status: Some(ItemStatus::Task(TaskStatus::Open)),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results = search(&store, "zanzibar", &filter).unwrap();
+        assert!(
+            results.iter().all(|r| r.kind != ItemKind::Review),
+            "status filter must skip reviews: {results:?}"
+        );
+        // Same for a tag filter — reviews carry no tags.
+        let filter = SearchFilter {
+            tags: Some(vec!["bug".to_string()]),
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results = search(&store, "zanzibar", &filter).unwrap();
+        assert!(
+            results.iter().all(|r| r.kind != ItemKind::Review),
+            "tag filter must skip reviews: {results:?}"
         );
     }
 }

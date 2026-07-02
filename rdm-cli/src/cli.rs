@@ -11,6 +11,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use rdm_core::model::{
     Difficulty, ModelTier, PhaseStatus, Priority, RoadmapSort, TaskStatus, TaskStatusFilter,
 };
+#[cfg(feature = "git")]
+use rdm_core::model::{ReviewCommentStatus, ReviewState, Verdict};
 use rdm_core::search::ItemKind;
 
 #[derive(Parser)]
@@ -232,8 +234,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
-    /// Inspect items awaiting review.
+    /// Author document reviews and inspect items awaiting implementation review.
     #[cfg(feature = "git")]
+    #[command(
+        after_help = "Command families:\n  Author document reviews:\n      start, comment, submit, list, show, update, delete, requests\n  Inspect items awaiting implementation review (the needs-review queue):\n      pending, restamp, blocked"
+    )]
     Review {
         #[command(subcommand)]
         command: ReviewCommand,
@@ -799,6 +804,182 @@ pub(crate) enum ReviewCommand {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Start a new draft review of a roadmap, phase, or task.
+    ///
+    /// Stamps the plan-repo HEAD as the review's `created_commit`, so quote
+    /// anchors added later are derived against the version of the target the
+    /// reviewer is looking at.
+    Start {
+        /// The item under review: `roadmap/<slug>`,
+        /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+        #[arg(long)]
+        on: String,
+        /// Review author (defaults to $RDM_REVIEW_AUTHOR, then $USER).
+        #[arg(long)]
+        author: Option<String>,
+        /// Project the target belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Initial summary body for the review.
+        #[arg(long)]
+        body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
+    /// Append a comment to a draft review.
+    ///
+    /// With `--quote`, the quoted text is located in the comment's document
+    /// as of the review's `created_commit` and a text-quote anchor
+    /// (quote + ~32 chars of surrounding context) is derived automatically.
+    /// Without `--quote`, the comment applies to the whole document.
+    Comment {
+        /// Id of the draft review to comment on.
+        review_id: String,
+        /// Exact text in the target's body the comment is anchored to.
+        #[arg(long)]
+        quote: Option<String>,
+        /// Which occurrence of `--quote` to anchor to (1-based), when the
+        /// quoted text appears more than once. Occurrences are counted
+        /// without overlap (the quote "aa" occurs twice in "aaaa", not
+        /// three times).
+        #[arg(long, requires = "quote")]
+        occurrence: Option<usize>,
+        /// Scope the comment to one of the roadmap's phases
+        /// (`phase/<stem-or-number>`). Only valid on roadmap reviews.
+        #[arg(long)]
+        doc: Option<String>,
+        /// Comment text.
+        #[arg(long)]
+        body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+        /// Project the review belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Submit a draft review with a verdict.
+    ///
+    /// After submission the comment structure is locked; only comment
+    /// resolutions (status, applied commit, reply) may change.
+    Submit {
+        /// Id of the draft review to submit.
+        review_id: String,
+        /// Overall verdict (approve, request-changes, or comment).
+        #[arg(long)]
+        verdict: Verdict,
+        /// Replace the review's summary body before submitting.
+        #[arg(long)]
+        body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+        /// Project the review belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// List document reviews, optionally filtered.
+    List {
+        /// Keep only reviews of this target: `roadmap/<slug>`,
+        /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+        #[arg(long)]
+        on: Option<String>,
+        /// Keep only reviews in this state (draft, submitted, addressed,
+        /// dismissed).
+        #[arg(long)]
+        state: Option<ReviewState>,
+        /// Keep only reviews with this verdict (approve, request-changes,
+        /// comment).
+        #[arg(long)]
+        verdict: Option<Verdict>,
+        /// Keep only reviews by this author.
+        #[arg(long)]
+        author: Option<String>,
+        /// Project to list reviews for.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Show a review: summary plus each comment with its anchor quote and
+    /// resolution state (resolved / drifted / unresolved).
+    Show {
+        /// Id of the review to show.
+        review_id: String,
+        /// Suppress the summary and comment bodies (metadata only).
+        #[arg(long)]
+        no_body: bool,
+        /// Project the review belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Update a review's state, or a single comment's resolution.
+    ///
+    /// Transitions are validated by the review lifecycle: `dismissed` closes
+    /// a draft or submitted review without acting on it; `addressed`
+    /// requires a submitted review whose comments are all resolved.
+    Update {
+        /// Id of the review to update.
+        review_id: String,
+        /// Transition the review to a terminal state.
+        #[arg(long)]
+        state: Option<ReviewTransitionArg>,
+        /// Comment id to update (see `rdm review show` for ids).
+        #[arg(long)]
+        comment: Option<u32>,
+        /// New resolution status for the comment (addressed or wont-fix).
+        #[arg(long, requires = "comment")]
+        status: Option<ReviewCommentStatus>,
+        /// Commit SHA that addressed the comment.
+        #[arg(long, requires = "comment")]
+        applied_commit: Option<String>,
+        /// Reply note recorded on the comment.
+        #[arg(long, requires = "comment")]
+        reply: Option<String>,
+        /// Project the review belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Delete a review (drafts only, unless forced).
+    Delete {
+        /// Id of the review to delete.
+        review_id: String,
+        /// Delete even a submitted or terminal review.
+        #[arg(long)]
+        force: bool,
+        /// Project the review belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// The agent work queue: submitted reviews requesting changes
+    /// (shorthand for `list --state submitted --verdict request-changes`).
+    Requests {
+        /// Project to list requests for.
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+/// Terminal state transitions accepted by `rdm review update --state`.
+///
+/// `draft` and `submitted` are deliberately unrepresentable: submission goes
+/// through `rdm review submit` (verdict-gated) and nothing returns to draft.
+#[cfg(feature = "git")]
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum ReviewTransitionArg {
+    /// Close the review as addressed (every comment must be resolved).
+    Addressed,
+    /// Dismiss the review without acting on it.
+    Dismissed,
+}
+
+#[cfg(feature = "git")]
+impl From<ReviewTransitionArg> for rdm_core::ops::reviews::ReviewTransition {
+    fn from(arg: ReviewTransitionArg) -> Self {
+        match arg {
+            ReviewTransitionArg::Addressed => Self::Addressed,
+            ReviewTransitionArg::Dismissed => Self::Dismissed,
+        }
+    }
 }
 
 #[cfg(feature = "git")]
@@ -895,6 +1076,7 @@ pub(crate) enum ItemKindArg {
     Roadmap,
     Phase,
     Task,
+    Review,
 }
 
 impl From<ItemKindArg> for ItemKind {
@@ -903,6 +1085,7 @@ impl From<ItemKindArg> for ItemKind {
             ItemKindArg::Roadmap => ItemKind::Roadmap,
             ItemKindArg::Phase => ItemKind::Phase,
             ItemKindArg::Task => ItemKind::Task,
+            ItemKindArg::Review => ItemKind::Review,
         }
     }
 }

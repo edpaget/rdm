@@ -47,6 +47,30 @@ rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> {proj
 rdm task update <slug> --status done --no-edit {proj_flag}
 ```
 
+## Document reviews
+
+Reviews are structured feedback on a roadmap, phase, or task document, with inline comments anchored to quoted text. A review targets `roadmap/<slug>`, `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`, and moves `draft` → `submitted` (with a verdict: `approve`, `request-changes`, or `comment`) → `addressed` or `dismissed`.
+
+```bash
+rdm review start --on task/<slug> --no-edit {proj_flag}          # start a draft; prints the review id
+rdm review comment <review-id> --quote "exact text" --body "Feedback." --no-edit {proj_flag}
+rdm review comment <review-id> --body "Whole-document feedback." --no-edit {proj_flag}
+rdm review submit <review-id> --verdict request-changes --no-edit {proj_flag}
+rdm review requests {proj_flag}                                  # the work queue: submitted reviews requesting changes
+rdm review show <review-id> --format json {proj_flag}            # full anchors + resolution states, one call
+rdm review update <review-id> --comment 1 --status addressed --applied-commit <sha> --reply "Fixed." {proj_flag}
+rdm review update <review-id> --state addressed {proj_flag}      # close once every comment is resolved
+rdm review list --state submitted {proj_flag}                    # filter by --on/--state/--verdict/--author
+```
+
+Key mechanics:
+
+- `--quote` must match the document text **exactly**; it is located in the document as it was when the review started (`created_commit`), so quoting stays valid even after the document is edited. If the quote appears more than once, the error lists every occurrence — re-run with `--occurrence <n>` (1-based).
+- On a roadmap review, `--doc phase/<stem-or-number>` points a comment at one of the roadmap's phases.
+- `rdm review show` reports each comment's anchor as `resolved`, `drifted` (the document changed since the review), or `unresolved`. In JSON, drifted ranges index the `created_commit` version of the body — read it with `--at <created_commit>` — never the current one.
+- **Acting on a review (the agent loop)**: `rdm review requests` → for each comment, make the change → `rdm review update <id> --comment <n> --status addressed --applied-commit <sha> --reply "..."` (or `--status wont-fix --reply "why"`) → `rdm review update <id> --state addressed`.
+- Searching review text: `rdm search <query> --type review {proj_flag}` matches summaries and comment bodies.
+
 ## Creating items
 
 Always pass `--no-edit` to suppress the interactive editor.

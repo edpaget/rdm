@@ -933,3 +933,1263 @@ fn pending_empty_lists_emit_clean_output() {
     let json: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json.as_array().unwrap().len(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Document reviews: rdm review start/comment/submit/list/show/update/delete/
+// requests (the authoring family, distinct from the needs-review queue above).
+// ---------------------------------------------------------------------------
+
+/// Creates a task with a known body so quote anchors have text to bite on.
+fn create_task_with_body(plan: &TempDir, slug: &str, body: &str) {
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "create",
+            slug,
+            "--title",
+            slug,
+            "--no-edit",
+            "--project",
+            "demo",
+            "--body",
+            body,
+        ])
+        .assert()
+        .success();
+}
+
+/// Starts a review of `on` and returns its id (parsed from the JSON output).
+fn start_review(plan: &TempDir, on: &str) -> String {
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            on,
+            "--author",
+            "tester",
+            "--no-edit",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&out).unwrap();
+    json["id"].as_str().unwrap().to_string()
+}
+
+/// Adds a whole-document comment with `body` to review `id`.
+fn add_plain_comment(plan: &TempDir, id: &str, body: &str) {
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            id,
+            "--body",
+            body,
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+}
+
+/// Runs `review show --format json` and returns the parsed value.
+fn show_review_json(plan: &TempDir, id: &str) -> Value {
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "show",
+            id,
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&out).unwrap()
+}
+
+#[test]
+fn review_start_creates_draft_and_prints_id() {
+    let plan = init_plan_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "task/item-x",
+            "--author",
+            "tester",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Started review '"))
+        .stdout(predicate::str::contains("on task/item-x (draft)"));
+}
+
+#[test]
+fn review_start_json_includes_target_and_created_commit() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    let json = show_review_json(&plan, &id);
+    assert_eq!(json["target"]["kind"], "task");
+    assert_eq!(json["target"]["slug"], "item-x");
+    assert_eq!(json["state"], "draft");
+    assert!(
+        json["created_commit"].as_str().is_some(),
+        "created_commit must be stamped: {json}"
+    );
+}
+
+#[test]
+fn review_start_phase_target_resolves_number_to_stem() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "phase/roadmap-z/1");
+    let json = show_review_json(&plan, &id);
+    assert_eq!(json["target"]["kind"], "phase");
+    assert_eq!(json["target"]["roadmap"], "roadmap-z");
+    assert_eq!(json["target"]["stem"], "phase-1-build");
+}
+
+#[test]
+fn review_start_missing_target_errors() {
+    let plan = init_plan_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "task/no-such-task",
+            "--author",
+            "tester",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("review target not found"));
+}
+
+#[test]
+fn review_start_malformed_ref_shows_accepted_forms() {
+    let plan = init_plan_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "not-a-ref",
+            "--author",
+            "tester",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("roadmap/<slug>"))
+        .stderr(predicate::str::contains("task/<slug>"));
+}
+
+#[test]
+fn review_comment_quote_derives_text_quote_anchor() {
+    let plan = init_plan_repo();
+    create_task_with_body(
+        &plan,
+        "quoted",
+        "Intro paragraph. The auth flow needs work here. Outro.",
+    );
+    let id = start_review(&plan, "task/quoted");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "auth flow",
+            "--body",
+            "Which auth flow?",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "Added comment 1 to review '{id}'"
+        )));
+
+    let json = show_review_json(&plan, &id);
+    let c = &json["comments"][0];
+    assert_eq!(c["anchor"]["anchor_type"], "text-quote");
+    assert_eq!(c["anchor"]["quote"], "auth flow");
+    assert_eq!(c["anchor"]["prefix"], "Intro paragraph. The ");
+    assert!(
+        c["anchor"]["suffix"]
+            .as_str()
+            .unwrap()
+            .starts_with(" needs work here."),
+        "suffix must capture trailing context: {c}"
+    );
+    assert_eq!(c["resolution"]["state"], "resolved");
+    assert_eq!(c["resolution"]["quote"], "auth flow");
+    assert_eq!(c["resolution"]["body"], "original");
+}
+
+#[test]
+fn review_comment_quote_is_derived_at_created_commit_and_reports_drift() {
+    let plan = init_plan_repo();
+    create_task_with_body(
+        &plan,
+        "drifty",
+        "Alpha. The original wording sits here. Omega.",
+    );
+    let id = start_review(&plan, "task/drifty");
+
+    // Edit the task body after the review started: the quoted text vanishes
+    // from the current document.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "update",
+            "drifty",
+            "--no-edit",
+            "--project",
+            "demo",
+            "--body",
+            "Alpha. Completely rewritten text sits here. Omega.",
+        ])
+        .assert()
+        .success();
+
+    // The quote still anchors — it is located in the body at created_commit.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "original wording",
+            "--body",
+            "Keep this term.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    let json = show_review_json(&plan, &id);
+    let r = &json["comments"][0]["resolution"];
+    assert_eq!(r["state"], "drifted", "current body changed: {json}");
+    assert_eq!(r["quote"], "original wording");
+    assert_eq!(
+        r["body"], "original",
+        "drifted ranges index the created_commit body"
+    );
+}
+
+#[test]
+fn review_comment_quote_not_found_names_created_commit() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "missing-quote", "Some body without the phrase.");
+    let id = start_review(&plan, "task/missing-quote");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "nonexistent phrase",
+            "--body",
+            "x",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("created commit"))
+        .stderr(predicate::str::contains("--at "))
+        .stderr(predicate::str::contains("fresh review"));
+}
+
+#[test]
+fn review_comment_ambiguous_quote_lists_occurrences_then_occurrence_selects() {
+    let plan = init_plan_repo();
+    create_task_with_body(
+        &plan,
+        "dup",
+        "call foo() at the start, then call foo() at the end.",
+    );
+    let id = start_review(&plan, "task/dup");
+
+    // Ambiguous without --occurrence: lists 1-based positions and the fix.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "call foo()",
+            "--body",
+            "x",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--occurrence"))
+        .stderr(predicate::str::contains("1: "))
+        .stderr(predicate::str::contains("2: "));
+
+    // Out-of-range occurrence is rejected with the valid range.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "call foo()",
+            "--occurrence",
+            "5",
+            "--body",
+            "x",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("valid: 1..=2"));
+
+    // --occurrence 2 anchors the second occurrence.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "call foo()",
+            "--occurrence",
+            "2",
+            "--body",
+            "The second call.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    let json = show_review_json(&plan, &id);
+    let prefix = json["comments"][0]["anchor"]["prefix"].as_str().unwrap();
+    assert!(
+        prefix.ends_with("then "),
+        "prefix must come from the second occurrence: {prefix:?}"
+    );
+}
+
+#[test]
+fn review_comment_occurrence_requires_quote() {
+    let plan = init_plan_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            "any-id",
+            "--occurrence",
+            "2",
+            "--body",
+            "x",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--quote"));
+}
+
+#[test]
+fn review_comment_doc_scopes_roadmap_review_to_phase() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "roadmap/roadmap-z");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--doc",
+            "phase/1",
+            "--body",
+            "About phase one.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    let json = show_review_json(&plan, &id);
+    assert_eq!(json["comments"][0]["doc"]["stem"], "phase-1-build");
+}
+
+#[test]
+fn review_comment_doc_out_of_scope_errors() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "roadmap/roadmap-z");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--doc",
+            "phase/ghost-phase",
+            "--body",
+            "x",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not part of roadmap"));
+}
+
+#[test]
+fn review_comment_doc_on_task_review_errors() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--doc",
+            "phase/1",
+            "--body",
+            "x",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("roadmap review"));
+}
+
+#[test]
+fn review_comment_on_submitted_review_errors() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    add_plain_comment(&plan, &id, "First comment.");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "comment",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--body",
+            "Too late.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a draft"));
+}
+
+#[test]
+fn review_comment_empty_body_errors() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "comment", &id, "--no-edit", "--project", "demo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("comment body must not be empty"));
+}
+
+#[test]
+fn review_submit_requires_verdict_flag() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "submit", &id, "--no-edit", "--project", "demo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--verdict"));
+}
+
+#[test]
+fn review_submit_empty_review_errors() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "approve",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no comments and no summary"));
+}
+
+#[test]
+fn review_submit_empty_body_against_summary_is_refused() {
+    let plan = init_plan_repo();
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "task/item-x",
+            "--author",
+            "tester",
+            "--no-edit",
+            "--project",
+            "demo",
+            "--body",
+            "Existing summary.",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "approve",
+            "--body",
+            "",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("non-empty summary"));
+}
+
+#[test]
+fn review_update_comment_before_submit_errors() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    add_plain_comment(&plan, &id, "A comment.");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has not been submitted"));
+}
+
+#[test]
+fn review_update_state_addressed_with_open_comments_errors() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    add_plain_comment(&plan, &id, "A comment.");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--state",
+            "addressed",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("open comment"));
+}
+
+#[test]
+fn review_update_without_any_change_errors() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "update", &id, "--project", "demo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing to update"));
+    // --comment without a resolution field is also rejected.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("at least one of"));
+}
+
+#[test]
+fn review_full_authoring_loop_end_to_end() {
+    let plan = init_plan_repo();
+    create_task_with_body(
+        &plan,
+        "loop-task",
+        "Step one is unclear. Step two is fine. Step three is missing tests.",
+    );
+    let id = start_review(&plan, "task/loop-task");
+
+    // Two anchored comments.
+    for (quote, body) in [
+        ("Step one is unclear", "Clarify step one."),
+        ("missing tests", "Add tests for step three."),
+    ] {
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .args([
+                "review",
+                "comment",
+                &id,
+                "--quote",
+                quote,
+                "--body",
+                body,
+                "--no-edit",
+                "--project",
+                "demo",
+            ])
+            .assert()
+            .success();
+    }
+
+    // Submit with request-changes.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--body",
+            "Two things to fix.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // The agent queue picks it up.
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "requests",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let queue: Value = serde_json::from_slice(&out).unwrap();
+    let arr = queue.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "requests must list the submitted review");
+    assert_eq!(arr[0]["id"], id.as_str());
+    assert_eq!(arr[0]["verdict"], "request-changes");
+    // Full anchor + resolution ride along, so agents need no second call.
+    assert_eq!(arr[0]["comments"][0]["anchor"]["anchor_type"], "text-quote");
+    assert_eq!(arr[0]["comments"][0]["resolution"]["state"], "resolved");
+
+    // Resolve both comments (addressed with commit + reply; wont-fix).
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            "abc1234",
+            "--reply",
+            "Clarified in abc1234.",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "2",
+            "--status",
+            "wont-fix",
+            "--reply",
+            "Covered elsewhere.",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // Close the loop.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--state",
+            "addressed",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: addressed"));
+
+    // The queue is empty again, and show reflects the resolutions.
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "requests",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&out)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    let json = show_review_json(&plan, &id);
+    assert_eq!(json["state"], "addressed");
+    assert_eq!(json["comments"][0]["status"], "addressed");
+    assert_eq!(json["comments"][0]["applied_commit"], "abc1234");
+    assert_eq!(json["comments"][0]["reply"], "Clarified in abc1234.");
+    assert_eq!(json["comments"][1]["status"], "wont-fix");
+}
+
+#[test]
+fn review_list_filters_by_on_state_verdict_author() {
+    let plan = init_plan_repo();
+    let draft = start_review(&plan, "task/item-x");
+    let submitted = start_review(&plan, "task/item-y");
+    add_plain_comment(&plan, &submitted, "A comment.");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &submitted,
+            "--verdict",
+            "approve",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    let list = |extra: &[&str]| -> Vec<String> {
+        let mut args = vec!["review", "list", "--project", "demo", "--format", "json"];
+        args.extend_from_slice(extra);
+        let out = rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .args(&args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice::<Value>(&out)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    assert_eq!(list(&[]).len(), 2);
+    assert_eq!(list(&["--state", "draft"]), vec![draft.clone()]);
+    assert_eq!(list(&["--verdict", "approve"]), vec![submitted.clone()]);
+    assert_eq!(list(&["--on", "task/item-x"]), vec![draft.clone()]);
+    assert_eq!(list(&["--author", "tester"]).len(), 2);
+    assert!(list(&["--author", "nobody"]).is_empty());
+}
+
+#[test]
+fn review_show_rejects_table_format_and_supports_no_body() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "shown", "Body with a notable phrase inside.");
+    let id = start_review(&plan, "task/shown");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "notable phrase",
+            "--body",
+            "Secret comment body.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "show",
+            &id,
+            "--project",
+            "demo",
+            "--format",
+            "table",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not supported for 'review show'"));
+
+    // --no-body suppresses comment bodies but keeps metadata + anchors.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "show", &id, "--no-body", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Secret comment body.").not())
+        .stdout(predicate::str::contains("Comment 1"))
+        .stdout(predicate::str::contains("notable phrase"));
+}
+
+#[test]
+fn review_delete_draft_ok_submitted_requires_force() {
+    let plan = init_plan_repo();
+    let draft = start_review(&plan, "task/item-x");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "delete", &draft, "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted review"));
+
+    let submitted = start_review(&plan, "task/item-y");
+    add_plain_comment(&plan, &submitted, "A comment.");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &submitted,
+            "--verdict",
+            "comment",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "delete", &submitted, "--project", "demo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force"));
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "delete",
+            &submitted,
+            "--force",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn review_help_groups_the_two_families() {
+    rdm()
+        .args(["review", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Author document reviews"))
+        .stdout(predicate::str::contains("awaiting implementation review"))
+        .stdout(predicate::str::contains("pending, restamp, blocked"))
+        .stdout(predicate::str::contains(
+            "start, comment, submit, list, show, update, delete, requests",
+        ));
+}
+
+#[test]
+fn review_start_staged_defers_commit_and_commit_includes_review_file() {
+    let plan = init_plan_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "--stage",
+            "review",
+            "start",
+            "--on",
+            "task/item-x",
+            "--author",
+            "tester",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("staged"));
+
+    // The review file exists on disk but is not yet committed.
+    let status = git(plan.path(), &["status", "--porcelain"]);
+    let porcelain = String::from_utf8_lossy(&status.stdout).to_string();
+    assert!(
+        porcelain.contains("reviews/"),
+        "review file must be uncommitted under staging: {porcelain}"
+    );
+
+    // rdm commit persists it.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["commit", "-m", "batch: add review"])
+        .assert()
+        .success();
+    let log = git(plan.path(), &["log", "--name-only", "-1"]);
+    let logged = String::from_utf8_lossy(&log.stdout).to_string();
+    assert!(
+        logged.contains("reviews/"),
+        "commit must include the review file: {logged}"
+    );
+}
+
+#[test]
+fn review_pending_unaffected_by_document_reviews() {
+    // Regression: the authoring family must not disturb the needs-review
+    // queue commands sharing the namespace.
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    add_plain_comment(&plan, &id, "A comment.");
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "main"]);
+    fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "initial"]);
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(src.path())
+        .args(["review", "pending", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No items pending review."));
+}
+
+#[test]
+fn review_submit_whitespace_body_without_comments_names_body_flag() {
+    // A whitespace-only --body is treated as no summary; with no comments
+    // either, the error must say the passed --body was blank rather than
+    // claim no summary was given.
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "comment",
+            "--body",
+            "   ",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--body you passed is blank"));
+}
+
+#[test]
+fn review_submit_whitespace_body_with_comments_does_not_persist_whitespace() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    add_plain_comment(&plan, &id, "A comment.");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "comment",
+            "--body",
+            "  \t ",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    let json = show_review_json(&plan, &id);
+    assert_eq!(json["state"], "submitted");
+    assert_eq!(
+        json["body"], "",
+        "whitespace-only --body must not persist as the summary"
+    );
+}
+
+#[test]
+fn review_list_format_table_renders_columns() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "tabled", "A body with a marker phrase inside.");
+    let id = start_review(&plan, "task/tabled");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--body",
+            "A note.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "list", "--format", "table", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Id"))
+        .stdout(predicate::str::contains("Target"))
+        .stdout(predicate::str::contains("task/tabled"))
+        .stdout(predicate::str::contains("draft"))
+        .stdout(predicate::str::contains("1/1 open"));
+}
+
+#[test]
+fn review_show_format_markdown_renders_comment_details() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "marked", "A body with a marker phrase inside.");
+    let id = start_review(&plan, "task/marked");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "marker phrase",
+            "--body",
+            "Sharpen the phrasing.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "show",
+            &id,
+            "--format",
+            "markdown",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("# Review {id}")))
+        .stdout(predicate::str::contains("task/marked"))
+        .stdout(predicate::str::contains("## Comments"))
+        .stdout(predicate::str::contains("marker phrase"))
+        .stdout(predicate::str::contains("Sharpen the phrasing."))
+        .stdout(predicate::str::contains("resolved"));
+}

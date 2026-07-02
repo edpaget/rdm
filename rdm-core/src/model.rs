@@ -683,6 +683,22 @@ pub enum ReviewTarget {
     },
 }
 
+impl ReviewTarget {
+    /// Renders the target in the CLI's `<kind>/<id>` reference syntax:
+    /// `roadmap/<slug>`, `phase/<roadmap-slug>/<stem>`, or `task/<slug>`.
+    ///
+    /// This is the same syntax `rdm review start --on` and `rdm review list
+    /// --on` accept, so labels round-trip as command arguments.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            ReviewTarget::Roadmap { roadmap } => format!("roadmap/{roadmap}"),
+            ReviewTarget::Phase { roadmap, stem } => format!("phase/{roadmap}/{stem}"),
+            ReviewTarget::Task { slug } => format!("task/{slug}"),
+        }
+    }
+}
+
 /// Kind of document a [`CommentDoc`] points at.
 ///
 /// Only `phase` is meaningful today: a roadmap review may scope a comment

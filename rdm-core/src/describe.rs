@@ -277,15 +277,90 @@ impl Describe for crate::model::Task {
     }
 }
 
+impl Describe for crate::model::Review {
+    fn describe() -> EntityInfo {
+        EntityInfo {
+            name: "review",
+            description: "A structured review of a roadmap, phase, or task, with anchored inline comments.",
+            fields: vec![
+                FieldInfo {
+                    name: "id",
+                    type_name: "string",
+                    required: true,
+                    enum_values: &[],
+                    description: "Timestamp-based identifier, unique within the project (also the file stem under reviews/).",
+                },
+                FieldInfo {
+                    name: "author",
+                    type_name: "string",
+                    required: true,
+                    enum_values: &[],
+                    description: "Who authored the review (free-form: email, agent name, etc.).",
+                },
+                FieldInfo {
+                    name: "target",
+                    type_name: "tagged mapping (kind: roadmap | phase | task)",
+                    required: true,
+                    enum_values: &[],
+                    description: "The plan item under review. The CLI reference syntax is roadmap/<slug>, phase/<roadmap-slug>/<stem>, or task/<slug>.",
+                },
+                FieldInfo {
+                    name: "state",
+                    type_name: "enum",
+                    required: true,
+                    enum_values: &["draft", "submitted", "addressed", "dismissed"],
+                    description: "Lifecycle state. Drafts accept comments; submission locks comment structure; addressed and dismissed are terminal.",
+                },
+                FieldInfo {
+                    name: "verdict",
+                    type_name: "enum",
+                    required: false,
+                    enum_values: &["approve", "request-changes", "comment"],
+                    description: "Overall verdict stamped on submit; absent while the review is a draft.",
+                },
+                FieldInfo {
+                    name: "created",
+                    type_name: "datetime (RFC 3339)",
+                    required: true,
+                    enum_values: &[],
+                    description: "When the review was started.",
+                },
+                FieldInfo {
+                    name: "submitted",
+                    type_name: "datetime (RFC 3339)",
+                    required: false,
+                    enum_values: &[],
+                    description: "When the review was submitted; absent on drafts.",
+                },
+                FieldInfo {
+                    name: "created_commit",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Plan-repo HEAD when the review started — the version of the target the reviewer saw. Quote anchors are derived against this version.",
+                },
+                FieldInfo {
+                    name: "comments",
+                    type_name: "list of comment objects",
+                    required: true,
+                    enum_values: &[],
+                    description: "Inline comments: id, optional doc scope (roadmap reviews only), status (open | addressed | wont-fix), optional applied_commit, optional text-quote anchor (quote/prefix/suffix), body, and optional reply.",
+                },
+            ],
+        }
+    }
+}
+
 /// Returns entity descriptions for all model types.
 #[must_use]
 pub fn all_entities() -> Vec<EntityInfo> {
-    use crate::model::{Phase, Project, Roadmap, Task};
+    use crate::model::{Phase, Project, Review, Roadmap, Task};
     vec![
         Project::describe(),
         Roadmap::describe(),
         Phase::describe(),
         Task::describe(),
+        Review::describe(),
     ]
 }
 
@@ -443,12 +518,33 @@ mod tests {
         assert_fields_match(&sample);
     }
 
+    // Not named `drift_review` like its siblings: in the review domain
+    // "drift" means anchor drift, and this test checks serde/Describe
+    // field agreement, not anchors.
     #[test]
-    fn all_entities_returns_four() {
+    fn describe_review_fields_match() {
+        let sample = crate::model::Review {
+            id: "2026-07-01-1430-a1b2".to_string(),
+            author: "ed".to_string(),
+            target: crate::model::ReviewTarget::Task {
+                slug: "fix-login".to_string(),
+            },
+            state: crate::model::ReviewState::Submitted,
+            verdict: Some(crate::model::Verdict::RequestChanges),
+            created: chrono::Utc::now(),
+            submitted: Some(chrono::Utc::now()),
+            created_commit: Some("abc123".to_string()),
+            comments: vec![],
+        };
+        assert_fields_match(&sample);
+    }
+
+    #[test]
+    fn all_entities_returns_five() {
         let entities = all_entities();
-        assert_eq!(entities.len(), 4);
+        assert_eq!(entities.len(), 5);
         let names: Vec<&str> = entities.iter().map(|e| e.name).collect();
-        assert_eq!(names, vec!["project", "roadmap", "phase", "task"]);
+        assert_eq!(names, vec!["project", "roadmap", "phase", "task", "review"]);
     }
 
     #[test]

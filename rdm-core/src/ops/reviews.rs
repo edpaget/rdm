@@ -18,6 +18,89 @@ use crate::model::{
 };
 use crate::store::{DirEntryKind, Store, VersionedStore};
 
+/// Parses a review target reference into a [`ReviewTarget`].
+///
+/// Accepted forms:
+///
+/// - `roadmap/<slug>`
+/// - `phase/<roadmap-slug>/<stem-or-number>` — the phase may be named by its
+///   file stem or its number, resolved the same way phase identifiers are
+///   everywhere else (via
+///   [`resolve_phase_stem`](crate::ops::phase::resolve_phase_stem))
+/// - `task/<slug>`
+///
+/// Existence of the target itself is *not* checked here — that stays with
+/// [`create_review`] — but resolving a phase *number* requires listing the
+/// roadmap's phases, so an unknown roadmap or number surfaces from that
+/// lookup.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidReviewTargetRef`] when `reference` matches none
+/// of the accepted forms, or whatever
+/// [`resolve_phase_stem`](crate::ops::phase::resolve_phase_stem) returns for
+/// an unresolvable phase number.
+pub fn parse_review_target_ref(
+    store: &impl Store,
+    project: &str,
+    reference: &str,
+) -> Result<ReviewTarget> {
+    let invalid = || Error::InvalidReviewTargetRef(reference.to_string());
+    let (kind, rest) = reference.split_once('/').ok_or_else(invalid)?;
+    match kind {
+        "roadmap" if !rest.is_empty() && !rest.contains('/') => Ok(ReviewTarget::Roadmap {
+            roadmap: rest.to_string(),
+        }),
+        "task" if !rest.is_empty() && !rest.contains('/') => Ok(ReviewTarget::Task {
+            slug: rest.to_string(),
+        }),
+        "phase" => {
+            let (roadmap, phase) = rest.split_once('/').ok_or_else(invalid)?;
+            if roadmap.is_empty() || phase.is_empty() || phase.contains('/') {
+                return Err(invalid());
+            }
+            let stem = crate::ops::phase::resolve_phase_stem(store, project, roadmap, phase)?;
+            Ok(ReviewTarget::Phase {
+                roadmap: roadmap.to_string(),
+                stem,
+            })
+        }
+        _ => Err(invalid()),
+    }
+}
+
+/// Parses a comment document reference (`phase/<stem-or-number>`) into a
+/// [`CommentDoc`] scoped to `roadmap`.
+///
+/// The phase may be named by stem or number, resolved via
+/// [`resolve_phase_stem`](crate::ops::phase::resolve_phase_stem). Scope
+/// validity (the phase belonging to the reviewed roadmap) is enforced by
+/// [`add_comment`]/[`update_comment`], not here.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidCommentDocRef`] when `reference` is not of the
+/// form `phase/<stem-or-number>`, or whatever
+/// [`resolve_phase_stem`](crate::ops::phase::resolve_phase_stem) returns for
+/// an unresolvable phase number.
+pub fn parse_comment_doc_ref(
+    store: &impl Store,
+    project: &str,
+    roadmap: &str,
+    reference: &str,
+) -> Result<CommentDoc> {
+    let invalid = || Error::InvalidCommentDocRef(reference.to_string());
+    let (kind, phase) = reference.split_once('/').ok_or_else(invalid)?;
+    if kind != "phase" || phase.is_empty() || phase.contains('/') {
+        return Err(invalid());
+    }
+    let stem = crate::ops::phase::resolve_phase_stem(store, project, roadmap, phase)?;
+    Ok(CommentDoc {
+        kind: CommentDocKind::Phase,
+        stem,
+    })
+}
+
 /// Maximum attempts to find a non-colliding review id before giving up.
 const MAX_ID_ATTEMPTS: u32 = 20;
 
@@ -464,6 +547,38 @@ pub fn submit_review(
     review_doc.frontmatter.verdict = Some(verdict);
     review_doc.frontmatter.state = ReviewState::Submitted;
     review_doc.frontmatter.submitted = Some(Utc::now());
+    crate::io::write_review(store, project, review_id, &review_doc)?;
+    Ok(review_doc)
+}
+
+/// Replaces a draft review's overall summary (the markdown body below the
+/// frontmatter).
+///
+/// Draft-only, like every other structural mutation in this module. Routes
+/// through [`BodyUpdate`](crate::ops::BodyUpdate), so replacing a non-empty
+/// summary with an empty string requires the explicit
+/// [`Clear`](crate::ops::BodyUpdate::Clear) opt-in — the same clobber
+/// protection every other body-bearing entity gets.
+///
+/// # Errors
+///
+/// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
+/// [`Error::ReviewNotDraft`] if the review has been submitted,
+/// [`Error::BodyClobberRefused`] if an empty `Set` would clobber a non-empty
+/// summary, [`Error::Io`] on read/write failure, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] on a malformed
+/// review file.
+pub fn set_summary(
+    store: &mut impl Store,
+    project: &str,
+    review_id: &str,
+    body: crate::ops::BodyUpdate,
+) -> Result<Document<Review>> {
+    let mut review_doc = crate::io::load_review(store, project, review_id)?;
+    if review_doc.frontmatter.state != ReviewState::Draft {
+        return Err(Error::ReviewNotDraft(review_id.to_string()));
+    }
+    body.apply(&mut review_doc.body)?;
     crate::io::write_review(store, project, review_id, &review_doc)?;
     Ok(review_doc)
 }
@@ -974,5 +1089,238 @@ mod tests {
         let kept = filter_reviews(reviews, &filter);
         let ids: Vec<&str> = kept.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, vec!["r1", "r3"]);
+    }
+
+    // -- target / doc reference parsing --
+
+    /// A store with a `test` project, roadmap `alpha` (one phase,
+    /// `phase-1-one`), and task `fix-login`.
+    fn setup_store_with_items() -> MemoryStore {
+        let mut store = setup_store();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::roadmap::CreateRoadmap {
+                project: "test",
+                slug: "alpha",
+                title: "Alpha",
+                body: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            crate::ops::phase::CreatePhase {
+                project: "test",
+                roadmap: "alpha",
+                slug: "one",
+                title: "One",
+                number: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::task::create_task(
+            &mut store,
+            crate::ops::task::CreateTask {
+                project: "test",
+                slug: "fix-login",
+                title: "Fix login",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        store
+    }
+
+    #[test]
+    fn parse_target_ref_roadmap() {
+        let store = setup_store_with_items();
+        let target = parse_review_target_ref(&store, "test", "roadmap/alpha").unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_target_ref_task() {
+        let store = setup_store_with_items();
+        let target = parse_review_target_ref(&store, "test", "task/fix-login").unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Task {
+                slug: "fix-login".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_target_ref_phase_by_stem() {
+        let store = setup_store_with_items();
+        let target = parse_review_target_ref(&store, "test", "phase/alpha/phase-1-one").unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-1-one".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_target_ref_phase_by_number() {
+        let store = setup_store_with_items();
+        let target = parse_review_target_ref(&store, "test", "phase/alpha/1").unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-1-one".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_target_ref_rejects_malformed() {
+        let store = setup_store_with_items();
+        for bad in [
+            "",
+            "alpha",
+            "roadmap/",
+            "roadmap/a/b",
+            "task/",
+            "task/a/b",
+            "phase/alpha",
+            "phase//1",
+            "phase/alpha/",
+            "phase/alpha/1/extra",
+            "widget/alpha",
+        ] {
+            let err = parse_review_target_ref(&store, "test", bad).unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidReviewTargetRef(_)),
+                "{bad:?} should be invalid, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("roadmap/<slug>"),
+                "error must show accepted forms: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_target_ref_unknown_phase_number_errors() {
+        let store = setup_store_with_items();
+        let err = parse_review_target_ref(&store, "test", "phase/alpha/9").unwrap_err();
+        assert!(matches!(err, Error::PhaseNotFound(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_comment_doc_ref_by_stem_and_number() {
+        let store = setup_store_with_items();
+        let doc = parse_comment_doc_ref(&store, "test", "alpha", "phase/phase-1-one").unwrap();
+        assert_eq!(doc.stem, "phase-1-one");
+        let doc = parse_comment_doc_ref(&store, "test", "alpha", "phase/1").unwrap();
+        assert_eq!(doc.stem, "phase-1-one");
+        assert_eq!(doc.kind, CommentDocKind::Phase);
+    }
+
+    #[test]
+    fn parse_comment_doc_ref_rejects_malformed() {
+        let store = setup_store_with_items();
+        for bad in ["", "phase-1-one", "phase/", "phase/a/b", "task/x"] {
+            let err = parse_comment_doc_ref(&store, "test", "alpha", bad).unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidCommentDocRef(_)),
+                "{bad:?} should be invalid, got {err:?}"
+            );
+        }
+    }
+
+    // -- set_summary --
+
+    #[test]
+    fn set_summary_replaces_draft_body() {
+        let mut store = setup_store_with_items();
+        let doc = create_review(
+            &mut store,
+            CreateReview {
+                project: "test",
+                author: "ed",
+                target: ReviewTarget::Task {
+                    slug: "fix-login".to_string(),
+                },
+                body: Some("first draft"),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        let updated = set_summary(
+            &mut store,
+            "test",
+            &id,
+            crate::ops::BodyUpdate::Set("final summary".to_string()),
+        )
+        .unwrap();
+        assert_eq!(updated.body, "final summary");
+    }
+
+    #[test]
+    fn set_summary_rejects_empty_clobber_without_clear() {
+        let mut store = setup_store_with_items();
+        let doc = create_review(
+            &mut store,
+            CreateReview {
+                project: "test",
+                author: "ed",
+                target: ReviewTarget::Task {
+                    slug: "fix-login".to_string(),
+                },
+                body: Some("existing summary"),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        let err = set_summary(
+            &mut store,
+            "test",
+            &id,
+            crate::ops::BodyUpdate::Set(String::new()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::BodyClobberRefused), "got {err:?}");
+        // Clear is the explicit opt-in.
+        let cleared = set_summary(&mut store, "test", &id, crate::ops::BodyUpdate::Clear).unwrap();
+        assert_eq!(cleared.body, "");
+    }
+
+    #[test]
+    fn set_summary_rejects_submitted_review() {
+        let mut store = setup_store_with_items();
+        let doc = create_review(
+            &mut store,
+            CreateReview {
+                project: "test",
+                author: "ed",
+                target: ReviewTarget::Task {
+                    slug: "fix-login".to_string(),
+                },
+                body: Some("summary"),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        submit_review(&mut store, "test", &id, Some(Verdict::Approve)).unwrap();
+        let err = set_summary(
+            &mut store,
+            "test",
+            &id,
+            crate::ops::BodyUpdate::Set("late edit".to_string()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::ReviewNotDraft(_)), "got {err:?}");
     }
 }

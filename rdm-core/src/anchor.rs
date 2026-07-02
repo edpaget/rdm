@@ -54,10 +54,150 @@
 
 use std::ops::Range;
 
-use crate::error::Error;
+use crate::error::{Error, Result};
 use crate::io;
 use crate::model::{Anchor, CommentDoc, CommentDocKind, Review, ReviewComment, ReviewTarget};
 use crate::store::VersionedStore;
+
+/// Maximum context captured on each side of a derived text-quote anchor,
+/// in `char`s.
+const DERIVE_CONTEXT_CHARS: usize = 32;
+
+/// One occurrence of a quote within a body, reported when a quote is
+/// ambiguous so the caller can disambiguate with a 1-based selector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuoteOccurrence {
+    /// 1-based position of this occurrence within the body.
+    pub occurrence: usize,
+    /// The occurrence with up to 16 chars of surrounding context on each
+    /// side (`…before[QUOTE]after…`), newlines flattened for display.
+    pub context: String,
+}
+
+/// Derives an [`Anchor::TextQuote`] for `quote` within `body`.
+///
+/// The quote must occur in `body` exactly (byte-for-byte). When it occurs
+/// once, that occurrence is used. When it occurs multiple times, `occurrence`
+/// (1-based) selects one; omitting it fails with the full occurrence list so
+/// the caller can disambiguate. Occurrences are counted **without overlap**
+/// (via [`str::match_indices`]): the quote `"aa"` occurs twice in `"aaaa"`,
+/// not three times. The anchor's `prefix`/`suffix` capture up to
+/// 32 `char`s immediately before/after the selected occurrence (shorter at a
+/// body boundary), trimmed on `char` boundaries so multi-byte UTF-8 content
+/// never splits.
+///
+/// `commit` names the revision `body` was read at and is used only to make
+/// errors actionable (it tells the caller *which* version of the document
+/// was searched); pass `None` when `body` is the current document.
+///
+/// # Errors
+///
+/// Returns [`Error::QuoteNotFound`] when `quote` is empty or absent from
+/// `body`, [`Error::QuoteAmbiguous`] when `quote` occurs more than once and
+/// `occurrence` is `None`, or [`Error::QuoteOccurrenceOutOfRange`] when
+/// `occurrence` exceeds the number of matches.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::anchor::derive_text_quote;
+/// use rdm_core::model::Anchor;
+///
+/// let body = "Alpha beta gamma.";
+/// let anchor = derive_text_quote(body, "beta", None, None).unwrap();
+/// assert_eq!(
+///     anchor,
+///     Anchor::TextQuote {
+///         quote: "beta".to_string(),
+///         prefix: "Alpha ".to_string(),
+///         suffix: " gamma.".to_string(),
+///     }
+/// );
+/// ```
+pub fn derive_text_quote(
+    body: &str,
+    quote: &str,
+    occurrence: Option<usize>,
+    commit: Option<&str>,
+) -> Result<Anchor> {
+    if quote.is_empty() {
+        return Err(Error::QuoteNotFound {
+            quote: quote.to_string(),
+            commit: commit.map(str::to_string),
+        });
+    }
+    let starts: Vec<usize> = body.match_indices(quote).map(|(i, _)| i).collect();
+    let start = match (starts.as_slice(), occurrence) {
+        ([], _) => {
+            return Err(Error::QuoteNotFound {
+                quote: quote.to_string(),
+                commit: commit.map(str::to_string),
+            });
+        }
+        ([only], None) => *only,
+        (many, None) => {
+            return Err(Error::QuoteAmbiguous {
+                quote: quote.to_string(),
+                commit: commit.map(str::to_string),
+                occurrences: many
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &s)| QuoteOccurrence {
+                        occurrence: i + 1,
+                        context: occurrence_context(body, s, quote.len()),
+                    })
+                    .collect(),
+            });
+        }
+        (many, Some(n)) => {
+            if n == 0 || n > many.len() {
+                return Err(Error::QuoteOccurrenceOutOfRange {
+                    quote: quote.to_string(),
+                    occurrence: n,
+                    available: many.len(),
+                });
+            }
+            many[n - 1]
+        }
+    };
+    let end = start + quote.len();
+    Ok(Anchor::TextQuote {
+        quote: quote.to_string(),
+        prefix: last_chars(&body[..start], DERIVE_CONTEXT_CHARS).to_string(),
+        suffix: first_chars(&body[end..], DERIVE_CONTEXT_CHARS).to_string(),
+    })
+}
+
+/// Returns the trailing slice of `s` containing at most `n` `char`s.
+///
+/// `n` must be non-zero (callers pass compile-time constants).
+fn last_chars(s: &str, n: usize) -> &str {
+    match s.char_indices().rev().nth(n - 1) {
+        Some((i, _)) => &s[i..],
+        None => s,
+    }
+}
+
+/// Returns the leading slice of `s` containing at most `n` `char`s.
+fn first_chars(s: &str, n: usize) -> &str {
+    match s.char_indices().nth(n) {
+        Some((i, _)) => &s[..i],
+        None => s,
+    }
+}
+
+/// Builds the display context for one quote occurrence: up to 16 chars of
+/// surrounding text on each side, newlines flattened to spaces.
+fn occurrence_context(body: &str, start: usize, quote_len: usize) -> String {
+    let before = last_chars(&body[..start], 16);
+    let after = first_chars(&body[start + quote_len..], 16);
+    format!(
+        "…{}[{}]{}…",
+        before.replace('\n', " "),
+        body[start..start + quote_len].replace('\n', " "),
+        after.replace('\n', " ")
+    )
+}
 
 /// Resolves an anchor to a byte range within `body`.
 ///
@@ -287,17 +427,24 @@ enum DocSelector<'a> {
 /// review's own target. A `doc` on a non-roadmap review (which the ops
 /// layer rejects at write time) is ignored defensively.
 fn doc_selector<'a>(review: &'a Review, comment: &'a ReviewComment) -> DocSelector<'a> {
+    doc_selector_for(&review.target, comment.doc.as_ref())
+}
+
+/// [`doc_selector`] over a bare target and optional doc scope, for callers
+/// that don't yet hold a stored [`ReviewComment`] (e.g. deriving the anchor
+/// for a comment about to be added).
+fn doc_selector_for<'a>(target: &'a ReviewTarget, doc: Option<&'a CommentDoc>) -> DocSelector<'a> {
     if let (
         Some(CommentDoc {
             kind: CommentDocKind::Phase,
             stem,
         }),
         ReviewTarget::Roadmap { roadmap },
-    ) = (&comment.doc, &review.target)
+    ) = (doc, target)
     {
         return DocSelector::Phase { roadmap, stem };
     }
-    match &review.target {
+    match target {
         ReviewTarget::Roadmap { roadmap } => DocSelector::Roadmap { roadmap },
         ReviewTarget::Phase { roadmap, stem } => DocSelector::Phase { roadmap, stem },
         ReviewTarget::Task { slug } => DocSelector::Task { slug },
@@ -436,6 +583,109 @@ pub fn resolve_against_history(
             None => Resolution::Unresolved,
         },
         Err(_) => Resolution::Unresolved,
+    }
+}
+
+/// Loads the body a **new** comment's quote should be searched against: the
+/// comment's document (`doc` scope for roadmap reviews, otherwise the
+/// review's own target) as it existed at the review's `created_commit` — the
+/// version the reviewer is looking at — falling back to the current body
+/// when history is unavailable (no recorded commit, unknown revision,
+/// document absent at that revision, or a historyless backend).
+///
+/// Returns the body together with the commit it was actually read at:
+/// `Some(sha)` for a historical read, `None` when the current body was used.
+/// Callers thread that commit into [`derive_text_quote`] so quote errors
+/// name the version that was searched.
+///
+/// Unlike [`resolve_against_history`], this is fallible: the caller is about
+/// to *write* a new anchor, so a document that cannot be found anywhere must
+/// surface as an error rather than degrade silently.
+///
+/// # Errors
+///
+/// Propagates the current-body load failure (e.g.
+/// [`Error::RoadmapNotFound`], [`Error::PhaseNotFound`],
+/// [`Error::TaskNotFound`]) when no body can be found at all.
+/// [`Error::FrontmatterMissing`] can arise from either path (content with
+/// no frontmatter delimiters); [`Error::FrontmatterParse`] only from the
+/// current-body fallback — the historical path splits the frontmatter off
+/// without deserializing it.
+pub fn body_for_comment(
+    store: &impl VersionedStore,
+    project: &str,
+    review: &Review,
+    doc: Option<&CommentDoc>,
+) -> Result<(String, Option<String>)> {
+    let selector = doc_selector_for(&review.target, doc);
+    if let Some(sha) = &review.created_commit {
+        match load_body_at(store, project, selector, sha) {
+            Ok(body) => return Ok((body, Some(sha.clone()))),
+            // Benign history gaps: fall back to the current body.
+            Err(
+                Error::RevisionUnknown { .. }
+                | Error::BodyAtRevisionMissing { .. }
+                | Error::HistoryUnavailable,
+            ) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok((load_body_current(store, project, selector)?, None))
+}
+
+/// A comment's resolved anchor paired with the literal text at the resolved
+/// range, sliced from whichever body the resolution indexes — so callers
+/// (JSON serialization, display rendering) never need a second store
+/// round-trip to show the anchored text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedComment {
+    /// The resolution outcome (see [`Resolution`]).
+    pub resolution: Resolution,
+    /// The text at the resolved range, from the body the resolution indexes
+    /// (the historical body for [`Resolution::Original`], the current body
+    /// for [`Resolution::Current`]). `None` when unresolved.
+    pub quote: Option<String>,
+}
+
+/// Resolves a comment's anchor via [`resolve_against_history`] and bundles
+/// the text at the resolved range.
+///
+/// Infallible, like [`resolve_against_history`]: any failure to re-load the
+/// resolved body degrades to [`Resolution::Unresolved`].
+///
+/// # Panics
+///
+/// Never panics.
+pub fn resolve_comment(
+    store: &impl VersionedStore,
+    project: &str,
+    review: &Review,
+    comment: &ReviewComment,
+) -> ResolvedComment {
+    let resolution = resolve_against_history(store, project, review, comment);
+    let selector = doc_selector(review, comment);
+    let quote = match &resolution {
+        Resolution::Original { range, .. } => review.created_commit.as_ref().and_then(|sha| {
+            load_body_at(store, project, selector, sha)
+                .ok()
+                .and_then(|body| body.get(range.clone()).map(str::to_string))
+        }),
+        Resolution::Current { range } => load_body_current(store, project, selector)
+            .ok()
+            .and_then(|body| body.get(range.clone()).map(str::to_string)),
+        Resolution::Unresolved => None,
+    };
+    match quote {
+        Some(q) => ResolvedComment {
+            resolution,
+            quote: Some(q),
+        },
+        // Unresolved, or the resolved body vanished between resolution and
+        // re-load (or the range no longer slices cleanly): degrade.
+        None => ResolvedComment {
+            resolution: Resolution::Unresolved,
+            quote: None,
+        },
     }
 }
 
@@ -962,5 +1212,294 @@ mod tests {
             }
             other => panic!("expected Current, got {other:?}"),
         }
+    }
+
+    // -- derive_text_quote --
+
+    #[test]
+    fn derive_unique_quote_captures_context() {
+        let body = "The quick brown fox jumps over the lazy dog.";
+        let anchor = derive_text_quote(body, "brown fox", None, None).unwrap();
+        assert_eq!(
+            anchor,
+            tq("brown fox", "The quick ", " jumps over the lazy dog.")
+        );
+    }
+
+    #[test]
+    fn derive_caps_context_at_32_chars() {
+        let long = "x".repeat(50);
+        let body = format!("{long}QUOTE{long}");
+        let anchor = derive_text_quote(&body, "QUOTE", None, None).unwrap();
+        let Anchor::TextQuote { prefix, suffix, .. } = anchor else {
+            panic!("expected TextQuote");
+        };
+        assert_eq!(prefix.chars().count(), 32);
+        assert_eq!(suffix.chars().count(), 32);
+    }
+
+    #[test]
+    fn derive_near_body_start_takes_shorter_prefix() {
+        let body = "abQUOTE and the rest of the line goes on.";
+        let anchor = derive_text_quote(body, "QUOTE", None, None).unwrap();
+        let Anchor::TextQuote { prefix, .. } = anchor else {
+            panic!("expected TextQuote");
+        };
+        assert_eq!(prefix, "ab");
+    }
+
+    #[test]
+    fn derive_multibyte_context_on_char_boundaries() {
+        // 40 multi-byte chars on each side: the 32-char cap must trim on
+        // char boundaries without panicking.
+        let side = "é".repeat(40);
+        let body = format!("{side}QUOTE{side}");
+        let anchor = derive_text_quote(&body, "QUOTE", None, None).unwrap();
+        let Anchor::TextQuote { prefix, suffix, .. } = anchor else {
+            panic!("expected TextQuote");
+        };
+        assert_eq!(prefix, "é".repeat(32));
+        assert_eq!(suffix, "é".repeat(32));
+    }
+
+    #[test]
+    fn derive_empty_quote_is_not_found() {
+        let err = derive_text_quote("body", "", None, None).unwrap_err();
+        assert!(matches!(err, Error::QuoteNotFound { .. }));
+    }
+
+    #[test]
+    fn derive_absent_quote_not_found_names_commit() {
+        let err = derive_text_quote("body text", "missing", None, Some("abc123")).unwrap_err();
+        match &err {
+            Error::QuoteNotFound { quote, commit } => {
+                assert_eq!(quote, "missing");
+                assert_eq!(commit.as_deref(), Some("abc123"));
+            }
+            other => panic!("expected QuoteNotFound, got {other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(msg.contains("abc123"), "must name the commit: {msg}");
+        assert!(msg.contains("--at abc123"), "must suggest --at: {msg}");
+        assert!(
+            msg.contains("may have changed since the review started"),
+            "must explain drift: {msg}"
+        );
+        assert!(
+            msg.contains("fresh review"),
+            "must suggest a fresh review: {msg}"
+        );
+    }
+
+    #[test]
+    fn derive_absent_quote_without_commit_mentions_current_document() {
+        let err = derive_text_quote("body text", "missing", None, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("current document"), "got: {msg}");
+    }
+
+    #[test]
+    fn derive_ambiguous_quote_lists_occurrences_and_commit() {
+        let body = "call foo() here, then call foo() there";
+        let err = derive_text_quote(body, "call foo()", None, Some("beef01")).unwrap_err();
+        match &err {
+            Error::QuoteAmbiguous {
+                quote,
+                commit,
+                occurrences,
+            } => {
+                assert_eq!(quote, "call foo()");
+                assert_eq!(commit.as_deref(), Some("beef01"));
+                assert_eq!(occurrences.len(), 2);
+                assert_eq!(occurrences[0].occurrence, 1);
+                assert_eq!(occurrences[1].occurrence, 2);
+                assert!(occurrences[0].context.contains("[call foo()]"));
+            }
+            other => panic!("expected QuoteAmbiguous, got {other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(msg.contains("beef01"), "must name the commit: {msg}");
+        assert!(msg.contains("--occurrence"), "must suggest fix: {msg}");
+        assert!(msg.contains("1:"), "must list positions: {msg}");
+        assert!(msg.contains("2:"), "must list positions: {msg}");
+    }
+
+    #[test]
+    fn derive_occurrence_selects_nth_match() {
+        let body = "call foo() here, then call foo() there";
+        let anchor = derive_text_quote(body, "call foo()", Some(2), None).unwrap();
+        let Anchor::TextQuote { prefix, suffix, .. } = anchor else {
+            panic!("expected TextQuote");
+        };
+        assert!(prefix.ends_with("then "), "prefix: {prefix:?}");
+        assert_eq!(suffix, " there");
+    }
+
+    #[test]
+    fn derive_occurrence_out_of_range_errors() {
+        let body = "dup and dup";
+        let err = derive_text_quote(body, "dup", Some(3), None).unwrap_err();
+        match &err {
+            Error::QuoteOccurrenceOutOfRange {
+                occurrence,
+                available,
+                ..
+            } => {
+                assert_eq!(*occurrence, 3);
+                assert_eq!(*available, 2);
+            }
+            other => panic!("expected QuoteOccurrenceOutOfRange, got {other:?}"),
+        }
+        assert!(err.to_string().contains("valid: 1..=2"));
+        // Occurrence 0 is also out of range (1-based).
+        let err = derive_text_quote(body, "dup", Some(0), None).unwrap_err();
+        assert!(matches!(err, Error::QuoteOccurrenceOutOfRange { .. }));
+    }
+
+    #[test]
+    fn derive_occurrence_on_unique_match_allows_one() {
+        let body = "only one match here";
+        let anchor = derive_text_quote(body, "one", Some(1), None).unwrap();
+        assert_eq!(anchor, tq("one", "only ", " match here"));
+    }
+
+    // -- body_for_comment --
+
+    #[test]
+    fn body_for_comment_reads_at_created_commit() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "original body");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+        seed_task(&mut store, "edited body");
+        store.commit().unwrap();
+
+        let rev = review(task_target(), Some(&sha));
+        let (body, at) = body_for_comment(&store, "test", &rev, None).unwrap();
+        assert_eq!(body, "original body\n");
+        assert_eq!(at.as_deref(), Some(sha.as_str()));
+    }
+
+    #[test]
+    fn body_for_comment_falls_back_to_current_on_unknown_sha() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "current body");
+        store.commit().unwrap();
+
+        let rev = review(task_target(), Some("mem-nope"));
+        let (body, at) = body_for_comment(&store, "test", &rev, None).unwrap();
+        assert_eq!(body, "current body\n");
+        assert_eq!(at, None);
+    }
+
+    #[test]
+    fn body_for_comment_uses_current_when_no_created_commit() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "current body");
+        store.commit().unwrap();
+
+        let rev = review(task_target(), None);
+        let (body, at) = body_for_comment(&store, "test", &rev, None).unwrap();
+        assert_eq!(body, "current body\n");
+        assert_eq!(at, None);
+    }
+
+    #[test]
+    fn body_for_comment_doc_scope_reads_phase_body() {
+        let mut store = MemoryStore::new();
+        seed_roadmap(&mut store, "roadmap body");
+        seed_phase(&mut store, "phase body");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+
+        let rev = review(
+            ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            Some(&sha),
+        );
+        let doc = CommentDoc {
+            kind: CommentDocKind::Phase,
+            stem: "phase-1-one".to_string(),
+        };
+        let (body, at) = body_for_comment(&store, "test", &rev, Some(&doc)).unwrap();
+        assert_eq!(body, "phase body\n");
+        assert_eq!(at.as_deref(), Some(sha.as_str()));
+    }
+
+    #[test]
+    fn body_for_comment_dangling_target_errors() {
+        let mut store = MemoryStore::new();
+        store.commit().unwrap();
+
+        let rev = review(task_target(), None);
+        let err = body_for_comment(&store, "test", &rev, None).unwrap_err();
+        assert!(matches!(err, Error::TaskNotFound(_)), "got {err:?}");
+    }
+
+    // -- resolve_comment --
+
+    #[test]
+    fn resolve_comment_bundles_original_quote() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "intro. the quoted span here. outro.");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+
+        let rev = review(task_target(), Some(&sha));
+        let c = comment(Some(tq("quoted span", "the ", " here")), None);
+        let resolved = resolve_comment(&store, "test", &rev, &c);
+        assert!(matches!(
+            resolved.resolution,
+            Resolution::Original { drifted: false, .. }
+        ));
+        assert_eq!(resolved.quote.as_deref(), Some("quoted span"));
+    }
+
+    #[test]
+    fn resolve_comment_bundles_drifted_quote_from_history() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "intro. the quoted span here. outro.");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+        seed_task(&mut store, "intro. the reworded span here. outro.");
+        store.commit().unwrap();
+
+        let rev = review(task_target(), Some(&sha));
+        let c = comment(Some(tq("quoted span", "the ", " here")), None);
+        let resolved = resolve_comment(&store, "test", &rev, &c);
+        assert!(matches!(
+            resolved.resolution,
+            Resolution::Original { drifted: true, .. }
+        ));
+        // The bundled quote is the text the reviewer saw (historical body).
+        assert_eq!(resolved.quote.as_deref(), Some("quoted span"));
+    }
+
+    #[test]
+    fn resolve_comment_bundles_current_quote_on_fallback() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "current body with the quoted span here.");
+        store.commit().unwrap();
+
+        let rev = review(task_target(), Some("mem-nope"));
+        let c = comment(Some(tq("quoted span", "the ", " here")), None);
+        let resolved = resolve_comment(&store, "test", &rev, &c);
+        assert!(matches!(resolved.resolution, Resolution::Current { .. }));
+        assert_eq!(resolved.quote.as_deref(), Some("quoted span"));
+    }
+
+    #[test]
+    fn resolve_comment_unresolved_has_no_quote() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "body.");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+
+        let rev = review(task_target(), Some(&sha));
+        let c = comment(None, None); // whole-document comment
+        let resolved = resolve_comment(&store, "test", &rev, &c);
+        assert_eq!(resolved.resolution, Resolution::Unresolved);
+        assert_eq!(resolved.quote, None);
     }
 }

@@ -372,3 +372,107 @@ fn search_help() {
         .success()
         .stdout(predicate::str::contains("Search across roadmaps"));
 }
+
+#[test]
+fn search_type_review_matches_summary_and_comment_bodies() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "reviewed-task", "Reviewed Task");
+
+    // Start a review whose summary and comment carry distinctive tokens.
+    let out = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "task/reviewed-task",
+            "--author",
+            "tester",
+            "--no-edit",
+            "--project",
+            "acme",
+            "--body",
+            "Summary mentions zanzibar.",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--body",
+            "Comment mentions quokka.",
+            "--no-edit",
+            "--project",
+            "acme",
+        ])
+        .assert()
+        .success();
+
+    // Summary text matches.
+    let out = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "search",
+            "zanzibar",
+            "--type",
+            "review",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let results: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let arr = results.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "summary text must match: {results}");
+    assert_eq!(arr[0]["kind"], "review");
+    assert_eq!(arr[0]["identifier"], id.as_str());
+    assert_eq!(arr[0]["title"], "review of task/reviewed-task");
+
+    // Comment body matches too.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "quokka", "--type", "review", "--project", "acme"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(id.as_str()));
+
+    // --type review with --status is rejected with a pointer to review list.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "search",
+            "zanzibar",
+            "--type",
+            "review",
+            "--status",
+            "open",
+            "--project",
+            "acme",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("rdm review list --state"));
+}
