@@ -47,6 +47,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Anchored review comments can now be located within a target's body and
+  re-located after the body is edited: exact-quote matching with
+  prefix/suffix disambiguation for repeated text, and a fuzzy context
+  fallback that recovers a drifted span from its surviving surrounding
+  context. History-aware resolution finds the span in the body the reviewer
+  originally saw (at the review's recorded commit), flags whether it has
+  since drifted, degrades to the current body when history is unavailable,
+  and reports unresolved (never failing) for unknown revisions, deleted
+  targets, and unrecognized anchor types. Library-only groundwork
+  (`rdm_core::anchor`); no CLI or API surface yet.
+
 - Review operations in `rdm-core`: `create_review`, `add_comment`,
   `update_comment`, `remove_comment`, `submit_review`, `update_review`,
   `get_review`, `delete_review`, and review filtering (by target, state,

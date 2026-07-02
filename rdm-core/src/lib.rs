@@ -3,6 +3,9 @@
 
 /// Agent configuration generation for AI coding assistants.
 pub mod agent_config;
+/// Anchor resolution: locating a review comment's span in a body,
+/// including after the body has been edited.
+pub mod anchor;
 /// Internal Markdown AST types for structured document generation.
 pub mod ast;
 /// Plan repo configuration (`rdm.toml`).
