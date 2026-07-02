@@ -1,5 +1,5 @@
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 
 use crate::handlers;
 use crate::state::AppState;
@@ -28,6 +28,28 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/projects/{project}/roadmaps/{roadmap}/phases/{phase}",
             get(handlers::phases::get_phase).patch(handlers::phases::update_phase),
+        )
+        .route(
+            "/projects/{project}/reviews",
+            get(handlers::reviews::list_reviews).post(handlers::reviews::create_review),
+        )
+        .route(
+            "/projects/{project}/reviews/{review_id}",
+            get(handlers::reviews::get_review)
+                .patch(handlers::reviews::update_review)
+                .delete(handlers::reviews::delete_review),
+        )
+        .route(
+            "/projects/{project}/reviews/{review_id}/comments",
+            post(handlers::reviews::add_comment),
+        )
+        .route(
+            "/projects/{project}/reviews/{review_id}/comments/{comment_id}",
+            patch(handlers::reviews::update_comment),
+        )
+        .route(
+            "/projects/{project}/reviews/{review_id}/submit",
+            post(handlers::reviews::submit_review),
         )
         .route(
             "/projects/{project}/search",

@@ -689,6 +689,33 @@ pub fn resolve_comment(
     }
 }
 
+/// Resolves every comment in `review` against history, in comment order.
+///
+/// One [`resolve_comment`] call per entry in `review.comments`; the result
+/// is parallel to that slice and feeds
+/// [`review_to_json`](crate::json::review_to_json) and the CLI's human and
+/// markdown renderers alike — every consumer performs the same single
+/// resolution pass over the same inputs rather than re-deriving it.
+///
+/// Infallible, like [`resolve_comment`]: comments whose anchors cannot be
+/// resolved yield [`Resolution::Unresolved`] entries.
+///
+/// # Panics
+///
+/// Never panics.
+#[must_use]
+pub fn resolve_comments(
+    store: &impl VersionedStore,
+    project: &str,
+    review: &Review,
+) -> Vec<ResolvedComment> {
+    review
+        .comments
+        .iter()
+        .map(|c| resolve_comment(store, project, review, c))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1501,5 +1528,43 @@ mod tests {
         let resolved = resolve_comment(&store, "test", &rev, &c);
         assert_eq!(resolved.resolution, Resolution::Unresolved);
         assert_eq!(resolved.quote, None);
+    }
+
+    // -- resolve_comments (batch pass) --
+
+    #[test]
+    fn resolve_comments_preserves_comment_order() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "intro. the quoted span here. outro.");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+
+        let mut rev = review(task_target(), Some(&sha));
+        let anchored = comment(Some(tq("quoted span", "the ", " here")), None);
+        let mut whole_doc = comment(None, None);
+        whole_doc.id = 2;
+        rev.comments = vec![anchored, whole_doc];
+
+        let resolved = resolve_comments(&store, "test", &rev);
+        assert_eq!(resolved.len(), 2);
+        // Parallel to `rev.comments`: the anchored comment first, then the
+        // whole-document one.
+        assert!(matches!(
+            resolved[0].resolution,
+            Resolution::Original { drifted: false, .. }
+        ));
+        assert_eq!(resolved[0].quote.as_deref(), Some("quoted span"));
+        assert_eq!(resolved[1].resolution, Resolution::Unresolved);
+        assert_eq!(resolved[1].quote, None);
+    }
+
+    #[test]
+    fn resolve_comments_empty_review_yields_empty_vec() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "body.");
+        store.commit().unwrap();
+
+        let rev = review(task_target(), None);
+        assert!(resolve_comments(&store, "test", &rev).is_empty());
     }
 }

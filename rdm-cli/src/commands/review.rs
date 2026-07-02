@@ -641,16 +641,11 @@ pub fn run(
     Ok(())
 }
 
-/// Runs the shared resolution pass: one
-/// [`resolve_comment`](rdm_core::anchor::resolve_comment) per comment, in
-/// comment order. The same slice feeds the JSON, human, and markdown
-/// renderers.
+/// Runs the shared resolution pass via
+/// [`resolve_comments`](rdm_core::anchor::resolve_comments). The same slice
+/// feeds the JSON, human, and markdown renderers.
 fn resolve_all(store: &AppStore, project: &str, doc: &Document<Review>) -> Vec<ResolvedComment> {
-    doc.frontmatter
-        .comments
-        .iter()
-        .map(|c| rdm_core::anchor::resolve_comment(store, project, &doc.frontmatter, c))
-        .collect()
+    rdm_core::anchor::resolve_comments(store, project, &doc.frontmatter)
 }
 
 /// Renders a filtered review list in the requested format.

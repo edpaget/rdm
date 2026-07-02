@@ -47,6 +47,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm-server` now exposes a REST API for document reviews under
+  `/projects/:project/reviews`: `GET` lists reviews as lightweight metadata
+  summaries (filterable by `?on=<kind>/<id>`, `?state=`, `?verdict=`, and
+  `?author=`); `POST` starts a draft (`{"target": "<kind>/<id>"}` plus
+  optional `author` and initial `summary`); `GET /:id` returns the full
+  detail — summary, comments, and each comment's anchor resolution
+  (resolved / drifted / unresolved, with the quoted text, byte range, and
+  which body the range indexes) so clients can highlight without extra
+  calls; `POST /:id/comments` adds a comment (optionally anchored via a
+  tagged `anchor` object or scoped to a roadmap phase via `doc`); `PATCH
+  /:id/comments/:n` edits a draft comment's `body`/`anchor`/`doc` — omit a
+  field to keep it, send `null` to clear it, or send a value to replace it
+  — or, once submitted, records `status`/`applied_commit`/`reply`; `POST
+  /:id/submit` stamps a `verdict` (optionally replacing the `summary`);
+  `PATCH /:id` transitions to `addressed` or `dismissed`; and `DELETE /:id`
+  removes drafts (submitted reviews are part of the record and return 409).
+  All lifecycle rules are enforced by `rdm-core` and surface as RFC 9457
+  Problem+JSON with actionable detail, and an anchor with an unrecognized
+  `anchor_type` round-trips through the API untouched.
+- `rdm-core::anchor::resolve_comments` runs the per-comment anchor
+  resolution pass for a whole review in one call — the shared helper behind
+  both the CLI's review rendering and the new server review endpoints.
+
 - The full review-authoring loop is now available on the CLI, joining the
   existing needs-review queue commands under `rdm review` (whose `--help`
   now groups the two families): `start --on <kind>/<id>` creates a draft

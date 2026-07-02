@@ -4,6 +4,8 @@ pub mod health;
 pub mod phases;
 /// Project listing endpoint.
 pub mod projects;
+/// Review list, detail, comment, submit, transition, and delete endpoints.
+pub mod reviews;
 /// Roadmap list and detail endpoints.
 pub mod roadmaps;
 /// API root endpoint.
