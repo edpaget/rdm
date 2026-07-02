@@ -1,19 +1,63 @@
 //! Index generation operations.
 
-use crate::display::{self, ProjectIndex, RoadmapIndexEntry};
+use std::collections::HashMap;
+
+use crate::display::{self, ProjectIndex, RoadmapIndexEntry, TaskIndexEntry};
 use crate::error::Result;
+use crate::model::{ReviewState, ReviewTarget};
 use crate::store::Store;
+
+/// Per-target open-review aggregates: roadmap-slug → counts and
+/// task-slug → counts, where counts are `(open_reviews, open_comments)`.
+struct ReviewCounts {
+    roadmaps: HashMap<String, (usize, usize)>,
+    tasks: HashMap<String, (usize, usize)>,
+}
+
+/// Aggregates open (submitted, non-terminal) reviews and their open comments
+/// per target. Phase-targeted reviews roll up into their parent roadmap's
+/// counts, since the INDEX roadmap table has one row per roadmap. Dangling
+/// targets (renamed/deleted items) are harmless: nothing looks them up.
+fn count_open_reviews(store: &impl Store, project: &str) -> Result<ReviewCounts> {
+    let mut counts = ReviewCounts {
+        roadmaps: HashMap::new(),
+        tasks: HashMap::new(),
+    };
+    for (_, doc) in super::reviews::list_reviews(store, project)? {
+        let review = &doc.frontmatter;
+        if review.state != ReviewState::Submitted {
+            continue;
+        }
+        let open_comments = review
+            .comments
+            .iter()
+            .filter(|c| !c.status.is_terminal())
+            .count();
+        let (map, key) = match &review.target {
+            ReviewTarget::Roadmap { roadmap } => (&mut counts.roadmaps, roadmap),
+            ReviewTarget::Phase { roadmap, .. } => (&mut counts.roadmaps, roadmap),
+            ReviewTarget::Task { slug } => (&mut counts.tasks, slug),
+        };
+        let entry: &mut (usize, usize) = map.entry(key.clone()).or_default();
+        entry.0 += 1;
+        entry.1 += open_comments;
+    }
+    Ok(counts)
+}
 
 /// Builds a [`ProjectIndex`] for a single project.
 ///
-/// Scans roadmaps (with phase progress) and tasks, returning the
-/// aggregated index data without performing any I/O beyond reads.
+/// Scans roadmaps (with phase progress), tasks, and reviews (open-review /
+/// open-comment counts per target), returning the aggregated index data
+/// without performing any I/O beyond reads.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if directory reads fail, or frontmatter
 /// errors if any document file is malformed.
 fn build_project_index(store: &impl Store, project: &str) -> Result<ProjectIndex> {
+    let review_counts = count_open_reviews(store, project)?;
+
     let roadmap_docs = super::roadmap::list_roadmaps(store, project, None, None)?;
     let mut roadmap_entries = Vec::new();
     for roadmap_doc in &roadmap_docs {
@@ -23,12 +67,19 @@ fn build_project_index(store: &impl Store, project: &str) -> Result<ProjectIndex
             .iter()
             .filter(|(_, doc)| doc.frontmatter.status.is_terminal())
             .count();
+        let (open_review_count, open_comment_count) = review_counts
+            .roadmaps
+            .get(slug)
+            .copied()
+            .unwrap_or_default();
         roadmap_entries.push(RoadmapIndexEntry {
             slug: slug.clone(),
             project: project.to_string(),
             phase_count: phases.len(),
             done_count,
             dependencies: roadmap_doc.frontmatter.dependencies.clone(),
+            open_review_count,
+            open_comment_count,
         });
     }
 
@@ -40,6 +91,19 @@ fn build_project_index(store: &impl Store, project: &str) -> Result<ProjectIndex
             .cmp(&doc_a.frontmatter.priority)
             .then_with(|| slug_a.cmp(slug_b))
     });
+    let tasks = tasks
+        .into_iter()
+        .map(|(slug, doc)| {
+            let (open_review_count, open_comment_count) =
+                review_counts.tasks.get(&slug).copied().unwrap_or_default();
+            TaskIndexEntry {
+                slug,
+                doc,
+                open_review_count,
+                open_comment_count,
+            }
+        })
+        .collect();
 
     Ok(ProjectIndex {
         name: project.to_string(),

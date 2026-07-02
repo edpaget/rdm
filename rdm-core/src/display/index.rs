@@ -12,8 +12,8 @@ pub struct ProjectIndex {
     pub name: String,
     /// Roadmap index entries, pre-sorted by slug.
     pub roadmaps: Vec<RoadmapIndexEntry>,
-    /// Tasks as `(slug, Document<Task>)`, pre-sorted by priority desc then slug asc.
-    pub tasks: Vec<(String, Document<Task>)>,
+    /// Task index entries, pre-sorted by priority desc then slug asc.
+    pub tasks: Vec<TaskIndexEntry>,
 }
 
 /// Summary data for a roadmap in the index.
@@ -28,6 +28,23 @@ pub struct RoadmapIndexEntry {
     pub done_count: usize,
     /// Optional list of dependency roadmap slugs.
     pub dependencies: Option<Vec<String>>,
+    /// Count of open (submitted, not terminal) reviews targeting this
+    /// roadmap or any of its phases.
+    pub open_review_count: usize,
+    /// Count of open comments within those open reviews.
+    pub open_comment_count: usize,
+}
+
+/// Summary data for a task in the index.
+pub struct TaskIndexEntry {
+    /// Task slug.
+    pub slug: String,
+    /// The task document.
+    pub doc: Document<Task>,
+    /// Count of open (submitted, not terminal) reviews targeting this task.
+    pub open_review_count: usize,
+    /// Count of open comments within those open reviews.
+    pub open_comment_count: usize,
 }
 
 /// Formats the top-level `INDEX.md` as a lightweight summary table.
@@ -110,10 +127,17 @@ fn push_roadmaps_section(
         d.paragraph("No roadmaps.");
         return;
     }
-    let headers = vec!["Roadmap", "Phases", "Progress", "Dependencies"]
-        .into_iter()
-        .map(|h| vec![ast::Inline::text(h)])
-        .collect();
+    let headers = vec![
+        "Roadmap",
+        "Phases",
+        "Progress",
+        "Open Reviews",
+        "Open Comments",
+        "Dependencies",
+    ]
+    .into_iter()
+    .map(|h| vec![ast::Inline::text(h)])
+    .collect();
     let rows = roadmaps
         .iter()
         .map(|rm| {
@@ -128,6 +152,8 @@ fn push_roadmaps_section(
                 vec![ast::Inline::link(&rm.slug, &link_url)],
                 vec![ast::Inline::Text(rm.phase_count.to_string())],
                 vec![ast::Inline::Text(progress)],
+                vec![ast::Inline::Text(rm.open_review_count.to_string())],
+                vec![ast::Inline::Text(rm.open_comment_count.to_string())],
                 vec![ast::Inline::Text(deps)],
             ]
         })
@@ -162,23 +188,31 @@ fn push_roadmaps_section(
 }
 
 /// Pushes the tasks table into `d`.
-fn push_tasks_section(d: &mut ast::Document, tasks: &[(String, Document<Task>)]) {
+fn push_tasks_section(d: &mut ast::Document, tasks: &[TaskIndexEntry]) {
     if tasks.is_empty() {
         d.paragraph("No tasks.");
         return;
     }
-    let headers = vec!["Task", "Priority", "Status"]
-        .into_iter()
-        .map(|h| vec![ast::Inline::text(h)])
-        .collect();
+    let headers = vec![
+        "Task",
+        "Priority",
+        "Status",
+        "Open Reviews",
+        "Open Comments",
+    ]
+    .into_iter()
+    .map(|h| vec![ast::Inline::text(h)])
+    .collect();
     let rows = tasks
         .iter()
-        .map(|(slug, doc)| {
-            let fm = &doc.frontmatter;
+        .map(|entry| {
+            let fm = &entry.doc.frontmatter;
             vec![
-                vec![ast::Inline::Text(slug.clone())],
+                vec![ast::Inline::Text(entry.slug.clone())],
                 vec![ast::Inline::Text(fm.priority.to_string())],
                 vec![ast::Inline::Text(fm.status.to_string())],
+                vec![ast::Inline::Text(entry.open_review_count.to_string())],
+                vec![ast::Inline::Text(entry.open_comment_count.to_string())],
             ]
         })
         .collect();
@@ -284,6 +318,17 @@ mod tests {
             phase_count,
             done_count,
             dependencies: deps,
+            open_review_count: 0,
+            open_comment_count: 0,
+        }
+    }
+
+    fn make_task_entry(slug: &str, doc: Document<Task>) -> TaskIndexEntry {
+        TaskIndexEntry {
+            slug: slug.to_string(),
+            doc,
+            open_review_count: 0,
+            open_comment_count: 0,
         }
     }
 
@@ -370,12 +415,60 @@ mod tests {
     }
 
     #[test]
+    fn project_index_shows_zero_review_and_comment_counts_by_default() {
+        let pi = ProjectIndex {
+            name: "fbm".to_string(),
+            roadmaps: vec![make_index_entry("alpha", "fbm", 3, 1, None)],
+            tasks: vec![make_task_entry(
+                "fix",
+                make_task_doc("Fix", TaskStatus::Open, Priority::Low, None),
+            )],
+        };
+        let output = format_project_index(&pi);
+        assert!(output.contains("Open Reviews"));
+        assert!(output.contains("Open Comments"));
+        assert!(output.contains("| 3 | 1/3 done | 0 | 0 | \u{2014} |"));
+        assert!(output.contains("| fix | low | open | 0 | 0 |"));
+    }
+
+    #[test]
+    fn project_index_shows_nonzero_review_and_comment_counts_for_roadmap() {
+        let mut entry = make_index_entry("alpha", "fbm", 3, 1, None);
+        entry.open_review_count = 2;
+        entry.open_comment_count = 5;
+        let pi = ProjectIndex {
+            name: "fbm".to_string(),
+            roadmaps: vec![entry],
+            tasks: vec![],
+        };
+        let output = format_project_index(&pi);
+        assert!(output.contains("| 3 | 1/3 done | 2 | 5 | \u{2014} |"));
+    }
+
+    #[test]
+    fn project_index_shows_review_and_comment_counts_for_task() {
+        let mut entry = make_task_entry(
+            "fix",
+            make_task_doc("Fix", TaskStatus::Open, Priority::High, None),
+        );
+        entry.open_review_count = 1;
+        entry.open_comment_count = 3;
+        let pi = ProjectIndex {
+            name: "fbm".to_string(),
+            roadmaps: vec![],
+            tasks: vec![entry],
+        };
+        let output = format_project_index(&pi);
+        assert!(output.contains("| fix | high | open | 1 | 3 |"));
+    }
+
+    #[test]
     fn project_index_idempotent() {
         let pi = ProjectIndex {
             name: "fbm".to_string(),
             roadmaps: vec![make_index_entry("alpha", "fbm", 2, 1, None)],
-            tasks: vec![(
-                "fix".to_string(),
+            tasks: vec![make_task_entry(
+                "fix",
                 make_task_doc("Fix", TaskStatus::Open, Priority::Low, None),
             )],
         };
@@ -399,8 +492,8 @@ mod tests {
         let projects = vec![ProjectIndex {
             name: "fbm".to_string(),
             roadmaps: vec![make_index_entry("alpha", "fbm", 3, 1, None)],
-            tasks: vec![(
-                "fix-bug".to_string(),
+            tasks: vec![make_task_entry(
+                "fix-bug",
                 make_task_doc("Fix Bug", TaskStatus::Open, Priority::High, None),
             )],
         }];
@@ -419,16 +512,16 @@ mod tests {
                 make_index_entry("beta", "fbm", 2, 2, None),
             ],
             tasks: vec![
-                (
-                    "t1".to_string(),
+                make_task_entry(
+                    "t1",
                     make_task_doc("T1", TaskStatus::Open, Priority::Low, None),
                 ),
-                (
-                    "t2".to_string(),
+                make_task_entry(
+                    "t2",
                     make_task_doc("T2", TaskStatus::Open, Priority::High, None),
                 ),
-                (
-                    "t3".to_string(),
+                make_task_entry(
+                    "t3",
                     make_task_doc("T3", TaskStatus::Done, Priority::Low, None),
                 ),
             ],
@@ -509,8 +602,8 @@ mod tests {
         let projects = vec![ProjectIndex {
             name: "fbm".to_string(),
             roadmaps: vec![make_index_entry("alpha", "fbm", 2, 1, None)],
-            tasks: vec![(
-                "fix".to_string(),
+            tasks: vec![make_task_entry(
+                "fix",
                 make_task_doc("Fix", TaskStatus::Open, Priority::Low, None),
             )],
         }];
@@ -526,19 +619,18 @@ mod tests {
         let projects = vec![ProjectIndex {
             name: "fbm".to_string(),
             roadmaps: vec![make_index_entry("alpha", "fbm", 3, 1, None)],
-            tasks: vec![(
-                "fix-bug".to_string(),
+            tasks: vec![make_task_entry(
+                "fix-bug",
                 make_task_doc("Fix Bug", TaskStatus::Open, Priority::High, None),
             )],
         }];
         let output = format_index(&projects);
         assert!(output.contains("# Plan Index"));
         assert!(output.contains("## Project: fbm"));
-        assert!(
-            output
-                .contains("| [alpha](projects/fbm/roadmaps/alpha/roadmap.md) | 3 | 1/3 done | — |")
-        );
-        assert!(output.contains("| fix-bug | high | open |"));
+        assert!(output.contains(
+            "| [alpha](projects/fbm/roadmaps/alpha/roadmap.md) | 3 | 1/3 done | 0 | 0 | — |"
+        ));
+        assert!(output.contains("| fix-bug | high | open | 0 | 0 |"));
         assert!(!output.contains("Dependency Graph"));
     }
 
@@ -568,16 +660,16 @@ mod tests {
             name: "fbm".to_string(),
             roadmaps: vec![],
             tasks: vec![
-                (
-                    "aaa-task".to_string(),
+                make_task_entry(
+                    "aaa-task",
                     make_task_doc("AAA", TaskStatus::Open, Priority::Critical, None),
                 ),
-                (
-                    "bbb-task".to_string(),
+                make_task_entry(
+                    "bbb-task",
                     make_task_doc("BBB", TaskStatus::Open, Priority::High, None),
                 ),
-                (
-                    "ccc-task".to_string(),
+                make_task_entry(
+                    "ccc-task",
                     make_task_doc("CCC", TaskStatus::Open, Priority::Low, None),
                 ),
             ],
@@ -637,8 +729,8 @@ mod tests {
         let projects = vec![ProjectIndex {
             name: "fbm".to_string(),
             roadmaps: vec![make_index_entry("alpha", "fbm", 2, 1, None)],
-            tasks: vec![(
-                "fix".to_string(),
+            tasks: vec![make_task_entry(
+                "fix",
                 make_task_doc("Fix", TaskStatus::Open, Priority::Low, None),
             )],
         }];

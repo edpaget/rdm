@@ -47,6 +47,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Review operations in `rdm-core`: `create_review`, `add_comment`,
+  `update_comment`, `remove_comment`, `submit_review`, `update_review`,
+  `get_review`, `delete_review`, and review filtering (by target, state,
+  verdict, and author) enforce the review lifecycle (`draft` → `submitted` →
+  `addressed` | `dismissed`). Submitting requires a verdict and a non-empty
+  review (at least one comment or a summary); comment structure locks after
+  submission (only a comment's status, applied commit, and reply may still
+  change); `addressed` requires every comment resolved; and terminal states
+  reject further transitions. Creating a review validates the target exists
+  and stamps the plan-repo HEAD the reviewer saw (`created_commit`), even
+  under staging mode. `INDEX.md` now shows, per roadmap and per task, the
+  count of open (submitted) reviews and the open comments within them —
+  phase-targeted reviews roll up into their roadmap's row. Library-only
+  groundwork: no CLI or API surface yet.
+
 - A foundational Review data model in `rdm-core`. Reviews of a roadmap, phase,
   or task are stored as markdown files under a project's `reviews/` directory
   (`reviews/<id>.md`) with the review summary as the body and all metadata —

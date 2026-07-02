@@ -1,3 +1,5 @@
+use crate::model::ReviewState;
+
 /// Errors that can occur in rdm-core operations.
 #[derive(Debug)]
 pub enum Error {
@@ -23,6 +25,50 @@ pub enum Error {
     TaskNotFound(String),
     /// The specified review was not found.
     ReviewNotFound(String),
+    /// The plan item a review would target does not exist.
+    ReviewTargetMissing(String),
+    /// Repeated review-id generation attempts all collided with existing
+    /// review files.
+    ReviewIdExhausted,
+    /// The operation requires the review to be a draft (comment structure
+    /// changes, submission, and un-forced deletion are draft-only).
+    ReviewNotDraft(String),
+    /// The operation requires the review to be submitted (a comment's
+    /// status, `applied_commit`, and `reply` only change after submission).
+    ReviewNotSubmitted(String),
+    /// A comment's `doc` names a document outside the review's scope.
+    CommentDocOutOfScope(String),
+    /// A comment's `doc` was set on a review whose target kind does not
+    /// support document scoping (only roadmap reviews do).
+    CommentDocNotApplicable,
+    /// The referenced comment does not exist within the review.
+    CommentNotFound {
+        /// The review the comment was looked up in.
+        review_id: String,
+        /// The comment id that was not found.
+        comment_id: u32,
+    },
+    /// A review was submitted without a verdict.
+    ReviewMissingVerdict(String),
+    /// A review was submitted with no comments and no summary.
+    ReviewEmpty(String),
+    /// The requested review state transition is not allowed by the review
+    /// lifecycle state machine.
+    ReviewInvalidTransition {
+        /// The review whose transition was rejected.
+        review_id: String,
+        /// The review's current state.
+        from: ReviewState,
+        /// The state the transition attempted to reach.
+        to: ReviewState,
+    },
+    /// A review cannot be marked addressed while comments remain open.
+    ReviewOpenComments {
+        /// The review whose transition was rejected.
+        review_id: String,
+        /// How many comments are still open.
+        open_count: usize,
+    },
     /// A slug already exists.
     DuplicateSlug(String),
     /// Adding a dependency would create a cycle.
@@ -133,6 +179,70 @@ impl std::fmt::Display for Error {
             }
             Error::ReviewNotFound(id) => {
                 write!(f, "review not found: {id}")
+            }
+            Error::ReviewTargetMissing(msg) => {
+                write!(f, "review target not found: {msg}")
+            }
+            Error::ReviewIdExhausted => {
+                write!(
+                    f,
+                    "failed to generate a unique review id after repeated attempts — try again"
+                )
+            }
+            Error::ReviewNotDraft(id) => {
+                write!(
+                    f,
+                    "review '{id}' is not a draft — comment structure, submission, and un-forced deletion all require the draft state"
+                )
+            }
+            Error::ReviewNotSubmitted(id) => {
+                write!(
+                    f,
+                    "review '{id}' has not been submitted — a comment's status, applied_commit, and reply can only change after submission"
+                )
+            }
+            Error::CommentDocOutOfScope(msg) => {
+                write!(f, "comment doc out of scope: {msg}")
+            }
+            Error::CommentDocNotApplicable => {
+                write!(
+                    f,
+                    "'doc' can only be set on a roadmap review, to scope a comment to one of the roadmap's phases"
+                )
+            }
+            Error::CommentNotFound {
+                review_id,
+                comment_id,
+            } => {
+                write!(f, "comment {comment_id} not found in review '{review_id}'")
+            }
+            Error::ReviewMissingVerdict(id) => {
+                write!(
+                    f,
+                    "review '{id}' cannot be submitted without a verdict — provide approve, request-changes, or comment"
+                )
+            }
+            Error::ReviewEmpty(id) => {
+                write!(
+                    f,
+                    "review '{id}' has no comments and no summary — add at least one before submitting"
+                )
+            }
+            Error::ReviewInvalidTransition {
+                review_id,
+                from,
+                to,
+            } => {
+                write!(f, "review '{review_id}' cannot move from {from} to {to}")
+            }
+            Error::ReviewOpenComments {
+                review_id,
+                open_count,
+            } => {
+                write!(
+                    f,
+                    "review '{review_id}' has {open_count} open comment(s) — resolve them (addressed or wont-fix) before marking the review addressed"
+                )
             }
             Error::DuplicateSlug(slug) => {
                 write!(f, "'{slug}' already exists — choose a different name")

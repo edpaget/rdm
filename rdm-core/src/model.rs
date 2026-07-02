@@ -521,6 +521,17 @@ pub enum ReviewState {
     Dismissed,
 }
 
+impl ReviewState {
+    /// Returns `true` for terminal states (`Addressed` or `Dismissed`).
+    ///
+    /// Terminal reviews accept no further state transitions. Mirrors
+    /// [`PhaseStatus::is_terminal`] and [`TaskStatus::is_terminal`].
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, ReviewState::Addressed | ReviewState::Dismissed)
+    }
+}
+
 impl fmt::Display for ReviewState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -600,6 +611,19 @@ pub enum ReviewCommentStatus {
     Addressed,
     /// The comment was closed without a change.
     WontFix,
+}
+
+impl ReviewCommentStatus {
+    /// Returns `true` for terminal states (`Addressed` or `WontFix`) — i.e.
+    /// comments that no longer need attention. Mirrors
+    /// [`PhaseStatus::is_terminal`] and [`TaskStatus::is_terminal`].
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            ReviewCommentStatus::Addressed | ReviewCommentStatus::WontFix
+        )
+    }
 }
 
 impl fmt::Display for ReviewCommentStatus {
@@ -1429,6 +1453,21 @@ title: Fantasy Baseball Manager
             let parsed: ReviewState = expected.parse().unwrap();
             assert_eq!(parsed, variant);
         }
+    }
+
+    #[test]
+    fn review_state_is_terminal() {
+        assert!(ReviewState::Addressed.is_terminal());
+        assert!(ReviewState::Dismissed.is_terminal());
+        assert!(!ReviewState::Draft.is_terminal());
+        assert!(!ReviewState::Submitted.is_terminal());
+    }
+
+    #[test]
+    fn review_comment_status_is_terminal() {
+        assert!(ReviewCommentStatus::Addressed.is_terminal());
+        assert!(ReviewCommentStatus::WontFix.is_terminal());
+        assert!(!ReviewCommentStatus::Open.is_terminal());
     }
 
     #[test]

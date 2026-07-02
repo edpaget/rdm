@@ -5991,3 +5991,1191 @@ fn list_reviews_returns_sorted() {
     assert_eq!(reviews[2].0, "2026-07-01-1430-zz99");
     assert_eq!(reviews[0].1.frontmatter.id, "2026-06-30-0900-aa11");
 }
+
+// -- Review operations (ops::reviews) --
+
+use rdm_core::ops::reviews::{
+    AddComment, AnchorUpdate, CreateReview, DocUpdate, ReviewTransition, UpdateComment,
+};
+
+fn add_task_fix_login(store: &mut MemoryStore) {
+    rdm_core::ops::task::create_task(
+        store,
+        rdm_core::ops::CreateTask {
+            project: "fbm",
+            slug: "fix-login",
+            title: "Fix login",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+fn add_roadmap_alpha_with_phase(store: &mut MemoryStore) {
+    rdm_core::ops::roadmap::create_roadmap(
+        store,
+        rdm_core::ops::CreateRoadmap {
+            project: "fbm",
+            slug: "alpha",
+            title: "Alpha",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        store,
+        rdm_core::ops::CreatePhase {
+            project: "fbm",
+            roadmap: "alpha",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+fn task_review_target() -> ReviewTarget {
+    ReviewTarget::Task {
+        slug: "fix-login".to_string(),
+    }
+}
+
+/// Creates a draft review of the `fix-login` task with a summary body,
+/// returning its id.
+fn draft_task_review(store: &mut MemoryStore) -> String {
+    rdm_core::ops::reviews::create_review(
+        store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: task_review_target(),
+            body: Some("Summary."),
+        },
+    )
+    .unwrap()
+    .frontmatter
+    .id
+}
+
+/// Adds one plain open comment to a draft review, returning its comment id.
+fn add_plain_comment(store: &mut MemoryStore, review_id: &str, body: &str) -> u32 {
+    rdm_core::ops::reviews::add_comment(
+        store,
+        AddComment {
+            project: "fbm",
+            review_id,
+            body,
+            doc: None,
+            anchor: None,
+        },
+    )
+    .unwrap()
+    .frontmatter
+    .comments
+    .last()
+    .unwrap()
+    .id
+}
+
+#[test]
+fn create_review_stamps_draft_state_and_created_commit() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    store.commit().unwrap();
+    let head = store.head_sha().unwrap();
+
+    let doc = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: task_review_target(),
+            body: Some("Looks solid overall."),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(doc.frontmatter.state, ReviewState::Draft);
+    assert_eq!(doc.frontmatter.verdict, None);
+    assert_eq!(doc.frontmatter.submitted, None);
+    assert_eq!(doc.frontmatter.author, "ed");
+    assert_eq!(doc.frontmatter.created_commit, Some(head));
+    assert!(doc.frontmatter.comments.is_empty());
+    // The file round-trips under its generated id.
+    let loaded = rdm_core::ops::reviews::get_review(&store, "fbm", &doc.frontmatter.id).unwrap();
+    assert_eq!(loaded.frontmatter, doc.frontmatter);
+}
+
+#[test]
+fn create_review_created_commit_reflects_head_before_pending_writes() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    store.commit().unwrap();
+    let head_at_creation = store.head_sha().unwrap();
+
+    // No commit after create_review: the review write is still staged, as
+    // under --stage. The stamp must be the HEAD the reviewer saw.
+    let id = draft_task_review(&mut store);
+    let doc = rdm_core::ops::reviews::get_review(&store, "fbm", &id).unwrap();
+    assert_eq!(
+        doc.frontmatter.created_commit,
+        Some(head_at_creation.clone())
+    );
+
+    // Committing later advances HEAD but never rewrites the stamp.
+    store.commit().unwrap();
+    assert_ne!(store.head_sha().unwrap(), head_at_creation);
+    let reloaded = rdm_core::ops::reviews::get_review(&store, "fbm", &id).unwrap();
+    assert_eq!(reloaded.frontmatter.created_commit, Some(head_at_creation));
+}
+
+#[test]
+fn create_review_target_missing_for_roadmap_phase_and_task() {
+    let mut store = setup_with_project();
+    add_roadmap_alpha_with_phase(&mut store);
+
+    let missing_roadmap = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: ReviewTarget::Roadmap {
+                roadmap: "ghost".to_string(),
+            },
+            body: None,
+        },
+    );
+    assert!(matches!(
+        missing_roadmap,
+        Err(Error::ReviewTargetMissing(_))
+    ));
+
+    let missing_phase = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-9-ghost".to_string(),
+            },
+            body: None,
+        },
+    );
+    assert!(matches!(missing_phase, Err(Error::ReviewTargetMissing(_))));
+
+    let missing_task = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: ReviewTarget::Task {
+                slug: "ghost".to_string(),
+            },
+            body: None,
+        },
+    );
+    assert!(matches!(missing_task, Err(Error::ReviewTargetMissing(_))));
+}
+
+#[test]
+fn create_review_project_not_found() {
+    let mut store = make_store();
+    let result = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "nope",
+            author: "ed",
+            target: task_review_target(),
+            body: None,
+        },
+    );
+    assert!(matches!(result, Err(Error::ProjectNotFound(_))));
+}
+
+#[test]
+fn create_review_ids_are_unique_across_calls() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let a = draft_task_review(&mut store);
+    let b = draft_task_review(&mut store);
+    assert_ne!(a, b);
+    assert_eq!(
+        rdm_core::ops::reviews::list_reviews(&store, "fbm")
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn create_review_body_defaults_to_empty() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let doc = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: task_review_target(),
+            body: None,
+        },
+    )
+    .unwrap();
+    let loaded = rdm_core::ops::reviews::get_review(&store, "fbm", &doc.frontmatter.id).unwrap();
+    assert!(loaded.body.trim().is_empty());
+}
+
+// -- add_comment --
+
+#[test]
+fn add_comment_appends_with_auto_incrementing_id() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    assert_eq!(add_plain_comment(&mut store, &id, "First."), 1);
+    assert_eq!(add_plain_comment(&mut store, &id, "Second."), 2);
+    let doc = rdm_core::ops::reviews::get_review(&store, "fbm", &id).unwrap();
+    assert_eq!(doc.frontmatter.comments.len(), 2);
+    assert_eq!(
+        doc.frontmatter.comments[0].status,
+        ReviewCommentStatus::Open
+    );
+}
+
+#[test]
+fn add_comment_id_after_removal_uses_max_plus_one() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "First.");
+    add_plain_comment(&mut store, &id, "Second.");
+
+    // Removing a non-highest id: survivors keep their ids and the next add
+    // continues from the highest surviving id.
+    rdm_core::ops::reviews::remove_comment(&mut store, "fbm", &id, 1).unwrap();
+    assert_eq!(add_plain_comment(&mut store, &id, "Third."), 3);
+
+    // Removing the highest id frees it for reuse: max+1 semantics, pinned.
+    rdm_core::ops::reviews::remove_comment(&mut store, "fbm", &id, 3).unwrap();
+    assert_eq!(add_plain_comment(&mut store, &id, "Reused."), 3);
+}
+
+#[test]
+fn add_comment_rejects_when_not_draft() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::Approve)).unwrap();
+    let result = rdm_core::ops::reviews::add_comment(
+        &mut store,
+        AddComment {
+            project: "fbm",
+            review_id: &id,
+            body: "Too late.",
+            doc: None,
+            anchor: None,
+        },
+    );
+    assert!(matches!(result, Err(Error::ReviewNotDraft(_))));
+}
+
+#[test]
+fn add_comment_review_not_found() {
+    let mut store = setup_with_project();
+    let result = rdm_core::ops::reviews::add_comment(
+        &mut store,
+        AddComment {
+            project: "fbm",
+            review_id: "ghost",
+            body: "Hello?",
+            doc: None,
+            anchor: None,
+        },
+    );
+    assert!(matches!(result, Err(Error::ReviewNotFound(_))));
+}
+
+#[test]
+fn add_comment_doc_valid_phase_in_roadmap_review() {
+    let mut store = setup_with_project();
+    add_roadmap_alpha_with_phase(&mut store);
+    let review = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            body: None,
+        },
+    )
+    .unwrap();
+    let doc = rdm_core::ops::reviews::add_comment(
+        &mut store,
+        AddComment {
+            project: "fbm",
+            review_id: &review.frontmatter.id,
+            body: "Scope this phase tighter.",
+            doc: Some(CommentDoc {
+                kind: CommentDocKind::Phase,
+                stem: "phase-1-core".to_string(),
+            }),
+            anchor: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        doc.frontmatter.comments[0].doc.as_ref().unwrap().stem,
+        "phase-1-core"
+    );
+}
+
+#[test]
+fn add_comment_doc_out_of_scope_phase_not_in_roadmap() {
+    let mut store = setup_with_project();
+    add_roadmap_alpha_with_phase(&mut store);
+    let review = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            body: None,
+        },
+    )
+    .unwrap();
+    let result = rdm_core::ops::reviews::add_comment(
+        &mut store,
+        AddComment {
+            project: "fbm",
+            review_id: &review.frontmatter.id,
+            body: "Points nowhere.",
+            doc: Some(CommentDoc {
+                kind: CommentDocKind::Phase,
+                stem: "phase-9-ghost".to_string(),
+            }),
+            anchor: None,
+        },
+    );
+    assert!(matches!(result, Err(Error::CommentDocOutOfScope(_))));
+}
+
+#[test]
+fn add_comment_doc_rejected_on_phase_review() {
+    let mut store = setup_with_project();
+    add_roadmap_alpha_with_phase(&mut store);
+    let review = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-1-core".to_string(),
+            },
+            body: None,
+        },
+    )
+    .unwrap();
+    let result = rdm_core::ops::reviews::add_comment(
+        &mut store,
+        AddComment {
+            project: "fbm",
+            review_id: &review.frontmatter.id,
+            body: "Doc scoping is roadmap-only.",
+            doc: Some(CommentDoc {
+                kind: CommentDocKind::Phase,
+                stem: "phase-1-core".to_string(),
+            }),
+            anchor: None,
+        },
+    );
+    assert!(matches!(result, Err(Error::CommentDocNotApplicable)));
+}
+
+#[test]
+fn add_comment_doc_rejected_on_task_review() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    add_roadmap_alpha_with_phase(&mut store);
+    let id = draft_task_review(&mut store);
+    let result = rdm_core::ops::reviews::add_comment(
+        &mut store,
+        AddComment {
+            project: "fbm",
+            review_id: &id,
+            body: "Doc scoping is roadmap-only.",
+            doc: Some(CommentDoc {
+                kind: CommentDocKind::Phase,
+                stem: "phase-1-core".to_string(),
+            }),
+            anchor: None,
+        },
+    );
+    assert!(matches!(result, Err(Error::CommentDocNotApplicable)));
+}
+
+#[test]
+fn add_comment_unresolvable_anchor_does_not_block_creation() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    // This quote appears nowhere in the task body — drift is expected and
+    // must not block comment creation.
+    let doc = rdm_core::ops::reviews::add_comment(
+        &mut store,
+        AddComment {
+            project: "fbm",
+            review_id: &id,
+            body: "Anchored to nothing.",
+            doc: None,
+            anchor: Some(Anchor::TextQuote {
+                quote: "text that does not exist in the target".to_string(),
+                prefix: String::new(),
+                suffix: String::new(),
+            }),
+        },
+    )
+    .unwrap();
+    assert!(doc.frontmatter.comments[0].anchor.is_some());
+}
+
+// -- update_comment --
+
+#[test]
+fn update_comment_body_anchor_doc_while_draft() {
+    let mut store = setup_with_project();
+    add_roadmap_alpha_with_phase(&mut store);
+    let review = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            body: None,
+        },
+    )
+    .unwrap();
+    let id = review.frontmatter.id.clone();
+    add_plain_comment(&mut store, &id, "Original.");
+
+    let doc = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            body: Some("Rewritten."),
+            anchor: AnchorUpdate::Set(Anchor::TextQuote {
+                quote: "q".to_string(),
+                prefix: "p".to_string(),
+                suffix: "s".to_string(),
+            }),
+            doc: DocUpdate::Set(CommentDoc {
+                kind: CommentDocKind::Phase,
+                stem: "phase-1-core".to_string(),
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let comment = &doc.frontmatter.comments[0];
+    assert_eq!(comment.body, "Rewritten.");
+    assert!(comment.anchor.is_some());
+    assert_eq!(comment.doc.as_ref().unwrap().stem, "phase-1-core");
+}
+
+#[test]
+fn update_comment_structure_rejected_after_submit() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Original.");
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::Comment)).unwrap();
+
+    let body_change = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            body: Some("Rewritten."),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(body_change, Err(Error::ReviewNotDraft(_))));
+
+    let anchor_change = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            anchor: AnchorUpdate::Clear,
+            ..Default::default()
+        },
+    );
+    assert!(matches!(anchor_change, Err(Error::ReviewNotDraft(_))));
+
+    let doc_change = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            doc: DocUpdate::Clear,
+            ..Default::default()
+        },
+    );
+    assert!(matches!(doc_change, Err(Error::ReviewNotDraft(_))));
+}
+
+#[test]
+fn update_comment_status_applied_commit_reply_while_submitted() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Fix the guard clause.");
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::RequestChanges))
+        .unwrap();
+
+    let doc = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            status: Some(ReviewCommentStatus::Addressed),
+            applied_commit: Some("abc123"),
+            reply: Some("Fixed in abc123."),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let comment = &doc.frontmatter.comments[0];
+    assert_eq!(comment.status, ReviewCommentStatus::Addressed);
+    assert_eq!(comment.applied_commit.as_deref(), Some("abc123"));
+    assert_eq!(comment.reply.as_deref(), Some("Fixed in abc123."));
+}
+
+#[test]
+fn update_comment_status_fields_rejected_while_draft() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Open question.");
+    let result = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            status: Some(ReviewCommentStatus::Addressed),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(result, Err(Error::ReviewNotSubmitted(_))));
+}
+
+#[test]
+fn update_comment_doc_clear_and_set_validation() {
+    let mut store = setup_with_project();
+    add_roadmap_alpha_with_phase(&mut store);
+    let review = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            body: None,
+        },
+    )
+    .unwrap();
+    let id = review.frontmatter.id.clone();
+    rdm_core::ops::reviews::add_comment(
+        &mut store,
+        AddComment {
+            project: "fbm",
+            review_id: &id,
+            body: "Scoped.",
+            doc: Some(CommentDoc {
+                kind: CommentDocKind::Phase,
+                stem: "phase-1-core".to_string(),
+            }),
+            anchor: None,
+        },
+    )
+    .unwrap();
+
+    // Clear drops the existing scope.
+    let doc = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            doc: DocUpdate::Clear,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(doc.frontmatter.comments[0].doc.is_none());
+
+    // Set is validated: an out-of-scope stem is rejected and nothing changes.
+    let result = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            doc: DocUpdate::Set(CommentDoc {
+                kind: CommentDocKind::Phase,
+                stem: "phase-9-ghost".to_string(),
+            }),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(result, Err(Error::CommentDocOutOfScope(_))));
+    let reloaded = rdm_core::ops::reviews::get_review(&store, "fbm", &id).unwrap();
+    assert!(reloaded.frontmatter.comments[0].doc.is_none());
+}
+
+#[test]
+fn update_comment_not_found() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    let result = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 42,
+            body: Some("Nobody home."),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(Error::CommentNotFound { comment_id: 42, .. })
+    ));
+}
+
+// -- remove_comment --
+
+#[test]
+fn remove_comment_draft_only() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "First.");
+    add_plain_comment(&mut store, &id, "Second.");
+    let doc = rdm_core::ops::reviews::remove_comment(&mut store, "fbm", &id, 1).unwrap();
+    assert_eq!(doc.frontmatter.comments.len(), 1);
+    // The survivor keeps its id.
+    assert_eq!(doc.frontmatter.comments[0].id, 2);
+}
+
+#[test]
+fn remove_comment_rejected_after_submit() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "First.");
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::Approve)).unwrap();
+    let result = rdm_core::ops::reviews::remove_comment(&mut store, "fbm", &id, 1);
+    assert!(matches!(result, Err(Error::ReviewNotDraft(_))));
+}
+
+#[test]
+fn remove_comment_not_found() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    let result = rdm_core::ops::reviews::remove_comment(&mut store, "fbm", &id, 7);
+    assert!(matches!(
+        result,
+        Err(Error::CommentNotFound { comment_id: 7, .. })
+    ));
+}
+
+// -- submit_review --
+
+#[test]
+fn submit_review_requires_verdict() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    let result = rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, None);
+    assert!(matches!(result, Err(Error::ReviewMissingVerdict(_))));
+    // The review stays a draft.
+    let doc = rdm_core::ops::reviews::get_review(&store, "fbm", &id).unwrap();
+    assert_eq!(doc.frontmatter.state, ReviewState::Draft);
+}
+
+#[test]
+fn submit_review_rejects_empty_review() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    // No comments and no summary body.
+    let review = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: task_review_target(),
+            body: None,
+        },
+    )
+    .unwrap();
+    let result = rdm_core::ops::reviews::submit_review(
+        &mut store,
+        "fbm",
+        &review.frontmatter.id,
+        Some(Verdict::Approve),
+    );
+    assert!(matches!(result, Err(Error::ReviewEmpty(_))));
+}
+
+#[test]
+fn submit_review_with_only_a_summary_is_not_empty() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store); // has a summary body, no comments
+    let doc = rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::Approve))
+        .unwrap();
+    assert_eq!(doc.frontmatter.state, ReviewState::Submitted);
+}
+
+#[test]
+fn submit_review_with_only_comments_is_not_empty() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let review = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: task_review_target(),
+            body: None, // empty summary
+        },
+    )
+    .unwrap();
+    let id = review.frontmatter.id.clone();
+    add_plain_comment(&mut store, &id, "One inline note.");
+    let doc = rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::Comment))
+        .unwrap();
+    assert_eq!(doc.frontmatter.state, ReviewState::Submitted);
+}
+
+#[test]
+fn submit_review_stamps_verdict_state_and_submitted() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    let doc = rdm_core::ops::reviews::submit_review(
+        &mut store,
+        "fbm",
+        &id,
+        Some(Verdict::RequestChanges),
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.state, ReviewState::Submitted);
+    assert_eq!(doc.frontmatter.verdict, Some(Verdict::RequestChanges));
+    assert!(doc.frontmatter.submitted.is_some());
+}
+
+#[test]
+fn submit_review_rejects_non_draft() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::Approve)).unwrap();
+    let again =
+        rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::Approve));
+    assert!(matches!(again, Err(Error::ReviewNotDraft(_))));
+}
+
+// -- update_review (state machine) --
+
+#[test]
+fn update_review_addressed_requires_all_comments_terminal() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Must be resolved first.");
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::RequestChanges))
+        .unwrap();
+
+    let blocked =
+        rdm_core::ops::reviews::update_review(&mut store, "fbm", &id, ReviewTransition::Addressed);
+    assert!(matches!(
+        blocked,
+        Err(Error::ReviewOpenComments { open_count: 1, .. })
+    ));
+
+    // Resolving the comment (wont-fix counts as terminal) unblocks it.
+    rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            status: Some(ReviewCommentStatus::WontFix),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let doc =
+        rdm_core::ops::reviews::update_review(&mut store, "fbm", &id, ReviewTransition::Addressed)
+            .unwrap();
+    assert_eq!(doc.frontmatter.state, ReviewState::Addressed);
+}
+
+#[test]
+fn update_review_addressed_requires_submitted() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    let result =
+        rdm_core::ops::reviews::update_review(&mut store, "fbm", &id, ReviewTransition::Addressed);
+    assert!(matches!(
+        result,
+        Err(Error::ReviewInvalidTransition {
+            from: ReviewState::Draft,
+            to: ReviewState::Addressed,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn update_review_dismissed_from_draft() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    let doc =
+        rdm_core::ops::reviews::update_review(&mut store, "fbm", &id, ReviewTransition::Dismissed)
+            .unwrap();
+    assert_eq!(doc.frontmatter.state, ReviewState::Dismissed);
+}
+
+#[test]
+fn update_review_dismissed_from_submitted() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::RequestChanges))
+        .unwrap();
+    let doc =
+        rdm_core::ops::reviews::update_review(&mut store, "fbm", &id, ReviewTransition::Dismissed)
+            .unwrap();
+    assert_eq!(doc.frontmatter.state, ReviewState::Dismissed);
+}
+
+#[test]
+fn update_review_terminal_states_reject_further_transitions() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+
+    // Addressed is terminal.
+    let addressed = draft_task_review(&mut store);
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &addressed, Some(Verdict::Approve))
+        .unwrap();
+    rdm_core::ops::reviews::update_review(
+        &mut store,
+        "fbm",
+        &addressed,
+        ReviewTransition::Addressed,
+    )
+    .unwrap();
+    let result = rdm_core::ops::reviews::update_review(
+        &mut store,
+        "fbm",
+        &addressed,
+        ReviewTransition::Dismissed,
+    );
+    assert!(matches!(
+        result,
+        Err(Error::ReviewInvalidTransition {
+            from: ReviewState::Addressed,
+            ..
+        })
+    ));
+
+    // Dismissed is terminal.
+    let dismissed = draft_task_review(&mut store);
+    rdm_core::ops::reviews::update_review(
+        &mut store,
+        "fbm",
+        &dismissed,
+        ReviewTransition::Dismissed,
+    )
+    .unwrap();
+    let result = rdm_core::ops::reviews::update_review(
+        &mut store,
+        "fbm",
+        &dismissed,
+        ReviewTransition::Addressed,
+    );
+    assert!(matches!(
+        result,
+        Err(Error::ReviewInvalidTransition {
+            from: ReviewState::Dismissed,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn update_review_addressed_with_zero_comments_succeeds() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store); // summary only, no comments
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::Approve)).unwrap();
+    let doc =
+        rdm_core::ops::reviews::update_review(&mut store, "fbm", &id, ReviewTransition::Addressed)
+            .unwrap();
+    assert_eq!(doc.frontmatter.state, ReviewState::Addressed);
+}
+
+// -- get_review / delete_review --
+
+#[test]
+fn delete_review_draft_succeeds() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    rdm_core::ops::reviews::delete_review(&mut store, "fbm", &id, false).unwrap();
+    let result = rdm_core::ops::reviews::get_review(&store, "fbm", &id);
+    assert!(matches!(result, Err(Error::ReviewNotFound(_))));
+}
+
+#[test]
+fn delete_review_non_draft_rejected_without_force() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::Approve)).unwrap();
+    let result = rdm_core::ops::reviews::delete_review(&mut store, "fbm", &id, false);
+    assert!(matches!(result, Err(Error::ReviewNotDraft(_))));
+    // Still there.
+    assert!(rdm_core::ops::reviews::get_review(&store, "fbm", &id).is_ok());
+}
+
+#[test]
+fn delete_review_non_draft_succeeds_with_force() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::Approve)).unwrap();
+    rdm_core::ops::reviews::delete_review(&mut store, "fbm", &id, true).unwrap();
+    let result = rdm_core::ops::reviews::get_review(&store, "fbm", &id);
+    assert!(matches!(result, Err(Error::ReviewNotFound(_))));
+}
+
+#[test]
+fn delete_review_not_found() {
+    let mut store = setup_with_project();
+    let result = rdm_core::ops::reviews::delete_review(&mut store, "fbm", "ghost", false);
+    assert!(matches!(result, Err(Error::ReviewNotFound(_))));
+}
+
+// -- INDEX.md review counts --
+
+/// Creates a submitted review of `target` with `open_comments` open comments.
+fn submitted_review_with_open_comments(
+    store: &mut MemoryStore,
+    target: ReviewTarget,
+    open_comments: usize,
+) -> String {
+    let review = rdm_core::ops::reviews::create_review(
+        store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target,
+            body: Some("Summary."),
+        },
+    )
+    .unwrap();
+    let id = review.frontmatter.id;
+    for i in 0..open_comments {
+        add_plain_comment(store, &id, &format!("Comment {i}."));
+    }
+    rdm_core::ops::reviews::submit_review(store, "fbm", &id, Some(Verdict::RequestChanges))
+        .unwrap();
+    id
+}
+
+#[test]
+fn generate_index_counts_open_reviews_and_comments_for_roadmap() {
+    let mut store = setup_with_project();
+    add_roadmap_alpha_with_phase(&mut store);
+    submitted_review_with_open_comments(
+        &mut store,
+        ReviewTarget::Roadmap {
+            roadmap: "alpha".to_string(),
+        },
+        2,
+    );
+
+    rdm_core::ops::index::generate_index(&mut store).unwrap();
+    let content = store
+        .read(&rdm_core::paths::project_index_path("fbm"))
+        .unwrap();
+    assert!(content.contains("Open Reviews"));
+    assert!(content.contains("Open Comments"));
+    assert!(
+        content.contains(
+            "| [alpha](roadmaps/alpha/roadmap.md) | 1 | not started | 1 | 2 | \u{2014} |"
+        ),
+        "roadmap row should carry 1 open review and 2 open comments, got:\n{content}"
+    );
+}
+
+#[test]
+fn generate_index_rolls_up_phase_targeted_review_into_roadmap_row() {
+    let mut store = setup_with_project();
+    add_roadmap_alpha_with_phase(&mut store);
+    submitted_review_with_open_comments(
+        &mut store,
+        ReviewTarget::Phase {
+            roadmap: "alpha".to_string(),
+            stem: "phase-1-core".to_string(),
+        },
+        1,
+    );
+
+    rdm_core::ops::index::generate_index(&mut store).unwrap();
+    let content = store
+        .read(&rdm_core::paths::project_index_path("fbm"))
+        .unwrap();
+    assert!(
+        content.contains(
+            "| [alpha](roadmaps/alpha/roadmap.md) | 1 | not started | 1 | 1 | \u{2014} |"
+        ),
+        "phase-targeted review should roll up to the roadmap row, got:\n{content}"
+    );
+}
+
+#[test]
+fn generate_index_counts_open_reviews_for_task() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    submitted_review_with_open_comments(&mut store, task_review_target(), 3);
+
+    rdm_core::ops::index::generate_index(&mut store).unwrap();
+    let content = store
+        .read(&rdm_core::paths::project_index_path("fbm"))
+        .unwrap();
+    assert!(
+        content.contains("| fix-login | medium | open | 1 | 3 |"),
+        "task row should carry 1 open review and 3 open comments, got:\n{content}"
+    );
+}
+
+#[test]
+fn generate_index_draft_reviews_do_not_count() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Still drafting.");
+
+    rdm_core::ops::index::generate_index(&mut store).unwrap();
+    let content = store
+        .read(&rdm_core::paths::project_index_path("fbm"))
+        .unwrap();
+    assert!(
+        content.contains("| fix-login | medium | open | 0 | 0 |"),
+        "draft reviews must not count as open, got:\n{content}"
+    );
+}
+
+#[test]
+fn generate_index_addressed_and_dismissed_reviews_do_not_count() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+
+    // One review dismissed after submit.
+    let dismissed = submitted_review_with_open_comments(&mut store, task_review_target(), 1);
+    rdm_core::ops::reviews::update_review(
+        &mut store,
+        "fbm",
+        &dismissed,
+        ReviewTransition::Dismissed,
+    )
+    .unwrap();
+
+    // One review addressed after its comment was resolved.
+    let addressed = submitted_review_with_open_comments(&mut store, task_review_target(), 1);
+    rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &addressed,
+            comment_id: 1,
+            status: Some(ReviewCommentStatus::Addressed),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::reviews::update_review(
+        &mut store,
+        "fbm",
+        &addressed,
+        ReviewTransition::Addressed,
+    )
+    .unwrap();
+
+    rdm_core::ops::index::generate_index(&mut store).unwrap();
+    let content = store
+        .read(&rdm_core::paths::project_index_path("fbm"))
+        .unwrap();
+    assert!(
+        content.contains("| fix-login | medium | open | 0 | 0 |"),
+        "terminal reviews must not count as open, got:\n{content}"
+    );
+}
+
+#[test]
+fn generate_index_addressed_or_wont_fix_comments_are_not_open() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = submitted_review_with_open_comments(&mut store, task_review_target(), 3);
+    // Resolve two of the three comments.
+    for (comment_id, status) in [
+        (1, ReviewCommentStatus::Addressed),
+        (2, ReviewCommentStatus::WontFix),
+    ] {
+        rdm_core::ops::reviews::update_comment(
+            &mut store,
+            UpdateComment {
+                project: "fbm",
+                review_id: &id,
+                comment_id,
+                status: Some(status),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    rdm_core::ops::index::generate_index(&mut store).unwrap();
+    let content = store
+        .read(&rdm_core::paths::project_index_path("fbm"))
+        .unwrap();
+    assert!(
+        content.contains("| fix-login | medium | open | 1 | 1 |"),
+        "only the remaining open comment should count, got:\n{content}"
+    );
+}

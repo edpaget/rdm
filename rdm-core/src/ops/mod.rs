@@ -16,7 +16,8 @@ pub mod phase;
 pub mod project;
 /// Review operations: enumerate items awaiting review.
 pub mod review;
-/// Review-document operations: list stored reviews.
+/// Review-document operations: create, comment, submit, transition, list,
+/// delete.
 pub mod reviews;
 /// Roadmap operations: create, update, delete, list, archive, split, dependencies.
 pub mod roadmap;
@@ -28,6 +29,7 @@ pub mod task;
 pub mod update;
 
 pub use phase::CreatePhase;
+pub use reviews::CreateReview;
 pub use roadmap::CreateRoadmap;
 pub use task::CreateTask;
 pub use update::{

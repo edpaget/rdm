@@ -63,6 +63,97 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("review not found: {id}")),
                 instance: None,
             },
+            Error::ReviewTargetMissing(msg) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Not Found".to_string(),
+                status: 404,
+                detail: Some(format!("review target not found: {msg}")),
+                instance: None,
+            },
+            Error::CommentNotFound {
+                review_id,
+                comment_id,
+            } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Not Found".to_string(),
+                status: 404,
+                detail: Some(format!(
+                    "comment {comment_id} not found in review '{review_id}'"
+                )),
+                instance: None,
+            },
+            Error::ReviewNotDraft(id) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(format!("review '{id}' is not a draft")),
+                instance: None,
+            },
+            Error::ReviewNotSubmitted(id) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(format!("review '{id}' has not been submitted")),
+                instance: None,
+            },
+            Error::ReviewInvalidTransition {
+                review_id,
+                from,
+                to,
+            } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(format!(
+                    "review '{review_id}' cannot move from {from} to {to}"
+                )),
+                instance: None,
+            },
+            Error::ReviewOpenComments {
+                review_id,
+                open_count,
+            } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(format!(
+                    "review '{review_id}' has {open_count} open comment(s)"
+                )),
+                instance: None,
+            },
+            Error::CommentDocOutOfScope(msg) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(format!("comment doc out of scope: {msg}")),
+                instance: None,
+            },
+            Error::CommentDocNotApplicable => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(
+                    "'doc' can only be set on a roadmap review, to scope a comment to one of the roadmap's phases"
+                        .to_string(),
+                ),
+                instance: None,
+            },
+            Error::ReviewMissingVerdict(id) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(format!(
+                    "review '{id}' cannot be submitted without a verdict"
+                )),
+                instance: None,
+            },
+            Error::ReviewEmpty(id) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(format!("review '{id}' has no comments and no summary")),
+                instance: None,
+            },
             Error::DuplicateSlug(slug) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),
@@ -152,7 +243,8 @@ impl From<&Error> for ProblemDetail {
                 instance: None,
             },
             // Internal errors: no detail leak
-            Error::Io(_)
+            Error::ReviewIdExhausted
+            | Error::Io(_)
             | Error::FrontmatterParse(_)
             | Error::FrontmatterMissing
             | Error::ConfigParse(_)
