@@ -4369,6 +4369,502 @@ fn mutate_regenerates_index_and_commits_once() {
 }
 
 #[test]
+fn mutate_batch_commits_exactly_once_for_multiple_steps() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "other",
+            title: "Other",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let before = store.head_sha().unwrap();
+
+    let steps: Vec<rdm_core::ops::BatchStep<'_, MemoryStore>> = vec![
+        Box::new(|s| {
+            rdm_core::ops::phase::update_phase(
+                s,
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                Some("aaa1111".to_string()),
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        }),
+        Box::new(|s| {
+            // Deliberately references a phase stem that does not exist, to
+            // exercise the "one bad step doesn't block the rest" contract.
+            rdm_core::ops::phase::update_phase(
+                s,
+                "fbm",
+                "two-way",
+                "phase-99-missing",
+                Some(PhaseStatus::Done),
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                Some("bad0000".to_string()),
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        }),
+        Box::new(|s| {
+            rdm_core::ops::phase::update_phase(
+                s,
+                "fbm",
+                "two-way",
+                "phase-2-other",
+                Some(PhaseStatus::Done),
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                Some("aaa2222".to_string()),
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        }),
+    ];
+
+    let outcome = rdm_core::ops::mutate_batch(&mut store, "fbm", steps, |_| {
+        "rdm: apply 2 Done: directive(s)".to_string()
+    });
+
+    assert!(outcome.finalize_result.is_ok());
+    assert_eq!(outcome.step_results.len(), 3);
+    assert!(outcome.step_results[0].is_ok());
+    assert!(outcome.step_results[1].is_err());
+    assert!(outcome.step_results[2].is_ok());
+
+    let after = store.head_sha().unwrap();
+    let counter = |sha: &str| sha.strip_prefix("mem-").unwrap().parse::<u32>().unwrap();
+    assert_eq!(
+        counter(&after),
+        counter(&before) + 1,
+        "mutate_batch must produce exactly one commit regardless of step count (before={before}, after={after})"
+    );
+}
+
+#[test]
+fn mutate_batch_regenerates_index_exactly_once_and_reflects_all_steps() {
+    let mut store = CountingStore::new(setup_with_project());
+
+    let steps: Vec<rdm_core::ops::BatchStep<'_, CountingStore>> = vec![
+        Box::new(|s| {
+            rdm_core::ops::roadmap::create_roadmap(
+                s,
+                rdm_core::ops::roadmap::CreateRoadmap {
+                    project: "fbm",
+                    slug: "alpha",
+                    title: "Alpha",
+                    ..Default::default()
+                },
+            )
+            .map(|_| ())
+        }),
+        Box::new(|s| {
+            rdm_core::ops::task::create_task(
+                s,
+                rdm_core::ops::task::CreateTask {
+                    project: "fbm",
+                    slug: "fix-bug",
+                    title: "Fix the bug",
+                    priority: Priority::High,
+                    ..Default::default()
+                },
+            )
+            .map(|_| ())
+        }),
+    ];
+
+    let outcome = rdm_core::ops::mutate_batch(&mut store, "fbm", steps, |_| {
+        "rdm: apply 2 Done: directive(s)".to_string()
+    });
+
+    assert!(outcome.finalize_result.is_ok());
+    assert!(outcome.step_results.iter().all(Result::is_ok));
+
+    // Narrow the needle to the per-project INDEX.md path specifically, since
+    // the root INDEX.md path also contains the substring "INDEX.md" and would
+    // otherwise double-count a single `generate_index_for_project` call.
+    assert_eq!(
+        store.writes_matching("projects/fbm/INDEX.md"),
+        1,
+        "INDEX.md must be regenerated exactly once per mutate_batch call; writes: {:?}",
+        store.writes
+    );
+
+    let project_index = store
+        .inner
+        .read(&rdm_core::paths::project_index_path("fbm"))
+        .unwrap();
+    assert!(
+        project_index.contains("roadmaps/alpha/roadmap.md"),
+        "INDEX.md should reference the roadmap created in the batch: {project_index}"
+    );
+    assert!(
+        project_index.contains("fix-bug"),
+        "INDEX.md should reference the task created in the batch: {project_index}"
+    );
+}
+
+#[test]
+fn mutate_batch_reapplying_same_step_preserves_completed_date() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let first_outcome = rdm_core::ops::mutate_batch(
+        &mut store,
+        "fbm",
+        vec![Box::new(|s| {
+            rdm_core::ops::phase::update_phase(
+                s,
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                Some("a".to_string()),
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })],
+        |_| "rdm: apply 1 Done: directive(s)".to_string(),
+    );
+    assert!(first_outcome.finalize_result.is_ok());
+    let first = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    let first_completed = first.frontmatter.completed;
+    assert!(first_completed.is_some());
+
+    let second_outcome = rdm_core::ops::mutate_batch(
+        &mut store,
+        "fbm",
+        vec![Box::new(|s| {
+            rdm_core::ops::phase::update_phase(
+                s,
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                Some("b".to_string()),
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })],
+        |_| "rdm: apply 1 Done: directive(s)".to_string(),
+    );
+    assert!(second_outcome.finalize_result.is_ok());
+    let second = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    assert_eq!(second.frontmatter.completed, first_completed);
+    assert_eq!(second.frontmatter.commit, Some("b".to_string()));
+}
+
+#[test]
+fn mutate_batch_preserves_each_steps_own_sha() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "other",
+            title: "Other",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let steps: Vec<rdm_core::ops::BatchStep<'_, MemoryStore>> = vec![
+        Box::new(|s| {
+            rdm_core::ops::phase::update_phase(
+                s,
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                Some("shaaaa1".to_string()),
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        }),
+        Box::new(|s| {
+            rdm_core::ops::phase::update_phase(
+                s,
+                "fbm",
+                "two-way",
+                "phase-2-other",
+                Some(PhaseStatus::Done),
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                Some("shaaaa2".to_string()),
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        }),
+    ];
+
+    let outcome = rdm_core::ops::mutate_batch(&mut store, "fbm", steps, |_| {
+        "rdm: apply 2 Done: directive(s)".to_string()
+    });
+    assert!(outcome.finalize_result.is_ok());
+    assert!(outcome.step_results.iter().all(Result::is_ok));
+
+    let core = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    let other = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-2-other").unwrap();
+    assert_eq!(core.frontmatter.commit, Some("shaaaa1".to_string()));
+    assert_eq!(other.frontmatter.commit, Some("shaaaa2".to_string()));
+}
+
+#[test]
+fn mutate_batch_continues_after_a_failing_step() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "other",
+            title: "Other",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let steps: Vec<rdm_core::ops::BatchStep<'_, MemoryStore>> = vec![
+        Box::new(|s| {
+            rdm_core::ops::phase::update_phase(
+                s,
+                "fbm",
+                "two-way",
+                "phase-1-core",
+                Some(PhaseStatus::Done),
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                Some("aaa1111".to_string()),
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        }),
+        Box::new(|s| {
+            rdm_core::ops::phase::update_phase(
+                s,
+                "fbm",
+                "two-way",
+                "phase-99-missing",
+                Some(PhaseStatus::Done),
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                Some("bad0000".to_string()),
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        }),
+        Box::new(|s| {
+            rdm_core::ops::phase::update_phase(
+                s,
+                "fbm",
+                "two-way",
+                "phase-2-other",
+                Some(PhaseStatus::Done),
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                Some("aaa2222".to_string()),
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        }),
+    ];
+
+    let outcome = rdm_core::ops::mutate_batch(&mut store, "fbm", steps, |_| {
+        "rdm: apply 2 Done: directive(s)".to_string()
+    });
+
+    assert_eq!(outcome.step_results.len(), 3);
+    assert!(outcome.step_results[0].is_ok());
+    assert!(outcome.step_results[1].is_err());
+    assert!(outcome.step_results[2].is_ok());
+
+    let core = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    let other = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-2-other").unwrap();
+    assert_eq!(core.frontmatter.status, PhaseStatus::Done);
+    assert_eq!(other.frontmatter.status, PhaseStatus::Done);
+}
+
+/// A [`Store`] wrapper whose `commit`/`commit_with_message` always fail,
+/// while everything else delegates to an inner [`MemoryStore`]. Used to pin
+/// that `mutate_batch` still exposes per-step results when the shared
+/// finalize stage (the commit, in this case) errors.
+struct AlwaysFailingCommitStore {
+    inner: MemoryStore,
+}
+
+impl Store for AlwaysFailingCommitStore {
+    fn read(&self, path: &rdm_core::store::RelPath) -> rdm_core::error::Result<String> {
+        self.inner.read(path)
+    }
+
+    fn exists(&self, path: &rdm_core::store::RelPath) -> bool {
+        self.inner.exists(path)
+    }
+
+    fn list(
+        &self,
+        path: &rdm_core::store::RelPath,
+    ) -> rdm_core::error::Result<Vec<rdm_core::store::DirEntry>> {
+        self.inner.list(path)
+    }
+
+    fn write(
+        &mut self,
+        path: &rdm_core::store::RelPath,
+        content: String,
+    ) -> rdm_core::error::Result<()> {
+        self.inner.write(path, content)
+    }
+
+    fn delete(&mut self, path: &rdm_core::store::RelPath) -> rdm_core::error::Result<()> {
+        self.inner.delete(path)
+    }
+
+    fn commit(&mut self) -> rdm_core::error::Result<()> {
+        Err(Error::Io(std::io::Error::other("commit always fails")))
+    }
+
+    fn commit_with_message(&mut self, _message: &str) -> rdm_core::error::Result<()> {
+        Err(Error::Io(std::io::Error::other("commit always fails")))
+    }
+
+    fn discard(&mut self) {
+        self.inner.discard();
+    }
+}
+
+#[test]
+fn mutate_batch_exposes_step_results_when_finalize_fails() {
+    let mut store = AlwaysFailingCommitStore {
+        inner: setup_with_project(),
+    };
+
+    let steps: Vec<rdm_core::ops::BatchStep<'_, AlwaysFailingCommitStore>> = vec![
+        Box::new(|s| {
+            rdm_core::ops::roadmap::create_roadmap(
+                s,
+                rdm_core::ops::roadmap::CreateRoadmap {
+                    project: "fbm",
+                    slug: "alpha",
+                    title: "Alpha",
+                    ..Default::default()
+                },
+            )
+            .map(|_| ())
+        }),
+        Box::new(|s| {
+            rdm_core::ops::task::create_task(
+                s,
+                rdm_core::ops::task::CreateTask {
+                    project: "fbm",
+                    slug: "fix-bug",
+                    title: "Fix the bug",
+                    priority: Priority::High,
+                    ..Default::default()
+                },
+            )
+            .map(|_| ())
+        }),
+    ];
+
+    let outcome = rdm_core::ops::mutate_batch(&mut store, "fbm", steps, |_| {
+        "rdm: apply 2 Done: directive(s)".to_string()
+    });
+
+    assert_eq!(outcome.step_results.len(), 2);
+    assert!(
+        outcome.step_results.iter().all(Result::is_ok),
+        "both steps' mutations should have applied even though the shared commit fails: {:?}",
+        outcome
+            .step_results
+            .iter()
+            .map(|r| r.as_ref().err().map(ToString::to_string))
+            .collect::<Vec<_>>()
+    );
+    assert!(outcome.finalize_result.is_err());
+}
+
+#[test]
 fn generate_index_writes_project_index() {
     let mut store = setup_with_project();
     rdm_core::ops::roadmap::create_roadmap(

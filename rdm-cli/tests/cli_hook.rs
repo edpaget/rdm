@@ -25,6 +25,36 @@ fn git_cmd() -> std::process::Command {
     cmd
 }
 
+/// Returns the number of commits reachable from HEAD in the plan repo.
+fn plan_repo_commit_count(plan_dir: &TempDir) -> u64 {
+    let out = git_cmd()
+        .args(["rev-list", "--count", "HEAD"])
+        .current_dir(plan_dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git rev-list --count HEAD failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+/// Returns the full commit message of the plan repo's current HEAD.
+fn plan_repo_head_message(plan_dir: &TempDir) -> String {
+    let out = git_cmd()
+        .args(["log", "-1", "--format=%B"])
+        .current_dir(plan_dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git log -1 --format=%B failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
 /// Initialize a plan repo (also creates a git repo via `rdm init`).
 fn init_repo(dir: &TempDir) {
     rdm()
@@ -1727,4 +1757,614 @@ fn hook_post_merge_never_blocks_past_configured_timeout() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Status: not-started"));
+}
+
+// -- batching tests (Done: directives collapse into one commit) --
+
+#[test]
+fn hook_post_merge_batches_multiple_directives_into_one_commit() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phases(&plan_dir, &["alpha", "beta", "gamma"]);
+    init_project_repo(&project_dir);
+
+    git_cmd()
+        .args(["tag", "before-merge"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    // Create three separate commits, each with a Done: directive, and
+    // remember each one's own SHA.
+    let phases = ["phase-1-alpha", "phase-2-beta", "phase-3-gamma"];
+    let mut shas = Vec::new();
+    for (i, phase) in phases.iter().enumerate() {
+        let filename = format!("file{i}.txt");
+        fs::write(project_dir.path().join(&filename), format!("content {i}")).unwrap();
+        git_cmd()
+            .args(["add", &filename])
+            .current_dir(project_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args([
+                "commit",
+                "-m",
+                &format!("feat: implement {phase}\n\nDone: my-roadmap/{phase}"),
+            ])
+            .current_dir(project_dir.path())
+            .output()
+            .unwrap();
+        let sha_output = git_cmd()
+            .args(["log", "-1", "--format=%H"])
+            .current_dir(project_dir.path())
+            .output()
+            .unwrap();
+        shas.push(
+            String::from_utf8_lossy(&sha_output.stdout)
+                .trim()
+                .to_string(),
+        );
+    }
+
+    let commits_before = plan_repo_commit_count(&plan_dir);
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-merge", "--since", "before-merge"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    let commits_after = plan_repo_commit_count(&plan_dir);
+    assert_eq!(
+        commits_after,
+        commits_before + 1,
+        "3 Done: directives across 3 source commits must land as exactly one plan-repo commit"
+    );
+
+    let head_message = plan_repo_head_message(&plan_dir);
+    for (phase, sha) in phases.iter().zip(shas.iter()) {
+        // Assert the target is paired with its OWN source SHA on one line —
+        // not merely that both strings appear somewhere in the message.
+        assert!(
+            head_message.contains(&format!("Done: my-roadmap/{phase} ({})", &sha[..7])),
+            "batch commit message must pair {phase} with its own source sha \
+             {}: {head_message}",
+            &sha[..7]
+        );
+    }
+
+    // Every phase is done, each carrying its own source commit's SHA (not a
+    // sibling directive's SHA, and not the plan repo's own new batch SHA).
+    for (phase, sha) in phases.iter().zip(shas.iter()) {
+        rdm()
+            .arg("--root")
+            .arg(plan_dir.path())
+            .args([
+                "phase",
+                "show",
+                phase,
+                "--roadmap",
+                "my-roadmap",
+                "--project",
+                "test-proj",
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Status: done"))
+            .stdout(predicate::str::contains(sha.as_str()));
+    }
+}
+
+#[test]
+fn hook_post_commit_batches_multiple_directives_in_one_message_into_one_commit() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix the bug",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success();
+
+    let commits_before = plan_repo_commit_count(&plan_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: land two things\n\nDone: my-roadmap/phase-1-my-phase\nDone: task/fix-bug",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    let sha_output = git_cmd()
+        .args(["log", "-1", "--format=%H"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    let commits_after = plan_repo_commit_count(&plan_dir);
+    assert_eq!(
+        commits_after,
+        commits_before + 1,
+        "one commit message with two Done: directives must land as exactly one plan-repo commit"
+    );
+
+    let head_message = plan_repo_head_message(&plan_dir);
+    assert!(head_message.contains("Done: my-roadmap/phase-1-my-phase"));
+    assert!(head_message.contains("Done: task/fix-bug"));
+    assert!(head_message.contains(&sha[..7]));
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"))
+        .stdout(predicate::str::contains(sha.as_str()));
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args(["task", "show", "fix-bug", "--project", "test-proj"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"))
+        .stdout(predicate::str::contains(sha.as_str()));
+}
+
+#[test]
+fn hook_post_commit_then_post_merge_batch_idempotent() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phases(&plan_dir, &["alpha", "beta"]);
+    init_project_repo(&project_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: done both\n\nDone: my-roadmap/phase-1-alpha\nDone: my-roadmap/phase-2-beta",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    let sha_output = git_cmd()
+        .args(["log", "-1", "--format=%H"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+
+    // Run post-commit first (the multi-directive batched path).
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    // Run post-merge second — should be a no-op re-application (already done).
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-merge"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    for phase in ["phase-1-alpha", "phase-2-beta"] {
+        rdm()
+            .arg("--root")
+            .arg(plan_dir.path())
+            .args([
+                "phase",
+                "show",
+                phase,
+                "--roadmap",
+                "my-roadmap",
+                "--project",
+                "test-proj",
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Status: done"))
+            .stdout(predicate::str::contains(sha.as_str()));
+    }
+}
+
+#[test]
+fn hook_post_commit_logs_directives_even_when_index_regen_fails() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    // Corrupt an unrelated roadmap directly on disk (bypassing `rdm`, since
+    // this is a hermetic fixture, not the dogfood plan repo) so that index
+    // regeneration fails for the whole project.
+    let broken_dir = plan_dir.path().join("projects/test-proj/roadmaps/broken");
+    fs::create_dir_all(&broken_dir).unwrap();
+    fs::write(
+        broken_dir.join("roadmap.md"),
+        "---\nnot_a_valid_roadmap_field: true\n---\nBroken.\n",
+    )
+    .unwrap();
+    git_cmd()
+        .args(["add", "-A"])
+        .current_dir(plan_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "test: seed corrupt roadmap fixture"])
+        .current_dir(plan_dir.path())
+        .output()
+        .unwrap();
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: land it\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    let commits_before = plan_repo_commit_count(&plan_dir);
+
+    // The hook wrapper always exits 0 — errors are logged, never propagated
+    // to the invoking `git commit`.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("post-commit apply-phase status=ok"),
+        "per-directive log fidelity must survive a shared index-regen failure: {log}"
+    );
+    assert!(
+        log.contains("batch-commit-error"),
+        "log missing batch-commit-error event: {log}"
+    );
+
+    // The batch is all-or-nothing: a finalize failure must leave the plan
+    // repo's history untouched — no partial or index-less commit lands.
+    let commits_after = plan_repo_commit_count(&plan_dir);
+    assert_eq!(
+        commits_after, commits_before,
+        "a finalize failure must not create a plan-repo commit"
+    );
+}
+
+#[test]
+fn hook_post_commit_one_bad_directive_does_not_abort_others() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phases(&plan_dir, &["alpha", "beta", "gamma"]);
+    init_project_repo(&project_dir);
+
+    let commits_before = plan_repo_commit_count(&plan_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: mixed batch\n\nDone: my-roadmap/phase-1-alpha\nDone: my-roadmap/99\nDone: my-roadmap/phase-3-gamma",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("skip-unknown-phase"),
+        "log missing skip-unknown-phase: {log}"
+    );
+    assert!(
+        log.contains("post-commit apply-phase status=ok"),
+        "log missing apply-phase status=ok for the good directives: {log}"
+    );
+
+    for phase in ["phase-1-alpha", "phase-3-gamma"] {
+        rdm()
+            .arg("--root")
+            .arg(plan_dir.path())
+            .args([
+                "phase",
+                "show",
+                phase,
+                "--roadmap",
+                "my-roadmap",
+                "--project",
+                "test-proj",
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Status: done"));
+    }
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-2-beta",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: not-started"));
+
+    // Both good directives still landed together in exactly one commit.
+    let commits_after = plan_repo_commit_count(&plan_dir);
+    assert_eq!(
+        commits_after,
+        commits_before + 1,
+        "the two good directives must still batch into exactly one commit \
+         even though a sibling directive in the same message was unknown"
+    );
+}
+
+#[test]
+fn hook_post_commit_duplicate_directive_in_one_message_not_deduped() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: duplicate directive\n\nDone: my-roadmap/phase-1-my-phase\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    // post-commit does not dedupe within one message (unlike post-merge's
+    // cross-commit `seen`-set dedup) — batching must not silently change
+    // that. This must not error or double-apply incorrectly.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"));
+
+    // The batch commit message is the observable proof of non-dedup: the
+    // duplicate directive must be applied — and enumerated — twice.
+    let message = plan_repo_head_message(&plan_dir);
+    assert!(
+        message.contains("rdm: apply 2 Done: directive(s)"),
+        "expected non-deduped count of 2 in batch commit message, got:\n{message}"
+    );
+    assert_eq!(
+        message.matches("Done: my-roadmap/phase-1-my-phase").count(),
+        2,
+        "expected the duplicate directive enumerated twice, got:\n{message}"
+    );
+}
+
+#[test]
+fn hook_post_commit_failed_step_is_excluded_from_batch_commit_message() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    let commits_before = plan_repo_commit_count(&plan_dir);
+
+    // `task/<slug>` directives have no pre-mutate existence check (unlike
+    // phases), so a nonexistent slug becomes a real batch step whose
+    // mutation fails — producing a mixed Ok/Err result slice.
+    fs::write(project_dir.path().join("dummy.txt"), "trigger").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: mixed outcome batch\n\nDone: my-roadmap/phase-1-my-phase\nDone: task/no-such-task",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("post-commit apply-phase status=ok"),
+        "log missing apply-phase status=ok: {log}"
+    );
+    assert!(
+        log.contains("apply-task status=error"),
+        "log missing apply-task status=error for the unknown task: {log}"
+    );
+
+    // The good directive still lands in exactly one commit.
+    let commits_after = plan_repo_commit_count(&plan_dir);
+    assert_eq!(commits_after, commits_before + 1);
+
+    // The commit message enumerates only the SUCCESSFUL directive: the failed
+    // step must not appear, and the count must reflect successes only.
+    let message = plan_repo_head_message(&plan_dir);
+    assert!(
+        message.contains("rdm: apply 1 Done: directive(s)"),
+        "count must reflect only successful steps, got:\n{message}"
+    );
+    assert!(
+        message.contains("Done: my-roadmap/phase-1-my-phase"),
+        "successful directive missing from message:\n{message}"
+    );
+    assert!(
+        !message.contains("no-such-task"),
+        "failed directive must not be enumerated as applied:\n{message}"
+    );
+}
+
+#[test]
+fn hook_post_commit_all_directives_skipped_creates_no_commit() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    let commits_before = plan_repo_commit_count(&plan_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-m", "feat: nothing valid\n\nDone: my-roadmap/99"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("skip-unknown-phase"),
+        "log missing skip-unknown-phase: {log}"
+    );
+
+    // Every directive was skipped pre-batch: no spurious empty batch commit.
+    let commits_after = plan_repo_commit_count(&plan_dir);
+    assert_eq!(
+        commits_after, commits_before,
+        "an all-skipped batch must not create a plan-repo commit"
+    );
 }

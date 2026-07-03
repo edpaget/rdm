@@ -361,8 +361,16 @@ impl Store for GitStore {
         if self.touched.is_empty() {
             return Ok(());
         }
+        let message = Self::commit_message(&self.touched);
+        self.commit_with_message(&message)
+    }
 
-        let touched = std::mem::take(&mut self.touched);
+    fn commit_with_message(&mut self, message: &str) -> Result<()> {
+        if self.touched.is_empty() {
+            return Ok(());
+        }
+
+        self.touched.clear();
 
         // Flush files to disk
         self.inner.commit()?;
@@ -372,8 +380,7 @@ impl Store for GitStore {
             return Ok(());
         }
 
-        let message = Self::commit_message(&touched);
-        self.git.create_git_commit(&message)
+        self.git.create_git_commit(message)
     }
 
     fn discard(&mut self) {
@@ -481,6 +488,21 @@ mod tests {
     }
 
     #[test]
+    fn commit_with_message_uses_given_message_verbatim() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        let path = RelPath::new("test.md").unwrap();
+        store.write(&path, "content".to_string()).unwrap();
+        store.commit_with_message("custom message").unwrap();
+
+        let repo = gix::open(dir.path()).unwrap();
+        let mut head = repo.head().unwrap();
+        let commit = head.peel_to_commit().unwrap();
+        let msg = String::from_utf8_lossy(commit.message_raw_sloppy());
+        assert_eq!(msg, "custom message");
+    }
+
+    #[test]
     fn delete_is_committed() {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
@@ -579,6 +601,38 @@ mod tests {
         let path = RelPath::new("staged.md").unwrap();
         store.write(&path, "staged content".to_string()).unwrap();
         store.commit().unwrap();
+
+        // File should exist on disk
+        assert!(dir.path().join("staged.md").exists());
+        let content = std::fs::read_to_string(dir.path().join("staged.md")).unwrap();
+        assert_eq!(content, "staged content");
+
+        // But no new git commit should have been created
+        let repo = gix::open(dir.path()).unwrap();
+        let head_after = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
+        assert_eq!(head_before, head_after);
+    }
+
+    #[test]
+    fn commit_with_message_respects_staging_mode() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap().with_staging_mode(true);
+
+        // Create an initial commit so HEAD exists
+        // (need to temporarily disable staging to get initial commit)
+        store.staging_mode = false;
+        let init_path = RelPath::new("init.md").unwrap();
+        store.write(&init_path, "init".to_string()).unwrap();
+        store.commit().unwrap();
+        store.staging_mode = true;
+
+        let repo = gix::open(dir.path()).unwrap();
+        let head_before = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
+
+        // Write and commit_with_message in staging mode
+        let path = RelPath::new("staged.md").unwrap();
+        store.write(&path, "staged content".to_string()).unwrap();
+        store.commit_with_message("custom message").unwrap();
 
         // File should exist on disk
         assert!(dir.path().join("staged.md").exists());

@@ -15,6 +15,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The `post-merge`/`post-commit` hooks now apply all `Done:` directives from a
+  single hook invocation as one plan-repo commit (with a single `INDEX.md`
+  regeneration) instead of one commit per directive. The commit message
+  enumerates every applied `Done: <target>` directive alongside its source
+  commit SHA, so per-directive provenance is preserved without a per-directive
+  commit. Note: if the shared index-regeneration/commit step fails, no
+  directive in that batch is committed (per-directive log lines plus a
+  `batch-commit-error` event still record what happened) — previously an
+  unrelated failure could not undo an already-committed directive's commit.
 - Clarified in `--help` (for `roadmap`/`phase`/`task` `create`/`update`) and in
   the agent-facing docs (`CLAUDE.md`, `rdm agent-config`'s CLI instructions
   template) that `--body` accepts any text verbatim — backticks, em-dashes,

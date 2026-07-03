@@ -388,10 +388,94 @@ where
     }
 }
 
+/// Per-directive bookkeeping kept alongside a batched mutation step, so the
+/// commit message and per-directive log lines can be built once
+/// [`rdm_core::ops::mutate_batch`] returns its per-step results.
+#[cfg(feature = "git")]
+#[derive(Clone)]
+enum DirectiveMeta {
+    /// A `Done: <roadmap>/<phase>` directive.
+    Phase {
+        /// The roadmap slug named in the directive.
+        roadmap: String,
+        /// The resolved phase stem (not the raw directive text, which may be
+        /// a bare number or partial slug).
+        stem: String,
+        /// The source commit SHA the directive was parsed from.
+        sha: String,
+    },
+    /// A `Done: task/<slug>` directive.
+    Task {
+        /// The task slug named in the directive.
+        slug: String,
+        /// The source commit SHA the directive was parsed from.
+        sha: String,
+    },
+}
+
+#[cfg(feature = "git")]
+impl DirectiveMeta {
+    /// Formats the directive back into `<roadmap>/<phase>` or `task/<slug>`
+    /// form, for use in the batch commit message.
+    fn target(&self) -> String {
+        match self {
+            DirectiveMeta::Phase { roadmap, stem, .. } => format!("{roadmap}/{stem}"),
+            DirectiveMeta::Task { slug, .. } => format!("task/{slug}"),
+        }
+    }
+
+    /// The source commit SHA carried by this directive.
+    fn sha(&self) -> &str {
+        match self {
+            DirectiveMeta::Phase { sha, .. } | DirectiveMeta::Task { sha, .. } => sha,
+        }
+    }
+}
+
+/// Builds the single plan-repo commit message for a batch of applied `Done:`
+/// directives: one summary line, then one `Done: <target> (<sha>)` line per
+/// directive whose step succeeded (failed/skipped steps are omitted).
+#[cfg(feature = "git")]
+fn build_batch_commit_message(
+    metas: &[DirectiveMeta],
+    results: &[rdm_core::error::Result<()>],
+) -> String {
+    let applied: Vec<&DirectiveMeta> = metas
+        .iter()
+        .zip(results.iter())
+        .filter_map(|(meta, result)| result.is_ok().then_some(meta))
+        .collect();
+    let mut message = format!("rdm: apply {} Done: directive(s)\n", applied.len());
+    for meta in applied {
+        let short_sha = meta.sha().get(..7).unwrap_or(meta.sha());
+        message.push_str(&format!("\nDone: {} ({short_sha})", meta.target()));
+    }
+    message
+}
+
 /// Applies a list of `Done:` directives, marking matching phases/tasks as done
 /// with the associated commit SHA.
 ///
-/// Silently skips directives whose phase or task cannot be found.
+/// All directives are applied as a single [`rdm_core::ops::mutate_batch`]
+/// transaction: one `INDEX.md` regeneration and one plan-repo commit cover
+/// every directive in `directives_with_sha`, rather than one commit per
+/// directive. The resulting commit's message enumerates each successfully
+/// applied directive as a `Done: <target> (<sha>)` line, so per-directive
+/// provenance survives the collapse into a single commit. That commit is
+/// produced via [`rdm_store_git::GitStore`]'s low-level git primitive, which
+/// bypasses git porcelain/hooks entirely, so it can never recursively
+/// re-trigger this same hook.
+///
+/// Silently skips directives whose phase or task cannot be found. A single
+/// directive's mutation failing does not abort the rest of the batch — every
+/// other directive is still applied and committed.
+///
+/// # Errors
+///
+/// Returns an error if the store cannot be opened, the project cannot be
+/// resolved, or the batch's shared finalize stage (index regeneration or the
+/// single commit) fails. In the finalize-failure case, every per-directive
+/// outcome has already been logged before the error is returned.
 #[cfg(feature = "git")]
 pub fn apply_done_directives(
     root: &Path,
@@ -427,6 +511,10 @@ pub fn apply_done_directives(
             return Err(e);
         }
     };
+
+    let mut steps: Vec<rdm_core::ops::BatchStep<'_, AppStore>> = Vec::new();
+    let mut metas: Vec<DirectiveMeta> = Vec::new();
+
     for (directive, sha) in directives_with_sha {
         match directive {
             rdm_core::hook::DoneDirective::Phase { roadmap, phase } => {
@@ -448,90 +536,137 @@ pub fn apply_done_directives(
                         continue;
                     }
                 };
-                match rdm_core::ops::mutate(&mut store, &project, |s| {
+                let project_owned = project.clone();
+                let roadmap_owned = roadmap.clone();
+                let sha_owned = sha.clone();
+                let stem_for_step = stem.clone();
+                steps.push(Box::new(move |s| {
                     rdm_core::ops::phase::update_phase(
                         s,
-                        &project,
-                        roadmap,
-                        &stem,
+                        &project_owned,
+                        &roadmap_owned,
+                        &stem_for_step,
                         Some(rdm_core::model::PhaseStatus::Done),
                         rdm_core::ops::TagsUpdate::Keep,
                         rdm_core::ops::BodyUpdate::Keep,
-                        Some(sha.clone()),
+                        Some(sha_owned),
                         None,
                         None,
                         rdm_core::ops::TitleUpdate::Keep,
                     )
-                }) {
-                    Ok(_) => logger.log(
-                        hook,
-                        "apply-phase",
-                        &[
-                            ("status", "ok"),
-                            ("roadmap", roadmap.as_str()),
-                            ("phase", stem.as_str()),
-                            ("sha", sha.as_str()),
-                        ],
-                    ),
-                    Err(e) => {
-                        let msg = format!("{e}");
-                        logger.log(
-                            hook,
-                            "apply-phase",
-                            &[
-                                ("status", "error"),
-                                ("roadmap", roadmap.as_str()),
-                                ("phase", stem.as_str()),
-                                ("sha", sha.as_str()),
-                                ("error", msg.as_str()),
-                            ],
-                        );
-                    }
-                }
+                    .map(|_| ())
+                }));
+                metas.push(DirectiveMeta::Phase {
+                    roadmap: roadmap.clone(),
+                    stem,
+                    sha: sha.clone(),
+                });
             }
             rdm_core::hook::DoneDirective::Task { slug } => {
-                match rdm_core::ops::mutate(&mut store, &project, |s| {
+                let project_owned = project.clone();
+                let slug_owned = slug.clone();
+                let sha_owned = sha.clone();
+                steps.push(Box::new(move |s| {
                     rdm_core::ops::task::update_task(
                         s,
-                        &project,
-                        slug,
+                        &project_owned,
+                        &slug_owned,
                         Some(rdm_core::model::TaskStatus::Done),
                         None,
                         rdm_core::ops::TagsUpdate::Keep,
                         rdm_core::ops::BodyUpdate::Keep,
-                        Some(sha.clone()),
+                        Some(sha_owned),
                         None,
                         None,
                         rdm_core::ops::TitleUpdate::Keep,
                     )
-                }) {
-                    Ok(_) => logger.log(
-                        hook,
-                        "apply-task",
-                        &[
-                            ("status", "ok"),
-                            ("slug", slug.as_str()),
-                            ("sha", sha.as_str()),
-                        ],
-                    ),
-                    Err(e) => {
-                        let msg = format!("{e}");
-                        logger.log(
-                            hook,
-                            "apply-task",
-                            &[
-                                ("status", "error"),
-                                ("slug", slug.as_str()),
-                                ("sha", sha.as_str()),
-                                ("error", msg.as_str()),
-                            ],
-                        );
-                    }
-                }
+                    .map(|_| ())
+                }));
+                metas.push(DirectiveMeta::Task {
+                    slug: slug.clone(),
+                    sha: sha.clone(),
+                });
             }
         }
     }
-    Ok(())
+
+    if steps.is_empty() {
+        // Every directive was skipped pre-mutate (e.g. all unknown phases) —
+        // nothing to batch, mirror the empty-directives no-op path.
+        return Ok(());
+    }
+
+    let message_metas = metas.clone();
+    let outcome = rdm_core::ops::mutate_batch(&mut store, &project, steps, move |results| {
+        build_batch_commit_message(&message_metas, results)
+    });
+
+    // Log every per-directive outcome unconditionally, before inspecting the
+    // shared finalize result — this preserves per-directive log fidelity even
+    // when the index regen / commit step below fails.
+    for (meta, result) in metas.iter().zip(outcome.step_results.iter()) {
+        match meta {
+            DirectiveMeta::Phase { roadmap, stem, sha } => match result {
+                Ok(()) => logger.log(
+                    hook,
+                    "apply-phase",
+                    &[
+                        ("status", "ok"),
+                        ("roadmap", roadmap.as_str()),
+                        ("phase", stem.as_str()),
+                        ("sha", sha.as_str()),
+                    ],
+                ),
+                Err(e) => {
+                    let msg = format!("{e}");
+                    logger.log(
+                        hook,
+                        "apply-phase",
+                        &[
+                            ("status", "error"),
+                            ("roadmap", roadmap.as_str()),
+                            ("phase", stem.as_str()),
+                            ("sha", sha.as_str()),
+                            ("error", msg.as_str()),
+                        ],
+                    );
+                }
+            },
+            DirectiveMeta::Task { slug, sha } => match result {
+                Ok(()) => logger.log(
+                    hook,
+                    "apply-task",
+                    &[
+                        ("status", "ok"),
+                        ("slug", slug.as_str()),
+                        ("sha", sha.as_str()),
+                    ],
+                ),
+                Err(e) => {
+                    let msg = format!("{e}");
+                    logger.log(
+                        hook,
+                        "apply-task",
+                        &[
+                            ("status", "error"),
+                            ("slug", slug.as_str()),
+                            ("sha", sha.as_str()),
+                            ("error", msg.as_str()),
+                        ],
+                    );
+                }
+            },
+        }
+    }
+
+    match outcome.finalize_result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let msg = format!("{e}");
+            logger.log(hook, "batch-commit-error", &[("error", msg.as_str())]);
+            Err(e.into())
+        }
+    }
 }
 
 /// Test-only stall injector used to exercise the hook-timeout wrapper
