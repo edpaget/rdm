@@ -61,6 +61,36 @@
   --badge-revision-bg: #fff4e0;
   --badge-revision-text: #7a4a00;
   --badge-revision-border: #d99a3a;
+
+  --badge-submitted-bg: #e8f4fd;
+  --badge-submitted-text: #0a558c;
+  --badge-submitted-border: #b6d9f0;
+
+  --badge-addressed-bg: #e6f9e6;
+  --badge-addressed-text: #1a7a1a;
+  --badge-addressed-border: #a3d9a3;
+
+  --badge-dismissed-bg: #f0f0f0;
+  --badge-dismissed-text: #555;
+  --badge-dismissed-border: #ccc;
+
+  --badge-approve-bg: #e6f9e6;
+  --badge-approve-text: #1a7a1a;
+  --badge-approve-border: #a3d9a3;
+
+  --badge-request-changes-bg: #fde8e8;
+  --badge-request-changes-text: #8b1a1a;
+  --badge-request-changes-border: #f0a3a3;
+
+  --badge-verdict-comment-bg: #f0f0f0;
+  --badge-verdict-comment-text: #555;
+  --badge-verdict-comment-border: #ccc;
+
+  --badge-outdated-bg: #fff4e0;
+  --badge-outdated-text: #7a4a00;
+  --badge-outdated-border: #d99a3a;
+
+  --anchor-highlight-bg: #fff3b8;
 }
 
 [data-theme="dark"] {
@@ -126,6 +156,36 @@
   --badge-revision-bg: #3a2a00;
   --badge-revision-text: #f0c060;
   --badge-revision-border: #6a4a00;
+
+  --badge-submitted-bg: #1a2a4a;
+  --badge-submitted-text: #6db3f2;
+  --badge-submitted-border: #2a4a7a;
+
+  --badge-addressed-bg: #1a3a1a;
+  --badge-addressed-text: #6dd96d;
+  --badge-addressed-border: #2a6a2a;
+
+  --badge-dismissed-bg: #2a2a4a;
+  --badge-dismissed-text: #aaa;
+  --badge-dismissed-border: #4a4a6a;
+
+  --badge-approve-bg: #1a3a1a;
+  --badge-approve-text: #6dd96d;
+  --badge-approve-border: #2a6a2a;
+
+  --badge-request-changes-bg: #3a1a1a;
+  --badge-request-changes-text: #f08080;
+  --badge-request-changes-border: #6a2a2a;
+
+  --badge-verdict-comment-bg: #2a2a4a;
+  --badge-verdict-comment-text: #aaa;
+  --badge-verdict-comment-border: #4a4a6a;
+
+  --badge-outdated-bg: #3a2a00;
+  --badge-outdated-text: #f0c060;
+  --badge-outdated-border: #6a4a00;
+
+  --anchor-highlight-bg: #5a4a10;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -270,7 +330,69 @@ th { font-weight: 600; }
 .badge-high { background: var(--badge-high-bg); color: var(--badge-high-text); border-color: var(--badge-high-border); }
 .badge-critical { background: var(--badge-critical-bg); color: var(--badge-critical-text); border-color: var(--badge-critical-border); }
 .badge-revision { background: var(--badge-revision-bg); color: var(--badge-revision-text); border-color: var(--badge-revision-border); }
+.badge-submitted { background: var(--badge-submitted-bg); color: var(--badge-submitted-text); border-color: var(--badge-submitted-border); }
+.badge-addressed { background: var(--badge-addressed-bg); color: var(--badge-addressed-text); border-color: var(--badge-addressed-border); }
+.badge-dismissed { background: var(--badge-dismissed-bg); color: var(--badge-dismissed-text); border-color: var(--badge-dismissed-border); }
+.badge-approve { background: var(--badge-approve-bg); color: var(--badge-approve-text); border-color: var(--badge-approve-border); }
+.badge-request-changes { background: var(--badge-request-changes-bg); color: var(--badge-request-changes-text); border-color: var(--badge-request-changes-border); }
+.badge-verdict-comment { background: var(--badge-verdict-comment-bg); color: var(--badge-verdict-comment-text); border-color: var(--badge-verdict-comment-border); }
+.badge-outdated { background: var(--badge-outdated-bg); color: var(--badge-outdated-text); border-color: var(--badge-outdated-border); }
 .revision-badge { margin: 0 0 0.5rem 0; }
+/* Inline review-anchor highlights are visually inert until the hover script
+   activates them, so pages degrade cleanly without JavaScript. */
+mark.rdm-anchor { background: none; color: inherit; padding: 0; }
+mark.rdm-anchor.is-active { background: var(--anchor-highlight-bg); }
+.reviews-section {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border-light);
+}
+.review {
+  border: 1px solid var(--color-border-light);
+  border-radius: 0.375rem;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+}
+.review-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.review-author { font-weight: 600; }
+.review-time { color: var(--color-muted); font-size: 0.875rem; }
+.review-summary { margin: 0.75rem 0; }
+.review-comments {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+}
+.review-comment {
+  border-top: 1px solid var(--color-border-light);
+  padding: 0.75rem 0;
+}
+.comment-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.875rem;
+}
+.comment-applied { color: var(--color-muted); }
+.anchor-label { color: var(--color-muted); font-style: italic; margin: 0.5rem 0 0; }
+.anchor-quote {
+  margin: 0.5rem 0;
+  padding: 0.25rem 0.75rem;
+  border-left: 3px solid var(--color-border-light);
+  color: var(--color-muted);
+  white-space: pre-wrap;
+}
+.anchor-quote[data-rdm-anchor-ref] { cursor: pointer; }
+.anchor-quote[data-rdm-anchor-ref]:hover,
+.anchor-quote[data-rdm-anchor-ref]:focus { border-left-color: var(--color-link); }
+.comment-body { margin: 0.5rem 0 0; }
+.comment-reply { margin: 0.5rem 0 0; font-size: 0.9375rem; }
+.comment-reply-label { font-weight: 600; }
 .body-content { margin: 1.5rem 0; }
 .body-content pre {
   background: var(--color-code-bg);

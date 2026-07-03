@@ -774,6 +774,80 @@ pub fn list_reviews(store: &impl Store, project: &str) -> Result<Vec<(String, Do
     Ok(reviews)
 }
 
+/// Open-review / open-comment tallies for a single roadmap or task.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReviewCounts {
+    /// Number of open ([`ReviewState::Submitted`]) reviews on the item.
+    pub open_reviews: usize,
+    /// Number of open (non-terminal) comments across those reviews.
+    pub open_comments: usize,
+}
+
+/// Per-target open-review aggregates: roadmap slug → counts and task slug →
+/// counts.
+///
+/// Phase-targeted reviews roll up into their **parent roadmap's** counts —
+/// listing surfaces (`INDEX.md` and the web list pages) have one row per
+/// roadmap, and both must report the same numbers, so this is the single
+/// counting shape they all consume.
+#[derive(Debug, Clone, Default)]
+pub struct OpenReviewCounts {
+    /// Roadmap slug → counts. Phase-targeted reviews are included under
+    /// their parent roadmap's slug.
+    pub roadmaps: std::collections::HashMap<String, ReviewCounts>,
+    /// Task slug → counts.
+    pub tasks: std::collections::HashMap<String, ReviewCounts>,
+}
+
+/// Aggregates open reviews and their open comments per target.
+///
+/// Only [`ReviewState::Submitted`] reviews count as open: drafts are not yet
+/// feedback and terminal reviews (`addressed`/`dismissed`) are resolved.
+/// Within a counted review, only comments whose status is not terminal add
+/// to `open_comments`. Phase-targeted reviews roll up into their parent
+/// roadmap's entry (see [`OpenReviewCounts`]). Dangling targets
+/// (renamed/deleted items) are harmless: nothing looks them up.
+///
+/// This is the shared counting pass behind both `INDEX.md` generation and
+/// the web list pages — they must never disagree.
+///
+/// # Errors
+///
+/// Returns [`Error::ProjectNotFound`] if the project does not exist,
+/// [`Error::Io`] if the reviews directory cannot be read, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a review
+/// file is malformed.
+pub fn count_open_reviews(store: &impl Store, project: &str) -> Result<OpenReviewCounts> {
+    Ok(count_open_reviews_in(&list_reviews(store, project)?))
+}
+
+/// [`count_open_reviews`] over an already-loaded review list, for callers
+/// that need the full list *and* the counts without a second store pass.
+#[must_use]
+pub fn count_open_reviews_in(reviews: &[(String, Document<Review>)]) -> OpenReviewCounts {
+    let mut counts = OpenReviewCounts::default();
+    for (_, doc) in reviews {
+        let review = &doc.frontmatter;
+        if review.state != ReviewState::Submitted {
+            continue;
+        }
+        let open_comments = review
+            .comments
+            .iter()
+            .filter(|c| !c.status.is_terminal())
+            .count();
+        let (map, key) = match &review.target {
+            ReviewTarget::Roadmap { roadmap } => (&mut counts.roadmaps, roadmap),
+            ReviewTarget::Phase { roadmap, .. } => (&mut counts.roadmaps, roadmap),
+            ReviewTarget::Task { slug } => (&mut counts.tasks, slug),
+        };
+        let entry = map.entry(key.clone()).or_default();
+        entry.open_reviews += 1;
+        entry.open_comments += open_comments;
+    }
+    counts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1322,5 +1396,189 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::ReviewNotDraft(_)), "got {err:?}");
+    }
+
+    // -- count_open_reviews --
+
+    fn counted_review(
+        id: &str,
+        target: ReviewTarget,
+        state: ReviewState,
+        comment_statuses: &[ReviewCommentStatus],
+    ) -> (String, Document<Review>) {
+        let mut doc = sample_review(id);
+        doc.frontmatter.target = target;
+        doc.frontmatter.state = state;
+        doc.frontmatter.comments = comment_statuses
+            .iter()
+            .enumerate()
+            .map(|(i, status)| ReviewComment {
+                id: (i + 1) as u32,
+                doc: None,
+                status: *status,
+                applied_commit: None,
+                anchor: None,
+                body: "note".to_string(),
+                reply: None,
+            })
+            .collect();
+        (id.to_string(), doc)
+    }
+
+    #[test]
+    fn count_open_reviews_counts_only_submitted() {
+        use ReviewCommentStatus::Open;
+        let reviews = vec![
+            counted_review(
+                "r1",
+                ReviewTarget::Task {
+                    slug: "fix".to_string(),
+                },
+                ReviewState::Submitted,
+                &[Open, Open],
+            ),
+            counted_review(
+                "r2",
+                ReviewTarget::Task {
+                    slug: "fix".to_string(),
+                },
+                ReviewState::Draft,
+                &[Open],
+            ),
+            counted_review(
+                "r3",
+                ReviewTarget::Task {
+                    slug: "fix".to_string(),
+                },
+                ReviewState::Addressed,
+                &[Open],
+            ),
+            counted_review(
+                "r4",
+                ReviewTarget::Task {
+                    slug: "fix".to_string(),
+                },
+                ReviewState::Dismissed,
+                &[Open],
+            ),
+        ];
+        let counts = count_open_reviews_in(&reviews);
+        assert_eq!(
+            counts.tasks.get("fix").copied(),
+            Some(ReviewCounts {
+                open_reviews: 1,
+                open_comments: 2
+            })
+        );
+    }
+
+    #[test]
+    fn count_open_reviews_excludes_terminal_comments() {
+        let reviews = vec![counted_review(
+            "r1",
+            ReviewTarget::Task {
+                slug: "fix".to_string(),
+            },
+            ReviewState::Submitted,
+            &[
+                ReviewCommentStatus::Open,
+                ReviewCommentStatus::Addressed,
+                ReviewCommentStatus::WontFix,
+            ],
+        )];
+        let counts = count_open_reviews_in(&reviews);
+        assert_eq!(
+            counts.tasks.get("fix").copied(),
+            Some(ReviewCounts {
+                open_reviews: 1,
+                open_comments: 1
+            })
+        );
+    }
+
+    #[test]
+    fn count_open_reviews_rolls_phase_reviews_into_parent_roadmap() {
+        use ReviewCommentStatus::Open;
+        let reviews = vec![
+            counted_review(
+                "r1",
+                ReviewTarget::Roadmap {
+                    roadmap: "alpha".to_string(),
+                },
+                ReviewState::Submitted,
+                &[Open],
+            ),
+            counted_review(
+                "r2",
+                ReviewTarget::Phase {
+                    roadmap: "alpha".to_string(),
+                    stem: "phase-1-one".to_string(),
+                },
+                ReviewState::Submitted,
+                &[Open, Open],
+            ),
+        ];
+        let counts = count_open_reviews_in(&reviews);
+        assert_eq!(
+            counts.roadmaps.get("alpha").copied(),
+            Some(ReviewCounts {
+                open_reviews: 2,
+                open_comments: 3
+            })
+        );
+        assert!(counts.tasks.is_empty());
+    }
+
+    #[test]
+    fn count_open_reviews_task_and_roadmap_slugs_do_not_collide() {
+        use ReviewCommentStatus::Open;
+        let reviews = vec![
+            counted_review(
+                "r1",
+                ReviewTarget::Roadmap {
+                    roadmap: "same".to_string(),
+                },
+                ReviewState::Submitted,
+                &[Open],
+            ),
+            counted_review(
+                "r2",
+                ReviewTarget::Task {
+                    slug: "same".to_string(),
+                },
+                ReviewState::Submitted,
+                &[Open, Open],
+            ),
+        ];
+        let counts = count_open_reviews_in(&reviews);
+        assert_eq!(counts.roadmaps.get("same").unwrap().open_comments, 1);
+        assert_eq!(counts.tasks.get("same").unwrap().open_comments, 2);
+    }
+
+    #[test]
+    fn count_open_reviews_empty_when_no_reviews() {
+        let counts = count_open_reviews_in(&[]);
+        assert!(counts.roadmaps.is_empty());
+        assert!(counts.tasks.is_empty());
+    }
+
+    #[test]
+    fn count_open_reviews_store_pass_matches_in_memory_pass() {
+        // The store-reading entry point and the slice-based pass must agree:
+        // INDEX generation and the web handlers may enter through either.
+        let mut store = setup_store();
+        let (id, doc) = counted_review(
+            "2026-07-01-1200-aaaa",
+            ReviewTarget::Task {
+                slug: "fix".to_string(),
+            },
+            ReviewState::Submitted,
+            &[ReviewCommentStatus::Open],
+        );
+        crate::io::write_review(&mut store, "test", &id, &doc).unwrap();
+        let via_store = count_open_reviews(&store, "test").unwrap();
+        let via_slice = count_open_reviews_in(&list_reviews(&store, "test").unwrap());
+        assert_eq!(via_store.tasks.get("fix"), via_slice.tasks.get("fix"));
+        assert_eq!(via_store.tasks.get("fix").unwrap().open_reviews, 1);
     }
 }

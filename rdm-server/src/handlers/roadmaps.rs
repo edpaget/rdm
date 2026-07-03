@@ -20,7 +20,6 @@ use crate::error::{
     error_response, json_rejection_response, problem_detail_into_response, validation_error,
 };
 use crate::extract::{hal_created_response, hal_response, see_other_response};
-use crate::markdown::render_markdown;
 use crate::state::AppState;
 use crate::templates::{
     PhaseRow, RoadmapDetailPage, RoadmapSummaryView, RoadmapsPage, computed_roadmap_status,
@@ -229,18 +228,32 @@ pub async fn list_roadmaps(
             Ok(hal_response(resource))
         }
         ResponseFormat::Html => {
+            // Same counting pass as INDEX.md generation (phase-targeted
+            // reviews roll up into their parent roadmap), so the two
+            // surfaces always report the same numbers.
+            let review_counts = rdm_core::ops::reviews::count_open_reviews(&store, &project)
+                .map_err(|e| error_response(e, format))?;
             let views: Vec<RoadmapSummaryView> = summaries
                 .into_iter()
-                .map(|s| RoadmapSummaryView {
-                    slug: s.slug,
-                    title: s.title,
-                    total_phases: s.total_phases,
-                    done_phases: s.done_phases,
-                    status: s.status,
-                    status_class: s.status_class,
-                    last_changed: s.last_changed,
-                    priority: s.priority,
-                    priority_class: s.priority_class,
+                .map(|s| {
+                    let counts = review_counts
+                        .roadmaps
+                        .get(&s.slug)
+                        .copied()
+                        .unwrap_or_default();
+                    RoadmapSummaryView {
+                        slug: s.slug,
+                        title: s.title,
+                        total_phases: s.total_phases,
+                        done_phases: s.done_phases,
+                        status: s.status,
+                        status_class: s.status_class,
+                        last_changed: s.last_changed,
+                        priority: s.priority,
+                        priority_class: s.priority_class,
+                        open_reviews: counts.open_reviews,
+                        open_comments: counts.open_comments,
+                    }
                 })
                 .collect();
             let quick_filters = state.quick_filter_views_for_path(
@@ -361,7 +374,23 @@ pub async fn get_roadmap(
             );
             let quick_filters =
                 state.quick_filter_views_for_path(&detail_path, filters.tag.as_deref());
-            let body_html = render_markdown(&roadmap_doc.body);
+            // Inline highlights index the *current* body; a pinned `?at=`
+            // view disables them (quote previews still render). Doc-scoped
+            // comments never highlight here — they link through to their
+            // phase instead. Note: `phases` may be tag-filtered; a comment
+            // scoped to a filtered-out phase degrades to a stem-only link
+            // label.
+            let page_reviews = crate::review_views::page_reviews(
+                &store,
+                &project,
+                &crate::review_views::PageDoc::Roadmap {
+                    roadmap: &roadmap,
+                    phases: &phases,
+                },
+                filters.at.is_none(),
+            )
+            .map_err(|e| error_response(e, format))?;
+            let body_html = page_reviews.render_body(&roadmap_doc.body);
             let page = RoadmapDetailPage {
                 project,
                 slug: roadmap_doc.frontmatter.roadmap,
@@ -379,6 +408,7 @@ pub async fn get_roadmap(
                 quick_filters,
                 active_tag: filters.tag,
                 revision: filters.at,
+                reviews: page_reviews.reviews,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1652,5 +1682,200 @@ mod tests {
         // First phase has tag foo and should appear; second has no tags and should not.
         assert!(html.contains("phase-1-first"));
         assert!(!html.contains("phase-2-second"));
+    }
+
+    // -- reviews section & open-review counts --
+
+    use rdm_core::model::{Anchor, CommentDoc, CommentDocKind, ReviewTarget, Verdict};
+
+    /// Text-quote anchor with empty context (fine for unique quotes).
+    fn tq(quote: &str) -> Anchor {
+        Anchor::TextQuote {
+            quote: quote.to_string(),
+            prefix: String::new(),
+            suffix: String::new(),
+        }
+    }
+
+    /// Authors a submitted review with the given comments via core ops;
+    /// returns the review id.
+    fn author_submitted_review(
+        state: &AppState,
+        target: ReviewTarget,
+        comments: &[(Option<Anchor>, Option<CommentDoc>, &str)],
+    ) -> String {
+        let mut store = state.store();
+        let doc = rdm_core::ops::reviews::create_review(
+            &mut store,
+            rdm_core::ops::reviews::CreateReview {
+                project: "demo",
+                author: "reviewer",
+                target,
+                body: Some("Summary."),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        for (anchor, doc_scope, body) in comments {
+            rdm_core::ops::reviews::add_comment(
+                &mut store,
+                rdm_core::ops::reviews::AddComment {
+                    project: "demo",
+                    review_id: &id,
+                    body,
+                    doc: doc_scope.clone(),
+                    anchor: anchor.clone(),
+                },
+            )
+            .unwrap();
+        }
+        rdm_core::ops::reviews::submit_review(&mut store, "demo", &id, Some(Verdict::Comment))
+            .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+        id
+    }
+
+    async fn get_html(state: &AppState, uri: &str) -> String {
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get(uri)
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 262144).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    /// A `setup()` variant whose roadmap has body text to anchor into.
+    fn setup_with_roadmap_body() -> (TempDir, AppState) {
+        let (dir, state) = setup();
+        let mut store = state.store();
+        rdm_core::ops::roadmap::update_roadmap(
+            &mut store,
+            "demo",
+            "alpha",
+            rdm_core::ops::BodyUpdate::Set(
+                "Intro paragraph. The roadmap span here. Outro.\n".to_string(),
+            ),
+            rdm_core::ops::PriorityUpdate::Keep,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_html_renders_reviews_section_with_highlight() {
+        let (_dir, state) = setup_with_roadmap_body();
+        let id = author_submitted_review(
+            &state,
+            ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            &[(Some(tq("roadmap span")), None, "About this span.")],
+        );
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha").await;
+        assert!(html.contains(r#"<section id="reviews""#), "got: {html}");
+        assert!(html.contains(r#"badge-verdict-comment">Comment</span>"#));
+        assert!(html.contains(&format!(
+            r#"<mark class="rdm-anchor" data-rdm-anchor="{id}-c1">roadmap span</mark>"#
+        )));
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_html_doc_scoped_comment_links_through_to_phase() {
+        let (_dir, state) = setup_with_roadmap_body();
+        let id = author_submitted_review(
+            &state,
+            ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            &[(
+                None,
+                Some(CommentDoc {
+                    kind: CommentDocKind::Phase,
+                    stem: "phase-2-second".to_string(),
+                }),
+                "Scoped into the phase.",
+            )],
+        );
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha").await;
+        assert!(html.contains("Scoped into the phase."), "got: {html}");
+        assert!(
+            html.contains("View in Phase 2: Second Phase"),
+            "cross-link label must name the phase: {html}"
+        );
+        assert!(html.contains(&format!(
+            r#"href="/projects/demo/roadmaps/alpha/phases/phase-2-second#comment-{id}-c1""#
+        )));
+        // Doc-scoped comments never highlight in the roadmap body.
+        assert!(!html.contains("<mark"), "got: {html}");
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_html_shows_rolled_up_counts_matching_index() {
+        let (_dir, state) = setup();
+        // One roadmap-targeted review with 1 open comment, one
+        // phase-targeted review with 2 — the roadmap row must roll them up
+        // to 2 open reviews / 3 open comments, exactly like INDEX.md.
+        author_submitted_review(
+            &state,
+            ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            &[(None, None, "Roadmap note.")],
+        );
+        author_submitted_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-1-first".to_string(),
+            },
+            &[(None, None, "First."), (None, None, "Second.")],
+        );
+
+        let html = get_html(&state, "/projects/demo/roadmaps?show_completed=true").await;
+        assert!(
+            html.contains(
+                r#"<a href="/projects/demo/roadmaps/alpha#reviews">2 open (3 comments)</a>"#
+            ),
+            "got: {html}"
+        );
+
+        // INDEX.md, regenerated over the same fixture, must agree.
+        let mut store = state.store();
+        rdm_core::ops::index::generate_project_index(&mut store, "demo").unwrap();
+        let index_md =
+            rdm_core::store::Store::read(&store, &rdm_core::paths::project_index_path("demo"))
+                .unwrap();
+        let alpha_row = index_md
+            .lines()
+            .find(|l| l.contains("[alpha]"))
+            .expect("alpha row present in INDEX.md");
+        let cells: Vec<&str> = alpha_row.split('|').map(str::trim).collect();
+        assert!(
+            cells.contains(&"2") && cells.contains(&"3"),
+            "INDEX.md must report the same 2 open reviews / 3 open comments: {alpha_row}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_roadmaps_html_dash_when_no_open_reviews() {
+        let (_dir, state) = setup();
+        let html = get_html(&state, "/projects/demo/roadmaps").await;
+        assert!(
+            html.contains(r#"<th scope="col">Reviews</th>"#),
+            "got: {html}"
+        );
+        assert!(
+            !html.contains("#reviews\">"),
+            "no count link without open reviews"
+        );
     }
 }

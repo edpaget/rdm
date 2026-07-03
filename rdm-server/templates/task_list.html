@@ -34,6 +34,7 @@
       <th scope="col">Task</th>
       <th scope="col">Status</th>
       <th scope="col">Priority</th>
+      <th scope="col">Reviews</th>
     </tr>
   </thead>
   <tbody>
@@ -42,6 +43,7 @@
       <td><a href="/projects/{{ project }}/tasks/{{ t.slug }}">{{ t.title }}</a></td>
       <td><span class="badge badge-{{ t.status_class }}">{{ t.status }}</span></td>
       <td><span class="badge badge-{{ t.priority_class }}">{{ t.priority }}</span></td>
+      <td>{% if t.open_reviews > 0 %}<a href="/projects/{{ project }}/tasks/{{ t.slug }}#reviews">{{ t.open_reviews }} open ({{ t.open_comments }} comments)</a>{% else %}—{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>

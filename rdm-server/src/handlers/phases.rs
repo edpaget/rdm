@@ -12,7 +12,6 @@ use rdm_core::store::Store;
 use crate::content_type::ResponseFormat;
 use crate::error::{error_response, json_rejection_response, validation_error};
 use crate::extract::{hal_created_response, hal_response, see_other_response};
-use crate::markdown::render_markdown;
 use crate::state::AppState;
 use crate::templates::{PhaseDetailPage, phase_status_class, phase_status_options};
 
@@ -198,7 +197,20 @@ pub async fn get_phase(
             Ok(hal_response(resource))
         }
         ResponseFormat::Html => {
-            let body_html = render_markdown(&doc.body);
+            // Inline highlights index the *current* body; a pinned `?at=`
+            // view renders historical bytes, so highlighting is disabled
+            // there (quote previews still render).
+            let page_reviews = crate::review_views::page_reviews(
+                &store,
+                &project,
+                &crate::review_views::PageDoc::Phase {
+                    roadmap: &roadmap,
+                    stem: &stem,
+                },
+                filters.at.is_none(),
+            )
+            .map_err(|e| error_response(e, format))?;
+            let body_html = page_reviews.render_body(&doc.body);
             let page = PhaseDetailPage {
                 project,
                 roadmap,
@@ -215,6 +227,7 @@ pub async fn get_phase(
                 prev_href,
                 next_href,
                 revision: filters.at,
+                reviews: page_reviews.reviews,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1246,5 +1259,273 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 422);
+    }
+
+    // -- reviews section --
+
+    use rdm_core::model::{Anchor, CommentDoc, ReviewTarget, Verdict};
+
+    /// Text-quote anchor with empty context (fine for unique quotes).
+    fn tq(quote: &str) -> Anchor {
+        Anchor::TextQuote {
+            quote: quote.to_string(),
+            prefix: String::new(),
+            suffix: String::new(),
+        }
+    }
+
+    /// Authors a review with the given comments via core ops, optionally
+    /// submitting it; returns the review id.
+    fn author_review(
+        state: &AppState,
+        target: ReviewTarget,
+        comments: &[(Option<Anchor>, Option<CommentDoc>, &str)],
+        submit: bool,
+    ) -> String {
+        let mut store = state.store();
+        let doc = rdm_core::ops::reviews::create_review(
+            &mut store,
+            rdm_core::ops::reviews::CreateReview {
+                project: "demo",
+                author: "reviewer",
+                target,
+                body: Some("Overall **summary** text."),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        for (anchor, doc_scope, body) in comments {
+            rdm_core::ops::reviews::add_comment(
+                &mut store,
+                rdm_core::ops::reviews::AddComment {
+                    project: "demo",
+                    review_id: &id,
+                    body,
+                    doc: doc_scope.clone(),
+                    anchor: anchor.clone(),
+                },
+            )
+            .unwrap();
+        }
+        if submit {
+            rdm_core::ops::reviews::submit_review(
+                &mut store,
+                "demo",
+                &id,
+                Some(Verdict::RequestChanges),
+            )
+            .unwrap();
+        }
+        rdm_core::store::Store::commit(&mut store).unwrap();
+        id
+    }
+
+    async fn get_html(state: &AppState, uri: &str) -> String {
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get(uri)
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 262144).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_renders_submitted_review_with_highlight() {
+        let (_dir, state) = setup();
+        let id = author_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-2-second".to_string(),
+            },
+            &[(
+                Some(tq("Some **bold** text.")),
+                None,
+                "Tighten this *wording*.",
+            )],
+            true,
+        );
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
+        // Section, state and verdict badges, author, summary.
+        assert!(html.contains(r#"<section id="reviews""#), "got: {html}");
+        assert!(html.contains(r#"badge-submitted">Submitted</span>"#));
+        assert!(html.contains(r#"badge-request-changes">Request changes</span>"#));
+        assert!(html.contains("reviewer"));
+        assert!(
+            html.contains("Overall <strong>summary</strong> text."),
+            "summary must render as markdown: {html}"
+        );
+        // Comment body rendered as markdown, quote preview wired for hover.
+        assert!(html.contains("Tighten this <em>wording</em>."));
+        let anchor_ref = format!("{id}-c1");
+        assert!(
+            html.contains(&format!(r#"data-rdm-anchor-ref="{anchor_ref}""#)),
+            "quote preview must carry the anchor ref: {html}"
+        );
+        // Inline highlight in the rendered body.
+        assert!(
+            html.contains(&format!(
+                r#"<mark class="rdm-anchor" data-rdm-anchor="{anchor_ref}">Some <strong>bold</strong> text.</mark>"#
+            )),
+            "body must carry the inline mark: {html}"
+        );
+        assert!(
+            !html.contains("badge-outdated"),
+            "resolved anchor is not outdated"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_hides_draft_reviews() {
+        let (_dir, state) = setup();
+        author_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-2-second".to_string(),
+            },
+            &[(None, None, "Draft-only note.")],
+            false,
+        );
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
+        assert!(
+            !html.contains(r#"<section id="reviews""#),
+            "drafts must not render: {html}"
+        );
+        assert!(!html.contains("Draft-only note."));
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_unresolved_anchor_shows_outdated_with_original_quote() {
+        let (_dir, state) = setup();
+        author_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-2-second".to_string(),
+            },
+            &[(Some(tq("vanished quote text")), None, "About the old text.")],
+            true,
+        );
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
+        assert!(
+            html.contains(r#"badge-outdated">outdated</span>"#),
+            "got: {html}"
+        );
+        assert!(
+            html.contains("vanished quote text"),
+            "original quote must render as the fallback preview: {html}"
+        );
+        assert!(
+            !html.contains("<mark"),
+            "unresolved anchors never highlight: {html}"
+        );
+        assert!(
+            !html.contains("data-rdm-anchor-ref"),
+            "unresolved quote must not wire hover: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_whole_document_comment_shows_label_not_quote() {
+        let (_dir, state) = setup();
+        author_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-2-second".to_string(),
+            },
+            &[(None, None, "General note.")],
+            true,
+        );
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
+        assert!(html.contains("Whole document"), "got: {html}");
+        assert!(
+            !html.contains("anchor-quote"),
+            "no quote preview for whole-doc comments"
+        );
+        assert!(
+            !html.contains("badge-outdated"),
+            "whole-doc comments are never outdated"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_shows_doc_scoped_roadmap_review_comment_with_backlink() {
+        let (_dir, state) = setup();
+        let id = author_review(
+            &state,
+            ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            &[
+                (
+                    Some(tq("Some **bold** text.")),
+                    Some(CommentDoc {
+                        kind: rdm_core::model::CommentDocKind::Phase,
+                        stem: "phase-2-second".to_string(),
+                    }),
+                    "Phase-scoped remark.",
+                ),
+                (None, None, "Roadmap-level remark."),
+            ],
+            true,
+        );
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
+        // The doc-scoped comment appears, highlights in this phase's body,
+        // and links back to the roadmap review.
+        assert!(html.contains("Phase-scoped remark."), "got: {html}");
+        assert!(html.contains(&format!(
+            r#"href="/projects/demo/roadmaps/alpha#review-{id}""#
+        )));
+        assert!(html.contains("From roadmap review by reviewer"));
+        assert!(html.contains(&format!(r#"data-rdm-anchor="{id}-c1""#)));
+        // The roadmap-level comment does not leak onto the phase page.
+        assert!(!html.contains("Roadmap-level remark."), "got: {html}");
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_renders_reply_and_applied_commit() {
+        let (_dir, state) = setup();
+        let id = author_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-2-second".to_string(),
+            },
+            &[(None, None, "Please fix.")],
+            true,
+        );
+        let mut store = state.store();
+        rdm_core::ops::reviews::update_comment(
+            &mut store,
+            rdm_core::ops::reviews::UpdateComment {
+                project: "demo",
+                review_id: &id,
+                comment_id: 1,
+                body: None,
+                anchor: rdm_core::ops::reviews::AnchorUpdate::Keep,
+                doc: rdm_core::ops::reviews::DocUpdate::Keep,
+                status: Some(rdm_core::model::ReviewCommentStatus::Addressed),
+                applied_commit: Some("abc1234"),
+                reply: Some("Fixed in abc1234."),
+            },
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
+        assert!(
+            html.contains(r#"badge-addressed">Addressed</span>"#),
+            "got: {html}"
+        );
+        assert!(html.contains("applied in <code>abc1234</code>"));
+        assert!(html.contains("Fixed in abc1234."));
     }
 }

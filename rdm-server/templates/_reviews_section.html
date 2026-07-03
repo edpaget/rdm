@@ -1,0 +1,48 @@
+{% if !reviews.is_empty() %}
+<section id="reviews" class="reviews-section" aria-label="Reviews">
+  <h2>Reviews</h2>
+  {% for r in reviews %}
+  <article class="review" id="review-{{ r.id }}">
+    <header class="review-header">
+      <span class="badge badge-{{ r.state_class }}">{{ r.state }}</span>
+      {% if let Some(v) = r.verdict %}
+      <span class="badge badge-{{ r.verdict_class.as_deref().unwrap_or("") }}">{{ v }}</span>
+      {% endif %}
+      <span class="review-author">{{ r.author }}</span>
+      <span class="review-time">{{ r.created_relative }}</span>
+    </header>
+    {% if !r.summary_html.is_empty() %}
+    <div class="review-summary body-content">{{ r.summary_html|safe }}</div>
+    {% endif %}
+    {% if !r.comments.is_empty() %}
+    <ol class="review-comments">
+      {% for c in r.comments %}
+      <li class="review-comment" id="comment-{{ c.anchor_ref }}">
+        <div class="comment-meta">
+          <span class="badge badge-{{ c.status_class }}">{{ c.status }}</span>
+          {% if c.outdated %}<span class="badge badge-outdated">outdated</span>{% endif %}
+          {% if let Some(link) = c.cross_link %}
+          <a class="cross-link" href="{{ link.href }}">{{ link.label }}</a>
+          {% endif %}
+          {% if let Some(commit) = c.applied_commit %}
+          <span class="comment-applied">applied in <code>{{ commit }}</code></span>
+          {% endif %}
+        </div>
+        {% if let Some(label) = c.anchor_label %}
+        <p class="anchor-label">{{ label }}</p>
+        {% endif %}
+        {% if let Some(q) = c.quote_text %}
+        <blockquote class="anchor-quote"{% if c.quote_highlightable %} tabindex="0" data-rdm-anchor-ref="{{ c.anchor_ref }}"{% endif %}>{{ q }}</blockquote>
+        {% endif %}
+        <div class="comment-body body-content">{{ c.body_html|safe }}</div>
+        {% if let Some(reply) = c.reply_html %}
+        <div class="comment-reply"><span class="comment-reply-label">Reply:</span> {{ reply|safe }}</div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endif %}

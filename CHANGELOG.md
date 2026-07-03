@@ -47,6 +47,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm-server`'s roadmap, phase, and task detail pages now render a Reviews
+  section: every non-draft review of the document (submitted, addressed, or
+  dismissed) with its state and verdict badges, author, relative timestamp,
+  summary, and comments in order — drafts are never shown. Anchored
+  comments show a quote preview; on the current body, hovering or
+  keyboard-focusing the preview highlights the resolved span inline in the
+  rendered body (a small new `/static/review-highlight.js` script; pages
+  stay fully readable with JavaScript disabled, degrading to the quote
+  preview). Anchors that no longer resolve (or, once a history-aware
+  backend lands, have drifted) get an "outdated" badge and show the
+  original quote instead of a highlight. Roadmap-review comments scoped to
+  a phase (`doc`) link through to that phase — where they render and
+  highlight — and link back to the roadmap review from there. The roadmaps
+  and tasks list pages gain a Reviews column with open-review/open-comment
+  counts per item (phase-targeted reviews rolled up into their roadmap,
+  matching `INDEX.md`), linking to the item's Reviews section.
+- `rdm-core`: `ops::reviews::count_open_reviews` (and its slice-based
+  sibling `count_open_reviews_in`) is the single open-review/open-comment
+  counting pass shared by `INDEX.md` generation and the web list pages, so
+  the two surfaces can never report different numbers.
+
 - `rdm-server` now exposes a REST API for document reviews under
   `/projects/:project/reviews`: `GET` lists reviews as lightweight metadata
   summaries (filterable by `?on=<kind>/<id>`, `?state=`, `?verdict=`, and

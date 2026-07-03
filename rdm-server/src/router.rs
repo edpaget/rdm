@@ -69,6 +69,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/static/edit.js", get(handlers::static_assets::edit_js))
         .route(
+            "/static/review-highlight.js",
+            get(handlers::static_assets::review_highlight_js),
+        )
+        .route(
             "/static/styles.css",
             get(handlers::static_assets::styles_css),
         )

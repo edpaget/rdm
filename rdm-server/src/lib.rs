@@ -22,6 +22,8 @@ pub mod handlers;
 pub mod markdown;
 /// RFC 9457 Problem Details for HTTP APIs.
 pub mod problem;
+/// Shared assembly of the detail pages' Reviews sections.
+pub mod review_views;
 /// Axum router construction.
 pub mod router;
 /// Shared application state.

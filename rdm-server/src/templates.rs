@@ -140,6 +140,159 @@ pub fn task_status_options(current: &rdm_core::model::TaskStatus) -> Vec<StatusO
     .collect()
 }
 
+/// Helper to map a review lifecycle state to its display label.
+///
+/// `Draft` is included for totality but never reaches a template: the web
+/// pages render only non-draft reviews.
+pub fn review_state_label(state: &rdm_core::model::ReviewState) -> &'static str {
+    match state {
+        rdm_core::model::ReviewState::Draft => "Draft",
+        rdm_core::model::ReviewState::Submitted => "Submitted",
+        rdm_core::model::ReviewState::Addressed => "Addressed",
+        rdm_core::model::ReviewState::Dismissed => "Dismissed",
+    }
+}
+
+/// Helper to map a review lifecycle state to its CSS badge class.
+pub fn review_state_class(state: &rdm_core::model::ReviewState) -> &'static str {
+    match state {
+        rdm_core::model::ReviewState::Draft => "draft",
+        rdm_core::model::ReviewState::Submitted => "submitted",
+        rdm_core::model::ReviewState::Addressed => "addressed",
+        rdm_core::model::ReviewState::Dismissed => "dismissed",
+    }
+}
+
+/// Helper to map a review verdict to its display label.
+pub fn verdict_label(verdict: &rdm_core::model::Verdict) -> &'static str {
+    match verdict {
+        rdm_core::model::Verdict::Approve => "Approve",
+        rdm_core::model::Verdict::RequestChanges => "Request changes",
+        rdm_core::model::Verdict::Comment => "Comment",
+    }
+}
+
+/// Helper to map a review verdict to its CSS badge class.
+pub fn verdict_class(verdict: &rdm_core::model::Verdict) -> &'static str {
+    match verdict {
+        rdm_core::model::Verdict::Approve => "approve",
+        rdm_core::model::Verdict::RequestChanges => "request-changes",
+        rdm_core::model::Verdict::Comment => "verdict-comment",
+    }
+}
+
+/// Helper to map a review comment status to its display label.
+pub fn comment_status_label(status: &rdm_core::model::ReviewCommentStatus) -> &'static str {
+    match status {
+        rdm_core::model::ReviewCommentStatus::Open => "Open",
+        rdm_core::model::ReviewCommentStatus::Addressed => "Addressed",
+        rdm_core::model::ReviewCommentStatus::WontFix => "Won't fix",
+    }
+}
+
+/// Helper to map a review comment status to its CSS badge class.
+pub fn comment_status_class(status: &rdm_core::model::ReviewCommentStatus) -> &'static str {
+    match status {
+        rdm_core::model::ReviewCommentStatus::Open => "open",
+        rdm_core::model::ReviewCommentStatus::Addressed => "addressed",
+        rdm_core::model::ReviewCommentStatus::WontFix => "wont-fix",
+    }
+}
+
+/// Formats how long ago `dt` was relative to `now`, coarsely
+/// ("just now", "5 minutes ago", "3 hours ago", "2 days ago").
+///
+/// Future timestamps (clock skew between writer and server) clamp to
+/// "just now" rather than rendering a negative duration.
+pub fn relative_time_at(
+    dt: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let secs = (now - dt).num_seconds().max(0);
+    let (n, unit) = match secs {
+        0..60 => return "just now".to_string(),
+        60..3600 => (secs / 60, "minute"),
+        3600..86400 => (secs / 3600, "hour"),
+        _ => (secs / 86400, "day"),
+    };
+    let s = if n == 1 { "" } else { "s" };
+    format!("{n} {unit}{s} ago")
+}
+
+/// [`relative_time_at`] against the current wall clock.
+pub fn relative_time(dt: chrono::DateTime<chrono::Utc>) -> String {
+    relative_time_at(dt, chrono::Utc::now())
+}
+
+/// A link from a review comment to a different document than the page it
+/// is rendered on — a roadmap-review comment scoped into a phase links
+/// forward to that phase, and the same comment shown on the phase page
+/// links back to the roadmap review.
+pub struct DocLink {
+    /// Link text.
+    pub label: String,
+    /// Link href (detail page plus fragment).
+    pub href: String,
+}
+
+/// One review comment prepared for HTML rendering.
+pub struct ReviewCommentView {
+    /// Stable per-comment reference (`<review-id>-c<comment-id>`); used as
+    /// the comment's DOM id and, when highlightable, mirrored by the
+    /// in-body `<mark data-rdm-anchor>` it controls.
+    pub anchor_ref: String,
+    /// Display status text.
+    pub status: String,
+    /// CSS class for the status badge.
+    pub status_class: String,
+    /// Commit SHA recorded when the comment was addressed, if any.
+    pub applied_commit: Option<String>,
+    /// Rendered HTML of the comment body.
+    pub body_html: String,
+    /// Rendered HTML of the agent reply, when present.
+    pub reply_html: Option<String>,
+    /// Cross-document link, when the comment targets a different document
+    /// than the page it is rendered on.
+    pub cross_link: Option<DocLink>,
+    /// `Some("Whole document")` for un-anchored comments; `None` for
+    /// anchored ones (which show `quote_text` instead).
+    pub anchor_label: Option<String>,
+    /// The anchored text (resolved quote, or the stored quote when the
+    /// anchor no longer resolves), when the comment is anchored.
+    pub quote_text: Option<String>,
+    /// `true` when hovering the quote should light up an in-body highlight
+    /// (i.e. an inline `<mark>` with this comment's `anchor_ref` exists in
+    /// the rendered body).
+    pub quote_highlightable: bool,
+    /// `true` when the anchor is drifted or unresolved — rendered as an
+    /// "outdated" badge with the original quote shown instead of a
+    /// highlight.
+    pub outdated: bool,
+}
+
+/// One review prepared for HTML rendering in a detail page's Reviews
+/// section.
+pub struct ReviewView {
+    /// Review id (used as the DOM fragment `#review-<id>`).
+    pub id: String,
+    /// Review author.
+    pub author: String,
+    /// Relative creation time (e.g. "3 hours ago").
+    pub created_relative: String,
+    /// Display state text.
+    pub state: String,
+    /// CSS class for the state badge.
+    pub state_class: String,
+    /// Display verdict text, when stamped.
+    pub verdict: Option<String>,
+    /// CSS class for the verdict badge, when stamped.
+    pub verdict_class: Option<String>,
+    /// Rendered HTML of the review summary.
+    pub summary_html: String,
+    /// The review's comments, in order.
+    pub comments: Vec<ReviewCommentView>,
+}
+
 /// Helper to map priority to CSS badge class.
 pub fn priority_class(priority: &rdm_core::model::Priority) -> &'static str {
     match priority {
@@ -197,6 +350,11 @@ pub struct RoadmapSummaryView {
     pub priority: Option<String>,
     /// CSS class for the priority badge, if set.
     pub priority_class: Option<String>,
+    /// Number of open (submitted) reviews on the roadmap, phase-targeted
+    /// reviews rolled up (same numbers as `INDEX.md`).
+    pub open_reviews: usize,
+    /// Number of open comments across those reviews.
+    pub open_comments: usize,
 }
 
 /// Roadmaps list page for a project.
@@ -265,6 +423,8 @@ pub struct RoadmapDetailPage {
     pub active_tag: Option<String>,
     /// Git revision the body is sourced from, when viewing at a historical SHA.
     pub revision: Option<String>,
+    /// Non-draft reviews of this roadmap, oldest first.
+    pub reviews: Vec<ReviewView>,
 }
 
 /// Phase detail page with rendered markdown body.
@@ -302,6 +462,9 @@ pub struct PhaseDetailPage {
     pub status_options: Vec<StatusOption>,
     /// Git revision the body is sourced from, when viewing at a historical SHA.
     pub revision: Option<String>,
+    /// Non-draft reviews of this phase (including roadmap-review comments
+    /// scoped into it), oldest first.
+    pub reviews: Vec<ReviewView>,
 }
 
 /// A task row for the task list page.
@@ -318,6 +481,11 @@ pub struct TaskRow {
     pub priority: String,
     /// CSS class for the priority badge.
     pub priority_class: String,
+    /// Number of open (submitted) reviews on the task (same numbers as
+    /// `INDEX.md`).
+    pub open_reviews: usize,
+    /// Number of open comments across those reviews.
+    pub open_comments: usize,
 }
 
 /// Task list page for a project.
@@ -367,6 +535,8 @@ pub struct TaskDetailPage {
     pub status_options: Vec<StatusOption>,
     /// Git revision the body is sourced from, when viewing at a historical SHA.
     pub revision: Option<String>,
+    /// Non-draft reviews of this task, oldest first.
+    pub reviews: Vec<ReviewView>,
 }
 
 /// A single search result row for the search results page.
@@ -524,6 +694,7 @@ mod tests {
             body_md: String::new(),
             status_options: task_status_options(&rdm_core::model::TaskStatus::Open),
             revision,
+            reviews: Vec::new(),
         };
         page.render().unwrap()
     }
@@ -576,6 +747,7 @@ mod tests {
             quick_filters: Vec::new(),
             active_tag: None,
             revision,
+            reviews: Vec::new(),
         };
         page.render().unwrap()
     }
@@ -612,6 +784,7 @@ mod tests {
             next_href: None,
             status_options: phase_status_options(&rdm_core::model::PhaseStatus::InProgress),
             revision,
+            reviews: Vec::new(),
         };
         page.render().unwrap()
     }
@@ -661,6 +834,117 @@ mod tests {
             css.contains("--badge-revision-bg"),
             "styles.css must define --badge-revision-bg CSS variable"
         );
+    }
+
+    // -- review display helpers --
+
+    #[test]
+    fn review_state_labels_and_classes_cover_all_variants() {
+        use rdm_core::model::ReviewState::*;
+        for (state, label, class) in [
+            (Draft, "Draft", "draft"),
+            (Submitted, "Submitted", "submitted"),
+            (Addressed, "Addressed", "addressed"),
+            (Dismissed, "Dismissed", "dismissed"),
+        ] {
+            assert_eq!(review_state_label(&state), label);
+            assert_eq!(review_state_class(&state), class);
+        }
+    }
+
+    #[test]
+    fn verdict_labels_and_classes_cover_all_variants() {
+        use rdm_core::model::Verdict::*;
+        for (verdict, label, class) in [
+            (Approve, "Approve", "approve"),
+            (RequestChanges, "Request changes", "request-changes"),
+            (Comment, "Comment", "verdict-comment"),
+        ] {
+            assert_eq!(verdict_label(&verdict), label);
+            assert_eq!(verdict_class(&verdict), class);
+        }
+    }
+
+    #[test]
+    fn comment_status_labels_and_classes_cover_all_variants() {
+        use rdm_core::model::ReviewCommentStatus::*;
+        for (status, label, class) in [
+            (Open, "Open", "open"),
+            (Addressed, "Addressed", "addressed"),
+            (WontFix, "Won't fix", "wont-fix"),
+        ] {
+            assert_eq!(comment_status_label(&status), label);
+            assert_eq!(comment_status_class(&status), class);
+        }
+    }
+
+    #[test]
+    fn relative_time_buckets() {
+        use chrono::{Duration, Utc};
+        let now = Utc::now();
+        assert_eq!(relative_time_at(now, now), "just now");
+        assert_eq!(
+            relative_time_at(now - Duration::seconds(59), now),
+            "just now"
+        );
+        assert_eq!(
+            relative_time_at(now - Duration::minutes(1), now),
+            "1 minute ago"
+        );
+        assert_eq!(
+            relative_time_at(now - Duration::minutes(5), now),
+            "5 minutes ago"
+        );
+        assert_eq!(
+            relative_time_at(now - Duration::hours(3), now),
+            "3 hours ago"
+        );
+        assert_eq!(relative_time_at(now - Duration::days(1), now), "1 day ago");
+        assert_eq!(
+            relative_time_at(now - Duration::days(40), now),
+            "40 days ago"
+        );
+    }
+
+    #[test]
+    fn relative_time_future_clamps_to_just_now() {
+        use chrono::{Duration, Utc};
+        let now = Utc::now();
+        assert_eq!(relative_time_at(now + Duration::hours(2), now), "just now");
+    }
+
+    #[test]
+    fn styles_css_defines_review_section_rules() {
+        // The reviews section introduces new badge classes (review state,
+        // verdict, outdated) and the inline-anchor mark styling; all must
+        // exist in the stylesheet, in both theme variable blocks.
+        let css = include_str!("../assets/styles.css");
+        for class in [
+            ".badge-submitted {",
+            ".badge-addressed {",
+            ".badge-dismissed {",
+            ".badge-approve {",
+            ".badge-request-changes {",
+            ".badge-verdict-comment {",
+            ".badge-outdated {",
+            "mark.rdm-anchor {",
+            "mark.rdm-anchor.is-active {",
+            ".reviews-section {",
+            ".anchor-quote {",
+        ] {
+            assert!(css.contains(class), "styles.css must define a {class} rule");
+        }
+        for var in [
+            "--badge-submitted-bg",
+            "--badge-outdated-bg",
+            "--anchor-highlight-bg",
+        ] {
+            assert_eq!(
+                css.matches(&format!("{var}:")).count(),
+                2,
+                "{var} must be defined in both the light and dark blocks"
+            );
+        }
     }
 
     #[test]

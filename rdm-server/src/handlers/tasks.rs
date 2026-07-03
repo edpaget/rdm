@@ -14,7 +14,6 @@ use crate::error::{
     error_response, json_rejection_response, problem_detail_into_response, validation_error,
 };
 use crate::extract::{hal_created_response, hal_response, see_other_response};
-use crate::markdown::render_markdown;
 use crate::state::AppState;
 use crate::templates::{
     TaskDetailPage, TaskListPage, TaskRow, priority_class, task_status_class, task_status_options,
@@ -159,15 +158,28 @@ pub async fn list_tasks(
             Ok(hal_response(resource))
         }
         ResponseFormat::Html => {
+            // Same counting pass as INDEX.md generation, so the two
+            // surfaces always agree.
+            let review_counts = rdm_core::ops::reviews::count_open_reviews(&store, &project)
+                .map_err(|e| error_response(e, format))?;
             let rows: Vec<TaskRow> = filtered
                 .iter()
-                .map(|(slug, doc)| TaskRow {
-                    slug: (*slug).clone(),
-                    title: doc.frontmatter.title.clone(),
-                    status: doc.frontmatter.status.to_string(),
-                    status_class: task_status_class(&doc.frontmatter.status).to_string(),
-                    priority: doc.frontmatter.priority.to_string(),
-                    priority_class: priority_class(&doc.frontmatter.priority).to_string(),
+                .map(|(slug, doc)| {
+                    let counts = review_counts
+                        .tasks
+                        .get(slug.as_str())
+                        .copied()
+                        .unwrap_or_default();
+                    TaskRow {
+                        slug: (*slug).clone(),
+                        title: doc.frontmatter.title.clone(),
+                        status: doc.frontmatter.status.to_string(),
+                        status_class: task_status_class(&doc.frontmatter.status).to_string(),
+                        priority: doc.frontmatter.priority.to_string(),
+                        priority_class: priority_class(&doc.frontmatter.priority).to_string(),
+                        open_reviews: counts.open_reviews,
+                        open_comments: counts.open_comments,
+                    }
                 })
                 .collect();
             let task_list_path = format!("/projects/{project}/tasks");
@@ -221,7 +233,16 @@ pub async fn get_task(
             Ok(hal_response(resource))
         }
         ResponseFormat::Html => {
-            let body_html = render_markdown(&doc.body);
+            // Inline highlights index the *current* body; a pinned `?at=`
+            // view disables them (quote previews still render).
+            let page_reviews = crate::review_views::page_reviews(
+                &store,
+                &project,
+                &crate::review_views::PageDoc::Task { slug: &task_slug },
+                filters.at.is_none(),
+            )
+            .map_err(|e| error_response(e, format))?;
+            let body_html = page_reviews.render_body(&doc.body);
             let page = TaskDetailPage {
                 project,
                 slug: task_slug,
@@ -236,6 +257,7 @@ pub async fn get_task(
                 body_html,
                 body_md: doc.body,
                 revision: filters.at,
+                reviews: page_reviews.reviews,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1301,5 +1323,178 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let tasks = json["_embedded"]["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 3);
+    }
+
+    // -- reviews section & open-review counts --
+
+    use rdm_core::model::{Anchor, ReviewTarget, Verdict};
+
+    /// Authors a review of the `bug-fix` task via core ops; returns its id.
+    fn author_review(state: &AppState, anchor: Option<Anchor>, submit: bool) -> String {
+        let mut store = state.store();
+        let doc = rdm_core::ops::reviews::create_review(
+            &mut store,
+            rdm_core::ops::reviews::CreateReview {
+                project: "demo",
+                author: "reviewer",
+                target: ReviewTarget::Task {
+                    slug: "bug-fix".to_string(),
+                },
+                body: Some("Task review summary."),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        rdm_core::ops::reviews::add_comment(
+            &mut store,
+            rdm_core::ops::reviews::AddComment {
+                project: "demo",
+                review_id: &id,
+                body: "Look at this.",
+                doc: None,
+                anchor,
+            },
+        )
+        .unwrap();
+        if submit {
+            rdm_core::ops::reviews::submit_review(&mut store, "demo", &id, Some(Verdict::Approve))
+                .unwrap();
+        }
+        rdm_core::store::Store::commit(&mut store).unwrap();
+        id
+    }
+
+    async fn get_html(state: &AppState, uri: &str) -> String {
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get(uri)
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 262144).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_task_html_renders_reviews_section_with_highlight() {
+        let (_dir, state) = setup();
+        let id = author_review(
+            &state,
+            Some(Anchor::TextQuote {
+                quote: "Bug details.".to_string(),
+                prefix: String::new(),
+                suffix: String::new(),
+            }),
+            true,
+        );
+        let html = get_html(&state, "/projects/demo/tasks/bug-fix").await;
+        assert!(html.contains(r#"<section id="reviews""#), "got: {html}");
+        assert!(html.contains(r#"badge-approve">Approve</span>"#));
+        assert!(html.contains("Task review summary."));
+        assert!(html.contains("Look at this."));
+        assert!(html.contains(&format!(
+            r#"<mark class="rdm-anchor" data-rdm-anchor="{id}-c1">Bug details.</mark>"#
+        )));
+    }
+
+    /// Reviewer-controlled fields (author, anchor quote) must render
+    /// entity-escaped: Askama auto-escaping is the XSS boundary for review
+    /// content, so pin it.
+    #[tokio::test]
+    async fn get_task_html_escapes_reviewer_controlled_fields() {
+        let (_dir, state) = setup();
+        let mut store = state.store();
+        let doc = rdm_core::ops::reviews::create_review(
+            &mut store,
+            rdm_core::ops::reviews::CreateReview {
+                project: "demo",
+                author: "<script>alert(1)</script>",
+                target: ReviewTarget::Task {
+                    slug: "bug-fix".to_string(),
+                },
+                body: Some("Summary."),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        // The quote does not occur in the task body, so it renders through
+        // the unresolved stored-quote preview path.
+        rdm_core::ops::reviews::add_comment(
+            &mut store,
+            rdm_core::ops::reviews::AddComment {
+                project: "demo",
+                review_id: &id,
+                body: "Hostile quote.",
+                doc: None,
+                anchor: Some(Anchor::TextQuote {
+                    quote: "<b>x</b>".to_string(),
+                    prefix: String::new(),
+                    suffix: String::new(),
+                }),
+            },
+        )
+        .unwrap();
+        rdm_core::ops::reviews::submit_review(&mut store, "demo", &id, Some(Verdict::Comment))
+            .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+
+        let html = get_html(&state, "/projects/demo/tasks/bug-fix").await;
+        // Askama escapes with numeric character references.
+        assert!(
+            html.contains("&#60;script&#62;alert(1)&#60;/script&#62;"),
+            "author must render entity-escaped: {html}"
+        );
+        assert!(
+            !html.contains("<script>alert(1)</script>"),
+            "raw author markup must never reach the page: {html}"
+        );
+        assert!(
+            html.contains("&#60;b&#62;x&#60;/b&#62;"),
+            "quote must render entity-escaped: {html}"
+        );
+        assert!(
+            !html.contains("<b>x</b>"),
+            "raw quote markup must never reach the page: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_task_html_hides_draft_reviews() {
+        let (_dir, state) = setup();
+        author_review(&state, None, false);
+        let html = get_html(&state, "/projects/demo/tasks/bug-fix").await;
+        assert!(!html.contains(r#"<section id="reviews""#), "got: {html}");
+        assert!(!html.contains("Look at this."));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_html_shows_open_review_counts() {
+        let (_dir, state) = setup();
+        author_review(&state, None, true);
+        let html = get_html(&state, "/projects/demo/tasks").await;
+        assert!(
+            html.contains(r#"<th scope="col">Reviews</th>"#),
+            "got: {html}"
+        );
+        assert!(
+            html.contains(
+                r#"<a href="/projects/demo/tasks/bug-fix#reviews">1 open (1 comments)</a>"#
+            ),
+            "got: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_tasks_html_dash_when_no_open_reviews() {
+        let (_dir, state) = setup();
+        let html = get_html(&state, "/projects/demo/tasks").await;
+        assert!(
+            !html.contains("#reviews\">"),
+            "no count link without open reviews: {html}"
+        );
     }
 }
