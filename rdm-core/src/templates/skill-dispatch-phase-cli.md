@@ -21,7 +21,7 @@ Unlike interactive `rdm-do`, there is no human to approve the tactical plan befo
 
 - `roadmap` — roadmap slug.
 - `phase` — phase stem or number.
-- `model tier` — read from the phase record (see step 2); the implementer subagent runs on this tier.
+- `model tier` — read from the phase record (see step 2); the planning and implementer subagents both run on this tier.
 - `worktree path` — the roadmap worktree, created or reused in step 3.
 
 **Output** — a structured outcome you print as the final result, so the orchestrator can act on it:
@@ -47,22 +47,27 @@ Unlike interactive `rdm-do`, there is no human to approve the tactical plan befo
 3. **Create/locate the roadmap worktree and mark in-progress:**
    - `rdm worktree add <slug> {proj_flag}` — pass the **roadmap** ref (not `<slug>/<phase-stem>`); idempotent and prints the worktree path. The first phase creates the `roadmap/<slug>` worktree; every later phase of the same roadmap reuses it. `cd` into the printed path and do all implementation there.
    - `rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> {proj_flag}`
-4. **Plan (implementer subagent):** dispatch an implementer subagent with the `Agent` tool, running on the phase's **model tier** (pass it as the agent's model). Seed it with **only** the phase body from step 2 and the repo — *not* this orchestrator's accumulated context. Ask it to produce a concrete tactical plan: the implementation steps that satisfy every acceptance criterion, the crates/files it will touch, and the tests it will add. Have it return the plan only — no code yet.
-5. **Plan gate (separate reviewer subagent):** dispatch a *different*, lightweight plan-review subagent with the `Agent` tool. Give it the phase body and the proposed plan — and nothing else. It checks the plan against:
+4. **Plan (planning subagent):** dispatch a planning subagent with the `Agent` tool, running on the phase's **model tier** (pass it as the agent's model). Seed it with **only** the phase body from step 2 and the repo — *not* this orchestrator's accumulated context. Ask it to return a **self-contained plan document** — everything the implementer needs written down, because a **new** agent implements it in step 6 with no access to this planner's exploration context. The document must contain:
+   - **Steps per AC** — the implementation steps that satisfy every acceptance criterion, mapped one-to-one to the ACs.
+   - **File/crate navigation map** — every crate and file it will touch, so the implementer inherits navigation instead of re-deriving it through fresh exploration (this is what avoids paying for discovery twice).
+   - **Test list per AC** — the tests to add, each mapped to the AC it covers.
+
+   Have it return the plan document only — no code yet.
+5. **Plan gate (separate reviewer subagent):** dispatch a *different*, lightweight plan-review subagent with the `Agent` tool. Give it the phase body and the plan document — and nothing else. It checks the plan document against:
    - **Acceptance criteria** — does the plan satisfy every AC?
    - **Scope** — does it stay in scope, adding no work the phase did not ask for?
    - **Architecture** — does it target the right crates per the core/cli/server separation (core is the source of truth; cli/server are thin)?
 
    It returns exactly one verdict:
-   - **approve** — proceed to implement.
-   - **revise** — concrete, bounded feedback. Apply it **once**: the implementer revises the plan a single time, then proceeds. Do **not** loop — there is at most one revise round.
+   - **approve** — proceed to implement. The approved plan document — exactly as reviewed, not a paraphrase — is what the implementer receives in step 6.
+   - **revise** — concrete, bounded feedback. Apply it **once**: the planning subagent revises the plan document a single time, then proceeds. Do **not** loop — there is at most one revise round.
    - **escalate** — genuine AC ambiguity or an architectural decision with no clear default. Stop and park the phase per the **escalation protocol** (see below): record the blocker as a `plan`-stage escalation and return the **escalated** outcome with it in `findings`.
      ```bash
      rdm phase update <phase> --status blocked --reason "[plan] <the decision or ambiguity>" --no-edit --roadmap <slug> {proj_flag}
      ```
 
    The gate is bounded: one review pass plus at most one revise round, then proceed or escalate. Never an unbounded critique loop. Exhausting the single revise round without converging is itself a `plan`-stage escalation.
-6. **Implement:** on `approve` (or after the single accepted revision), the implementer subagent implements the approved plan inside the worktree and commits the changes. Do **not** emit a `Done:` line YET — that is owned by `rdm-review`, which adds it on a passing review (a deferred two-stage protocol, not a contradiction).
+6. **Implement (new implementer subagent):** on `approve` (or after the single accepted revision), dispatch a **new** implementer subagent with the `Agent` tool, on the phase's **model tier**. Seed it with **only** the phase body from step 2 and the approved plan document from steps 4–5 — *not* the planning subagent's accumulated context (its exploration, rejected alternatives, or files it opened but will not touch). The plan document's file/crate navigation map and per-AC test list are what let it skip re-deriving discovery. It implements the approved plan document inside the worktree and commits the changes. Do **not** emit a `Done:` line YET — that is owned by `rdm-review`, which adds it on a passing review (a deferred two-stage protocol, not a contradiction).
 7. **Code review:** run the `rdm-review` skill on the result (`<slug> <phase>`). It owns the `needs-review` → `reviewed` gate and the `Done:` line. Map its verdict onto the outcome:
    - **pass** → `rdm-review` leaves the phase `reviewed` with a `Done:` line on the branch → return **reviewed**.
    - **fail (fixable defect)** → allow **one** bounded rework pass (the implementer addresses the review findings and re-runs `rdm-review`). If it still fails, `rdm-review` returns the phase to `in-progress` → return **rework**. Never loop indefinitely on rework.
@@ -82,11 +87,12 @@ This skill follows the shared **escalation protocol** (`docs/escalation-protocol
 
 ## Context isolation
 
-The whole point is a *fresh* per-phase agent. When you dispatch the implementer and the plan reviewer:
+The whole point is a *fresh* per-phase agent, and the isolation holds at three boundaries. When you dispatch the planner, the plan reviewer, and the implementer:
 
 - Pass the phase body captured in step 2 **explicitly** as their context.
-- Do **not** leak unrelated roadmap phases, other tasks, or this orchestrator's conversation history into either subagent.
-- The plan reviewer is a *separate* agent from the implementer — the planner never grades its own plan.
+- Do **not** leak unrelated roadmap phases, other tasks, or this orchestrator's conversation history into any of the subagents.
+- **Planner ↔ reviewer:** the plan reviewer is a *separate* agent from the planner — the planner never grades its own plan.
+- **Planner ↔ implementer:** the step-6 implementer is a **new** agent, seeded only with the phase body and the approved plan document — never the planning agent's own context (its exploration, dead ends, or files it read but did not act on). The plan document is the *only* channel from planning to implementation, which is why step 4 requires it to be self-contained.
 
 ## Side-work
 

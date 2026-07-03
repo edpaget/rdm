@@ -18,6 +18,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   No change to how the loop interprets `reviewed`/`rework`/`escalated`, the
   per-phase rework-retry budget, or blocked-parking. See
   [`docs/autonomous-loop.md`](docs/autonomous-loop.md).
+- The `rdm-dispatch-phase` agent skill (CLI and MCP variants) now splits the
+  planning agent from the implementing agent. The planning subagent (step 4)
+  returns a **self-contained plan document** — steps mapped to each acceptance
+  criterion, a file/crate navigation map, and a per-AC test list — and the
+  independent plan gate (step 5) approves that exact document. Implementation
+  (step 6) is then handed to a **new** implementer subagent seeded only with the
+  phase body and the approved plan document, rather than reusing the planner's
+  accumulated exploration context. The plan document carries the navigation map
+  forward so the implementer inherits it instead of re-discovering it. The skill's
+  "Context isolation" section now names the planner→implementer boundary
+  explicitly alongside the existing planner→reviewer one.
 
 ### Added
 
