@@ -177,7 +177,7 @@ fn run() -> Result<()> {
         )?,
 
         #[cfg(feature = "mcp")]
-        Command::Mcp => commands::mcp::run(root, &global_config, staging)?,
+        Command::Mcp => commands::mcp::run(root, &global_config)?,
 
         #[cfg(feature = "server")]
         Command::Serve {

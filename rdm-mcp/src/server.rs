@@ -54,23 +54,15 @@ fn err_text(msg: String) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
 }
 
-/// Returns the plan-repo commit produced by a just-completed mutation, for
-/// provenance reporting in tool responses.
-///
-/// `None` under staging mode (the write is on disk but not yet committed)
-/// or when the backend has no history (plain filesystem store / unborn
-/// HEAD).
-fn commit_sha_after_mutation(store: &AppStore, staging: bool) -> Option<String> {
-    if staging {
-        return None;
-    }
-    store.head_sha().ok()
-}
-
 /// Appends a machine-readable `Commit: <sha>` trailer line to a tool's
 /// human-formatted output, so agents can thread the resulting plan-repo
 /// commit into review provenance (`applied_commit`) without a follow-up
 /// call. No-op when there is no commit to report.
+///
+/// Used exclusively by the `rdm_commit` tool (see the `git`-feature-gated
+/// tool router below) — mutation tools no longer report a commit since MCP
+/// mutations only stage.
+#[cfg(feature = "git")]
 fn with_commit_trailer(mut text: String, sha: Option<String>) -> String {
     if let Some(sha) = sha {
         if !text.ends_with('\n') {
@@ -396,11 +388,9 @@ struct ReviewAddressCommentParams {
     /// for clarification).
     status: Option<String>,
     /// Plan-repo commit SHA that made the change, recorded on the comment.
-    /// Thread the `Commit:`/`commit` value reported by the mutation tool
-    /// that applied the edit. When omitted with status "addressed", the
-    /// plan-repo HEAD *before* this call is recorded as a best-effort
-    /// fallback (it may name an unrelated commit — prefer passing the SHA
-    /// explicitly). Never defaulted for "wont-fix".
+    /// Thread the `Commit:` value reported by the `rdm_commit` tool call
+    /// that landed the fix. Left `null` if omitted — MCP mutations only
+    /// stage, so there is no commit to default to.
     applied_commit: Option<String>,
     /// Reply explaining what changed (or why the comment won't be fixed),
     /// including whether the anchor resolved.
@@ -458,19 +448,44 @@ struct WorktreeRemoveParams {
     force: Option<bool>,
 }
 
+// ---------- Parameter structs (git status/commit/discard; git feature only) ----------
+
+/// Parameters for `rdm_commit`.
+#[cfg(feature = "git")]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CommitParams {
+    /// Commit message. Omit to auto-generate a summary from the staged
+    /// changes (matching the CLI's `rdm commit` default).
+    message: Option<String>,
+}
+
+/// Parameters for `rdm_discard`.
+#[cfg(feature = "git")]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DiscardParams {
+    /// Must be `true` to confirm the (irreversible) discard of staged
+    /// changes. Omitting it is treated as `false` (rejected) rather than a
+    /// schema validation error, so a missing confirmation always surfaces as
+    /// an ordinary tool error instead of a protocol-level one.
+    confirm: Option<bool>,
+}
+
 // ---------- Store helpers ----------
 
 /// Creates an [`AppStore`] for an existing plan repo.
-fn make_store(root: &Path, staging: bool) -> anyhow::Result<AppStore> {
+///
+/// MCP mutations always stage to disk without an implicit git commit — there
+/// is no human present to run `rdm commit` after every tool call, so the
+/// server relies on the explicit `rdm_commit` tool to land history.
+fn make_store(root: &Path) -> anyhow::Result<AppStore> {
     #[cfg(feature = "git")]
     {
         Ok(rdm_store_git::GitStore::new(root)
             .map_err(|e| anyhow::anyhow!("failed to open git repository: {e}"))?
-            .with_staging_mode(staging))
+            .with_staging_mode(true))
     }
     #[cfg(not(feature = "git"))]
     {
-        let _ = staging;
         Ok(FsStore::new(root))
     }
 }
@@ -479,8 +494,9 @@ fn make_store(root: &Path, staging: bool) -> anyhow::Result<AppStore> {
 fn make_init_store(root: &Path) -> anyhow::Result<AppStore> {
     #[cfg(feature = "git")]
     {
-        rdm_store_git::GitStore::init(root)
-            .map_err(|e| anyhow::anyhow!("failed to initialize git repository: {e}"))
+        let store = rdm_store_git::GitStore::init(root)
+            .map_err(|e| anyhow::anyhow!("failed to initialize git repository: {e}"))?;
+        Ok(store.with_staging_mode(true))
     }
     #[cfg(not(feature = "git"))]
     {
@@ -495,18 +511,15 @@ struct RdmMcpServer {
     store: Mutex<AppStore>,
     plan_root: PathBuf,
     auto_init: bool,
-    /// Whether mutations defer their git commit (staging mode) — when set,
-    /// tool responses omit the `Commit:`/`commit` provenance fields.
-    staging: bool,
 }
 
 impl RdmMcpServer {
-    fn new(plan_root: PathBuf, auto_init: bool, staging: bool) -> anyhow::Result<Self> {
+    fn new(plan_root: PathBuf, auto_init: bool) -> anyhow::Result<Self> {
         // Try opening an existing repo. If it doesn't exist yet (common when the
         // MCP server starts before `rdm_init`), create the git repo so the server
         // can start — the plan-level initialisation happens later via the rdm_init
         // tool or maybe_auto_init.
-        let store = match make_store(&plan_root, staging) {
+        let store = match make_store(&plan_root) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("failed to open existing store, falling back to init: {e}");
@@ -518,7 +531,6 @@ impl RdmMcpServer {
             store: Mutex::new(store),
             plan_root,
             auto_init,
-            staging,
         })
     }
 
@@ -571,6 +583,8 @@ impl RdmMcpServer {
         let mut router = Self::tool_router();
         #[cfg(feature = "git")]
         router.merge(Self::worktree_tool_router());
+        #[cfg(feature = "git")]
+        router.merge(Self::git_ops_tool_router());
         router
     }
 }
@@ -1011,11 +1025,7 @@ impl RdmMcpServer {
                 Ok(p) => p,
                 Err(e) => return core_err(e),
             };
-        let commit = commit_sha_after_mutation(&store, self.staging);
-        ok_text(with_commit_trailer(
-            display::format_roadmap_summary(&doc, &phases, None),
-            commit,
-        ))
+        ok_text(display::format_roadmap_summary(&doc, &phases, None))
     }
 
     /// Create a new phase in a roadmap.
@@ -1125,11 +1135,7 @@ impl RdmMcpServer {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        let commit = commit_sha_after_mutation(&store, self.staging);
-        ok_text(with_commit_trailer(
-            display::format_phase_detail(&stem, &doc, None),
-            commit,
-        ))
+        ok_text(display::format_phase_detail(&stem, &doc, None))
     }
 
     /// Create a new task in a project.
@@ -1223,11 +1229,7 @@ impl RdmMcpServer {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        let commit = commit_sha_after_mutation(&store, self.staging);
-        ok_text(with_commit_trailer(
-            display::format_task_detail(&params.task, &doc, None),
-            commit,
-        ))
+        ok_text(display::format_task_detail(&params.task, &doc, None))
     }
 
     /// Promote a task to a roadmap.
@@ -1370,7 +1372,7 @@ impl RdmMcpServer {
 
     /// Resolve (or reply to) a single review comment.
     #[rmcp::tool(
-        description = "Resolve one comment on a submitted change-request review: set status (\"addressed\" or \"wont-fix\"), record the plan-repo commit that applied the change, and store a reply. Omit status to only record a reply and leave the comment open (e.g. asking the reviewer for clarification). Pass applied_commit explicitly from the Commit: value the mutation tool reported; when omitted with status \"addressed\", the plan-repo HEAD before this call is recorded as a best-effort fallback (never for \"wont-fix\"). Returns the updated comment plus review state, remaining open comment count, and the commit this call produced.",
+        description = "Resolve one comment on a submitted change-request review: set status (\"addressed\" or \"wont-fix\"), record the plan-repo commit that applied the change, and store a reply. Omit status to only record a reply and leave the comment open (e.g. asking the reviewer for clarification). Pass applied_commit explicitly from the `Commit:` value the rdm_commit tool reported for the batch that applied this fix — MCP mutations only stage, so there is nothing to default it to. Returns the updated comment plus review state and remaining open comment count.",
         annotations(read_only_hint = false)
     )]
     async fn rdm_review_address_comment(
@@ -1393,19 +1395,11 @@ impl RdmMcpServer {
         };
 
         let mut store = self.store.lock().unwrap();
-        // Best-effort applied_commit fallback: only when the agent marked
-        // the comment addressed without naming a commit. HEAD is read
-        // *before* the status-change mutation so the fallback can never be
-        // this call's own review-file commit. Never defaulted for wont-fix
-        // or reply-only updates — that would stamp a false provenance
-        // record on a comment no edit was made for.
-        let applied_commit = match (&params.applied_commit, status) {
-            (Some(sha), _) => Some(sha.clone()),
-            (None, Some(ReviewCommentStatus::Addressed)) => {
-                commit_sha_after_mutation(&store, self.staging)
-            }
-            _ => None,
-        };
+        // An explicitly supplied applied_commit is always honored (even for
+        // wont-fix). There is no auto-default: MCP mutations only stage, so
+        // there is no plan-repo commit to fall back to until the agent calls
+        // rdm_commit.
+        let applied_commit = params.applied_commit.clone();
         let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
             rdm_core::ops::reviews::update_comment(
                 s,
@@ -1423,7 +1417,6 @@ impl RdmMcpServer {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        let commit = commit_sha_after_mutation(&store, self.staging);
         let comment = doc
             .frontmatter
             .comments
@@ -1444,7 +1437,6 @@ impl RdmMcpServer {
             "reply": comment.reply,
             "review_state": doc.frontmatter.state,
             "open_comment_count": open_comment_count,
-            "commit": commit,
         });
         ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
     }
@@ -1642,6 +1634,106 @@ impl RdmMcpServer {
     }
 }
 
+// ==================== Git status/commit/discard tools (git feature only) ====================
+//
+// MCP mutations only stage changes to disk (see `make_store`) — there is no
+// human present to run `rdm commit` after every tool call, so these tools
+// mirror the CLI's `rdm status` / `rdm commit` / `rdm discard`, letting an
+// agent inspect what's staged and land (or discard) a batch explicitly. They
+// live in their own `#[tool_router]` impl block for the same `#[cfg]`-gating
+// reason as the worktree tools above.
+
+#[cfg(feature = "git")]
+#[rmcp::tool_router(router = git_ops_tool_router)]
+impl RdmMcpServer {
+    /// Report staged-but-uncommitted changes in the plan repo.
+    #[rmcp::tool(
+        description = "List staged-but-uncommitted changes in the plan repo, each as {path, change} where change is \"added\", \"modified\", or \"deleted\". MCP mutation tools only stage to disk — call this to see what a batch of edits touched before landing it with rdm_commit.",
+        annotations(read_only_hint = true)
+    )]
+    async fn rdm_status(&self) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+        let store = self.store.lock().unwrap();
+        let statuses = match store.git().git_status() {
+            Ok(s) => s,
+            Err(e) => return core_err(e),
+        };
+        let arr: Vec<serde_json::Value> = statuses
+            .iter()
+            .map(|s| {
+                let change = match s.change {
+                    rdm_store_git::FileChange::Added => "added",
+                    rdm_store_git::FileChange::Modified => "modified",
+                    rdm_store_git::FileChange::Deleted => "deleted",
+                };
+                serde_json::json!({ "path": s.path, "change": change })
+            })
+            .collect();
+        let value = serde_json::Value::Array(arr);
+        ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
+    }
+
+    /// Commit all currently staged changes as a single git commit.
+    #[rmcp::tool(
+        description = "Land every currently staged change as one git commit. Mutate freely across as many tool calls as you need, then call rdm_commit once per logical batch of work — do not commit after every single edit. Omit `message` to auto-generate a summary from the changed files (matching the CLI's `rdm commit` default). No-op (`Nothing to commit.`) if the working tree is already clean. Returns a `Commit: <sha>` line — thread that value into `applied_commit` on rdm_review_address_comment.",
+        annotations(read_only_hint = false)
+    )]
+    async fn rdm_commit(
+        &self,
+        Parameters(params): Parameters<CommitParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+        let store = self.store.lock().unwrap();
+        let statuses = match store.git().git_status() {
+            Ok(s) => s,
+            Err(e) => return core_err(e),
+        };
+        if statuses.is_empty() {
+            return ok_text("Nothing to commit.".to_string());
+        }
+        let message = params
+            .message
+            .unwrap_or_else(|| rdm_store_git::GitRepo::default_commit_message(&statuses));
+        if let Err(e) = store.commit_now(&message) {
+            return core_err(e);
+        }
+        let sha = store.head_sha().ok();
+        ok_text(with_commit_trailer(
+            format!("Committed {} file(s).", statuses.len()),
+            sha,
+        ))
+    }
+
+    /// Discard all staged changes, reverting the plan repo to HEAD.
+    #[rmcp::tool(
+        description = "Discard every staged-but-uncommitted change, reverting the plan repo's working tree to its last commit. Irreversible — requires confirm: true, and rejects the call before touching anything if it is missing or false. No-op (`Nothing to discard.`) if the working tree is already clean.",
+        annotations(read_only_hint = false)
+    )]
+    async fn rdm_discard(
+        &self,
+        Parameters(params): Parameters<DiscardParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if !params.confirm.unwrap_or(false) {
+            return err_text(
+                "discarding changes is irreversible — pass confirm: true to proceed".to_string(),
+            );
+        }
+        self.maybe_auto_init();
+        let store = self.store.lock().unwrap();
+        let statuses = match store.git().git_status() {
+            Ok(s) => s,
+            Err(e) => return core_err(e),
+        };
+        if statuses.is_empty() {
+            return ok_text("Nothing to discard.".to_string());
+        }
+        if let Err(e) = store.git().git_discard() {
+            return core_err(e);
+        }
+        ok_text(format!("Discarded {} file(s).", statuses.len()))
+    }
+}
+
 /// Parse a status string into an `ItemStatus`.
 ///
 #[rmcp::tool_handler(router = Self::all_tools_router())]
@@ -1659,8 +1751,8 @@ impl ServerHandler for RdmMcpServer {
 ///
 /// Returns an error if the transport fails to initialize or the server
 /// encounters a fatal I/O error.
-pub async fn run(plan_root: PathBuf, auto_init: bool, staging: bool) -> anyhow::Result<()> {
-    let server = RdmMcpServer::new(plan_root, auto_init, staging)?;
+pub async fn run(plan_root: PathBuf, auto_init: bool) -> anyhow::Result<()> {
+    let server = RdmMcpServer::new(plan_root, auto_init)?;
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())

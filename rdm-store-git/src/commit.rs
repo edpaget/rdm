@@ -225,6 +225,53 @@ impl GitRepo {
         self.create_git_commit(message)
     }
 
+    /// Generates a default commit message summarizing a set of file statuses.
+    ///
+    /// Mirrors the CLI's `rdm commit` default-message behavior (and the
+    /// message [`GitStore::commit`](crate::GitStore) generates from touched
+    /// paths): a single changed file yields `"rdm: <verb> <path>"`; multiple
+    /// files yield a `"rdm: update <n> files"` summary line followed by a
+    /// blank-line-separated `<verb> <path>` bullet per file. `<verb>` is
+    /// `add`, `update`, or `delete` depending on [`FileChange`].
+    ///
+    /// Used by [`GitStore::commit_now`](crate::GitStore::commit_now) callers
+    /// (the CLI's `rdm commit` and the MCP `rdm_commit` tool) to generate a
+    /// message when none is supplied explicitly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rdm_store_git::{FileChange, FileStatus, GitRepo};
+    ///
+    /// let statuses = vec![FileStatus {
+    ///     path: "a.md".to_string(),
+    ///     change: FileChange::Added,
+    /// }];
+    /// assert_eq!(GitRepo::default_commit_message(&statuses), "rdm: add a.md");
+    /// ```
+    pub fn default_commit_message(statuses: &[FileStatus]) -> String {
+        let summary: Vec<String> = statuses
+            .iter()
+            .map(|s| {
+                let kind = match s.change {
+                    FileChange::Added => "add",
+                    FileChange::Modified => "update",
+                    FileChange::Deleted => "delete",
+                };
+                format!("{kind} {}", s.path)
+            })
+            .collect();
+        if summary.len() == 1 {
+            format!("rdm: {}", summary[0])
+        } else {
+            let mut msg = format!("rdm: update {} files", statuses.len());
+            for s in &summary {
+                msg.push_str(&format!("\n\n- {s}"));
+            }
+            msg
+        }
+    }
+
     /// Compares the working directory to HEAD and returns a list of changes.
     ///
     /// Walks the working directory tree and the HEAD tree, reporting files
@@ -534,5 +581,66 @@ impl GitRepo {
             });
         }
         Err(Error::Git(stderr.trim().to_string()))
+    }
+}
+
+#[cfg(test)]
+mod default_commit_message_tests {
+    use super::*;
+
+    #[test]
+    fn single_file_added() {
+        let statuses = vec![FileStatus {
+            path: "a.md".to_string(),
+            change: FileChange::Added,
+        }];
+        assert_eq!(GitRepo::default_commit_message(&statuses), "rdm: add a.md");
+    }
+
+    #[test]
+    fn single_file_modified() {
+        let statuses = vec![FileStatus {
+            path: "a.md".to_string(),
+            change: FileChange::Modified,
+        }];
+        assert_eq!(
+            GitRepo::default_commit_message(&statuses),
+            "rdm: update a.md"
+        );
+    }
+
+    #[test]
+    fn single_file_deleted() {
+        let statuses = vec![FileStatus {
+            path: "a.md".to_string(),
+            change: FileChange::Deleted,
+        }];
+        assert_eq!(
+            GitRepo::default_commit_message(&statuses),
+            "rdm: delete a.md"
+        );
+    }
+
+    #[test]
+    fn multiple_files() {
+        let statuses = vec![
+            FileStatus {
+                path: "a.md".to_string(),
+                change: FileChange::Added,
+            },
+            FileStatus {
+                path: "b.md".to_string(),
+                change: FileChange::Modified,
+            },
+            FileStatus {
+                path: "c.md".to_string(),
+                change: FileChange::Deleted,
+            },
+        ];
+        let msg = GitRepo::default_commit_message(&statuses);
+        assert!(msg.starts_with("rdm: update 3 files"));
+        assert!(msg.contains("- add a.md"));
+        assert!(msg.contains("- update b.md"));
+        assert!(msg.contains("- delete c.md"));
     }
 }

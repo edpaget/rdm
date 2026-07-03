@@ -19,28 +19,8 @@ pub fn run(root: &Path, staging: bool, message: Option<String>) -> Result<()> {
     if statuses.is_empty() {
         println!("Nothing to commit.");
     } else {
-        let msg = message.unwrap_or_else(|| {
-            let summary: Vec<String> = statuses
-                .iter()
-                .map(|s| {
-                    let kind = match s.change {
-                        rdm_store_git::FileChange::Added => "add",
-                        rdm_store_git::FileChange::Modified => "update",
-                        rdm_store_git::FileChange::Deleted => "delete",
-                    };
-                    format!("{kind} {}", s.path)
-                })
-                .collect();
-            if summary.len() == 1 {
-                format!("rdm: {}", summary[0])
-            } else {
-                let mut msg = format!("rdm: update {} files", statuses.len());
-                for s in &summary {
-                    msg.push_str(&format!("\n\n- {s}"));
-                }
-                msg
-            }
-        });
+        let msg =
+            message.unwrap_or_else(|| rdm_store_git::GitRepo::default_commit_message(&statuses));
         store
             .git()
             .git_commit(&msg)

@@ -311,6 +311,11 @@ fn tools_list() {
         "rdm_worktree_list",
         "rdm_worktree_current",
         "rdm_worktree_remove",
+        // Git status/commit/discard tools — same always-on-git rationale as
+        // the worktree tools above.
+        "rdm_status",
+        "rdm_commit",
+        "rdm_discard",
     ];
 
     for name in &expected {
@@ -504,6 +509,11 @@ fn tools_list_includes_mutation_tools() {
         // so these tools are always present.
         "rdm_worktree_add",
         "rdm_worktree_remove",
+        // `rdm_commit` / `rdm_discard` mutate the plan repo; `rdm_status` is
+        // read-only (verified as such by being absent from this list, per the
+        // `else` branch below).
+        "rdm_commit",
+        "rdm_discard",
     ];
 
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -1698,14 +1708,14 @@ fn git_head_sha(root: &std::path::Path) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-/// Get git log output (one line per commit) from a repo.
-fn git_log(root: &std::path::Path) -> String {
-    let output = git_cmd(root, &["log", "--oneline"]);
+/// Get the HEAD commit's full message.
+fn git_last_commit_message(root: &std::path::Path) -> String {
+    let output = git_cmd(root, &["log", "-1", "--format=%B"]);
     String::from_utf8_lossy(&output.stdout).to_string()
 }
 
 #[test]
-fn git_mutation_creates_commit() {
+fn git_mutation_stages_without_commit() {
     let tmp = tempfile::TempDir::new().unwrap();
     setup_plan_repo(tmp.path());
 
@@ -1725,20 +1735,32 @@ fn git_mutation_creates_commit() {
         text.contains("Billing System"),
         "Expected creation to succeed: {text}"
     );
+
+    // Verify the roadmap is readable (data was written to disk, even though
+    // nothing was committed).
+    let show = h.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "billing"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("Billing System"),
+        "Expected roadmap to be readable after a staged mutation: {show_text}"
+    );
     drop(h);
 
     let after = git_head_sha(tmp.path());
-    assert_ne!(before, after, "Expected HEAD to advance after mutation");
-
-    let log = git_log(tmp.path());
-    assert!(
-        log.contains("rdm:"),
-        "Expected auto-commit message with 'rdm:' prefix in log:\n{log}"
+    assert_eq!(
+        before, after,
+        "Expected NO new git commits from an MCP mutation (before={before}, after={after})"
     );
 }
 
 #[test]
-fn git_staging_mode_defers_commit() {
+fn git_stage_env_var_is_inert_for_mcp() {
+    // RDM_STAGE only affects the CLI's per-command commit behavior; MCP
+    // mutations always stage regardless, so setting it must not change
+    // anything observable.
     let tmp = tempfile::TempDir::new().unwrap();
     setup_plan_repo(tmp.path());
 
@@ -1756,10 +1778,9 @@ fn git_staging_mode_defers_commit() {
     let text = result_text(&response);
     assert!(
         text.contains("Billing System"),
-        "Expected creation to succeed in staging mode: {text}"
+        "Expected creation to succeed with RDM_STAGE set: {text}"
     );
 
-    // Verify the roadmap is readable (data was written to disk)
     let show = h.call_tool(
         "rdm_roadmap_show",
         serde_json::json!({"project": "test-proj", "roadmap": "billing"}),
@@ -1767,14 +1788,14 @@ fn git_staging_mode_defers_commit() {
     let show_text = result_text(&show);
     assert!(
         show_text.contains("Billing System"),
-        "Expected roadmap to be readable in staging mode: {show_text}"
+        "Expected roadmap to be readable: {show_text}"
     );
     drop(h);
 
     let after = git_head_sha(tmp.path());
     assert_eq!(
         before, after,
-        "Expected NO new git commits in staging mode (before={before}, after={after})"
+        "Expected NO new git commits regardless of RDM_STAGE (before={before}, after={after})"
     );
 }
 
@@ -2132,101 +2153,55 @@ Fixture review with an unknown anchor type.
 }
 
 #[test]
-fn task_update_response_reports_commit_sha() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    setup_plan_repo(tmp.path());
-    let mut h = McpTestHarness::spawn(tmp.path());
+fn update_tools_never_report_a_commit_trailer() {
+    // MCP mutations only stage; they never carry a Commit: trailer,
+    // regardless of RDM_STAGE (which is inert for MCP — see
+    // `git_stage_env_var_is_inert_for_mcp`).
+    for env in [&[][..], &[("RDM_STAGE", "true")][..]] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        setup_plan_repo(tmp.path());
+        let mut h = McpTestHarness::spawn_with_env(tmp.path(), env);
 
-    let response = h.call_tool(
-        "rdm_task_update",
-        serde_json::json!({
-            "project": "test-proj",
-            "task": "fix-login-bug",
-            "body": "Login fails when the password contains a quote character.",
-        }),
-    );
-    let sha = commit_trailer(result_text(&response))
-        .expect("task update response must carry a Commit: trailer");
-    drop(h);
-    assert_eq!(
-        sha,
-        git_head_sha(tmp.path()),
-        "trailer must name the commit the mutation produced"
-    );
-}
+        let response = h.call_tool(
+            "rdm_task_update",
+            serde_json::json!({
+                "project": "test-proj",
+                "task": "fix-login-bug",
+                "body": "Login fails when the password contains a quote character.",
+            }),
+        );
+        assert!(
+            commit_trailer(result_text(&response)).is_none(),
+            "rdm_task_update must never report a Commit: trailer (env={env:?})"
+        );
 
-#[test]
-fn phase_update_response_reports_commit_sha() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    setup_plan_repo(tmp.path());
-    let mut h = McpTestHarness::spawn(tmp.path());
+        let response = h.call_tool(
+            "rdm_phase_update",
+            serde_json::json!({
+                "project": "test-proj",
+                "roadmap": "auth",
+                "phase": "1",
+                "status": "in-progress",
+            }),
+        );
+        assert!(
+            commit_trailer(result_text(&response)).is_none(),
+            "rdm_phase_update must never report a Commit: trailer (env={env:?})"
+        );
 
-    let response = h.call_tool(
-        "rdm_phase_update",
-        serde_json::json!({
-            "project": "test-proj",
-            "roadmap": "auth",
-            "phase": "1",
-            "status": "in-progress",
-        }),
-    );
-    let sha = commit_trailer(result_text(&response))
-        .expect("phase update response must carry a Commit: trailer");
-    drop(h);
-    assert_eq!(sha, git_head_sha(tmp.path()));
-}
-
-#[test]
-fn staging_mode_omits_commit_trailer() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    setup_plan_repo(tmp.path());
-    let mut h = McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_STAGE", "true")]);
-
-    let response = h.call_tool(
-        "rdm_task_update",
-        serde_json::json!({
-            "project": "test-proj",
-            "task": "fix-login-bug",
-            "body": "Edited under staging mode.",
-        }),
-    );
-    assert!(
-        commit_trailer(result_text(&response)).is_none(),
-        "staging mode must not report a Commit: trailer (nothing was committed)"
-    );
-
-    let response = h.call_tool(
-        "rdm_roadmap_update",
-        serde_json::json!({
-            "project": "test-proj",
-            "roadmap": "auth",
-            "body": "Roadmap edited under staging mode.",
-        }),
-    );
-    assert!(
-        commit_trailer(result_text(&response)).is_none(),
-        "staging mode must not report a Commit: trailer on roadmap update either"
-    );
-}
-
-#[test]
-fn roadmap_update_response_reports_commit_sha() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    setup_plan_repo(tmp.path());
-    let mut h = McpTestHarness::spawn(tmp.path());
-
-    let response = h.call_tool(
-        "rdm_roadmap_update",
-        serde_json::json!({
-            "project": "test-proj",
-            "roadmap": "auth",
-            "body": "Implement authentication, now with provenance.",
-        }),
-    );
-    let sha = commit_trailer(result_text(&response))
-        .expect("roadmap update response must carry a Commit: trailer");
-    drop(h);
-    assert_eq!(sha, git_head_sha(tmp.path()));
+        let response = h.call_tool(
+            "rdm_roadmap_update",
+            serde_json::json!({
+                "project": "test-proj",
+                "roadmap": "auth",
+                "body": "Implement authentication, now with provenance.",
+            }),
+        );
+        assert!(
+            commit_trailer(result_text(&response)).is_none(),
+            "rdm_roadmap_update must never report a Commit: trailer (env={env:?})"
+        );
+    }
 }
 
 #[test]
@@ -2337,7 +2312,7 @@ fn review_address_comment_records_explicit_applied_commit() {
     let id = setup_review_fixture(tmp.path());
     let mut h = McpTestHarness::spawn(tmp.path());
 
-    // Apply the edit the comment asked for; thread its Commit: trailer.
+    // Apply the edit the comment asked for; it only stages...
     let update = h.call_tool(
         "rdm_task_update",
         serde_json::json!({
@@ -2346,7 +2321,16 @@ fn review_address_comment_records_explicit_applied_commit() {
             "body": "Login fails when the password contains quotes or backslashes.",
         }),
     );
-    let edit_sha = commit_trailer(result_text(&update)).expect("Commit: trailer");
+    assert!(
+        commit_trailer(result_text(&update)).is_none(),
+        "rdm_task_update must not report a Commit: trailer"
+    );
+
+    // ...so land it explicitly and thread its Commit: trailer.
+    let commit = h.call_tool("rdm_commit", serde_json::json!({}));
+    let edit_sha = commit_trailer(result_text(&commit))
+        .expect("rdm_commit response must carry a Commit: trailer");
+    assert_eq!(edit_sha, git_head_sha(tmp.path()));
 
     let response = h.call_tool(
         "rdm_review_address_comment",
@@ -2368,19 +2352,18 @@ fn review_address_comment_records_explicit_applied_commit() {
     );
     assert_eq!(v["review_state"], "submitted");
     assert_eq!(v["open_comment_count"], 1);
-    // The commit this call produced (review-file write) is reported and is
-    // distinct from the applied edit commit.
-    let call_commit = v["commit"].as_str().expect("commit of this call");
-    assert_ne!(call_commit, edit_sha);
-    drop(h);
-    assert_eq!(call_commit, git_head_sha(tmp.path()));
+    // The review-file update this call produced was only staged — there is
+    // no real plan-repo commit to report, so the JSON carries no "commit" key.
+    assert!(
+        v.get("commit").is_none(),
+        "response must not carry a stale commit field: {v}"
+    );
 }
 
 #[test]
-fn review_address_comment_defaults_applied_commit_to_pre_mutation_head() {
+fn review_address_comment_omitted_applied_commit_stays_null() {
     let tmp = tempfile::TempDir::new().unwrap();
     let id = setup_review_fixture(tmp.path());
-    let head_before = git_head_sha(tmp.path());
     let mut h = McpTestHarness::spawn(tmp.path());
 
     let response = h.call_tool(
@@ -2394,11 +2377,13 @@ fn review_address_comment_defaults_applied_commit_to_pre_mutation_head() {
         }),
     );
     let v = result_json(&response);
-    // Best-effort fallback: HEAD strictly before this call — never the
-    // review-file commit the call itself produced.
-    assert_eq!(v["applied_commit"], serde_json::json!(head_before));
-    let call_commit = v["commit"].as_str().unwrap();
-    assert_ne!(call_commit, head_before);
+    // MCP mutations only stage: there is no commit to default to, so
+    // omitting applied_commit must leave it null rather than guessing.
+    assert!(
+        v["applied_commit"].is_null(),
+        "omitted applied_commit must stay null: {v}"
+    );
+    assert!(v.get("commit").is_none(), "no commit field: {v}");
 }
 
 #[test]
@@ -2549,4 +2534,351 @@ fn review_complete_succeeds_when_all_resolved() {
         serde_json::json!({"project": "test-proj"}),
     );
     assert_eq!(result_json(&queue).as_array().unwrap().len(), 0);
+}
+
+// ==================== Git status/commit/discard tools ====================
+
+#[test]
+fn status_empty_on_clean_tree() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool("rdm_status", serde_json::json!({}));
+    let statuses = result_json(&response);
+    assert_eq!(
+        statuses.as_array().unwrap().len(),
+        0,
+        "expected no staged changes on a freshly committed repo: {statuses}"
+    );
+}
+
+#[test]
+fn status_reports_staged_changes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Updated body for status test.",
+        }),
+    );
+
+    let response = h.call_tool("rdm_status", serde_json::json!({}));
+    let statuses = result_json(&response);
+    let arr = statuses.as_array().expect("array of statuses");
+    assert_eq!(arr.len(), 1, "expected exactly one staged change: {arr:?}");
+    assert!(
+        arr[0]["path"].as_str().unwrap().contains("fix-login-bug"),
+        "expected the task file path: {arr:?}"
+    );
+    assert_eq!(arr[0]["change"], "modified");
+}
+
+#[test]
+fn commit_clean_tree_is_noop() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let before = git_head_sha(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool("rdm_commit", serde_json::json!({}));
+    let text = result_text(&response);
+    assert!(
+        text.contains("Nothing to commit."),
+        "expected no-op message: {text}"
+    );
+    drop(h);
+    assert_eq!(before, git_head_sha(tmp.path()), "HEAD must not move");
+}
+
+#[test]
+fn commit_lands_real_commit() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let before = git_head_sha(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Updated body for commit test.",
+        }),
+    );
+    let response = h.call_tool("rdm_commit", serde_json::json!({}));
+    let text = result_text(&response);
+    assert!(text.contains("Committed 1 file(s)."), "got: {text}");
+    let sha = commit_trailer(text).expect("rdm_commit must report a Commit: trailer");
+    drop(h);
+
+    let after = git_head_sha(tmp.path());
+    assert_ne!(before, after, "HEAD must advance");
+    assert_eq!(
+        sha, after,
+        "trailer must name the commit rdm_commit produced"
+    );
+}
+
+#[test]
+fn commit_default_message_matches_cli_generator() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Updated body for default-message test.",
+        }),
+    );
+    h.call_tool("rdm_commit", serde_json::json!({}));
+    drop(h);
+
+    // Mirrors GitRepo::default_commit_message's single-file shape: "rdm:
+    // update <path>" — the same shape the CLI's `rdm commit` produces.
+    let msg = git_last_commit_message(tmp.path());
+    assert!(
+        msg.starts_with("rdm: update "),
+        "expected default single-file message shape, got: {msg}"
+    );
+    assert!(msg.contains("fix-login-bug"), "got: {msg}");
+}
+
+#[test]
+fn commit_explicit_message_used_verbatim() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Updated body for explicit-message test.",
+        }),
+    );
+    h.call_tool(
+        "rdm_commit",
+        serde_json::json!({"message": "custom commit message"}),
+    );
+    drop(h);
+
+    let msg = git_last_commit_message(tmp.path());
+    assert!(
+        msg.starts_with("custom commit message"),
+        "expected verbatim explicit message, got: {msg}"
+    );
+}
+
+#[test]
+fn discard_without_confirm_rejected() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Should survive the rejected discard.",
+        }),
+    );
+
+    let response = h.call_tool("rdm_discard", serde_json::json!({}));
+    assert_eq!(response["result"]["isError"], serde_json::json!(true));
+    assert!(result_text(&response).contains("confirm"));
+
+    // Data survives: the staged edit is still readable.
+    let show = h.call_tool(
+        "rdm_task_show",
+        serde_json::json!({"project": "test-proj", "task": "fix-login-bug"}),
+    );
+    assert!(
+        result_text(&show).contains("Should survive the rejected discard."),
+        "staged edit must not be lost by a rejected discard"
+    );
+}
+
+#[test]
+fn discard_with_confirm_reverts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let before = git_head_sha(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Should be discarded.",
+        }),
+    );
+
+    let response = h.call_tool("rdm_discard", serde_json::json!({"confirm": true}));
+    let text = result_text(&response);
+    assert!(text.contains("Discarded 1 file(s)."), "got: {text}");
+
+    let show = h.call_tool(
+        "rdm_task_show",
+        serde_json::json!({"project": "test-proj", "task": "fix-login-bug"}),
+    );
+    assert!(
+        !result_text(&show).contains("Should be discarded."),
+        "discarded edit must be reverted"
+    );
+    drop(h);
+    assert_eq!(
+        before,
+        git_head_sha(tmp.path()),
+        "discard never touches HEAD — nothing was committed"
+    );
+}
+
+#[test]
+fn discard_clean_tree_is_noop() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool("rdm_discard", serde_json::json!({"confirm": true}));
+    let text = result_text(&response);
+    assert!(
+        text.contains("Nothing to discard."),
+        "expected no-op message: {text}"
+    );
+}
+
+#[test]
+fn review_address_comment_wont_fix_honors_explicit_applied_commit() {
+    // The plan explicitly preserves pass-through of an explicitly supplied
+    // applied_commit even for wont-fix — only the auto-default was removed.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Some unrelated context captured for the record.",
+        }),
+    );
+    let commit = h.call_tool("rdm_commit", serde_json::json!({}));
+    let sha = commit_trailer(result_text(&commit)).expect("Commit: trailer");
+
+    let response = h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": id,
+            "comment_id": 2,
+            "status": "wont-fix",
+            "applied_commit": sha,
+            "reply": "Documented in this commit instead of fixing.",
+        }),
+    );
+    let v = result_json(&response);
+    assert_eq!(v["status"], "wont-fix");
+    assert_eq!(
+        v["applied_commit"],
+        serde_json::json!(sha),
+        "explicit applied_commit must pass through even for wont-fix: {v}"
+    );
+}
+
+#[test]
+fn stage_status_commit_discard_roundtrip() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let head_after_setup = git_head_sha(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Mutate: stages only, no commit.
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "billing",
+            "title": "Billing System"
+        }),
+    );
+    assert_eq!(
+        head_after_setup,
+        git_head_sha(tmp.path()),
+        "mutation must not advance HEAD"
+    );
+
+    // rdm_status is non-empty.
+    let status = h.call_tool("rdm_status", serde_json::json!({}));
+    let arr = result_json(&status);
+    assert!(
+        !arr.as_array().unwrap().is_empty(),
+        "expected staged changes: {arr}"
+    );
+
+    // rdm_commit lands one commit; status empties.
+    let commit_response = h.call_tool("rdm_commit", serde_json::json!({}));
+    let landed_sha =
+        commit_trailer(result_text(&commit_response)).expect("Commit: trailer after rdm_commit");
+    assert_ne!(
+        head_after_setup, landed_sha,
+        "HEAD must advance exactly once"
+    );
+    assert_eq!(landed_sha, git_head_sha(tmp.path()));
+
+    let status = h.call_tool("rdm_status", serde_json::json!({}));
+    assert!(
+        result_json(&status).as_array().unwrap().is_empty(),
+        "status must be empty right after commit"
+    );
+
+    // A separate mutate...
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "invoicing",
+            "title": "Invoicing"
+        }),
+    );
+    assert_eq!(
+        landed_sha,
+        git_head_sha(tmp.path()),
+        "second mutation must not advance HEAD either"
+    );
+
+    // ...reverted by rdm_discard: HEAD unchanged since the rdm_commit above,
+    // and the item is gone.
+    let discard = h.call_tool("rdm_discard", serde_json::json!({"confirm": true}));
+    assert!(result_text(&discard).contains("Discarded"));
+    drop(h);
+
+    assert_eq!(
+        landed_sha,
+        git_head_sha(tmp.path()),
+        "discard never touches HEAD"
+    );
+
+    let mut h2 = McpTestHarness::spawn(tmp.path());
+    let show = h2.call_tool(
+        "rdm_roadmap_show",
+        serde_json::json!({"project": "test-proj", "roadmap": "invoicing"}),
+    );
+    assert_eq!(
+        show["result"]["isError"],
+        serde_json::json!(true),
+        "discarded roadmap must be gone: {show}"
+    );
 }
