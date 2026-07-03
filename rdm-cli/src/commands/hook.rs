@@ -1,8 +1,11 @@
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-use super::{run_post_commit_hook, run_post_merge_hook};
+use super::{
+    resolve_hook_timeout_secs, run_hook_with_timeout, run_post_commit_hook, run_post_merge_hook,
+};
 use crate::HookCommand;
 
 pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
@@ -83,18 +86,29 @@ pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
         }
         HookCommand::PostMerge { since } => {
             // Capture errors so we can log them, but never propagate — the hook
-            // must always exit 0 to avoid blocking git.
-            if let Err(err) = run_post_merge_hook(root, false, since.as_deref()) {
-                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let logger = crate::hook_log::HookLogger::new(&cwd);
+            // must always exit 0 to avoid blocking git. Execution is also
+            // bounded by `run_hook_with_timeout` (AC1): a hook body that hangs
+            // past its configured deadline is abandoned rather than allowed
+            // to block the invoking `git merge` indefinitely.
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let logger = crate::hook_log::HookLogger::new(&cwd);
+            let timeout = Duration::from_secs(resolve_hook_timeout_secs(root));
+            let root = root.to_path_buf();
+            if let Err(err) = run_hook_with_timeout(timeout, &logger, "post-merge", move || {
+                run_post_merge_hook(&root, false, since.as_deref())
+            }) {
                 let msg = format!("{err:#}");
                 logger.log("post-merge", "wrapper-error", &[("error", msg.as_str())]);
             }
         }
         HookCommand::PostCommit => {
-            if let Err(err) = run_post_commit_hook(root, false) {
-                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let logger = crate::hook_log::HookLogger::new(&cwd);
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let logger = crate::hook_log::HookLogger::new(&cwd);
+            let timeout = Duration::from_secs(resolve_hook_timeout_secs(root));
+            let root = root.to_path_buf();
+            if let Err(err) = run_hook_with_timeout(timeout, &logger, "post-commit", move || {
+                run_post_commit_hook(&root, false)
+            }) {
                 let msg = format!("{err:#}");
                 logger.log("post-commit", "wrapper-error", &[("error", msg.as_str())]);
             }

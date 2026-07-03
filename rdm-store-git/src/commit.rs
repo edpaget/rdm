@@ -148,6 +148,21 @@ impl GitRepo {
     }
 
     /// Builds a tree and creates a git commit with the given message.
+    ///
+    /// This method **never invokes git hooks**. It builds the tree object
+    /// directly and writes the commit via gix's low-level `commit_as` (a
+    /// gitoxide object-database write plus a `gix_ref` transaction) rather
+    /// than shelling out to the `git` CLI — it bypasses the git porcelain
+    /// entirely, including the porcelain's hook-invocation step. Concretely:
+    /// an ordinary `rdm phase update`/`rdm task update` auto-commit on the
+    /// plan repo can *never* re-trigger that same plan repo's own
+    /// `post-commit` hook, even when `rdm hook install` has been run against
+    /// it (a documented, supported configuration). This was investigated and
+    /// ruled out as the mechanism behind an observed post-commit hang — see
+    /// `run_post_commit_hook`'s doc comment in `rdm-cli` for the actual
+    /// re-entrancy path (a *real* subprocess `git commit`/`git merge`,
+    /// e.g. via [`GitRepo::git_resolve_conflict`]) and the guard that handles
+    /// it.
     pub(crate) fn create_git_commit(&self, message: &str) -> Result<()> {
         let repo = self.repo.to_thread_local();
         let root = self.root.clone();

@@ -131,6 +131,8 @@ For phase directives, it calls `rdm phase update <phase> --status done --commit 
 
 Project resolution follows the standard chain: `--project` flag > `RDM_PROJECT` env var > `default_project` in `rdm.toml`.
 
+**Reliability guarantees:** `rdm hook post-merge`/`post-commit` can never block the invoking `git commit`/`git merge` indefinitely. Execution is bounded by a `hook_timeout_secs` deadline (repo `rdm.toml` or global config, same precedence as `default_branch`; defaults to 30s, and `0` is treated as unset rather than "unbounded") — a hook that hits the deadline logs a `timeout` event and still exits 0. Independently, every git subprocess rdm spawns is hardened to be non-interactive (forced non-interactive editor and disabled credential/host-key prompts, regardless of the invoking user's git config), and a hook invocation that detects it was itself spawned as a git subprocess by rdm (e.g. a real `git commit` made by `rdm resolve` re-triggering this same repo's installed hooks) short-circuits immediately instead of re-running the `Done:`-directive pipeline.
+
 **Example commit message:**
 
 ```

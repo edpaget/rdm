@@ -1457,3 +1457,274 @@ fn hook_log_truncates_when_oversize() {
         &log[log.len().saturating_sub(500)..]
     );
 }
+
+// -- AC4: git-subprocess re-entrancy guard --
+
+#[test]
+fn hook_post_commit_skips_when_marker_env_present() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger commit").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: land it\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    // Simulate this hook invocation itself being a subprocess spawned by
+    // rdm's own git_command — the marker every rdm-invoked git subprocess
+    // carries (e.g. the completing `git commit --no-edit` in
+    // `git_resolve_conflict`, whose own hook runner could invoke this same
+    // `rdm hook post-commit` as a nested child — see §1.2(C)).
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .env("RDM_GIT_SUBPROCESS", "1")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    // The phase must NOT be marked done — the guard must short-circuit
+    // before ever touching the store.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: not-started"));
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("post-commit skip-reentrant"),
+        "log missing skip-reentrant event: {log}"
+    );
+}
+
+#[test]
+fn hook_post_merge_skips_when_marker_env_present() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger commit").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: merge stuff\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .env("RDM_GIT_SUBPROCESS", "1")
+        .args(["hook", "post-merge"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: not-started"));
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("post-merge skip-reentrant"),
+        "log missing skip-reentrant event: {log}"
+    );
+}
+
+// -- AC1: hook execution deadline --
+
+#[test]
+fn hook_post_commit_never_blocks_past_configured_timeout() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    // Configure a very low hook_timeout_secs in the plan repo.
+    let config_path = plan_dir.path().join("rdm.toml");
+    let existing = fs::read_to_string(&config_path).unwrap_or_default();
+    fs::write(&config_path, format!("{existing}\nhook_timeout_secs = 1\n")).unwrap();
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger commit").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: land it\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    let start = std::time::Instant::now();
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        // Make the hook body stall far longer than the configured 1s
+        // timeout — simulating the kind of stuck-subprocess hang AC2/AC3
+        // fix, without needing a real stuck editor/credential prompt here.
+        .env("RDM_TEST_STALL_HOOK_MS", "5000")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(4),
+        "hook post-commit should return within a small multiple of the \
+         configured 1s timeout even though its body stalls for 5s, took {elapsed:?}"
+    );
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("post-commit timeout"),
+        "log missing timeout event: {log}"
+    );
+
+    // Because the body was abandoned mid-stall, the phase was never
+    // actually marked done.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: not-started"));
+}
+
+#[test]
+fn hook_post_merge_never_blocks_past_configured_timeout() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    // Configure a very low hook_timeout_secs in the plan repo.
+    let config_path = plan_dir.path().join("rdm.toml");
+    let existing = fs::read_to_string(&config_path).unwrap_or_default();
+    fs::write(&config_path, format!("{existing}\nhook_timeout_secs = 1\n")).unwrap();
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger commit").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: merge stuff\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+
+    let start = std::time::Instant::now();
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        // Same stall injection as the post-commit test above — each hook
+        // arm gets its own fresh timeout budget, so this pins the
+        // post-merge wiring independently.
+        .env("RDM_TEST_STALL_HOOK_MS", "5000")
+        .args(["hook", "post-merge"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(4),
+        "hook post-merge should return within a small multiple of the \
+         configured 1s timeout even though its body stalls for 5s, took {elapsed:?}"
+    );
+
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("post-merge timeout"),
+        "log missing timeout event: {log}"
+    );
+
+    // Because the body was abandoned mid-stall, the phase was never
+    // actually marked done.
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: not-started"));
+}

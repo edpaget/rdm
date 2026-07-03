@@ -1,5 +1,11 @@
 use std::io::{self, Read, Write};
 use std::path::Path;
+#[cfg(feature = "git")]
+use std::sync::mpsc;
+#[cfg(feature = "git")]
+use std::thread;
+#[cfg(feature = "git")]
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use is_terminal::IsTerminal;
@@ -280,6 +286,108 @@ pub fn maybe_print_uncommitted_hint(store: &AppStore, staging: bool) {
 #[cfg(not(feature = "git"))]
 pub fn maybe_print_uncommitted_hint(_store: &AppStore, _staging: bool) {}
 
+/// Built-in hook execution deadline (seconds) used when `hook_timeout_secs`
+/// is unset, or configured to `0`. `0` is deliberately normalized to this
+/// default rather than treated as "unbounded" — an unbounded timeout would
+/// defeat the purpose of the guard entirely.
+#[cfg(feature = "git")]
+pub const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 30;
+
+/// Resolves the hook execution deadline (in seconds) for the plan repo at
+/// `root`, following the same repo-config-then-global-then-built-in-default
+/// precedence as `default_branch`.
+#[cfg(feature = "git")]
+pub fn resolve_hook_timeout_secs(root: &Path) -> u64 {
+    let global = paths::load_global_config();
+    let repo = paths::load_repo_config(root);
+    resolve_hook_timeout_secs_inner(&repo, &global)
+}
+
+/// Pure core of [`resolve_hook_timeout_secs`], split out for direct unit
+/// testing: merges repo over global via `with_global_defaults`, then
+/// normalizes unset **and `0`** to [`DEFAULT_HOOK_TIMEOUT_SECS`] — a `0`
+/// deadline would mean "unbounded", which defeats the guard. Note that a
+/// repo-level `hook_timeout_secs = 0` does NOT fall back to a global value:
+/// `with_global_defaults` merges `Some(0)` as a present value, so `0` in the
+/// repo config always yields the built-in default even when the global
+/// config carries a nonzero setting.
+#[cfg(feature = "git")]
+fn resolve_hook_timeout_secs_inner(
+    repo: &rdm_core::config::Config,
+    global: &rdm_core::config::GlobalConfig,
+) -> u64 {
+    repo.with_global_defaults(global)
+        .hook_timeout_secs
+        .filter(|&secs| secs > 0)
+        .unwrap_or(DEFAULT_HOOK_TIMEOUT_SECS)
+}
+
+/// Bounds the execution of `f` — the body of a `post-merge`/`post-commit`
+/// hook invocation — to `timeout`, run on a fresh thread.
+///
+/// If `f` completes before `timeout` elapses, its result is returned
+/// directly. If `f` is still running when the deadline passes, a
+/// `"timeout"` event (with the elapsed wall-clock time) is logged via
+/// `logger` and `Ok(())` is returned immediately, **without** joining or
+/// killing the still-running worker thread — it (and anything it is
+/// blocked on, such as a hung `git` child process or an interactive editor)
+/// is deliberately abandoned. This is safe under the hooks' existing
+/// contract: `hook.rs`'s `PostMerge`/`PostCommit` arms always let the
+/// process exit immediately after this call returns (they must always exit
+/// 0 to avoid blocking git), which tears down every thread in the process
+/// regardless of what it's doing. If `f` panics instead of completing, a
+/// distinct `"panicked"` event is logged (the worker's channel sender is
+/// dropped without a send) and `Ok(())` is likewise returned.
+///
+/// # Errors
+///
+/// Returns whatever `f` returns if it completes before `timeout` elapses.
+/// Never returns an error on timeout or panic — the hook still exits 0, by
+/// design (see above).
+#[cfg(feature = "git")]
+pub fn run_hook_with_timeout<F>(
+    timeout: Duration,
+    logger: &crate::hook_log::HookLogger,
+    hook: &str,
+    f: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()> + Send + 'static,
+{
+    let start = Instant::now();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = f();
+        // The receiver may already be gone (timed out and returned) — a
+        // failed send just means nobody is listening anymore, which is fine.
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(err) => {
+            let elapsed = format!("{:.3}", start.elapsed().as_secs_f64());
+            let timeout_str = format!("{:.3}", timeout.as_secs_f64());
+            // Distinguish the deadline passing from the worker thread
+            // panicking (which drops `tx` without sending): mislabeling a
+            // panic as "timeout" would report a nonsensical near-zero
+            // elapsed time and send debugging down the wrong path.
+            let event = match err {
+                mpsc::RecvTimeoutError::Timeout => "timeout",
+                mpsc::RecvTimeoutError::Disconnected => "panicked",
+            };
+            logger.log(
+                hook,
+                event,
+                &[
+                    ("elapsed_secs", elapsed.as_str()),
+                    ("timeout_secs", timeout_str.as_str()),
+                ],
+            );
+            Ok(())
+        }
+    }
+}
+
 /// Applies a list of `Done:` directives, marking matching phases/tasks as done
 /// with the associated commit SHA.
 ///
@@ -426,6 +534,25 @@ pub fn apply_done_directives(
     Ok(())
 }
 
+/// Test-only stall injector used to exercise the hook-timeout wrapper
+/// ([`run_hook_with_timeout`]) end-to-end through the real compiled `rdm`
+/// binary. When the `RDM_TEST_STALL_HOOK_MS` environment variable is set to
+/// a valid millisecond count, sleeps for that long before the hook does any
+/// further work; a complete no-op otherwise (the variable is never set
+/// outside of tests). This exists because the hook body itself
+/// (`apply_done_directives`) has no genuine, deterministic way to hang from
+/// the outside without a real stuck `git` subprocess or editor — which AC2
+/// and AC3 fix — so the integration test for AC1 needs a controlled way to
+/// simulate "the hook body is still running past its deadline".
+#[cfg(feature = "git")]
+fn maybe_test_stall_hook() {
+    if let Ok(ms) = std::env::var("RDM_TEST_STALL_HOOK_MS")
+        && let Ok(ms) = ms.parse::<u64>()
+    {
+        thread::sleep(Duration::from_millis(ms));
+    }
+}
+
 /// Runs the post-merge hook logic: parse `Done:` directives from commits
 /// and mark matching phases done.
 ///
@@ -434,7 +561,16 @@ pub fn apply_done_directives(
 /// all commits reachable from HEAD but not from the given ref.
 ///
 /// All errors are intentionally swallowed by the caller — this must never
-/// block a git merge.
+/// block a git merge. Execution is additionally bounded by
+/// [`run_hook_with_timeout`] at the `hook.rs` call site, so even a body that
+/// hangs past its configured deadline cannot block the invoking `git merge`
+/// indefinitely.
+///
+/// If this process was itself spawned as a git subprocess by rdm (tagged
+/// with [`rdm_git::RDM_GIT_SUBPROCESS_ENV`]), it returns immediately without
+/// touching the store — see that constant's doc comment, and
+/// [`GitRepo::create_git_commit`](rdm_store_git::GitRepo::create_git_commit)'s,
+/// for the full re-entrancy rationale.
 #[cfg(feature = "git")]
 pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
@@ -442,6 +578,7 @@ pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> R
     let hook = "post-merge";
     let cwd_str = cwd.display().to_string();
     let staging_str = staging.to_string();
+    let timeout_secs = resolve_hook_timeout_secs(root).to_string();
     logger.log(
         hook,
         "entry",
@@ -449,8 +586,17 @@ pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> R
             ("cwd", cwd_str.as_str()),
             ("since", since.unwrap_or("")),
             ("staging", staging_str.as_str()),
+            ("timeout_secs", timeout_secs.as_str()),
         ],
     );
+
+    if std::env::var(rdm_git::RDM_GIT_SUBPROCESS_ENV).is_ok() {
+        logger.log(hook, "skip-reentrant", &[]);
+        logger.log(hook, "exit", &[("ok", "true")]);
+        return Ok(());
+    }
+
+    maybe_test_stall_hook();
 
     let commits = match rdm_git::commit_messages_since_at(&cwd, since) {
         Ok(c) => c,
@@ -498,7 +644,26 @@ pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> R
 /// (configured via `default_branch` in config, falling back to `"main"`).
 ///
 /// All errors are intentionally swallowed by the caller — this must never
-/// block a git commit.
+/// block a git commit. Execution is additionally bounded by
+/// [`run_hook_with_timeout`] at the `hook.rs` call site, so even a body that
+/// hangs past its configured deadline cannot block the invoking `git commit`
+/// indefinitely.
+///
+/// If this process was itself spawned as a git subprocess by rdm (tagged
+/// with [`rdm_git::RDM_GIT_SUBPROCESS_ENV`]), it returns immediately without
+/// touching the store, instead of re-running the full `Done:`-directive
+/// pipeline. This matters because
+/// [`GitRepo::create_git_commit`](rdm_store_git::GitRepo::create_git_commit)
+/// — the commit path behind every *ordinary* plan-repo mutation — never
+/// invokes git hooks at all (it bypasses the git porcelain entirely via
+/// gix's low-level `commit_as`), so an ordinary `rdm phase update`/`rdm task
+/// update` can never reach this guard in the first place. The one path that
+/// *can* is a genuine subprocess `git commit`/`git merge` against a repo
+/// that itself has rdm's hooks installed (see
+/// [`GitRepo::git_resolve_conflict`](rdm_store_git::GitRepo::git_resolve_conflict),
+/// which completes a merge with a real `git commit --no-edit`) — the guard
+/// short-circuits that one-level re-entrancy instead of leaving it
+/// completely untested and unbounded.
 #[cfg(feature = "git")]
 pub fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
@@ -506,11 +671,24 @@ pub fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
     let hook = "post-commit";
     let cwd_str = cwd.display().to_string();
     let staging_str = staging.to_string();
+    let timeout_secs = resolve_hook_timeout_secs(root).to_string();
     logger.log(
         hook,
         "entry",
-        &[("cwd", cwd_str.as_str()), ("staging", staging_str.as_str())],
+        &[
+            ("cwd", cwd_str.as_str()),
+            ("staging", staging_str.as_str()),
+            ("timeout_secs", timeout_secs.as_str()),
+        ],
     );
+
+    if std::env::var(rdm_git::RDM_GIT_SUBPROCESS_ENV).is_ok() {
+        logger.log(hook, "skip-reentrant", &[]);
+        logger.log(hook, "exit", &[("ok", "true")]);
+        return Ok(());
+    }
+
+    maybe_test_stall_hook();
 
     // Only run on the default branch.
     let current_branch = match rdm_git::current_branch_at(&cwd) {
@@ -575,4 +753,170 @@ pub fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
         &[("ok", if result.is_ok() { "true" } else { "false" })],
     );
     result
+}
+
+#[cfg(all(test, feature = "git"))]
+mod hook_timeout_tests {
+    use super::*;
+    use crate::hook_log::HookLogger;
+    use tempfile::TempDir;
+
+    /// Builds a `HookLogger` backed by a fresh temp git repo, so `.log()`
+    /// calls actually write somewhere and can be read back.
+    fn logger_in_temp_repo() -> (TempDir, HookLogger) {
+        let dir = TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let logger = HookLogger::new(dir.path());
+        (dir, logger)
+    }
+
+    #[test]
+    fn run_hook_with_timeout_returns_ok_when_inner_completes_promptly() {
+        let (_dir, logger) = logger_in_temp_repo();
+        let start = Instant::now();
+
+        let result =
+            run_hook_with_timeout(Duration::from_secs(5), &logger, "post-commit", || Ok(()));
+
+        assert!(result.is_ok());
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "should return almost immediately when the inner closure completes promptly"
+        );
+    }
+
+    #[test]
+    fn run_hook_with_timeout_logs_timeout_event_and_returns_when_inner_hangs() {
+        let (dir, logger) = logger_in_temp_repo();
+        let start = Instant::now();
+
+        let result =
+            run_hook_with_timeout(Duration::from_millis(200), &logger, "post-commit", || {
+                // Blocks forever: nobody ever sends on this channel.
+                let (_tx, rx) = mpsc::channel::<()>();
+                let _ = rx.recv();
+                Ok(())
+            });
+
+        let elapsed = start.elapsed();
+        assert!(result.is_ok(), "a timed-out hook must still report Ok");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "should return shortly after the configured timeout, took {elapsed:?}"
+        );
+
+        let log_path = dir.path().join(".git/rdm-hook.log");
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            log.contains("post-commit timeout"),
+            "log missing timeout event: {log}"
+        );
+    }
+
+    #[test]
+    fn run_hook_with_timeout_logs_panicked_event_when_inner_panics() {
+        let (dir, logger) = logger_in_temp_repo();
+        let start = Instant::now();
+
+        let result = run_hook_with_timeout(Duration::from_secs(5), &logger, "post-commit", || {
+            panic!("hook body blew up");
+        });
+
+        let elapsed = start.elapsed();
+        assert!(result.is_ok(), "a panicked hook must still report Ok");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "should return as soon as the worker disconnects, took {elapsed:?}"
+        );
+
+        let log_path = dir.path().join(".git/rdm-hook.log");
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            log.contains("post-commit panicked"),
+            "log missing panicked event: {log}"
+        );
+        assert!(
+            !log.contains("post-commit timeout"),
+            "a panic must not be mislabeled as a timeout: {log}"
+        );
+    }
+
+    // -- resolve_hook_timeout_secs resolution semantics --
+
+    fn repo_config(toml: &str) -> rdm_core::config::Config {
+        rdm_core::config::Config::from_toml(toml).unwrap()
+    }
+
+    fn global_config(toml: &str) -> rdm_core::config::GlobalConfig {
+        rdm_core::config::GlobalConfig::from_toml(toml).unwrap()
+    }
+
+    #[test]
+    fn hook_timeout_defaults_when_unset() {
+        assert_eq!(
+            resolve_hook_timeout_secs_inner(&repo_config(""), &global_config("")),
+            DEFAULT_HOOK_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn hook_timeout_zero_normalizes_to_default_not_unbounded() {
+        assert_eq!(
+            resolve_hook_timeout_secs_inner(
+                &repo_config("hook_timeout_secs = 0"),
+                &global_config("")
+            ),
+            DEFAULT_HOOK_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn hook_timeout_nonzero_repo_value_wins_over_global() {
+        assert_eq!(
+            resolve_hook_timeout_secs_inner(
+                &repo_config("hook_timeout_secs = 10"),
+                &global_config("hook_timeout_secs = 60")
+            ),
+            10
+        );
+    }
+
+    #[test]
+    fn hook_timeout_global_fills_in_when_repo_unset() {
+        assert_eq!(
+            resolve_hook_timeout_secs_inner(
+                &repo_config(""),
+                &global_config("hook_timeout_secs = 60")
+            ),
+            60
+        );
+    }
+
+    #[test]
+    fn hook_timeout_repo_zero_does_not_defer_to_global() {
+        // Pins current behavior: with_global_defaults treats Some(0) as a
+        // present repo value, so repo=0 yields the built-in default even
+        // when the global config carries a nonzero setting — it does NOT
+        // fall through to the global value.
+        assert_eq!(
+            resolve_hook_timeout_secs_inner(
+                &repo_config("hook_timeout_secs = 0"),
+                &global_config("hook_timeout_secs = 60")
+            ),
+            DEFAULT_HOOK_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn hook_timeout_public_fn_reads_repo_rdm_toml() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("rdm.toml"), "hook_timeout_secs = 7\n").unwrap();
+        // Isolate from the host's real global config. SAFETY (env mutation):
+        // cargo-nextest runs each test in its own OS process, so this cannot
+        // race with other tests.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", "/dev/null/nonexistent");
+        }
+        assert_eq!(resolve_hook_timeout_secs(dir.path()), 7);
+    }
 }

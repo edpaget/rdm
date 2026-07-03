@@ -54,6 +54,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `hook_timeout_secs` config option (repo `rdm.toml` and global config,
+  same precedence as `default_branch`) bounds how long `rdm hook post-merge`
+  / `rdm hook post-commit` may run before giving up. Defaults to 30 seconds
+  when unset (a configured `0` is treated the same as unset — an unbounded
+  timeout would defeat the point of the guard). A hook that hits its
+  deadline logs a `timeout` event and still exits 0, so it can never block
+  the invoking `git commit`/`git merge` indefinitely.
 - The MCP server now exposes the LLM revision workflow, so an agent can
   discover and act on document reviews entirely over MCP:
   - `rdm_review_requests` — the change-request queue (submitted reviews
@@ -258,6 +265,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   whitespace-only `--title` is rejected with an actionable error (titles are
   required and cannot be cleared); omit `--title` to leave the existing title
   unchanged.
+
+### Fixed
+
+- Fixed a class of hangs that could leave a plan-repo mutation (or `rdm hook
+  post-merge`/`post-commit`) stuck indefinitely, requiring a manual
+  `SIGTERM`, in `--auto`/agent-driven flows:
+  - Every git subprocess rdm spawns is now hardened to be strictly
+    non-interactive — `GIT_EDITOR`/`GIT_SEQUENCE_EDITOR` are forced to a
+    no-op so a merge that would otherwise open an interactive commit-message
+    editor can't block on it, and `GIT_TERMINAL_PROMPT`/`GIT_ASKPASS` are
+    forced so a `fetch`/`push` against an authentication-required remote
+    fails fast instead of hanging on a credential or host-key prompt. This
+    holds regardless of the invoking user's `core.editor`/`GIT_EDITOR`/
+    `VISUAL`/credential-helper configuration.
+  - `rdm remote pull`'s diverged-history merge now also explicitly passes
+    `--no-edit` (defense-in-depth alongside the blanket editor hardening
+    above).
+  - `rdm hook post-merge`/`post-commit` now detect when they were themselves
+    spawned as a git subprocess by rdm (as can happen if a real `git commit`
+    made by `rdm resolve` re-triggers the plan repo's own installed hooks)
+    and short-circuit immediately instead of re-running the `Done:`-directive
+    pipeline.
+  - `rdm hook post-merge`/`post-commit` execution is now bounded by the new
+    `hook_timeout_secs` deadline (see Added, above) as a last-resort backstop.
 
 ## [0.15.0] - 2026-07-01
 

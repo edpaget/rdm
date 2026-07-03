@@ -13,6 +13,13 @@
 //! All process spawning routes through a single private `git_command` spawner;
 //! the path-taking [`run_git`]/[`run_git_at`] wrappers map the raw
 //! [`std::io::Result`] into [`rdm_core::error::Error`].
+//!
+//! Every child `git` process spawned here is hardened to be strictly
+//! non-interactive (see `process::git_command`'s doc comment for the full
+//! rationale and the exact environment variables involved) and is tagged with
+//! [`RDM_GIT_SUBPROCESS_ENV`] so that anything downstream — notably git's own
+//! hook runner — can tell it was spawned by rdm itself rather than by a
+//! human or agent.
 
 #![warn(missing_docs)]
 
@@ -22,6 +29,30 @@ use rdm_core::error::{Error, Result};
 
 mod process;
 pub mod worktree;
+
+/// Environment variable set to `"1"` on every git subprocess spawned by
+/// [`run_git`]/[`run_git_at`] (via `process::git_command`).
+///
+/// Because [`std::process::Command`] inherits the parent's environment by
+/// default, this value propagates transitively through any chain of child
+/// processes: e.g. `rdm resolve` spawning `git commit --no-edit` (tagged),
+/// which git's own hook runner then invokes `.git/hooks/post-commit` from
+/// (still tagged, since the hook shim is a plain child process), which in
+/// turn may invoke `rdm hook post-commit` (still tagged).
+///
+/// `run_post_commit_hook`/`run_post_merge_hook` in `rdm-cli` check for this
+/// variable at entry and short-circuit immediately when it is present — a
+/// git subprocess spawned *by rdm itself* is never the kind of
+/// human/agent-authored `Done:`-bearing commit those hooks exist to react
+/// to, and re-running the full directive pipeline in that situation would be
+/// unbounded, untested re-entrancy for no benefit. See the rustdoc on
+/// `GitRepo::create_git_commit` in `rdm-store-git` for why *ordinary*
+/// plan-repo mutations can never reach this path in the first place.
+///
+/// The name is deliberately namespaced (`RDM_GIT_SUBPROCESS`, not something
+/// generic like `SUBPROCESS`) to make an ambient collision with an
+/// unrelated environment variable implausible; treat it as reserved.
+pub const RDM_GIT_SUBPROCESS_ENV: &str = "RDM_GIT_SUBPROCESS";
 
 /// Information about a single commit (its SHA and raw message).
 ///

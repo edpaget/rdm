@@ -18,6 +18,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "root",
     "auto_init",
     "default_branch",
+    "hook_timeout_secs",
 ];
 
 /// Keys that may only be set in the global config (not in a repo `rdm.toml`).
@@ -120,6 +121,13 @@ pub struct GlobalConfig {
     /// When `true`, the MCP server auto-initializes the plan repo if uninitialized.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_init: Option<bool>,
+
+    /// Wall-clock deadline (in seconds) for `rdm hook post-merge` /
+    /// `rdm hook post-commit` execution. Defaults to a conservative built-in
+    /// constant when unset. See [`Config::hook_timeout_secs`] for the
+    /// repo-level counterpart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_timeout_secs: Option<u64>,
 }
 
 impl GlobalConfig {
@@ -182,6 +190,18 @@ pub struct Config {
     /// HTTP server configuration (`[server]` table).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server: Option<ServerConfig>,
+
+    /// Wall-clock deadline (in seconds) for `rdm hook post-merge` /
+    /// `rdm hook post-commit` execution on this repo.
+    ///
+    /// Bounds how long the hook may run before it gives up, logs a
+    /// `"timeout"` event, and exits successfully rather than risking an
+    /// indefinite hang that blocks the invoking `git commit`/`git merge`.
+    /// Falls back to a conservative built-in default when unset (and when a
+    /// value of `0` is configured, since an unbounded timeout would defeat
+    /// the purpose of this guard).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_timeout_secs: Option<u64>,
 }
 
 impl Config {
@@ -238,6 +258,7 @@ impl Config {
                 .clone()
                 .or_else(|| global.default_branch.clone()),
             server: self.server.clone(),
+            hook_timeout_secs: self.hook_timeout_secs.or(global.hook_timeout_secs),
         }
     }
 }
@@ -630,6 +651,52 @@ default = "upstream"
         let parsed = Config::from_toml(&toml_str).unwrap();
         assert_eq!(parsed, config);
         assert_eq!(parsed.default_branch, Some("develop".to_string()));
+    }
+
+    // --- hook_timeout_secs tests ---
+
+    #[test]
+    fn config_with_hook_timeout_round_trip() {
+        let config = Config {
+            hook_timeout_secs: Some(45),
+            ..Default::default()
+        };
+        let toml_str = config.to_toml().unwrap();
+        let parsed = Config::from_toml(&toml_str).unwrap();
+        assert_eq!(parsed, config);
+        assert_eq!(parsed.hook_timeout_secs, Some(45));
+    }
+
+    #[test]
+    fn with_global_defaults_includes_hook_timeout() {
+        let repo_config = Config::default();
+        let global = GlobalConfig {
+            hook_timeout_secs: Some(60),
+            ..Default::default()
+        };
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(merged.hook_timeout_secs, Some(60));
+    }
+
+    #[test]
+    fn with_global_defaults_repo_hook_timeout_wins() {
+        let repo_config = Config {
+            hook_timeout_secs: Some(10),
+            ..Default::default()
+        };
+        let global = GlobalConfig {
+            hook_timeout_secs: Some(60),
+            ..Default::default()
+        };
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(merged.hook_timeout_secs, Some(10));
+    }
+
+    #[test]
+    fn parse_global_config_with_hook_timeout() {
+        let toml_str = "hook_timeout_secs = 20";
+        let config = GlobalConfig::from_toml(toml_str).unwrap();
+        assert_eq!(config.hook_timeout_secs, Some(20));
     }
 
     // --- ConfigSource display tests ---

@@ -1888,4 +1888,469 @@ mod tests {
             other => panic!("expected RevisionUnknown, got {other:?}"),
         }
     }
+
+    // -- hook-reliability regression tests (mutation-hook-reliability phase 1) --
+
+    /// Prepends `dir` to `PATH` for the current process, returning the
+    /// original value so the caller can restore it afterward. Safe under
+    /// cargo-nextest, which isolates each test into its own OS process, so
+    /// mutating process-wide `PATH` here cannot race with other tests.
+    fn prepend_path(dir: &Path) -> String {
+        let original = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{original}", dir.display());
+        // SAFETY: see doc comment above — process-isolated under nextest.
+        unsafe {
+            std::env::set_var("PATH", new_path);
+        }
+        original
+    }
+
+    /// Restores `PATH` to a value previously captured by [`prepend_path`].
+    fn restore_path(original: String) {
+        // SAFETY: process-isolated under nextest; see `prepend_path`.
+        unsafe {
+            std::env::set_var("PATH", original);
+        }
+    }
+
+    /// Writes a fake `git` executable that answers a fixed script of
+    /// subcommands sufficient to drive `GitRepo::git_pull` down either its
+    /// diverged-merge or fast-forward branch, without touching a real
+    /// remote. Every invocation's full argument list (space-joined) is
+    /// appended as one line to `$FAKE_GIT_ARGV_LOG` when that env var is
+    /// set. `$FAKE_GIT_AHEAD`/`$FAKE_GIT_BEHIND` (read at invocation time)
+    /// control the `rev-list --left-right --count` output, which is what
+    /// `GitRepo::git_sync_status` parses to decide ahead/behind.
+    fn fake_git_canned_dir() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let script = dir.path().join("git");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+if [ -n "$FAKE_GIT_ARGV_LOG" ]; then
+  printf '%s\n' "$*" >> "$FAKE_GIT_ARGV_LOG"
+fi
+case "$1" in
+  symbolic-ref)
+    echo "refs/heads/main"
+    exit 0
+    ;;
+  rev-list)
+    printf '%s\t%s\n' "${FAKE_GIT_AHEAD:-0}" "${FAKE_GIT_BEHIND:-0}"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir
+    }
+
+    /// AC5 regression test: proves the diverged-history merge branch
+    /// (`remote.rs`'s non-fast-forward `git merge`) explicitly passes
+    /// `--no-edit`, and that the fast-forward branch is distinct (passes
+    /// `--ff-only` and never `--no-edit`). This is the only test that would
+    /// catch a regression of AC5 itself — the AC2 end-to-end editor-hang
+    /// test would still pass even if `--no-edit` were dropped here, because
+    /// the blanket `GIT_EDITOR=true` env override independently neutralizes
+    /// the editor.
+    #[test]
+    fn git_pull_diverged_merge_passes_no_edit_flag() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store
+            .git_mut()
+            .git_remote_add("origin", "file:///nonexistent")
+            .unwrap();
+
+        let fake_bin = fake_git_canned_dir();
+
+        // -- diverged branch: ahead > 0, behind > 0 --
+        let log_dir = TempDir::new().unwrap();
+        let argv_log = log_dir.path().join("argv.log");
+        let original_path = prepend_path(fake_bin.path());
+        // SAFETY: process-isolated under nextest; see `prepend_path`.
+        unsafe {
+            std::env::set_var("FAKE_GIT_ARGV_LOG", &argv_log);
+            std::env::set_var("FAKE_GIT_AHEAD", "1");
+            std::env::set_var("FAKE_GIT_BEHIND", "1");
+        }
+        let outcome = store.git_mut().git_pull("origin");
+        // SAFETY: process-isolated under nextest; see `prepend_path`.
+        unsafe {
+            std::env::remove_var("FAKE_GIT_AHEAD");
+            std::env::remove_var("FAKE_GIT_BEHIND");
+            std::env::remove_var("FAKE_GIT_ARGV_LOG");
+        }
+        restore_path(original_path);
+        outcome.expect("diverged pull against the fake git shim should succeed");
+
+        let log = std::fs::read_to_string(&argv_log).unwrap_or_default();
+        let merge_line = log
+            .lines()
+            .find(|l| l.starts_with("merge "))
+            .unwrap_or_else(|| panic!("no merge invocation recorded; log: {log}"));
+        assert!(
+            merge_line.contains("--no-edit"),
+            "diverged merge should pass --no-edit: {merge_line}"
+        );
+        assert!(
+            !merge_line.contains("--ff-only"),
+            "diverged merge should not be ff-only: {merge_line}"
+        );
+
+        // -- fast-forward branch: ahead == 0, behind > 0 --
+        let log_dir2 = TempDir::new().unwrap();
+        let argv_log2 = log_dir2.path().join("argv.log");
+        let original_path2 = prepend_path(fake_bin.path());
+        // SAFETY: process-isolated under nextest; see `prepend_path`.
+        unsafe {
+            std::env::set_var("FAKE_GIT_ARGV_LOG", &argv_log2);
+            std::env::set_var("FAKE_GIT_AHEAD", "0");
+            std::env::set_var("FAKE_GIT_BEHIND", "1");
+        }
+        let outcome2 = store.git_mut().git_pull("origin");
+        // SAFETY: process-isolated under nextest; see `prepend_path`.
+        unsafe {
+            std::env::remove_var("FAKE_GIT_AHEAD");
+            std::env::remove_var("FAKE_GIT_BEHIND");
+            std::env::remove_var("FAKE_GIT_ARGV_LOG");
+        }
+        restore_path(original_path2);
+        outcome2.expect("fast-forward pull against the fake git shim should succeed");
+
+        let log2 = std::fs::read_to_string(&argv_log2).unwrap_or_default();
+        let merge_line2 = log2
+            .lines()
+            .find(|l| l.starts_with("merge "))
+            .unwrap_or_else(|| panic!("no merge invocation recorded; log: {log2}"));
+        assert!(
+            merge_line2.contains("--ff-only"),
+            "fast-forward-only merge should pass --ff-only: {merge_line2}"
+        );
+        assert!(
+            !merge_line2.contains("--no-edit"),
+            "fast-forward-only merge should not carry --no-edit: {merge_line2}"
+        );
+    }
+
+    /// AC2 regression test: even when this repo's `core.editor` is
+    /// configured to a script that would block forever if actually invoked,
+    /// a diverged (non-conflicting) `git_pull` — which needs a real merge
+    /// commit, not just a fast-forward — completes promptly. This proves
+    /// the blanket `GIT_EDITOR=true`/`GIT_SEQUENCE_EDITOR=true` override in
+    /// `rdm_git::process::git_command` wins over the invoking user's
+    /// `core.editor` configuration (git's own precedence: `GIT_EDITOR` env
+    /// beats `core.editor`).
+    #[test]
+    fn git_pull_diverged_history_completes_without_editor_even_when_core_editor_hangs() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_mut().git_fetch("origin").unwrap();
+
+        // Local commit (different file from remote): a real merge commit
+        // will be needed, not just a fast-forward.
+        store
+            .write(&RelPath::new("local.md").unwrap(), "local".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        // Push a different file to the bare remote from a separate clone.
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "remote commit"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        // Configure this repo's core.editor to a script that would block
+        // forever if it were ever actually invoked.
+        let editor_dir = TempDir::new().unwrap();
+        let hanging_editor = editor_dir.path().join("hang-editor.sh");
+        std::fs::write(&hanging_editor, "#!/bin/sh\nsleep 9999\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hanging_editor, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let out = git_cmd()
+            .args(["config", "core.editor", hanging_editor.to_str().unwrap()])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git config core.editor failed");
+
+        let start = std::time::Instant::now();
+        let outcome = store.git_mut().git_pull("origin").unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "git_pull should not block on a hanging core.editor, took {elapsed:?}"
+        );
+        match outcome {
+            PullOutcome::Success(result) => {
+                assert!(result.changed);
+                assert!(result.commits_merged > 0);
+            }
+            PullOutcome::Conflict(_) => panic!("expected clean merge, got conflict"),
+        }
+        assert!(dir.path().join("local.md").exists());
+        assert!(dir.path().join("remote.md").exists());
+
+        let _ = bare_dir;
+    }
+
+    /// Resolves the real `git` binary's absolute path via `which`, for use
+    /// by [`spy_git_dir`] before `PATH` is overridden.
+    fn which_git() -> String {
+        let out = std::process::Command::new("which")
+            .arg("git")
+            .output()
+            .expect("`which` should be available on macOS/Linux CI targets");
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert!(!path.is_empty(), "could not resolve real git binary");
+        path
+    }
+
+    /// Writes a "spy" `git` executable that logs `argv=<...>` plus whether
+    /// `RDM_GIT_SUBPROCESS` is present in its environment for every
+    /// invocation (one line per call, appended to `log_path`), then execs
+    /// the real system `git` binary with the same arguments so the
+    /// underlying git operation still actually happens. Used to observe the
+    /// environment of a real subprocess `git commit`/`git merge` without
+    /// faking away the git behavior the test also depends on.
+    fn spy_git_dir(log_path: &Path) -> TempDir {
+        let real_git = which_git();
+        let dir = TempDir::new().unwrap();
+        let script = dir.path().join("git");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+{{
+  printf 'argv=%s' "$*"
+  if [ -n "$RDM_GIT_SUBPROCESS" ]; then
+    printf ' RDM_GIT_SUBPROCESS=%s' "$RDM_GIT_SUBPROCESS"
+  else
+    printf ' RDM_GIT_SUBPROCESS=<unset>'
+  fi
+  printf '\n'
+}} >> "{log}"
+exec "{real_git}" "$@"
+"#,
+                log = log_path.display(),
+                real_git = real_git,
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir
+    }
+
+    /// AC4 regression test: proves that `GitRepo::git_resolve_conflict`'s
+    /// merge-completing `git commit --no-edit` call (`merge.rs`, the one
+    /// genuine subprocess commit in this crate — see §1.2(C) of the
+    /// investigation) is spawned through the marked `git_command`, i.e.
+    /// carries `RDM_GIT_SUBPROCESS=1`. This is the call site that can
+    /// re-trigger a plan repo's own `post-commit` hook, so the marker must
+    /// reach it for the re-entrancy guard in `rdm-cli` to short-circuit
+    /// correctly.
+    #[test]
+    fn git_resolve_conflict_completing_commit_tags_subprocess_env() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("shared.md").unwrap(), "original".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_mut().git_fetch("origin").unwrap();
+
+        store
+            .write(
+                &RelPath::new("shared.md").unwrap(),
+                "local change".to_string(),
+            )
+            .unwrap();
+        store.commit().unwrap();
+
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("shared.md"), "remote change").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "conflicting commit"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+
+        // Pull to get a real conflict.
+        let outcome = store.git_mut().git_pull("origin").unwrap();
+        assert!(matches!(outcome, PullOutcome::Conflict(_)));
+
+        // Spy on git invocations for the resolve step: prepend a
+        // forwarding spy `git` to PATH so the completing `git commit
+        // --no-edit` call (merge.rs) is observed but still actually runs.
+        let log_dir = TempDir::new().unwrap();
+        let log_path = log_dir.path().join("spy.log");
+        let spy_bin = spy_git_dir(&log_path);
+        let original_path = prepend_path(spy_bin.path());
+
+        std::fs::write(dir.path().join("shared.md"), "resolved content").unwrap();
+        let result = store.git_mut().git_resolve_conflict("shared.md");
+
+        restore_path(original_path);
+
+        let result = result.unwrap();
+        assert!(result.merge_completed);
+
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let commit_line = log
+            .lines()
+            .find(|l| l.starts_with("argv=commit "))
+            .unwrap_or_else(|| panic!("no commit invocation recorded; log: {log}"));
+        assert!(
+            commit_line.contains("RDM_GIT_SUBPROCESS=1"),
+            "the completing git commit call should carry the rdm subprocess marker: {commit_line}"
+        );
+
+        let _ = bare_dir;
+    }
+
+    /// AC3 end-to-end regression test (mechanism B): a `git fetch` against a
+    /// remote that demands authentication must fail fast instead of hanging
+    /// on a credential prompt — even when the repo's own `core.askPass` is
+    /// configured to a script that would block forever if invoked.
+    ///
+    /// Hermetic hang simulation: a localhost-only HTTP listener answers
+    /// every request `401 Unauthorized` with a `WWW-Authenticate: Basic`
+    /// challenge, which makes git go looking for credentials. Without the
+    /// `GIT_TERMINAL_PROMPT=0` / `GIT_ASKPASS=true` hardening in
+    /// `rdm_git::process::git_command`, git would run the configured
+    /// `core.askPass` helper (the hanging script) and block indefinitely —
+    /// the env override wins over the repo config (git's precedence:
+    /// `GIT_ASKPASS` env beats `core.askpass`), so the empty credentials are
+    /// rejected and the fetch errors out promptly. No real network is used
+    /// (loopback only) and no auth ever succeeds.
+    #[test]
+    fn git_fetch_against_auth_required_remote_fails_fast_without_prompting() {
+        use std::io::{Read as _, Write as _};
+
+        // Loopback HTTP server: every request gets a 401 Basic challenge.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\n\
+                      WWW-Authenticate: Basic realm=\"rdm-test\"\r\n\
+                      Content-Length: 0\r\n\
+                      Connection: close\r\n\r\n",
+                );
+            }
+        });
+
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        // Configure core.askPass to a script that would hang forever if it
+        // were ever actually invoked.
+        let script_dir = TempDir::new().unwrap();
+        let hanging_askpass = script_dir.path().join("hang-askpass.sh");
+        std::fs::write(&hanging_askpass, "#!/bin/sh\nsleep 9999\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hanging_askpass, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let out = git_cmd()
+            .args(["config", "core.askPass", hanging_askpass.to_str().unwrap()])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git config core.askPass failed");
+
+        store
+            .git_mut()
+            .git_remote_add("origin", &format!("http://{addr}/repo.git"))
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let result = store.git_mut().git_fetch("origin");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "git fetch against an auth-required remote should fail fast \
+             rather than block on a credential prompt, took {elapsed:?}"
+        );
+        assert!(
+            result.is_err(),
+            "fetch should fail (auth never succeeds), got {result:?}"
+        );
+    }
 }

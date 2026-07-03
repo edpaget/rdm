@@ -416,3 +416,129 @@ fn config_repo_default_branch_overrides_global() {
         .stdout(predicate::str::contains("develop"))
         .stdout(predicate::str::contains("repo config"));
 }
+
+// -- hook_timeout_secs config round-trips --
+
+#[test]
+fn config_set_and_get_hook_timeout_secs() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "hook_timeout_secs", "45"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo config"));
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "hook_timeout_secs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("45"))
+        .stdout(predicate::str::contains("repo config"));
+
+    // list shows the key with its value, not "(not set)".
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hook_timeout_secs"))
+        .stdout(predicate::str::contains("45"));
+}
+
+#[test]
+fn config_set_and_get_global_hook_timeout_secs() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "hook_timeout_secs", "60", "--global"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("global config"));
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "hook_timeout_secs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("60"))
+        .stdout(predicate::str::contains("global config"));
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hook_timeout_secs"))
+        .stdout(predicate::str::contains("60"));
+}
+
+#[test]
+fn config_repo_hook_timeout_overrides_global() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "hook_timeout_secs", "60", "--global"])
+        .assert()
+        .success();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "hook_timeout_secs", "10"])
+        .assert()
+        .success();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "hook_timeout_secs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("10"))
+        .stdout(predicate::str::contains("repo config"));
+}
+
+#[test]
+fn config_set_hook_timeout_rejects_non_integer() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "hook_timeout_secs", "soon"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("non-negative integer"));
+}

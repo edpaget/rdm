@@ -242,7 +242,15 @@ impl GitRepo {
     /// Pulls from a named git remote (fetch + fast-forward merge).
     ///
     /// Fetches from the remote, checks sync status, and if behind,
-    /// performs a `git merge --ff-only` to incorporate remote changes.
+    /// performs a `git merge --ff-only` to incorporate remote changes. If the
+    /// local branch has also diverged (commits on both sides), attempts a
+    /// real (non-fast-forward) `git merge --no-edit <tracking_ref>` instead —
+    /// `--no-edit` is passed explicitly here as defense-in-depth, on top of
+    /// the blanket `GIT_EDITOR=true`/`GIT_SEQUENCE_EDITOR=true` hardening
+    /// every rdm-spawned git subprocess already gets (see
+    /// `rdm_git::process::git_command`): a merge that needs a real merge
+    /// commit would otherwise invoke an interactive editor and hang
+    /// indefinitely waiting for input nobody will send.
     ///
     /// # Errors
     ///
@@ -300,7 +308,7 @@ impl GitRepo {
             // Sync the git index with HEAD (GitStore commits bypass the index)
             self.sync_index_to_head()?;
 
-            let output = self.run_git(&["merge", &tracking_ref])?;
+            let output = self.run_git(&["merge", "--no-edit", &tracking_ref])?;
 
             if !output.status.success() {
                 // Check if this is a merge conflict

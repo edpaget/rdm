@@ -242,6 +242,7 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "stage" => config.stage.map(|b| b.to_string()),
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
         "default_branch" => config.default_branch.clone(),
+        "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
         _ => None,
     }
 }
@@ -256,6 +257,7 @@ pub fn get_global_config_field(config: &GlobalConfig, key: &str) -> Option<Strin
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
         "auto_init" => config.auto_init.map(|b| b.to_string()),
         "default_branch" => config.default_branch.clone(),
+        "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
         _ => None,
     }
 }
@@ -283,6 +285,9 @@ pub fn set_config_field(
             config.remote.get_or_insert_with(Default::default).default = Some(value.to_string());
         }
         "default_branch" => config.default_branch = Some(value.to_string()),
+        "hook_timeout_secs" => {
+            config.hook_timeout_secs = Some(parse_u64(key, value)?);
+        }
         "root" | "auto_init" => bail!("'{key}' can only be set in global config — use --global"),
         _ => bail!(
             "unknown config key: {key} — valid keys: {}",
@@ -315,6 +320,9 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
             config.auto_init = Some(parse_bool(value)?);
         }
         "default_branch" => config.default_branch = Some(value.to_string()),
+        "hook_timeout_secs" => {
+            config.hook_timeout_secs = Some(parse_u64(key, value)?);
+        }
         _ => bail!(
             "unknown config key: {key} — valid keys: {}",
             KNOWN_KEYS.join(", ")
@@ -349,6 +357,11 @@ fn parse_bool(s: &str) -> Result<bool> {
         "false" => Ok(false),
         _ => bail!("invalid boolean value: {s} — use 'true' or 'false'"),
     }
+}
+
+fn parse_u64(key: &str, s: &str) -> Result<u64> {
+    s.parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("invalid value for {key}: {s} — use a non-negative integer"))
 }
 
 /// Expands `~` and resolves `.`/`..` in a path.
