@@ -105,8 +105,10 @@ phase as its own subagent keeps that detail inside the subagent; only the
 `{roadmap, phase, outcome, summary, findings}` JSON crosses back. The loop's
 retained state per iteration is therefore bounded: the latest `rdm next` result
 and each returned outcome, nothing more. This is the same isolation
-`rdm-dispatch-phase` applies one level down, where its implementer and plan
-reviewer are separate subagents seeded with only the phase body.
+`rdm-dispatch-phase` applies one level down, where its planner, plan reviewer,
+and implementer are separate subagents — the planner and reviewer seeded with
+only the phase body, the implementer with the phase body and the approved plan
+document.
 
 ## Budgets and stop conditions
 
