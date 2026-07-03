@@ -275,6 +275,7 @@ pub async fn start_review_form(
                 state: Some(ReviewState::Draft),
                 verdict: None,
                 author: Some(author.clone()),
+                ..Default::default()
             },
         )
         .into_iter()

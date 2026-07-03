@@ -257,7 +257,7 @@ pub struct SkillOptions {
 ///     principles_file: None,
 ///     mcp: false,
 /// });
-/// assert_eq!(skills.len(), 8);
+/// assert_eq!(skills.len(), 9);
 /// assert!(skills[0].content.contains("--project myproj"));
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
@@ -273,6 +273,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_dispatch_phase_mcp(&proj, principles_note.as_deref()),
             skill_autopilot_mcp(&proj, principles_note.as_deref()),
             skill_land_mcp(&proj, principles_note.as_deref()),
+            skill_revise_mcp(&proj, principles_note.as_deref()),
         ]
     } else {
         let proj_flag = proj_flag_str(opts.project.as_deref());
@@ -285,6 +286,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_dispatch_phase(&proj_flag, principles_note.as_deref()),
             skill_autopilot(&proj_flag, principles_note.as_deref()),
             skill_land(&proj_flag, principles_note.as_deref()),
+            skill_revise(&proj_flag, principles_note.as_deref()),
         ]
     }
 }
@@ -396,6 +398,18 @@ fn skill_land(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
         relative_path: "rdm-land/SKILL.md",
         content: render_skill(
             include_str!("templates/skill-land-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
+        ),
+    }
+}
+
+fn skill_revise(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-revise/SKILL.md",
+        content: render_skill(
+            include_str!("templates/skill-revise-cli.md"),
             "{proj_flag}",
             proj_flag,
             principles_note,
@@ -606,6 +620,26 @@ fn skill_land_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_task_update", "rdm_task_update"),
                 ("t_worktree_current", "rdm_worktree_current"),
                 ("t_worktree_remove", "rdm_worktree_remove"),
+            ],
+        ),
+    }
+}
+
+fn skill_revise_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-revise/SKILL.md",
+        content: render_mcp_skill(
+            include_str!("templates/skill-revise-mcp.md"),
+            proj,
+            principles_note,
+            &[
+                ("t_review_requests", "rdm_review_requests"),
+                ("t_review_show", "rdm_review_show"),
+                ("t_review_address_comment", "rdm_review_address_comment"),
+                ("t_review_complete", "rdm_review_complete"),
+                ("t_phase_update", "rdm_phase_update"),
+                ("t_task_update", "rdm_task_update"),
+                ("t_roadmap_update", "rdm_roadmap_update"),
             ],
         ),
     }
@@ -1019,6 +1053,35 @@ mod tests {
         assert!(content.contains("created_commit"));
         // The project flag is substituted into the review commands too.
         assert!(content.contains("rdm review requests --project myproj"));
+        // The agent loop is automated by the rdm-revise skill.
+        assert!(content.contains("rdm-revise"));
+    }
+
+    #[test]
+    fn mcp_instructions_teach_document_reviews() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: Some("myproj".to_string()),
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(content.contains("## Document reviews"));
+        // The four review tools and the loop.
+        assert!(content.contains("rdm_review_requests"));
+        assert!(content.contains("rdm_review_show"));
+        assert!(content.contains("rdm_review_address_comment"));
+        assert!(content.contains("rdm_review_complete"));
+        assert!(content.contains("rdm-revise"));
+        // Anchor/resolution semantics an agent must know.
+        assert!(content.contains("anchor_type"));
+        assert!(content.contains("drifted"));
+        assert!(content.contains("body_at_created_commit"));
+        // Commit provenance threading from update responses.
+        assert!(content.contains("Commit: <sha>"));
+        assert!(content.contains("applied_commit"));
+        // The project param is substituted.
+        assert!(content.contains("review_id: \"<id>\""));
+        assert!(!content.contains("<PROJECT>"));
     }
 
     #[test]
@@ -1200,13 +1263,13 @@ mod tests {
     // --- Skill generation tests ---
 
     #[test]
-    fn generate_skills_returns_eight_files() {
+    fn generate_skills_returns_nine_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
-        assert_eq!(skills.len(), 8);
+        assert_eq!(skills.len(), 9);
     }
 
     #[test]
@@ -1224,6 +1287,88 @@ mod tests {
         assert_eq!(skills[5].relative_path, "rdm-dispatch-phase/SKILL.md");
         assert_eq!(skills[6].relative_path, "rdm-autopilot/SKILL.md");
         assert_eq!(skills[7].relative_path, "rdm-land/SKILL.md");
+        assert_eq!(skills[8].relative_path, "rdm-revise/SKILL.md");
+    }
+
+    #[test]
+    fn skill_revise_documents_the_revision_loop() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[8].content;
+        assert!(content.contains("name: rdm-revise"));
+        assert!(content.contains("$ARGUMENTS"));
+        // Distinct from rdm-review: acts on *document* reviews.
+        assert!(content.contains("rdm-review"));
+        assert!(content.contains("document"));
+        // The queue → read → dispatch → apply → record → close loop.
+        assert!(content.contains("rdm review requests --format json"));
+        assert!(content.contains("rdm review show <review-id> --format json"));
+        // Summary-first: comments are instances of the reviewer's intent.
+        assert!(content.contains("summary"));
+        assert!(content.contains("overall intent"));
+        // Anchor dispatch: resolved / drifted / whole-document (incl. Unknown).
+        assert!(content.contains("anchor_type"));
+        assert!(content.contains("drifted"));
+        assert!(content.contains("whole-document"));
+        assert!(content.contains("unrecognized `anchor_type`"));
+        assert!(content.contains("created_commit"));
+        // Edits go through rdm update commands, never direct file edits.
+        assert!(content.contains("rdm phase update"));
+        assert!(content.contains("rdm task update"));
+        assert!(content.contains("rdm roadmap update"));
+        // SHA capture immediately after the edit, threaded explicitly.
+        assert!(content.contains("rev-parse HEAD"));
+        assert!(content.contains("--applied-commit <sha>"));
+        assert!(content.contains("before any review update"));
+        // Clarification leaves the comment open; wont-fix carries reasoning.
+        assert!(content.contains("leave the comment **open** (no `--status`)"));
+        assert!(content.contains("--status wont-fix"));
+        // Close only when nothing is open; otherwise stay submitted.
+        assert!(content.contains("--state addressed"));
+        assert!(content.contains("leave the review submitted"));
+    }
+
+    #[test]
+    fn mcp_skill_revise_uses_review_tools_and_commit_threading() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[8].content;
+        assert!(content.contains("name: rdm-revise"));
+        assert!(content.contains("$ARGUMENTS"));
+        // Drives the loop through the four review tools plus the doc updates.
+        assert!(content.contains("rdm_review_requests"));
+        assert!(content.contains("rdm_review_show"));
+        assert!(content.contains("rdm_review_address_comment"));
+        assert!(content.contains("rdm_review_complete"));
+        assert!(content.contains("rdm_phase_update"));
+        assert!(content.contains("rdm_task_update"));
+        assert!(content.contains("rdm_roadmap_update"));
+        // Commit provenance is threaded from the update tool's response —
+        // the defaulting fallback is best-effort and never fires on wont-fix.
+        assert!(content.contains("Commit: <sha>"));
+        assert!(content.contains("applied_commit"));
+        assert!(content.contains("best-effort"));
+        assert!(content.contains("never defaults for `wont-fix`"));
+        // Clarification: no status leaves the comment open; complete refuses
+        // and lists open ids while clarification is pending.
+        assert!(content.contains("no `status`"));
+        assert!(content.contains("leave the review submitted"));
+        // Anchor dispatch against the inlined document bodies.
+        assert!(content.contains("body_at_created_commit"));
+        assert!(content.contains("current_body"));
+        assert!(content.contains("anchor_type"));
+        // MCP variant: Bash-free frontmatter, resolved mcp__rdm__ tool names.
+        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
+        assert!(!frontmatter.contains("  - Bash"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_review_requests"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_review_address_comment"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_task_update"));
     }
 
     #[test]
@@ -2084,13 +2229,13 @@ mod tests {
     // --- MCP skill generation tests ---
 
     #[test]
-    fn mcp_skills_returns_eight_files() {
+    fn mcp_skills_returns_nine_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: true,
         });
-        assert_eq!(skills.len(), 8);
+        assert_eq!(skills.len(), 9);
     }
 
     #[test]
@@ -2108,6 +2253,7 @@ mod tests {
         assert_eq!(skills[5].relative_path, "rdm-dispatch-phase/SKILL.md");
         assert_eq!(skills[6].relative_path, "rdm-autopilot/SKILL.md");
         assert_eq!(skills[7].relative_path, "rdm-land/SKILL.md");
+        assert_eq!(skills[8].relative_path, "rdm-revise/SKILL.md");
     }
 
     #[test]

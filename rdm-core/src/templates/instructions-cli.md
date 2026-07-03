@@ -68,7 +68,7 @@ Key mechanics:
 - `--quote` must match the document text **exactly**; it is located in the document as it was when the review started (`created_commit`), so quoting stays valid even after the document is edited. If the quote appears more than once, the error lists every occurrence — re-run with `--occurrence <n>` (1-based).
 - On a roadmap review, `--doc phase/<stem-or-number>` points a comment at one of the roadmap's phases.
 - `rdm review show` reports each comment's anchor as `resolved`, `drifted` (the document changed since the review), or `unresolved`. In JSON, drifted ranges index the `created_commit` version of the body — read it with `--at <created_commit>` — never the current one.
-- **Acting on a review (the agent loop)**: `rdm review requests` → for each comment, make the change → `rdm review update <id> --comment <n> --status addressed --applied-commit <sha> --reply "..."` (or `--status wont-fix --reply "why"`) → `rdm review update <id> --state addressed`.
+- **Acting on a review (the agent loop)**: `rdm review requests` → for each comment, make the change → `rdm review update <id> --comment <n> --status addressed --applied-commit <sha> --reply "..."` (or `--status wont-fix --reply "why"`) → `rdm review update <id> --state addressed`. The `rdm-revise` skill automates this loop end to end, including drifted-anchor clarification replies.
 - Searching review text: `rdm search <query> --type review {proj_flag}` matches summaries and comment bodies.
 
 ## Creating items

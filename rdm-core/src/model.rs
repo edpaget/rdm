@@ -697,6 +697,57 @@ impl ReviewTarget {
             ReviewTarget::Task { slug } => format!("task/{slug}"),
         }
     }
+
+    /// Returns the target's kind discriminant, for kind-only filtering (see
+    /// [`ReviewFilter`](crate::ops::reviews::ReviewFilter)).
+    #[must_use]
+    pub fn kind(&self) -> ReviewTargetKind {
+        match self {
+            ReviewTarget::Roadmap { .. } => ReviewTargetKind::Roadmap,
+            ReviewTarget::Phase { .. } => ReviewTargetKind::Phase,
+            ReviewTarget::Task { .. } => ReviewTargetKind::Task,
+        }
+    }
+}
+
+/// The kind discriminant of a [`ReviewTarget`], without its identifying
+/// fields — what a caller filters on when it cares about "reviews of tasks"
+/// rather than one specific task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewTargetKind {
+    /// A whole roadmap.
+    Roadmap,
+    /// A single phase within a roadmap.
+    Phase,
+    /// A standalone task.
+    Task,
+}
+
+impl fmt::Display for ReviewTargetKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReviewTargetKind::Roadmap => write!(f, "roadmap"),
+            ReviewTargetKind::Phase => write!(f, "phase"),
+            ReviewTargetKind::Task => write!(f, "task"),
+        }
+    }
+}
+
+impl FromStr for ReviewTargetKind {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "roadmap" => Ok(ReviewTargetKind::Roadmap),
+            "phase" => Ok(ReviewTargetKind::Phase),
+            "task" => Ok(ReviewTargetKind::Task),
+            other => Err(ParseError::new(
+                "review target kind",
+                other,
+                "roadmap, phase, or task",
+            )),
+        }
+    }
 }
 
 /// Kind of document a [`CommentDoc`] points at.

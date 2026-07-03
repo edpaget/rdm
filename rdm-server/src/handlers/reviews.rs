@@ -204,6 +204,7 @@ pub async fn list_reviews(
             state: state_filter,
             verdict: verdict_filter,
             author: filters.author.clone(),
+            ..Default::default()
         },
     );
 

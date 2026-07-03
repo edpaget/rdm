@@ -88,7 +88,7 @@ rdm agent-config claude --skills --project fbm --out ~/Projects/fbm
 rdm agent-config pi --skills --project fbm --out ~/Projects/fbm
 ```
 
-rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), implementation and task work (`rdm-do`), review (`rdm-review`), documentation generation (`rdm-document`), autonomous roadmap execution (`rdm-autopilot`) — which drives one roadmap to `reviewed` unattended (see [`docs/autonomous-loop.md`](docs/autonomous-loop.md)) — and landing (`rdm-land`), which integrates a reviewed item into `main` with linear history and then prunes its worktree (see [`docs/landing.md`](docs/landing.md)). The same skill set is emitted for Pi under `.pi/skills/`.
+rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), implementation and task work (`rdm-do`), review (`rdm-review`), acting on document reviews that request changes (`rdm-revise`) — which works a submitted review comment by comment, applying edits through rdm and recording per-comment commit provenance until the review is `addressed` — documentation generation (`rdm-document`), autonomous roadmap execution (`rdm-autopilot`) — which drives one roadmap to `reviewed` unattended (see [`docs/autonomous-loop.md`](docs/autonomous-loop.md)) — and landing (`rdm-land`), which integrates a reviewed item into `main` with linear history and then prunes its worktree (see [`docs/landing.md`](docs/landing.md)). The same skill set is emitted for Pi under `.pi/skills/`.
 
 #### Auto-review Stop hook (Claude Code)
 
@@ -114,7 +114,7 @@ To run the worktree + auto-review loop unattended, drive Pi in a non-interactive
 
 ### MCP Server
 
-For agents that support [Model Context Protocol](https://modelcontextprotocol.io/), rdm exposes all operations as MCP tools — projects, roadmaps, phases, tasks, and search:
+For agents that support [Model Context Protocol](https://modelcontextprotocol.io/), rdm exposes all operations as MCP tools — projects, roadmaps, phases, tasks, search, worktrees, and document reviews. The review tools (`rdm_review_requests`, `rdm_review_show`, `rdm_review_address_comment`, `rdm_review_complete`) close the revision loop: an agent discovers submitted change-request reviews, gets each comment with its anchor resolution and the referenced document bodies in one call, applies edits through the update tools (whose responses report the resulting plan-repo commit for provenance), and drives the review to `addressed`:
 
 ```bash
 # Start the MCP server (stdio transport)

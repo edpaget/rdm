@@ -502,22 +502,15 @@ pub fn run(
                     state,
                     verdict,
                     author,
+                    ..Default::default()
                 },
             );
             render_review_list(store, &project, &filtered, format, staging)?;
         }
         ReviewCommand::Requests { project } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let reviews = rdm_core::ops::reviews::list_reviews(store, &project)
-                .context("failed to list reviews")?;
-            let filtered = rdm_core::ops::reviews::filter_reviews(
-                reviews,
-                &ReviewFilter {
-                    state: Some(ReviewState::Submitted),
-                    verdict: Some(rdm_core::model::Verdict::RequestChanges),
-                    ..Default::default()
-                },
-            );
+            let filtered = rdm_core::ops::reviews::change_requests(store, &project)
+                .context("failed to list change requests")?;
             render_review_list(store, &project, &filtered, format, staging)?;
         }
         ReviewCommand::Show {

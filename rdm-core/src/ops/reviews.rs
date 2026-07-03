@@ -14,7 +14,7 @@ use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{
     Anchor, CommentDoc, CommentDocKind, Review, ReviewComment, ReviewCommentStatus, ReviewState,
-    ReviewTarget, Verdict,
+    ReviewTarget, ReviewTargetKind, Verdict,
 };
 use crate::store::{DirEntryKind, Store, VersionedStore};
 
@@ -668,6 +668,10 @@ pub fn update_review(
 pub struct ReviewFilter {
     /// Target criterion: keep only reviews of exactly this target.
     pub target: Option<ReviewTarget>,
+    /// Target-kind criterion: keep only reviews whose target has this kind
+    /// discriminant (any roadmap / any phase / any task), regardless of
+    /// which one.
+    pub target_kind: Option<ReviewTargetKind>,
     /// State criterion: keep only reviews in exactly this state.
     pub state: Option<ReviewState>,
     /// Verdict criterion: keep only reviews stamped with exactly this
@@ -681,6 +685,7 @@ pub struct ReviewFilter {
 #[must_use]
 pub fn review_matches(review: &Review, filter: &ReviewFilter) -> bool {
     filter.target.as_ref().is_none_or(|t| &review.target == t)
+        && filter.target_kind.is_none_or(|k| review.target.kind() == k)
         && filter.state.is_none_or(|s| review.state == s)
         && filter.verdict.is_none_or(|v| review.verdict == Some(v))
         && filter.author.as_deref().is_none_or(|a| review.author == a)
@@ -699,6 +704,33 @@ pub fn filter_reviews(
         .into_iter()
         .filter(|(_, doc)| review_matches(&doc.frontmatter, filter))
         .collect()
+}
+
+/// Lists a project's change-request queue: submitted reviews whose verdict
+/// is `request-changes`, sorted by review id.
+///
+/// This is the single definition of "reviews an agent must act on", shared
+/// by the CLI (`rdm review requests`) and the MCP server
+/// (`rdm_review_requests`) so the two surfaces can never disagree.
+///
+/// # Errors
+///
+/// Returns [`Error::ProjectNotFound`] if the project does not exist,
+/// [`Error::Io`] if the reviews directory cannot be read, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a review
+/// file has invalid frontmatter.
+pub fn change_requests(
+    store: &impl Store,
+    project: &str,
+) -> Result<Vec<(String, Document<Review>)>> {
+    Ok(filter_reviews(
+        list_reviews(store, project)?,
+        &ReviewFilter {
+            state: Some(ReviewState::Submitted),
+            verdict: Some(Verdict::RequestChanges),
+            ..Default::default()
+        },
+    ))
 }
 
 /// Loads a single review by id.
@@ -1038,6 +1070,46 @@ mod tests {
     }
 
     #[test]
+    fn review_filter_by_target_kind() {
+        let filter = ReviewFilter {
+            target_kind: Some(ReviewTargetKind::Task),
+            ..Default::default()
+        };
+        // Any task matches, regardless of slug.
+        let task_a = review_for_filter(task_target("a"), ReviewState::Draft, None, "ed");
+        assert!(review_matches(&task_a, &filter));
+        let task_b = review_for_filter(task_target("b"), ReviewState::Draft, None, "ed");
+        assert!(review_matches(&task_b, &filter));
+        // Other kinds do not.
+        let roadmap = review_for_filter(
+            ReviewTarget::Roadmap {
+                roadmap: "a".to_string(),
+            },
+            ReviewState::Draft,
+            None,
+            "ed",
+        );
+        assert!(!review_matches(&roadmap, &filter));
+        let phase = review_for_filter(
+            ReviewTarget::Phase {
+                roadmap: "a".to_string(),
+                stem: "phase-1-one".to_string(),
+            },
+            ReviewState::Draft,
+            None,
+            "ed",
+        );
+        assert!(!review_matches(&phase, &filter));
+        // Combined with an exact target, both criteria must hold.
+        let filter = ReviewFilter {
+            target: Some(task_target("a")),
+            target_kind: Some(ReviewTargetKind::Roadmap),
+            ..Default::default()
+        };
+        assert!(!review_matches(&task_a, &filter));
+    }
+
+    #[test]
     fn review_filter_by_state() {
         let filter = ReviewFilter {
             state: Some(ReviewState::Submitted),
@@ -1095,6 +1167,7 @@ mod tests {
     fn review_filter_combines_criteria_as_and() {
         let filter = ReviewFilter {
             target: Some(task_target("a")),
+            target_kind: Some(ReviewTargetKind::Task),
             state: Some(ReviewState::Submitted),
             verdict: Some(Verdict::Approve),
             author: Some("ed".to_string()),
@@ -1163,6 +1236,90 @@ mod tests {
         let kept = filter_reviews(reviews, &filter);
         let ids: Vec<&str> = kept.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, vec!["r1", "r3"]);
+    }
+
+    // -- change_requests --
+
+    fn write_review_with(
+        store: &mut MemoryStore,
+        id: &str,
+        state: ReviewState,
+        verdict: Option<Verdict>,
+    ) {
+        let mut doc = sample_review(id);
+        doc.frontmatter.state = state;
+        doc.frontmatter.verdict = verdict;
+        crate::io::write_review(store, "test", id, &doc).unwrap();
+    }
+
+    #[test]
+    fn change_requests_keeps_only_submitted_request_changes() {
+        let mut store = setup_store();
+        write_review_with(
+            &mut store,
+            "2026-07-01-0900-aaaa",
+            ReviewState::Submitted,
+            Some(Verdict::RequestChanges),
+        );
+        write_review_with(
+            &mut store,
+            "2026-07-01-1000-bbbb",
+            ReviewState::Submitted,
+            Some(Verdict::RequestChanges),
+        );
+        let queue = change_requests(&store, "test").unwrap();
+        let ids: Vec<&str> = queue.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["2026-07-01-0900-aaaa", "2026-07-01-1000-bbbb"]);
+    }
+
+    #[test]
+    fn change_requests_excludes_drafts_approvals_and_terminal_reviews() {
+        let mut store = setup_store();
+        // Draft (no verdict yet) — not actionable.
+        write_review_with(&mut store, "r-draft", ReviewState::Draft, None);
+        // Submitted but approved / neutral — nothing to change.
+        write_review_with(
+            &mut store,
+            "r-approve",
+            ReviewState::Submitted,
+            Some(Verdict::Approve),
+        );
+        write_review_with(
+            &mut store,
+            "r-comment",
+            ReviewState::Submitted,
+            Some(Verdict::Comment),
+        );
+        // Terminal request-changes reviews — already handled.
+        write_review_with(
+            &mut store,
+            "r-addressed",
+            ReviewState::Addressed,
+            Some(Verdict::RequestChanges),
+        );
+        write_review_with(
+            &mut store,
+            "r-dismissed",
+            ReviewState::Dismissed,
+            Some(Verdict::RequestChanges),
+        );
+        // The one live change request.
+        write_review_with(
+            &mut store,
+            "r-live",
+            ReviewState::Submitted,
+            Some(Verdict::RequestChanges),
+        );
+        let queue = change_requests(&store, "test").unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].0, "r-live");
+    }
+
+    #[test]
+    fn change_requests_project_not_found() {
+        let store = MemoryStore::new();
+        let result = change_requests(&store, "nonexistent");
+        assert!(matches!(result, Err(Error::ProjectNotFound(_))));
     }
 
     // -- target / doc reference parsing --

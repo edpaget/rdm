@@ -3,9 +3,13 @@ use std::str::FromStr;
 use std::sync::Mutex;
 
 use rdm_core::display;
-use rdm_core::model::{PhaseStatus, Priority, RoadmapSort, TaskStatus};
+use rdm_core::model::{
+    PhaseStatus, Priority, ReviewCommentStatus, ReviewTarget, ReviewTargetKind, RoadmapSort,
+    TaskStatus,
+};
 use rdm_core::ops::{BodyUpdate, PriorityUpdate, ReasonUpdate, TagsUpdate};
 use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
+use rdm_core::store::{Store, VersionedStore};
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
 use rmcp::handler::server::wrapper::Parameters;
@@ -48,6 +52,100 @@ fn ok_text(text: String) -> Result<CallToolResult, ErrorData> {
 /// Returns an error `CallToolResult` containing a message.
 fn err_text(msg: String) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::error(vec![Content::text(msg)]))
+}
+
+/// Returns the plan-repo commit produced by a just-completed mutation, for
+/// provenance reporting in tool responses.
+///
+/// `None` under staging mode (the write is on disk but not yet committed)
+/// or when the backend has no history (plain filesystem store / unborn
+/// HEAD).
+fn commit_sha_after_mutation(store: &AppStore, staging: bool) -> Option<String> {
+    if staging {
+        return None;
+    }
+    store.head_sha().ok()
+}
+
+/// Appends a machine-readable `Commit: <sha>` trailer line to a tool's
+/// human-formatted output, so agents can thread the resulting plan-repo
+/// commit into review provenance (`applied_commit`) without a follow-up
+/// call. No-op when there is no commit to report.
+fn with_commit_trailer(mut text: String, sha: Option<String>) -> String {
+    if let Some(sha) = sha {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!("Commit: {sha}\n"));
+    }
+    text
+}
+
+/// Renders every document a review references — the target itself plus each
+/// distinct phase a comment scopes to (roadmap reviews only) — as JSON
+/// entries carrying both the body at the review's `created_commit` (what
+/// the reviewer saw; `Original`/drifted resolution ranges index it) and the
+/// current body (`Current` resolution ranges index it; also what
+/// whole-document comments should be read against). Either body is `null`
+/// when unavailable (no recorded commit, document absent at that revision,
+/// deleted since, or a historyless backend).
+fn review_documents(
+    store: &AppStore,
+    project: &str,
+    review: &rdm_core::model::Review,
+) -> Vec<serde_json::Value> {
+    let mut refs: Vec<(String, rdm_core::store::RelPath)> = Vec::new();
+    match &review.target {
+        ReviewTarget::Roadmap { roadmap } => refs.push((
+            format!("roadmap/{roadmap}"),
+            rdm_core::paths::roadmap_path(project, roadmap),
+        )),
+        ReviewTarget::Phase { roadmap, stem } => refs.push((
+            format!("phase/{roadmap}/{stem}"),
+            rdm_core::paths::phase_path(project, roadmap, stem),
+        )),
+        ReviewTarget::Task { slug } => refs.push((
+            format!("task/{slug}"),
+            rdm_core::paths::task_path(project, slug),
+        )),
+    }
+    // Comment doc scopes are only valid on roadmap reviews (enforced at
+    // write time) and only phase-kinded today; first-appearance order.
+    if let ReviewTarget::Roadmap { roadmap } = &review.target {
+        for comment in &review.comments {
+            if let Some(doc) = &comment.doc {
+                let label = format!("phase/{roadmap}/{}", doc.stem);
+                if !refs.iter().any(|(l, _)| l == &label) {
+                    refs.push((
+                        label,
+                        rdm_core::paths::phase_path(project, roadmap, &doc.stem),
+                    ));
+                }
+            }
+        }
+    }
+
+    let body_of = |content: String| {
+        rdm_core::markdown::split_frontmatter(&content)
+            .ok()
+            .map(|(_, body)| body.to_string())
+    };
+    refs.into_iter()
+        .map(|(label, path)| {
+            let current_body = store.read(&path).ok().and_then(body_of);
+            let body_at_created_commit = review
+                .created_commit
+                .as_ref()
+                .and_then(|sha| store.fetch_body_at(&path, sha).ok())
+                .and_then(body_of);
+            serde_json::json!({
+                "ref": label,
+                "created_commit": review.created_commit,
+                "body_at_created_commit": body_at_created_commit,
+                "current_body": current_body,
+            })
+        })
+        .collect()
 }
 
 // ---------- Parameter structs (read-only) ----------
@@ -264,6 +362,59 @@ struct TaskPromoteParams {
     roadmap_slug: String,
 }
 
+// ---------- Parameter structs (document reviews) ----------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ReviewRequestsParams {
+    /// The project name.
+    project: String,
+    /// Optional target-kind filter: "roadmap", "phase", or "task".
+    target_kind: Option<String>,
+    /// Optional target-id filter (requires `target_kind`): a roadmap slug,
+    /// "<roadmap>/<phase-stem-or-number>" for a phase, or a task slug.
+    target_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ReviewShowParams {
+    /// The project name.
+    project: String,
+    /// Id of the review to show.
+    review_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ReviewAddressCommentParams {
+    /// The project name.
+    project: String,
+    /// Id of the review containing the comment.
+    review_id: String,
+    /// Id of the comment to resolve (see `rdm_review_show`).
+    comment_id: u32,
+    /// New resolution status: "addressed" or "wont-fix". Omit to only
+    /// record a reply and leave the comment open (e.g. asking the reviewer
+    /// for clarification).
+    status: Option<String>,
+    /// Plan-repo commit SHA that made the change, recorded on the comment.
+    /// Thread the `Commit:`/`commit` value reported by the mutation tool
+    /// that applied the edit. When omitted with status "addressed", the
+    /// plan-repo HEAD *before* this call is recorded as a best-effort
+    /// fallback (it may name an unrelated commit — prefer passing the SHA
+    /// explicitly). Never defaulted for "wont-fix".
+    applied_commit: Option<String>,
+    /// Reply explaining what changed (or why the comment won't be fixed),
+    /// including whether the anchor resolved.
+    reply: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ReviewCompleteParams {
+    /// The project name.
+    project: String,
+    /// Id of the review to close as addressed.
+    review_id: String,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct InitParams {
     /// Optional default project to create during initialization.
@@ -344,6 +495,9 @@ struct RdmMcpServer {
     store: Mutex<AppStore>,
     plan_root: PathBuf,
     auto_init: bool,
+    /// Whether mutations defer their git commit (staging mode) — when set,
+    /// tool responses omit the `Commit:`/`commit` provenance fields.
+    staging: bool,
 }
 
 impl RdmMcpServer {
@@ -364,6 +518,7 @@ impl RdmMcpServer {
             store: Mutex::new(store),
             plan_root,
             auto_init,
+            staging,
         })
     }
 
@@ -856,7 +1011,11 @@ impl RdmMcpServer {
                 Ok(p) => p,
                 Err(e) => return core_err(e),
             };
-        ok_text(display::format_roadmap_summary(&doc, &phases, None))
+        let commit = commit_sha_after_mutation(&store, self.staging);
+        ok_text(with_commit_trailer(
+            display::format_roadmap_summary(&doc, &phases, None),
+            commit,
+        ))
     }
 
     /// Create a new phase in a roadmap.
@@ -966,7 +1125,11 @@ impl RdmMcpServer {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        ok_text(display::format_phase_detail(&stem, &doc, None))
+        let commit = commit_sha_after_mutation(&store, self.staging);
+        ok_text(with_commit_trailer(
+            display::format_phase_detail(&stem, &doc, None),
+            commit,
+        ))
     }
 
     /// Create a new task in a project.
@@ -1060,7 +1223,11 @@ impl RdmMcpServer {
             Ok(d) => d,
             Err(e) => return core_err(e),
         };
-        ok_text(display::format_task_detail(&params.task, &doc, None))
+        let commit = commit_sha_after_mutation(&store, self.staging);
+        ok_text(with_commit_trailer(
+            display::format_task_detail(&params.task, &doc, None),
+            commit,
+        ))
     }
 
     /// Promote a task to a roadmap.
@@ -1092,6 +1259,244 @@ impl RdmMcpServer {
                 Err(e) => return core_err(e),
             };
         ok_text(display::format_roadmap_summary(&doc, &phases, None))
+    }
+
+    // ==================== Document review tools ====================
+
+    /// List the change-request review queue.
+    #[rmcp::tool(
+        description = "List the change-request review queue: submitted document reviews with verdict request-changes, each with id, target, author, summary, created_commit, and open_comment_count. Optional target_kind/target_id filters narrow to one plan item.",
+        annotations(read_only_hint = true)
+    )]
+    async fn rdm_review_requests(
+        &self,
+        Parameters(params): Parameters<ReviewRequestsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+        let store = self.store.lock().unwrap();
+        let reviews = match rdm_core::ops::reviews::change_requests(&*store, &params.project) {
+            Ok(r) => r,
+            Err(e) => return core_err(e),
+        };
+
+        let target_kind = match params.target_kind.as_deref() {
+            None => None,
+            Some(k) => match ReviewTargetKind::from_str(k) {
+                Ok(kind) => Some(kind),
+                Err(msg) => return err_text(msg.to_string()),
+            },
+        };
+        // With both kind and id, resolve to an exact target (this also
+        // resolves a phase *number* to its stem). An id without a kind is
+        // ambiguous — roadmap and task slugs can collide.
+        let target = match (target_kind, &params.target_id) {
+            (Some(kind), Some(id)) => {
+                match rdm_core::ops::reviews::parse_review_target_ref(
+                    &*store,
+                    &params.project,
+                    &format!("{kind}/{id}"),
+                ) {
+                    Ok(t) => Some(t),
+                    Err(e) => return core_err(e),
+                }
+            }
+            (None, Some(_)) => {
+                return err_text(
+                    "target_id requires target_kind (\"roadmap\", \"phase\", or \"task\")"
+                        .to_string(),
+                );
+            }
+            _ => None,
+        };
+
+        let filtered = rdm_core::ops::reviews::filter_reviews(
+            reviews,
+            &rdm_core::ops::reviews::ReviewFilter {
+                target,
+                target_kind,
+                ..Default::default()
+            },
+        );
+        let entries: Vec<serde_json::Value> = filtered
+            .iter()
+            .map(|(id, doc)| {
+                let open_comment_count = doc
+                    .frontmatter
+                    .comments
+                    .iter()
+                    .filter(|c| !c.status.is_terminal())
+                    .count();
+                serde_json::json!({
+                    "id": id,
+                    "target": doc.frontmatter.target,
+                    "target_ref": doc.frontmatter.target.label(),
+                    "author": doc.frontmatter.author,
+                    "summary": doc.body,
+                    "created_commit": doc.frontmatter.created_commit,
+                    "open_comment_count": open_comment_count,
+                })
+            })
+            .collect();
+        let value = serde_json::Value::Array(entries);
+        ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
+    }
+
+    /// Show a review in full, with resolutions and referenced document bodies.
+    #[rmcp::tool(
+        description = "Show a document review in full: summary, every comment with its tagged-union anchor (dispatch on anchor_type) and resolution state (resolved/drifted/unresolved, with the byte range and which body it indexes), plus the rendered body of every referenced document at both the review's created_commit and the current HEAD — everything needed to act on the review in one call. Comments with no anchor or an unrecognized anchor_type resolve as unresolved: treat them as whole-document feedback against current_body.",
+        annotations(read_only_hint = true)
+    )]
+    async fn rdm_review_show(
+        &self,
+        Parameters(params): Parameters<ReviewShowParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+        let store = self.store.lock().unwrap();
+        let doc =
+            match rdm_core::ops::reviews::get_review(&*store, &params.project, &params.review_id) {
+                Ok(d) => d,
+                Err(e) => return core_err(e),
+            };
+        let resolutions =
+            rdm_core::anchor::resolve_comments(&*store, &params.project, &doc.frontmatter);
+        let review = rdm_core::json::review_to_json(&params.review_id, &doc, &resolutions);
+        let documents = review_documents(&store, &params.project, &doc.frontmatter);
+        let value = serde_json::json!({
+            "review": review,
+            "documents": documents,
+        });
+        ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
+    }
+
+    /// Resolve (or reply to) a single review comment.
+    #[rmcp::tool(
+        description = "Resolve one comment on a submitted change-request review: set status (\"addressed\" or \"wont-fix\"), record the plan-repo commit that applied the change, and store a reply. Omit status to only record a reply and leave the comment open (e.g. asking the reviewer for clarification). Pass applied_commit explicitly from the Commit: value the mutation tool reported; when omitted with status \"addressed\", the plan-repo HEAD before this call is recorded as a best-effort fallback (never for \"wont-fix\"). Returns the updated comment plus review state, remaining open comment count, and the commit this call produced.",
+        annotations(read_only_hint = false)
+    )]
+    async fn rdm_review_address_comment(
+        &self,
+        Parameters(params): Parameters<ReviewAddressCommentParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+        let status = match params.status.as_deref() {
+            None => None,
+            Some(s) => match ReviewCommentStatus::from_str(s) {
+                Ok(ReviewCommentStatus::Open) => {
+                    return err_text(
+                        "status must be \"addressed\" or \"wont-fix\" — omit status entirely to leave the comment open with a clarification reply"
+                            .to_string(),
+                    );
+                }
+                Ok(st) => Some(st),
+                Err(msg) => return err_text(msg.to_string()),
+            },
+        };
+
+        let mut store = self.store.lock().unwrap();
+        // Best-effort applied_commit fallback: only when the agent marked
+        // the comment addressed without naming a commit. HEAD is read
+        // *before* the status-change mutation so the fallback can never be
+        // this call's own review-file commit. Never defaulted for wont-fix
+        // or reply-only updates — that would stamp a false provenance
+        // record on a comment no edit was made for.
+        let applied_commit = match (&params.applied_commit, status) {
+            (Some(sha), _) => Some(sha.clone()),
+            (None, Some(ReviewCommentStatus::Addressed)) => {
+                commit_sha_after_mutation(&store, self.staging)
+            }
+            _ => None,
+        };
+        let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
+            rdm_core::ops::reviews::update_comment(
+                s,
+                rdm_core::ops::reviews::UpdateComment {
+                    project: &params.project,
+                    review_id: &params.review_id,
+                    comment_id: params.comment_id,
+                    status,
+                    applied_commit: applied_commit.as_deref(),
+                    reply: Some(&params.reply),
+                    ..Default::default()
+                },
+            )
+        }) {
+            Ok(d) => d,
+            Err(e) => return core_err(e),
+        };
+        let commit = commit_sha_after_mutation(&store, self.staging);
+        let comment = doc
+            .frontmatter
+            .comments
+            .iter()
+            .find(|c| c.id == params.comment_id)
+            .expect("comment presence enforced by update_comment");
+        let open_comment_count = doc
+            .frontmatter
+            .comments
+            .iter()
+            .filter(|c| !c.status.is_terminal())
+            .count();
+        let value = serde_json::json!({
+            "review_id": params.review_id,
+            "comment_id": params.comment_id,
+            "status": comment.status,
+            "applied_commit": comment.applied_commit,
+            "reply": comment.reply,
+            "review_state": doc.frontmatter.state,
+            "open_comment_count": open_comment_count,
+            "commit": commit,
+        });
+        ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
+    }
+
+    /// Close a review as addressed.
+    #[rmcp::tool(
+        description = "Close a submitted review as addressed. Refuses while any comment is still open, listing the offending comment ids — resolve each via rdm_review_address_comment first, or leave the review submitted while clarification is pending.",
+        annotations(read_only_hint = false)
+    )]
+    async fn rdm_review_complete(
+        &self,
+        Parameters(params): Parameters<ReviewCompleteParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+        let mut store = self.store.lock().unwrap();
+        // Pre-check open comments so the refusal can name the offenders —
+        // core's ReviewOpenComments error carries only the count.
+        let existing =
+            match rdm_core::ops::reviews::get_review(&*store, &params.project, &params.review_id) {
+                Ok(d) => d,
+                Err(e) => return core_err(e),
+            };
+        let open_ids: Vec<String> = existing
+            .frontmatter
+            .comments
+            .iter()
+            .filter(|c| !c.status.is_terminal())
+            .map(|c| c.id.to_string())
+            .collect();
+        if !open_ids.is_empty() {
+            return err_text(format!(
+                "cannot complete review '{}': {} comment(s) still open: {} — resolve each with rdm_review_address_comment (status \"addressed\" or \"wont-fix\"), or leave the review submitted while clarification is pending",
+                params.review_id,
+                open_ids.len(),
+                open_ids.join(", "),
+            ));
+        }
+        let doc = match rdm_core::ops::mutate(&mut *store, &params.project, |s| {
+            rdm_core::ops::reviews::update_review(
+                s,
+                &params.project,
+                &params.review_id,
+                rdm_core::ops::reviews::ReviewTransition::Addressed,
+            )
+        }) {
+            Ok(d) => d,
+            Err(e) => return core_err(e),
+        };
+        ok_text(format!(
+            "Review '{}' → state: {}",
+            params.review_id, doc.frontmatter.state
+        ))
     }
 }
 

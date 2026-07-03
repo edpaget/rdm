@@ -299,6 +299,11 @@ fn tools_list() {
         "rdm_task_create",
         "rdm_task_update",
         "rdm_task_promote",
+        // Document review tools
+        "rdm_review_requests",
+        "rdm_review_show",
+        "rdm_review_address_comment",
+        "rdm_review_complete",
         // Worktree tools — the spawned `rdm` binary is built via `cargo build -p
         // rdm-cli`, whose default features enable `git` (and `rdm-mcp?/git`), so
         // these are always registered regardless of this test crate's features.
@@ -490,6 +495,9 @@ fn tools_list_includes_mutation_tools() {
         "rdm_task_create",
         "rdm_task_update",
         "rdm_task_promote",
+        // Review resolution tools mutate the review file.
+        "rdm_review_address_comment",
+        "rdm_review_complete",
         // `rdm_worktree_add` / `rdm_worktree_remove` mutate the project repo and
         // so carry readOnlyHint=false; `rdm_worktree_list` is read-only. The
         // spawned `rdm` binary always has the git feature on (see `tools_list`),
@@ -1662,15 +1670,21 @@ fn search_ambiguous_status_without_kind_matches_both_kinds() {
 
 // ==================== GitStore integration tests ====================
 
-/// Run a git command in `root`, clearing `GIT_DIR` / `GIT_WORK_TREE` so the
-/// command targets the temp-dir repo rather than a parent repo leaked via
-/// environment variables (e.g. inside pre-commit hooks).
+/// Run a git command in `root`, clearing `GIT_DIR` / `GIT_WORK_TREE` /
+/// `GIT_INDEX_FILE` / object-directory overrides so the command targets the
+/// temp-dir repo rather than a parent repo leaked via environment variables
+/// (e.g. inside pre-commit hooks, which may point `GIT_INDEX_FILE` at the
+/// source repo's index — a leaked value would make a `git add` here clobber
+/// that index with the temp repo's tree).
 fn git_cmd(root: &std::path::Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
         .args(args)
         .current_dir(root)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .output()
         .expect("failed to run git command")
 }
@@ -1791,4 +1805,748 @@ fn git_read_tools_no_commit() {
         before, after,
         "Expected no git commits from read-only tools (before={before}, after={after})"
     );
+}
+
+// ==================== Document review tools ====================
+
+/// Run the rdm CLI against `root` and return its stdout (asserting success).
+fn run_rdm_capture(root: &std::path::Path, args: &[&str]) -> String {
+    build_once();
+    let binary = env!("CARGO_MANIFEST_DIR").replace("rdm-mcp", "target/debug/rdm");
+    let mut full_args = vec!["--root", root.to_str().unwrap()];
+    full_args.extend_from_slice(args);
+    let output = Command::new(&binary)
+        .args(&full_args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run rdm {}: {e}", args.join(" ")));
+    assert!(
+        output.status.success(),
+        "rdm {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+/// Seed the standard plan repo plus a submitted request-changes review on
+/// `task/fix-login-bug` with two comments: #1 anchored to the quote
+/// "special chars", #2 whole-document. Returns the review id.
+fn setup_review_fixture(root: &std::path::Path) -> String {
+    setup_plan_repo(root);
+    let started = run_rdm_capture(
+        root,
+        &[
+            "review",
+            "start",
+            "--on",
+            "task/fix-login-bug",
+            "--author",
+            "reviewer",
+            "--no-edit",
+            "--project",
+            "test-proj",
+            "--format",
+            "json",
+        ],
+    );
+    let started: serde_json::Value = serde_json::from_str(&started).expect("review JSON");
+    let id = started["id"].as_str().expect("review id").to_string();
+    run_rdm_capture(
+        root,
+        &[
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "special chars",
+            "--body",
+            "Spell out which characters break login.",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+    run_rdm_capture(
+        root,
+        &[
+            "review",
+            "comment",
+            &id,
+            "--body",
+            "Overall: add reproduction steps to the task body.",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+    run_rdm_capture(
+        root,
+        &[
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--body",
+            "Please tighten the task description.",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+    id
+}
+
+/// Parse a tool response's text content as JSON.
+fn result_json(response: &serde_json::Value) -> serde_json::Value {
+    serde_json::from_str(result_text(response)).expect("tool response should be JSON")
+}
+
+/// Extract the `Commit: <sha>` trailer from a mutation tool's text output.
+fn commit_trailer(text: &str) -> Option<String> {
+    text.lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("Commit: "))
+        .map(str::to_string)
+}
+
+#[test]
+fn review_requests_lists_only_request_changes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    // An approved review must not appear in the queue.
+    let approved = run_rdm_capture(
+        tmp.path(),
+        &[
+            "review",
+            "start",
+            "--on",
+            "roadmap/auth",
+            "--author",
+            "reviewer",
+            "--no-edit",
+            "--project",
+            "test-proj",
+            "--format",
+            "json",
+        ],
+    );
+    let approved: serde_json::Value = serde_json::from_str(&approved).unwrap();
+    let approved_id = approved["id"].as_str().unwrap().to_string();
+    run_rdm_capture(
+        tmp.path(),
+        &[
+            "review",
+            "submit",
+            &approved_id,
+            "--verdict",
+            "approve",
+            "--body",
+            "Looks good.",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+
+    let mut h = McpTestHarness::spawn(tmp.path());
+    let response = h.call_tool(
+        "rdm_review_requests",
+        serde_json::json!({"project": "test-proj"}),
+    );
+    let queue = result_json(&response);
+    let arr = queue.as_array().expect("array of change requests");
+    assert_eq!(arr.len(), 1, "only the request-changes review: {queue}");
+    let entry = &arr[0];
+    assert_eq!(entry["id"], serde_json::json!(id));
+    assert_eq!(entry["target"]["kind"], "task");
+    assert_eq!(entry["target"]["slug"], "fix-login-bug");
+    assert_eq!(entry["target_ref"], "task/fix-login-bug");
+    assert_eq!(entry["author"], "reviewer");
+    assert_eq!(
+        entry["summary"].as_str().map(str::trim),
+        Some("Please tighten the task description.")
+    );
+    assert_eq!(entry["open_comment_count"], 2);
+    assert!(
+        entry["created_commit"].as_str().is_some(),
+        "git-backed store must record created_commit: {entry}"
+    );
+}
+
+#[test]
+fn review_requests_target_filters() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Kind-only filter: no roadmap-targeted change requests exist.
+    let response = h.call_tool(
+        "rdm_review_requests",
+        serde_json::json!({"project": "test-proj", "target_kind": "roadmap"}),
+    );
+    assert_eq!(result_json(&response).as_array().unwrap().len(), 0);
+
+    // Exact target filter matches the fixture review.
+    let response = h.call_tool(
+        "rdm_review_requests",
+        serde_json::json!({
+            "project": "test-proj",
+            "target_kind": "task",
+            "target_id": "fix-login-bug",
+        }),
+    );
+    assert_eq!(result_json(&response).as_array().unwrap().len(), 1);
+
+    // target_id without target_kind is rejected.
+    let response = h.call_tool(
+        "rdm_review_requests",
+        serde_json::json!({"project": "test-proj", "target_id": "fix-login-bug"}),
+    );
+    assert_eq!(response["result"]["isError"], serde_json::json!(true));
+    assert!(result_text(&response).contains("target_kind"));
+}
+
+#[test]
+fn review_show_returns_resolution_and_documents() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_review_show",
+        serde_json::json!({"project": "test-proj", "review_id": id}),
+    );
+    let v = result_json(&response);
+    let review = &v["review"];
+    assert_eq!(review["id"], serde_json::json!(id));
+    assert_eq!(review["state"], "submitted");
+    assert_eq!(review["verdict"], "request-changes");
+
+    // Comment 1: anchored, resolves against the created_commit body.
+    let c1 = &review["comments"][0];
+    assert_eq!(c1["anchor"]["anchor_type"], "text-quote");
+    assert_eq!(c1["resolution"]["state"], "resolved");
+    assert_eq!(c1["resolution"]["quote"], "special chars");
+    assert_eq!(c1["resolution"]["body"], "original");
+    // Comment 2: whole-document, always unresolved.
+    let c2 = &review["comments"][1];
+    assert!(c2.get("anchor").is_none(), "whole-doc comment: {c2}");
+    assert_eq!(c2["resolution"]["state"], "unresolved");
+
+    // Referenced documents are inlined: the target with both body versions.
+    let docs = v["documents"].as_array().expect("documents array");
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0]["ref"], "task/fix-login-bug");
+    let current = docs[0]["current_body"].as_str().expect("current body");
+    assert!(current.contains("special chars"), "got: {current}");
+    let original = docs[0]["body_at_created_commit"]
+        .as_str()
+        .expect("historical body");
+    assert!(original.contains("special chars"), "got: {original}");
+    // The resolution range indexes body_at_created_commit.
+    let start = c1["resolution"]["range_start"].as_u64().unwrap() as usize;
+    let end = c1["resolution"]["range_end"].as_u64().unwrap() as usize;
+    assert_eq!(&original[start..end], "special chars");
+}
+
+#[test]
+fn review_show_unknown_anchor_round_trips() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    // Write a review fixture carrying an anchor_type this build does not
+    // model (as a newer rdm would), and commit it like any plan mutation.
+    let review_path = tmp
+        .path()
+        .join("projects/test-proj/reviews/2026-07-01-1200-ffff.md");
+    std::fs::create_dir_all(review_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &review_path,
+        r#"---
+id: 2026-07-01-1200-ffff
+author: fixture
+target:
+  kind: task
+  slug: fix-login-bug
+state: submitted
+verdict: request-changes
+created: 2026-07-01T12:00:00Z
+submitted: 2026-07-01T12:30:00Z
+comments:
+- id: 1
+  status: open
+  anchor:
+    anchor_type: line-range
+    start: 3
+    end: 7
+  body: Uses a line-range anchor from a newer rdm.
+---
+Fixture review with an unknown anchor type.
+"#,
+    )
+    .unwrap();
+    let add = git_cmd(tmp.path(), &["add", "-A"]);
+    assert!(add.status.success());
+    let commit = git_cmd(
+        tmp.path(),
+        &[
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            "fixture: unknown-anchor review",
+        ],
+    );
+    assert!(commit.status.success());
+
+    let mut h = McpTestHarness::spawn(tmp.path());
+    let response = h.call_tool(
+        "rdm_review_show",
+        serde_json::json!({"project": "test-proj", "review_id": "2026-07-01-1200-ffff"}),
+    );
+    assert!(
+        response["result"]["isError"].is_null()
+            || response["result"]["isError"] == serde_json::json!(false),
+        "unknown anchor must not error: {response}"
+    );
+    let v = result_json(&response);
+    let c1 = &v["review"]["comments"][0];
+    // The unknown anchor round-trips verbatim (tagged union preserved)...
+    assert_eq!(c1["anchor"]["anchor_type"], "line-range");
+    assert_eq!(c1["anchor"]["start"], 3);
+    assert_eq!(c1["anchor"]["end"], 7);
+    // ...and resolves as unresolved (whole-document treatment).
+    assert_eq!(c1["resolution"]["state"], "unresolved");
+
+    // It also passes through the queue without error.
+    let response = h.call_tool(
+        "rdm_review_requests",
+        serde_json::json!({"project": "test-proj"}),
+    );
+    let queue = result_json(&response);
+    assert_eq!(queue.as_array().unwrap().len(), 1);
+    assert_eq!(queue[0]["open_comment_count"], 1);
+}
+
+#[test]
+fn task_update_response_reports_commit_sha() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Login fails when the password contains a quote character.",
+        }),
+    );
+    let sha = commit_trailer(result_text(&response))
+        .expect("task update response must carry a Commit: trailer");
+    drop(h);
+    assert_eq!(
+        sha,
+        git_head_sha(tmp.path()),
+        "trailer must name the commit the mutation produced"
+    );
+}
+
+#[test]
+fn phase_update_response_reports_commit_sha() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "1",
+            "status": "in-progress",
+        }),
+    );
+    let sha = commit_trailer(result_text(&response))
+        .expect("phase update response must carry a Commit: trailer");
+    drop(h);
+    assert_eq!(sha, git_head_sha(tmp.path()));
+}
+
+#[test]
+fn staging_mode_omits_commit_trailer() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_STAGE", "true")]);
+
+    let response = h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Edited under staging mode.",
+        }),
+    );
+    assert!(
+        commit_trailer(result_text(&response)).is_none(),
+        "staging mode must not report a Commit: trailer (nothing was committed)"
+    );
+
+    let response = h.call_tool(
+        "rdm_roadmap_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "body": "Roadmap edited under staging mode.",
+        }),
+    );
+    assert!(
+        commit_trailer(result_text(&response)).is_none(),
+        "staging mode must not report a Commit: trailer on roadmap update either"
+    );
+}
+
+#[test]
+fn roadmap_update_response_reports_commit_sha() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_roadmap_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "body": "Implement authentication, now with provenance.",
+        }),
+    );
+    let sha = commit_trailer(result_text(&response))
+        .expect("roadmap update response must carry a Commit: trailer");
+    drop(h);
+    assert_eq!(sha, git_head_sha(tmp.path()));
+}
+
+#[test]
+fn review_address_comment_rejects_bogus_status() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": id,
+            "comment_id": 1,
+            "status": "bogus",
+            "reply": "nope",
+        }),
+    );
+    assert_eq!(response["result"]["isError"], serde_json::json!(true));
+    let text = result_text(&response);
+    assert!(
+        text.contains("addressed") && text.contains("wont-fix"),
+        "rejection must name the accepted status values: {text}"
+    );
+}
+
+#[test]
+fn review_requests_rejects_bogus_target_kind() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_review_requests",
+        serde_json::json!({"project": "test-proj", "target_kind": "bogus"}),
+    );
+    assert_eq!(response["result"]["isError"], serde_json::json!(true));
+    let text = result_text(&response);
+    assert!(
+        text.contains("roadmap, phase, or task"),
+        "rejection must name the accepted kinds: {text}"
+    );
+}
+
+#[test]
+fn review_show_unknown_review_id_errors() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_review_show",
+        serde_json::json!({"project": "test-proj", "review_id": "9999-99-99-0000-dead"}),
+    );
+    assert_eq!(response["result"]["isError"], serde_json::json!(true));
+    assert!(
+        result_text(&response).contains("9999-99-99-0000-dead"),
+        "error must name the missing review id: {}",
+        result_text(&response)
+    );
+}
+
+#[test]
+fn review_address_comment_unknown_review_id_errors() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": "9999-99-99-0000-dead",
+            "comment_id": 1,
+            "status": "addressed",
+            "reply": "nope",
+        }),
+    );
+    assert_eq!(response["result"]["isError"], serde_json::json!(true));
+    assert!(
+        result_text(&response).contains("9999-99-99-0000-dead"),
+        "error must name the missing review id: {}",
+        result_text(&response)
+    );
+}
+
+#[test]
+fn review_complete_unknown_review_id_errors() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_review_complete",
+        serde_json::json!({"project": "test-proj", "review_id": "9999-99-99-0000-dead"}),
+    );
+    assert_eq!(response["result"]["isError"], serde_json::json!(true));
+    assert!(
+        result_text(&response).contains("9999-99-99-0000-dead"),
+        "error must name the missing review id: {}",
+        result_text(&response)
+    );
+}
+
+#[test]
+fn review_address_comment_records_explicit_applied_commit() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Apply the edit the comment asked for; thread its Commit: trailer.
+    let update = h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Login fails when the password contains quotes or backslashes.",
+        }),
+    );
+    let edit_sha = commit_trailer(result_text(&update)).expect("Commit: trailer");
+
+    let response = h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": id,
+            "comment_id": 1,
+            "status": "addressed",
+            "applied_commit": edit_sha,
+            "reply": "Spelled out the failing characters; anchor resolved cleanly.",
+        }),
+    );
+    let v = result_json(&response);
+    assert_eq!(v["status"], "addressed");
+    assert_eq!(v["applied_commit"], serde_json::json!(edit_sha));
+    assert_eq!(
+        v["reply"],
+        "Spelled out the failing characters; anchor resolved cleanly."
+    );
+    assert_eq!(v["review_state"], "submitted");
+    assert_eq!(v["open_comment_count"], 1);
+    // The commit this call produced (review-file write) is reported and is
+    // distinct from the applied edit commit.
+    let call_commit = v["commit"].as_str().expect("commit of this call");
+    assert_ne!(call_commit, edit_sha);
+    drop(h);
+    assert_eq!(call_commit, git_head_sha(tmp.path()));
+}
+
+#[test]
+fn review_address_comment_defaults_applied_commit_to_pre_mutation_head() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    let head_before = git_head_sha(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": id,
+            "comment_id": 1,
+            "status": "addressed",
+            "reply": "Addressed without naming the commit.",
+        }),
+    );
+    let v = result_json(&response);
+    // Best-effort fallback: HEAD strictly before this call — never the
+    // review-file commit the call itself produced.
+    assert_eq!(v["applied_commit"], serde_json::json!(head_before));
+    let call_commit = v["commit"].as_str().unwrap();
+    assert_ne!(call_commit, head_before);
+}
+
+#[test]
+fn review_address_comment_wont_fix_never_defaults_applied_commit() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": id,
+            "comment_id": 2,
+            "status": "wont-fix",
+            "reply": "Out of scope for this task; tracked separately.",
+        }),
+    );
+    let v = result_json(&response);
+    assert_eq!(v["status"], "wont-fix");
+    assert!(
+        v["applied_commit"].is_null(),
+        "wont-fix must never stamp a provenance commit: {v}"
+    );
+}
+
+#[test]
+fn review_address_comment_reply_only_leaves_comment_open() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": id,
+            "comment_id": 1,
+            "reply": "The quoted text drifted — which behavior did you mean?",
+        }),
+    );
+    let v = result_json(&response);
+    assert_eq!(v["status"], "open");
+    assert!(
+        v["applied_commit"].is_null(),
+        "no default on reply-only: {v}"
+    );
+    assert_eq!(v["open_comment_count"], 2);
+}
+
+#[test]
+fn review_address_comment_rejects_open_status() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": id,
+            "comment_id": 1,
+            "status": "open",
+            "reply": "nope",
+        }),
+    );
+    assert_eq!(response["result"]["isError"], serde_json::json!(true));
+    assert!(result_text(&response).contains("omit status"));
+}
+
+#[test]
+fn review_complete_refuses_open_comments_listing_offenders() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Resolve comment 1, leave comment 2 open.
+    h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": id,
+            "comment_id": 1,
+            "status": "addressed",
+            "reply": "Done.",
+        }),
+    );
+    let response = h.call_tool(
+        "rdm_review_complete",
+        serde_json::json!({"project": "test-proj", "review_id": id}),
+    );
+    assert_eq!(response["result"]["isError"], serde_json::json!(true));
+    let text = result_text(&response);
+    assert!(
+        text.contains("1 comment(s) still open: 2"),
+        "refusal must name the open comment ids: {text}"
+    );
+
+    // The review is still submitted.
+    let show = h.call_tool(
+        "rdm_review_show",
+        serde_json::json!({"project": "test-proj", "review_id": id}),
+    );
+    assert_eq!(result_json(&show)["review"]["state"], "submitted");
+}
+
+#[test]
+fn review_complete_succeeds_when_all_resolved() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let id = setup_review_fixture(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": id,
+            "comment_id": 1,
+            "status": "addressed",
+            "reply": "Done.",
+        }),
+    );
+    h.call_tool(
+        "rdm_review_address_comment",
+        serde_json::json!({
+            "project": "test-proj",
+            "review_id": id,
+            "comment_id": 2,
+            "status": "wont-fix",
+            "reply": "Reproduction steps live in the linked issue.",
+        }),
+    );
+    let response = h.call_tool(
+        "rdm_review_complete",
+        serde_json::json!({"project": "test-proj", "review_id": id}),
+    );
+    let text = result_text(&response);
+    assert!(text.contains("addressed"), "got: {text}");
+
+    let show = h.call_tool(
+        "rdm_review_show",
+        serde_json::json!({"project": "test-proj", "review_id": id}),
+    );
+    assert_eq!(result_json(&show)["review"]["state"], "addressed");
+    // And it drops out of the change-request queue.
+    let queue = h.call_tool(
+        "rdm_review_requests",
+        serde_json::json!({"project": "test-proj"}),
+    );
+    assert_eq!(result_json(&queue).as_array().unwrap().len(), 0);
 }

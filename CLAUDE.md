@@ -21,7 +21,7 @@ Core is the source of truth. CLI and server are thin layers. New interfaces (TUI
 - **Roadmaps** contain ordered **phases** (not-started | in-progress | done | blocked | wont-fix)
 - **Tasks** are standalone work items (open | in-progress | done | wont-fix)
 - Agent integration: `rdm agent-config` generates config for AI agents to interact via CLI
-- **Claude Code skills** (`.claude/skills/`): `rdm-roadmap` (create roadmaps), `rdm-do` (implement phases / work on tasks; finalize → needs-review), `rdm-document` (generate docs from completed roadmaps)
+- **Claude Code skills** (`.claude/skills/`): `rdm-roadmap` (create roadmaps), `rdm-do` (implement phases / work on tasks; finalize → needs-review), `rdm-document` (generate docs from completed roadmaps), `rdm-revise` (act on document reviews requesting changes)
 
 ## Development Practices
 
@@ -167,6 +167,7 @@ For sessions running in a sandboxed Claude Code web environment (no local plan r
 - Regression harness: `bash scripts/verify-claude-code-web-loop.sh` — stands up a hermetic simulation of the bootstrap → Done: → plan-repo-update loop using temp dirs. Run it after touching the template, `rdm bootstrap`, or `rdm hook post-commit`.
 - Cross-host worktree-review harness: `bash scripts/verify-worktree-review-loop.sh` — hermetic do → finalize → trigger → review regression for the one-worktree-per-roadmap model, asserting roadmap isolation across the Claude Stop hook and Pi `agent_end` host paths. Run it after touching the worktree/review-trigger model (`rdm worktree`, the branch-scoped `rdm review pending` filter, needs-review stamping, or the hook/extension templates).
 - Auto-review Stop hook harness: `bash scripts/verify-auto-review-hook-loop.sh` — hermetic FIRE / OUT-OF-SCOPE / LOOP-GUARD / CLEARED regression driving the real `.claude/hooks/rdm-review-on-finalize.sh` (all four states) plus the shipped `rdm-core/src/templates/hook-review-on-finalize.sh` loop-guard and reviewed-cleared cases, against the Claude Code Stop payload contract. Run it after touching either hook script, `rdm review pending`/`restamp`, or `--project`/root resolution.
+- Review revision-loop harness: `bash scripts/verify-review-revision-loop.sh` — hermetic end-to-end regression for the LLM revision workflow (the `rdm-revise` loop): a submitted request-changes review is worked comment by comment against a temp git-backed plan repo, covering the resolved-anchor, whole-document, drifted-anchor-clarification (blocks close), wont-fix, and completion paths with explicit `--applied-commit` provenance. Run it after touching the review resolution model (`ops/reviews.rs` update paths, anchor drift resolution, `rdm review requests`/`update`, the MCP review tools, or the `rdm-revise` skill templates).
 
 ### *** DEVELOPMENT BUILD REQUIREMENT ***
 

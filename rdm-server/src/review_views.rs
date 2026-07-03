@@ -241,6 +241,7 @@ pub fn draft_panel(
                     state: Some(ReviewState::Draft),
                     verdict: None,
                     author: Some(author.to_string()),
+                    ..Default::default()
                 },
             );
             // `list_reviews` is id-sorted, so the first match is stable.

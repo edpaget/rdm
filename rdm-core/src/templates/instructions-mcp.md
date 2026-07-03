@@ -46,6 +46,18 @@ Use `rdm_search` for fuzzy matching against titles and body content. Tags are a 
 
 The `body` parameter accepts full Markdown including multiline content. The `tags` parameter is optional. On `*_update`, passing `tags: [...]` replaces the existing list, and `clear_tags: true` removes all tags (roadmap and phase only; task uses `tags: []`).
 
+Every `*_update` response ends with a `Commit: <sha>` line naming the plan-repo commit the mutation produced — capture it when the edit resolves a review comment (see below).
+
+## Document reviews
+
+Reviews are structured feedback on a roadmap, phase, or task document, with inline comments anchored to quoted text. A review moves `draft` → `submitted` (with a verdict: `approve`, `request-changes`, or `comment`) → `addressed` or `dismissed`. Acting on the change-request queue is the agent loop (automated by the `rdm-revise` skill):
+
+- `rdm_review_requests` with `project: {proj_param}` — the work queue: submitted reviews with verdict `request-changes`, each with its target, summary, and `open_comment_count`. Optional `target_kind`/`target_id` narrow to one plan item.
+- `rdm_review_show` with `project: {proj_param}, review_id: "<id>"` — the full review in one call: summary, every comment with its anchor (a tagged union on `anchor_type`) and resolution (`resolved`, `drifted`, or `unresolved`), plus `documents[]` carrying each referenced document's `body_at_created_commit` (what the reviewer saw) and `current_body`. `resolved`/`drifted` ranges with `body: "original"` index `body_at_created_commit`, never the current body. Comments with no anchor or an unrecognized `anchor_type` are whole-document feedback — read `current_body` in full.
+- Apply each requested edit via `rdm_phase_update` / `rdm_task_update` / `rdm_roadmap_update` and capture the `Commit: <sha>` line from the response.
+- `rdm_review_address_comment` with `project: {proj_param}, review_id: "<id>", comment_id: <n>, status: "addressed", applied_commit: "<sha>", reply: "What changed."` — flips the comment and records provenance. Use `status: "wont-fix"` with reasoning to decline (never records an `applied_commit` default); omit `status` to only record a clarification reply and leave the comment open.
+- `rdm_review_complete` with `project: {proj_param}, review_id: "<id>"` — closes the review as `addressed`; refuses while any comment is open, listing the offending ids.
+
 ## Tagging convention
 
 - Tag work to make it findable across roadmaps, phases, and tasks (e.g. all auth-related items get `auth`).

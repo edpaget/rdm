@@ -2193,3 +2193,71 @@ fn review_show_format_markdown_renders_comment_details() {
         .stdout(predicate::str::contains("Sharpen the phrasing."))
         .stdout(predicate::str::contains("resolved"));
 }
+
+/// An anchor whose `anchor_type` this build does not model (written by a
+/// newer rdm) must round-trip verbatim through `review show --format json`
+/// and resolve as `unresolved` — never error.
+#[test]
+fn review_show_unknown_anchor_round_trips() {
+    let plan = init_plan_repo();
+
+    // Hand-write a review fixture carrying a `line-range` anchor, the way a
+    // newer rdm would have stored it.
+    let review_path = plan
+        .path()
+        .join("projects/demo/reviews/2026-07-01-1200-ffff.md");
+    fs::create_dir_all(review_path.parent().unwrap()).unwrap();
+    fs::write(
+        &review_path,
+        r#"---
+id: 2026-07-01-1200-ffff
+author: fixture
+target:
+  kind: task
+  slug: item-x
+state: submitted
+verdict: request-changes
+created: 2026-07-01T12:00:00Z
+submitted: 2026-07-01T12:30:00Z
+comments:
+- id: 1
+  status: open
+  anchor:
+    anchor_type: line-range
+    start: 3
+    end: 7
+  body: Uses a line-range anchor from a newer rdm.
+---
+Fixture review with an unknown anchor type.
+"#,
+    )
+    .unwrap();
+
+    let output = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "show",
+            "2026-07-01-1200-ffff",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&output).unwrap();
+
+    let comment = &v["comments"][0];
+    // The unknown anchor is echoed verbatim (tagged union preserved)...
+    assert_eq!(comment["anchor"]["anchor_type"], "line-range");
+    assert_eq!(comment["anchor"]["start"], 3);
+    assert_eq!(comment["anchor"]["end"], 7);
+    // ...and resolves as unresolved (whole-document treatment).
+    assert_eq!(comment["resolution"]["state"], "unresolved");
+    assert!(comment["resolution"].get("quote").is_none());
+}
