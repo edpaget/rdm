@@ -1319,6 +1319,24 @@ mod tests {
         assert!(content.contains("revise"));
         assert!(content.contains("escalate"));
         assert!(content.contains("at most one revise round"));
+        // Plan gate rigor scales with the phase's difficulty tier.
+        assert!(content.contains("Scale the reviewer's rigor to the phase's difficulty tier"));
+        assert!(content.contains("Trivial/easy"));
+        assert!(content.contains("Moderate"));
+        assert!(content.contains("per-finding evidence"));
+        assert!(content.contains("refute pass"));
+        // Sharpened checklist: AC->step, AC->test, edge cases, and declared
+        // cross-phase/cross-crate dependencies, in addition to scope/architecture.
+        assert!(content.contains("Acceptance criteria → steps"));
+        assert!(content.contains("Acceptance criteria → tests"));
+        assert!(content.contains("test-per-AC"));
+        assert!(content.contains("Edge cases / error paths"));
+        assert!(content.contains("Cross-phase / cross-crate dependencies"));
+        // Revise round re-checks the revised plan; an unconverged revise escalates
+        // rather than silently proceeding with a deficient plan.
+        assert!(content.contains("re-checks the revised plan against the same checklist"));
+        assert!(content.contains("exhausted plan-revise budget"));
+        assert!(!content.contains("a single time, then proceeds"));
         // Delegates code review to rdm-review (which owns the Done: line).
         assert!(content.contains("rdm-review"));
         // Escalation parks the phase as blocked; it never writes a Done: line.
@@ -2178,6 +2196,24 @@ mod tests {
         assert!(content.contains("reviewed | rework | escalated"));
         assert!(content.contains("\"blocked\""));
         assert!(content.contains("rdm-review"));
+        // Plan gate rigor scales with the phase's difficulty tier.
+        assert!(content.contains("Scale the reviewer's rigor to the phase's difficulty tier"));
+        assert!(content.contains("Trivial/easy"));
+        assert!(content.contains("Moderate"));
+        assert!(content.contains("per-finding evidence"));
+        assert!(content.contains("refute pass"));
+        // Sharpened checklist: AC->step, AC->test, edge cases, and declared
+        // cross-phase/cross-crate dependencies, in addition to scope/architecture.
+        assert!(content.contains("Acceptance criteria → steps"));
+        assert!(content.contains("Acceptance criteria → tests"));
+        assert!(content.contains("test-per-AC"));
+        assert!(content.contains("Edge cases / error paths"));
+        assert!(content.contains("Cross-phase / cross-crate dependencies"));
+        // Revise round re-checks the revised plan; an unconverged revise escalates
+        // rather than silently proceeding with a deficient plan.
+        assert!(content.contains("re-checks the revised plan against the same checklist"));
+        assert!(content.contains("exhausted plan-revise budget"));
+        assert!(!content.contains("a single time, then proceeds"));
         // Escalation follows the shared protocol: references the protocol doc
         // and records a stage-tagged reason via the MCP tool's `reason` param.
         assert!(content.contains("docs/escalation-protocol.md"));

@@ -29,6 +29,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   forward so the implementer inherits it instead of re-discovering it. The skill's
   "Context isolation" section now names the planner→implementer boundary
   explicitly alongside the existing planner→reviewer one.
+- The `rdm-dispatch-phase` plan gate (step 5, CLI and MCP variants) now scales
+  its rigor to the phase's difficulty tier instead of applying one fixed level
+  of scrutiny: trivial/easy gets a holistic single-reviewer judgment, moderate
+  requires the reviewer to cite per-finding evidence (the specific AC text,
+  plan step, or file/crate each checklist judgment rests on), and hard adds a
+  refute pass — a third, fresh subagent whose only job is to refute the
+  reviewer's verdict, adapted from (not a faithful mirror of) `rdm-review`'s
+  verify step: it is deliberately one-directional and can only tighten the
+  gate's verdict, never loosen it. The checklist itself is sharpened for every
+  tier: acceptance-criteria→step and acceptance-criteria→test mappings, edge
+  cases/error paths per AC, and declared cross-phase/cross-crate dependencies,
+  alongside the existing scope and architecture checks. The `revise` round now
+  explicitly re-checks the revised plan against the same checklist, and an
+  un-converged revise round escalates (stage `plan`) rather than silently
+  proceeding with a deficient plan.
 
 ### Added
 

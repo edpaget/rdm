@@ -53,22 +53,34 @@ Unlike interactive `rdm-do`, there is no human to approve the tactical plan befo
    - **Steps per AC** — the implementation steps that satisfy every acceptance criterion, mapped one-to-one to the ACs.
    - **File/crate navigation map** — every crate and file it will touch, so the implementer inherits navigation instead of re-deriving it through fresh exploration (this is what avoids paying for discovery twice).
    - **Test list per AC** — the tests to add, each mapped to the AC it covers.
+   - **Edge cases / error paths per AC** — for each AC, the edge cases and error paths it implies, not just the happy path.
+   - **Cross-phase / cross-crate dependencies** — the other phases, crates, or assumptions the plan depends on (e.g. a type or function an earlier phase must already provide), so they are declared rather than silently assumed.
 
    Have it return the plan document only — no code yet.
-5. **Plan gate (separate reviewer subagent):** dispatch a *different*, lightweight plan-review subagent with the `Agent` tool. Give it the phase body and the plan document — and nothing else. It checks the plan document against:
-   - **Acceptance criteria** — does the plan satisfy every AC?
-   - **Scope** — does it stay in scope, adding no work the phase did not ask for?
+5. **Plan gate (separate reviewer subagent):** dispatch a *different*, lightweight plan-review subagent with the `Agent` tool. Give it the phase body and the plan document — and nothing else.
+
+   Scale the reviewer's rigor to the phase's difficulty tier (same tier `rdm-estimate` assigned: trivial/easy → small, moderate → medium, hard → large):
+   - **Trivial/easy (small)** — a single reviewer subagent, holistic judgment against the checklist.
+   - **Moderate (medium)** — a single reviewer subagent, but its verdict must carry per-finding evidence — for every checklist item, cite the specific AC text, plan step, or file/crate the judgment rests on. A verdict with no cited evidence is invalid and must be redone before it counts.
+   - **Hard (large)** — in addition to the moderate evidence discipline, the reviewer's verdict goes through a refute pass — a third, fresh subagent (never the planner, never the first reviewer) whose only job is to refute the reviewer's verdict and evidence, in the same adversarial spirit as `rdm-review`'s verify step ("this verdict is NOT correct unless the plan and phase body prove otherwise"). It returns agreement: confirmed | overturned plus its own evidence. Reconciliation rule: the stricter of the two verdicts governs, ranked escalate > revise > approve — a refute pass can only tighten the gate, never loosen it. (This is a deliberate one-directional difference from `rdm-review`'s per-finding refute, which can also drop findings; here the refute can only catch an under-verified approval.)
+
+   The reviewer (and, for hard phases, the refuter) checks the plan document against:
+   - **Acceptance criteria → steps** — does every AC map to at least one concrete implementation step? Flag any AC with no mapped step.
+   - **Acceptance criteria → tests** — does every AC map to at least one named test in the plan's per-AC test list (test-per-AC)? Flag any AC with no mapped test.
+   - **Edge cases / error paths** — for each AC, does the plan enumerate the edge cases or error paths that AC implies, not just its happy path?
+   - **Cross-phase / cross-crate dependencies** — does the plan declare the other phases, crates, or assumptions it depends on? Flag any undeclared dependency it silently assumes.
+   - **Scope** — does the plan stay in scope, adding no work the phase did not ask for?
    - **Architecture** — does it target the right crates per the core/cli/server separation (core is the source of truth; cli/server are thin)?
 
    It returns exactly one verdict:
    - **approve** — proceed to implement. The approved plan document — exactly as reviewed, not a paraphrase — is what the implementer receives in step 6.
-   - **revise** — concrete, bounded feedback. Apply it **once**: the planning subagent revises the plan document a single time, then proceeds. Do **not** loop — there is at most one revise round.
-   - **escalate** — genuine AC ambiguity or an architectural decision with no clear default. Stop and park the phase per the **escalation protocol** (see below): record the blocker as a `plan`-stage escalation and return the **escalated** outcome with it in `findings`.
+   - **revise** — concrete, bounded feedback tied to the specific checklist item(s) that failed. Apply it once: the planning subagent revises the plan document a single time. The reviewer then re-checks the revised plan against the same checklist (repeating the tier-scaled rigor above, including the refute pass for hard phases). If the revised plan now satisfies the checklist, approve it and proceed to step 6. If it still does not, do not proceed with a deficient plan — escalate (stage `plan`) per the exhausted-budget rule below. Do not loop — there is at most one revise round, win or lose.
+   - **escalate** — either a genuine AC ambiguity or an architectural decision with no clear default on the first pass, or an exhausted plan-revise budget (the one allowed revision, re-checked, still does not satisfy the checklist). Either way, stop and park the phase per the **escalation protocol** (see below): record the blocker as a `plan`-stage escalation and return the **escalated** outcome with it in `findings`.
      ```bash
      ./target/debug/rdm phase update <phase> --status blocked --reason "[plan] <the decision or ambiguity>" --no-edit --roadmap <slug> --project rdm
      ```
 
-   The gate is bounded: one review pass plus at most one revise round, then proceed or escalate. Never an unbounded critique loop. Exhausting the single revise round without converging is itself a `plan`-stage escalation.
+   The gate is bounded: one review pass plus at most one revise round (with its own re-check), then proceed or escalate. Never an unbounded critique loop. Exhausting the single revise round without converging is itself a `plan`-stage escalation — never proceed to implementation with a plan that still fails the checklist.
 6. **Implement (new implementer subagent):** on `approve` (or after the single accepted revision), dispatch a **new** implementer subagent with the `Agent` tool, on the phase's **model tier**. Seed it with **only** the phase body from step 2 and the approved plan document from steps 4–5 — *not* the planning subagent's accumulated context (its exploration, rejected alternatives, or files it opened but will not touch). The plan document's file/crate navigation map and per-AC test list are what let it skip re-deriving discovery. It implements the approved plan document inside the worktree and commits the changes. Do **not** emit a `Done:` line YET — that is owned by `rdm-review`, which adds it on a passing review (a deferred two-stage protocol, not a contradiction).
 7. **Code review:** run the `rdm-review` skill on the result (`<slug> <phase>`). It owns the `needs-review` → `reviewed` gate and the `Done:` line. Map its verdict onto the outcome:
    - **pass** → `rdm-review` leaves the phase `reviewed` with a `Done:` line on the branch → return **reviewed**.
