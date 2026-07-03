@@ -15,6 +15,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Clarified in `--help` (for `roadmap`/`phase`/`task` `create`/`update`) and in
+  the agent-facing docs (`CLAUDE.md`, `rdm agent-config`'s CLI instructions
+  template) that `--body` accepts any text verbatim — backticks, em-dashes,
+  and other Unicode/punctuation included — and always takes precedence over
+  stdin, which is never read once `--body` is set. No behavior changed;
+  `--body` was already authoritative (fixed in a prior release) and does not
+  hang on special-character content — this is documentation-only, backed by
+  new regression tests.
 - The `rdm-autopilot` agent skill (CLI and MCP variants) now dispatches each
   phase — including the `rdm-estimate` step when a difficulty is unset — as a
   single isolated `Agent` subagent instead of invoking `rdm-estimate` and

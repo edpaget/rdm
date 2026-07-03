@@ -856,6 +856,122 @@ fn task_update_body_flag_beats_stdin() {
     );
 }
 
+/// Body content covering the reported hang triggers: backticks, em-dash,
+/// curly quotes/ellipsis, shell metacharacters, and a literal `--no-edit`
+/// substring embedded in the value (not passed as a separate flag).
+const SPECIAL_BODY: &str = r#"backtick `code` em-dash — curly “quotes” ‘single’ ellipsis … shell $!\;|<>*~&& literal --no-edit here"#;
+
+#[test]
+fn task_update_with_special_character_body_content() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-bug", "Fix the bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--body",
+            SPECIAL_BODY,
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let task_file = dir.path().join("projects/fbm/tasks/fix-bug.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    assert!(
+        content.contains(SPECIAL_BODY),
+        "expected special-character body to round-trip verbatim, got: {content}"
+    );
+}
+
+#[test]
+fn task_create_with_special_character_body_content() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix the bug",
+            "--project",
+            "fbm",
+            "--body",
+            SPECIAL_BODY,
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let task_file = dir.path().join("projects/fbm/tasks/fix-bug.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    assert!(
+        content.contains(SPECIAL_BODY),
+        "expected special-character body to round-trip verbatim, got: {content}"
+    );
+}
+
+/// Reproduces the reported hang mechanism directly: an orchestrator that
+/// spawns the process with `--body` set but holds stdin open via a pipe
+/// that is never written to and never closed. Since `--body` is
+/// authoritative, `resolve_body` must never read stdin, so the process
+/// must exit promptly regardless of the open pipe.
+#[test]
+fn task_create_body_flag_no_hang_with_open_stdin_pipe() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rdm"))
+        .env("XDG_CONFIG_HOME", "/dev/null/nonexistent")
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix the bug",
+            "--project",
+            "fbm",
+            "--body",
+            SPECIAL_BODY,
+            "--no-edit",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Keep the child's stdin pipe open (never written, never closed) —
+    // dropping it would deliver EOF and defeat the point of this test.
+    let _stdin = child.stdin.take();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let _ = tx.send(status);
+    });
+
+    let status = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("rdm task create --body must not hang with stdin held open")
+        .unwrap();
+
+    assert!(status.success());
+}
+
 #[test]
 fn task_update_empty_body_refuses_clobber() {
     let dir = TempDir::new().unwrap();

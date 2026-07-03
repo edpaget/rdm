@@ -755,6 +755,38 @@ pub fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
     result
 }
 
+#[cfg(test)]
+mod resolve_body_tests {
+    use super::*;
+
+    /// `--body` is authoritative: when it is `Some`, `resolve_body` must
+    /// return the content verbatim without touching stdin, regardless of
+    /// backticks, em-dashes, or other special characters it contains. This
+    /// is not gated behind the `git` feature — `resolve_body` has no git
+    /// dependency, so this must hold in every build (including
+    /// `--no-default-features`).
+    #[test]
+    fn resolve_body_returns_special_character_body_verbatim() {
+        let special =
+            "backtick `code` em-dash — curly “quotes” ellipsis … shell $!\\;|<>*~&& --no-edit";
+
+        let result = resolve_body(Some(special.to_string()), true).unwrap();
+
+        assert_eq!(result, Some(special.to_string()));
+    }
+
+    /// A body made up entirely of special characters (no alphanumerics)
+    /// should also round-trip verbatim.
+    #[test]
+    fn resolve_body_returns_only_special_characters_verbatim() {
+        let special = "`—“”‘’…$!\\;|<>*~&&";
+
+        let result = resolve_body(Some(special.to_string()), true).unwrap();
+
+        assert_eq!(result, Some(special.to_string()));
+    }
+}
+
 #[cfg(all(test, feature = "git"))]
 mod hook_timeout_tests {
     use super::*;

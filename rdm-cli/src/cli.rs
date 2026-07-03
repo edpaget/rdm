@@ -320,7 +320,10 @@ pub(crate) enum RoadmapCommand {
         /// Comma-separated tags.
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
-        /// Body content for the roadmap.
+        /// Body content for the roadmap. Accepts any text verbatim
+        /// (backticks, em-dashes, other Unicode/punctuation included) and
+        /// always takes precedence over stdin — stdin is never read once
+        /// this is set.
         #[arg(long)]
         body: Option<String>,
         /// Suppress interactive editor for body content.
@@ -360,7 +363,10 @@ pub(crate) enum RoadmapCommand {
         /// New comma-separated tags (replaces existing).
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
-        /// Body content for the roadmap.
+        /// Body content for the roadmap. Accepts any text verbatim
+        /// (backticks, em-dashes, other Unicode/punctuation included) and
+        /// always takes precedence over stdin — stdin is never read once
+        /// this is set.
         #[arg(long, conflicts_with = "clear_body")]
         body: Option<String>,
         /// Clear an existing body (replace it with an empty string).
@@ -492,7 +498,10 @@ pub(crate) enum PhaseCommand {
         /// Model tier that should run the phase (small, medium, large).
         #[arg(long)]
         model: Option<ModelTier>,
-        /// Body content for the phase.
+        /// Body content for the phase. Accepts any text verbatim
+        /// (backticks, em-dashes, other Unicode/punctuation included) and
+        /// always takes precedence over stdin — stdin is never read once
+        /// this is set.
         #[arg(long)]
         body: Option<String>,
         /// Suppress interactive editor for body content.
@@ -556,7 +565,10 @@ pub(crate) enum PhaseCommand {
         /// Remove the model tier from this phase.
         #[arg(long, conflicts_with = "model")]
         clear_model: bool,
-        /// Body content for the phase.
+        /// Body content for the phase. Accepts any text verbatim
+        /// (backticks, em-dashes, other Unicode/punctuation included) and
+        /// always takes precedence over stdin — stdin is never read once
+        /// this is set.
         #[arg(long, conflicts_with = "clear_body")]
         body: Option<String>,
         /// Clear an existing body (replace it with an empty string).
@@ -606,7 +618,9 @@ pub(crate) enum TaskCommand {
         /// Comma-separated tags.
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
-        /// Body content for the task.
+        /// Body content for the task. Accepts any text verbatim (backticks,
+        /// em-dashes, other Unicode/punctuation included) and always takes
+        /// precedence over stdin — stdin is never read once this is set.
         #[arg(long)]
         body: Option<String>,
         /// Suppress interactive editor for body content.
@@ -646,7 +660,9 @@ pub(crate) enum TaskCommand {
         /// New comma-separated tags (replaces existing).
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
-        /// Body content for the task.
+        /// Body content for the task. Accepts any text verbatim (backticks,
+        /// em-dashes, other Unicode/punctuation included) and always takes
+        /// precedence over stdin — stdin is never read once this is set.
         #[arg(long, conflicts_with = "clear_body")]
         body: Option<String>,
         /// Clear an existing body (replace it with an empty string).

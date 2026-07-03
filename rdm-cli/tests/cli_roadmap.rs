@@ -1301,6 +1301,86 @@ fn roadmap_update_body_flag_beats_stdin() {
     );
 }
 
+/// Body content covering the reported hang triggers: backticks, em-dash,
+/// curly quotes/ellipsis, shell metacharacters, and a literal `--no-edit`
+/// substring embedded in the value (not passed as a separate flag).
+const SPECIAL_BODY: &str = r#"backtick `code` em-dash — curly “quotes” ‘single’ ellipsis … shell $!\;|<>*~&& literal --no-edit here"#;
+
+#[test]
+fn roadmap_update_with_special_character_body_content() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "update",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            SPECIAL_BODY,
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let file = dir.path().join("projects/fbm/roadmaps/two-way/roadmap.md");
+    let content = fs::read_to_string(&file).unwrap();
+    assert!(
+        content.contains(SPECIAL_BODY),
+        "expected special-character body to round-trip verbatim, got: {content}"
+    );
+}
+
+#[test]
+fn roadmap_create_with_special_character_body_content() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way Players",
+            "--project",
+            "fbm",
+            "--body",
+            SPECIAL_BODY,
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let file = dir.path().join("projects/fbm/roadmaps/two-way/roadmap.md");
+    let content = fs::read_to_string(&file).unwrap();
+    assert!(
+        content.contains(SPECIAL_BODY),
+        "expected special-character body to round-trip verbatim, got: {content}"
+    );
+}
+
 #[test]
 fn roadmap_update_empty_body_refuses_clobber() {
     let dir = TempDir::new().unwrap();

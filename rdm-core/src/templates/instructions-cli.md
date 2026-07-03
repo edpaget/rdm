@@ -93,7 +93,7 @@ For `phase create`, pass a bare slug like `hook-commit-bug` — rdm prepends `ph
 
 ## Body content
 
-Use `--body` for short inline content. `--body` is **authoritative**: when you pass it, rdm uses the value verbatim and ignores stdin. For multiline content, pipe via stdin instead (do not also pass `--body`):
+Use `--body` for short inline content. `--body` is **authoritative**: when you pass it, rdm uses the value verbatim and ignores stdin. This includes backticks, em-dashes, curly quotes, and other Unicode/punctuation — none of it triggers stdin reads or hangs. For multiline content, pipe via stdin instead (do not also pass `--body`):
 
 ```bash
 rdm task create <slug> --title "Title" --no-edit {proj_flag} <<'EOF'

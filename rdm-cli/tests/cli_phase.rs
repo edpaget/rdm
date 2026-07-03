@@ -1527,6 +1527,131 @@ fn phase_update_body_flag_beats_stdin() {
     );
 }
 
+/// Body content covering the reported hang triggers: backticks, em-dash,
+/// curly quotes/ellipsis, shell metacharacters, and a literal `--no-edit`
+/// substring embedded in the value (not passed as a separate flag).
+const SPECIAL_BODY: &str = r#"backtick `code` em-dash — curly “quotes” ‘single’ ellipsis … shell $!\;|<>*~&& literal --no-edit here"#;
+
+#[test]
+fn phase_update_with_special_character_body_content() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            SPECIAL_BODY,
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let phase_file = dir
+        .path()
+        .join("projects/fbm/roadmaps/two-way/phase-1-core.md");
+    let content = fs::read_to_string(&phase_file).unwrap();
+    assert!(
+        content.contains(SPECIAL_BODY),
+        "expected special-character body to round-trip verbatim, got: {content}"
+    );
+}
+
+#[test]
+fn phase_create_with_special_character_body_content() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--title",
+            "Core Valuation",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            SPECIAL_BODY,
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    let phase_file = dir
+        .path()
+        .join("projects/fbm/roadmaps/two-way/phase-1-core.md");
+    let content = fs::read_to_string(&phase_file).unwrap();
+    assert!(
+        content.contains(SPECIAL_BODY),
+        "expected special-character body to round-trip verbatim, got: {content}"
+    );
+}
+
+/// Reproduces the reported hang mechanism directly: an orchestrator that
+/// spawns the process with `--body` set but holds stdin open via a pipe
+/// that is never written to and never closed. Since `--body` is
+/// authoritative, `resolve_body` must never read stdin, so the process
+/// must exit promptly regardless of the open pipe.
+#[test]
+fn phase_update_body_flag_no_hang_with_open_stdin_pipe() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rdm"))
+        .env("XDG_CONFIG_HOME", "/dev/null/nonexistent")
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            SPECIAL_BODY,
+            "--no-edit",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Keep the child's stdin pipe open (never written, never closed) —
+    // dropping it would deliver EOF and defeat the point of this test.
+    let _stdin = child.stdin.take();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let _ = tx.send(status);
+    });
+
+    let status = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("rdm phase update --body must not hang with stdin held open")
+        .unwrap();
+
+    assert!(status.success());
+}
+
 #[test]
 fn phase_update_empty_body_refuses_clobber() {
     let dir = TempDir::new().unwrap();

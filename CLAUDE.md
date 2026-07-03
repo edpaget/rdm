@@ -261,7 +261,7 @@ Always pass `--no-edit` to suppress the interactive editor.
 
 `--tags` is comma-separated. On `update`, `--tags` replaces the existing list; pass `--tags ""` to clear. Tagging convention: lowercase kebab-case (`bug`, `auth`, `tech-debt`); prefer existing tags — check with `./target/debug/rdm search "" --tag <candidate> --project rdm` before inventing a new one.
 
-`--body` is **authoritative**: when you pass `--body`, rdm uses that value verbatim and ignores stdin. To intentionally empty an existing body on `phase update`, `task update`, or `roadmap update`, pass `--clear-body` (mutually exclusive with `--body`); passing `--body ""` against a non-empty body is rejected with an actionable error to prevent silent clobber from a truncated heredoc or empty command substitution.
+`--body` is **authoritative**: when you pass `--body`, rdm uses that value verbatim and ignores stdin. This includes backticks, em-dashes, curly quotes, and other Unicode/punctuation — none of it triggers stdin reads or hangs. To intentionally empty an existing body on `phase update`, `task update`, or `roadmap update`, pass `--clear-body` (mutually exclusive with `--body`); passing `--body ""` against a non-empty body is rejected with an actionable error to prevent silent clobber from a truncated heredoc or empty command substitution.
 
 For multiline content, pipe via stdin (do not also pass `--body` — stdin is ignored when `--body` is present):
 
