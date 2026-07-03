@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- Upgraded the MCP server's `rmcp` dependency to 2.0.0, which fixes an OAuth
+  resource-spoofing vulnerability, a metadata SSRF, and a streamable-HTTP
+  session leak, and aligns tool-response content encoding with the MCP
+  2025-11-25 specification.
+
 ### Changed
 
 - The `rdm-autopilot` agent skill (CLI and MCP variants) now dispatches each

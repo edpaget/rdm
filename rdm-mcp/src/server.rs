@@ -23,7 +23,7 @@ type AppStore = rdm_store_git::GitStore;
 /// See the `git`-feature variant for documentation.
 #[cfg(not(feature = "git"))]
 type AppStore = FsStore;
-use rmcp::model::Content;
+use rmcp::model::ContentBlock;
 use rmcp::{
     ErrorData, ServerHandler, ServiceExt,
     model::{CallToolResult, Implementation, ServerCapabilities, ServerInfo},
@@ -41,17 +41,17 @@ fn core_err(e: rdm_core::error::Error) -> Result<CallToolResult, ErrorData> {
     } else {
         e.to_string()
     };
-    Ok(CallToolResult::error(vec![Content::text(msg)]))
+    Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
 }
 
 /// Returns a successful `CallToolResult` containing text.
 fn ok_text(text: String) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::success(vec![Content::text(text)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
 /// Returns an error `CallToolResult` containing a message.
 fn err_text(msg: String) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::error(vec![Content::text(msg)]))
+    Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
 }
 
 /// Returns the plan-repo commit produced by a just-completed mutation, for
