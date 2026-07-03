@@ -3,6 +3,7 @@ use axum::response::IntoResponse;
 
 const EDIT_JS: &str = include_str!("../../assets/edit.js");
 const REVIEW_HIGHLIGHT_JS: &str = include_str!("../../assets/review-highlight.js");
+const REVIEW_ANCHOR_JS: &str = include_str!("../../assets/review-anchor.js");
 const STYLES_CSS: &str = include_str!("../../assets/styles.css");
 const FAVICON_SVG: &str = include_str!("../../assets/logo.svg");
 
@@ -32,6 +33,21 @@ pub async fn review_highlight_js() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-store"),
         ],
         REVIEW_HIGHLIGHT_JS,
+    )
+}
+
+/// `GET /static/review-anchor.js` — serves the embedded select-to-anchor
+/// client script (selection gesture plus no-reload draft-panel updates).
+pub async fn review_anchor_js() -> impl IntoResponse {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        REVIEW_ANCHOR_JS,
     )
 }
 
@@ -196,6 +212,45 @@ mod tests {
         assert!(
             text.contains("rdm-anchor"),
             "review-highlight.js should toggle inline marks"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_anchor_js_returns_200_with_javascript_content_type() {
+        let app = build_router(test_state());
+        let response = app
+            .oneshot(
+                Request::get("/static/review-anchor.js")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let ctype = response
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            ctype.contains("javascript"),
+            "expected javascript content-type, got: {ctype}"
+        );
+        let body = to_bytes(response.into_body(), 32768).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            text.contains("data-rdm-annotated"),
+            "review-anchor.js should target annotated bodies"
+        );
+        assert!(
+            text.contains("data-rdm-anchor-action"),
+            "review-anchor.js should read the panel's anchor endpoint"
+        );
+        assert!(
+            text.contains("rendered_text"),
+            "review-anchor.js should ship the selected text for the cross-check"
         );
     }
 

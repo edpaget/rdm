@@ -618,3 +618,84 @@ mark.rdm-anchor.is-active { background: var(--anchor-highlight-bg); }
 .verdict-picker { border: 1px solid var(--color-border-light); border-radius: 0.25rem; margin: 0.5rem 0; }
 .verdict-picker label { margin-right: 1rem; }
 .review-dismiss { margin-left: auto; }
+/* Roadmap-page per-phase disclosures: each phase body renders inside a
+   native <details>, collapsed by default. */
+.phase-disclosures { list-style: none; padding: 0; margin: 0.75rem 0; }
+.phase-disclosures > li { margin-bottom: 0.5rem; }
+.phase-disclosure {
+  border: 1px solid var(--color-border-light);
+  border-radius: 0.375rem;
+  padding: 0.25rem 0.75rem;
+}
+.phase-disclosure summary {
+  cursor: pointer;
+  padding: 0.375rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.phase-disclosure .phase-number { font-weight: 600; color: var(--color-muted); }
+.phase-disclosure-link { font-size: 0.875rem; margin: 0.25rem 0; }
+/* Select-to-anchor affordance and inline composer. */
+.rdm-anchor-affordance {
+  position: absolute;
+  z-index: 20;
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--color-link);
+  background: var(--color-link);
+  color: var(--color-bg);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+.rdm-anchor-affordance:hover { background: var(--color-link-hover); }
+.rdm-anchor-form {
+  position: absolute;
+  z-index: 20;
+  max-width: 28rem;
+  border: 1px solid var(--color-border-light);
+  border-radius: 0.375rem;
+  background: var(--color-bg);
+  padding: 0.5rem 0.75rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.rdm-anchor-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--color-input-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+  padding: 0.5rem;
+}
+.rdm-anchor-form button {
+  margin: 0.5rem 0.5rem 0 0;
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--color-link);
+  background: var(--color-link);
+  color: var(--color-bg);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+.rdm-anchor-form button[type="button"] {
+  background: transparent;
+  color: inherit;
+  border-color: var(--color-border-light);
+}
+.rdm-anchor-form-quote,
+.draft-anchor-quote {
+  border-left: 3px solid var(--color-link);
+  margin: 0.25rem 0;
+  padding: 0.125rem 0.5rem;
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+.rdm-no-anchor-note {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+  border-left: 3px solid var(--color-border-light);
+  padding-left: 0.5rem;
+}

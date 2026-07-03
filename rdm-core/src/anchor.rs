@@ -602,6 +602,17 @@ pub fn resolve_against_history(
 /// to *write* a new anchor, so a document that cannot be found anywhere must
 /// surface as an error rather than degrade silently.
 ///
+/// # Which body a new anchor derives against: CLI vs. web
+///
+/// This pinned-to-`created_commit` load is the **CLI** semantics: a quote
+/// typed blind on the command line refers to the document the reviewer
+/// checked out when they started the review, so it is searched at that
+/// commit. The **web** selection flow deliberately does *not* use this
+/// function — a browser selection is made against the *rendered current
+/// body*, so it validates against [`current_body_for_comment`] instead,
+/// and any later divergence surfaces through [`resolve_against_history`]'s
+/// drift detection rather than at capture time.
+///
 /// # Errors
 ///
 /// Propagates the current-body load failure (e.g.
@@ -631,6 +642,35 @@ pub fn body_for_comment(
         }
     }
     Ok((load_body_current(store, project, selector)?, None))
+}
+
+/// Loads the **current** body of the comment's document (`doc` scope for
+/// roadmap reviews, otherwise the review's own target), ignoring the
+/// review's `created_commit` entirely.
+///
+/// This is the **web** selection flow's seam (see the CLI-vs-web note on
+/// [`body_for_comment`]): browser selection offsets index the rendered
+/// *current* body, so anchors captured from a selection must be derived
+/// and validated against exactly that body — under a history-capable
+/// store, pinning to `created_commit` would make every selection on a
+/// document edited since the review started fail its round-trip and
+/// degrade needlessly. Drift relative to the review's start point is
+/// [`resolve_against_history`]'s job at *display* time, not a capture-time
+/// concern.
+///
+/// # Errors
+///
+/// Propagates the current-body load failure (e.g.
+/// [`Error::RoadmapNotFound`], [`Error::PhaseNotFound`],
+/// [`Error::TaskNotFound`], [`Error::FrontmatterMissing`],
+/// [`Error::FrontmatterParse`]).
+pub fn current_body_for_comment(
+    store: &impl VersionedStore,
+    project: &str,
+    review: &Review,
+    doc: Option<&CommentDoc>,
+) -> Result<String> {
+    load_body_current(store, project, doc_selector_for(&review.target, doc))
 }
 
 /// A comment's resolved anchor paired with the literal text at the resolved
@@ -1417,6 +1457,25 @@ mod tests {
         let (body, at) = body_for_comment(&store, "test", &rev, None).unwrap();
         assert_eq!(body, "current body\n");
         assert_eq!(at, None);
+    }
+
+    /// The web-selection seam ignores `created_commit` entirely —
+    /// contrast [`body_for_comment_reads_at_created_commit`], which pins
+    /// to it (the CLI semantics).
+    #[test]
+    fn current_body_for_comment_ignores_created_commit() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "original body");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+        seed_task(&mut store, "edited body");
+        store.commit().unwrap();
+
+        let rev = review(task_target(), Some(&sha));
+        assert_eq!(
+            current_body_for_comment(&store, "test", &rev, None).unwrap(),
+            "edited body\n"
+        );
     }
 
     #[test]

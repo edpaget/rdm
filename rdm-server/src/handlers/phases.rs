@@ -213,7 +213,6 @@ pub async fn get_phase(
                 filters.at.is_none(),
             )
             .map_err(|e| error_response(e, format))?;
-            let body_html = page_reviews.render_body(&doc.body);
             let draft_panel = if filters.at.is_none() {
                 Some(
                     crate::review_views::draft_panel(
@@ -231,6 +230,10 @@ pub async fn get_phase(
             } else {
                 None
             };
+            // Exclusive render modes: selection annotations while the
+            // viewer's draft is open, inline review highlights otherwise.
+            let annotated = draft_panel.as_ref().is_some_and(|p| p.draft.is_some());
+            let body_html = page_reviews.render_body(&doc.body, annotated);
             let page = PhaseDetailPage {
                 project,
                 roadmap,
@@ -251,6 +254,7 @@ pub async fn get_phase(
                 draft_panel,
                 // A bare `?draft_error=` must not render an empty alert banner.
                 draft_error: filters.draft_error.filter(|s| !s.trim().is_empty()),
+                annotated,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1659,6 +1663,50 @@ mod tests {
         )
         .await;
         assert!(!html.contains("form-error"), "got: {html}");
+    }
+
+    /// Exclusive render modes on the phase page: with the viewer's draft
+    /// open the body carries `rdm-src` selection annotations and no
+    /// phase-6 `<mark>` renders even though a submitted review's anchor
+    /// resolves; without a draft the highlight renders and no annotations
+    /// do (the latter pinned by
+    /// `get_phase_html_renders_submitted_review_with_highlight`).
+    #[tokio::test]
+    async fn get_phase_html_annotates_body_when_draft_open() {
+        let (_dir, state) = setup();
+        author_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-2-second".to_string(),
+            },
+            &[(Some(tq("Some **bold** text.")), None, "Tighten this.")],
+            true,
+        );
+        // The viewer's own open draft on the same phase.
+        author_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-2-second".to_string(),
+            },
+            &[],
+            false,
+        );
+        let html = get_html_with_cookie(
+            &state,
+            "/projects/demo/roadmaps/alpha/phases/2",
+            "rdm_author=reviewer",
+        )
+        .await;
+        assert!(
+            html.contains(r#"<div class="body-content" data-rdm-annotated>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<span class="rdm-src" data-so="#), "{html}");
+        assert!(!html.contains("<mark"), "exclusive modes: {html}");
+        // The panel advertises the anchor endpoint for the client script.
+        assert!(html.contains("data-rdm-anchor-action="), "{html}");
     }
 
     #[tokio::test]

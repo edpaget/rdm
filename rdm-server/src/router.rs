@@ -42,6 +42,10 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::review_forms::add_comment_form),
         )
         .route(
+            "/projects/{project}/reviews/{review_id}/form/comments/anchor",
+            post(handlers::review_forms::anchor_comment_form),
+        )
+        .route(
             "/projects/{project}/reviews/{review_id}/form/comments/{comment_id}/edit",
             post(handlers::review_forms::edit_comment_form),
         )
@@ -99,6 +103,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/static/review-highlight.js",
             get(handlers::static_assets::review_highlight_js),
+        )
+        .route(
+            "/static/review-anchor.js",
+            get(handlers::static_assets::review_anchor_js),
         )
         .route(
             "/static/styles.css",

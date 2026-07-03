@@ -321,6 +321,9 @@ pub struct DraftCommentView {
     /// Phase options for the edit form's scope dropdown, with the current
     /// scope flagged `selected`. Empty on non-roadmap reviews (no dropdown).
     pub doc_options: Vec<DocOption>,
+    /// The quoted text of the comment's stored anchor, when it has one —
+    /// rendered as a small preview above the pending comment.
+    pub anchor_preview: Option<String>,
 }
 
 /// The visitor's open draft review, rendered in the draft panel.
@@ -348,6 +351,19 @@ pub struct DraftPanelView {
     /// Phase options for the add-comment form's scope dropdown (roadmap
     /// pages only; empty elsewhere).
     pub doc_options: Vec<DocOption>,
+}
+
+/// Standalone render of the draft panel (`_draft_panel.html`), returned as
+/// an HTML fragment by the JSON responses of the review form endpoints so
+/// the select-to-anchor client can refresh the panel without a full page
+/// reload.
+#[derive(Template)]
+#[template(path = "draft_panel_fragment.html")]
+pub struct DraftPanelFragment {
+    /// Project name.
+    pub project: String,
+    /// The assembled panel state.
+    pub panel: DraftPanelView,
 }
 
 /// Helper to map priority to CSS badge class.
@@ -430,7 +446,7 @@ pub struct RoadmapsPage {
     pub active_tag: Option<String>,
 }
 
-/// A phase row for the roadmap detail page.
+/// A phase row for the roadmap detail page's per-phase disclosures.
 pub struct PhaseRow {
     /// Phase number.
     pub phase: u32,
@@ -442,6 +458,10 @@ pub struct PhaseRow {
     pub status: String,
     /// CSS class for the status badge.
     pub status_class: String,
+    /// Rendered HTML of the phase body, shown inside the collapsed
+    /// disclosure. `None` when the body is empty or the page is pinned to
+    /// a historical `?at=` revision (no phase bodies render there).
+    pub body_html: Option<String>,
 }
 
 /// Roadmap detail page with phase table.
@@ -486,6 +506,9 @@ pub struct RoadmapDetailPage {
     pub draft_panel: Option<DraftPanelView>,
     /// Inline error from a redirected review-form action, if any.
     pub draft_error: Option<String>,
+    /// `true` when the rendered bodies carry `rdm-src` selection
+    /// annotations (the viewer has an open draft on this document).
+    pub annotated: bool,
 }
 
 /// Phase detail page with rendered markdown body.
@@ -530,6 +553,9 @@ pub struct PhaseDetailPage {
     pub draft_panel: Option<DraftPanelView>,
     /// Inline error from a redirected review-form action, if any.
     pub draft_error: Option<String>,
+    /// `true` when the rendered body carries `rdm-src` selection
+    /// annotations (the viewer has an open draft on this document).
+    pub annotated: bool,
 }
 
 /// A task row for the task list page.
@@ -606,6 +632,9 @@ pub struct TaskDetailPage {
     pub draft_panel: Option<DraftPanelView>,
     /// Inline error from a redirected review-form action, if any.
     pub draft_error: Option<String>,
+    /// `true` when the rendered body carries `rdm-src` selection
+    /// annotations (the viewer has an open draft on this document).
+    pub annotated: bool,
 }
 
 /// A single search result row for the search results page.
@@ -766,6 +795,7 @@ mod tests {
             reviews: Vec::new(),
             draft_panel: None,
             draft_error: None,
+            annotated: false,
         };
         page.render().unwrap()
     }
@@ -821,8 +851,56 @@ mod tests {
             reviews: Vec::new(),
             draft_panel: None,
             draft_error: None,
+            annotated: false,
         };
         page.render().unwrap()
+    }
+
+    /// The pinned-`?at=` view matches the existing revision gates: phase
+    /// disclosures render summary-only (no body markup, no doc attrs, no
+    /// annotations in the DOM flow at all).
+    #[test]
+    fn roadmap_detail_pinned_revision_renders_summary_only_disclosures() {
+        let page = RoadmapDetailPage {
+            project: "demo".to_string(),
+            slug: "alpha".to_string(),
+            title: "Alpha Roadmap".to_string(),
+            status: "in-progress".to_string(),
+            status_class: "in-progress".to_string(),
+            last_changed: None,
+            priority: None,
+            priority_class: None,
+            dependencies: None,
+            tags: None,
+            body_html: String::new(),
+            body_md: String::new(),
+            phases: vec![PhaseRow {
+                phase: 1,
+                stem: "phase-1-first".to_string(),
+                title: "First".to_string(),
+                status: "done".to_string(),
+                status_class: "done".to_string(),
+                // The handler passes None for every phase when ?at= is set.
+                body_html: None,
+            }],
+            quick_filters: Vec::new(),
+            active_tag: None,
+            revision: Some("abcdef1".to_string()),
+            reviews: Vec::new(),
+            draft_panel: None,
+            draft_error: None,
+            annotated: false,
+        };
+        let html = page.render().unwrap();
+        assert!(
+            html.contains(r#"<details class="phase-disclosure" id="phase-phase-1-first">"#),
+            "summary-only disclosure still renders: {html}"
+        );
+        assert!(
+            !html.contains("data-rdm-doc"),
+            "no phase body markup on a pinned revision: {html}"
+        );
+        assert!(!html.contains("data-rdm-annotated"), "{html}");
     }
 
     #[test]
@@ -860,6 +938,7 @@ mod tests {
             reviews: Vec::new(),
             draft_panel: None,
             draft_error: None,
+            annotated: false,
         };
         page.render().unwrap()
     }
@@ -1019,6 +1098,27 @@ mod tests {
                 2,
                 "{var} must be defined in both the light and dark blocks"
             );
+        }
+    }
+
+    #[test]
+    fn styles_css_defines_select_to_anchor_and_disclosure_rules() {
+        // The select-to-anchor affordance/composer, the draft panel's
+        // anchor-quote preview, the no-anchor fallback note, and the
+        // roadmap page's per-phase disclosures all carry classes that
+        // must be styled by the shipped stylesheet.
+        let css = include_str!("../assets/styles.css");
+        for class in [
+            ".phase-disclosures {",
+            ".phase-disclosure {",
+            ".phase-disclosure summary {",
+            ".rdm-anchor-affordance {",
+            ".rdm-anchor-form {",
+            ".rdm-anchor-form-quote,",
+            ".draft-anchor-quote {",
+            ".rdm-no-anchor-note {",
+        ] {
+            assert!(css.contains(class), "styles.css must define a {class} rule");
         }
     }
 

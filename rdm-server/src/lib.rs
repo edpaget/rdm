@@ -26,6 +26,8 @@ pub mod problem;
 pub mod review_views;
 /// Axum router construction.
 pub mod router;
+/// Selection→anchor derivation for the web select-to-anchor flow.
+pub mod selection;
 /// Shared application state.
 pub mod state;
 /// Askama template structs for HTML pages.

@@ -52,7 +52,7 @@
   {% endif %}{% endif %}
 </dl>
 {% if !body_html.is_empty() %}
-<div class="body-content">{{ body_html|safe }}</div>
+<div class="body-content"{% if annotated %} data-rdm-annotated{% endif %}>{{ body_html|safe }}</div>
 {% endif %}
 <details class="body-edit">
   <summary>Edit body</summary>

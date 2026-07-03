@@ -47,6 +47,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- With JavaScript enabled, `rdm-server` detail pages now support
+  GitHub-style select-to-anchor review comments: while your draft review
+  is open, highlighting text in a rendered roadmap, phase, or task body
+  pops an "Add review comment" affordance that attaches a
+  text-quote-anchored comment to the draft. The selection is mapped back
+  to the markdown source (formatting spans, inline code, lists, tables,
+  and multi-byte text included) and re-validated server-side before
+  anything is stored, so the anchor always re-resolves to the exact
+  selected span and later renders as an inline highlight; selections that
+  cannot be mapped confidently degrade to a general comment carrying the
+  selected text as a blockquote plus a visible "no anchor attached" note —
+  a wrong anchor is never stored. The draft panel now updates in place
+  without a full page reload and shows a quote preview on pending
+  anchored comments. The plain-HTML review flow keeps working unchanged
+  with JavaScript disabled.
+- The roadmap detail page now renders each phase's body inside a
+  collapsed, keyboard-accessible disclosure (native `<details>` — the
+  phase list replaces the old table). Expanding a phase and selecting
+  text in its body attaches the comment to the open roadmap draft scoped
+  to that phase, so phase-level feedback can be authored from the roadmap
+  page. Phase bodies are omitted when viewing a pinned `?at=` revision,
+  and inline review highlights still live on the phase pages (the
+  existing cross-links).
 - `rdm-server`'s roadmap, phase, and task detail pages now support
   authoring reviews entirely through plain HTML forms — no JavaScript
   required. A "Start review" form begins (or resumes, if one is already

@@ -245,7 +245,6 @@ pub async fn get_task(
                 filters.at.is_none(),
             )
             .map_err(|e| error_response(e, format))?;
-            let body_html = page_reviews.render_body(&doc.body);
             let draft_panel = if filters.at.is_none() {
                 Some(
                     crate::review_views::draft_panel(
@@ -262,6 +261,10 @@ pub async fn get_task(
             } else {
                 None
             };
+            // Exclusive render modes: selection annotations while the
+            // viewer's draft is open, inline review highlights otherwise.
+            let annotated = draft_panel.as_ref().is_some_and(|p| p.draft.is_some());
+            let body_html = page_reviews.render_body(&doc.body, annotated);
             let page = TaskDetailPage {
                 project,
                 slug: task_slug,
@@ -280,6 +283,7 @@ pub async fn get_task(
                 draft_panel,
                 // A bare `?draft_error=` must not render an empty alert banner.
                 draft_error: filters.draft_error.filter(|s| !s.trim().is_empty()),
+                annotated,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1532,5 +1536,47 @@ mod tests {
         assert!(html.contains(r#"<label for="review-author""#));
         // Task pages have no doc-scope dropdown.
         assert!(!html.contains("draft-new-comment-doc"));
+    }
+
+    /// Exclusive render modes on the task page: an open draft switches
+    /// the body from phase-6 inline highlights to `rdm-src` selection
+    /// annotations; without a draft (pinned by
+    /// `get_task_html_renders_reviews_section_with_highlight`) the
+    /// highlight renders and no annotations do.
+    #[tokio::test]
+    async fn get_task_html_annotates_body_when_draft_open() {
+        let (_dir, state) = setup();
+        // A submitted review whose anchor resolves...
+        author_review(
+            &state,
+            Some(Anchor::TextQuote {
+                quote: "Bug details.".to_string(),
+                prefix: String::new(),
+                suffix: String::new(),
+            }),
+            true,
+        );
+        // ...and the viewer's own open draft.
+        author_review(&state, None, false);
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get("/projects/demo/tasks/bug-fix")
+                    .header("accept", "text/html")
+                    .header("cookie", "rdm_author=reviewer")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 262144).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            html.contains(r#"<div class="body-content" data-rdm-annotated>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<span class="rdm-src" data-so="#), "{html}");
+        assert!(!html.contains("<mark"), "exclusive modes: {html}");
+        assert!(html.contains("data-rdm-anchor-action="), "{html}");
     }
 }

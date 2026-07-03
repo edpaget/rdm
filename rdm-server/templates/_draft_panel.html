@@ -1,5 +1,6 @@
 {% if let Some(draft) = panel.draft %}
-<section id="review-draft" class="draft-panel" aria-label="Your pending review">
+<section id="review-draft" class="draft-panel" aria-label="Your pending review"
+         data-rdm-anchor-action="/projects/{{ project }}/reviews/{{ draft.id }}/form/comments/anchor">
   <h2>Your pending review</h2>
   <p class="draft-privacy-note">Draft comments are private to this panel until you submit.</p>
   {% if !draft.comments.is_empty() %}
@@ -7,6 +8,9 @@
     {% for c in draft.comments %}
     <li class="draft-comment" id="draft-comment-{{ c.id }}">
       <p class="draft-comment-doc">{{ c.doc_label }}</p>
+      {% if let Some(q) = c.anchor_preview %}
+      <blockquote class="draft-anchor-quote">{{ q }}</blockquote>
+      {% endif %}
       <form method="post" class="draft-comment-edit"
             action="/projects/{{ project }}/reviews/{{ draft.id }}/form/comments/{{ c.id }}/edit">
         <label for="draft-comment-body-{{ c.id }}" class="visually-hidden">Comment (markdown)</label>

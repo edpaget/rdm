@@ -47,7 +47,7 @@
   {% endif %}{% endif %}
 </dl>
 {% if !body_html.is_empty() %}
-<div class="body-content">{{ body_html|safe }}</div>
+<div class="body-content"{% if annotated %} data-rdm-annotated{% endif %}>{{ body_html|safe }}</div>
 {% endif %}
 <details class="body-edit">
   <summary>Edit body</summary>
@@ -78,24 +78,23 @@
 <p>No phases defined.</p>
 {% endif %}
 {% else %}
-<table>
-  <thead>
-    <tr>
-      <th scope="col">#</th>
-      <th scope="col">Phase</th>
-      <th scope="col">Status</th>
-    </tr>
-  </thead>
-  <tbody>
+<ul class="phase-disclosures">
   {% for p in phases %}
-    <tr>
-      <td>{{ p.phase }}</td>
-      <td><a href="/projects/{{ project }}/roadmaps/{{ slug }}/phases/{{ p.stem }}">{{ p.title }}</a></td>
-      <td><span class="badge badge-{{ p.status_class }}">{{ p.status }}</span></td>
-    </tr>
+  <li>
+    <details class="phase-disclosure" id="phase-{{ p.stem }}">
+      <summary>
+        <span class="phase-number">{{ p.phase }}</span>
+        <span class="phase-title">{{ p.title }}</span>
+        <span class="badge badge-{{ p.status_class }}">{{ p.status }}</span>
+      </summary>
+      <p class="phase-disclosure-link"><a href="/projects/{{ project }}/roadmaps/{{ slug }}/phases/{{ p.stem }}">Open phase page</a></p>
+      {% if let Some(phase_body) = p.body_html %}
+      <div class="body-content" data-rdm-doc="{{ p.stem }}"{% if annotated %} data-rdm-annotated{% endif %}>{{ phase_body|safe }}</div>
+      {% endif %}
+    </details>
+  </li>
   {% endfor %}
-  </tbody>
-</table>
+</ul>
 {% endif %}
 {% if let Some(panel) = draft_panel %}
 {% include "_draft_panel.html" %}

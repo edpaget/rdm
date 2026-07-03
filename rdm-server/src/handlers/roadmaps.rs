@@ -361,19 +361,6 @@ pub async fn get_roadmap(
             Ok(hal_response(resource))
         }
         ResponseFormat::Html => {
-            let phase_rows: Vec<PhaseRow> = phases
-                .iter()
-                .map(|(stem, doc)| {
-                    let status_cls = phase_status_class(&doc.frontmatter.status).to_string();
-                    PhaseRow {
-                        phase: doc.frontmatter.phase,
-                        stem: stem.clone(),
-                        title: doc.frontmatter.title.clone(),
-                        status: doc.frontmatter.status.to_string(),
-                        status_class: status_cls,
-                    }
-                })
-                .collect();
             let priority = roadmap_doc.frontmatter.priority.map(|p| p.to_string());
             let pri_class = roadmap_doc
                 .frontmatter
@@ -401,7 +388,6 @@ pub async fn get_roadmap(
                 filters.at.is_none(),
             )
             .map_err(|e| error_response(e, format))?;
-            let body_html = page_reviews.render_body(&roadmap_doc.body);
             let draft_panel = match panel_phases {
                 Some(ref all_phases) => Some(
                     crate::review_views::draft_panel(
@@ -417,6 +403,38 @@ pub async fn get_roadmap(
                 ),
                 None => None,
             };
+            // Exclusive render modes: selection annotations while the
+            // viewer's draft is open, inline review highlights otherwise.
+            let annotated = draft_panel.as_ref().is_some_and(|p| p.draft.is_some());
+            let body_html = page_reviews.render_body(&roadmap_doc.body, annotated);
+            // Each phase body renders into its collapsed disclosure. This
+            // is one markdown render per phase per request (bodies were
+            // already loaded for the table); collapsed-by-default keeps
+            // the browser cost off the initial view. Phase-6 inline
+            // highlights deliberately do NOT extend into these bodies —
+            // doc-scoped comments keep linking through to the phase page —
+            // so annotations are the only instrumentation here.
+            let phase_rows: Vec<PhaseRow> = phases
+                .iter()
+                .map(|(stem, doc)| {
+                    let status_cls = phase_status_class(&doc.frontmatter.status).to_string();
+                    let body_html = (filters.at.is_none() && !doc.body.is_empty()).then(|| {
+                        if annotated {
+                            crate::markdown::render_markdown_annotated(&doc.body)
+                        } else {
+                            crate::markdown::render_markdown(&doc.body)
+                        }
+                    });
+                    PhaseRow {
+                        phase: doc.frontmatter.phase,
+                        stem: stem.clone(),
+                        title: doc.frontmatter.title.clone(),
+                        status: doc.frontmatter.status.to_string(),
+                        status_class: status_cls,
+                        body_html,
+                    }
+                })
+                .collect();
             let page = RoadmapDetailPage {
                 project,
                 slug: roadmap_doc.frontmatter.roadmap,
@@ -438,6 +456,7 @@ pub async fn get_roadmap(
                 draft_panel,
                 // A bare `?draft_error=` must not render an empty alert banner.
                 draft_error: filters.draft_error.filter(|s| !s.trim().is_empty()),
+                annotated,
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1951,5 +1970,289 @@ mod tests {
         assert!(html.contains(r#"<option value="phase-1-first">Phase 1: First Phase</option>"#));
         assert!(html.contains(r#"<option value="phase-2-second">Phase 2: Second Phase</option>"#));
         assert!(html.contains(">Whole roadmap</option>"));
+    }
+
+    // -- per-phase disclosures & selection annotations --
+
+    /// Like [`setup`] but with markdown bodies on the roadmap and both
+    /// phases, so disclosure/annotation content is observable.
+    fn setup_with_bodies() -> (TempDir, AppState) {
+        let (dir, state) = setup();
+        let mut store = state.store();
+        rdm_core::ops::roadmap::update_roadmap(
+            &mut store,
+            "demo",
+            "alpha",
+            rdm_core::ops::BodyUpdate::Set("Roadmap body with a roadmap span here.\n".to_string()),
+            rdm_core::ops::PriorityUpdate::Keep,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+        .unwrap();
+        for (stem, body) in [
+            ("phase-1-first", "First phase body with **bold** text.\n"),
+            ("phase-2-second", "Second phase body plain.\n"),
+        ] {
+            rdm_core::ops::phase::update_phase(
+                &mut store,
+                "demo",
+                "alpha",
+                stem,
+                None,
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Set(body.to_string()),
+                None,
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .unwrap();
+        }
+        rdm_core::store::Store::commit(&mut store).unwrap();
+        (dir, state)
+    }
+
+    /// Starts a draft roadmap review by "ed" (the cookie identity the
+    /// annotation tests browse with).
+    fn start_roadmap_draft(state: &AppState) {
+        let mut store = state.store();
+        rdm_core::ops::reviews::create_review(
+            &mut store,
+            rdm_core::ops::reviews::CreateReview {
+                project: "demo",
+                author: "ed",
+                target: ReviewTarget::Roadmap {
+                    roadmap: "alpha".to_string(),
+                },
+                body: None,
+            },
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+    }
+
+    async fn get_html_with_cookie(state: &AppState, uri: &str, cookie: &str) -> String {
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get(uri)
+                    .header("accept", "text/html")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 262144).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    /// Under `FsStore` (no history) a pinned `?at=` view fails cleanly at
+    /// the handler boundary with the HTML error page — it never reaches
+    /// the disclosure/annotation rendering path. The full pinned-render
+    /// handler test is deferred to the git-backed-server task; the
+    /// template-level behavior is pinned by
+    /// `templates::tests::roadmap_detail_pinned_revision_renders_summary_only_disclosures`.
+    #[tokio::test]
+    async fn get_roadmap_html_at_revision_with_fs_store_surfaces_error_page() {
+        let (_dir, state) = setup_with_bodies();
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha?at=deadbeef")
+                    .header("accept", "text/html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+        let ct = response
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(ct.contains("text/html"), "{ct}");
+        let body = to_bytes(response.into_body(), 262144).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<!DOCTYPE html>"), "{html}");
+        assert!(
+            !html.contains("phase-disclosure"),
+            "error page, not the detail view: {html}"
+        );
+        assert!(!html.contains("rdm-src"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_html_renders_collapsed_details_per_phase() {
+        let (_dir, state) = setup_with_bodies();
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha").await;
+        for stem in ["phase-1-first", "phase-2-second"] {
+            assert!(
+                html.contains(&format!(
+                    r#"<details class="phase-disclosure" id="phase-{stem}">"#
+                )),
+                "disclosure for {stem}: {html}"
+            );
+        }
+        // Collapsed by default: never an `open` attribute on disclosures.
+        assert!(
+            !html.contains(r#"<details class="phase-disclosure" open"#)
+                && !html.contains(r#"id="phase-phase-1-first" open"#),
+            "disclosures must be collapsed: {html}"
+        );
+        // Summary carries number, title, and status badge.
+        assert!(html.contains(r#"<span class="phase-number">1</span>"#));
+        assert!(html.contains(r#"<span class="phase-title">First Phase</span>"#));
+        assert!(html.contains(r#"badge-done">done</span>"#), "{html}");
+        // Phase bodies render inside.
+        assert!(html.contains("First phase body with <strong>bold</strong> text."));
+        assert!(html.contains("Second phase body plain."));
+        // The phase-page link lives in the disclosure body, after the
+        // summary (not inside it, where a link would split the toggle's
+        // click target).
+        let summary_end = html.find("</summary>").unwrap();
+        let link = html
+            .find(r#"href="/projects/demo/roadmaps/alpha/phases/phase-1-first">Open phase page"#)
+            .expect("phase-page link present");
+        assert!(summary_end < link, "link must follow the summary");
+    }
+
+    /// Native `<details>/<summary>` is the disclosure widget (keyboard-
+    /// and screen-reader-accessible with zero JS): the summary is the
+    /// element's first child, and the old phase `<table>` is gone.
+    #[tokio::test]
+    async fn get_roadmap_html_phase_disclosure_structure_is_accessible() {
+        let (_dir, state) = setup_with_bodies();
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha").await;
+        let details = html
+            .find(r#"<details class="phase-disclosure" id="phase-phase-1-first">"#)
+            .unwrap();
+        let after = &html[details..];
+        let summary = after.find("<summary>").unwrap();
+        assert!(
+            after[..summary].trim_end().ends_with('>'),
+            "summary must be the details' first child"
+        );
+        assert!(
+            !html.contains("<th scope=\"col\">Phase</th>"),
+            "the phase table is replaced by disclosures: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_roadmap_html_phase_body_carries_doc_attr_when_draft_open() {
+        let (_dir, state) = setup_with_bodies();
+        start_roadmap_draft(&state);
+        let html =
+            get_html_with_cookie(&state, "/projects/demo/roadmaps/alpha", "rdm_author=ed").await;
+        // Phase bodies: annotated, and stamped with THEIR doc stem.
+        assert!(
+            html.contains(
+                r#"<div class="body-content" data-rdm-doc="phase-1-first" data-rdm-annotated>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<div class="body-content" data-rdm-doc="phase-2-second" data-rdm-annotated>"#
+            ),
+            "{html}"
+        );
+        // Annotation spans present, with per-document offsets: the first
+        // phase's body ("First phase body with " = bytes 0..22 of ITS OWN
+        // document) starts at source offset 0.
+        assert!(
+            html.contains(
+                r#"<span class="rdm-src" data-so="0" data-se="22">First phase body with"#
+            ),
+            "{html}"
+        );
+        // The roadmap's own body: annotated, but with NO doc attr.
+        assert!(
+            html.contains(r#"<div class="body-content" data-rdm-annotated>"#),
+            "{html}"
+        );
+    }
+
+    /// The exclusive-mode boundary, pinned: phase-6 inline highlights do
+    /// NOT extend into roadmap-page phase bodies (doc-scoped comments keep
+    /// linking through to the phase page), and without an open draft no
+    /// annotation spans render anywhere.
+    #[tokio::test]
+    async fn get_roadmap_html_phase_bodies_plain_when_no_draft() {
+        let (_dir, state) = setup_with_bodies();
+        author_submitted_review(
+            &state,
+            ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            &[(
+                Some(tq("First phase body")),
+                Some(CommentDoc {
+                    kind: CommentDocKind::Phase,
+                    stem: "phase-1-first".to_string(),
+                }),
+                "Phase-scoped remark.",
+            )],
+        );
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha").await;
+        // Phase body renders in the disclosure, plain.
+        assert!(html.contains("First phase body with <strong>bold</strong> text."));
+        assert!(!html.contains("rdm-src"), "no annotations without a draft");
+        assert!(
+            !html.contains("<mark"),
+            "doc-scoped comments never highlight inline on the roadmap page: {html}"
+        );
+        // The cross-link to the phase page remains the way to the highlight.
+        assert!(
+            html.contains("#comment-") && html.contains("phases/phase-1-first"),
+            "{html}"
+        );
+    }
+
+    /// With a submitted review anchored to the ROADMAP body and no open
+    /// draft, the phase-6 inline highlight still renders (regression for
+    /// the exclusive-mode split).
+    #[tokio::test]
+    async fn get_roadmap_html_highlight_renders_when_no_draft() {
+        let (_dir, state) = setup_with_bodies();
+        let id = author_submitted_review(
+            &state,
+            ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            &[(Some(tq("roadmap span")), None, "About this span.")],
+        );
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha").await;
+        assert!(
+            html.contains(&format!(
+                r#"<mark class="rdm-anchor" data-rdm-anchor="{id}-c1">roadmap span</mark>"#
+            )),
+            "{html}"
+        );
+        assert!(!html.contains("rdm-src"), "no annotations without a draft");
+    }
+
+    /// With an open draft the same page swaps to annotations: no `<mark>`
+    /// renders even though a submitted review's anchor resolves.
+    #[tokio::test]
+    async fn get_roadmap_html_draft_open_annotates_instead_of_highlighting() {
+        let (_dir, state) = setup_with_bodies();
+        author_submitted_review(
+            &state,
+            ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            &[(Some(tq("roadmap span")), None, "About this span.")],
+        );
+        start_roadmap_draft(&state);
+        let html =
+            get_html_with_cookie(&state, "/projects/demo/roadmaps/alpha", "rdm_author=ed").await;
+        assert!(!html.contains("<mark"), "exclusive modes: {html}");
+        assert!(html.contains("rdm-src"), "annotations active: {html}");
+        // The quote preview in the reviews section still renders.
+        assert!(html.contains("roadmap span"), "{html}");
     }
 }

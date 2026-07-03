@@ -76,12 +76,20 @@ pub struct PageReviews {
 }
 
 impl PageReviews {
-    /// Renders the page document's markdown `body` to HTML, wrapping the
-    /// collected highlight spans inline (plain [`render_markdown`] when
-    /// there are none).
+    /// Renders the page document's markdown `body` to HTML.
+    ///
+    /// The two instrumentation modes are exclusive: with `annotate` set
+    /// (the viewer has an open draft, so the select-to-anchor gesture is
+    /// live) the body renders through
+    /// [`render_markdown_annotated`](crate::markdown::render_markdown_annotated)
+    /// and the collected highlight spans are skipped; otherwise resolved
+    /// review anchors highlight inline as before (plain
+    /// [`render_markdown`] when there are none).
     #[must_use]
-    pub fn render_body(&self, body: &str) -> String {
-        if self.highlights.is_empty() {
+    pub fn render_body(&self, body: &str, annotate: bool) -> String {
+        if annotate {
+            crate::markdown::render_markdown_annotated(body)
+        } else if self.highlights.is_empty() {
             render_markdown(body)
         } else {
             crate::markdown::render_markdown_with_highlights(body, &self.highlights)
@@ -246,6 +254,7 @@ pub fn draft_panel(
                         body_md: c.body.clone(),
                         doc_label: draft_doc_label(phases, c.doc.as_ref()),
                         doc_options: doc_options(phases, c.doc.as_ref()),
+                        anchor_preview: c.anchor.as_ref().and_then(stored_quote),
                     })
                     .collect();
                 DraftReviewView {

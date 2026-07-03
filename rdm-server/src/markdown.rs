@@ -81,13 +81,151 @@ pub fn render_markdown(input: &str) -> String {
     html_output
 }
 
-/// The single set of pulldown-cmark options both rendering entry points use
-/// (see [`render_markdown`] for the rationale behind each flag).
+/// The single set of pulldown-cmark options every rendering entry point
+/// uses (see [`render_markdown`] for the rationale behind each flag).
 fn cmark_options() -> Options {
     Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_GFM
+}
+
+/// Whether `event` is user-authored raw HTML that must be dropped (the
+/// same filter [`render_markdown`] applies inline).
+fn is_user_html(event: &Event<'_>) -> bool {
+    matches!(
+        event,
+        Event::Html(_)
+            | Event::InlineHtml(_)
+            | Event::Start(Tag::HtmlBlock)
+            | Event::End(TagEnd::HtmlBlock)
+    )
+}
+
+/// One visible text run of a markdown document: the source byte range it
+/// was parsed from and the text it renders as.
+///
+/// Runs come from pulldown-cmark `Text` and inline `Code` events (image
+/// alt text is excluded — it renders into an attribute, not the DOM text
+/// flow). For plain text runs `content` equals the source slice at
+/// `range`; for inline code and entity/escape runs the two differ (`range`
+/// includes backticks or the entity spelling), which callers detect by
+/// comparing `content.as_bytes()` against the source slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceRun {
+    /// Byte range into the markdown source this run was parsed from.
+    pub range: Range<usize>,
+    /// The visible text the run renders as.
+    pub content: String,
+}
+
+/// Collects the visible text runs of `source`, in document order.
+///
+/// This is the server-side mirror of the DOM text nodes that
+/// [`render_markdown_annotated`] wraps in `rdm-src` spans: the `n`-th run
+/// here corresponds to the `n`-th annotated span there, with the same
+/// source range. Used by selection→anchor validation to reconstruct the
+/// rendered text of a source byte range.
+#[must_use]
+pub fn source_runs(source: &str) -> Vec<SourceRun> {
+    let mut runs = Vec::new();
+    let mut in_image = 0usize;
+    for (event, range) in Parser::new_ext(source, cmark_options()).into_offset_iter() {
+        if is_user_html(&event) {
+            continue;
+        }
+        match &event {
+            Event::Start(Tag::Image { .. }) => in_image += 1,
+            Event::End(TagEnd::Image) => in_image = in_image.saturating_sub(1),
+            Event::Text(t) | Event::Code(t) if in_image == 0 => runs.push(SourceRun {
+                range,
+                content: t.to_string(),
+            }),
+            _ => {}
+        }
+    }
+    runs
+}
+
+/// Renders Markdown to HTML like [`render_markdown`], additionally
+/// wrapping every visible text run in
+/// `<span class="rdm-src" data-so="{start}" data-se="{end}">`, where the
+/// two attributes are the run's **source** byte range.
+///
+/// This is the read-back half of the select-to-anchor flow: client-side
+/// JavaScript maps a DOM selection to source byte offsets by walking these
+/// spans, and the server re-validates the mapping before storing an
+/// anchor. The spans wrap exactly the runs reported by [`source_runs`],
+/// in the same order.
+///
+/// Rules:
+///
+/// - Plain text runs are wrapped as-is; their text content equals the
+///   source slice, so clients can do exact within-run offset arithmetic.
+/// - Inline code runs are wrapped *inside* their `<code>` element; the
+///   annotated range includes the backticks, so the span's text content is
+///   shorter than its source range — clients treat such runs as opaque and
+///   snap selections to the whole run.
+/// - Image alt text is **not** annotated: it renders into the `alt`
+///   attribute, where an injected span would corrupt the markup.
+/// - Raw user HTML is stripped exactly as in [`render_markdown`].
+///
+/// One `<span>` per text run is a deliberate DOM-weight trade-off: plan
+/// bodies are small, and per-run annotation makes the client's offset
+/// arithmetic exact instead of heuristic.
+///
+/// Annotations and inline review highlights
+/// ([`render_markdown_with_highlights`]) are mutually exclusive render
+/// modes: pages render annotations only while the viewer has an open
+/// draft (the only state in which the selection gesture is usable) and
+/// highlights otherwise, so the two instrumentation schemes never have to
+/// compose.
+#[must_use]
+pub fn render_markdown_annotated(source: &str) -> String {
+    let mut events: Vec<Event> = Vec::new();
+    let mut in_image = 0usize;
+    for (event, range) in Parser::new_ext(source, cmark_options()).into_offset_iter() {
+        if is_user_html(&event) {
+            continue;
+        }
+        match event {
+            Event::Start(Tag::Image { .. }) => {
+                in_image += 1;
+                events.push(event);
+            }
+            Event::End(TagEnd::Image) => {
+                in_image = in_image.saturating_sub(1);
+                events.push(event);
+            }
+            Event::Text(_) if in_image == 0 => {
+                events.push(Event::Html(open_run_span(&range).into()));
+                events.push(event);
+                events.push(Event::Html("</span>".into()));
+            }
+            Event::Code(text) if in_image == 0 => {
+                // Replace the default `<code>…</code>` rendering so the
+                // annotation span sits on the content node inside it.
+                events.push(Event::Html(
+                    format!("<code>{}", open_run_span(&range)).into(),
+                ));
+                // Re-emitted as a text event so push_html escapes it.
+                events.push(Event::Text(text));
+                events.push(Event::Html("</span></code>".into()));
+            }
+            _ => events.push(event),
+        }
+    }
+    let mut out = String::new();
+    html::push_html(&mut out, events.into_iter());
+    out
+}
+
+/// The opening tag of one `rdm-src` annotation span.
+fn open_run_span(range: &Range<usize>) -> String {
+    format!(
+        "<span class=\"rdm-src\" data-so=\"{}\" data-se=\"{}\">",
+        range.start, range.end
+    )
 }
 
 /// One resolved review-comment anchor to highlight inline in a rendered
@@ -651,5 +789,178 @@ mod tests {
             assert!(!is_sentinel(c), "no sentinel may leak: {html}");
         }
         assert!(html.contains("<a href="), "link must survive: {html}");
+    }
+
+    // -- render_markdown_annotated / source_runs --
+
+    /// Extracts each annotated span's `(start, end)` from rendered HTML, in
+    /// document order.
+    fn annotated_ranges(html: &str) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut rest = html;
+        while let Some(i) = rest.find("data-so=\"") {
+            let after = &rest[i + 9..];
+            let so: usize = after[..after.find('"').unwrap()].parse().unwrap();
+            let j = after.find("data-se=\"").unwrap();
+            let after_e = &after[j + 9..];
+            let se: usize = after_e[..after_e.find('"').unwrap()].parse().unwrap();
+            out.push((so, se));
+            rest = after_e;
+        }
+        out
+    }
+
+    #[test]
+    fn annotated_wraps_text_runs_with_source_offsets() {
+        let src = "start **bold** end";
+        let html = render_markdown_annotated(src);
+        // Each run's data range slices back to exactly its rendered text.
+        for (so, se) in annotated_ranges(&html) {
+            let slice = &src[so..se];
+            assert!(
+                html.contains(&format!(
+                    "<span class=\"rdm-src\" data-so=\"{so}\" data-se=\"{se}\">{slice}</span>"
+                )),
+                "span {so}..{se} must wrap its source slice {slice:?}: {html}"
+            );
+        }
+        // The three runs of a bold-crossing paragraph, structure intact.
+        assert_eq!(annotated_ranges(&html).len(), 3, "got: {html}");
+        assert!(html.contains("<strong>"), "got: {html}");
+    }
+
+    #[test]
+    fn annotated_list_heading_and_table_runs_slice_back() {
+        let src =
+            "# Big Heading\n\n- first item\n- second item\n\n| a | b |\n|---|---|\n| c1 | c2 |\n";
+        let html = render_markdown_annotated(src);
+        for needle in ["Big Heading", "second item", "c2"] {
+            let so = src.find(needle).unwrap();
+            let se = so + needle.len();
+            assert!(
+                html.contains(&format!(
+                    "data-so=\"{so}\" data-se=\"{se}\">{needle}</span>"
+                )),
+                "run for {needle:?} must be annotated: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn annotated_inline_code_run_includes_backticks() {
+        let src = "use `foo()` here";
+        let html = render_markdown_annotated(src);
+        let code_range = range_of(src, "`foo()`");
+        // The annotation sits inside the <code> element and spans the
+        // backtick-inclusive source range while wrapping only the content.
+        assert!(
+            html.contains(&format!(
+                "<code><span class=\"rdm-src\" data-so=\"{}\" data-se=\"{}\">foo()</span></code>",
+                code_range.start, code_range.end
+            )),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn annotated_skips_image_alt_text() {
+        let src = "before ![alt text](http://example.com/i.png) after";
+        let html = render_markdown_annotated(src);
+        assert!(
+            html.contains(r#"alt="alt text""#),
+            "alt attribute must stay clean: {html}"
+        );
+        assert!(
+            !html.contains("alt=\"<span"),
+            "no span may leak into the alt attribute: {html}"
+        );
+        // The surrounding text runs are still annotated.
+        assert!(html.contains(">before </span>"), "got: {html}");
+        assert!(html.contains("> after</span>"), "got: {html}");
+    }
+
+    #[test]
+    fn annotated_still_strips_raw_html() {
+        // Inline: the tags are dropped, the inner text stays inert —
+        // matching render_markdown.
+        let src = "before <script>alert('x')</script> after";
+        let html = render_markdown_annotated(src);
+        assert!(!html.contains("<script>"), "got: {html}");
+        // Block: the whole HTML block (tags and content) is dropped.
+        let block = render_markdown_annotated("<script>alert('x')</script>");
+        assert!(!block.contains("script"), "got: {block}");
+        assert!(!block.contains("alert"), "got: {block}");
+    }
+
+    #[test]
+    fn annotated_multibyte_offsets_slice_back() {
+        let src = "Café **résumé** naïve";
+        let html = render_markdown_annotated(src);
+        let r = range_of(src, "résumé");
+        assert!(
+            html.contains(&format!(
+                "data-so=\"{}\" data-se=\"{}\">résumé</span>",
+                r.start, r.end
+            )),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn annotated_code_block_lines_are_annotated() {
+        let src = "```\nfn main() {}\n```\n";
+        let html = render_markdown_annotated(src);
+        let r = range_of(src, "fn main() {}\n");
+        assert!(
+            html.contains(&format!("data-so=\"{}\" data-se=\"{}\">", r.start, r.end)),
+            "fenced code content must be annotated: {html}"
+        );
+    }
+
+    #[test]
+    fn source_runs_match_annotated_offsets() {
+        let src = "# H\n\npara with `code` and **bold** plus AT&amp;T.\n\n- item une\n";
+        let runs = source_runs(src);
+        let spans = annotated_ranges(&render_markdown_annotated(src));
+        assert_eq!(
+            runs.iter()
+                .map(|r| (r.range.start, r.range.end))
+                .collect::<Vec<_>>(),
+            spans,
+            "source_runs and the annotated renderer must agree run-for-run"
+        );
+    }
+
+    #[test]
+    fn source_runs_plain_text_content_equals_source_slice() {
+        let src = "plain text run";
+        let runs = source_runs(src);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].content, "plain text run");
+        assert_eq!(&src[runs[0].range.clone()], "plain text run");
+    }
+
+    #[test]
+    fn source_runs_entity_run_is_opaque() {
+        let src = "AT&amp;T works";
+        let runs = source_runs(src);
+        // The entity run's content ("&") differs from its source slice
+        // ("&amp;") — the opacity signal clients and the server key off.
+        let entity = runs
+            .iter()
+            .find(|r| r.content == "&")
+            .expect("entity run present");
+        assert_eq!(&src[entity.range.clone()], "&amp;");
+    }
+
+    #[test]
+    fn source_runs_exclude_image_alt() {
+        let src = "before ![alt text](http://example.com/i.png) after";
+        let runs = source_runs(src);
+        assert!(
+            runs.iter().all(|r| r.content != "alt text"),
+            "image alt must not be a run: {runs:?}"
+        );
+        assert!(runs.iter().any(|r| r.content == "before "));
     }
 }

@@ -35,14 +35,15 @@
 //! pre-filled, so deliberate clearing is not possible from this form (use
 //! the CLI or JSON API).
 
+use askama::Template;
 use axum::extract::{Form, Path, State};
-use axum::http::header::{COOKIE, SET_COOKIE};
-use axum::http::{HeaderMap, HeaderValue};
-use axum::response::Response;
+use axum::http::header::{ACCEPT, CONTENT_TYPE, COOKIE, SET_COOKIE};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde::Deserialize;
 
-use rdm_core::model::{CommentDoc, CommentDocKind, ReviewState, Verdict};
+use rdm_core::model::{CommentDoc, CommentDocKind, ReviewState, ReviewTarget, Verdict};
 use rdm_core::ops::BodyUpdate;
 use rdm_core::ops::reviews::{
     AddComment, AnchorUpdate, CreateReview, DocUpdate, ReviewFilter, ReviewTransition,
@@ -54,7 +55,9 @@ use crate::content_type::ResponseFormat;
 use crate::error::error_response;
 use crate::extract::see_other_response;
 use crate::review_views::target_detail_href;
+use crate::selection::{SelectionOutcome, anchor_from_selection};
 use crate::state::AppState;
+use crate::templates::DraftPanelFragment;
 
 /// Name of the cookie remembering the visitor's review-author identity.
 const AUTHOR_COOKIE: &str = "rdm_author";
@@ -115,6 +118,89 @@ fn redirect_err(target_href: &str, fragment: &str, message: &str) -> Response {
         "{target_href}?draft_error={}#{fragment}",
         encode_value(message)
     ))
+}
+
+/// Whether the request asked for a JSON response (`Accept:
+/// application/json`) — the progressively-enhanced client's signal. No-JS
+/// browser form posts send `text/html` accepts and keep the PRG redirects.
+///
+/// Deliberately separate from `crate::content_type::ResponseFormat`, which
+/// negotiates `application/hal+json` vs `text/html` for the resource
+/// routes: this checks for the *bare* `application/json` the enhanced
+/// client sends for panel-fragment responses. If a third consumer of
+/// plain-JSON responses appears, promote this to a
+/// `ResponseFormat::Json` variant instead of duplicating the check.
+fn wants_json(headers: &HeaderMap) -> bool {
+    headers
+        .get(ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("application/json"))
+}
+
+/// `422 Unprocessable Entity` with a `{"error": …}` JSON body, for the
+/// enhanced client's inline error rendering.
+fn json_error(message: &str) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        [(CONTENT_TYPE, "application/json")],
+        serde_json::json!({ "error": message }).to_string(),
+    )
+        .into_response()
+}
+
+/// Renders the draft panel for `target` as a standalone HTML fragment (the
+/// same `_draft_panel.html` the detail pages embed).
+///
+/// # Errors
+///
+/// Propagates review/phase listing failures from core.
+fn render_panel_fragment(
+    store: &FsStore,
+    project: &str,
+    target: &ReviewTarget,
+    author: Option<&str>,
+) -> Result<String, rdm_core::error::Error> {
+    let phases = match target {
+        ReviewTarget::Roadmap { roadmap } => {
+            rdm_core::ops::phase::list_phases(store, project, roadmap)?
+        }
+        _ => Vec::new(),
+    };
+    let panel = crate::review_views::draft_panel(store, project, target, &phases, author)?;
+    Ok(DraftPanelFragment {
+        project: project.to_string(),
+        panel,
+    }
+    .render()
+    .expect("template rendering cannot fail"))
+}
+
+/// `200 OK` JSON `{"panel_html": …}` response carrying the re-rendered
+/// draft panel (plus an optional `outcome` marker for the anchor route:
+/// `"anchored"` or `"fallback"`).
+fn json_panel_response(
+    store: &FsStore,
+    project: &str,
+    target: &ReviewTarget,
+    headers: &HeaderMap,
+    outcome: Option<&str>,
+) -> Response {
+    let author = read_author_cookie(headers);
+    match render_panel_fragment(store, project, target, author.as_deref()) {
+        Ok(panel_html) => {
+            let mut body = serde_json::json!({ "panel_html": panel_html });
+            if let Some(o) = outcome {
+                body["outcome"] = serde_json::Value::from(o);
+            }
+            (
+                StatusCode::OK,
+                [(CONTENT_TYPE, "application/json")],
+                body.to_string(),
+            )
+                .into_response()
+        }
+        Err(e) => json_error(&e.to_string()),
+    }
 }
 
 /// Resolves the detail-page href of the document a review targets — the
@@ -233,22 +319,32 @@ pub struct AddCommentForm {
 
 /// `POST /projects/:project/reviews/:review_id/form/comments` — add a
 /// whole-document (or `doc`-scoped) comment to the draft.
+///
+/// Content-negotiated: browser form posts get the PRG `303`; the enhanced
+/// client (`Accept: application/json`) gets `{"panel_html": …}` back so it
+/// can refresh the panel without a page reload. The validation and the
+/// mutation are identical either way.
 pub async fn add_comment_form(
     State(state): State<AppState>,
     Path((project, review_id)): Path<(String, String)>,
+    headers: HeaderMap,
     Form(req): Form<AddCommentForm>,
 ) -> Response {
     let mut store = state.store();
-    let target_href = match review_target_href(&store, &project, &review_id) {
-        Ok(href) => href,
-        Err(response) => return response,
+    let review = match rdm_core::ops::reviews::get_review(&store, &project, &review_id) {
+        Ok(doc) => doc,
+        Err(e) => return error_response(e, ResponseFormat::Html),
     };
+    let target = review.frontmatter.target.clone();
+    let target_href = target_detail_href(&project, &target);
+    let json = wants_json(&headers);
     if req.body.trim().is_empty() {
-        return redirect_err(
-            &target_href,
-            DRAFT_FRAGMENT,
-            "comment body must not be empty",
-        );
+        let message = "comment body must not be empty";
+        return if json {
+            json_error(message)
+        } else {
+            redirect_err(&target_href, DRAFT_FRAGMENT, message)
+        };
     }
     let result = rdm_core::ops::mutate(&mut store, &project, |s| {
         rdm_core::ops::reviews::add_comment(
@@ -263,7 +359,155 @@ pub async fn add_comment_form(
         )
     });
     match result {
+        Ok(_) if json => json_panel_response(&store, &project, &target, &headers, None),
         Ok(_) => redirect_ok(&target_href, DRAFT_FRAGMENT),
+        Err(e) if json => json_error(&e.to_string()),
+        Err(e) => redirect_err(&target_href, DRAFT_FRAGMENT, &e.to_string()),
+    }
+}
+
+/// Form body for
+/// `POST /projects/:project/reviews/:review_id/form/comments/anchor`.
+///
+/// Posted by the select-to-anchor client. `sel_start`/`sel_end` are byte
+/// offsets into the markdown **source** of the document named by
+/// `doc_stem` (blank = the review target's own body), and `rendered_text`
+/// is the visible text the user selected. The offsets are treated as a
+/// hint only — see [`crate::selection`] for the validation that decides
+/// whether an anchor is stored.
+#[derive(Deserialize)]
+pub struct AnchorCommentForm {
+    /// Comment text (Markdown). Must not be blank.
+    #[serde(default)]
+    body: String,
+    /// Document the offsets index: blank for the review target's own
+    /// body, or a phase stem (roadmap reviews only).
+    #[serde(default)]
+    doc_stem: String,
+    /// Selection start, as a byte offset into the source. Absent or
+    /// unparsable values degrade to the no-anchor fallback.
+    #[serde(default)]
+    sel_start: String,
+    /// Selection end, exclusive byte offset into the source.
+    #[serde(default)]
+    sel_end: String,
+    /// The visible text the user selected in the rendered page.
+    #[serde(default)]
+    rendered_text: String,
+}
+
+/// Builds the fallback comment body when a selection could not be mapped:
+/// the selected text as a blockquote plus a visible no-anchor note, ahead
+/// of the user's comment.
+fn fallback_comment_body(rendered_text: &str, comment: &str) -> String {
+    let mut out = String::new();
+    if !rendered_text.trim().is_empty() {
+        for line in rendered_text.lines() {
+            out.push_str("> ");
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out.push_str(
+        "*(No anchor attached — the selection could not be mapped to the document source.)*\n\n",
+    );
+    out.push_str(comment);
+    out
+}
+
+/// `POST /projects/:project/reviews/:review_id/form/comments/anchor` —
+/// add a text-quote-anchored comment from a validated selection, degrading
+/// to a general comment (selected text quoted, visible no-anchor note)
+/// whenever the selection cannot be verified. A wrong anchor is never
+/// stored.
+pub async fn anchor_comment_form(
+    State(state): State<AppState>,
+    Path((project, review_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Form(req): Form<AnchorCommentForm>,
+) -> Response {
+    let mut store = state.store();
+    let review = match rdm_core::ops::reviews::get_review(&store, &project, &review_id) {
+        Ok(doc) => doc,
+        Err(e) => return error_response(e, ResponseFormat::Html),
+    };
+    let target = review.frontmatter.target.clone();
+    let target_href = target_detail_href(&project, &target);
+    let json = wants_json(&headers);
+    if req.body.trim().is_empty() {
+        let message = "comment body must not be empty";
+        return if json {
+            json_error(message)
+        } else {
+            redirect_err(&target_href, DRAFT_FRAGMENT, message)
+        };
+    }
+    let doc = comment_doc_from_stem(&req.doc_stem);
+    // The offsets index the body of the comment's own document (per-doc
+    // offsets): a phase body for a `doc`-scoped comment on a roadmap
+    // review, the target's body otherwise. An unloadable doc means a
+    // tampered or stale `doc_stem` — an error, never a silent fallback.
+    //
+    // Deliberately the CURRENT body, not `anchor::body_for_comment`'s
+    // created_commit-pinned load (the CLI semantics for quotes typed
+    // blind): the client's offsets were computed against the annotated
+    // *rendered current body* it just fetched, so validating against
+    // anything else — once a history-capable store backs the server —
+    // would make every selection on a since-edited document fail its
+    // round-trip and degrade needlessly. Drift versus the review's start
+    // point is anchor resolution's display-time concern, not a
+    // capture-time one. The derivation context is therefore "current"
+    // (`derive_text_quote` runs with `commit: None` inside
+    // `anchor_from_selection`).
+    let anchor_body = match rdm_core::anchor::current_body_for_comment(
+        &store,
+        &project,
+        &review.frontmatter,
+        doc.as_ref(),
+    ) {
+        Ok(body) => body,
+        Err(e) => {
+            return if json {
+                json_error(&e.to_string())
+            } else {
+                redirect_err(&target_href, DRAFT_FRAGMENT, &e.to_string())
+            };
+        }
+    };
+    let outcome = match (
+        req.sel_start.trim().parse::<usize>(),
+        req.sel_end.trim().parse::<usize>(),
+    ) {
+        (Ok(start), Ok(end)) => anchor_from_selection(&anchor_body, start, end, &req.rendered_text),
+        _ => SelectionOutcome::NoAnchor,
+    };
+    let (anchor, comment_body, outcome_label) = match outcome {
+        SelectionOutcome::Anchored(anchor) => (Some(anchor), req.body.clone(), "anchored"),
+        SelectionOutcome::NoAnchor => (
+            None,
+            fallback_comment_body(&req.rendered_text, &req.body),
+            "fallback",
+        ),
+    };
+    let result = rdm_core::ops::mutate(&mut store, &project, |s| {
+        rdm_core::ops::reviews::add_comment(
+            s,
+            AddComment {
+                project: &project,
+                review_id: &review_id,
+                body: &comment_body,
+                doc,
+                anchor,
+            },
+        )
+    });
+    match result {
+        Ok(_) if json => {
+            json_panel_response(&store, &project, &target, &headers, Some(outcome_label))
+        }
+        Ok(_) => redirect_ok(&target_href, DRAFT_FRAGMENT),
+        Err(e) if json => json_error(&e.to_string()),
         Err(e) => redirect_err(&target_href, DRAFT_FRAGMENT, &e.to_string()),
     }
 }
@@ -295,6 +539,7 @@ pub struct EditCommentForm {
 pub async fn edit_comment_form(
     State(state): State<AppState>,
     Path((project, review_id, comment_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
     Form(req): Form<EditCommentForm>,
 ) -> Response {
     let mut store = state.store();
@@ -304,7 +549,9 @@ pub async fn edit_comment_form(
         Ok(doc) => doc,
         Err(e) => return error_response(e, ResponseFormat::Html),
     };
-    let target_href = target_detail_href(&project, &review.frontmatter.target);
+    let target = review.frontmatter.target.clone();
+    let target_href = target_detail_href(&project, &target);
+    let json = wants_json(&headers);
     let Ok(comment_id) = comment_id.parse::<u32>() else {
         // Comment ids are template-generated; a non-numeric one is a
         // tampered URL, not a user mistake worth a friendly banner.
@@ -317,11 +564,12 @@ pub async fn edit_comment_form(
         );
     };
     if req.body.trim().is_empty() {
-        return redirect_err(
-            &target_href,
-            DRAFT_FRAGMENT,
-            "comment body must not be empty",
-        );
+        let message = "comment body must not be empty";
+        return if json {
+            json_error(message)
+        } else {
+            redirect_err(&target_href, DRAFT_FRAGMENT, message)
+        };
     }
     let posted_doc = comment_doc_from_stem(&req.doc_stem);
     let current_doc = review
@@ -355,7 +603,9 @@ pub async fn edit_comment_form(
         )
     });
     match result {
+        Ok(_) if json => json_panel_response(&store, &project, &target, &headers, None),
         Ok(_) => redirect_ok(&target_href, DRAFT_FRAGMENT),
+        Err(e) if json => json_error(&e.to_string()),
         Err(e) => redirect_err(&target_href, DRAFT_FRAGMENT, &e.to_string()),
     }
 }
@@ -365,12 +615,16 @@ pub async fn edit_comment_form(
 pub async fn remove_comment_form(
     State(state): State<AppState>,
     Path((project, review_id, comment_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let mut store = state.store();
-    let target_href = match review_target_href(&store, &project, &review_id) {
-        Ok(href) => href,
-        Err(response) => return response,
+    let review = match rdm_core::ops::reviews::get_review(&store, &project, &review_id) {
+        Ok(doc) => doc,
+        Err(e) => return error_response(e, ResponseFormat::Html),
     };
+    let target = review.frontmatter.target.clone();
+    let target_href = target_detail_href(&project, &target);
+    let json = wants_json(&headers);
     let Ok(comment_id) = comment_id.parse::<u32>() else {
         return error_response(
             rdm_core::error::Error::CommentNotFound {
@@ -384,7 +638,9 @@ pub async fn remove_comment_form(
         rdm_core::ops::reviews::remove_comment(s, &project, &review_id, comment_id)
     });
     match result {
+        Ok(_) if json => json_panel_response(&store, &project, &target, &headers, None),
         Ok(_) => redirect_ok(&target_href, DRAFT_FRAGMENT),
+        Err(e) if json => json_error(&e.to_string()),
         Err(e) => redirect_err(&target_href, DRAFT_FRAGMENT, &e.to_string()),
     }
 }
@@ -555,6 +811,25 @@ mod tests {
             .header("content-type", "application/x-www-form-urlencoded")
             .body(axum::body::Body::from(body.to_string()))
             .unwrap()
+    }
+
+    /// A form post from the enhanced client: `Accept: application/json`,
+    /// carrying the author cookie the browser would send (the returned
+    /// panel fragment is scoped to the visitor's own draft).
+    fn post_form_json(uri: &str, body: &str) -> Request<axum::body::Body> {
+        Request::post(uri)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("accept", "application/json")
+            .header("cookie", "rdm_author=ed")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn json_body(response: axum::response::Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(response.into_body(), 262144)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
     }
 
     async fn send(state: &AppState, req: Request<axum::body::Body>) -> axum::response::Response {
@@ -1445,5 +1720,444 @@ mod tests {
         );
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].0, id);
+    }
+
+    // -- anchored comments (select-to-anchor) --
+
+    use rdm_core::model::Anchor;
+
+    /// The one comment of review `id`, straight from core.
+    fn only_comment(state: &AppState, id: &str) -> rdm_core::model::ReviewComment {
+        let doc = rdm_core::ops::reviews::get_review(&state.store(), "demo", id).unwrap();
+        assert_eq!(doc.frontmatter.comments.len(), 1);
+        doc.frontmatter.comments[0].clone()
+    }
+
+    /// A valid selection over the task body ("Task body.\n"): the
+    /// "Task body" span at bytes 0..9.
+    const TASK_SEL: &str = "sel_start=0&sel_end=9&rendered_text=Task%20body";
+
+    #[tokio::test]
+    async fn anchor_comment_form_stores_text_quote_anchor() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                &format!("body=Tighten%20this.&doc_stem=&{TASK_SEL}"),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        assert_eq!(
+            decoded_location(&response),
+            "/projects/demo/tasks/fix-login#review-draft"
+        );
+        let comment = only_comment(&state, &id);
+        assert_eq!(comment.body, "Tighten this.");
+        assert!(comment.doc.is_none());
+        let anchor = comment.anchor.expect("anchor stored");
+        assert_eq!(
+            anchor,
+            Anchor::TextQuote {
+                quote: "Task body".to_string(),
+                prefix: String::new(),
+                suffix: ".\n".to_string(),
+            }
+        );
+        // The stored anchor re-resolves to the exact selected span.
+        assert_eq!(
+            rdm_core::anchor::resolve("Task body.\n", &anchor),
+            Some(0..9)
+        );
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_unmappable_degrades_to_general_comment() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                "body=About%20this.&doc_stem=&sel_start=0&sel_end=999&rendered_text=Task%20body",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        let location = decoded_location(&response);
+        assert!(
+            !location.contains("draft_error="),
+            "fallback is a success, not an error: {location}"
+        );
+        let comment = only_comment(&state, &id);
+        assert!(comment.anchor.is_none(), "no anchor may be stored");
+        assert!(comment.body.contains("> Task body"), "{}", comment.body);
+        assert!(
+            comment.body.contains("No anchor attached"),
+            "{}",
+            comment.body
+        );
+        assert!(comment.body.contains("About this."), "{}", comment.body);
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_missing_offsets_degrade_to_general_comment() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                "body=No%20offsets.&rendered_text=Task%20body",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        let comment = only_comment(&state, &id);
+        assert!(comment.anchor.is_none());
+        assert!(comment.body.contains("No anchor attached"));
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_mismatched_rendered_text_degrades() {
+        // Valid offsets but a rendered_text that does not match the slice:
+        // the cross-check refuses the anchor.
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                "body=Wrong%20map.&sel_start=0&sel_end=9&rendered_text=different%20text",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        let comment = only_comment(&state, &id);
+        assert!(comment.anchor.is_none(), "wrong mapping must not anchor");
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_blank_body_errors() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                &format!("body=%20&{TASK_SEL}"),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        let location = decoded_location(&response);
+        assert!(location.contains("must not be empty"), "{location}");
+        let doc = rdm_core::ops::reviews::get_review(&state.store(), "demo", &id).unwrap();
+        assert!(doc.frontmatter.comments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_json_returns_panel_html_and_outcome() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            post_form_json(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                &format!("body=Tighten%20this.&{TASK_SEL}"),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+        let json = json_body(response).await;
+        assert_eq!(json["outcome"], "anchored");
+        let panel = json["panel_html"].as_str().unwrap();
+        assert!(panel.contains(r#"id="review-draft""#), "{panel}");
+        // The pending anchored comment lists its quote preview.
+        assert!(
+            panel.contains(r#"<blockquote class="draft-anchor-quote">Task body</blockquote>"#),
+            "{panel}"
+        );
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_json_fallback_outcome() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            post_form_json(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                "body=Nope.&sel_start=3&sel_end=2&rendered_text=x",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let json = json_body(response).await;
+        assert_eq!(json["outcome"], "fallback");
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_doc_stem_anchors_against_phase_body() {
+        // Selection over a toggled-open phase body on the roadmap page:
+        // the offsets index the PHASE source ("Phase body.\n"), and the
+        // comment lands on the roadmap draft with the phase doc scope.
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "roadmap/alpha", "ed").await;
+        let response = send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                "body=Phase%20remark.&doc_stem=phase-1-one&sel_start=0&sel_end=10&rendered_text=Phase%20body",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        let comment = only_comment(&state, &id);
+        assert_eq!(comment.doc.as_ref().unwrap().stem, "phase-1-one");
+        let anchor = comment.anchor.expect("anchor stored");
+        assert_eq!(
+            rdm_core::anchor::resolve("Phase body.\n", &anchor),
+            Some(0..10),
+            "anchor must re-resolve against the phase body"
+        );
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_doc_stem_offsets_against_wrong_body_degrade() {
+        // Offsets that slice the ROADMAP body while doc_stem names the
+        // phase: the cross-check against the phase body fails and the
+        // comment degrades — keeping the phase scope, storing no anchor.
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "roadmap/alpha", "ed").await;
+        let response = send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                "body=Mismatch.&doc_stem=phase-1-one&sel_start=0&sel_end=12&rendered_text=Roadmap%20body",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        let comment = only_comment(&state, &id);
+        assert_eq!(comment.doc.as_ref().unwrap().stem, "phase-1-one");
+        assert!(comment.anchor.is_none(), "wrong-body anchor must degrade");
+        assert!(comment.body.contains("No anchor attached"));
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_unknown_doc_stem_errors_not_fallback() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "roadmap/alpha", "ed").await;
+        let response = send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                "body=Ghost.&doc_stem=ghost&sel_start=0&sel_end=5&rendered_text=x",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        let location = decoded_location(&response);
+        assert!(location.contains("draft_error="), "{location}");
+        let doc = rdm_core::ops::reviews::get_review(&state.store(), "demo", &id).unwrap();
+        assert!(doc.frontmatter.comments.is_empty(), "no comment stored");
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_doc_stem_on_task_review_rejected() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                &format!("body=Bad%20scope.&doc_stem=phase-1-one&{TASK_SEL}"),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        let location = decoded_location(&response);
+        assert!(location.contains("roadmap review"), "{location}");
+        let doc = rdm_core::ops::reviews::get_review(&state.store(), "demo", &id).unwrap();
+        assert!(doc.frontmatter.comments.is_empty(), "no comment stored");
+    }
+
+    #[tokio::test]
+    async fn anchor_comment_form_blank_doc_stem_anchors_roadmap_body() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "roadmap/alpha", "ed").await;
+        let response = send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                "body=Roadmap%20note.&doc_stem=&sel_start=0&sel_end=12&rendered_text=Roadmap%20body",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        let comment = only_comment(&state, &id);
+        assert!(comment.doc.is_none());
+        let anchor = comment.anchor.expect("anchor stored");
+        assert_eq!(
+            rdm_core::anchor::resolve("Roadmap body.\n", &anchor),
+            Some(0..12)
+        );
+    }
+
+    // -- JSON panel updates for the phase-7 forms --
+
+    #[tokio::test]
+    async fn add_comment_form_json_returns_panel_fragment() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            post_form_json(
+                &format!("/projects/demo/reviews/{id}/form/comments"),
+                "body=General%20note.",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let json = json_body(response).await;
+        let panel = json["panel_html"].as_str().unwrap();
+        assert!(panel.contains(r#"id="review-draft""#), "{panel}");
+        assert!(panel.contains("General note."), "{panel}");
+        assert!(json.get("outcome").is_none(), "no outcome on plain adds");
+    }
+
+    #[tokio::test]
+    async fn add_comment_form_json_blank_body_returns_422_error() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            post_form_json(
+                &format!("/projects/demo/reviews/{id}/form/comments"),
+                "body=%20%20",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 422);
+        let json = json_body(response).await;
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("must not be empty"),
+            "{json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_comment_form_json_returns_panel_fragment() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments"),
+                "body=Original.",
+            ),
+        )
+        .await;
+        let response = send(
+            &state,
+            post_form_json(
+                &format!("/projects/demo/reviews/{id}/form/comments/1/edit"),
+                "body=Reworded.",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let json = json_body(response).await;
+        assert!(json["panel_html"].as_str().unwrap().contains("Reworded."));
+    }
+
+    #[tokio::test]
+    async fn remove_comment_form_json_returns_panel_fragment() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments"),
+                "body=Drop%20me.",
+            ),
+        )
+        .await;
+        let response = send(
+            &state,
+            post_form_json(
+                &format!("/projects/demo/reviews/{id}/form/comments/1/remove"),
+                "",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let json = json_body(response).await;
+        let panel = json["panel_html"].as_str().unwrap();
+        assert!(!panel.contains("Drop me."), "{panel}");
+    }
+
+    /// Regression: a browser form post (whose Accept lists html/xml
+    /// wildcards but never application/json) keeps the phase-7 PRG 303 —
+    /// the no-JS flow is unchanged by the enhancement.
+    #[tokio::test]
+    async fn add_comment_form_browser_accept_still_redirects_303() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        let response = send(
+            &state,
+            Request::post(format!("/projects/demo/reviews/{id}/form/comments"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header(
+                    "accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                )
+                .body(axum::body::Body::from("body=Browser%20note.".to_string()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), 303);
+        assert_eq!(
+            decoded_location(&response),
+            "/projects/demo/tasks/fix-login#review-draft"
+        );
+    }
+
+    /// The draft panel carries the anchor endpoint for the enhanced client
+    /// and shows quote previews for pending anchored comments.
+    #[tokio::test]
+    async fn draft_panel_carries_anchor_action_and_quote_preview() {
+        let (_dir, state) = setup();
+        let id = start_draft(&state, "task/fix-login", "ed").await;
+        send(
+            &state,
+            post_form(
+                &format!("/projects/demo/reviews/{id}/form/comments/anchor"),
+                &format!("body=Tighten.&{TASK_SEL}"),
+            ),
+        )
+        .await;
+        let html =
+            get_html_with_cookie(&state, "/projects/demo/tasks/fix-login", "rdm_author=ed").await;
+        assert!(
+            html.contains(&format!(
+                r#"data-rdm-anchor-action="/projects/demo/reviews/{id}/form/comments/anchor""#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<blockquote class="draft-anchor-quote">Task body</blockquote>"#),
+            "{html}"
+        );
     }
 }
