@@ -31,7 +31,7 @@ This skill is non-interactive. Launch unattended runs with `--permission-mode au
 
 ## Loop
 
-Each iteration:
+Each iteration runs on **bounded state**: the only things the loop retains across iterations are the latest `rdm next` result and the small structured outcome JSON returned by each dispatched phase. It never accumulates the plan, plan-review, implementation, or code-review detail of the phases it has already run — that stays behind the subagent boundary (see step 2). This is what keeps the loop context flat across a long roadmap instead of growing with every phase.
 
 1. **Ask for the next actionable phase:**
    ```bash
@@ -44,21 +44,24 @@ Each iteration:
 
    `rdm next` is also the **termination oracle**: it skips `needs-review`, `reviewed`, `done`, `blocked`, and `wont-fix`, so a parked or reviewed phase is automatically stepped over on the next iteration. A phase you left `in-progress` (a rework) is returned **again** — which is why each phase carries a retry budget (below).
 
-2. **Estimate if needed:** if the phase's `difficulty` is unset in the `rdm next` output, run the `rdm-estimate` skill on it first (`<slug> <phase>`) so it has a difficulty and a derived model tier before dispatch. If it already has a difficulty, skip estimation.
+2. **Dispatch the phase in an isolated subagent:** spawn **one `Agent` subagent** for this phase, briefed with only the roadmap slug, the phase stem, and whether `--plan-only` is in effect — *not* this loop's accumulated context. That subagent does the whole per-phase job and returns only its structured outcome:
+   - If the phase's `difficulty` is unset in the `rdm next` output, the subagent runs the `rdm-estimate` skill on it first (`<slug> <phase>`) so it has a difficulty and a derived model tier before dispatch; if it already has a difficulty, it skips estimation.
+   - The subagent then runs the `rdm-dispatch-phase` skill (`<slug> <phase>`), which runs the phase end-to-end in the roadmap's shared worktree on its model tier — plan, independent plan gate, implement, code-review — and produces a structured `reviewed | rework | escalated` outcome.
+   - Under `--plan-only`, the subagent stops the dispatch after its plan gate and reports the gate verdict instead of implementing.
+   - The subagent returns **only** the structured `{roadmap, phase, outcome, summary, findings}` JSON. That blob — not the transcript — is all that crosses back into the loop.
 
-3. **Dispatch the phase:** run the `rdm-dispatch-phase` skill (`<slug> <phase>`). It runs the phase end-to-end in the roadmap's shared worktree on its model tier — plan, independent plan gate, implement, code-review — and returns a structured `reviewed | rework | escalated` outcome.
-   - Under `--plan-only`, stop the dispatch after its plan gate and record the gate verdict instead of implementing.
+   **Why the boundary.** The `Skill` tool runs **inline** in this conversation, so invoking `rdm-estimate`/`rdm-dispatch-phase`/`rdm-review` directly from the loop would pour every phase's estimate, plan, plan-review, implementation, and code-review detail into the loop context — growing it roughly quadratically over a multi-phase run and diluting attention on later phases. Dispatching each phase as its own `Agent` subagent keeps that detail inside the subagent; only the outcome JSON returns. This mirrors the isolation `rdm-dispatch-phase` already applies one level down (its own **Context isolation** section, where the implementer and plan reviewer are separate subagents). **Never** invoke `rdm-estimate`, `rdm-dispatch-phase`, or `rdm-review` directly with the `Skill` tool from this loop — that reintroduces the inline-accumulation trap.
 
-4. **Interpret the outcome:**
+3. **Interpret the outcome** returned by the subagent:
    - **reviewed** → the phase is `reviewed` with a `Done:` line on the branch. Advance: the next `rdm next` steps past it.
-   - **rework** → code review failed but it is a fixable defect. Re-dispatch the phase, counting against its **per-phase rework-retry budget**. When the budget is exhausted (the phase still isn't converging), **park it `blocked`** with a `code`-stage reason and continue:
+   - **rework** → code review failed but it is a fixable defect. Re-dispatch the phase — spawn a fresh subagent per step 2 — counting against its **per-phase rework-retry budget**. When the budget is exhausted (the phase still isn't converging), **park it `blocked`** with a `code`-stage reason and continue:
      ```bash
      rdm phase update <phase> --status blocked --reason "[code] rework budget exhausted: <what kept failing>" --no-edit --roadmap <slug> {proj_flag}
      ```
      Parking it `blocked` is what lets `rdm next` move past it instead of handing you the same `in-progress` phase forever.
    - **escalated** → `rdm-dispatch-phase` already parked the phase `blocked` (stage `[plan]` or `[code]`). Do nothing more to it; continue the loop with the remaining actionable phases.
 
-5. **Repeat** until a stop condition fires.
+4. **Repeat** until a stop condition fires.
 
 ## Budgets and stop conditions
 

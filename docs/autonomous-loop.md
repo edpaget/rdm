@@ -11,6 +11,12 @@ the earlier phases rather than re-implementing them:
 - `rdm-dispatch-phase` — runs one phase end-to-end (plan → independent plan
   gate → implement → `rdm-review`) and returns a structured outcome.
 
+`rdm-estimate` and `rdm-dispatch-phase` are invoked **behind an `Agent`
+subagent boundary**, not inline: each phase is dispatched as its own subagent
+that runs estimation (if needed) and dispatch internally and returns only the
+structured outcome. The loop never runs those skills directly with the `Skill`
+tool — see [Context isolation](#context-isolation) for why.
+
 The skill is emitted by `rdm agent-config --skills` in both CLI and MCP
 variants, alongside the other seven skills:
 
@@ -35,12 +41,14 @@ pick roadmap (human)
 │      result = nothing ──────────────┼──► stop → summary      │
 │      result = blocked-on-deps ──────┘                        │
 │                                                              │
-│  difficulty unset? ──► rdm-estimate <slug> <phase>           │
+│  ┌── Agent subagent (isolated context) ──────────────────┐  │
+│  │  difficulty unset? ──► rdm-estimate <slug> <phase>     │  │
+│  │  rdm-dispatch-phase <slug> <phase>                     │  │
+│  └── returns {roadmap, phase, outcome, summary, findings} ┘  │
 │                                                              │
-│  rdm-dispatch-phase <slug> <phase>                           │
 │      outcome = reviewed  ──► advance (next steps past it)    │
-│      outcome = rework    ──► retry; on budget exhaustion     │
-│                              park blocked [code], continue   │
+│      outcome = rework    ──► retry (new subagent); on budget │
+│                              exhaustion park blocked [code]  │
 │      outcome = escalated ──► already blocked, continue       │
 └─────────────────────────────────────────────────────────────┘
       │ (repeat until a stop condition)
@@ -74,13 +82,31 @@ budget and, on exhaustion, is parked `blocked` so the selector moves past it.
 
 ### Interpreting a dispatch outcome
 
-`rdm-dispatch-phase` returns one of three outcomes:
+Each phase is dispatched inside its own `Agent` subagent (estimation included),
+and every rework retry is a **fresh** subagent call — so all the loop ever sees
+per phase is the structured outcome the subagent returns, one of three:
 
 | Outcome | Phase state | Autopilot action |
 |---------|-------------|------------------|
 | `reviewed` | `reviewed`, `Done:` line on the branch | advance |
-| `rework` | back to `in-progress` (fixable defect) | re-dispatch within the rework-retry budget; on exhaustion park `blocked` with a `[code]` reason and continue |
+| `rework` | back to `in-progress` (fixable defect) | re-dispatch (new subagent) within the rework-retry budget; on exhaustion park `blocked` with a `[code]` reason and continue |
 | `escalated` | already `blocked` (`[plan]`/`[code]`) | leave it; continue with the remaining actionable phases |
+
+### Context isolation
+
+The loop invokes `rdm-estimate` and `rdm-dispatch-phase` through an `Agent`
+subagent boundary rather than inline via the `Skill` tool. The `Skill` tool runs
+in the loop's own conversation, so running those skills directly would
+accumulate every phase's estimate, plan, plan-review, implementation, and
+code-review detail in the loop context — growing it roughly quadratically over a
+multi-phase run and diluting attention on later phases, even though the loop only
+needs each phase's structured outcome to decide the next step. Dispatching each
+phase as its own subagent keeps that detail inside the subagent; only the
+`{roadmap, phase, outcome, summary, findings}` JSON crosses back. The loop's
+retained state per iteration is therefore bounded: the latest `rdm next` result
+and each returned outcome, nothing more. This is the same isolation
+`rdm-dispatch-phase` applies one level down, where its implementer and plan
+reviewer are separate subagents seeded with only the phase body.
 
 ## Budgets and stop conditions
 

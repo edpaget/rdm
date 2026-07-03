@@ -10,6 +10,13 @@ Autonomy is only useful if the human is interrupted for the *right* things.
 `rdm-review` already absorbs routine code findings, so those must never reach
 the user. What is left — genuine decisions and hard blockers — is what escalates.
 
+**Isolation note.** Both escalation stages (`plan` and `code`) are raised and
+recorded *inside* the per-phase `Agent` subagent that `rdm-autopilot` dispatches
+for each phase — not in the loop's own context. The subagent parks the phase
+`blocked` with a stage-tagged reason and returns only its structured outcome, so
+the loop never needs to hold the plan or review detail to apply this protocol: it
+reads parked escalations back through `rdm phase show` / `rdm review blocked`.
+
 ## Taxonomy: routine vs escalation
 
 **Routine findings — never escalate.** Anything `rdm-review` can resolve on its

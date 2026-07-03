@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The `rdm-autopilot` agent skill (CLI and MCP variants) now dispatches each
+  phase — including the `rdm-estimate` step when a difficulty is unset — as a
+  single isolated `Agent` subagent instead of invoking `rdm-estimate` and
+  `rdm-dispatch-phase` inline via the `Skill` tool. Only the structured
+  `{roadmap, phase, outcome, summary, findings}` outcome crosses back into the
+  loop, so the loop's context stays flat across a multi-phase run instead of
+  accumulating every phase's plan/plan-review/implementation/code-review detail.
+  No change to how the loop interprets `reviewed`/`rework`/`escalated`, the
+  per-phase rework-retry budget, or blocked-parking. See
+  [`docs/autonomous-loop.md`](docs/autonomous-loop.md).
+
 ### Added
 
 - `roadmap update`, `phase update`, and `task update` now accept `--title
