@@ -9,19 +9,13 @@ pub fn run(
     store: &mut AppStore,
     format: OutputFormat,
     no_index: bool,
-    staging: bool,
 ) -> Result<()> {
     match command {
         ProjectCommand::Create { name, title } => {
             let title = title.as_deref().unwrap_or(&name);
-            let doc = commit_mutation(
-                store,
-                &name,
-                no_index,
-                staging,
-                "failed to create project",
-                |s| rdm_core::ops::project::create_project(s, &name, title),
-            )?;
+            let doc = commit_mutation(store, &name, no_index, "failed to create project", |s| {
+                rdm_core::ops::project::create_project(s, &name, title)
+            })?;
             println!("Created project '{}'", doc.frontmatter.name);
         }
         ProjectCommand::Show { name } => {
@@ -54,7 +48,7 @@ pub fn run(
                     }
                 }
             }
-            maybe_print_uncommitted_hint(store, staging);
+            maybe_print_uncommitted_hint(store);
         }
         ProjectCommand::List => {
             let projects =
@@ -78,7 +72,7 @@ pub fn run(
                     }
                 }
             }
-            maybe_print_uncommitted_hint(store, staging);
+            maybe_print_uncommitted_hint(store);
         }
     }
     Ok(())

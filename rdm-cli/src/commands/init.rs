@@ -14,7 +14,6 @@ use crate::paths;
 pub fn run(
     root: &Path,
     global_config: &rdm_core::config::GlobalConfig,
-    stage: bool,
     default_project: Option<String>,
     default_format: Option<String>,
     #[cfg(feature = "git")] remote: Option<String>,
@@ -43,9 +42,6 @@ pub fn run(
         config.remote = Some(rdm_core::config::RemoteConfig {
             default: Some("origin".to_string()),
         });
-        if stage {
-            config.stage = Some(true);
-        }
         paths::save_repo_config(root, &config).context("failed to update repo config")?;
 
         // Commit the config update.
@@ -95,9 +91,6 @@ pub fn run(
         if let Some(ref fmt) = default_format {
             println!("  default format: {fmt}");
         }
-        if stage {
-            println!("  staging mode: enabled");
-        }
         println!();
         println!("Next steps:");
         println!("  rdm roadmap list   # see available roadmaps");
@@ -114,7 +107,6 @@ pub fn run(
     // Build repo config from flags.
     let init_config = rdm_core::config::Config {
         default_project: default_project.clone(),
-        stage: if stage { Some(true) } else { None },
         ..Default::default()
     };
 
@@ -171,9 +163,6 @@ pub fn run(
     }
     if let Some(ref fmt) = default_format {
         println!("  default format: {fmt}");
-    }
-    if stage {
-        println!("  staging mode: enabled");
     }
     println!();
     println!("Next steps:");

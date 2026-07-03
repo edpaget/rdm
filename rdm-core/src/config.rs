@@ -13,7 +13,6 @@ pub const VALID_FORMATS: &[&str] = &["human", "json", "table", "markdown"];
 pub const KNOWN_KEYS: &[&str] = &[
     "default_project",
     "default_format",
-    "stage",
     "remote.default",
     "root",
     "auto_init",
@@ -106,10 +105,6 @@ pub struct GlobalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_format: Option<String>,
 
-    /// When `true`, defers git commits until an explicit `rdm commit`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stage: Option<bool>,
-
     /// Git remote configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteConfig>,
@@ -174,10 +169,6 @@ pub struct Config {
     /// Default output format (human, json, table, markdown).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_format: Option<String>,
-
-    /// When `true`, defers git commits until an explicit `rdm commit`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stage: Option<bool>,
 
     /// Git remote configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,7 +242,6 @@ impl Config {
                 .default_format
                 .clone()
                 .or_else(|| global.default_format.clone()),
-            stage: self.stage.or(global.stage),
             remote: self.remote.clone().or_else(|| global.remote.clone()),
             default_branch: self
                 .default_branch

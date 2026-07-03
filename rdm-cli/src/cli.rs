@@ -26,10 +26,6 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub no_index: bool,
 
-    /// Defer git commits until an explicit `rdm commit`.
-    #[arg(long, global = true, env = "RDM_STAGE")]
-    pub stage: bool,
-
     /// Output format (human, json, table, or markdown).
     #[arg(long, global = true)]
     pub format: Option<OutputFormat>,
@@ -1069,7 +1065,7 @@ pub(crate) enum WorktreeCommand {
 pub(crate) enum ConfigCommand {
     /// Get the resolved value of a config key.
     Get {
-        /// Config key (e.g. default_project, default_format, stage, remote.default, root).
+        /// Config key (e.g. default_project, default_format, remote.default, root).
         key: String,
     },
     /// Set a config key.

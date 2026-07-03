@@ -17,7 +17,6 @@ pub fn run(
     repo_config: &Config,
     format: OutputFormat,
     no_index: bool,
-    staging: bool,
 ) -> Result<()> {
     match command {
         RoadmapCommand::Create {
@@ -32,26 +31,19 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to create roadmap",
-                |s| {
-                    rdm_core::ops::roadmap::create_roadmap(
-                        s,
-                        rdm_core::ops::roadmap::CreateRoadmap {
-                            project: &project,
-                            slug: &slug,
-                            title,
-                            body: body.as_deref(),
-                            priority,
-                            tags,
-                        },
-                    )
-                },
-            )?;
+            commit_mutation(store, &project, no_index, "failed to create roadmap", |s| {
+                rdm_core::ops::roadmap::create_roadmap(
+                    s,
+                    rdm_core::ops::roadmap::CreateRoadmap {
+                        project: &project,
+                        slug: &slug,
+                        title,
+                        body: body.as_deref(),
+                        priority,
+                        tags,
+                    },
+                )
+            })?;
             println!("Created roadmap '{slug}' in project '{project}'");
         }
         RoadmapCommand::Show {
@@ -110,7 +102,7 @@ pub fn run(
                     "--format table is not supported for 'roadmap show'; use --format human, --format json, --format markdown, or omit --format"
                 ),
             }
-            maybe_print_uncommitted_hint(store, staging);
+            maybe_print_uncommitted_hint(store);
         }
         RoadmapCommand::Update {
             slug,
@@ -132,18 +124,11 @@ pub fn run(
             };
             let priority = PriorityUpdate::from_args(priority, clear_priority)?;
             let tags = TagsUpdate::from_args(tags, false)?;
-            commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to update roadmap",
-                |s| {
-                    rdm_core::ops::roadmap::update_roadmap(
-                        s, &project, &slug, body, priority, tags, title,
-                    )
-                },
-            )
+            commit_mutation(store, &project, no_index, "failed to update roadmap", |s| {
+                rdm_core::ops::roadmap::update_roadmap(
+                    s, &project, &slug, body, priority, tags, title,
+                )
+            })
             .map_err(map_body_clobber)?;
             println!("Updated '{slug}'");
         }
@@ -175,18 +160,13 @@ pub fn run(
                 collect_entries(store, &project, sort, priority)?
             };
             print_entries(&entries, format)?;
-            maybe_print_uncommitted_hint(store, staging);
+            maybe_print_uncommitted_hint(store);
         }
         RoadmapCommand::Depend { slug, on, project } => {
             let project = paths::resolve_project(project, repo_config)?;
-            commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to add dependency",
-                |s| rdm_core::ops::roadmap::add_dependency(s, &project, &slug, &on),
-            )?;
+            commit_mutation(store, &project, no_index, "failed to add dependency", |s| {
+                rdm_core::ops::roadmap::add_dependency(s, &project, &slug, &on)
+            })?;
             println!("Added dependency: {slug} → {on}");
         }
         RoadmapCommand::Undepend { slug, on, project } => {
@@ -195,7 +175,6 @@ pub fn run(
                 store,
                 &project,
                 no_index,
-                staging,
                 "failed to remove dependency",
                 |s| rdm_core::ops::roadmap::remove_dependency(s, &project, &slug, &on),
             )?;
@@ -207,7 +186,7 @@ pub fn run(
             let graph = rdm_core::ops::roadmap::dependency_graph(store, &project)
                 .context("failed to get dependency graph")?;
             print!("{}", display::format_dependency_graph(&graph));
-            maybe_print_uncommitted_hint(store, staging);
+            maybe_print_uncommitted_hint(store);
         }
         RoadmapCommand::Delete {
             slug,
@@ -220,14 +199,9 @@ pub fn run(
                 );
             }
             let project = paths::resolve_project(project, repo_config)?;
-            commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to delete roadmap",
-                |s| rdm_core::ops::roadmap::delete_roadmap(s, &project, &slug),
-            )?;
+            commit_mutation(store, &project, no_index, "failed to delete roadmap", |s| {
+                rdm_core::ops::roadmap::delete_roadmap(s, &project, &slug)
+            })?;
             println!("Deleted roadmap '{slug}' from project '{project}'");
         }
         RoadmapCommand::Split {
@@ -250,24 +224,17 @@ pub fn run(
             } else {
                 None
             };
-            commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to split roadmap",
-                |s| {
-                    rdm_core::ops::roadmap::split_roadmap(
-                        s,
-                        &project,
-                        &slug,
-                        &into,
-                        &title,
-                        &resolved_stems,
-                        dep,
-                    )
-                },
-            )?;
+            commit_mutation(store, &project, no_index, "failed to split roadmap", |s| {
+                rdm_core::ops::roadmap::split_roadmap(
+                    s,
+                    &project,
+                    &slug,
+                    &into,
+                    &title,
+                    &resolved_stems,
+                    dep,
+                )
+            })?;
             println!(
                 "Split {} phase(s) from '{slug}' into new roadmap '{into}'",
                 resolved_stems.len()
@@ -283,7 +250,6 @@ pub fn run(
                 store,
                 &project,
                 no_index,
-                staging,
                 "failed to archive roadmap",
                 |s| rdm_core::ops::roadmap::archive_roadmap(s, &project, &slug, force),
             )?;
@@ -295,7 +261,6 @@ pub fn run(
                 store,
                 &project,
                 no_index,
-                staging,
                 "failed to unarchive roadmap",
                 |s| rdm_core::ops::roadmap::unarchive_roadmap(s, &project, &slug),
             )?;

@@ -16,7 +16,6 @@ pub fn run(
     command: WorktreeCommand,
     root: &Path,
     repo_config: &rdm_core::config::Config,
-    staging: bool,
     format: OutputFormat,
 ) -> Result<()> {
     match command {
@@ -24,15 +23,7 @@ pub fn run(
             item,
             base,
             project,
-        } => add(
-            root,
-            repo_config,
-            staging,
-            format,
-            &item,
-            base.as_deref(),
-            project,
-        ),
+        } => add(root, repo_config, format, &item, base.as_deref(), project),
         WorktreeCommand::List => list(format),
         WorktreeCommand::Current => current(format),
         WorktreeCommand::Remove {
@@ -40,15 +31,7 @@ pub fn run(
             delete_branch,
             force,
             project,
-        } => remove(
-            root,
-            repo_config,
-            staging,
-            &target,
-            delete_branch,
-            force,
-            project,
-        ),
+        } => remove(root, repo_config, &target, delete_branch, force, project),
         WorktreeCommand::Prune {
             project,
             delete_branch,
@@ -57,7 +40,6 @@ pub fn run(
         } => prune(
             root,
             repo_config,
-            staging,
             format,
             delete_branch,
             force,
@@ -70,14 +52,13 @@ pub fn run(
 fn add(
     root: &Path,
     repo_config: &rdm_core::config::Config,
-    staging: bool,
     format: OutputFormat,
     raw_item: &str,
     base: Option<&str>,
     project: Option<String>,
 ) -> Result<()> {
     let project = paths::resolve_project(project, repo_config)?;
-    let store = commands::make_store(root, staging)?;
+    let store = commands::make_store(root)?;
     let item = worktree::resolve_item(&store, &project, raw_item).map_err(map_err)?;
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let repo = worktree::discover_distinct_project_repo(&cwd, root).map_err(map_err)?;
@@ -176,14 +157,13 @@ fn current(format: OutputFormat) -> Result<()> {
 fn remove(
     root: &Path,
     repo_config: &rdm_core::config::Config,
-    staging: bool,
     target: &str,
     delete_branch: bool,
     force: bool,
     project: Option<String>,
 ) -> Result<()> {
     let project = paths::resolve_project(project, repo_config)?;
-    let store = commands::make_store(root, staging)?;
+    let store = commands::make_store(root)?;
     let resolved = worktree::resolve_target(&store, &project, target);
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let repo = worktree::discover_project_repo(&cwd).map_err(map_err)?;
@@ -204,7 +184,6 @@ fn remove(
 fn prune(
     root: &Path,
     repo_config: &rdm_core::config::Config,
-    staging: bool,
     format: OutputFormat,
     delete_branch: bool,
     force: bool,
@@ -212,7 +191,7 @@ fn prune(
     project: Option<String>,
 ) -> Result<()> {
     let project = paths::resolve_project(project, repo_config)?;
-    let store = commands::make_store(root, staging)?;
+    let store = commands::make_store(root)?;
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let repo = worktree::discover_project_repo(&cwd).map_err(map_err)?;
     let results = worktree::prune(

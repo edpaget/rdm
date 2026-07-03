@@ -8,14 +8,7 @@ use super::{
 };
 use crate::HookCommand;
 
-pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
-    // Hooks are automated plumbing: the PostMerge / PostCommit arms below force
-    // staging off so the Done: status updates they apply always land as a
-    // commit, regardless of the user's resolved staging preference (--stage /
-    // RDM_STAGE / stage = true). Staging is a human "batch my edits" affordance
-    // that makes no sense for an automated hook — honoring it would leave the
-    // update written-but-uncommitted, silently losing the Done: directive.
-    let _ = staging;
+pub fn run(command: HookCommand, root: &Path) -> Result<()> {
     match command {
         HookCommand::Install { force } => {
             let cwd = std::env::current_dir().context("cannot determine current directory")?;
@@ -95,7 +88,7 @@ pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
             let timeout = Duration::from_secs(resolve_hook_timeout_secs(root));
             let root = root.to_path_buf();
             if let Err(err) = run_hook_with_timeout(timeout, &logger, "post-merge", move || {
-                run_post_merge_hook(&root, false, since.as_deref())
+                run_post_merge_hook(&root, since.as_deref())
             }) {
                 let msg = format!("{err:#}");
                 logger.log("post-merge", "wrapper-error", &[("error", msg.as_str())]);
@@ -107,7 +100,7 @@ pub fn run(command: HookCommand, root: &Path, staging: bool) -> Result<()> {
             let timeout = Duration::from_secs(resolve_hook_timeout_secs(root));
             let root = root.to_path_buf();
             if let Err(err) = run_hook_with_timeout(timeout, &logger, "post-commit", move || {
-                run_post_commit_hook(&root, false)
+                run_post_commit_hook(&root)
             }) {
                 let msg = format!("{err:#}");
                 logger.log("post-commit", "wrapper-error", &[("error", msg.as_str())]);

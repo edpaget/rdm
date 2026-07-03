@@ -18,7 +18,6 @@ use crate::{ItemKindArg, OutputFormat};
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
-    staging: bool,
     format: OutputFormat,
     query: String,
     kind: Option<ItemKindArg>,
@@ -28,7 +27,7 @@ pub fn run(
     limit: usize,
     min_score_ratio: f64,
 ) -> Result<()> {
-    let store = commands::make_store(root, staging)?;
+    let store = commands::make_store(root)?;
     let item_status = status
         .as_deref()
         .map(|s| commands::parse_status(s, kind))
@@ -74,6 +73,6 @@ pub fn run(
             );
         }
     }
-    commands::maybe_print_uncommitted_hint(&store, staging);
+    commands::maybe_print_uncommitted_hint(&store);
     Ok(())
 }

@@ -10,8 +10,8 @@ use crate::commands;
 ///
 /// Returns an error if the store cannot be opened or git merge-state queries
 /// fail.
-pub fn run(root: &Path, staging: bool) -> Result<()> {
-    let store = commands::make_store(root, staging)?;
+pub fn run(root: &Path) -> Result<()> {
+    let store = commands::make_store(root)?;
     if !store
         .git()
         .git_is_merge_in_progress()

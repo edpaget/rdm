@@ -45,17 +45,6 @@ pub fn resolve_root(cli_root: Option<PathBuf>, global: &GlobalConfig) -> Result<
     })
 }
 
-/// Resolves whether staging mode is active.
-///
-/// The `config` should already have global defaults merged via
-/// [`Config::with_global_defaults`]. Priority: CLI flag/env → config.
-pub fn resolve_staging(flag: bool, config: &rdm_core::config::Config) -> bool {
-    if flag {
-        return true;
-    }
-    config.stage == Some(true)
-}
-
 /// Resolves the default project.
 ///
 /// The `config` should already have global defaults merged via
@@ -239,7 +228,6 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
     match key {
         "default_project" => config.default_project.clone(),
         "default_format" => config.default_format.clone(),
-        "stage" => config.stage.map(|b| b.to_string()),
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
         "default_branch" => config.default_branch.clone(),
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
@@ -253,7 +241,6 @@ pub fn get_global_config_field(config: &GlobalConfig, key: &str) -> Option<Strin
         "root" => config.root.as_ref().map(|p| p.display().to_string()),
         "default_project" => config.default_project.clone(),
         "default_format" => config.default_format.clone(),
-        "stage" => config.stage.map(|b| b.to_string()),
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
         "auto_init" => config.auto_init.map(|b| b.to_string()),
         "default_branch" => config.default_branch.clone(),
@@ -277,9 +264,6 @@ pub fn set_config_field(
         "default_format" => {
             config.default_format = Some(value.to_string());
             config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
-        }
-        "stage" => {
-            config.stage = Some(parse_bool(value)?);
         }
         "remote.default" => {
             config.remote.get_or_insert_with(Default::default).default = Some(value.to_string());
@@ -309,9 +293,6 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
         "default_format" => {
             config.default_format = Some(value.to_string());
             config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
-        }
-        "stage" => {
-            config.stage = Some(parse_bool(value)?);
         }
         "remote.default" => {
             config.remote.get_or_insert_with(Default::default).default = Some(value.to_string());
@@ -379,30 +360,6 @@ pub fn expand_root(path: PathBuf) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn resolve_staging_flag_wins() {
-        let config = rdm_core::config::Config {
-            stage: Some(false),
-            ..Default::default()
-        };
-        assert!(resolve_staging(true, &config));
-    }
-
-    #[test]
-    fn resolve_staging_config_true() {
-        let config = rdm_core::config::Config {
-            stage: Some(true),
-            ..Default::default()
-        };
-        assert!(resolve_staging(false, &config));
-    }
-
-    #[test]
-    fn resolve_staging_default_false() {
-        let config = rdm_core::config::Config::default();
-        assert!(!resolve_staging(false, &config));
-    }
 
     #[test]
     fn resolve_project_flag_wins() {

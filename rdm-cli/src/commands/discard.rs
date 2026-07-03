@@ -10,11 +10,11 @@ use crate::commands;
 ///
 /// Returns an error if `--force` is not passed, the store cannot be opened,
 /// or git merge-abort/status/discard operations fail.
-pub fn run(root: &Path, staging: bool, force: bool) -> Result<()> {
+pub fn run(root: &Path, force: bool) -> Result<()> {
     if !force {
         bail!("discarding changes is irreversible — pass --force to confirm");
     }
-    let mut store = commands::make_store(root, staging)?;
+    let mut store = commands::make_store(root)?;
     // Abort merge if one is in progress
     if store
         .git()

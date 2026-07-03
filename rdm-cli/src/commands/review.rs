@@ -64,7 +64,6 @@ pub fn run(
     repo_config: &Config,
     format: OutputFormat,
     no_index: bool,
-    staging: bool,
 ) -> Result<()> {
     match command {
         ReviewCommand::Pending { project } => {
@@ -172,7 +171,6 @@ pub fn run(
                                 store,
                                 &project,
                                 no_index,
-                                staging,
                                 "failed to restamp phase",
                                 |s| {
                                     rdm_core::ops::phase::update_phase(
@@ -199,7 +197,6 @@ pub fn run(
                                 store,
                                 &project,
                                 no_index,
-                                staging,
                                 "failed to restamp task",
                                 |s| {
                                     rdm_core::ops::task::update_task(
@@ -308,24 +305,17 @@ pub fn run(
             let body = resolve_body(body, no_edit)?;
             let target = rdm_core::ops::reviews::parse_review_target_ref(store, &project, &on)
                 .context("failed to resolve review target")?;
-            let doc = commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to start review",
-                |s| {
-                    rdm_core::ops::reviews::create_review(
-                        s,
-                        CreateReview {
-                            project: &project,
-                            author: &author,
-                            target: target.clone(),
-                            body: body.as_deref(),
-                        },
-                    )
-                },
-            )?;
+            let doc = commit_mutation(store, &project, no_index, "failed to start review", |s| {
+                rdm_core::ops::reviews::create_review(
+                    s,
+                    CreateReview {
+                        project: &project,
+                        author: &author,
+                        target: target.clone(),
+                        body: body.as_deref(),
+                    },
+                )
+            })?;
             let id = doc.frontmatter.id.clone();
             match format {
                 OutputFormat::Json => println!(
@@ -397,13 +387,8 @@ pub fn run(
                     "comment body must not be empty — pass --body <text> or pipe content via stdin"
                 );
             };
-            let updated = commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to add comment",
-                |s| {
+            let updated =
+                commit_mutation(store, &project, no_index, "failed to add comment", |s| {
                     rdm_core::ops::reviews::add_comment(
                         s,
                         AddComment {
@@ -414,8 +399,7 @@ pub fn run(
                             anchor,
                         },
                     )
-                },
-            )?;
+                })?;
             let comment_id = updated
                 .frontmatter
                 .comments
@@ -451,24 +435,17 @@ pub fn run(
                     );
                 }
             }
-            let doc = commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to submit review",
-                |s| {
-                    if let Some(b) = &body {
-                        rdm_core::ops::reviews::set_summary(
-                            s,
-                            &project,
-                            &review_id,
-                            BodyUpdate::Set(b.clone()),
-                        )?;
-                    }
-                    rdm_core::ops::reviews::submit_review(s, &project, &review_id, Some(verdict))
-                },
-            )
+            let doc = commit_mutation(store, &project, no_index, "failed to submit review", |s| {
+                if let Some(b) = &body {
+                    rdm_core::ops::reviews::set_summary(
+                        s,
+                        &project,
+                        &review_id,
+                        BodyUpdate::Set(b.clone()),
+                    )?;
+                }
+                rdm_core::ops::reviews::submit_review(s, &project, &review_id, Some(verdict))
+            })
             .map_err(|e| map_blank_summary(e, blank_body_given))?;
             println!(
                 "Submitted review '{review_id}' with verdict {}",
@@ -505,13 +482,13 @@ pub fn run(
                     ..Default::default()
                 },
             );
-            render_review_list(store, &project, &filtered, format, staging)?;
+            render_review_list(store, &project, &filtered, format)?;
         }
         ReviewCommand::Requests { project } => {
             let project = paths::resolve_project(project, repo_config)?;
             let filtered = rdm_core::ops::reviews::change_requests(store, &project)
                 .context("failed to list change requests")?;
-            render_review_list(store, &project, &filtered, format, staging)?;
+            render_review_list(store, &project, &filtered, format)?;
         }
         ReviewCommand::Show {
             review_id,
@@ -550,7 +527,7 @@ pub fn run(
                     "--format table is not supported for 'review show'; use --format human, --format json, --format markdown, or omit --format"
                 ),
             }
-            maybe_print_uncommitted_hint(store, staging);
+            maybe_print_uncommitted_hint(store);
         }
         ReviewCommand::Update {
             review_id,
@@ -576,38 +553,31 @@ pub fn run(
                 );
             }
             let project = paths::resolve_project(project, repo_config)?;
-            let doc = commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to update review",
-                |s| {
-                    if let Some(comment_id) = comment {
-                        rdm_core::ops::reviews::update_comment(
-                            s,
-                            UpdateComment {
-                                project: &project,
-                                review_id: &review_id,
-                                comment_id,
-                                status,
-                                applied_commit: applied_commit.as_deref(),
-                                reply: reply.as_deref(),
-                                ..Default::default()
-                            },
-                        )?;
-                    }
-                    match state {
-                        Some(transition) => rdm_core::ops::reviews::update_review(
-                            s,
-                            &project,
-                            &review_id,
-                            transition.into(),
-                        ),
-                        None => rdm_core::ops::reviews::get_review(s, &project, &review_id),
-                    }
-                },
-            )?;
+            let doc = commit_mutation(store, &project, no_index, "failed to update review", |s| {
+                if let Some(comment_id) = comment {
+                    rdm_core::ops::reviews::update_comment(
+                        s,
+                        UpdateComment {
+                            project: &project,
+                            review_id: &review_id,
+                            comment_id,
+                            status,
+                            applied_commit: applied_commit.as_deref(),
+                            reply: reply.as_deref(),
+                            ..Default::default()
+                        },
+                    )?;
+                }
+                match state {
+                    Some(transition) => rdm_core::ops::reviews::update_review(
+                        s,
+                        &project,
+                        &review_id,
+                        transition.into(),
+                    ),
+                    None => rdm_core::ops::reviews::get_review(s, &project, &review_id),
+                }
+            })?;
             println!(
                 "Updated review '{review_id}' → state: {}",
                 doc.frontmatter.state
@@ -619,14 +589,9 @@ pub fn run(
             project,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to delete review",
-                |s| rdm_core::ops::reviews::delete_review(s, &project, &review_id, force),
-            )
+            commit_mutation(store, &project, no_index, "failed to delete review", |s| {
+                rdm_core::ops::reviews::delete_review(s, &project, &review_id, force)
+            })
             .map_err(map_delete_not_draft)?;
             println!("Deleted review '{review_id}' from project '{project}'");
         }
@@ -647,7 +612,6 @@ fn render_review_list(
     project: &str,
     reviews: &[(String, Document<Review>)],
     format: OutputFormat,
-    staging: bool,
 ) -> Result<()> {
     match format {
         OutputFormat::Json => {
@@ -667,7 +631,7 @@ fn render_review_list(
         OutputFormat::Markdown => print!("{}", display::format_review_list_md(reviews)),
         OutputFormat::Human => print!("{}", display::format_review_list(reviews)),
     }
-    maybe_print_uncommitted_hint(store, staging);
+    maybe_print_uncommitted_hint(store);
     Ok(())
 }
 

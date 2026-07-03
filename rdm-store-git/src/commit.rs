@@ -203,11 +203,10 @@ impl GitRepo {
     ///
     /// This is the low-level commit primitive. Prefer the blessed
     /// caller-facing API [`GitStore::commit_now`], which delegates here, when
-    /// a commit must land regardless of staging mode (e.g. hook handlers
-    /// applying `Done:` directives or `rdm bootstrap --init`). Unlike
-    /// [`Store::commit`], which honors staging mode and skips the git commit
-    /// while staging is enabled, this always commits from the current working
-    /// directory state.
+    /// a commit must land unconditionally (e.g. hook handlers applying
+    /// `Done:` directives or `rdm bootstrap --init`). Unlike [`Store::commit`],
+    /// which only ever stages (flushes to disk) and never creates a git
+    /// commit, this always commits from the current working directory state.
     ///
     /// Returns `Ok(())` if the working directory matches HEAD (no-op).
     ///

@@ -198,24 +198,6 @@ pub trait Store {
     /// Returns an error if the commit fails.
     fn commit(&mut self) -> Result<()>;
 
-    /// Commits all staged changes atomically, using `message` in place of any
-    /// backend-specific auto-generated commit message.
-    ///
-    /// Backends without a notion of a custom commit message (or a backend with
-    /// nothing staged) may ignore `message` and behave exactly like
-    /// [`Store::commit`]. The default implementation does exactly this, so
-    /// existing implementors need no changes; only backends that want callers
-    /// to control the commit message (currently just the git-backed store)
-    /// need to override it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error under the same conditions as [`Store::commit`].
-    fn commit_with_message(&mut self, message: &str) -> Result<()> {
-        let _ = message;
-        self.commit()
-    }
-
     /// Discards all staged changes without committing.
     fn discard(&mut self);
 

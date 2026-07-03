@@ -15,18 +15,16 @@ pub fn run(
     root: &Path,
     repo_config: &rdm_core::config::Config,
     no_index: bool,
-    staging: bool,
     task_slug: String,
     roadmap_slug: String,
     project: Option<String>,
 ) -> Result<()> {
-    let mut store = commands::make_store(root, staging)?;
+    let mut store = commands::make_store(root)?;
     let project = paths::resolve_project(project, repo_config)?;
     let doc = commands::commit_mutation(
         &mut store,
         &project,
         no_index,
-        staging,
         "failed to promote task",
         |s| rdm_core::ops::task::promote_task(s, &project, &task_slug, &roadmap_slug),
     )?;

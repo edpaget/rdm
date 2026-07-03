@@ -480,9 +480,8 @@ struct DiscardParams {
 fn make_store(root: &Path) -> anyhow::Result<AppStore> {
     #[cfg(feature = "git")]
     {
-        Ok(rdm_store_git::GitStore::new(root)
-            .map_err(|e| anyhow::anyhow!("failed to open git repository: {e}"))?
-            .with_staging_mode(true))
+        rdm_store_git::GitStore::new(root)
+            .map_err(|e| anyhow::anyhow!("failed to open git repository: {e}"))
     }
     #[cfg(not(feature = "git"))]
     {
@@ -494,9 +493,8 @@ fn make_store(root: &Path) -> anyhow::Result<AppStore> {
 fn make_init_store(root: &Path) -> anyhow::Result<AppStore> {
     #[cfg(feature = "git")]
     {
-        let store = rdm_store_git::GitStore::init(root)
-            .map_err(|e| anyhow::anyhow!("failed to initialize git repository: {e}"))?;
-        Ok(store.with_staging_mode(true))
+        rdm_store_git::GitStore::init(root)
+            .map_err(|e| anyhow::anyhow!("failed to initialize git repository: {e}"))
     }
     #[cfg(not(feature = "git"))]
     {

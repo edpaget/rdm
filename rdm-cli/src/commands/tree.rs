@@ -16,11 +16,10 @@ use crate::paths;
 pub fn run(
     root: &Path,
     repo_config: &rdm_core::config::Config,
-    staging: bool,
     format: OutputFormat,
     project: Option<String>,
 ) -> Result<()> {
-    let store = commands::make_store(root, staging)?;
+    let store = commands::make_store(root)?;
     let project = paths::resolve_project(project, repo_config)?;
     let node = tree::build_tree(&store, &project).context("failed to build tree")?;
     match format {
@@ -36,6 +35,6 @@ pub fn run(
             "--format table is not supported for 'tree'; use --format human, --format json, --format markdown, or omit --format"
         ),
     }
-    commands::maybe_print_uncommitted_hint(&store, staging);
+    commands::maybe_print_uncommitted_hint(&store);
     Ok(())
 }

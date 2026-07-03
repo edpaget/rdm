@@ -13,7 +13,6 @@ pub fn run(
     store: &mut AppStore,
     root: &Path,
     repo_config: &Config,
-    staging: bool,
 ) -> Result<()> {
     match command {
         RemoteCommand::Add { name, url } => {
@@ -76,7 +75,7 @@ pub fn run(
                             result.commits_merged, result.remote, result.branch
                         );
                         // Regenerate INDEX.md after pulling new content
-                        let mut new_store = make_store(root, staging)?;
+                        let mut new_store = make_store(root)?;
                         rdm_core::ops::index::generate_index(&mut new_store)
                             .context("failed to regenerate INDEX.md after pull")?;
                     }

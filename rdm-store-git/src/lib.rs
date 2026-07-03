@@ -1,9 +1,9 @@
-//! Git-backed [`Store`] implementation with automatic commits via gitoxide.
+//! Git-backed [`Store`] implementation, with commits created via gitoxide.
 //!
-//! [`GitStore`] wraps [`FsStore`] and creates a git commit on every
-//! [`Store::commit`] call. Reads, writes, and deletes are delegated to the
-//! inner `FsStore`, with `GitStore` tracking which paths were touched so it
-//! can generate meaningful commit messages.
+//! [`GitStore`] wraps [`FsStore`] and only ever flushes to disk on
+//! [`Store::commit`] — it never creates a git commit. [`GitStore::commit_now`]
+//! is the only path that creates a git commit. Reads, writes, and deletes are
+//! delegated to the inner `FsStore`.
 //!
 //! All git logic — low-level plumbing and high-level porcelain — lives on the
 //! [`GitRepo`] collaborator (see the `repo`, `commit`, `remote`, and
@@ -13,7 +13,6 @@
 
 #![warn(missing_docs)]
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rdm_core::conflict::ConflictItem;
@@ -32,15 +31,6 @@ mod repo;
 /// [`GitRepo::head_commit_info`] / [`GitRepo::commit_messages_since`].
 pub use rdm_git::HeadCommitInfo;
 pub use repo::GitRepo;
-
-/// The kind of change tracked for commit message generation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ChangeKind {
-    /// A file was written (created or updated).
-    Write,
-    /// A file was deleted.
-    Delete,
-}
 
 /// The kind of file change detected by [`GitRepo::git_status`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,14 +132,12 @@ pub struct ResolveResult {
 /// A [`Store`] backed by git, wrapping [`FsStore`] for filesystem operations.
 ///
 /// Every call to [`Store::commit`] flushes staged changes to disk via the inner
-/// `FsStore`, then creates a git commit with an auto-generated message
-/// summarizing which files were touched. All git logic is delegated to the
+/// `FsStore` — it never creates a git commit. Use [`GitStore::commit_now`] when
+/// a commit must land unconditionally. All git logic is delegated to the
 /// composed [`GitRepo`], reachable via [`git`](Self::git)/[`git_mut`](Self::git_mut).
 pub struct GitStore {
     inner: FsStore,
     git: GitRepo,
-    touched: BTreeMap<String, ChangeKind>,
-    staging_mode: bool,
 }
 
 impl GitStore {
@@ -166,8 +154,6 @@ impl GitStore {
         Ok(Self {
             inner: FsStore::new(&root),
             git: GitRepo::new(root, repo),
-            touched: BTreeMap::new(),
-            staging_mode: false,
         })
     }
 
@@ -206,8 +192,6 @@ impl GitStore {
         Ok(Self {
             inner: FsStore::new(&root),
             git: GitRepo::new(root, repo.into_sync()),
-            touched: BTreeMap::new(),
-            staging_mode: false,
         })
     }
 
@@ -264,24 +248,7 @@ impl GitStore {
         Ok(Self {
             inner: FsStore::new(&root),
             git: GitRepo::new(root, repo),
-            touched: BTreeMap::new(),
-            staging_mode: false,
         })
-    }
-
-    /// Enables or disables staging mode.
-    ///
-    /// When staging mode is enabled, [`Store::commit`] flushes files to disk
-    /// but skips the git commit. Use [`GitRepo::git_commit`] to
-    /// explicitly create a git commit later.
-    pub fn with_staging_mode(mut self, staging: bool) -> Self {
-        self.staging_mode = staging;
-        self
-    }
-
-    /// Returns `true` if staging mode is enabled.
-    pub fn staging_mode(&self) -> bool {
-        self.staging_mode
     }
 
     /// Returns the root path of this store.
@@ -305,45 +272,18 @@ impl GitStore {
     }
 
     /// Always creates a git commit from the current working-directory state,
-    /// regardless of staging mode.
+    /// unconditionally.
     ///
     /// Use this when a commit MUST land — the hook handlers applying `Done:`
     /// directives and `rdm bootstrap --init` seeding a fresh plan repo — as
-    /// opposed to [`Store::commit`], which honors staging mode and skips the
-    /// git commit while staging is enabled. No-op if the working tree already
+    /// opposed to [`Store::commit`], which only ever stages (flushes to disk)
+    /// and never creates a git commit. No-op if the working tree already
     /// matches HEAD.
     ///
     /// # Errors
     /// Returns [`Error::Git`] if the commit cannot be created.
     pub fn commit_now(&self, message: &str) -> Result<()> {
         self.git.git_commit(message)
-    }
-
-    /// Generates a commit message from the set of touched paths.
-    fn commit_message(touched: &BTreeMap<String, ChangeKind>) -> String {
-        let writes: Vec<&String> = touched
-            .iter()
-            .filter(|(_, k)| **k == ChangeKind::Write)
-            .map(|(p, _)| p)
-            .collect();
-        let deletes: Vec<&String> = touched
-            .iter()
-            .filter(|(_, k)| **k == ChangeKind::Delete)
-            .map(|(p, _)| p)
-            .collect();
-
-        match (writes.len(), deletes.len()) {
-            (1, 0) => format!("rdm: update {}", writes[0]),
-            (0, 1) => format!("rdm: delete {}", deletes[0]),
-            _ => {
-                let total = touched.len();
-                let mut msg = format!("rdm: update {total} files\n");
-                for path in touched.keys() {
-                    msg.push_str(&format!("\n- {path}"));
-                }
-                msg
-            }
-        }
     }
 }
 
@@ -361,45 +301,21 @@ impl Store for GitStore {
     }
 
     fn write(&mut self, path: &RelPath, content: String) -> Result<()> {
-        self.touched
-            .insert(path.as_str().to_string(), ChangeKind::Write);
         self.inner.write(path, content)
     }
 
     fn delete(&mut self, path: &RelPath) -> Result<()> {
-        self.touched
-            .insert(path.as_str().to_string(), ChangeKind::Delete);
         self.inner.delete(path)
     }
 
     fn commit(&mut self) -> Result<()> {
-        if self.touched.is_empty() {
-            return Ok(());
-        }
-        let message = Self::commit_message(&self.touched);
-        self.commit_with_message(&message)
-    }
-
-    fn commit_with_message(&mut self, message: &str) -> Result<()> {
-        if self.touched.is_empty() {
-            return Ok(());
-        }
-
-        self.touched.clear();
-
-        // Flush files to disk
-        self.inner.commit()?;
-
-        // In staging mode, skip the git commit
-        if self.staging_mode {
-            return Ok(());
-        }
-
-        self.git.create_git_commit(message)
+        // Staging is the only workflow now: flush to disk and never create a
+        // git commit. Use `commit_now` when a commit must land unconditionally
+        // (see its docs).
+        self.inner.commit()
     }
 
     fn discard(&mut self) {
-        self.touched.clear();
         self.inner.discard();
     }
 }
@@ -453,68 +369,19 @@ mod tests {
     }
 
     #[test]
-    fn write_and_commit_creates_git_commit() {
+    fn commit_now_creates_git_commit() {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
         let path = RelPath::new("hello.md").unwrap();
         store.write(&path, "world".to_string()).unwrap();
         store.commit().unwrap();
-
-        let repo = gix::open(dir.path()).unwrap();
-        let mut head = repo.head().unwrap();
-        let commit = head.peel_to_commit().unwrap();
-        assert!(commit.message_raw_sloppy().starts_with(b"rdm:"));
-    }
-
-    #[test]
-    fn commit_message_single_file() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        let path = RelPath::new("test.md").unwrap();
-        store.write(&path, "content".to_string()).unwrap();
-        store.commit().unwrap();
+        store.commit_now("test message").unwrap();
 
         let repo = gix::open(dir.path()).unwrap();
         let mut head = repo.head().unwrap();
         let commit = head.peel_to_commit().unwrap();
         let msg = String::from_utf8_lossy(commit.message_raw_sloppy());
-        assert_eq!(msg, "rdm: update test.md");
-    }
-
-    #[test]
-    fn commit_message_multiple_files() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        store
-            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
-            .unwrap();
-        store
-            .write(&RelPath::new("b.md").unwrap(), "b".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        let repo = gix::open(dir.path()).unwrap();
-        let mut head = repo.head().unwrap();
-        let commit = head.peel_to_commit().unwrap();
-        let msg = String::from_utf8_lossy(commit.message_raw_sloppy());
-        assert!(msg.starts_with("rdm: update 2 files"));
-        assert!(msg.contains("- a.md"));
-        assert!(msg.contains("- b.md"));
-    }
-
-    #[test]
-    fn commit_with_message_uses_given_message_verbatim() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        let path = RelPath::new("test.md").unwrap();
-        store.write(&path, "content".to_string()).unwrap();
-        store.commit_with_message("custom message").unwrap();
-
-        let repo = gix::open(dir.path()).unwrap();
-        let mut head = repo.head().unwrap();
-        let commit = head.peel_to_commit().unwrap();
-        let msg = String::from_utf8_lossy(commit.message_raw_sloppy());
-        assert_eq!(msg, "custom message");
+        assert_eq!(msg, "test message");
     }
 
     #[test]
@@ -522,23 +389,37 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
 
-        // Write and commit a file first
+        // Write the file, then land a real commit.
         let path = RelPath::new("doomed.md").unwrap();
         store.write(&path, "bye".to_string()).unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add doomed.md").unwrap();
         assert!(dir.path().join("doomed.md").exists());
 
-        // Delete and commit
+        // Delete, then land a real commit reflecting the delete.
         store.delete(&path).unwrap();
         store.commit().unwrap();
+        store.commit_now("delete doomed.md").unwrap();
         assert!(!dir.path().join("doomed.md").exists());
 
-        // Verify the latest commit message mentions delete
+        // Verify the delete is reflected in a real commit: the latest commit
+        // message matches, and the tree no longer contains the file.
         let repo = gix::open(dir.path()).unwrap();
         let mut head = repo.head().unwrap();
         let commit = head.peel_to_commit().unwrap();
         let msg = String::from_utf8_lossy(commit.message_raw_sloppy());
-        assert!(msg.contains("delete"));
+        assert_eq!(msg, "delete doomed.md");
+
+        let output = git_cmd()
+            .args(["show", "--stat", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let shown = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            shown.contains("doomed.md"),
+            "expected doomed.md in HEAD commit stat, got: {shown}"
+        );
     }
 
     #[test]
@@ -550,6 +431,7 @@ mod tests {
         let path = RelPath::new("init.md").unwrap();
         store.write(&path, "init".to_string()).unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let repo = gix::open(dir.path()).unwrap();
         let head_before = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
@@ -567,168 +449,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_commit_is_noop() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-
-        // Create an initial commit
-        let path = RelPath::new("init.md").unwrap();
-        store.write(&path, "init".to_string()).unwrap();
-        store.commit().unwrap();
-
-        let repo = gix::open(dir.path()).unwrap();
-        let head_before = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
-
-        // Empty commit
-        store.commit().unwrap();
-
-        let repo = gix::open(dir.path()).unwrap();
-        let head_after = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
-        assert_eq!(head_before, head_after);
-    }
-
-    #[test]
     fn read_your_own_writes() {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
         let path = RelPath::new("staged.md").unwrap();
         store.write(&path, "staged content".to_string()).unwrap();
         assert_eq!(store.read(&path).unwrap(), "staged content");
-    }
-
-    #[test]
-    fn staging_mode_flushes_to_disk_without_git_commit() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap().with_staging_mode(true);
-
-        // Create an initial commit so HEAD exists
-        // (need to temporarily disable staging to get initial commit)
-        store.staging_mode = false;
-        let init_path = RelPath::new("init.md").unwrap();
-        store.write(&init_path, "init".to_string()).unwrap();
-        store.commit().unwrap();
-        store.staging_mode = true;
-
-        let repo = gix::open(dir.path()).unwrap();
-        let head_before = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
-
-        // Write and commit in staging mode
-        let path = RelPath::new("staged.md").unwrap();
-        store.write(&path, "staged content".to_string()).unwrap();
-        store.commit().unwrap();
-
-        // File should exist on disk
-        assert!(dir.path().join("staged.md").exists());
-        let content = std::fs::read_to_string(dir.path().join("staged.md")).unwrap();
-        assert_eq!(content, "staged content");
-
-        // But no new git commit should have been created
-        let repo = gix::open(dir.path()).unwrap();
-        let head_after = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
-        assert_eq!(head_before, head_after);
-    }
-
-    #[test]
-    fn commit_with_message_respects_staging_mode() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap().with_staging_mode(true);
-
-        // Create an initial commit so HEAD exists
-        // (need to temporarily disable staging to get initial commit)
-        store.staging_mode = false;
-        let init_path = RelPath::new("init.md").unwrap();
-        store.write(&init_path, "init".to_string()).unwrap();
-        store.commit().unwrap();
-        store.staging_mode = true;
-
-        let repo = gix::open(dir.path()).unwrap();
-        let head_before = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
-
-        // Write and commit_with_message in staging mode
-        let path = RelPath::new("staged.md").unwrap();
-        store.write(&path, "staged content".to_string()).unwrap();
-        store.commit_with_message("custom message").unwrap();
-
-        // File should exist on disk
-        assert!(dir.path().join("staged.md").exists());
-        let content = std::fs::read_to_string(dir.path().join("staged.md")).unwrap();
-        assert_eq!(content, "staged content");
-
-        // But no new git commit should have been created
-        let repo = gix::open(dir.path()).unwrap();
-        let head_after = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
-        assert_eq!(head_before, head_after);
-    }
-
-    #[test]
-    fn git_commit_creates_commit_with_custom_message() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap().with_staging_mode(true);
-
-        // Create initial commit without staging mode
-        store.staging_mode = false;
-        store
-            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
-            .unwrap();
-        store.commit().unwrap();
-        store.staging_mode = true;
-
-        // Stage a file
-        store
-            .write(&RelPath::new("new.md").unwrap(), "new content".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        // Now explicitly git commit
-        store.git().git_commit("my custom message").unwrap();
-
-        let repo = gix::open(dir.path()).unwrap();
-        let mut head = repo.head().unwrap();
-        let commit = head.peel_to_commit().unwrap();
-        let msg = String::from_utf8_lossy(commit.message_raw_sloppy());
-        assert_eq!(msg, "my custom message");
-    }
-
-    #[test]
-    fn commit_now_commits_even_in_staging_mode() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap().with_staging_mode(true);
-
-        // Seed an initial commit so HEAD exists (toggle staging off, write,
-        // commit, toggle back on).
-        store.staging_mode = false;
-        store
-            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
-            .unwrap();
-        store.commit().unwrap();
-        store.staging_mode = true;
-
-        // Capture HEAD before staging a change.
-        let repo = gix::open(dir.path()).unwrap();
-        let head_before = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
-
-        // Stage a file: staging mode flushes to disk but creates no git commit.
-        store
-            .write(&RelPath::new("new.md").unwrap(), "new content".to_string())
-            .unwrap();
-        store.commit().unwrap();
-        let head_after_stage = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
-        assert_eq!(
-            head_before, head_after_stage,
-            "staged commit must not move HEAD"
-        );
-
-        // commit_now must land a real commit regardless of staging mode.
-        store.commit_now("msg").unwrap();
-        let mut head = repo.head().unwrap();
-        let commit = head.peel_to_commit().unwrap();
-        assert_ne!(
-            head_before,
-            commit.id().detach(),
-            "commit_now must advance HEAD"
-        );
-        let msg = String::from_utf8_lossy(commit.message_raw_sloppy());
-        assert_eq!(msg, "msg");
     }
 
     #[test]
@@ -744,6 +470,7 @@ mod tests {
             .write(&RelPath::new("doomed.md").unwrap(), "delete me".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add keep.md and doomed.md").unwrap();
 
         // Now make changes directly on disk (simulating staging mode)
         std::fs::write(dir.path().join("keep.md"), "modified").unwrap();
@@ -776,6 +503,7 @@ mod tests {
             .write(&RelPath::new("doomed.md").unwrap(), "keep me".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add keep.md and doomed.md").unwrap();
 
         // Make changes on disk
         std::fs::write(dir.path().join("keep.md"), "modified").unwrap();
@@ -900,6 +628,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let repo = gix::open(dir.path()).unwrap();
         let head_before = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
@@ -1046,6 +775,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1067,6 +797,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1076,10 +807,12 @@ mod tests {
             .write(&RelPath::new("local1.md").unwrap(), "local1".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add local1.md").unwrap();
         store
             .write(&RelPath::new("local2.md").unwrap(), "local2".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add local2.md").unwrap();
 
         let status = store.git().git_sync_status("origin").unwrap().unwrap();
         assert_eq!(status.ahead, 2);
@@ -1095,6 +828,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
 
@@ -1150,6 +884,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1159,6 +894,7 @@ mod tests {
             .write(&RelPath::new("local.md").unwrap(), "local".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add local.md").unwrap();
 
         // Push a different commit to bare from a clone
         let clone_dir = TempDir::new().unwrap();
@@ -1260,6 +996,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1269,10 +1006,12 @@ mod tests {
             .write(&RelPath::new("a.md").unwrap(), "a".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add a.md").unwrap();
         store
             .write(&RelPath::new("b.md").unwrap(), "b".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add b.md").unwrap();
 
         let result = store.git_mut().git_push("origin", false).unwrap();
         assert_eq!(result.remote, "origin");
@@ -1294,6 +1033,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1328,6 +1068,7 @@ mod tests {
             .write(&RelPath::new("local.md").unwrap(), "local".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add local.md").unwrap();
 
         // Push should fail — diverged histories
         let result = store.git_mut().git_push("origin", false);
@@ -1350,6 +1091,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1384,6 +1126,7 @@ mod tests {
             .write(&RelPath::new("local.md").unwrap(), "local".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add local.md").unwrap();
 
         // Force push should succeed
         let result = store.git_mut().git_push("origin", true).unwrap();
@@ -1400,6 +1143,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
 
@@ -1475,6 +1219,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1484,6 +1229,7 @@ mod tests {
             .write(&RelPath::new("local.md").unwrap(), "local".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add local.md").unwrap();
 
         // Push a different file to bare from a clone
         let clone_dir = TempDir::new().unwrap();
@@ -1535,6 +1281,7 @@ mod tests {
             .write(&RelPath::new("shared.md").unwrap(), "original".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add shared.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1547,6 +1294,7 @@ mod tests {
             )
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("update shared.md locally").unwrap();
 
         // Push a conflicting change to shared.md from a clone
         let clone_dir = TempDir::new().unwrap();
@@ -1603,6 +1351,7 @@ mod tests {
             .write(&RelPath::new("shared.md").unwrap(), "original".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add shared.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1615,6 +1364,7 @@ mod tests {
             )
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("update shared.md locally").unwrap();
 
         // Remote conflicting change
         let clone_dir = TempDir::new().unwrap();
@@ -1687,6 +1437,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
 
         // Tag the initial commit as our anchor
         git_cmd()
@@ -1700,14 +1451,17 @@ mod tests {
             .write(&RelPath::new("a.md").unwrap(), "a".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add a.md").unwrap();
         store
             .write(&RelPath::new("b.md").unwrap(), "b".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add b.md").unwrap();
         store
             .write(&RelPath::new("c.md").unwrap(), "c".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add c.md").unwrap();
 
         let commits = store.git().commit_messages_since(Some("anchor")).unwrap();
         assert_eq!(
@@ -1788,6 +1542,7 @@ mod tests {
             .write(&RelPath::new("INDEX.md").unwrap(), "# Index\n".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: init plan repo").unwrap();
 
         let bare = TempDir::new().unwrap();
         std::process::Command::new("git")
@@ -1836,14 +1591,15 @@ mod tests {
     }
 
     #[test]
-    fn commit_syncs_git_index_so_status_is_clean() {
+    fn commit_leaves_git_status_dirty_since_it_never_touches_git() {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
         let path = RelPath::new("hello.md").unwrap();
         store.write(&path, "world".to_string()).unwrap();
         store.commit().unwrap();
 
-        // After rdm commits, `git status` should report a clean tree.
+        // `Store::commit` only flushes to disk — it never touches git. So
+        // `git status` still reports the file as untracked/dirty.
         let output = git_cmd()
             .args(["status", "--porcelain"])
             .current_dir(dir.path())
@@ -1851,8 +1607,8 @@ mod tests {
             .unwrap();
         let status = String::from_utf8_lossy(&output.stdout);
         assert!(
-            status.trim().is_empty(),
-            "expected clean git status after commit, got: {status}"
+            !status.trim().is_empty(),
+            "expected dirty git status since Store::commit never commits, got: {status}"
         );
     }
 
@@ -1915,6 +1671,7 @@ mod tests {
         let path = RelPath::new("a.md").unwrap();
         store.write(&path, "first".to_string()).unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add a.md").unwrap();
 
         let sha = store.head_sha().unwrap();
         let info = store.git().head_commit_info().unwrap().unwrap();
@@ -1939,10 +1696,12 @@ mod tests {
         let path = RelPath::new("a.md").unwrap();
         store.write(&path, "v1".to_string()).unwrap();
         store.commit().unwrap();
+        store.commit_now("add a.md v1").unwrap();
         let v1_sha = store.head_sha().unwrap();
 
         store.write(&path, "v2".to_string()).unwrap();
         store.commit().unwrap();
+        store.commit_now("update a.md to v2").unwrap();
         let v2_sha = store.head_sha().unwrap();
         assert_ne!(v1_sha, v2_sha);
 
@@ -1961,6 +1720,7 @@ mod tests {
             .write(&RelPath::new("seed.md").unwrap(), "seed".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("seed: add seed.md").unwrap();
         let early_sha = store.head_sha().unwrap();
 
         // Later commit: introduce later.md.
@@ -1968,6 +1728,7 @@ mod tests {
             .write(&RelPath::new("later.md").unwrap(), "later".to_string())
             .unwrap();
         store.commit().unwrap();
+        store.commit_now("add later.md").unwrap();
 
         let err = store
             .fetch_body_at(&RelPath::new("later.md").unwrap(), &early_sha)
@@ -1998,470 +1759,5 @@ mod tests {
             }
             other => panic!("expected RevisionUnknown, got {other:?}"),
         }
-    }
-
-    // -- hook-reliability regression tests (mutation-hook-reliability phase 1) --
-
-    /// Prepends `dir` to `PATH` for the current process, returning the
-    /// original value so the caller can restore it afterward. Safe under
-    /// cargo-nextest, which isolates each test into its own OS process, so
-    /// mutating process-wide `PATH` here cannot race with other tests.
-    fn prepend_path(dir: &Path) -> String {
-        let original = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{original}", dir.display());
-        // SAFETY: see doc comment above — process-isolated under nextest.
-        unsafe {
-            std::env::set_var("PATH", new_path);
-        }
-        original
-    }
-
-    /// Restores `PATH` to a value previously captured by [`prepend_path`].
-    fn restore_path(original: String) {
-        // SAFETY: process-isolated under nextest; see `prepend_path`.
-        unsafe {
-            std::env::set_var("PATH", original);
-        }
-    }
-
-    /// Writes a fake `git` executable that answers a fixed script of
-    /// subcommands sufficient to drive `GitRepo::git_pull` down either its
-    /// diverged-merge or fast-forward branch, without touching a real
-    /// remote. Every invocation's full argument list (space-joined) is
-    /// appended as one line to `$FAKE_GIT_ARGV_LOG` when that env var is
-    /// set. `$FAKE_GIT_AHEAD`/`$FAKE_GIT_BEHIND` (read at invocation time)
-    /// control the `rev-list --left-right --count` output, which is what
-    /// `GitRepo::git_sync_status` parses to decide ahead/behind.
-    fn fake_git_canned_dir() -> TempDir {
-        let dir = TempDir::new().unwrap();
-        let script = dir.path().join("git");
-        std::fs::write(
-            &script,
-            r#"#!/bin/sh
-if [ -n "$FAKE_GIT_ARGV_LOG" ]; then
-  printf '%s\n' "$*" >> "$FAKE_GIT_ARGV_LOG"
-fi
-case "$1" in
-  symbolic-ref)
-    echo "refs/heads/main"
-    exit 0
-    ;;
-  rev-list)
-    printf '%s\t%s\n' "${FAKE_GIT_AHEAD:-0}" "${FAKE_GIT_BEHIND:-0}"
-    exit 0
-    ;;
-  *)
-    exit 0
-    ;;
-esac
-"#,
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        dir
-    }
-
-    /// AC5 regression test: proves the diverged-history merge branch
-    /// (`remote.rs`'s non-fast-forward `git merge`) explicitly passes
-    /// `--no-edit`, and that the fast-forward branch is distinct (passes
-    /// `--ff-only` and never `--no-edit`). This is the only test that would
-    /// catch a regression of AC5 itself — the AC2 end-to-end editor-hang
-    /// test would still pass even if `--no-edit` were dropped here, because
-    /// the blanket `GIT_EDITOR=true` env override independently neutralizes
-    /// the editor.
-    #[test]
-    fn git_pull_diverged_merge_passes_no_edit_flag() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        store
-            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
-            .unwrap();
-        store.commit().unwrap();
-        store
-            .git_mut()
-            .git_remote_add("origin", "file:///nonexistent")
-            .unwrap();
-
-        let fake_bin = fake_git_canned_dir();
-
-        // -- diverged branch: ahead > 0, behind > 0 --
-        let log_dir = TempDir::new().unwrap();
-        let argv_log = log_dir.path().join("argv.log");
-        let original_path = prepend_path(fake_bin.path());
-        // SAFETY: process-isolated under nextest; see `prepend_path`.
-        unsafe {
-            std::env::set_var("FAKE_GIT_ARGV_LOG", &argv_log);
-            std::env::set_var("FAKE_GIT_AHEAD", "1");
-            std::env::set_var("FAKE_GIT_BEHIND", "1");
-        }
-        let outcome = store.git_mut().git_pull("origin");
-        // SAFETY: process-isolated under nextest; see `prepend_path`.
-        unsafe {
-            std::env::remove_var("FAKE_GIT_AHEAD");
-            std::env::remove_var("FAKE_GIT_BEHIND");
-            std::env::remove_var("FAKE_GIT_ARGV_LOG");
-        }
-        restore_path(original_path);
-        outcome.expect("diverged pull against the fake git shim should succeed");
-
-        let log = std::fs::read_to_string(&argv_log).unwrap_or_default();
-        let merge_line = log
-            .lines()
-            .find(|l| l.starts_with("merge "))
-            .unwrap_or_else(|| panic!("no merge invocation recorded; log: {log}"));
-        assert!(
-            merge_line.contains("--no-edit"),
-            "diverged merge should pass --no-edit: {merge_line}"
-        );
-        assert!(
-            !merge_line.contains("--ff-only"),
-            "diverged merge should not be ff-only: {merge_line}"
-        );
-
-        // -- fast-forward branch: ahead == 0, behind > 0 --
-        let log_dir2 = TempDir::new().unwrap();
-        let argv_log2 = log_dir2.path().join("argv.log");
-        let original_path2 = prepend_path(fake_bin.path());
-        // SAFETY: process-isolated under nextest; see `prepend_path`.
-        unsafe {
-            std::env::set_var("FAKE_GIT_ARGV_LOG", &argv_log2);
-            std::env::set_var("FAKE_GIT_AHEAD", "0");
-            std::env::set_var("FAKE_GIT_BEHIND", "1");
-        }
-        let outcome2 = store.git_mut().git_pull("origin");
-        // SAFETY: process-isolated under nextest; see `prepend_path`.
-        unsafe {
-            std::env::remove_var("FAKE_GIT_AHEAD");
-            std::env::remove_var("FAKE_GIT_BEHIND");
-            std::env::remove_var("FAKE_GIT_ARGV_LOG");
-        }
-        restore_path(original_path2);
-        outcome2.expect("fast-forward pull against the fake git shim should succeed");
-
-        let log2 = std::fs::read_to_string(&argv_log2).unwrap_or_default();
-        let merge_line2 = log2
-            .lines()
-            .find(|l| l.starts_with("merge "))
-            .unwrap_or_else(|| panic!("no merge invocation recorded; log: {log2}"));
-        assert!(
-            merge_line2.contains("--ff-only"),
-            "fast-forward-only merge should pass --ff-only: {merge_line2}"
-        );
-        assert!(
-            !merge_line2.contains("--no-edit"),
-            "fast-forward-only merge should not carry --no-edit: {merge_line2}"
-        );
-    }
-
-    /// AC2 regression test: even when this repo's `core.editor` is
-    /// configured to a script that would block forever if actually invoked,
-    /// a diverged (non-conflicting) `git_pull` — which needs a real merge
-    /// commit, not just a fast-forward — completes promptly. This proves
-    /// the blanket `GIT_EDITOR=true`/`GIT_SEQUENCE_EDITOR=true` override in
-    /// `rdm_git::process::git_command` wins over the invoking user's
-    /// `core.editor` configuration (git's own precedence: `GIT_EDITOR` env
-    /// beats `core.editor`).
-    #[test]
-    fn git_pull_diverged_history_completes_without_editor_even_when_core_editor_hangs() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        store
-            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        let bare_dir = setup_bare_remote(&mut store, "origin");
-        store.git_mut().git_fetch("origin").unwrap();
-
-        // Local commit (different file from remote): a real merge commit
-        // will be needed, not just a fast-forward.
-        store
-            .write(&RelPath::new("local.md").unwrap(), "local".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        // Push a different file to the bare remote from a separate clone.
-        let clone_dir = TempDir::new().unwrap();
-        git_cmd()
-            .args(["clone"])
-            .arg(bare_dir.path())
-            .arg(clone_dir.path())
-            .output()
-            .unwrap();
-        std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
-        git_cmd()
-            .args(["add", "."])
-            .current_dir(clone_dir.path())
-            .output()
-            .unwrap();
-        git_cmd()
-            .args(["commit", "-m", "remote commit"])
-            .current_dir(clone_dir.path())
-            .output()
-            .unwrap();
-        git_cmd()
-            .args(["push"])
-            .current_dir(clone_dir.path())
-            .output()
-            .unwrap();
-
-        // Configure this repo's core.editor to a script that would block
-        // forever if it were ever actually invoked.
-        let editor_dir = TempDir::new().unwrap();
-        let hanging_editor = editor_dir.path().join("hang-editor.sh");
-        std::fs::write(&hanging_editor, "#!/bin/sh\nsleep 9999\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&hanging_editor, std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-        }
-        let out = git_cmd()
-            .args(["config", "core.editor", hanging_editor.to_str().unwrap()])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git config core.editor failed");
-
-        let start = std::time::Instant::now();
-        let outcome = store.git_mut().git_pull("origin").unwrap();
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed < std::time::Duration::from_secs(10),
-            "git_pull should not block on a hanging core.editor, took {elapsed:?}"
-        );
-        match outcome {
-            PullOutcome::Success(result) => {
-                assert!(result.changed);
-                assert!(result.commits_merged > 0);
-            }
-            PullOutcome::Conflict(_) => panic!("expected clean merge, got conflict"),
-        }
-        assert!(dir.path().join("local.md").exists());
-        assert!(dir.path().join("remote.md").exists());
-
-        let _ = bare_dir;
-    }
-
-    /// Resolves the real `git` binary's absolute path via `which`, for use
-    /// by [`spy_git_dir`] before `PATH` is overridden.
-    fn which_git() -> String {
-        let out = std::process::Command::new("which")
-            .arg("git")
-            .output()
-            .expect("`which` should be available on macOS/Linux CI targets");
-        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        assert!(!path.is_empty(), "could not resolve real git binary");
-        path
-    }
-
-    /// Writes a "spy" `git` executable that logs `argv=<...>` plus whether
-    /// `RDM_GIT_SUBPROCESS` is present in its environment for every
-    /// invocation (one line per call, appended to `log_path`), then execs
-    /// the real system `git` binary with the same arguments so the
-    /// underlying git operation still actually happens. Used to observe the
-    /// environment of a real subprocess `git commit`/`git merge` without
-    /// faking away the git behavior the test also depends on.
-    fn spy_git_dir(log_path: &Path) -> TempDir {
-        let real_git = which_git();
-        let dir = TempDir::new().unwrap();
-        let script = dir.path().join("git");
-        std::fs::write(
-            &script,
-            format!(
-                r#"#!/bin/sh
-{{
-  printf 'argv=%s' "$*"
-  if [ -n "$RDM_GIT_SUBPROCESS" ]; then
-    printf ' RDM_GIT_SUBPROCESS=%s' "$RDM_GIT_SUBPROCESS"
-  else
-    printf ' RDM_GIT_SUBPROCESS=<unset>'
-  fi
-  printf '\n'
-}} >> "{log}"
-exec "{real_git}" "$@"
-"#,
-                log = log_path.display(),
-                real_git = real_git,
-            ),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        dir
-    }
-
-    /// AC4 regression test: proves that `GitRepo::git_resolve_conflict`'s
-    /// merge-completing `git commit --no-edit` call (`merge.rs`, the one
-    /// genuine subprocess commit in this crate — see §1.2(C) of the
-    /// investigation) is spawned through the marked `git_command`, i.e.
-    /// carries `RDM_GIT_SUBPROCESS=1`. This is the call site that can
-    /// re-trigger a plan repo's own `post-commit` hook, so the marker must
-    /// reach it for the re-entrancy guard in `rdm-cli` to short-circuit
-    /// correctly.
-    #[test]
-    fn git_resolve_conflict_completing_commit_tags_subprocess_env() {
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        store
-            .write(&RelPath::new("shared.md").unwrap(), "original".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        let bare_dir = setup_bare_remote(&mut store, "origin");
-        store.git_mut().git_fetch("origin").unwrap();
-
-        store
-            .write(
-                &RelPath::new("shared.md").unwrap(),
-                "local change".to_string(),
-            )
-            .unwrap();
-        store.commit().unwrap();
-
-        let clone_dir = TempDir::new().unwrap();
-        git_cmd()
-            .args(["clone"])
-            .arg(bare_dir.path())
-            .arg(clone_dir.path())
-            .output()
-            .unwrap();
-        std::fs::write(clone_dir.path().join("shared.md"), "remote change").unwrap();
-        git_cmd()
-            .args(["add", "."])
-            .current_dir(clone_dir.path())
-            .output()
-            .unwrap();
-        git_cmd()
-            .args(["commit", "-m", "conflicting commit"])
-            .current_dir(clone_dir.path())
-            .output()
-            .unwrap();
-        git_cmd()
-            .args(["push"])
-            .current_dir(clone_dir.path())
-            .output()
-            .unwrap();
-
-        // Pull to get a real conflict.
-        let outcome = store.git_mut().git_pull("origin").unwrap();
-        assert!(matches!(outcome, PullOutcome::Conflict(_)));
-
-        // Spy on git invocations for the resolve step: prepend a
-        // forwarding spy `git` to PATH so the completing `git commit
-        // --no-edit` call (merge.rs) is observed but still actually runs.
-        let log_dir = TempDir::new().unwrap();
-        let log_path = log_dir.path().join("spy.log");
-        let spy_bin = spy_git_dir(&log_path);
-        let original_path = prepend_path(spy_bin.path());
-
-        std::fs::write(dir.path().join("shared.md"), "resolved content").unwrap();
-        let result = store.git_mut().git_resolve_conflict("shared.md");
-
-        restore_path(original_path);
-
-        let result = result.unwrap();
-        assert!(result.merge_completed);
-
-        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-        let commit_line = log
-            .lines()
-            .find(|l| l.starts_with("argv=commit "))
-            .unwrap_or_else(|| panic!("no commit invocation recorded; log: {log}"));
-        assert!(
-            commit_line.contains("RDM_GIT_SUBPROCESS=1"),
-            "the completing git commit call should carry the rdm subprocess marker: {commit_line}"
-        );
-
-        let _ = bare_dir;
-    }
-
-    /// AC3 end-to-end regression test (mechanism B): a `git fetch` against a
-    /// remote that demands authentication must fail fast instead of hanging
-    /// on a credential prompt — even when the repo's own `core.askPass` is
-    /// configured to a script that would block forever if invoked.
-    ///
-    /// Hermetic hang simulation: a localhost-only HTTP listener answers
-    /// every request `401 Unauthorized` with a `WWW-Authenticate: Basic`
-    /// challenge, which makes git go looking for credentials. Without the
-    /// `GIT_TERMINAL_PROMPT=0` / `GIT_ASKPASS=true` hardening in
-    /// `rdm_git::process::git_command`, git would run the configured
-    /// `core.askPass` helper (the hanging script) and block indefinitely —
-    /// the env override wins over the repo config (git's precedence:
-    /// `GIT_ASKPASS` env beats `core.askpass`), so the empty credentials are
-    /// rejected and the fetch errors out promptly. No real network is used
-    /// (loopback only) and no auth ever succeeds.
-    #[test]
-    fn git_fetch_against_auth_required_remote_fails_fast_without_prompting() {
-        use std::io::{Read as _, Write as _};
-
-        // Loopback HTTP server: every request gets a 401 Basic challenge.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { break };
-                let mut buf = [0u8; 8192];
-                let _ = stream.read(&mut buf);
-                let _ = stream.write_all(
-                    b"HTTP/1.1 401 Unauthorized\r\n\
-                      WWW-Authenticate: Basic realm=\"rdm-test\"\r\n\
-                      Content-Length: 0\r\n\
-                      Connection: close\r\n\r\n",
-                );
-            }
-        });
-
-        let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
-        store
-            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
-            .unwrap();
-        store.commit().unwrap();
-
-        // Configure core.askPass to a script that would hang forever if it
-        // were ever actually invoked.
-        let script_dir = TempDir::new().unwrap();
-        let hanging_askpass = script_dir.path().join("hang-askpass.sh");
-        std::fs::write(&hanging_askpass, "#!/bin/sh\nsleep 9999\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&hanging_askpass, std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-        }
-        let out = git_cmd()
-            .args(["config", "core.askPass", hanging_askpass.to_str().unwrap()])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git config core.askPass failed");
-
-        store
-            .git_mut()
-            .git_remote_add("origin", &format!("http://{addr}/repo.git"))
-            .unwrap();
-
-        let start = std::time::Instant::now();
-        let result = store.git_mut().git_fetch("origin");
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed < std::time::Duration::from_secs(10),
-            "git fetch against an auth-required remote should fail fast \
-             rather than block on a credential prompt, took {elapsed:?}"
-        );
-        assert!(
-            result.is_err(),
-            "fetch should fail (auth never succeeds), got {result:?}"
-        );
     }
 }

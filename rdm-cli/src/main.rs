@@ -38,7 +38,6 @@ fn run() -> Result<()> {
     let root = paths::resolve_root(cli.root, &global_config)?;
     let root = paths::expand_root(root)?;
     let repo_config = paths::load_repo_config(&root).with_global_defaults(&global_config);
-    let staging = paths::resolve_staging(cli.stage, &repo_config);
     let format_str = paths::resolve_format(cli.format.map(|f| f.to_string()), &repo_config);
     let format: OutputFormat = format_str
         .parse::<OutputFormat>()
@@ -54,7 +53,6 @@ fn run() -> Result<()> {
         } => commands::init::run(
             &root,
             &global_config,
-            cli.stage,
             default_project,
             default_format,
             #[cfg(feature = "git")]
@@ -71,47 +69,26 @@ fn run() -> Result<()> {
             command,
         } => commands::bootstrap::run_command(plan_repo, path, branch, init, token, command)?,
 
-        Command::Index => commands::index::run(&root, staging)?,
+        Command::Index => commands::index::run(&root)?,
 
         Command::Project { command } => {
-            let mut store = commands::make_store(&root, staging)?;
-            commands::project::run(command, &mut store, format, cli.no_index, staging)?;
+            let mut store = commands::make_store(&root)?;
+            commands::project::run(command, &mut store, format, cli.no_index)?;
         }
 
         Command::Roadmap { command } => {
-            let mut store = commands::make_store(&root, staging)?;
-            commands::roadmap::run(
-                command,
-                &mut store,
-                &repo_config,
-                format,
-                cli.no_index,
-                staging,
-            )?;
+            let mut store = commands::make_store(&root)?;
+            commands::roadmap::run(command, &mut store, &repo_config, format, cli.no_index)?;
         }
 
         Command::Phase { command } => {
-            let mut store = commands::make_store(&root, staging)?;
-            commands::phase::run(
-                command,
-                &mut store,
-                &repo_config,
-                format,
-                cli.no_index,
-                staging,
-            )?;
+            let mut store = commands::make_store(&root)?;
+            commands::phase::run(command, &mut store, &repo_config, format, cli.no_index)?;
         }
 
         Command::Task { command } => {
-            let mut store = commands::make_store(&root, staging)?;
-            commands::task::run(
-                command,
-                &mut store,
-                &repo_config,
-                format,
-                cli.no_index,
-                staging,
-            )?;
+            let mut store = commands::make_store(&root)?;
+            commands::task::run(command, &mut store, &repo_config, format, cli.no_index)?;
         }
 
         Command::Promote {
@@ -122,15 +99,12 @@ fn run() -> Result<()> {
             &root,
             &repo_config,
             cli.no_index,
-            staging,
             task_slug,
             roadmap_slug,
             project,
         )?,
 
-        Command::Tree { project } => {
-            commands::tree::run(&root, &repo_config, staging, format, project)?
-        }
+        Command::Tree { project } => commands::tree::run(&root, &repo_config, format, project)?,
 
         Command::Describe { entity } => commands::describe::run(format, entity)?,
 
@@ -165,7 +139,6 @@ fn run() -> Result<()> {
             min_score_ratio,
         } => commands::search::run(
             &root,
-            staging,
             format,
             query,
             kind,
@@ -187,55 +160,48 @@ fn run() -> Result<()> {
         } => commands::serve::run(root, &repo_config, port, bind, quick_filter)?,
 
         #[cfg(feature = "git")]
-        Command::Status { fetch } => commands::status::run(&root, staging, fetch)?,
+        Command::Status { fetch } => commands::status::run(&root, fetch)?,
 
         #[cfg(feature = "git")]
-        Command::Commit { message } => commands::commit::run(&root, staging, message)?,
+        Command::Commit { message } => commands::commit::run(&root, message)?,
 
         #[cfg(feature = "git")]
-        Command::Discard { force } => commands::discard::run(&root, staging, force)?,
+        Command::Discard { force } => commands::discard::run(&root, force)?,
 
         #[cfg(feature = "git")]
-        Command::Conflicts => commands::conflicts::run(&root, staging)?,
+        Command::Conflicts => commands::conflicts::run(&root)?,
 
         #[cfg(feature = "git")]
-        Command::Resolve { file } => commands::resolve::run(&root, staging, file)?,
+        Command::Resolve { file } => commands::resolve::run(&root, file)?,
 
         #[cfg(feature = "git")]
         Command::Remote { command } => {
-            let mut store = commands::make_store(&root, staging)?;
-            commands::remote::run(command, &mut store, &root, &repo_config, staging)?;
+            let mut store = commands::make_store(&root)?;
+            commands::remote::run(command, &mut store, &root, &repo_config)?;
         }
 
         #[cfg(feature = "git")]
         Command::Hook { command } => {
-            commands::hook::run(command, &root, staging)?;
+            commands::hook::run(command, &root)?;
         }
 
         #[cfg(feature = "git")]
         Command::Worktree { command } => {
-            commands::worktree::run(command, &root, &repo_config, staging, format)?;
+            commands::worktree::run(command, &root, &repo_config, format)?;
         }
 
         #[cfg(feature = "git")]
         Command::Review { command } => {
-            let mut store = commands::make_store(&root, staging)?;
-            commands::review::run(
-                command,
-                &mut store,
-                &repo_config,
-                format,
-                cli.no_index,
-                staging,
-            )?;
+            let mut store = commands::make_store(&root)?;
+            commands::review::run(command, &mut store, &repo_config, format, cli.no_index)?;
         }
 
         Command::List { project, all } => {
-            commands::list::run(&root, &repo_config, staging, format, project, all)?
+            commands::list::run(&root, &repo_config, format, project, all)?
         }
 
         Command::Next { roadmap, project } => {
-            let mut store = commands::make_store(&root, staging)?;
+            let mut store = commands::make_store(&root)?;
             commands::next::run(&mut store, &repo_config, format, roadmap, project)?;
         }
     }

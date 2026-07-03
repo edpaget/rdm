@@ -52,8 +52,10 @@ use crate::store::Store;
 ///
 /// `f` receives the store and performs the entity write (e.g.
 /// [`roadmap::create_roadmap`]). Because reads observe staged writes, the index
-/// regeneration sees the mutation `f` just staged. The single trailing commit
-/// is staging-aware: under staging mode the backend defers it like any other.
+/// regeneration sees the mutation `f` just staged. The single trailing
+/// [`Store::commit`] flushes the staged writes to disk without creating a git
+/// commit; landing a real commit is the separate, explicit responsibility of
+/// the store's commit-now pathway.
 ///
 /// # Errors
 ///
@@ -85,9 +87,19 @@ pub struct BatchOutcome {
     /// Per-step results, in the same order as the `steps` passed in.
     pub step_results: Vec<Result<()>>,
     /// Result of the finalize stage: index regeneration (if any step
-    /// succeeded) followed by the single commit. `Ok(())` when both
-    /// succeeded or when there was nothing to do.
+    /// succeeded) followed by flushing the batch to the store. `Ok(())` when
+    /// both succeeded or when there was nothing to do.
+    ///
+    /// For a git-backed store this flush does **not** create a git commit —
+    /// [`Store::commit`] only ever flushes to disk. Callers that need the
+    /// batch to land as a single real commit inspect [`Self::commit_message`]
+    /// and pass it to the store's blessed always-commit pathway themselves.
     pub finalize_result: Result<()>,
+    /// The commit message for the batch, produced by the `message` closure
+    /// passed to [`mutate_batch`]. `Some` iff at least one step succeeded (and
+    /// there is therefore something to commit); `None` when every step failed
+    /// or the batch was empty, so callers land no empty commit.
+    pub commit_message: Option<String>,
 }
 
 /// A single step in a [`mutate_batch`] call: a boxed, one-shot mutation
@@ -101,10 +113,14 @@ pub type BatchStep<'a, S> = Box<dyn FnOnce(&mut S) -> Result<()> + 'a>;
 /// short-circuiting on an individual step's error (unlike [`mutate`]) — one
 /// bad step must not block the rest, matching the hook directive path's
 /// long-standing skip-and-continue contract. Regenerates the project's
-/// `INDEX.md` exactly once (only if at least one step succeeded), then
-/// commits exactly once, using the message returned by `message` — which is
-/// called with the full, in-order slice of per-step results, so the message
-/// can name only the steps that actually succeeded.
+/// `INDEX.md` exactly once (only if at least one step succeeded), then flushes
+/// the batch to the store exactly once. The single commit message is computed
+/// (only if at least one step succeeded) by calling `message` with the full,
+/// in-order slice of per-step results, so the message can name only the steps
+/// that actually succeeded; it is returned in [`BatchOutcome::commit_message`]
+/// for the caller to land as one real commit via the store's blessed
+/// always-commit pathway. Flushing here never creates a git commit — a
+/// git-backed [`Store::commit`] only writes to disk.
 ///
 /// Each step's return type is normalized to `Result<()>`: batched steps are
 /// typically heterogeneous (e.g. a phase update and a task update in the same
@@ -117,8 +133,8 @@ pub type BatchStep<'a, S> = Box<dyn FnOnce(&mut S) -> Result<()> + 'a>;
 /// through the returned [`BatchOutcome`]. Individual step failures land in
 /// `step_results`; an index-regeneration or commit failure lands in
 /// `finalize_result`. When `finalize_result` is `Err`, **none** of the
-/// batch's successful steps are committed — they remain staged (see
-/// [`Store::commit_with_message`]/[`Store::commit`]'s semantics) rather than
+/// batch's successful steps are flushed — they remain uncommitted (see
+/// [`Store::commit`]'s flush-only semantics) rather than
 /// partially landing, but `step_results` still faithfully reports which
 /// steps' mutations were applied (staged). This is an intentional
 /// consequence of collapsing the batch into a single transaction — under
@@ -136,15 +152,23 @@ pub fn mutate_batch<'a, S: Store>(
     for step in steps {
         step_results.push(step(store));
     }
+    let any_ok = step_results.iter().any(Result::is_ok);
+    // Compute the batch commit message iff there is something to commit,
+    // calling the caller's closure exactly once so it can name only the
+    // successful steps. The caller lands the real commit via the store's
+    // blessed always-commit pathway.
+    let commit_message = any_ok.then(|| message(&step_results));
     let finalize_result = (|| {
-        if step_results.iter().any(Result::is_ok) {
+        if any_ok {
             index::generate_index_for_project(store, project)?;
         }
-        let msg = message(&step_results);
-        store.commit_with_message(&msg)
+        // Flush the batch to disk only. For a git-backed store this creates no
+        // git commit; the caller commits via `commit_message`.
+        store.commit()
     })();
     BatchOutcome {
         step_results,
         finalize_result,
+        commit_message,
     }
 }

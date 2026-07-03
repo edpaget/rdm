@@ -17,12 +17,11 @@ use crate::paths;
 pub fn run(
     root: &Path,
     repo_config: &rdm_core::config::Config,
-    staging: bool,
     format: OutputFormat,
     project: Option<String>,
     all: bool,
 ) -> Result<()> {
-    let store = commands::make_store(root, staging)?;
+    let store = commands::make_store(root)?;
     let projects = if all {
         rdm_core::ops::project::list_projects(&store).context("failed to list projects")?
     } else {
@@ -52,6 +51,6 @@ pub fn run(
             serde_json::to_string_pretty(&all_summaries).context("failed to serialize roadmaps")?
         );
     }
-    commands::maybe_print_uncommitted_hint(&store, staging);
+    commands::maybe_print_uncommitted_hint(&store);
     Ok(())
 }

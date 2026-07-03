@@ -10,8 +10,8 @@ use crate::commands;
 ///
 /// Returns an error if the store cannot be opened, git status fails, or the
 /// commit fails.
-pub fn run(root: &Path, staging: bool, message: Option<String>) -> Result<()> {
-    let store = commands::make_store(root, staging)?;
+pub fn run(root: &Path, message: Option<String>) -> Result<()> {
+    let store = commands::make_store(root)?;
     let statuses = store
         .git()
         .git_status()

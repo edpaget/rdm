@@ -182,7 +182,6 @@ pub fn run(
     repo_config: &Config,
     format: OutputFormat,
     no_index: bool,
-    staging: bool,
 ) -> Result<()> {
     match command {
         PhaseCommand::Create {
@@ -202,29 +201,22 @@ pub fn run(
             let body = resolve_body(body, no_edit)?;
             let difficulty_update = DifficultyUpdate::from_args(difficulty, false)?;
             let model_update = ModelTierUpdate::from_args(model, false)?;
-            let doc = commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to create phase",
-                |s| {
-                    rdm_core::ops::phase::create_phase(
-                        s,
-                        rdm_core::ops::phase::CreatePhase {
-                            project: &project,
-                            roadmap: &roadmap,
-                            slug: &slug,
-                            title,
-                            number,
-                            body: body.as_deref(),
-                            tags,
-                            difficulty: difficulty_update,
-                            model: model_update,
-                        },
-                    )
-                },
-            )?;
+            let doc = commit_mutation(store, &project, no_index, "failed to create phase", |s| {
+                rdm_core::ops::phase::create_phase(
+                    s,
+                    rdm_core::ops::phase::CreatePhase {
+                        project: &project,
+                        roadmap: &roadmap,
+                        slug: &slug,
+                        title,
+                        number,
+                        body: body.as_deref(),
+                        tags,
+                        difficulty: difficulty_update,
+                        model: model_update,
+                    },
+                )
+            })?;
             let stem = doc.frontmatter.stem(&slug);
             println!("Created phase '{stem}' in roadmap '{roadmap}'");
         }
@@ -250,7 +242,7 @@ pub fn run(
                     );
                 }
             }
-            maybe_print_uncommitted_hint(store, staging);
+            maybe_print_uncommitted_hint(store);
         }
         PhaseCommand::Show {
             stem,
@@ -315,7 +307,7 @@ pub fn run(
                     "--format table is not supported for 'phase show'; use --format human, --format json, --format markdown, or omit --format"
                 ),
             }
-            maybe_print_uncommitted_hint(store, staging);
+            maybe_print_uncommitted_hint(store);
         }
         PhaseCommand::Update {
             stem,
@@ -397,40 +389,33 @@ pub fn run(
             let model_update = ModelTierUpdate::from_args(model, clear_model)?;
             let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
             let has_reason = !matches!(reason_update, ReasonUpdate::Keep);
-            let doc = commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to update phase",
-                |s| {
-                    let mut doc = rdm_core::ops::phase::update_phase_with_estimate(
+            let doc = commit_mutation(store, &project, no_index, "failed to update phase", |s| {
+                let mut doc = rdm_core::ops::phase::update_phase_with_estimate(
+                    s,
+                    &project,
+                    &roadmap,
+                    &stem,
+                    status,
+                    tags,
+                    body,
+                    commit,
+                    review_sha,
+                    review_branch,
+                    difficulty_update,
+                    model_update,
+                    title_update,
+                )?;
+                if has_reason {
+                    doc = rdm_core::ops::phase::set_phase_blocked_reason(
                         s,
                         &project,
                         &roadmap,
                         &stem,
-                        status,
-                        tags,
-                        body,
-                        commit,
-                        review_sha,
-                        review_branch,
-                        difficulty_update,
-                        model_update,
-                        title_update,
+                        reason_update,
                     )?;
-                    if has_reason {
-                        doc = rdm_core::ops::phase::set_phase_blocked_reason(
-                            s,
-                            &project,
-                            &roadmap,
-                            &stem,
-                            reason_update,
-                        )?;
-                    }
-                    Ok(doc)
-                },
-            )
+                }
+                Ok(doc)
+            })
             .map_err(map_body_clobber)?;
             println!("Updated '{stem}' → {}", doc.frontmatter.status);
             if let Some(warning) = needs_review_warning {
@@ -445,14 +430,9 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
                 .context("failed to resolve phase")?;
-            commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to remove phase",
-                |s| rdm_core::ops::phase::remove_phase(s, &project, &roadmap, &stem),
-            )?;
+            commit_mutation(store, &project, no_index, "failed to remove phase", |s| {
+                rdm_core::ops::phase::remove_phase(s, &project, &roadmap, &stem)
+            })?;
             println!("Removed phase '{stem}' from roadmap '{roadmap}'");
         }
     }

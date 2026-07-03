@@ -97,16 +97,13 @@ pub fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatu
 }
 
 /// Opens a store for an existing plan repo.
-pub fn make_store(root: &Path, staging: bool) -> Result<AppStore> {
+pub fn make_store(root: &Path) -> Result<AppStore> {
     #[cfg(feature = "git")]
     {
-        Ok(rdm_store_git::GitStore::new(root)
-            .context("failed to open git repository")?
-            .with_staging_mode(staging))
+        rdm_store_git::GitStore::new(root).context("failed to open git repository")
     }
     #[cfg(not(feature = "git"))]
     {
-        let _ = staging;
         Ok(rdm_store_fs::FsStore::new(root))
     }
 }
@@ -236,18 +233,17 @@ pub fn reject_non_human(format: OutputFormat, command_name: &str) -> Result<()> 
 /// Runs a mutating op as a single transaction and prints the staging hint.
 ///
 /// Wraps `f` in [`rdm_core::ops::mutate`], so the entity write, `INDEX.md`
-/// regeneration, and the single git commit happen together — the CLI never
+/// regeneration, and the single staged flush happen together — the CLI never
 /// has to remember to regenerate the index. `context` labels any failure.
 ///
 /// `--no-index` is honored as an escape hatch: the mutation is still applied
-/// and committed, but the index is left stale (the user can rebuild it later
-/// with `rdm index`). When staging mode is active, the trailing `rdm commit`
-/// hint is printed.
+/// and staged, but the index is left stale (the user can rebuild it later
+/// with `rdm index`). The trailing `rdm commit` hint is always printed —
+/// staging is now the only workflow.
 pub fn commit_mutation<T>(
     store: &mut AppStore,
     project: &str,
     no_index: bool,
-    staging: bool,
     context: &str,
     f: impl FnOnce(&mut AppStore) -> rdm_core::error::Result<T>,
 ) -> Result<T> {
@@ -258,21 +254,17 @@ pub fn commit_mutation<T>(
     } else {
         rdm_core::ops::mutate(store, project, f).with_context(|| context.to_string())?
     };
-    if staging {
-        println!("  (staged — run `rdm commit` to persist)");
-    }
+    #[cfg(feature = "git")]
+    println!("  (staged — run `rdm commit` to persist)");
     Ok(out)
 }
 
-/// Prints a hint about uncommitted changes when staging mode is active.
+/// Prints a hint about uncommitted changes.
 ///
 /// Called after read-only commands (list, show, search) so the user is aware
 /// that the data they see includes uncommitted staged mutations.
 #[cfg(feature = "git")]
-pub fn maybe_print_uncommitted_hint(store: &AppStore, staging: bool) {
-    if !staging {
-        return;
-    }
+pub fn maybe_print_uncommitted_hint(store: &AppStore) {
     if let Ok(statuses) = store.git().git_status()
         && !statuses.is_empty()
     {
@@ -284,7 +276,7 @@ pub fn maybe_print_uncommitted_hint(store: &AppStore, staging: bool) {
 }
 
 #[cfg(not(feature = "git"))]
-pub fn maybe_print_uncommitted_hint(_store: &AppStore, _staging: bool) {}
+pub fn maybe_print_uncommitted_hint(_store: &AppStore) {}
 
 /// Built-in hook execution deadline (seconds) used when `hook_timeout_secs`
 /// is unset, or configured to `0`. `0` is deliberately normalized to this
@@ -479,7 +471,6 @@ fn build_batch_commit_message(
 #[cfg(feature = "git")]
 pub fn apply_done_directives(
     root: &Path,
-    staging: bool,
     directives_with_sha: &[(rdm_core::hook::DoneDirective, String)],
     logger: &crate::hook_log::HookLogger,
     hook: &str,
@@ -489,7 +480,11 @@ pub fn apply_done_directives(
         return Ok(());
     }
 
-    let mut store = match make_store(root, staging) {
+    // Each per-directive `ops::mutate` → `Store::commit` only flushes to
+    // disk — that's the only thing `Store::commit` ever does now. After the
+    // loop we land exactly one real commit via the blessed always-commit
+    // pathway (`commit_now`).
+    let mut store = match make_store(root) {
         Ok(s) => s,
         Err(e) => {
             let msg = format!("{e:#}");
@@ -597,7 +592,7 @@ pub fn apply_done_directives(
     }
 
     let message_metas = metas.clone();
-    let outcome = rdm_core::ops::mutate_batch(&mut store, &project, steps, move |results| {
+    let mut outcome = rdm_core::ops::mutate_batch(&mut store, &project, steps, move |results| {
         build_batch_commit_message(&message_metas, results)
     });
 
@@ -659,14 +654,27 @@ pub fn apply_done_directives(
         }
     }
 
-    match outcome.finalize_result {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let msg = format!("{e}");
-            logger.log(hook, "batch-commit-error", &[("error", msg.as_str())]);
-            Err(e.into())
-        }
+    // Surface any flush / index-regen failure before attempting the commit —
+    // if the store never flushed cleanly there is nothing safe to commit.
+    if let Err(e) = outcome.finalize_result {
+        let msg = format!("{e}");
+        logger.log(hook, "batch-commit-error", &[("error", msg.as_str())]);
+        return Err(e.into());
     }
+
+    // Land exactly one real git commit for the whole batch via the blessed
+    // always-commit pathway. `mutate_batch` only flushed to disk (the store's
+    // `commit` never touches git); `commit_message` is `Some` iff at least one
+    // directive applied, so an all-skipped batch produces no empty commit.
+    if let Some(message) = outcome.commit_message.take()
+        && let Err(e) = store.commit_now(&message)
+    {
+        let msg = format!("{e}");
+        logger.log(hook, "batch-commit-error", &[("error", msg.as_str())]);
+        return Err(e.into());
+    }
+
+    Ok(())
 }
 
 /// Test-only stall injector used to exercise the hook-timeout wrapper
@@ -707,12 +715,11 @@ fn maybe_test_stall_hook() {
 /// [`GitRepo::create_git_commit`](rdm_store_git::GitRepo::create_git_commit)'s,
 /// for the full re-entrancy rationale.
 #[cfg(feature = "git")]
-pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> Result<()> {
+pub fn run_post_merge_hook(root: &Path, since: Option<&str>) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let logger = crate::hook_log::HookLogger::new(&cwd);
     let hook = "post-merge";
     let cwd_str = cwd.display().to_string();
-    let staging_str = staging.to_string();
     let timeout_secs = resolve_hook_timeout_secs(root).to_string();
     logger.log(
         hook,
@@ -720,7 +727,6 @@ pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> R
         &[
             ("cwd", cwd_str.as_str()),
             ("since", since.unwrap_or("")),
-            ("staging", staging_str.as_str()),
             ("timeout_secs", timeout_secs.as_str()),
         ],
     );
@@ -763,7 +769,7 @@ pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> R
     let count = directives_with_sha.len().to_string();
     logger.log(hook, "parsed-directives", &[("count", count.as_str())]);
 
-    let result = apply_done_directives(root, staging, &directives_with_sha, &logger, hook);
+    let result = apply_done_directives(root, &directives_with_sha, &logger, hook);
     logger.log(
         hook,
         "exit",
@@ -800,19 +806,17 @@ pub fn run_post_merge_hook(root: &Path, staging: bool, since: Option<&str>) -> R
 /// short-circuits that one-level re-entrancy instead of leaving it
 /// completely untested and unbounded.
 #[cfg(feature = "git")]
-pub fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
+pub fn run_post_commit_hook(root: &Path) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let logger = crate::hook_log::HookLogger::new(&cwd);
     let hook = "post-commit";
     let cwd_str = cwd.display().to_string();
-    let staging_str = staging.to_string();
     let timeout_secs = resolve_hook_timeout_secs(root).to_string();
     logger.log(
         hook,
         "entry",
         &[
             ("cwd", cwd_str.as_str()),
-            ("staging", staging_str.as_str()),
             ("timeout_secs", timeout_secs.as_str()),
         ],
     );
@@ -881,7 +885,7 @@ pub fn run_post_commit_hook(root: &Path, staging: bool) -> Result<()> {
         &[("count", count.as_str()), ("sha", commit.sha.as_str())],
     );
 
-    let result = apply_done_directives(root, staging, &directives, &logger, hook);
+    let result = apply_done_directives(root, &directives, &logger, hook);
     logger.log(
         hook,
         "exit",

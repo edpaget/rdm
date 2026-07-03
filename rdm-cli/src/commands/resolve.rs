@@ -11,8 +11,8 @@ use crate::commands;
 ///
 /// Returns an error if the store cannot be opened, conflict resolution fails,
 /// or post-merge index regeneration fails.
-pub fn run(root: &Path, staging: bool, file: String) -> Result<()> {
-    let mut store = commands::make_store(root, staging)?;
+pub fn run(root: &Path, file: String) -> Result<()> {
+    let mut store = commands::make_store(root)?;
     let result = store
         .git_mut()
         .git_resolve_conflict(&file)

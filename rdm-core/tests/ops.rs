@@ -4764,10 +4764,10 @@ fn mutate_batch_continues_after_a_failing_step() {
     assert_eq!(other.frontmatter.status, PhaseStatus::Done);
 }
 
-/// A [`Store`] wrapper whose `commit`/`commit_with_message` always fail,
-/// while everything else delegates to an inner [`MemoryStore`]. Used to pin
-/// that `mutate_batch` still exposes per-step results when the shared
-/// finalize stage (the commit, in this case) errors.
+/// A [`Store`] wrapper whose `commit` always fails, while everything else
+/// delegates to an inner [`MemoryStore`]. Used to pin that `mutate_batch`
+/// still exposes per-step results when the shared finalize stage (the flush,
+/// in this case) errors.
 struct AlwaysFailingCommitStore {
     inner: MemoryStore,
 }
@@ -4801,10 +4801,6 @@ impl Store for AlwaysFailingCommitStore {
     }
 
     fn commit(&mut self) -> rdm_core::error::Result<()> {
-        Err(Error::Io(std::io::Error::other("commit always fails")))
-    }
-
-    fn commit_with_message(&mut self, _message: &str) -> rdm_core::error::Result<()> {
         Err(Error::Io(std::io::Error::other("commit always fails")))
     }
 

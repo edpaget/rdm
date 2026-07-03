@@ -15,7 +15,6 @@ pub fn run(
     repo_config: &Config,
     format: OutputFormat,
     no_index: bool,
-    staging: bool,
 ) -> Result<()> {
     match command {
         TaskCommand::Create {
@@ -30,26 +29,19 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to create task",
-                |s| {
-                    rdm_core::ops::task::create_task(
-                        s,
-                        rdm_core::ops::task::CreateTask {
-                            project: &project,
-                            slug: &slug,
-                            title,
-                            priority,
-                            tags,
-                            body: body.as_deref(),
-                        },
-                    )
-                },
-            )?;
+            commit_mutation(store, &project, no_index, "failed to create task", |s| {
+                rdm_core::ops::task::create_task(
+                    s,
+                    rdm_core::ops::task::CreateTask {
+                        project: &project,
+                        slug: &slug,
+                        title,
+                        priority,
+                        tags,
+                        body: body.as_deref(),
+                    },
+                )
+            })?;
             println!("Created task '{slug}' in project '{project}'");
         }
         TaskCommand::Show {
@@ -87,7 +79,7 @@ pub fn run(
                     "--format table is not supported for 'task show'; use --format human, --format json, --format markdown, or omit --format"
                 ),
             }
-            maybe_print_uncommitted_hint(store, staging);
+            maybe_print_uncommitted_hint(store);
         }
         TaskCommand::Update {
             slug,
@@ -154,28 +146,21 @@ pub fn run(
             });
             #[cfg(not(feature = "git"))]
             let needs_review_warning: Option<String> = None;
-            let doc = commit_mutation(
-                store,
-                &project,
-                no_index,
-                staging,
-                "failed to update task",
-                |s| {
-                    rdm_core::ops::task::update_task(
-                        s,
-                        &project,
-                        &slug,
-                        status,
-                        priority,
-                        tags,
-                        body,
-                        commit,
-                        review_sha,
-                        review_branch,
-                        title,
-                    )
-                },
-            )
+            let doc = commit_mutation(store, &project, no_index, "failed to update task", |s| {
+                rdm_core::ops::task::update_task(
+                    s,
+                    &project,
+                    &slug,
+                    status,
+                    priority,
+                    tags,
+                    body,
+                    commit,
+                    review_sha,
+                    review_branch,
+                    title,
+                )
+            })
             .map_err(map_body_clobber)?;
             println!(
                 "Updated task '{slug}' → status: {}, priority: {}",
@@ -222,7 +207,7 @@ pub fn run(
                     );
                 }
             }
-            maybe_print_uncommitted_hint(store, staging);
+            maybe_print_uncommitted_hint(store);
         }
     }
     Ok(())
