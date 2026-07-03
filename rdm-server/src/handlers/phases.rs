@@ -136,12 +136,15 @@ pub async fn list_phases(
 pub struct PhaseDetailFilters {
     /// Read the body as it was at a specific git revision.
     pub at: Option<String>,
+    /// Inline error message from a redirected review-form action.
+    pub draft_error: Option<String>,
 }
 
 /// `GET /projects/:project/roadmaps/:roadmap/phases/:phase` — phase detail
 /// with sibling links.
 pub async fn get_phase(
     format: ResponseFormat,
+    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
     Path((project, roadmap, phase_id)): Path<(String, String, String)>,
     Query(filters): Query<PhaseDetailFilters>,
@@ -211,6 +214,23 @@ pub async fn get_phase(
             )
             .map_err(|e| error_response(e, format))?;
             let body_html = page_reviews.render_body(&doc.body);
+            let draft_panel = if filters.at.is_none() {
+                Some(
+                    crate::review_views::draft_panel(
+                        &store,
+                        &project,
+                        &rdm_core::model::ReviewTarget::Phase {
+                            roadmap: roadmap.clone(),
+                            stem: stem.clone(),
+                        },
+                        &[],
+                        crate::handlers::review_forms::read_author_cookie(&headers).as_deref(),
+                    )
+                    .map_err(|e| error_response(e, format))?,
+                )
+            } else {
+                None
+            };
             let page = PhaseDetailPage {
                 project,
                 roadmap,
@@ -228,6 +248,9 @@ pub async fn get_phase(
                 next_href,
                 revision: filters.at,
                 reviews: page_reviews.reviews,
+                draft_panel,
+                // A bare `?draft_error=` must not render an empty alert banner.
+                draft_error: filters.draft_error.filter(|s| !s.trim().is_empty()),
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1527,5 +1550,148 @@ mod tests {
         );
         assert!(html.contains("applied in <code>abc1234</code>"));
         assert!(html.contains("Fixed in abc1234."));
+    }
+
+    // -- draft panel --
+
+    async fn get_html_with_cookie(state: &AppState, uri: &str, cookie: &str) -> String {
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get(uri)
+                    .header("accept", "text/html")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 262144).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_shows_start_review_form_when_no_draft() {
+        let (_dir, state) = setup();
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
+        assert!(html.contains(r#"id="review-draft""#), "got: {html}");
+        assert!(html.contains(r#"action="/projects/demo/reviews/form""#));
+        assert!(html.contains(r#"value="phase/alpha/phase-2-second""#));
+        assert!(html.contains(r#"<label for="review-author""#));
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_draft_panel_keeps_draft_private_to_its_author() {
+        let (_dir, state) = setup();
+        author_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-2-second".to_string(),
+            },
+            &[(None, None, "Draft-only note.")],
+            false,
+        );
+        let html = get_html_with_cookie(
+            &state,
+            "/projects/demo/roadmaps/alpha/phases/2",
+            "rdm_author=reviewer",
+        )
+        .await;
+        // The author sees their pending review in the panel...
+        assert!(html.contains("Your pending review"), "got: {html}");
+        assert!(html.contains("Draft-only note."));
+        assert!(html.contains("form/submit"));
+        assert!(html.contains("Leave blank to keep the current summary."));
+        // ...but it never leaks into the public reviews section.
+        assert!(!html.contains(r#"<section id="reviews""#), "got: {html}");
+        // Phase pages have no doc-scope dropdown.
+        assert!(!html.contains("draft-new-comment-doc"));
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_hides_other_authors_draft() {
+        let (_dir, state) = setup();
+        author_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-2-second".to_string(),
+            },
+            &[(None, None, "Draft-only note.")],
+            false,
+        );
+        let html = get_html_with_cookie(
+            &state,
+            "/projects/demo/roadmaps/alpha/phases/2",
+            "rdm_author=someone-else",
+        )
+        .await;
+        assert!(!html.contains("Draft-only note."), "got: {html}");
+        assert!(html.contains(r#"action="/projects/demo/reviews/form""#));
+        // The cookie identity prefills the start form.
+        assert!(html.contains(r#"value="someone-else""#));
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_renders_draft_error_banner_from_query_param() {
+        let (_dir, state) = setup();
+        let html = get_html(
+            &state,
+            "/projects/demo/roadmaps/alpha/phases/2?draft_error=comment%20body%20must%20not%20be%20empty",
+        )
+        .await;
+        assert!(
+            html.contains(r#"class="form-error" role="alert""#),
+            "got: {html}"
+        );
+        assert!(html.contains("comment body must not be empty"));
+    }
+
+    /// A bare `?draft_error=` (present but empty) must not render an
+    /// empty `role="alert"` banner.
+    #[tokio::test]
+    async fn get_phase_html_blank_draft_error_renders_no_banner() {
+        let (_dir, state) = setup();
+        let html = get_html(
+            &state,
+            "/projects/demo/roadmaps/alpha/phases/2?draft_error=",
+        )
+        .await;
+        assert!(!html.contains("form-error"), "got: {html}");
+    }
+
+    #[tokio::test]
+    async fn get_phase_html_dismiss_control_only_on_submitted_reviews() {
+        let (_dir, state) = setup();
+        let id = author_review(
+            &state,
+            ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-2-second".to_string(),
+            },
+            &[(None, None, "Please fix.")],
+            true,
+        );
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
+        assert!(
+            html.contains(&format!(
+                r#"action="/projects/demo/reviews/{id}/form/dismiss""#
+            )),
+            "got: {html}"
+        );
+
+        // Once dismissed, the control disappears.
+        let mut store = state.store();
+        rdm_core::ops::reviews::update_review(
+            &mut store,
+            "demo",
+            &id,
+            rdm_core::ops::reviews::ReviewTransition::Dismissed,
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
+        assert!(!html.contains("form/dismiss"), "got: {html}");
     }
 }

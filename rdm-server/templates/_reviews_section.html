@@ -10,6 +10,11 @@
       {% endif %}
       <span class="review-author">{{ r.author }}</span>
       <span class="review-time">{{ r.created_relative }}</span>
+      {% if let Some(href) = r.dismiss_href %}
+      <form method="post" class="review-dismiss" action="{{ href }}">
+        <button type="submit" aria-label="Dismiss this review">Dismiss</button>
+      </form>
+      {% endif %}
     </header>
     {% if !r.summary_html.is_empty() %}
     <div class="review-summary body-content">{{ r.summary_html|safe }}</div>

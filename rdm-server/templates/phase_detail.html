@@ -24,6 +24,9 @@
   <span class="badge badge-revision">Viewing revision {{ sha }}</span>
 </p>
 {% endif %}
+{% if let Some(err) = draft_error %}
+<p class="form-error" role="alert">{{ err }}</p>
+{% endif %}
 <dl class="meta">
   <dt>Status</dt>
   <dd>
@@ -84,5 +87,8 @@
   <span></span>
   {% endif %}
 </nav>
+{% if let Some(panel) = draft_panel %}
+{% include "_draft_panel.html" %}
+{% endif %}
 {% include "_reviews_section.html" %}
 {% endblock %}

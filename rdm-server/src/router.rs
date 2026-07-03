@@ -34,6 +34,34 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::reviews::list_reviews).post(handlers::reviews::create_review),
         )
         .route(
+            "/projects/{project}/reviews/form",
+            post(handlers::review_forms::start_review_form),
+        )
+        .route(
+            "/projects/{project}/reviews/{review_id}/form/comments",
+            post(handlers::review_forms::add_comment_form),
+        )
+        .route(
+            "/projects/{project}/reviews/{review_id}/form/comments/{comment_id}/edit",
+            post(handlers::review_forms::edit_comment_form),
+        )
+        .route(
+            "/projects/{project}/reviews/{review_id}/form/comments/{comment_id}/remove",
+            post(handlers::review_forms::remove_comment_form),
+        )
+        .route(
+            "/projects/{project}/reviews/{review_id}/form/submit",
+            post(handlers::review_forms::submit_review_form),
+        )
+        .route(
+            "/projects/{project}/reviews/{review_id}/form/dismiss",
+            post(handlers::review_forms::dismiss_review_form),
+        )
+        .route(
+            "/projects/{project}/reviews/{review_id}/form/delete",
+            post(handlers::review_forms::delete_review_form),
+        )
+        .route(
             "/projects/{project}/reviews/{review_id}",
             get(handlers::reviews::get_review)
                 .patch(handlers::reviews::update_review)

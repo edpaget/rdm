@@ -291,6 +291,63 @@ pub struct ReviewView {
     pub summary_html: String,
     /// The review's comments, in order.
     pub comments: Vec<ReviewCommentView>,
+    /// Form action for the inline Dismiss control; `Some` only while the
+    /// review is submitted (drafts never render here, and terminal states
+    /// have nothing left to dismiss).
+    pub dismiss_href: Option<String>,
+}
+
+/// One phase option for the draft panel's `doc` scope dropdowns (roadmap
+/// pages only).
+pub struct DocOption {
+    /// Phase file stem — the `doc_stem` form value.
+    pub stem: String,
+    /// Display label ("Phase N: Title").
+    pub label: String,
+    /// Whether this option is the comment's current scope.
+    pub selected: bool,
+}
+
+/// One pending comment rendered in the draft panel with its edit/remove
+/// forms.
+pub struct DraftCommentView {
+    /// Comment id within the review.
+    pub id: u32,
+    /// Raw markdown of the comment body, backing the edit textarea.
+    pub body_md: String,
+    /// Display label of the comment's scope ("Whole document" or the
+    /// targeted phase).
+    pub doc_label: String,
+    /// Phase options for the edit form's scope dropdown, with the current
+    /// scope flagged `selected`. Empty on non-roadmap reviews (no dropdown).
+    pub doc_options: Vec<DocOption>,
+}
+
+/// The visitor's open draft review, rendered in the draft panel.
+pub struct DraftReviewView {
+    /// Review id.
+    pub id: String,
+    /// Raw markdown of the draft summary, backing the submit-form textarea.
+    pub summary_md: String,
+    /// Pending comments, in order.
+    pub comments: Vec<DraftCommentView>,
+}
+
+/// The draft-review panel on a detail page: either the visitor's open
+/// draft on this document, or a "Start review" form.
+pub struct DraftPanelView {
+    /// The page document as a review target reference
+    /// (`roadmap/<slug>`, `phase/<roadmap>/<stem>`, or `task/<slug>`) —
+    /// the start form's hidden `target` field.
+    pub target_ref: String,
+    /// Prefill for the start form's author input (from the `rdm_author`
+    /// cookie; empty when absent).
+    pub author_value: String,
+    /// The visitor's open draft on this document, if any.
+    pub draft: Option<DraftReviewView>,
+    /// Phase options for the add-comment form's scope dropdown (roadmap
+    /// pages only; empty elsewhere).
+    pub doc_options: Vec<DocOption>,
 }
 
 /// Helper to map priority to CSS badge class.
@@ -425,6 +482,10 @@ pub struct RoadmapDetailPage {
     pub revision: Option<String>,
     /// Non-draft reviews of this roadmap, oldest first.
     pub reviews: Vec<ReviewView>,
+    /// Draft-review panel; `None` when viewing a pinned `?at=` revision.
+    pub draft_panel: Option<DraftPanelView>,
+    /// Inline error from a redirected review-form action, if any.
+    pub draft_error: Option<String>,
 }
 
 /// Phase detail page with rendered markdown body.
@@ -465,6 +526,10 @@ pub struct PhaseDetailPage {
     /// Non-draft reviews of this phase (including roadmap-review comments
     /// scoped into it), oldest first.
     pub reviews: Vec<ReviewView>,
+    /// Draft-review panel; `None` when viewing a pinned `?at=` revision.
+    pub draft_panel: Option<DraftPanelView>,
+    /// Inline error from a redirected review-form action, if any.
+    pub draft_error: Option<String>,
 }
 
 /// A task row for the task list page.
@@ -537,6 +602,10 @@ pub struct TaskDetailPage {
     pub revision: Option<String>,
     /// Non-draft reviews of this task, oldest first.
     pub reviews: Vec<ReviewView>,
+    /// Draft-review panel; `None` when viewing a pinned `?at=` revision.
+    pub draft_panel: Option<DraftPanelView>,
+    /// Inline error from a redirected review-form action, if any.
+    pub draft_error: Option<String>,
 }
 
 /// A single search result row for the search results page.
@@ -695,6 +764,8 @@ mod tests {
             status_options: task_status_options(&rdm_core::model::TaskStatus::Open),
             revision,
             reviews: Vec::new(),
+            draft_panel: None,
+            draft_error: None,
         };
         page.render().unwrap()
     }
@@ -748,6 +819,8 @@ mod tests {
             active_tag: None,
             revision,
             reviews: Vec::new(),
+            draft_panel: None,
+            draft_error: None,
         };
         page.render().unwrap()
     }
@@ -785,6 +858,8 @@ mod tests {
             status_options: phase_status_options(&rdm_core::model::PhaseStatus::InProgress),
             revision,
             reviews: Vec::new(),
+            draft_panel: None,
+            draft_error: None,
         };
         page.render().unwrap()
     }

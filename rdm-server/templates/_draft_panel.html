@@ -1,0 +1,79 @@
+{% if let Some(draft) = panel.draft %}
+<section id="review-draft" class="draft-panel" aria-label="Your pending review">
+  <h2>Your pending review</h2>
+  <p class="draft-privacy-note">Draft comments are private to this panel until you submit.</p>
+  {% if !draft.comments.is_empty() %}
+  <ol class="draft-comments">
+    {% for c in draft.comments %}
+    <li class="draft-comment" id="draft-comment-{{ c.id }}">
+      <p class="draft-comment-doc">{{ c.doc_label }}</p>
+      <form method="post" class="draft-comment-edit"
+            action="/projects/{{ project }}/reviews/{{ draft.id }}/form/comments/{{ c.id }}/edit">
+        <label for="draft-comment-body-{{ c.id }}" class="visually-hidden">Comment (markdown)</label>
+        <textarea id="draft-comment-body-{{ c.id }}" name="body" rows="4">
+{{ c.body_md }}</textarea>
+        {% if !c.doc_options.is_empty() %}
+        <label for="draft-comment-doc-{{ c.id }}">Applies to</label>
+        <select id="draft-comment-doc-{{ c.id }}" name="doc_stem">
+          <option value="">Whole roadmap</option>
+          {% for o in c.doc_options %}
+          <option value="{{ o.stem }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>
+          {% endfor %}
+        </select>
+        {% endif %}
+        <button type="submit">Save comment</button>
+      </form>
+      <form method="post" class="draft-comment-remove"
+            action="/projects/{{ project }}/reviews/{{ draft.id }}/form/comments/{{ c.id }}/remove">
+        <button type="submit">Remove</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+  <form method="post" class="draft-add-comment"
+        action="/projects/{{ project }}/reviews/{{ draft.id }}/form/comments">
+    <h3>Add general comment</h3>
+    <label for="draft-new-comment" class="visually-hidden">New comment (markdown)</label>
+    <textarea id="draft-new-comment" name="body" rows="4"></textarea>
+    {% if !panel.doc_options.is_empty() %}
+    <label for="draft-new-comment-doc">Applies to</label>
+    <select id="draft-new-comment-doc" name="doc_stem">
+      <option value="">Whole roadmap</option>
+      {% for o in panel.doc_options %}
+      <option value="{{ o.stem }}">{{ o.label }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <button type="submit">Add comment</button>
+  </form>
+  <form method="post" class="draft-submit"
+        action="/projects/{{ project }}/reviews/{{ draft.id }}/form/submit">
+    <h3>Submit review</h3>
+    <label for="draft-summary">Summary (markdown)</label>
+    <textarea id="draft-summary" name="summary" rows="6">
+{{ draft.summary_md }}</textarea>
+    <p class="field-hint">Leave blank to keep the current summary.</p>
+    <fieldset class="verdict-picker">
+      <legend>Verdict</legend>
+      <label><input type="radio" name="verdict" value="comment"> Comment</label>
+      <label><input type="radio" name="verdict" value="approve"> Approve</label>
+      <label><input type="radio" name="verdict" value="request-changes"> Request changes</label>
+    </fieldset>
+    <button type="submit">Submit review</button>
+  </form>
+  <form method="post" class="draft-delete"
+        action="/projects/{{ project }}/reviews/{{ draft.id }}/form/delete">
+    <button type="submit">Delete draft</button>
+  </form>
+</section>
+{% else %}
+<section id="review-draft" class="draft-panel-start" aria-label="Start a review">
+  <form method="post" class="draft-start" action="/projects/{{ project }}/reviews/form">
+    <input type="hidden" name="target" value="{{ panel.target_ref }}">
+    <label for="review-author">Your name</label>
+    <input type="text" id="review-author" name="author" value="{{ panel.author_value }}" required>
+    <button type="submit">Start review</button>
+  </form>
+</section>
+{% endif %}

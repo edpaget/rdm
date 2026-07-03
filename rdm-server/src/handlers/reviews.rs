@@ -75,15 +75,7 @@ where
 /// Builds the `target` link relation for a review: the reviewed roadmap,
 /// phase, or task resource.
 fn target_link(project: &str, target: &ReviewTarget) -> HalLink {
-    match target {
-        ReviewTarget::Roadmap { roadmap } => {
-            HalLink::new(format!("/projects/{project}/roadmaps/{roadmap}"))
-        }
-        ReviewTarget::Phase { roadmap, stem } => HalLink::new(format!(
-            "/projects/{project}/roadmaps/{roadmap}/phases/{stem}"
-        )),
-        ReviewTarget::Task { slug } => HalLink::new(format!("/projects/{project}/tasks/{slug}")),
-    }
+    HalLink::new(crate::review_views::target_detail_href(project, target))
 }
 
 /// Wraps a full review detail (metadata, summary, comments with resolution)

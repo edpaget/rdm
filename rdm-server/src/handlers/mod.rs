@@ -4,6 +4,8 @@ pub mod health;
 pub mod phases;
 /// Project listing endpoint.
 pub mod projects;
+/// Plain-HTML-form endpoints for authoring reviews from detail pages.
+pub mod review_forms;
 /// Review list, detail, comment, submit, transition, and delete endpoints.
 pub mod reviews;
 /// Roadmap list and detail endpoints.

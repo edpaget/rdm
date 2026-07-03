@@ -2938,6 +2938,7 @@ dependencies = [
  "chrono",
  "headers-accept",
  "mediatype",
+ "percent-encoding",
  "pulldown-cmark",
  "rdm-core",
  "rdm-store-fs",

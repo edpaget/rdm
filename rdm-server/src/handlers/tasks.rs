@@ -52,6 +52,8 @@ struct TaskDetail {
 pub struct TaskDetailFilters {
     /// Read the body as it was at a specific git revision.
     pub at: Option<String>,
+    /// Inline error message from a redirected review-form action.
+    pub draft_error: Option<String>,
 }
 
 /// `GET /projects/:project/tasks` — list tasks with optional filters.
@@ -204,6 +206,7 @@ pub async fn list_tasks(
 /// `GET /projects/:project/tasks/:task` — task detail.
 pub async fn get_task(
     format: ResponseFormat,
+    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
     Path((project, task_slug)): Path<(String, String)>,
     Query(filters): Query<TaskDetailFilters>,
@@ -243,6 +246,22 @@ pub async fn get_task(
             )
             .map_err(|e| error_response(e, format))?;
             let body_html = page_reviews.render_body(&doc.body);
+            let draft_panel = if filters.at.is_none() {
+                Some(
+                    crate::review_views::draft_panel(
+                        &store,
+                        &project,
+                        &rdm_core::model::ReviewTarget::Task {
+                            slug: task_slug.clone(),
+                        },
+                        &[],
+                        crate::handlers::review_forms::read_author_cookie(&headers).as_deref(),
+                    )
+                    .map_err(|e| error_response(e, format))?,
+                )
+            } else {
+                None
+            };
             let page = TaskDetailPage {
                 project,
                 slug: task_slug,
@@ -258,6 +277,9 @@ pub async fn get_task(
                 body_md: doc.body,
                 revision: filters.at,
                 reviews: page_reviews.reviews,
+                draft_panel,
+                // A bare `?draft_error=` must not render an empty alert banner.
+                draft_error: filters.draft_error.filter(|s| !s.trim().is_empty()),
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1496,5 +1518,19 @@ mod tests {
             !html.contains("#reviews\">"),
             "no count link without open reviews: {html}"
         );
+    }
+
+    // -- draft panel --
+
+    #[tokio::test]
+    async fn get_task_html_shows_start_review_form_when_no_draft() {
+        let (_dir, state) = setup();
+        let html = get_html(&state, "/projects/demo/tasks/bug-fix").await;
+        assert!(html.contains(r#"id="review-draft""#), "got: {html}");
+        assert!(html.contains(r#"action="/projects/demo/reviews/form""#));
+        assert!(html.contains(r#"value="task/bug-fix""#));
+        assert!(html.contains(r#"<label for="review-author""#));
+        // Task pages have no doc-scope dropdown.
+        assert!(!html.contains("draft-new-comment-doc"));
     }
 }

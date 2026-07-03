@@ -47,6 +47,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm-server`'s roadmap, phase, and task detail pages now support
+  authoring reviews entirely through plain HTML forms — no JavaScript
+  required. A "Start review" form begins (or resumes, if one is already
+  open on the document by the same author) a draft; a server-rendered
+  draft panel lets you add whole-document comments (with an optional
+  phase-scoped dropdown on roadmap pages), edit or remove pending
+  comments, and submit with a required verdict (Comment / Approve /
+  Request changes) plus a summary. Draft comments stay private to the
+  draft panel and never appear in the public Reviews section until
+  submitted. Submitted reviews gain an inline Dismiss control, and drafts
+  a Delete button. Author identity comes from the form and is remembered
+  across visits via an `rdm_author` cookie so the panel resumes your own
+  open draft, not someone else's. Validation and lifecycle errors
+  (missing verdict, blank comment, editing after submit, out-of-scope
+  phase scope) redirect back to the page with a readable inline banner
+  instead of a raw Problem+JSON body.
 - `rdm-server`'s roadmap, phase, and task detail pages now render a Reviews
   section: every non-draft review of the document (submitted, addressed, or
   dismissed) with its state and verdict badges, author, relative timestamp,

@@ -283,11 +283,14 @@ pub struct RoadmapDetailFilters {
     pub tag: Option<String>,
     /// Read the body as it was at a specific git revision.
     pub at: Option<String>,
+    /// Inline error message from a redirected review-form action.
+    pub draft_error: Option<String>,
 }
 
 /// `GET /projects/:project/roadmaps/:roadmap` — roadmap detail with embedded phases.
 pub async fn get_roadmap(
     format: ResponseFormat,
+    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
     Path((project, roadmap)): Path<(String, String)>,
     Query(filters): Query<RoadmapDetailFilters>,
@@ -302,6 +305,14 @@ pub async fn get_roadmap(
 
     let mut phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
         .map_err(|e| error_response(e, format))?;
+
+    // The draft panel's `doc` dropdowns list the *unfiltered* phases —
+    // capture them before the `?tag=` filter narrows the table below.
+    let panel_phases = if format == ResponseFormat::Html && filters.at.is_none() {
+        Some(phases.clone())
+    } else {
+        None
+    };
 
     if let Some(ref tag) = filters.tag {
         phases.retain(|(_, doc)| {
@@ -391,6 +402,21 @@ pub async fn get_roadmap(
             )
             .map_err(|e| error_response(e, format))?;
             let body_html = page_reviews.render_body(&roadmap_doc.body);
+            let draft_panel = match panel_phases {
+                Some(ref all_phases) => Some(
+                    crate::review_views::draft_panel(
+                        &store,
+                        &project,
+                        &rdm_core::model::ReviewTarget::Roadmap {
+                            roadmap: roadmap.clone(),
+                        },
+                        all_phases,
+                        crate::handlers::review_forms::read_author_cookie(&headers).as_deref(),
+                    )
+                    .map_err(|e| error_response(e, format))?,
+                ),
+                None => None,
+            };
             let page = RoadmapDetailPage {
                 project,
                 slug: roadmap_doc.frontmatter.roadmap,
@@ -409,6 +435,9 @@ pub async fn get_roadmap(
                 active_tag: filters.tag,
                 revision: filters.at,
                 reviews: page_reviews.reviews,
+                draft_panel,
+                // A bare `?draft_error=` must not render an empty alert banner.
+                draft_error: filters.draft_error.filter(|s| !s.trim().is_empty()),
             };
             Ok((
                 [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1877,5 +1906,50 @@ mod tests {
             !html.contains("#reviews\">"),
             "no count link without open reviews"
         );
+    }
+
+    // -- draft panel --
+
+    /// The roadmap draft panel's `doc` dropdowns list every phase — even
+    /// when a `?tag=` filter narrows the phase table on the same page.
+    #[tokio::test]
+    async fn get_roadmap_html_draft_panel_doc_dropdown_lists_all_phases() {
+        let (_dir, state) = setup();
+        let mut store = state.store();
+        rdm_core::ops::reviews::create_review(
+            &mut store,
+            rdm_core::ops::reviews::CreateReview {
+                project: "demo",
+                author: "ed",
+                target: rdm_core::model::ReviewTarget::Roadmap {
+                    roadmap: "alpha".to_string(),
+                },
+                body: None,
+            },
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha?tag=no-phase-has-this")
+                    .header("accept", "text/html")
+                    .header("cookie", "rdm_author=ed")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 262144).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("Your pending review"), "got: {html}");
+        assert!(
+            html.contains(r#"id="draft-new-comment-doc""#),
+            "roadmap pages carry the doc dropdown: {html}"
+        );
+        assert!(html.contains(r#"<option value="phase-1-first">Phase 1: First Phase</option>"#));
+        assert!(html.contains(r#"<option value="phase-2-second">Phase 2: Second Phase</option>"#));
+        assert!(html.contains(">Whole roadmap</option>"));
     }
 }

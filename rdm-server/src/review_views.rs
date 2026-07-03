@@ -17,9 +17,26 @@ use rdm_store_fs::FsStore;
 
 use crate::markdown::{HighlightSpan, render_markdown};
 use crate::templates::{
-    DocLink, ReviewCommentView, ReviewView, comment_status_class, comment_status_label,
-    relative_time, review_state_class, review_state_label, verdict_class, verdict_label,
+    DocLink, DocOption, DraftCommentView, DraftPanelView, DraftReviewView, ReviewCommentView,
+    ReviewView, comment_status_class, comment_status_label, relative_time, review_state_class,
+    review_state_label, verdict_class, verdict_label,
 };
+
+/// Detail-page path for a review target (the page its reviews render on).
+///
+/// The one implementation of "target → detail href", shared by the JSON
+/// API's `target` link relation and the form handlers' redirect
+/// destinations.
+#[must_use]
+pub fn target_detail_href(project: &str, target: &ReviewTarget) -> String {
+    match target {
+        ReviewTarget::Roadmap { roadmap } => format!("/projects/{project}/roadmaps/{roadmap}"),
+        ReviewTarget::Phase { roadmap, stem } => {
+            format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}")
+        }
+        ReviewTarget::Task { slug } => format!("/projects/{project}/tasks/{slug}"),
+    }
+}
 
 /// The document a detail page renders, deciding which reviews it shows,
 /// which comments highlight inline in its body, and which link elsewhere.
@@ -171,12 +188,132 @@ pub fn page_reviews(
                 .map(|v| verdict_class(v).to_string()),
             summary_html: render_markdown(&doc.body),
             comments,
+            dismiss_href: (review.state == ReviewState::Submitted)
+                .then(|| format!("/projects/{project}/reviews/{id}/form/dismiss")),
         });
     }
     Ok(PageReviews {
         reviews,
         highlights,
     })
+}
+
+/// Assembles the draft-review panel for a detail page: the visitor's open
+/// draft on `target` (matched by the `rdm_author` cookie identity), or the
+/// data for a "Start review" form when they have none.
+///
+/// Draft privacy: only a draft whose author equals `author` is surfaced —
+/// other visitors' drafts stay invisible, matching the non-draft filter in
+/// [`page_reviews`]. With no author identity (`None`), no draft is ever
+/// resumed. When several drafts by the same author exist on the document
+/// (possible via the API), the oldest (lowest id) wins, deterministically.
+///
+/// `phases` supplies the `doc`-scope dropdown options and is non-empty only
+/// for roadmap detail pages.
+///
+/// # Errors
+///
+/// Propagates `rdm_core::ops::reviews::list_reviews` failures (project not
+/// found, unreadable reviews directory, malformed review file).
+pub fn draft_panel(
+    store: &FsStore,
+    project: &str,
+    target: &ReviewTarget,
+    phases: &[(String, Document<Phase>)],
+    author: Option<&str>,
+) -> Result<DraftPanelView, rdm_core::error::Error> {
+    let draft = match author {
+        None => None,
+        Some(author) => {
+            let all = rdm_core::ops::reviews::list_reviews(store, project)?;
+            let matches = rdm_core::ops::reviews::filter_reviews(
+                all,
+                &rdm_core::ops::reviews::ReviewFilter {
+                    target: Some(target.clone()),
+                    state: Some(ReviewState::Draft),
+                    verdict: None,
+                    author: Some(author.to_string()),
+                },
+            );
+            // `list_reviews` is id-sorted, so the first match is stable.
+            matches.into_iter().next().map(|(id, doc)| {
+                let comments = doc
+                    .frontmatter
+                    .comments
+                    .iter()
+                    .map(|c| DraftCommentView {
+                        id: c.id,
+                        body_md: c.body.clone(),
+                        doc_label: draft_doc_label(phases, c.doc.as_ref()),
+                        doc_options: doc_options(phases, c.doc.as_ref()),
+                    })
+                    .collect();
+                DraftReviewView {
+                    id,
+                    summary_md: doc.body.clone(),
+                    comments,
+                }
+            })
+        }
+    };
+    Ok(DraftPanelView {
+        target_ref: target.label(),
+        author_value: author.unwrap_or_default().to_string(),
+        draft,
+        doc_options: doc_options(phases, None),
+    })
+}
+
+/// Builds the `doc`-scope `<select>` options from a roadmap's phases,
+/// flagging the option matching `current` as selected. Empty when the page
+/// has no phases (phase and task pages — no dropdown renders).
+///
+/// When `current` names a stem missing from the live phase list (the phase
+/// was deleted after the comment was scoped), a synthetic selected option
+/// carrying that stale stem is appended, so an untouched edit-form submit
+/// round-trips the scope unchanged instead of silently clearing it (a
+/// `<select>` always posts a value; without the synthetic entry the browser
+/// would fall back to "Whole roadmap").
+fn doc_options(
+    phases: &[(String, Document<Phase>)],
+    current: Option<&CommentDoc>,
+) -> Vec<DocOption> {
+    let current_stem = current.map(|d| d.stem.as_str());
+    let mut options: Vec<DocOption> = phases
+        .iter()
+        .map(|(stem, doc)| DocOption {
+            stem: stem.clone(),
+            label: format!("Phase {}: {}", doc.frontmatter.phase, doc.frontmatter.title),
+            selected: Some(stem.as_str()) == current_stem,
+        })
+        .collect();
+    if let Some(stem) = current_stem
+        && !options.iter().any(|o| o.stem == stem)
+    {
+        options.push(DocOption {
+            stem: stem.to_string(),
+            label: format!("Phase {stem} (deleted)"),
+            selected: true,
+        });
+    }
+    options
+}
+
+/// Display label for a draft comment's scope: "Whole document", or the
+/// targeted phase (falling back to the raw stem, marked deleted, when it
+/// isn't in `phases`).
+fn draft_doc_label(phases: &[(String, Document<Phase>)], doc: Option<&CommentDoc>) -> String {
+    match doc {
+        None => "Whole document".to_string(),
+        Some(CommentDoc {
+            kind: CommentDocKind::Phase,
+            stem,
+        }) => phases
+            .iter()
+            .find(|(s, _)| s == stem)
+            .map(|(_, d)| format!("Phase {}: {}", d.frontmatter.phase, d.frontmatter.title))
+            .unwrap_or_else(|| format!("Phase {stem} (deleted)")),
+    }
 }
 
 /// Whether a review belongs on the given page at all.
