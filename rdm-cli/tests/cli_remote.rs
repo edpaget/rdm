@@ -17,6 +17,12 @@ fn init_repo(dir: &TempDir) {
         .arg("init")
         .assert()
         .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "seed: init plan repo"])
+        .assert()
+        .success();
 }
 
 /// Runs a git command with GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE cleared

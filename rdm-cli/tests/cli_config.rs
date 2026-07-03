@@ -60,7 +60,6 @@ fn config_list_shows_defaults() {
         .success()
         .stdout(predicate::str::contains("default_project"))
         .stdout(predicate::str::contains("default_format"))
-        .stdout(predicate::str::contains("stage"))
         .stdout(predicate::str::contains("remote.default"))
         .stdout(predicate::str::contains("root"))
         .stdout(predicate::str::contains("default_branch"));

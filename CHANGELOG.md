@@ -74,6 +74,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   un-converged revise round escalates (stage `plan`) rather than silently
   proceeding with a deficient plan.
 
+### Fixed
+
+- The CLI's "staged — run `rdm commit` to persist" and "N uncommitted
+  change(s)" hints now print to stderr instead of stdout. Since staging is
+  the only workflow (no more opt-in `--stage`), these hints previously fired
+  on every mutating and read command, corrupting machine-readable stdout
+  (`--format json` and any piped/captured output).
+
 ### Added
 
 - New `hook_timeout_secs` config option (repo `rdm.toml` and global config,

@@ -1135,6 +1135,13 @@ fn roadmap_show_at_revision_returns_historical_body() {
         .assert()
         .success();
 
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "seed: create roadmap with original body"])
+        .assert()
+        .success();
+
     let old_sha = head_sha(dir.path());
 
     rdm()
@@ -1152,6 +1159,16 @@ fn roadmap_show_at_revision_returns_historical_body() {
         ])
         .assert()
         .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "feat: update roadmap body"])
+        .assert()
+        .success();
+
+    let new_sha = head_sha(dir.path());
+    assert_ne!(old_sha, new_sha, "the update commit should have moved HEAD");
 
     rdm()
         .arg("--root")
@@ -1216,6 +1233,12 @@ fn roadmap_show_at_unknown_revision_errors() {
 fn roadmap_show_at_revision_missing_path_errors() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "seed: init plan repo and project"])
+        .assert()
+        .success();
 
     // Anchor SHA captured before the roadmap exists.
     let pre_sha = head_sha(dir.path());

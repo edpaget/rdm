@@ -67,6 +67,9 @@ End-to-end verification ping phase.
 EOF
 # The phase file's stem is `phase-1-ping` (phase-<n>-<slug>).
 
+# rdm mutations only stage — land a real commit so the bare clone has content.
+XDG_CONFIG_HOME="$SEED_XDG" "$RDM_BIN" --root "$PLAN_SEED" commit -m "seed: verify-demo/phase-1-ping" >/dev/null
+
 git clone --quiet --bare "$PLAN_SEED" "$PLAN_ORIGIN"
 ok "plan repo seeded and pushed to bare remote"
 

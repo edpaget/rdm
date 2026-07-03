@@ -337,19 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn config_with_stage_round_trip() {
-        let config = Config {
-            default_project: Some("fbm".to_string()),
-            stage: Some(true),
-            ..Default::default()
-        };
-        let toml_str = config.to_toml().unwrap();
-        let parsed = Config::from_toml(&toml_str).unwrap();
-        assert_eq!(parsed, config);
-        assert_eq!(parsed.stage, Some(true));
-    }
-
-    #[test]
     fn empty_config_round_trip() {
         let config = Config::default();
         let toml_str = config.to_toml().unwrap();
@@ -449,7 +436,6 @@ quick_filters = [
         let toml_str = r#"
 root = "/some/path"
 default_project = "myproj"
-stage = true
 
 [remote]
 default = "upstream"
@@ -457,7 +443,6 @@ default = "upstream"
         let config = GlobalConfig::from_toml(toml_str).unwrap();
         assert_eq!(config.root, Some(PathBuf::from("/some/path")));
         assert_eq!(config.default_project, Some("myproj".to_string()));
-        assert_eq!(config.stage, Some(true));
         assert_eq!(
             config.remote,
             Some(RemoteConfig {
@@ -471,7 +456,6 @@ default = "upstream"
         let config = GlobalConfig::from_toml("").unwrap();
         assert_eq!(config.root, None);
         assert_eq!(config.default_project, None);
-        assert_eq!(config.stage, None);
         assert_eq!(config.remote, None);
         assert_eq!(config.default_branch, None);
     }
@@ -481,7 +465,6 @@ default = "upstream"
         let config = GlobalConfig {
             root: Some(PathBuf::from("/plans")),
             default_project: Some("proj".to_string()),
-            stage: Some(true),
             remote: Some(RemoteConfig {
                 default: Some("origin".to_string()),
             }),
@@ -501,7 +484,6 @@ default = "upstream"
         let global = GlobalConfig {
             root: Some(PathBuf::from("/global")),
             default_project: Some("global-proj".to_string()),
-            stage: Some(true),
             remote: Some(RemoteConfig {
                 default: Some("upstream".to_string()),
             }),
@@ -510,8 +492,6 @@ default = "upstream"
         let merged = repo_config.with_global_defaults(&global);
         // repo config wins for default_project
         assert_eq!(merged.default_project, Some("repo-proj".to_string()));
-        // global fills in stage
-        assert_eq!(merged.stage, Some(true));
         // global fills in remote
         assert_eq!(
             merged.remote,

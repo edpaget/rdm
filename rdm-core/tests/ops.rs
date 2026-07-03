@@ -3919,14 +3919,12 @@ fn init_already_initialized() {
 fn init_with_config_writes_custom_config() {
     let config = Config {
         default_project: Some("myproj".to_string()),
-        stage: Some(true),
         ..Default::default()
     };
     let mut store = MemoryStore::new();
     rdm_core::ops::init::init_with_config(&mut store, config).unwrap();
     let loaded = rdm_core::io::load_config(&store).unwrap();
     assert_eq!(loaded.default_project, Some("myproj".to_string()));
-    assert_eq!(loaded.stage, Some(true));
 }
 
 #[test]
@@ -6606,8 +6604,9 @@ fn create_review_created_commit_reflects_head_before_pending_writes() {
     store.commit().unwrap();
     let head_at_creation = store.head_sha().unwrap();
 
-    // No commit after create_review: the review write is still staged, as
-    // under --stage. The stamp must be the HEAD the reviewer saw.
+    // No commit after create_review: writes are never auto-committed, so the
+    // review write is still staged. The stamp must be the HEAD the reviewer
+    // saw.
     let id = draft_task_review(&mut store);
     let doc = rdm_core::ops::reviews::get_review(&store, "fbm", &id).unwrap();
     assert_eq!(

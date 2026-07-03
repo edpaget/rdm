@@ -255,7 +255,7 @@ pub fn commit_mutation<T>(
         rdm_core::ops::mutate(store, project, f).with_context(|| context.to_string())?
     };
     #[cfg(feature = "git")]
-    println!("  (staged — run `rdm commit` to persist)");
+    eprintln!("  (staged — run `rdm commit` to persist)");
     Ok(out)
 }
 
@@ -268,7 +268,7 @@ pub fn maybe_print_uncommitted_hint(store: &AppStore) {
     if let Ok(statuses) = store.git().git_status()
         && !statuses.is_empty()
     {
-        println!(
+        eprintln!(
             "\n  ({} uncommitted change(s) — run `rdm status` for details)",
             statuses.len()
         );

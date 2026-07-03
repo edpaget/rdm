@@ -257,6 +257,15 @@ fn setup_plan_repo(root: &std::path::Path) {
         "--project",
         "test-proj",
     ]);
+
+    // Land a real commit so the fixture starts from a clean, committed state.
+    run(&[
+        "--root",
+        root_str,
+        "commit",
+        "-m",
+        "seed: plan repo fixture",
+    ]);
 }
 
 #[test]
@@ -1757,49 +1766,6 @@ fn git_mutation_stages_without_commit() {
 }
 
 #[test]
-fn git_stage_env_var_is_inert_for_mcp() {
-    // RDM_STAGE only affects the CLI's per-command commit behavior; MCP
-    // mutations always stage regardless, so setting it must not change
-    // anything observable.
-    let tmp = tempfile::TempDir::new().unwrap();
-    setup_plan_repo(tmp.path());
-
-    let before = git_head_sha(tmp.path());
-
-    let mut h = McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_STAGE", "true")]);
-    let response = h.call_tool(
-        "rdm_roadmap_create",
-        serde_json::json!({
-            "project": "test-proj",
-            "slug": "billing",
-            "title": "Billing System"
-        }),
-    );
-    let text = result_text(&response);
-    assert!(
-        text.contains("Billing System"),
-        "Expected creation to succeed with RDM_STAGE set: {text}"
-    );
-
-    let show = h.call_tool(
-        "rdm_roadmap_show",
-        serde_json::json!({"project": "test-proj", "roadmap": "billing"}),
-    );
-    let show_text = result_text(&show);
-    assert!(
-        show_text.contains("Billing System"),
-        "Expected roadmap to be readable: {show_text}"
-    );
-    drop(h);
-
-    let after = git_head_sha(tmp.path());
-    assert_eq!(
-        before, after,
-        "Expected NO new git commits regardless of RDM_STAGE (before={before}, after={after})"
-    );
-}
-
-#[test]
 fn git_read_tools_no_commit() {
     let tmp = tempfile::TempDir::new().unwrap();
     setup_plan_repo(tmp.path());
@@ -2154,54 +2120,50 @@ Fixture review with an unknown anchor type.
 
 #[test]
 fn update_tools_never_report_a_commit_trailer() {
-    // MCP mutations only stage; they never carry a Commit: trailer,
-    // regardless of RDM_STAGE (which is inert for MCP — see
-    // `git_stage_env_var_is_inert_for_mcp`).
-    for env in [&[][..], &[("RDM_STAGE", "true")][..]] {
-        let tmp = tempfile::TempDir::new().unwrap();
-        setup_plan_repo(tmp.path());
-        let mut h = McpTestHarness::spawn_with_env(tmp.path(), env);
+    // MCP mutations only stage; they never carry a Commit: trailer.
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
 
-        let response = h.call_tool(
-            "rdm_task_update",
-            serde_json::json!({
-                "project": "test-proj",
-                "task": "fix-login-bug",
-                "body": "Login fails when the password contains a quote character.",
-            }),
-        );
-        assert!(
-            commit_trailer(result_text(&response)).is_none(),
-            "rdm_task_update must never report a Commit: trailer (env={env:?})"
-        );
+    let response = h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "body": "Login fails when the password contains a quote character.",
+        }),
+    );
+    assert!(
+        commit_trailer(result_text(&response)).is_none(),
+        "rdm_task_update must never report a Commit: trailer"
+    );
 
-        let response = h.call_tool(
-            "rdm_phase_update",
-            serde_json::json!({
-                "project": "test-proj",
-                "roadmap": "auth",
-                "phase": "1",
-                "status": "in-progress",
-            }),
-        );
-        assert!(
-            commit_trailer(result_text(&response)).is_none(),
-            "rdm_phase_update must never report a Commit: trailer (env={env:?})"
-        );
+    let response = h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "1",
+            "status": "in-progress",
+        }),
+    );
+    assert!(
+        commit_trailer(result_text(&response)).is_none(),
+        "rdm_phase_update must never report a Commit: trailer"
+    );
 
-        let response = h.call_tool(
-            "rdm_roadmap_update",
-            serde_json::json!({
-                "project": "test-proj",
-                "roadmap": "auth",
-                "body": "Implement authentication, now with provenance.",
-            }),
-        );
-        assert!(
-            commit_trailer(result_text(&response)).is_none(),
-            "rdm_roadmap_update must never report a Commit: trailer (env={env:?})"
-        );
-    }
+    let response = h.call_tool(
+        "rdm_roadmap_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "body": "Implement authentication, now with provenance.",
+        }),
+    );
+    assert!(
+        commit_trailer(result_text(&response)).is_none(),
+        "rdm_roadmap_update must never report a Commit: trailer"
+    );
 }
 
 #[test]

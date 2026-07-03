@@ -30,6 +30,12 @@ fn make_plan_repo_with_bare() -> (TempDir, TempDir) {
         .arg("init")
         .assert()
         .success();
+    rdm()
+        .arg("--root")
+        .arg(source.path())
+        .args(["commit", "-m", "seed: init plan repo"])
+        .assert()
+        .success();
 
     let bare = TempDir::new().unwrap();
     let status = git_cmd()
@@ -145,6 +151,12 @@ fn bootstrap_fast_forwards_new_commits() {
         .arg("project")
         .arg("create")
         .arg("demo")
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(source.path())
+        .args(["commit", "-m", "feat: add demo project"])
         .assert()
         .success();
     let status = git_cmd()

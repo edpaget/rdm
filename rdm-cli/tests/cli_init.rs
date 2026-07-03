@@ -126,24 +126,6 @@ fn init_with_default_format() {
 }
 
 #[test]
-fn init_with_stage() {
-    let dir = TempDir::new().unwrap();
-    let xdg = TempDir::new().unwrap();
-    rdm(&xdg)
-        .arg("--root")
-        .arg(dir.path())
-        .arg("--stage")
-        .arg("init")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("staging mode: enabled"));
-
-    // rdm.toml should contain stage = true
-    let toml_str = std::fs::read_to_string(dir.path().join("rdm.toml")).unwrap();
-    assert!(toml_str.contains("stage = true"));
-}
-
-#[test]
 fn init_with_invalid_format_fails() {
     let dir = TempDir::new().unwrap();
     let xdg = TempDir::new().unwrap();
@@ -216,7 +198,6 @@ fn init_with_all_flags() {
     rdm(&xdg)
         .arg("--root")
         .arg(dir.path())
-        .arg("--stage")
         .arg("init")
         .arg("--default-project")
         .arg("myproj")
@@ -225,13 +206,11 @@ fn init_with_all_flags() {
         .assert()
         .success()
         .stdout(predicate::str::contains("default project: myproj"))
-        .stdout(predicate::str::contains("default format: table"))
-        .stdout(predicate::str::contains("staging mode: enabled"));
+        .stdout(predicate::str::contains("default format: table"));
 
     // Verify repo config
     let toml_str = std::fs::read_to_string(dir.path().join("rdm.toml")).unwrap();
     assert!(toml_str.contains("myproj"));
-    assert!(toml_str.contains("stage = true"));
 
     // Verify global config
     let global_path = xdg.path().join("rdm/config.toml");
@@ -276,6 +255,12 @@ fn setup_remote_source(xdg: &TempDir) -> (TempDir, TempDir) {
         .arg("init")
         .arg("--default-project")
         .arg("demo")
+        .assert()
+        .success();
+    rdm(xdg)
+        .arg("--root")
+        .arg(source.path())
+        .args(["commit", "-m", "seed: init plan repo"])
         .assert()
         .success();
 
@@ -471,27 +456,4 @@ fn init_remote_repo_is_usable() {
         .arg("demo")
         .assert()
         .success();
-}
-
-#[test]
-fn init_remote_with_stage() {
-    let xdg = TempDir::new().unwrap();
-    let (_source, bare) = setup_remote_source(&xdg);
-    let bare_path = bare.path().join("repo.git");
-    let target = TempDir::new().unwrap();
-    let target_path = target.path().join("cloned");
-
-    rdm(&xdg)
-        .arg("--root")
-        .arg(&target_path)
-        .arg("--stage")
-        .arg("init")
-        .arg("--remote")
-        .arg(bare_path.to_str().unwrap())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("staging mode: enabled"));
-
-    let toml_str = std::fs::read_to_string(target_path.join("rdm.toml")).unwrap();
-    assert!(toml_str.contains("stage = true"));
 }

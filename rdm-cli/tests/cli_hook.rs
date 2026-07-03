@@ -132,6 +132,14 @@ fn init_with_phase(dir: &TempDir) {
         ])
         .assert()
         .success();
+    // Staging is the only workflow now: commit the seeded project/roadmap/phase
+    // so the plan repo has real git history for the hook to build on.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "seed: create phase"])
+        .assert()
+        .success();
 }
 
 // -- hook install tests --
@@ -503,6 +511,12 @@ fn init_with_phases(dir: &TempDir, phases: &[&str]) {
             .assert()
             .success();
     }
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "seed: create phases"])
+        .assert()
+        .success();
 }
 
 #[test]
@@ -800,7 +814,7 @@ fn hook_post_commit_marks_phase_done_on_default_branch() {
 }
 
 #[test]
-fn hook_post_commit_commits_even_when_staging_enabled() {
+fn hook_post_commit_leaves_working_tree_clean() {
     let plan_dir = TempDir::new().unwrap();
     let project_dir = TempDir::new().unwrap();
     init_with_phase(&plan_dir);
@@ -834,13 +848,12 @@ fn hook_post_commit_commits_even_when_staging_enabled() {
         .trim()
         .to_string();
 
-    // Run the hook with staging forced on via RDM_STAGE. The hook must override
-    // this and commit anyway, otherwise the Done: update is silently lost.
+    // Run the hook. It must always create a real commit, otherwise the
+    // Done: update is silently lost.
     rdm()
         .arg("--root")
         .arg(plan_dir.path())
         .env("RDM_PROJECT", "test-proj")
-        .env("RDM_STAGE", "true")
         .args(["hook", "post-commit"])
         .current_dir(project_dir.path())
         .assert()
@@ -874,7 +887,7 @@ fn hook_post_commit_commits_even_when_staging_enabled() {
         .to_string();
     assert_ne!(
         head_before, head_after,
-        "hook should have created a commit in the plan repo despite staging mode"
+        "hook should have created a commit in the plan repo"
     );
 
     // Nothing left staged-but-uncommitted: the tree is clean.
@@ -891,7 +904,7 @@ fn hook_post_commit_commits_even_when_staging_enabled() {
 }
 
 #[test]
-fn hook_post_merge_commits_even_when_staging_enabled() {
+fn hook_post_merge_leaves_working_tree_clean() {
     let plan_dir = TempDir::new().unwrap();
     let project_dir = TempDir::new().unwrap();
     init_with_phase(&plan_dir);
@@ -925,13 +938,11 @@ fn hook_post_merge_commits_even_when_staging_enabled() {
         .trim()
         .to_string();
 
-    // Run the hook with staging forced on via RDM_STAGE. As with post-commit,
-    // the hook must override this and commit anyway.
+    // Run the hook. As with post-commit, it must always create a real commit.
     rdm()
         .arg("--root")
         .arg(plan_dir.path())
         .env("RDM_PROJECT", "test-proj")
-        .env("RDM_STAGE", "true")
         .args(["hook", "post-merge"])
         .current_dir(project_dir.path())
         .assert()
@@ -965,7 +976,7 @@ fn hook_post_merge_commits_even_when_staging_enabled() {
         .to_string();
     assert_ne!(
         head_before, head_after,
-        "hook should have created a commit in the plan repo despite staging mode"
+        "hook should have created a commit in the plan repo"
     );
 
     let status = git_cmd()

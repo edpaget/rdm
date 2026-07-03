@@ -80,6 +80,11 @@ Repro: post a token minted five seconds in the future.
 Cleanup: the retry helper duplicates backoff logic.
 EOF
 
+# rdm mutations only stage — land a real commit so the review's
+# created_commit pins to a revision where the task body actually exists in
+# history (required for the drift-detection scenario below).
+rdm commit -m "seed: add fix-login task" >/dev/null
+
 # ---------------------------------------------------------------------------
 say "Setup: submitted request-changes review with four comments"
 # ---------------------------------------------------------------------------

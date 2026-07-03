@@ -104,6 +104,12 @@ fn init_plan_repo() -> TempDir {
         ])
         .assert()
         .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "seed: init plan repo fixture"])
+        .assert()
+        .success();
     dir
 }
 
@@ -1128,6 +1134,14 @@ fn review_comment_quote_derives_text_quote_anchor() {
         "quoted",
         "Intro paragraph. The auth flow needs work here. Outro.",
     );
+    // Land a real commit so the review's created_commit pins to a revision
+    // where the task actually exists in history.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["commit", "-m", "seed: add quoted task"])
+        .assert()
+        .success();
     let id = start_review(&plan, "task/quoted");
     rdm()
         .arg("--root")
@@ -1175,6 +1189,14 @@ fn review_comment_quote_is_derived_at_created_commit_and_reports_drift() {
         "drifty",
         "Alpha. The original wording sits here. Omega.",
     );
+    // Land a real commit so the review's created_commit pins to a revision
+    // where the task actually exists in history.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["commit", "-m", "seed: add drifty task"])
+        .assert()
+        .success();
     let id = start_review(&plan, "task/drifty");
 
     // Edit the task body after the review started: the quoted text vanishes
@@ -1228,6 +1250,14 @@ fn review_comment_quote_is_derived_at_created_commit_and_reports_drift() {
 fn review_comment_quote_not_found_names_created_commit() {
     let plan = init_plan_repo();
     create_task_with_body(&plan, "missing-quote", "Some body without the phrase.");
+    // Land a real commit so the review's created_commit pins to a revision
+    // where the task actually exists in history.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["commit", "-m", "seed: add missing-quote task"])
+        .assert()
+        .success();
     let id = start_review(&plan, "task/missing-quote");
     rdm()
         .arg("--root")
@@ -1992,13 +2022,12 @@ fn review_help_groups_the_two_families() {
 }
 
 #[test]
-fn review_start_staged_defers_commit_and_commit_includes_review_file() {
+fn review_start_defers_commit_and_commit_includes_review_file() {
     let plan = init_plan_repo();
     rdm()
         .arg("--root")
         .arg(plan.path())
         .args([
-            "--stage",
             "review",
             "start",
             "--on",
@@ -2011,7 +2040,7 @@ fn review_start_staged_defers_commit_and_commit_includes_review_file() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("staged"));
+        .stderr(predicate::str::contains("staged"));
 
     // The review file exists on disk but is not yet committed.
     let status = git(plan.path(), &["status", "--porcelain"]);
