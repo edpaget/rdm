@@ -13,6 +13,7 @@ use rdm_core::model::PhaseStatus;
 use rdm_core::search::ItemStatus;
 use rdm_core::store::Store;
 
+#[cfg(feature = "git")]
 use crate::paths;
 use crate::{AppStore, ItemKindArg, OutputFormat};
 

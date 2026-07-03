@@ -494,6 +494,7 @@ fn skill_roadmap_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_roadmap_create", "rdm_roadmap_create"),
                 ("t_phase_create", "rdm_phase_create"),
                 ("t_roadmap_show", "rdm_roadmap_show"),
+                ("t_commit", "rdm_commit"),
             ],
         ),
     }
@@ -516,6 +517,7 @@ fn skill_do_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_task_create", "rdm_task_create"),
                 ("t_worktree_current", "rdm_worktree_current"),
                 ("t_worktree_add", "rdm_worktree_add"),
+                ("t_commit", "rdm_commit"),
             ],
         ),
     }
@@ -549,6 +551,7 @@ fn skill_review_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_task_show", "rdm_task_show"),
                 ("t_task_update", "rdm_task_update"),
                 ("t_task_create", "rdm_task_create"),
+                ("t_commit", "rdm_commit"),
             ],
         ),
     }
@@ -640,6 +643,7 @@ fn skill_revise_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_phase_update", "rdm_phase_update"),
                 ("t_task_update", "rdm_task_update"),
                 ("t_roadmap_update", "rdm_roadmap_update"),
+                ("t_commit", "rdm_commit"),
             ],
         ),
     }

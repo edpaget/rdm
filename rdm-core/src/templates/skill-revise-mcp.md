@@ -12,6 +12,7 @@ allowed-tools:
   - {t_phase_update}
   - {t_task_update}
   - {t_roadmap_update}
+  - {t_commit}
 ---
 
 Act on submitted document reviews with verdict `request-changes`: work through each comment, apply the requested edits through the rdm update tools, and drive the review to `addressed`. This is not `rdm-review` (which reviews *implementations*) — this skill acts on *document* reviews of roadmaps, phases, and tasks.
@@ -42,7 +43,9 @@ For each comment with `status: "open"`, branch on the anchor:
 
 Apply the change through the matching update tool (never edit plan files directly): `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<stem>", body: "..."`, `rdm_task_update` with `project: {proj_param}, task: "<slug>", body: "..."`, or `rdm_roadmap_update` with `project: {proj_param}, roadmap: "<slug>", body: "..."`.
 
-Each mutation auto-commits to the plan repo, and the tool's response ends with a `Commit: <sha>` line naming that commit. **Capture that SHA from the response** — it is the provenance record for the next step.
+Each mutation only **stages** the change — the update tool's response carries no commit trailer. Land it immediately, **before moving to the next comment**, by calling `{t_commit}` with `message: "docs(plan): address review comment"`. **Its** response ends with a `Commit: <sha>` line — capture that SHA from there, it is the provenance record for the next step.
+
+**Commit per comment, not per batch:** `{t_commit}` lands *every* currently staged change as one commit, so if you edited more than one comment's target before calling it, that single SHA would no longer identify which comment it resolved. Commit after **each** comment's edit, before starting the next, to keep a 1:1 comment→commit provenance trail — do not batch multiple comments' edits for efficiency here.
 
 ### 5. Record the resolution
 
@@ -54,7 +57,7 @@ status: "addressed", applied_commit: "<sha from step 4>",
 reply: "What changed, and whether the anchor resolved (note drift if any)."
 ```
 
-Always thread `applied_commit` explicitly from the `Commit:` value the update tool reported. If omitted with `status: "addressed"`, the tool falls back to the plan-repo HEAD before the call — best-effort only, and wrong whenever an unrelated commit landed in between. It never defaults for `wont-fix`.
+Always thread `applied_commit` explicitly from the `Commit: <sha>` line `{t_commit}` reported in step 4. MCP mutations only stage, so there is no best-effort fallback to default `applied_commit` from — omitting it just records `null`; it never defaults for `wont-fix` either. Always pass it explicitly.
 
 ### 6. Ambiguous comment or anchor drifted beyond recovery
 

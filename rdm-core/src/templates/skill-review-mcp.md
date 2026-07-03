@@ -13,6 +13,7 @@ allowed-tools:
   - {t_task_show}
   - {t_task_update}
   - {t_task_create}
+  - {t_commit}
 ---
 
 Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task.
@@ -120,13 +121,15 @@ This skill owns the `needs-review` → `reviewed` gate.
 - **Pass / Pass with concerns** (verdict PASS or PASS WITH CONCERNS — clean, or clean after small fixes, with no blocking findings): set the item to `reviewed`, then amend a `Done:` line into the branch commit — this completes the deferred `Done:` directive from the rdm-do (or rdm-dispatch-phase) finalize step, not a contradiction of it — so the merge-to-main hook flips it to `done` later. Recorded concerns do not block this transition.
   - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "reviewed"`
   - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "reviewed"`
-  - then `git commit --amend` to add the `Done:` line to the branch commit message, completing the finalize step's deferred directive: `Done: <roadmap-slug>/<phase-stem>` (phase) or `Done: task/<slug>` (task), using the exact slugs/stems from the rdm tools above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
+  - land the plan-repo status change: call `{t_commit}` with `message: "chore(plan): mark <phase-or-task> reviewed"`
+  - then `git commit --amend` — a **separate**, source-repo op — to add the `Done:` line to the branch commit message, completing the finalize step's deferred directive: `Done: <roadmap-slug>/<phase-stem>` (phase) or `Done: task/<slug>` (task), using the exact slugs/stems from the rdm tools above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
 - **Blocked** (verdict BLOCKED — one or more surviving blocking findings): do NOT advance to `reviewed` and write **no** `Done:` line. The transition depends on the item kind, because tasks have no `blocked` status:
-  - **Phase**: set it to `blocked` with the escalation reason (use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "blocked"`), so the blocked-phase queue surfaces it for a human decision.
-  - **Task**: tasks support only `open | in-progress | done | wont-fix`, so there is no `blocked` status. Return the task to `in-progress` instead (use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "in-progress"`), and state clearly in the report that review found **blocking** findings and the work is **not done** (this is not a clean rework — the blockers must be resolved before re-review).
+  - **Phase**: set it to `blocked` with the escalation reason (use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "blocked"`), so the blocked-phase queue surfaces it for a human decision. Land it: call `{t_commit}` with `message: "chore(plan): block <phase-or-task>: <reason>"`.
+  - **Task**: tasks support only `open | in-progress | done | wont-fix`, so there is no `blocked` status. Return the task to `in-progress` instead (use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "in-progress"`), and state clearly in the report that review found **blocking** findings and the work is **not done** (this is not a clean rework — the blockers must be resolved before re-review). Land it: call `{t_commit}` with `message: "chore(plan): block <phase-or-task>: <reason>"`.
 - **Rework** (verdict FAIL — acceptance criteria unmet, substantial changes needed): return the item to `in-progress` and write **no** `Done:` line.
   - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`
   - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "in-progress"`
+  - land it: call `{t_commit}` with `message: "chore(plan): return <phase-or-task> to in-progress"`
 
 ## Guidelines
 

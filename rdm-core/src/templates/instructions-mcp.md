@@ -46,7 +46,13 @@ Use `rdm_search` for fuzzy matching against titles and body content. Tags are a 
 
 The `body` parameter accepts full Markdown including multiline content. The `tags` parameter is optional. On `*_update`, passing `tags: [...]` replaces the existing list, and `clear_tags: true` removes all tags (roadmap and phase only; task uses `tags: []`).
 
-Every `*_update` response ends with a `Commit: <sha>` line naming the plan-repo commit the mutation produced — capture it when the edit resolves a review comment (see below).
+`*_update`, `*_create`, and other mutation tools only **stage** their change to disk — none of them commit to git on their own (see "Committing changes" below). Capture the `Commit: <sha>` line from `rdm_commit`'s response, not from the mutation tool, when the edit resolves a review comment (see "Document reviews" below).
+
+## Committing changes
+
+- `rdm_status` — list staged-but-uncommitted changes, each as `{path, change}` (`added` / `modified` / `deleted`). No `project` parameter — it reports the whole plan repo's git state, not one project.
+- `rdm_commit` with `message: "..."` — land every currently staged change as one git commit. Omit `message` to auto-generate one from the changed files. Returns a `Commit: <sha>` line.
+- `rdm_discard` with `confirm: true` — discard every staged-but-uncommitted change, reverting the working tree to its last commit. Irreversible; omitting or falsifying `confirm` is rejected.
 
 ## Document reviews
 
@@ -54,7 +60,7 @@ Reviews are structured feedback on a roadmap, phase, or task document, with inli
 
 - `rdm_review_requests` with `project: {proj_param}` — the work queue: submitted reviews with verdict `request-changes`, each with its target, summary, and `open_comment_count`. Optional `target_kind`/`target_id` narrow to one plan item.
 - `rdm_review_show` with `project: {proj_param}, review_id: "<id>"` — the full review in one call: summary, every comment with its anchor (a tagged union on `anchor_type`) and resolution (`resolved`, `drifted`, or `unresolved`), plus `documents[]` carrying each referenced document's `body_at_created_commit` (what the reviewer saw) and `current_body`. `resolved`/`drifted` ranges with `body: "original"` index `body_at_created_commit`, never the current body. Comments with no anchor or an unrecognized `anchor_type` are whole-document feedback — read `current_body` in full.
-- Apply each requested edit via `rdm_phase_update` / `rdm_task_update` / `rdm_roadmap_update` and capture the `Commit: <sha>` line from the response.
+- Apply each requested edit via `rdm_phase_update` / `rdm_task_update` / `rdm_roadmap_update`, land it with `rdm_commit`, and capture the `Commit: <sha>` line from **that** response.
 - `rdm_review_address_comment` with `project: {proj_param}, review_id: "<id>", comment_id: <n>, status: "addressed", applied_commit: "<sha>", reply: "What changed."` — flips the comment and records provenance. Use `status: "wont-fix"` with reasoning to decline (never records an `applied_commit` default); omit `status` to only record a clarification reply and leave the comment open.
 - `rdm_review_complete` with `project: {proj_param}, review_id: "<id>"` — closes the review as `addressed`; refuses while any comment is open, listing the offending ids.
 

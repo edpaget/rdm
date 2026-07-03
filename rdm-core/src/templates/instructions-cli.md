@@ -47,6 +47,18 @@ rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> {proj
 rdm task update <slug> --status done --no-edit {proj_flag}
 ```
 
+## Committing changes
+
+Every mutating command (`roadmap`/`phase`/`task`/`review` create, update, delete, and friends) only **stages** its change to disk — it never commits to git on its own. Land a batch of staged changes explicitly:
+
+```bash
+rdm status                                   # show what's staged (path + change kind)
+rdm commit -m "feat(plan): describe the batch"  # land every staged change as one commit
+rdm discard --force                          # discard staged changes (irreversible)
+```
+
+`rdm status`, `rdm commit`, and `rdm discard` operate on the whole plan repo's git state, not a single project, so they take no `--project` flag. Prefer batching related mutations (e.g. a roadmap plus all its phases, or a status update plus its follow-on task) into a single `rdm commit` rather than committing after every individual command.
+
 ## Document reviews
 
 Reviews are structured feedback on a roadmap, phase, or task document, with inline comments anchored to quoted text. A review targets `roadmap/<slug>`, `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`, and moves `draft` → `submitted` (with a verdict: `approve`, `request-changes`, or `comment`) → `addressed` or `dismissed`.

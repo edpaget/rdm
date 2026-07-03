@@ -48,6 +48,7 @@ For unattended Claude Code runs (where no human is present to approve permission
 4. **Mark in-progress:**
    - phase: `./target/debug/rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> --project rdm`
    - task: `./target/debug/rdm task update <slug> --status in-progress --no-edit --project rdm`
+   - land the status change: `./target/debug/rdm commit -m "chore(plan): start <phase-or-task>"`
 5. **Get into the roadmap's worktree (one worktree per roadmap, work in place).** Each roadmap gets a *single* worktree on branch `roadmap/<slug>`, and **every phase of that roadmap is implemented in place in it**. Entry happens at most **once** — on the first phase, from the main checkout — so the session never re-enters or nests. Run `./target/debug/rdm worktree current --format json` and compare the current worktree's roadmap to the target `<slug>`. (`worktree current` reports `item` = the roadmap slug for a roadmap worktree, or `<roadmap>/<stem>` for a legacy per-phase worktree — compare the roadmap portion against `<slug>`.)
    - **Match** (current worktree's roadmap == `<slug>`): you are already in the target roadmap's worktree → **work in place**. Skip `worktree add` and entry. Run `cargo build` here. This is the common case for every phase after the first.
    - **None** (output is `null` — main checkout or not in a worktree): ensure the roadmap worktree exists with `./target/debug/rdm worktree add <slug> --project rdm` (idempotent — reuses it if present), take the `path` it prints, then enter it **once** with `EnterWorktree({path})`. `EnterWorktree` is a **one-time entry convenience**, not required for correctness — the model never re-enters, so a plain `cd`/launch into `path` works just as well on any host.
@@ -62,9 +63,12 @@ For unattended Claude Code runs (where no human is present to approve permission
 7. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
 8. **Execute the plan**: implement each step, following the plan and any acceptance criteria.
 9. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
-10. **Finalize:** on user acceptance, commit the implementation changes, then transition the item to `needs-review`:
+10. **Finalize:** on user acceptance, commit the implementation changes — a plain `git commit` of the code diff in the **source repo**, on the worktree's branch — then transition the item to `needs-review`:
     - phase: `./target/debug/rdm phase update <phase> --status needs-review --no-edit --roadmap <slug> --project rdm`
     - task: `./target/debug/rdm task update <slug> --status needs-review --no-edit --project rdm`
+    - land the plan-repo status change: `./target/debug/rdm commit -m "chore(plan): finalize <phase-or-task>"`
+
+    This `rdm commit` is a **separate, plan-repo** git commit — distinct from the source-repo `git commit` of the implementation diff above. Do not conflate the two: one lands your code, the other lands the plan-repo status update.
 
     **Do NOT emit a `Done:` line in the commit message YET** — `rdm-review` adds it on a passing review as the final step. This is a deferred two-stage `Done:` protocol, not a contradiction: finalize defers the `Done:` line, review completes it. An item sitting in `needs-review` is the sentinel that signals a review is pending. Use the exact roadmap slug / phase stem / task slug from the rdm commands you ran earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch, which is left for merge to main (review takes it `needs-review` → `reviewed`, and the merge hook flips it to `done`).
 
@@ -74,6 +78,7 @@ If you discover bugs or unrelated improvements while working, do not fix them in
 
 ```bash
 ./target/debug/rdm task create <slug> --title "Description" --body "Details." --tags <tag1>,<tag2> --no-edit --project rdm
+./target/debug/rdm commit -m "chore(plan): file side-work task <slug>"  # land the batch
 ```
 
 Use lowercase kebab-case tags and prefer ones already present in the project (check with `./target/debug/rdm search "" --tag <candidate> --project rdm`).

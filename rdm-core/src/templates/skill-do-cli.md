@@ -44,6 +44,7 @@ For unattended Claude Code runs (where no human is present to approve permission
 3. **Mark in-progress:**
    - phase: `rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> {proj_flag}`
    - task: `rdm task update <slug> --status in-progress --no-edit {proj_flag}`
+   - land the status change: `rdm commit -m "chore(plan): start <phase-or-task>"`
 4. **Get into the roadmap's worktree (one worktree per roadmap, work in place).** Each roadmap gets a *single* worktree on branch `roadmap/<slug>`, and **every phase of that roadmap is implemented in place in it**. Entry therefore happens at most **once** — on the first phase, from the main checkout — so the session never re-enters or nests. Run `rdm worktree current --format json` and compare the current worktree's roadmap to the target `<slug>`. (`worktree current` reports `item` = the roadmap slug for a roadmap worktree, or `<roadmap>/<stem>` for a legacy per-phase worktree — compare the roadmap portion against `<slug>`.)
    - **Match** (current worktree's roadmap == `<slug>`): you are already in the target roadmap's worktree → **work in place**. Skip `worktree add` and entry. This is the common case for every phase after the first.
    - **None** (output is `null` — main checkout or not in a worktree): ensure the roadmap worktree exists with `rdm worktree add <slug> {proj_flag}` (idempotent — reuses it if present), take the `path` it prints, then enter it **once**. Claude Code may use `EnterWorktree({path})` as a one-time convenience; any other host (Pi, web, etc.) `cd`s into / launches in the printed `path`. Because the model never re-enters, plain `cd`/launch is **fully correct** — `EnterWorktree` is a convenience, **not** a correctness dependency.
@@ -58,9 +59,12 @@ For unattended Claude Code runs (where no human is present to approve permission
 6. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
 7. **Execute the plan**: implement each step, following the plan and any acceptance criteria.
 8. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
-9. **Finalize:** on user acceptance, commit the implementation changes, then transition the item to `needs-review`:
+9. **Finalize:** on user acceptance, commit the implementation changes — a plain `git commit` of the code diff in the **source repo**, on the worktree's branch — then transition the item to `needs-review`:
    - phase: `rdm phase update <phase> --status needs-review --no-edit --roadmap <slug> {proj_flag}`
    - task: `rdm task update <slug> --status needs-review --no-edit {proj_flag}`
+   - land the plan-repo status change: `rdm commit -m "chore(plan): finalize <phase-or-task>"`
+
+   This `rdm commit` is a **separate, plan-repo** git commit — distinct from the source-repo `git commit` of the implementation diff above. Do not conflate the two: one lands your code, the other lands the plan-repo status update.
 
    **Do NOT emit a `Done:` line in the commit message YET** — `rdm-review` adds it on a passing review as the final step. This is a deferred two-stage `Done:` protocol, not a contradiction: finalize defers the `Done:` line, review completes it. An item sitting in `needs-review` is the sentinel that signals a review is pending. Use the exact roadmap slug / phase stem / task slug from the rdm commands you ran earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch, which is left for merge to main (review takes it `needs-review` → `reviewed`, and the merge hook flips it to `done`).
 
@@ -70,6 +74,7 @@ If you discover bugs or unrelated improvements while working, do not fix them in
 
 ```bash
 rdm task create <slug> --title "Description" --body "Details." --tags <tag1>,<tag2> --no-edit {proj_flag}
+rdm commit -m "chore(plan): file side-work task <slug>"  # land the batch
 ```
 
 Use lowercase kebab-case tags and prefer ones already present in the project (check with `rdm search "" --tag <candidate> {proj_flag}`).

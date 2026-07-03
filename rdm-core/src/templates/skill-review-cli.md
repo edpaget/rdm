@@ -120,22 +120,26 @@ This skill owns the `needs-review` → `reviewed` gate.
   ```bash
   rdm phase update <phase> --status reviewed --no-edit --roadmap <slug> {proj_flag}
   # or: rdm task update <slug> --status reviewed --no-edit {proj_flag}
-  git commit --amend   # add the Done: line (completing the finalize step's deferred directive)
+  rdm commit -m "chore(plan): mark <phase-or-task> reviewed"
+  git commit --amend   # SEPARATE, source-repo op: add the Done: line (completing the finalize step's deferred directive)
   ```
   The `Done:` line is `Done: <roadmap-slug>/<phase-stem>` (phase) or `Done: task/<slug>` (task), using the exact slugs/stems from the rdm commands above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
 - **Blocked** (verdict BLOCKED — one or more surviving blocking findings): do NOT advance to `reviewed` and write **no** `Done:` line. The transition depends on the item kind, because tasks have no `blocked` status:
   - **Phase**: set it to `blocked` with the escalation reason, so the blocked-phase queue surfaces it for a human decision.
     ```bash
     rdm phase update <phase> --status blocked --no-edit --roadmap <slug> {proj_flag}
+    rdm commit -m "chore(plan): block <phase-or-task>: <reason>"
     ```
   - **Task**: tasks support only `open | in-progress | done | wont-fix`, so there is no `blocked` status. Return the task to `in-progress` instead, and state clearly in the report that review found **blocking** findings and the work is **not done** (this is not a clean rework — the blockers must be resolved before re-review).
     ```bash
     rdm task update <slug> --status in-progress --no-edit {proj_flag}
+    rdm commit -m "chore(plan): block <phase-or-task>: <reason>"
     ```
 - **Rework** (verdict FAIL — acceptance criteria unmet, substantial changes needed): return the item to `in-progress` and write **no** `Done:` line.
   ```bash
   rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> {proj_flag}
   # or: rdm task update <slug> --status in-progress --no-edit {proj_flag}
+  rdm commit -m "chore(plan): return <phase-or-task> to in-progress"
   ```
 
 ## Guidelines

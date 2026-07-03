@@ -13,6 +13,7 @@ pub fn global_config_path() -> Option<PathBuf> {
 /// Returns the default data directory for plan repos.
 ///
 /// Delegates to [`rdm_core::root::default_data_dir`].
+#[cfg(feature = "git")]
 pub fn default_data_dir() -> Option<PathBuf> {
     rdm_core::root::default_data_dir()
 }
@@ -83,6 +84,7 @@ fn resolve_project_inner(
 /// # Errors
 ///
 /// Returns an error when none of the sources yield a non-empty value.
+#[cfg(feature = "git")]
 pub fn resolve_review_author(flag: Option<String>) -> Result<String> {
     resolve_review_author_inner(
         flag,
@@ -93,6 +95,7 @@ pub fn resolve_review_author(flag: Option<String>) -> Result<String> {
     )
 }
 
+#[cfg(feature = "git")]
 fn resolve_review_author_inner(
     flag: Option<String>,
     env_author: Option<String>,
@@ -114,6 +117,7 @@ fn resolve_review_author_inner(
 /// # Errors
 ///
 /// Returns an error if no remote name could be determined.
+#[cfg(feature = "git")]
 pub fn resolve_remote_name(
     name: Option<String>,
     config: &rdm_core::config::Config,

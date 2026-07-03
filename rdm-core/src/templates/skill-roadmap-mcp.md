@@ -8,6 +8,7 @@ allowed-tools:
   - {t_roadmap_create}
   - {t_phase_create}
   - {t_roadmap_show}
+  - {t_commit}
 ---
 
 Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
@@ -35,7 +36,8 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
    ```
 
    Pass a bare slug like `hook-commit-bug` for `slug:` — rdm builds the final stem as `phase-<number>-<slug>`. Do **not** include `phase-N-` in `slug:` or you'll get a doubled prefix like `phase-1-phase-1-hook-commit-bug`.
-5. **Verify** the roadmap looks correct: use `rdm_roadmap_show` with `project: {proj_param}, roadmap: "<slug>"`
+5. **Land the batch**: call `{t_commit}` with `message: "feat(plan): add <roadmap> roadmap"` — one commit for the roadmap and all its phases.
+6. **Verify** the roadmap looks correct: use `rdm_roadmap_show` with `project: {proj_param}, roadmap: "<slug>"`
 
 ## Guidelines
 

@@ -230,6 +230,7 @@ Always pass `--no-edit` to prevent the CLI from opening an interactive editor (w
 ```bash
 ./target/debug/rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> --project rdm
 ./target/debug/rdm task update <slug> --status done --no-edit --project rdm
+./target/debug/rdm commit -m "chore(plan): update status"  # land the batch
 ```
 
 ### Document reviews
@@ -257,6 +258,7 @@ Always pass `--no-edit` to suppress the interactive editor.
 ./target/debug/rdm roadmap create <slug> --title "Title" --body "Summary." --tags bug,ui --no-edit --project rdm
 ./target/debug/rdm phase create <slug> --title "Title" --number <n> --body "Details." --tags audit --no-edit --roadmap <slug> --project rdm
 ./target/debug/rdm task create <slug> --title "Title" --body "Description." --tags bug --no-edit --project rdm
+./target/debug/rdm commit -m "chore(plan): create <slug> roadmap/phase/task"  # land the batch
 ```
 
 `--tags` is comma-separated. On `update`, `--tags` replaces the existing list; pass `--tags ""` to clear. Tagging convention: lowercase kebab-case (`bug`, `auth`, `tech-debt`); prefer existing tags — check with `./target/debug/rdm search "" --tag <candidate> --project rdm` before inventing a new one.
@@ -313,14 +315,14 @@ If a task becomes large enough to warrant multiple phases, promote it to a roadm
 
 **Task statuses:** `open` → `in-progress` → `done` (or `wont-fix`). `done` and `wont-fix` are terminal.
 
-### Staging mode
+### Workflow
 
-By default, every mutation auto-commits to git. Use `--stage` (or `RDM_STAGE=true`, or `stage = true` in `rdm.toml`) to defer git commits — files are written to disk but the git commit is skipped until you explicitly run `rdm commit`.
+Every mutation stages changes; run `rdm commit` to land them. There is no auto-commit and no opt-in flag — `roadmap`/`phase`/`task`/`review` create/update/delete commands all write to disk immediately, but the git commit is always deferred until you explicitly run `rdm commit`. Batch related mutations together, then land them in one commit.
 
 ```bash
-./target/debug/rdm --stage task create fix-bug --title "Fix bug" --no-edit --project rdm  # writes file, no git commit
-./target/debug/rdm status                          # show uncommitted changes
-./target/debug/rdm commit -m "batch: fix bug and update phase"  # explicit git commit
+./target/debug/rdm task create fix-bug --title "Fix bug" --no-edit --project rdm  # writes file, no git commit yet
+./target/debug/rdm status                          # show staged changes
+./target/debug/rdm commit -m "batch: fix bug and update phase"  # explicit git commit — lands the batch
 ./target/debug/rdm discard --force                 # reset working directory to HEAD (destructive)
 ```
 

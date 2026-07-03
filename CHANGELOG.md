@@ -32,6 +32,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--body` was already authoritative (fixed in a prior release) and does not
   hang on special-character content — this is documentation-only, backed by
   new regression tests.
+- **BREAKING:** The opt-in staging mode is gone — every mutating `rdm`
+  command (`roadmap`/`phase`/`task`/`review`/`promote`/etc. create, update,
+  delete) now stages its change to disk and defers the git commit
+  **unconditionally**; there is no longer a way to auto-commit per mutation.
+  The `--stage` flag, the `RDM_STAGE` environment variable, and the `stage`
+  field in `rdm.toml` (both repo-level and global config) are removed —
+  passing `--stage` or setting `RDM_STAGE`/`stage` is now a plain unknown-flag
+  / ignored-config-key situation rather than a behavior toggle. **Migration:**
+  after a batch of mutating commands, run `rdm commit -m "..."` to land them
+  as one git commit; `rdm status` shows what's pending and `rdm discard
+  --force` reverts it. `rdm hook post-commit`/`post-merge` and `rdm bootstrap`
+  are unaffected — they already committed unconditionally through an internal
+  always-commit pathway and continue to do so. See the MCP bullet below for
+  the equivalent change on the MCP server, which is now stage-only and
+  exposes `rdm_status`/`rdm_commit`/`rdm_discard`.
 - MCP mutation tools now stage changes to disk and require an explicit
   `rdm_commit` to land them — no more auto-commit per mutation. `*_update`
   responses no longer carry a `Commit:` trailer and

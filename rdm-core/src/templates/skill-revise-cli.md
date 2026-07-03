@@ -54,11 +54,19 @@ rdm roadmap update <slug> --no-edit {proj_flag} <<'EOF'
 EOF
 ```
 
-Each mutation auto-commits to the plan repo. Capture the SHA of that commit **immediately, before any review update** (which creates its own commit):
+Each mutation only **stages** the change — it does not commit. Land it immediately, before moving to the next comment:
+
+```bash
+rdm commit -m "docs(plan): address review comment"
+```
+
+Then capture the SHA of that commit **immediately, before any review update** (which creates its own commit):
 
 ```bash
 git -C "$RDM_ROOT" rev-parse HEAD
 ```
+
+**Commit per comment, not per batch:** `rdm commit` lands *every* currently staged change as one commit, so if you edited more than one comment's target before committing, that single SHA would no longer identify which comment it resolved. Commit after **each** comment's edit, before starting the next, to keep a 1:1 comment→commit provenance trail — do not batch multiple comments' edits for efficiency here.
 
 ### 5. Record the resolution
 
