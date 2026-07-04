@@ -1687,6 +1687,93 @@ fn search_ambiguous_status_without_kind_matches_both_kinds() {
     );
 }
 
+#[test]
+fn search_ambiguous_status_both_phase_and_task_without_kind() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Move phase 2 (Implement Auth) to needs-review
+    h.call_tool(
+        "rdm_phase_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "phase": "2",
+            "status": "needs-review"
+        }),
+    );
+
+    // Move fix-login-bug task to needs-review
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "status": "needs-review"
+        }),
+    );
+
+    // With no `kind`, both phase and task must be returned
+    let response = h.call_tool(
+        "rdm_search",
+        serde_json::json!({
+            "query": "",
+            "project": "test-proj",
+            "status": "needs-review"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Implement Auth"),
+        "needs-review phase should appear without a kind filter: {text}"
+    );
+    assert!(
+        text.contains("Fix login bug"),
+        "needs-review task should appear without a kind filter: {text}"
+    );
+
+    // Verify kind="task" narrows to only the task
+    let response = h.call_tool(
+        "rdm_search",
+        serde_json::json!({
+            "query": "",
+            "project": "test-proj",
+            "status": "needs-review",
+            "kind": "task"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Fix login bug"),
+        "task should appear with kind=task filter: {text}"
+    );
+    assert!(
+        !text.contains("Implement Auth"),
+        "phase should not appear with kind=task filter: {text}"
+    );
+
+    // Verify kind="phase" narrows to only the phase
+    let response = h.call_tool(
+        "rdm_search",
+        serde_json::json!({
+            "query": "",
+            "project": "test-proj",
+            "status": "needs-review",
+            "kind": "phase"
+        }),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Implement Auth"),
+        "phase should appear with kind=phase filter: {text}"
+    );
+    assert!(
+        !text.contains("Fix login bug"),
+        "task should not appear with kind=phase filter: {text}"
+    );
+}
+
 // ==================== GitStore integration tests ====================
 
 /// Run a git command in `root`, clearing `GIT_DIR` / `GIT_WORK_TREE` /

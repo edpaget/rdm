@@ -365,6 +365,90 @@ fn search_min_score_ratio_zero_keeps_all() {
 }
 
 #[test]
+fn search_ambiguous_status_both_phase_and_task_without_type() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    // Move phase 2 (implementation) to needs-review
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "2",
+            "--status",
+            "needs-review",
+            "--roadmap",
+            "widget-launch",
+            "--project",
+            "acme",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // Move add-search task to needs-review
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "add-search",
+            "--status",
+            "needs-review",
+            "--project",
+            "acme",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // Search with no --type flag; must return both phase and task
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "", "--status", "needs-review"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(
+        stdout.contains("widget-launch/phase-2-implementation"),
+        "Expected phase identifier in output: {stdout}"
+    );
+    assert!(
+        stdout.contains("add-search"),
+        "Expected task slug in output: {stdout}"
+    );
+
+    // Verify --type task narrows to only the task
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "", "--status", "needs-review", "--type", "task"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("add-search"))
+        .stdout(predicate::str::contains("widget-launch/phase-2-implementation").not());
+
+    // Verify --type phase narrows to only the phase
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "", "--status", "needs-review", "--type", "phase"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "widget-launch/phase-2-implementation",
+        ))
+        .stdout(predicate::str::contains("add-search").not());
+}
+
+#[test]
 fn search_help() {
     rdm()
         .args(["search", "--help"])
