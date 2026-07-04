@@ -8,18 +8,16 @@
 //! [`PageDoc`](crate::review_views::PageDoc) they pass (which also drives the cross-document links between
 //! roadmap reviews and the phases their `doc`-scoped comments point at).
 
-use rdm_core::anchor::Resolution;
-use rdm_core::document::Document;
-use rdm_core::model::{
-    Anchor, CommentDoc, CommentDocKind, Phase, Review, ReviewComment, ReviewState, ReviewTarget,
-};
-use rdm_store_fs::FsStore;
-
 use crate::markdown::{HighlightSpan, render_markdown};
 use crate::templates::{
     DocLink, DocOption, DraftCommentView, DraftPanelView, DraftReviewView, ReviewCommentView,
     ReviewView, comment_status_class, comment_status_label, relative_time, review_state_class,
     review_state_label, verdict_class, verdict_label,
+};
+use rdm_core::anchor::Resolution;
+use rdm_core::document::Document;
+use rdm_core::model::{
+    Anchor, CommentDoc, CommentDocKind, Phase, Review, ReviewComment, ReviewState, ReviewTarget,
 };
 
 /// Detail-page path for a review target (the page its reviews render on).
@@ -110,7 +108,7 @@ impl PageReviews {
 /// Propagates `rdm_core::ops::reviews::list_reviews` failures (project not
 /// found, unreadable reviews directory, malformed review file).
 pub fn page_reviews(
-    store: &FsStore,
+    store: &impl rdm_core::store::VersionedStore,
     project: &str,
     page: &PageDoc<'_>,
     allow_highlight: bool,
@@ -224,7 +222,7 @@ pub fn page_reviews(
 /// Propagates `rdm_core::ops::reviews::list_reviews` failures (project not
 /// found, unreadable reviews directory, malformed review file).
 pub fn draft_panel(
-    store: &FsStore,
+    store: &impl rdm_core::store::Store,
     project: &str,
     target: &ReviewTarget,
     phases: &[(String, Document<Phase>)],

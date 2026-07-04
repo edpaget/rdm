@@ -43,14 +43,6 @@ use axum::response::{IntoResponse, Response};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde::Deserialize;
 
-use rdm_core::model::{CommentDoc, CommentDocKind, ReviewState, ReviewTarget, Verdict};
-use rdm_core::ops::BodyUpdate;
-use rdm_core::ops::reviews::{
-    AddComment, AnchorUpdate, CreateReview, DocUpdate, ReviewFilter, ReviewTransition,
-    UpdateComment,
-};
-use rdm_store_fs::FsStore;
-
 use crate::content_type::ResponseFormat;
 use crate::error::error_response;
 use crate::extract::see_other_response;
@@ -58,6 +50,12 @@ use crate::review_views::target_detail_href;
 use crate::selection::{SelectionOutcome, anchor_from_selection};
 use crate::state::AppState;
 use crate::templates::DraftPanelFragment;
+use rdm_core::model::{CommentDoc, CommentDocKind, ReviewState, ReviewTarget, Verdict};
+use rdm_core::ops::BodyUpdate;
+use rdm_core::ops::reviews::{
+    AddComment, AnchorUpdate, CreateReview, DocUpdate, ReviewFilter, ReviewTransition,
+    UpdateComment,
+};
 
 /// Name of the cookie remembering the visitor's review-author identity.
 const AUTHOR_COOKIE: &str = "rdm_author";
@@ -155,7 +153,7 @@ fn json_error(message: &str) -> Response {
 ///
 /// Propagates review/phase listing failures from core.
 fn render_panel_fragment(
-    store: &FsStore,
+    store: &impl rdm_core::store::Store,
     project: &str,
     target: &ReviewTarget,
     author: Option<&str>,
@@ -179,7 +177,7 @@ fn render_panel_fragment(
 /// draft panel (plus an optional `outcome` marker for the anchor route:
 /// `"anchored"` or `"fallback"`).
 fn json_panel_response(
-    store: &FsStore,
+    store: &impl rdm_core::store::Store,
     project: &str,
     target: &ReviewTarget,
     headers: &HeaderMap,
@@ -210,7 +208,11 @@ fn json_panel_response(
 /// there is no page to return to, so this yields the HTML error page as
 /// the `Err` response.
 #[allow(clippy::result_large_err)]
-fn review_target_href(store: &FsStore, project: &str, review_id: &str) -> Result<String, Response> {
+fn review_target_href(
+    store: &impl rdm_core::store::Store,
+    project: &str,
+    review_id: &str,
+) -> Result<String, Response> {
     let doc = rdm_core::ops::reviews::get_review(store, project, review_id)
         .map_err(|e| error_response(e, ResponseFormat::Html))?;
     Ok(target_detail_href(project, &doc.frontmatter.target))
@@ -803,6 +805,7 @@ mod tests {
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
+            ..Default::default()
         };
         (dir, state)
     }

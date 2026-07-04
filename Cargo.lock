@@ -2923,6 +2923,7 @@ dependencies = [
  "pulldown-cmark",
  "rdm-core",
  "rdm-store-fs",
+ "rdm-store-git",
  "reqwest",
  "serde",
  "serde_json",

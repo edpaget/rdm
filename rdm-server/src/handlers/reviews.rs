@@ -620,6 +620,7 @@ mod tests {
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
+            ..Default::default()
         };
         (dir, state)
     }

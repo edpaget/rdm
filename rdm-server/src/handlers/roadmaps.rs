@@ -47,7 +47,7 @@ fn format_system_time(t: SystemTime) -> String {
 
 /// Compute the most recent modification date across the roadmap and phase files.
 fn last_changed_date(
-    store: &rdm_store_fs::FsStore,
+    store: &impl rdm_core::store::Store,
     project: &str,
     roadmap: &str,
     phases: &[(String, Document<Phase>)],
@@ -678,6 +678,7 @@ mod tests {
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
+            ..Default::default()
         };
         (dir, state)
     }
@@ -1159,6 +1160,7 @@ mod tests {
         let state = AppState {
             plan_root: dir.path().to_path_buf(),
             quick_filters: Vec::new(),
+            ..Default::default()
         };
         (dir, state)
     }
@@ -1366,6 +1368,7 @@ mod tests {
                 label: "Foo".to_string(),
                 tag: "foo".to_string(),
             }],
+            ..Default::default()
         };
         (dir, state)
     }

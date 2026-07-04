@@ -89,6 +89,7 @@ mod tests {
         AppState {
             plan_root: std::path::PathBuf::from("/tmp/rdm-test"),
             quick_filters: Vec::new(),
+            ..Default::default()
         }
     }
 

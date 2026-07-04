@@ -22,6 +22,7 @@ pub fn run(
         let state = rdm_server::state::AppState {
             plan_root: root.clone(),
             quick_filters,
+            ..Default::default()
         };
         let app = rdm_server::router::build_router(state);
         let addr = format!("{bind}:{port}");

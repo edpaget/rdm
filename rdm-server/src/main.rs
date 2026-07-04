@@ -16,6 +16,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         plan_root,
         quick_filters: Vec::new(),
+        ..Default::default()
     };
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;

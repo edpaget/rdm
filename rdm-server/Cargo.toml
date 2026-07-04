@@ -37,3 +37,4 @@ tower = { workspace = true }
 tempfile = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
+rdm-store-git = { path = "../rdm-store-git" }
