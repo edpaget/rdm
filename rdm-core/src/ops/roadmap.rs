@@ -17,7 +17,7 @@ use crate::store::{DirEntryKind, RelPath, Store};
 pub enum RoadmapStatus {
     /// No phases, or all phases not yet started (or only blocked).
     NotStarted,
-    /// At least one phase in progress, or a mix of terminal and non-terminal phases.
+    /// At least one phase in-progress, needs-review, or reviewed, or a mix of terminal and non-terminal phases.
     InProgress,
     /// Every phase is in a terminal state (`done` or `wont-fix`).
     Done,
@@ -46,8 +46,8 @@ impl fmt::Display for RoadmapStatus {
 ///
 /// - No phases → [`RoadmapStatus::NotStarted`].
 /// - All phases terminal (`done` or `wont-fix`) → [`RoadmapStatus::Done`].
-/// - Any phase in progress, or any terminal phase mixed with non-terminal
-///   phases → [`RoadmapStatus::InProgress`].
+/// - Any phase active (in-progress, needs-review, or reviewed), or any terminal
+///   phase mixed with non-terminal phases → [`RoadmapStatus::InProgress`].
 /// - Otherwise (all not-started, or all blocked) → [`RoadmapStatus::NotStarted`].
 #[must_use]
 pub fn computed_status(phases: &[PhaseStatus]) -> RoadmapStatus {
@@ -58,8 +58,13 @@ pub fn computed_status(phases: &[PhaseStatus]) -> RoadmapStatus {
         return RoadmapStatus::Done;
     }
     let has_terminal = phases.iter().any(PhaseStatus::is_terminal);
-    let has_in_progress = phases.contains(&PhaseStatus::InProgress);
-    if has_in_progress || has_terminal {
+    let has_active = phases.iter().any(|p| {
+        matches!(
+            p,
+            PhaseStatus::InProgress | PhaseStatus::NeedsReview | PhaseStatus::Reviewed
+        )
+    });
+    if has_active || has_terminal {
         return RoadmapStatus::InProgress;
     }
     RoadmapStatus::NotStarted
@@ -798,6 +803,30 @@ mod tests {
     fn computed_status_only_blocked_is_not_started() {
         let statuses = [PhaseStatus::Blocked, PhaseStatus::Blocked];
         assert_eq!(computed_status(&statuses), RoadmapStatus::NotStarted);
+    }
+
+    #[test]
+    fn computed_status_lone_needs_review_is_in_progress() {
+        let statuses = [PhaseStatus::NeedsReview];
+        assert_eq!(computed_status(&statuses), RoadmapStatus::InProgress);
+    }
+
+    #[test]
+    fn computed_status_lone_reviewed_is_in_progress() {
+        let statuses = [PhaseStatus::Reviewed];
+        assert_eq!(computed_status(&statuses), RoadmapStatus::InProgress);
+    }
+
+    #[test]
+    fn computed_status_not_started_and_needs_review_is_in_progress() {
+        let statuses = [PhaseStatus::NotStarted, PhaseStatus::NeedsReview];
+        assert_eq!(computed_status(&statuses), RoadmapStatus::InProgress);
+    }
+
+    #[test]
+    fn computed_status_not_started_and_reviewed_is_in_progress() {
+        let statuses = [PhaseStatus::NotStarted, PhaseStatus::Reviewed];
+        assert_eq!(computed_status(&statuses), RoadmapStatus::InProgress);
     }
 
     #[test]

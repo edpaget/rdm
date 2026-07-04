@@ -101,6 +101,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the only workflow (no more opt-in `--stage`), these hints previously fired
   on every mutating and read command, corrupting machine-readable stdout
   (`--format json` and any piped/captured output).
+- Roadmap status now treats `needs-review` and `reviewed` phases as active work: a roadmap whose phases are only in review states (no `in-progress` phase) is reported as `in-progress` instead of `not-started`, in the CLI and the server UI's roadmap status badge.
 - REST API 400/422 responses for invalid status values in request filters and
   updates now list the complete status set including `needs-review` and
   `reviewed`, derived from the core `ParseError` instead of hand-maintained

@@ -775,6 +775,38 @@ mod tests {
         assert!(!views[0].is_active);
     }
 
+    #[test]
+    fn computed_roadmap_status_lone_needs_review_is_in_progress() {
+        assert_eq!(
+            computed_roadmap_status(&[PhaseStatus::NeedsReview]),
+            ("in-progress", "in-progress")
+        );
+    }
+
+    #[test]
+    fn computed_roadmap_status_lone_reviewed_is_in_progress() {
+        assert_eq!(
+            computed_roadmap_status(&[PhaseStatus::Reviewed]),
+            ("in-progress", "in-progress")
+        );
+    }
+
+    #[test]
+    fn computed_roadmap_status_not_started_and_needs_review_is_in_progress() {
+        assert_eq!(
+            computed_roadmap_status(&[PhaseStatus::NotStarted, PhaseStatus::NeedsReview]),
+            ("in-progress", "in-progress")
+        );
+    }
+
+    #[test]
+    fn computed_roadmap_status_not_started_and_reviewed_is_in_progress() {
+        assert_eq!(
+            computed_roadmap_status(&[PhaseStatus::NotStarted, PhaseStatus::Reviewed]),
+            ("in-progress", "in-progress")
+        );
+    }
+
     // -- Revision badge a11y tests --
 
     fn revision_page_html(revision: Option<String>) -> String {
