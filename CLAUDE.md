@@ -192,9 +192,9 @@ Do NOT use the Read, Glob, Grep, or Bash tools to read, search, list, or modify 
 
 ```bash
 ./target/debug/rdm roadmap list --project rdm              # list all roadmaps with progress
-./target/debug/rdm task list --project rdm                  # list open/in-progress tasks
+./target/debug/rdm task list --project rdm                  # list active tasks (open, in-progress, needs-review, reviewed)
 ./target/debug/rdm task list --project rdm --status all     # list all tasks including done
-./target/debug/rdm task list --project rdm --tag bug        # list open tasks carrying tag "bug"
+./target/debug/rdm task list --project rdm --tag bug        # list active tasks carrying tag "bug"
 ```
 
 ### Reading details

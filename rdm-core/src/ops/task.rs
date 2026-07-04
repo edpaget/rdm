@@ -12,12 +12,13 @@ use crate::store::{DirEntryKind, Store};
 ///
 /// Each field narrows the result set independently; a task is kept only if it
 /// satisfies all populated criteria. The default value (all fields empty) keeps
-/// the "active work" set — open or in-progress tasks of any priority and tags.
+/// the "active work" set — open, in-progress, needs-review, or reviewed tasks
+/// of any priority and tags.
 #[derive(Debug, Clone, Default)]
 pub struct TaskFilter {
-    /// Status criterion. `None` keeps open **or** in-progress tasks (the
-    /// "active work" default); `Some(All)` keeps any status; `Some(Status(s))`
-    /// keeps only tasks with exactly status `s`.
+    /// Status criterion. `None` keeps active tasks — open, in-progress,
+    /// needs-review, or reviewed (the "active work" default); `Some(All)` keeps
+    /// any status; `Some(Status(s))` keeps only tasks with exactly status `s`.
     pub status: Option<TaskStatusFilter>,
     /// Priority criterion. `None` keeps tasks of any priority; `Some(p)` keeps
     /// only tasks with exactly priority `p`.
@@ -30,15 +31,15 @@ pub struct TaskFilter {
 /// Returns whether `task` satisfies every populated criterion in `filter`.
 ///
 /// Status semantics match the CLI's `task list`: `filter.status` of `None`
-/// keeps open or in-progress tasks, `Some(All)` keeps any status, and
-/// `Some(Status(s))` keeps an exact match. Priority of `None` matches any.
-/// Tags are matched as a logical AND — every tag in `filter.tags` must be
-/// present on the task (an empty list imposes no tag constraint).
+/// keeps active tasks (open, in-progress, needs-review, or reviewed), `Some(All)`
+/// keeps any status, and `Some(Status(s))` keeps an exact match. Priority of
+/// `None` matches any. Tags are matched as a logical AND — every tag in
+/// `filter.tags` must be present on the task (an empty list imposes no tag constraint).
 pub fn task_matches(task: &Task, filter: &TaskFilter) -> bool {
     let status_ok = match filter.status {
         Some(TaskStatusFilter::All) => true,
         Some(TaskStatusFilter::Status(s)) => task.status == s,
-        None => task.status == TaskStatus::Open || task.status == TaskStatus::InProgress,
+        None => !task.status.is_terminal(),
     };
     let priority_ok = filter.priority.is_none_or(|p| task.priority == p);
     let tags_ok = filter
@@ -377,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn default_filter_keeps_open_and_in_progress() {
+    fn default_filter_keeps_active_tasks() {
         let filter = TaskFilter::default();
         assert!(task_matches(
             &task(TaskStatus::Open, Priority::Medium, &[]),
@@ -385,6 +386,14 @@ mod tests {
         ));
         assert!(task_matches(
             &task(TaskStatus::InProgress, Priority::Medium, &[]),
+            &filter
+        ));
+        assert!(task_matches(
+            &task(TaskStatus::NeedsReview, Priority::Medium, &[]),
+            &filter
+        ));
+        assert!(task_matches(
+            &task(TaskStatus::Reviewed, Priority::Medium, &[]),
             &filter
         ));
         assert!(!task_matches(

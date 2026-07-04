@@ -308,6 +308,95 @@ async fn tasks_filter_by_priority() {
 }
 
 #[tokio::test]
+async fn tasks_default_filter_shows_active_only() {
+    use rdm_core::model::TaskStatus;
+
+    // Stand up a fresh plan repo with one task in every status.
+    let dir = TempDir::new().unwrap();
+    let mut store = FsStore::new(dir.path());
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
+
+    let seed = [
+        ("open-task", "Open Task", None),
+        (
+            "in-progress-task",
+            "In Progress Task",
+            Some(TaskStatus::InProgress),
+        ),
+        (
+            "needs-review-task",
+            "Needs Review Task",
+            Some(TaskStatus::NeedsReview),
+        ),
+        ("reviewed-task", "Reviewed Task", Some(TaskStatus::Reviewed)),
+        ("done-task", "Done Task", Some(TaskStatus::Done)),
+        ("wont-fix-task", "Wont Fix Task", Some(TaskStatus::WontFix)),
+    ];
+    for (slug, title, status) in seed {
+        rdm_core::ops::task::create_task(
+            &mut store,
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug,
+                title,
+                priority: Priority::Medium,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        if let Some(status) = status {
+            rdm_core::ops::task::update_task(
+                &mut store,
+                "demo",
+                slug,
+                Some(status),
+                None,
+                rdm_core::ops::TagsUpdate::Keep,
+                rdm_core::ops::BodyUpdate::Keep,
+                None,
+                None,
+                None,
+                rdm_core::ops::TitleUpdate::Keep,
+            )
+            .unwrap();
+        }
+    }
+    rdm_core::store::Store::commit(&mut store).unwrap();
+
+    let state = rdm_server::state::AppState {
+        plan_root: dir.path().to_path_buf(),
+        quick_filters: Vec::new(),
+    };
+    let app = rdm_server::router::build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    // No status / show_completed params: only non-terminal tasks come back.
+    let resp = Client::new()
+        .get(url(addr, "/projects/demo/tasks"))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    let tasks = json["_embedded"]["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 4, "expected exactly the four active tasks");
+
+    let titles: Vec<&str> = tasks.iter().filter_map(|t| t["title"].as_str()).collect();
+    assert!(titles.contains(&"Open Task"));
+    assert!(titles.contains(&"In Progress Task"));
+    assert!(titles.contains(&"Needs Review Task"));
+    assert!(titles.contains(&"Reviewed Task"));
+    assert!(!titles.contains(&"Done Task"));
+    assert!(!titles.contains(&"Wont Fix Task"));
+}
+
+#[tokio::test]
 async fn task_detail_hal_json() {
     let (_dir, addr, client) = spawn_server().await;
     let resp = client

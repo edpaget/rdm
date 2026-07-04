@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `rdm task list` with no `--status` now shows all active tasks (open,
+  in-progress, needs-review, reviewed) instead of only open/in-progress,
+  matching the REST server's default. Done and wont-fix remain hidden by default.
 - The `post-merge`/`post-commit` hooks now apply all `Done:` directives from a
   single hook invocation as one plan-repo commit (with a single `INDEX.md`
   regeneration) instead of one commit per directive. The commit message

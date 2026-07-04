@@ -101,14 +101,63 @@ fn task_create_with_tags() {
 }
 
 #[test]
-fn task_list_default_filters() {
+fn task_list_default_shows_active_tasks() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);
 
     create_task(&dir, "open-task", "Open Task");
+    create_task(&dir, "in-progress-task", "In Progress Task");
+    create_task(&dir, "needs-review-task", "Needs Review Task");
+    create_task(&dir, "reviewed-task", "Reviewed Task");
     create_task(&dir, "done-task", "Done Task");
+    create_task(&dir, "wont-fix-task", "Wont Fix Task");
 
-    // Mark one as done
+    // Set statuses
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "in-progress-task",
+            "--status",
+            "in-progress",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "needs-review-task",
+            "--status",
+            "needs-review",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "reviewed-task",
+            "--status",
+            "reviewed",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -124,7 +173,23 @@ fn task_list_default_filters() {
         .assert()
         .success();
 
-    // Default list should show only open/in-progress
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "wont-fix-task",
+            "--status",
+            "wont-fix",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    // Default list should show active tasks (open, in-progress, needs-review, reviewed)
+    // but NOT done or wont-fix tasks
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -132,7 +197,12 @@ fn task_list_default_filters() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("open-task").and(predicate::str::contains("done-task").not()),
+            predicate::str::contains("open-task")
+                .and(predicate::str::contains("in-progress-task"))
+                .and(predicate::str::contains("needs-review-task"))
+                .and(predicate::str::contains("reviewed-task"))
+                .and(predicate::str::contains("done-task").not())
+                .and(predicate::str::contains("wont-fix-task").not()),
         );
 }
 
