@@ -101,6 +101,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the only workflow (no more opt-in `--stage`), these hints previously fired
   on every mutating and read command, corrupting machine-readable stdout
   (`--format json` and any piped/captured output).
+- REST API 400/422 responses for invalid status values in request filters and
+  updates now list the complete status set including `needs-review` and
+  `reviewed`, derived from the core `ParseError` instead of hand-maintained
+  literals. This affects `/projects/:project/tasks?status=` (GET), `PATCH
+  /projects/:project/tasks/:task`, `/projects/:project/roadmaps/:roadmap/phases?status=`
+  (GET), and `PATCH /projects/:project/roadmaps/:roadmap/phases/:phase`.
 
 ### Added
 

@@ -48,11 +48,10 @@ pub async fn list_phases(
     Query(filters): Query<PhaseFilters>,
 ) -> Result<Response, Response> {
     let status_filter: Option<PhaseStatus> = match &filters.status {
-        Some(s) => Some(s.parse::<PhaseStatus>().map_err(|_| {
-            validation_error(format!(
-                "invalid status filter: '{s}' (expected not-started, in-progress, done, blocked, or wont-fix)"
-            ))
-        })?),
+        Some(s) => Some(
+            s.parse::<PhaseStatus>()
+                .map_err(|e| validation_error(e.to_string()))?,
+        ),
         None => None,
     };
 
@@ -347,11 +346,8 @@ pub async fn update_phase(
         .map(
             #[allow(clippy::result_large_err)]
             |s| {
-                s.parse().map_err(|_| {
-                    validation_error(format!(
-                        "invalid status: '{s}' (expected not-started, in-progress, done, blocked, or wont-fix)",
-                    ))
-                })
+                s.parse::<PhaseStatus>()
+                    .map_err(|e| validation_error(e.to_string()))
             },
         )
         .transpose()?;
@@ -945,6 +941,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 422);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let detail = json["detail"].as_str().unwrap();
+        assert!(detail.contains("invalid phase status"));
+        assert!(detail.contains("bogus"));
+        assert!(detail.contains("needs-review"));
+        assert!(detail.contains("reviewed"));
     }
 
     #[tokio::test]
@@ -1061,6 +1064,29 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let phases = json["_embedded"]["phases"].as_array().unwrap();
         assert_eq!(phases.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_phases_invalid_status_returns_422() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha/phases?status=bogus")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 422);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let detail = json["detail"].as_str().unwrap();
+        assert!(detail.contains("invalid phase status"));
+        assert!(detail.contains("bogus"));
+        assert!(detail.contains("needs-review"));
+        assert!(detail.contains("reviewed"));
     }
 
     #[tokio::test]

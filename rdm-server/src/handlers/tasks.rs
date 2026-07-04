@@ -67,14 +67,12 @@ pub async fn list_tasks(
     let status_filter = match &filters.status {
         Some(s) => match s.parse::<TaskStatus>() {
             Ok(ts) => Some(ts),
-            Err(_) => {
+            Err(e) => {
                 return Err(problem_detail_into_response(ProblemDetail {
                     problem_type: "about:blank".to_string(),
                     title: "Bad Request".to_string(),
                     status: 400,
-                    detail: Some(format!(
-                        "invalid status filter: '{s}' (expected open, in-progress, done, or wont-fix)"
-                    )),
+                    detail: Some(e.to_string()),
                     instance: None,
                 }));
             }
@@ -373,11 +371,10 @@ pub async fn update_task(
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
 
     let status = match &req.status {
-        Some(s) => Some(s.parse::<TaskStatus>().map_err(|_| {
-            validation_error(format!(
-                "invalid status: '{s}' (expected open, in-progress, done, or wont-fix)"
-            ))
-        })?),
+        Some(s) => Some(
+            s.parse::<TaskStatus>()
+                .map_err(|e| validation_error(e.to_string()))?,
+        ),
         None => None,
     };
 
@@ -597,7 +594,11 @@ mod tests {
         assert_eq!(response.status(), 400);
         let body = to_bytes(response.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["detail"].as_str().unwrap().contains("bogus"));
+        let detail = json["detail"].as_str().unwrap();
+        assert!(detail.contains("invalid task status"));
+        assert!(detail.contains("bogus"));
+        assert!(detail.contains("needs-review"));
+        assert!(detail.contains("reviewed"));
     }
 
     #[tokio::test]
@@ -1055,6 +1056,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 422);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let detail = json["detail"].as_str().unwrap();
+        assert!(detail.contains("invalid task status"));
+        assert!(detail.contains("bogus"));
+        assert!(detail.contains("needs-review"));
+        assert!(detail.contains("reviewed"));
     }
 
     #[tokio::test]
