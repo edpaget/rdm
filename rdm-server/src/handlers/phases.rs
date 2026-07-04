@@ -617,7 +617,15 @@ mod tests {
         assert!(html.contains("data-rdm-method=\"PATCH\""));
         assert!(html.contains("action=\"/projects/demo/roadmaps/alpha/phases/phase-2-second\""));
         assert!(html.contains("<select id=\"phase-status-edit\" name=\"status\">"));
-        for s in ["not-started", "in-progress", "done", "blocked", "wont-fix"] {
+        for s in [
+            "not-started",
+            "in-progress",
+            "needs-review",
+            "reviewed",
+            "done",
+            "blocked",
+            "wont-fix",
+        ] {
             assert!(
                 html.contains(&format!("value=\"{s}\"")),
                 "missing option value={s} in:\n{html}"

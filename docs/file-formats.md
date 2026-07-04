@@ -141,13 +141,13 @@ The current valuation engine treats pitchers and hitters as separate entities...
 |-------|----------|------|-------------|
 | `phase` | yes | integer | 1-based phase number |
 | `title` | yes | string | Human-readable title |
-| `status` | yes | string | `not-started` \| `in-progress` \| `done` \| `blocked` \| `wont-fix` |
+| `status` | yes | string | `not-started` \| `in-progress` \| `needs-review` \| `reviewed` \| `done` \| `blocked` \| `wont-fix` |
 | `completed` | no | date | Completion date (YYYY-MM-DD). Set automatically when status becomes `done` or `wont-fix` |
 | `commit` | no | string | Git commit SHA. Recorded by the post-merge hook or `--commit` flag |
 
 ### Status transitions
 
-`not-started` &rarr; `in-progress` &rarr; `done`
+`not-started` &rarr; `in-progress` &rarr; `needs-review` &rarr; `reviewed` &rarr; `done`
 
 A phase can also be `blocked` from any non-terminal state. A phase can also be marked `wont-fix` from any non-terminal state. Both `done` and `wont-fix` are terminal.
 
@@ -176,16 +176,16 @@ renamed to `barrel_pct`.
 |-------|----------|------|---------|-------------|
 | `project` | yes | string | | Project slug |
 | `title` | yes | string | | Human-readable title |
-| `status` | yes | string | `open` | `open` \| `in-progress` \| `done` \| `wont-fix` |
+| `status` | yes | string | `open` | `open` \| `in-progress` \| `needs-review` \| `reviewed` \| `done` \| `wont-fix` |
 | `priority` | yes | string | `medium` | `low` \| `medium` \| `high` \| `critical` |
 | `created` | yes | date | *(today)* | Creation date (YYYY-MM-DD). Set automatically |
 | `tags` | no | list of strings | | Free-form labels for filtering |
-| `completed` | no | date | | Completion date (YYYY-MM-DD). Set automatically when status becomes `done` |
+| `completed` | no | date | | Completion date (YYYY-MM-DD). Set automatically when status becomes `done` or `wont-fix` |
 | `commit` | no | string | | Git commit SHA |
 
 ### Status transitions
 
-`open` &rarr; `in-progress` &rarr; `done`
+`open` &rarr; `in-progress` &rarr; `needs-review` &rarr; `reviewed` &rarr; `done`
 
 A task can also be marked `wont-fix` from any non-terminal state. Both `done` and `wont-fix` are terminal.
 
