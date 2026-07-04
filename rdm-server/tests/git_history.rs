@@ -72,6 +72,7 @@ async fn spawn_git_backed_server() -> (TempDir, SocketAddr, Client, String) {
     )
     .unwrap();
     Store::commit(&mut store).unwrap();
+    store.commit_now("seed original bodies").unwrap();
     let old_sha = VersionedStore::head_sha(&store).unwrap();
 
     // Second commit that changes all three bodies, so the "current" read
@@ -115,6 +116,9 @@ async fn spawn_git_backed_server() -> (TempDir, SocketAddr, Client, String) {
     )
     .unwrap();
     Store::commit(&mut store).unwrap();
+    store
+        .commit_now("overwrite bodies with new markers")
+        .unwrap();
 
     let state = rdm_server::state::AppState {
         plan_root: dir.path().to_path_buf(),

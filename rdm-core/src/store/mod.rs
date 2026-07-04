@@ -282,10 +282,6 @@ impl Store for Box<dyn VersionedStore + Send + Sync> {
         (**self).commit()
     }
 
-    fn commit_with_message(&mut self, message: &str) -> Result<()> {
-        (**self).commit_with_message(message)
-    }
-
     fn discard(&mut self) {
         (**self).discard();
     }
@@ -408,76 +404,6 @@ mod tests {
 
         assert_eq!(Store::read(&boxed, &path).unwrap(), "hello");
         assert!(Store::exists(&boxed, &path));
-    }
-
-    #[test]
-    fn boxed_versioned_store_delegates_commit_with_message() {
-        use std::sync::{Arc, Mutex};
-
-        /// Wraps [`MemoryStore`] and records the message passed to
-        /// `commit_with_message` into a shared cell. This distinguishes the
-        /// boxed delegation override from the trait's default body: the
-        /// default discards the message and calls `commit()`, so if the
-        /// `impl Store for Box<dyn VersionedStore + Send + Sync>` override
-        /// were removed, nothing would be recorded and this test would fail.
-        struct MessageRecordingStore {
-            inner: MemoryStore,
-            recorded: Arc<Mutex<Option<String>>>,
-        }
-
-        impl Store for MessageRecordingStore {
-            fn read(&self, path: &RelPath) -> Result<String> {
-                self.inner.read(path)
-            }
-            fn exists(&self, path: &RelPath) -> bool {
-                self.inner.exists(path)
-            }
-            fn list(&self, path: &RelPath) -> Result<Vec<DirEntry>> {
-                self.inner.list(path)
-            }
-            fn write(&mut self, path: &RelPath, content: String) -> Result<()> {
-                self.inner.write(path, content)
-            }
-            fn delete(&mut self, path: &RelPath) -> Result<()> {
-                self.inner.delete(path)
-            }
-            fn commit(&mut self) -> Result<()> {
-                self.inner.commit()
-            }
-            fn commit_with_message(&mut self, message: &str) -> Result<()> {
-                *self.recorded.lock().unwrap() = Some(message.to_string());
-                self.inner.commit()
-            }
-            fn discard(&mut self) {
-                self.inner.discard();
-            }
-        }
-
-        impl VersionedStore for MessageRecordingStore {
-            fn head_sha(&self) -> Result<String> {
-                self.inner.head_sha()
-            }
-            fn fetch_body_at(&self, path: &RelPath, sha: &str) -> Result<String> {
-                self.inner.fetch_body_at(path, sha)
-            }
-        }
-
-        let recorded: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let mut boxed: Box<dyn VersionedStore + Send + Sync> = Box::new(MessageRecordingStore {
-            inner: MemoryStore::new(),
-            recorded: Arc::clone(&recorded),
-        });
-
-        let path = RelPath::new("foo.md").unwrap();
-        Store::write(&mut boxed, &path, "hello".to_string()).unwrap();
-        Store::commit_with_message(&mut boxed, "custom message").unwrap();
-
-        assert_eq!(
-            recorded.lock().unwrap().as_deref(),
-            Some("custom message"),
-            "boxed delegation must forward the commit message to the inner store"
-        );
-        assert_eq!(Store::read(&boxed, &path).unwrap(), "hello");
     }
 
     #[test]
