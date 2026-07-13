@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- New `[models]` config table schema (`small`/`medium`/`large` model ids,
+  `review_floor`, and per-step `[models.steps]` overrides) in `rdm.toml` and
+  the global config, with repo-over-global merge semantics. Not yet consumed
+  by any command — this lays the storage foundation for upcoming model-tier
+  resolution.
+
 ## [0.16.0] - 2026-07-04
 
 ### Security

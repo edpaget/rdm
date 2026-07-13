@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::model::ModelTier;
 
 /// Valid values for the `default_format` config key.
 pub const VALID_FORMATS: &[&str] = &["human", "json", "table", "markdown"];
@@ -88,6 +89,55 @@ pub struct ServerConfig {
     pub quick_filters: Vec<QuickFilter>,
 }
 
+/// Per-step model tier overrides within `[models.steps]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct StepTiersConfig {
+    /// Model tier for the planning step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<ModelTier>,
+    /// Model tier for the implementation step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implement: Option<ModelTier>,
+    /// Model tier for the review-find step.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "review-find"
+    )]
+    pub review_find: Option<ModelTier>,
+    /// Model tier for the review-verify step.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "review-verify"
+    )]
+    pub review_verify: Option<ModelTier>,
+    /// Model tier for mechanical (non-LLM-judgment) steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mechanical: Option<ModelTier>,
+}
+
+/// Configuration for the `[models]` table: model-tier sizing policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ModelsConfig {
+    /// Model id bound to the small tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small: Option<String>,
+    /// Model id bound to the medium tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medium: Option<String>,
+    /// Model id bound to the large tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large: Option<String>,
+    /// Minimum tier that review steps may run on, regardless of a lower
+    /// per-step override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_floor: Option<ModelTier>,
+    /// Per-step tier overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<StepTiersConfig>,
+}
+
 /// Global configuration stored at `~/.config/rdm/config.toml`.
 ///
 /// Fields here act as fallback defaults for repo-level config and CLI flags.
@@ -123,6 +173,10 @@ pub struct GlobalConfig {
     /// repo-level counterpart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_timeout_secs: Option<u64>,
+
+    /// Model-tier sizing policy (`[models]` table).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<ModelsConfig>,
 }
 
 impl GlobalConfig {
@@ -193,6 +247,10 @@ pub struct Config {
     /// the purpose of this guard).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_timeout_secs: Option<u64>,
+
+    /// Model-tier sizing policy (`[models]` table).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<ModelsConfig>,
 }
 
 impl Config {
@@ -249,6 +307,7 @@ impl Config {
                 .or_else(|| global.default_branch.clone()),
             server: self.server.clone(),
             hook_timeout_secs: self.hook_timeout_secs.or(global.hook_timeout_secs),
+            models: self.models.clone().or_else(|| global.models.clone()),
         }
     }
 }
@@ -458,6 +517,7 @@ default = "upstream"
         assert_eq!(config.default_project, None);
         assert_eq!(config.remote, None);
         assert_eq!(config.default_branch, None);
+        assert_eq!(config.models, None);
     }
 
     #[test]
@@ -678,5 +738,172 @@ default = "upstream"
         assert_eq!(ConfigSource::Repo.to_string(), "repo config");
         assert_eq!(ConfigSource::Global.to_string(), "global config");
         assert_eq!(ConfigSource::Default.to_string(), "default");
+    }
+
+    // --- [models] config tests ---
+
+    #[test]
+    fn parse_config_with_full_models_table() {
+        let toml_str = r#"
+[models]
+small = "haiku"
+medium = "sonnet"
+large = "opus"
+review_floor = "medium"
+
+[models.steps]
+plan = "medium"
+implement = "large"
+review-find = "medium"
+review-verify = "large"
+mechanical = "small"
+"#;
+        let config = Config::from_toml(toml_str).unwrap();
+        let models = config.models.expect("models section parsed");
+        assert_eq!(models.small, Some("haiku".to_string()));
+        assert_eq!(models.medium, Some("sonnet".to_string()));
+        assert_eq!(models.large, Some("opus".to_string()));
+        assert_eq!(models.review_floor, Some(ModelTier::Medium));
+
+        let steps = models.steps.expect("steps section parsed");
+        assert_eq!(steps.plan, Some(ModelTier::Medium));
+        assert_eq!(steps.implement, Some(ModelTier::Large));
+        assert_eq!(steps.review_find, Some(ModelTier::Medium));
+        assert_eq!(steps.review_verify, Some(ModelTier::Large));
+        assert_eq!(steps.mechanical, Some(ModelTier::Small));
+    }
+
+    #[test]
+    fn config_with_models_round_trip() {
+        let config = Config {
+            models: Some(ModelsConfig {
+                small: Some("haiku".to_string()),
+                medium: Some("sonnet".to_string()),
+                large: Some("opus".to_string()),
+                review_floor: Some(ModelTier::Medium),
+                steps: Some(StepTiersConfig {
+                    plan: Some(ModelTier::Medium),
+                    implement: Some(ModelTier::Large),
+                    review_find: Some(ModelTier::Medium),
+                    review_verify: Some(ModelTier::Large),
+                    mechanical: Some(ModelTier::Small),
+                }),
+            }),
+            ..Default::default()
+        };
+        let toml_str = config.to_toml().unwrap();
+        assert!(toml_str.contains("review-find"));
+        assert!(toml_str.contains("review-verify"));
+        assert!(!toml_str.contains("review_find"));
+        assert!(!toml_str.contains("review_verify"));
+
+        let parsed = Config::from_toml(&toml_str).unwrap();
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn models_omitted_when_none() {
+        let config = Config {
+            default_project: Some("fbm".to_string()),
+            ..Default::default()
+        };
+        let toml_str = config.to_toml().unwrap();
+        assert!(!toml_str.contains("[models]"));
+    }
+
+    #[test]
+    fn with_global_defaults_fills_models_from_global() {
+        let repo_config = Config::default();
+        let global_models = ModelsConfig {
+            small: Some("haiku".to_string()),
+            medium: Some("sonnet".to_string()),
+            large: Some("opus".to_string()),
+            review_floor: Some(ModelTier::Medium),
+            steps: None,
+        };
+        let global = GlobalConfig {
+            models: Some(global_models.clone()),
+            ..Default::default()
+        };
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(merged.models, Some(global_models));
+    }
+
+    #[test]
+    fn with_global_defaults_repo_models_wins() {
+        let repo_models = ModelsConfig {
+            small: Some("haiku".to_string()),
+            medium: None,
+            large: None,
+            review_floor: None,
+            steps: None,
+        };
+        let global_models = ModelsConfig {
+            small: Some("haiku".to_string()),
+            medium: Some("sonnet".to_string()),
+            large: Some("opus".to_string()),
+            review_floor: Some(ModelTier::Large),
+            steps: None,
+        };
+        let repo_config = Config {
+            models: Some(repo_models.clone()),
+            ..Default::default()
+        };
+        let global = GlobalConfig {
+            models: Some(global_models),
+            ..Default::default()
+        };
+        let merged = repo_config.with_global_defaults(&global);
+        // Wholesale override: repo's models table wins entirely, no deep merge
+        // of individual fields against the global table.
+        assert_eq!(merged.models, Some(repo_models));
+    }
+
+    #[test]
+    fn config_without_models_parses_to_none() {
+        let toml_str = r#"default_project = "fbm""#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert!(config.models.is_none());
+    }
+
+    #[test]
+    fn validate_config_invalid_model_tier_rejected() {
+        let toml_str = "[models]\nreview_floor = \"extra-large\"";
+        let err = Config::from_toml(toml_str).unwrap_err();
+        assert!(
+            matches!(err, Error::ConfigParse(_)),
+            "expected ConfigParse, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_invalid_step_tier_rejected() {
+        let toml_str = "[models.steps]\nplan = \"extra-large\"";
+        let err = Config::from_toml(toml_str).unwrap_err();
+        assert!(
+            matches!(err, Error::ConfigParse(_)),
+            "expected ConfigParse, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn empty_models_steps_table_parses_to_all_none() {
+        let toml_str = "[models]\n[models.steps]\n";
+        let config = Config::from_toml(toml_str).unwrap();
+        let models = config.models.expect("models section parsed");
+        let steps = models.steps.expect("steps section parsed");
+        assert_eq!(steps, StepTiersConfig::default());
+    }
+
+    #[test]
+    fn partial_models_table_parses() {
+        let toml_str = "[models]\nsmall = \"haiku\"\n";
+        let config = Config::from_toml(toml_str).unwrap();
+        let models = config.models.expect("models section parsed");
+        assert_eq!(models.small, Some("haiku".to_string()));
+        assert_eq!(models.medium, None);
+        assert_eq!(models.large, None);
+        assert_eq!(models.review_floor, None);
+        assert_eq!(models.steps, None);
     }
 }
