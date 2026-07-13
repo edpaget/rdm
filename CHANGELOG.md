@@ -13,6 +13,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the global config, with repo-over-global merge semantics. Not yet consumed
   by any command — this lays the storage foundation for upcoming model-tier
   resolution.
+- `rdm-core::model_policy` module with a `ModelPolicy` resolver that turns a
+  dispatch step (`plan`, `implement`, `review-find`, `review-verify`,
+  `mechanical`) plus an optional caller tier hint into a concrete model id,
+  applying the `[models]` config from `rdm.toml`/global config with built-in
+  defaults (`small`→`haiku`, `medium`→`sonnet`, `large`→`opus`, review floor
+  `medium`). Review-reasoning steps are clamped up to the review floor;
+  `mechanical` is exempt. Not yet wired into any CLI command or skill — this
+  is the internal sizing engine upcoming phases will consume.
 
 ## [0.16.0] - 2026-07-04
 

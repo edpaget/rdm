@@ -31,6 +31,9 @@ pub mod json;
 pub mod markdown;
 /// Data model types for roadmaps, phases, and tasks.
 pub mod model;
+/// Model-tier sizing policy: resolves a dispatch step (plus an optional
+/// caller hint) to a concrete model id via the `[models]` config.
+pub mod model_policy;
 /// Domain operations for plan repo entities.
 pub mod ops;
 /// Path builders for plan repo layout.
