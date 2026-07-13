@@ -277,6 +277,25 @@ pub(crate) enum Command {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Resolve or inspect the model-tier sizing policy for dispatch steps.
+    Model {
+        #[command(subcommand)]
+        command: ModelCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ModelCommand {
+    /// Resolve a dispatch step (plus optional tier hint) to a concrete model id.
+    Resolve {
+        /// Dispatch step: plan, implement, review-find, review-verify, or mechanical.
+        step: String,
+        /// Caller tier hint (small, medium, large) overriding the step's configured/default tier.
+        #[arg(long)]
+        tier: Option<String>,
+    },
+    /// Show the resolved model policy: tier bindings, review floor, and each step's no-hint model.
+    Show,
 }
 
 #[derive(Subcommand)]

@@ -2863,6 +2863,7 @@ dependencies = [
  "rdm-server",
  "rdm-store-fs",
  "rdm-store-git",
+ "serde",
  "serde_json",
  "tabled",
  "tempfile",

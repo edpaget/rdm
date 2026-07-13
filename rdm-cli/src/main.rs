@@ -204,6 +204,10 @@ fn run() -> Result<()> {
             let mut store = commands::make_store(&root)?;
             commands::next::run(&mut store, &repo_config, format, roadmap, project)?;
         }
+
+        Command::Model { command } => {
+            commands::model::run(command, &repo_config, format)?;
+        }
     }
 
     Ok(())

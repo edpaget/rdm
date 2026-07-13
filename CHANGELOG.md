@@ -21,6 +21,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `medium`). Review-reasoning steps are clamped up to the review floor;
   `mechanical` is exempt. Not yet wired into any CLI command or skill — this
   is the internal sizing engine upcoming phases will consume.
+- `rdm model resolve <step> [--tier <tier>]` and `rdm model show` (`--format
+  json` supported) — CLI porcelain over the `[models]` sizing policy,
+  resolving a dispatch step (`plan`, `implement`, `review-find`,
+  `review-verify`, `mechanical`) to a concrete model id, or inspecting the
+  full resolved policy (tier bindings, review floor, per-step models).
 
 ## [0.16.0] - 2026-07-04
 
