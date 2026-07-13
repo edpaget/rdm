@@ -27,6 +27,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `review-verify`, `mechanical`) to a concrete model id, or inspecting the
   full resolved policy (tier bindings, review floor, per-step models).
 
+### Changed
+
+- The generated `rdm-review` skill (CLI and MCP variants) and the dogfood
+  `.claude/skills/rdm-review/SKILL.md` now size the review fleet via the
+  `[models]` policy instead of inheriting the session's model: step 1 derives
+  a `small`/`medium`/`large` tier hint from the diff's blast radius, step 2
+  resolves `rdm model resolve review-find --tier <hint>` (or `mechanical` for
+  scripted checks) for each dispatched finder agent, and step 3 resolves `rdm
+  model resolve review-verify` for the refute pass. Every dispatched agent is
+  now given an explicit `model`, closing the session-model-inheritance leak.
+
 ## [0.16.0] - 2026-07-04
 
 ### Security

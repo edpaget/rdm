@@ -33,6 +33,8 @@ The review runs as a pipeline: **find → verify → filter → report → act �
    Extract the acceptance criteria, steps, and any other requirements from the body.
 3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task. Note the diff size, which modules it touches, and whether it changes public API, `unsafe` constructs, dependencies, or user-facing behavior — these drive which conditional agents you launch in step 2.
 
+   From those same diff signals, derive a **tier hint** for step 2's fleet: `small` (localized, single module, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one module, a bugfix), or `large` (touches public API, `unsafe`, spans multiple modules/crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
+
 ### 2. Find — dispatch an adaptive review fleet (parallel)
 
 Scale the fleet to what the diff actually touches. Always run the **base** agents; add **conditional** agents only when the diff hits their surface. This keeps a 10-line phase cheap while a cross-cutting change still gets full coverage. Each agent is **read-only** — it reviews and reports, it never edits.
@@ -51,6 +53,12 @@ Scale the fleet to what the diff actually touches. Always run the **base** agent
 - **Changelog & docs** — *trigger: the change is user-facing (CLI commands, API endpoints, MCP tools, config options, observable behavior).* If the project requires a changelog/docs update for user-facing changes (CLAUDE.md / AGENTS.md), is it present in the same change? Flag a missing or non-user-facing entry as a finding.
 
 Decide triggers from the `git diff` and file list in step 1. When in doubt about a trigger, include the agent — a spurious agent that finds nothing is cheaper than a missed concern. State which agents you launched and why in the report.
+
+**Model sizing.** Every dispatched agent in this step runs on an **explicitly resolved** model — never the inherited session model. For each finder agent (AC Compliance, Correctness, and any conditional agent launched above), resolve:
+```bash
+model=$(rdm model resolve review-find --tier <hint>)
+```
+using the tier hint derived in step 1, and pass `model` explicitly when dispatching that agent with the `Agent` tool. Purely mechanical checks (e.g. a scripted presence/lint check with no judgment involved) may instead resolve `rdm model resolve mechanical`, or run inline without a subagent at all. Resolution reads the `[models]` config table (tier→model-id bindings, review floor, and per-step overrides), falling back to built-in defaults (`small`→haiku, `medium`→sonnet, `large`→opus) when unset.
 
 **Each agent returns structured findings**, one block per finding:
 
@@ -83,6 +91,8 @@ For every finding with `severity` of blocking or concern (and every AC FAIL/PART
 - Returns `verdict: confirmed | refuted | uncertain`, a corrected `confidence` (0-100), and one line of evidence.
 
 Run these concurrently. The finder is never the verifier. Suggestions may skip verification (low stakes) but are still subject to the confidence filter.
+
+The refute agent also runs on an explicitly resolved model, never the inherited session model: resolve `model=$(rdm model resolve review-verify)` once (its default tier is already floored to the top review tier, so no `--tier` hint is needed) and pass `model` when dispatching each refute agent.
 
 ### 4. Filter & consolidate
 

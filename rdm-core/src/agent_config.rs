@@ -1942,6 +1942,36 @@ mod tests {
     }
 
     #[test]
+    fn skill_review_sizes_the_fleet_via_model_policy() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("rdm model resolve review-find"));
+        assert!(content.contains("rdm model resolve review-verify"));
+        assert!(content.contains("tier hint"));
+        assert!(content.contains("small"));
+        assert!(content.contains("large"));
+        assert!(content.contains("never the inherited session model"));
+    }
+
+    #[test]
+    fn skill_review_mcp_sizes_the_fleet_via_model_policy() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("rdm model resolve review-find"));
+        assert!(content.contains("rdm model resolve review-verify"));
+        assert!(content.contains("tier hint"));
+        assert!(content.contains("never the inherited session model"));
+    }
+
+    #[test]
     fn skill_document_contains_rdm_commands() {
         let skills = generate_skills(&SkillOptions {
             project: None,

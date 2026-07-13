@@ -29,7 +29,7 @@ The review runs as a pipeline: **find → verify → filter → report → act �
    - For a phase: `./target/debug/rdm phase show <phase-number> --roadmap <slug> --project rdm`
    - For a task: `./target/debug/rdm task show <slug> --project rdm`
    Extract the acceptance criteria, steps, and any other requirements from the body.
-4. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task. Note the diff size, which crates it touches, and whether it changes public API, `unsafe`, dependencies, or user-facing behavior — these drive which conditional agents you launch in step 2.
+4. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task. Note the diff size, which crates it touches, and whether it changes public API, `unsafe`, dependencies, or user-facing behavior — these drive which conditional agents you launch in step 2. From those same diff signals, derive a **tier hint** for step 2's fleet: `small` (localized, single crate, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one crate, a bugfix), or `large` (touches public API, `unsafe`, spans multiple crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
 
 > **Scope = `rdm review pending`.** `./target/debug/rdm review pending --project rdm` is the single shared source of truth for "what is in scope to review". An item is in scope by **branch identity** — its stamped `review_branch` equals the current checkout's branch, which keeps roadmaps exactly isolated — falling back to **SHA reachability** for legacy/unstamped items or when the current branch is unresolvable (these fail open). The auto-review Stop hook keys off the same command, so the skill and the hook never disagree about scope. If you were invoked without explicit `$ARGUMENTS`, run it to discover what to review on this branch; an item finalized on another worktree's branch will not appear here.
 >
@@ -53,6 +53,12 @@ Scale the fleet to what the diff actually touches. Always run the **base** agent
 - **Changelog & docs** — *trigger: the change is user-facing (CLI commands, API endpoints, MCP tools, config options, observable behavior).* Per CLAUDE.md, every user-facing change MUST update `CHANGELOG.md` (`[Unreleased]`) in the same commit. Flag a missing or non-user-facing entry as a finding.
 
 Decide triggers from the `git diff` and file list in step 1. When in doubt about a trigger, include the agent — a spurious agent that finds nothing is cheaper than a missed concern. State which agents you launched and why in the report.
+
+**Model sizing.** Every dispatched agent in this step runs on an **explicitly resolved** model — never the inherited session model. For each finder agent (AC Compliance, Correctness, and any conditional agent launched above), resolve:
+```bash
+model=$(./target/debug/rdm model resolve review-find --tier <hint>)
+```
+using the tier hint derived in step 1, and pass `model` explicitly when dispatching that agent with the `Agent` tool. Purely mechanical checks (e.g. a scripted presence/lint check with no judgment involved) may instead resolve `./target/debug/rdm model resolve mechanical`, or run inline without a subagent at all. Resolution reads the `[models]` config table (tier→model-id bindings, review floor, and per-step overrides), falling back to built-in defaults (`small`→haiku, `medium`→sonnet, `large`→opus) when unset.
 
 **Each agent returns structured findings**, one block per finding:
 
@@ -85,6 +91,8 @@ For every finding with `severity` of blocking or concern (and every AC FAIL/PART
 - Returns `verdict: confirmed | refuted | uncertain`, a corrected `confidence` (0-100), and one line of evidence.
 
 Run these concurrently. The finder is never the verifier. Suggestions may skip verification (low stakes) but are still subject to the confidence filter.
+
+The refute agent also runs on an explicitly resolved model, never the inherited session model: resolve `model=$(./target/debug/rdm model resolve review-verify)` once (its default tier is already floored to the top review tier, so no `--tier` hint is needed) and pass `model` when dispatching each refute agent.
 
 ### 4. Filter & consolidate
 
