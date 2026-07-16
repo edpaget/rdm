@@ -37,6 +37,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scripted checks) for each dispatched finder agent, and step 3 resolves `rdm
   model resolve review-verify` for the refute pass. Every dispatched agent is
   now given an explicit `model`, closing the session-model-inheritance leak.
+- `rdm-autopilot` and `rdm-dispatch-phase` skills now state an explicit **synchronous dispatch contract**: every subagent (per-phase dispatch, planner, plan reviewer, implementer) is spawned synchronously and its returned result is the sole channel back — no background-and-poll, no resume-by-message, and no `SendMessage` to a parent (`"claude"` does not resolve); rework always spawns a fresh subagent.
 
 ## [0.16.0] - 2026-07-04
 

@@ -49,7 +49,7 @@ Unlike interactive `rdm-do`, there is no human to approve the tactical plan befo
 3. **Create/locate the roadmap worktree and mark in-progress:**
    - `./target/debug/rdm worktree add <slug> --project rdm` — pass the **roadmap** ref (not `<slug>/<phase-stem>`); idempotent and prints the worktree path. The first phase creates the `roadmap/<slug>` worktree; every later phase of the same roadmap reuses it. `cd` into the printed path and do all implementation there (run `cargo build` in the worktree and use **that worktree's** `./target/debug/rdm`).
    - `./target/debug/rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> --project rdm`
-4. **Plan (planning subagent):** dispatch a planning subagent with the `Agent` tool, running on the phase's **model tier** (pass it as the agent's model). Seed it with **only** the phase body from step 2 and the repo — *not* this orchestrator's accumulated context. Ask it to return a **self-contained plan document** — everything the implementer needs written down, because a **new** agent implements it in step 6 with no access to this planner's exploration context. The document must contain:
+4. **Plan (planning subagent):** dispatch a planning subagent **synchronously** with the `Agent` tool — block on its returned result — running on the phase's **model tier** (pass it as the agent's model). Seed it with **only** the phase body from step 2 and the repo — *not* this orchestrator's accumulated context. Ask it to return a **self-contained plan document** — everything the implementer needs written down, because a **new** agent implements it in step 6 with no access to this planner's exploration context. The document must contain:
    - **Steps per AC** — the implementation steps that satisfy every acceptance criterion, mapped one-to-one to the ACs.
    - **File/crate navigation map** — every crate and file it will touch, so the implementer inherits navigation instead of re-deriving it through fresh exploration (this is what avoids paying for discovery twice).
    - **Test list per AC** — the tests to add, each mapped to the AC it covers.
@@ -57,7 +57,7 @@ Unlike interactive `rdm-do`, there is no human to approve the tactical plan befo
    - **Cross-phase / cross-crate dependencies** — the other phases, crates, or assumptions the plan depends on (e.g. a type or function an earlier phase must already provide), so they are declared rather than silently assumed.
 
    Have it return the plan document only — no code yet.
-5. **Plan gate (separate reviewer subagent):** dispatch a *different*, lightweight plan-review subagent with the `Agent` tool. Give it the phase body and the plan document — and nothing else.
+5. **Plan gate (separate reviewer subagent):** dispatch a *different*, lightweight plan-review subagent **synchronously** with the `Agent` tool, blocking on its returned verdict. Give it the phase body and the plan document — and nothing else.
 
    Scale the reviewer's rigor to the phase's difficulty tier (same tier `rdm-estimate` assigned: trivial/easy → small, moderate → medium, hard → large):
    - **Trivial/easy (small)** — a single reviewer subagent, holistic judgment against the checklist.
@@ -81,10 +81,10 @@ Unlike interactive `rdm-do`, there is no human to approve the tactical plan befo
      ```
 
    The gate is bounded: one review pass plus at most one revise round (with its own re-check), then proceed or escalate. Never an unbounded critique loop. Exhausting the single revise round without converging is itself a `plan`-stage escalation — never proceed to implementation with a plan that still fails the checklist.
-6. **Implement (new implementer subagent):** on `approve` (or after the single accepted revision), dispatch a **new** implementer subagent with the `Agent` tool, on the phase's **model tier**. Seed it with **only** the phase body from step 2 and the approved plan document from steps 4–5 — *not* the planning subagent's accumulated context (its exploration, rejected alternatives, or files it opened but will not touch). The plan document's file/crate navigation map and per-AC test list are what let it skip re-deriving discovery. It implements the approved plan document inside the worktree and commits the changes. Do **not** emit a `Done:` line YET — that is owned by `rdm-review`, which adds it on a passing review (a deferred two-stage protocol, not a contradiction).
+6. **Implement (new implementer subagent):** on `approve` (or after the single accepted revision), dispatch a **new** implementer subagent **synchronously** with the `Agent` tool — block on its returned result — on the phase's **model tier**. Seed it with **only** the phase body from step 2 and the approved plan document from steps 4–5 — *not* the planning subagent's accumulated context (its exploration, rejected alternatives, or files it opened but will not touch). The plan document's file/crate navigation map and per-AC test list are what let it skip re-deriving discovery. It implements the approved plan document inside the worktree and commits the changes. Do **not** emit a `Done:` line YET — that is owned by `rdm-review`, which adds it on a passing review (a deferred two-stage protocol, not a contradiction).
 7. **Code review:** run the `rdm-review` skill on the result (`<slug> <phase>`). It owns the `needs-review` → `reviewed` gate and the `Done:` line. Map its verdict onto the outcome:
    - **pass** → `rdm-review` leaves the phase `reviewed` with a `Done:` line on the branch → return **reviewed**.
-   - **fail (fixable defect)** → allow **one** bounded rework pass (the implementer addresses the review findings and re-runs `rdm-review`). If it still fails, `rdm-review` returns the phase to `in-progress` → return **rework**. Never loop indefinitely on rework.
+   - **fail (fixable defect)** → allow **one** bounded rework pass: dispatch a **fresh** implementer subagent (per step 6, seeded the same way plus the review findings) to address the findings and re-run `rdm-review` — never resume the returned implementer by message. If it still fails, `rdm-review` returns the phase to `in-progress` → return **rework**. Never loop indefinitely on rework.
    - **fail (decision/blocker, not a defect)** → if review surfaces a genuine AC ambiguity or architectural decision rather than a fixable defect — or the single rework pass is exhausted without converging — park it as a `code`-stage escalation instead of retrying, and return **escalated**:
      ```bash
      ./target/debug/rdm phase update <phase> --status blocked --reason "[code] <the decision or ambiguity>" --no-edit --roadmap <slug> --project rdm
@@ -107,6 +107,8 @@ The whole point is a *fresh* per-phase agent, and the isolation holds at three b
 - Do **not** leak unrelated roadmap phases, other tasks, or this orchestrator's conversation history into any of the subagents.
 - **Planner ↔ reviewer:** the plan reviewer is a *separate* agent from the planner — the planner never grades its own plan.
 - **Planner ↔ implementer:** the step-6 implementer is a **new** agent, seeded only with the phase body and the approved plan document — never the planning agent's own context (its exploration, dead ends, or files it read but did not act on). The plan document is the *only* channel from planning to implementation, which is why step 4 requires it to be self-contained.
+
+**Subagents never `SendMessage` their orchestrator.** The planner, plan reviewer, and implementer subagents must not attempt to `SendMessage` back to this dispatcher — there is no resolvable parent name (`"claude"` does not resolve). The dispatcher reads each subagent's returned result; that result is the sole channel for outcomes to flow back.
 
 ## Side-work
 
