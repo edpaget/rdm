@@ -541,3 +541,200 @@ fn config_set_hook_timeout_rejects_non_integer() {
         .failure()
         .stderr(predicate::str::contains("non-negative integer"));
 }
+
+// -- server.quick_filters config round-trips --
+
+#[test]
+fn config_set_and_get_quick_filters() {
+    let (config_dir, root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args([
+            "config",
+            "set",
+            "server.quick_filters",
+            "Bug:bug,Refactor:refactor",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo config"));
+
+    // rdm.toml on disk contains the array-of-tables form.
+    let toml_contents = std::fs::read_to_string(root_dir.path().join("rdm.toml")).unwrap();
+    assert!(toml_contents.contains("[[server.quick_filters]]"));
+    assert!(toml_contents.contains("label = \"Bug\""));
+    assert!(toml_contents.contains("tag = \"bug\""));
+    assert!(toml_contents.contains("label = \"Refactor\""));
+    assert!(toml_contents.contains("tag = \"refactor\""));
+
+    // get prints the same Label:tag form.
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args(["config", "get", "server.quick_filters"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Bug:bug,Refactor:refactor"))
+        .stdout(predicate::str::contains("repo config"));
+}
+
+#[test]
+fn config_set_quick_filters_global_rejected() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args([
+            "config",
+            "set",
+            "server.quick_filters",
+            "Bug:bug",
+            "--global",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("repo config"))
+        .stderr(predicate::str::contains("--global"));
+}
+
+#[test]
+fn config_get_quick_filters_env_override() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env("RDM_SERVER_QUICK_FILTERS", "Env:tag")
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "server.quick_filters"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Env:tag"))
+        .stdout(predicate::str::contains("environment variable"));
+}
+
+#[test]
+fn config_list_includes_quick_filters() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args(["config", "set", "server.quick_filters", "Bug:bug"])
+        .assert()
+        .success();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args(["config", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("server.quick_filters"))
+        .stdout(predicate::str::contains("Bug:bug"))
+        .stdout(predicate::str::contains("repo config"));
+}
+
+#[test]
+fn config_set_empty_quick_filters_clears() {
+    let (config_dir, root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args(["config", "set", "server.quick_filters", "Bug:bug"])
+        .assert()
+        .success();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args(["config", "set", "server.quick_filters", ""])
+        .assert()
+        .success();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args(["config", "get", "server.quick_filters"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo config"))
+        .stdout(predicate::str::contains("Bug:bug").not());
+
+    let toml_contents = std::fs::read_to_string(root_dir.path().join("rdm.toml")).unwrap();
+    assert!(!toml_contents.contains("quick_filters"));
+}
+
+#[test]
+fn config_set_quick_filters_missing_colon_fails() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args(["config", "set", "server.quick_filters", "Bug"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Label:tag"))
+        .stderr(predicate::str::contains("server.quick_filters"))
+        .stderr(predicate::str::contains("RDM_SERVER_QUICK_FILTERS").not());
+}
+
+#[test]
+fn config_set_quick_filters_empty_side_fails() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args(["config", "set", "server.quick_filters", "Bug:"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Label:tag"));
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_SERVER_QUICK_FILTERS")
+        .args(["config", "set", "server.quick_filters", ":bug"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Label:tag"));
+}

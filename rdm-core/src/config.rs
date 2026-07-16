@@ -19,10 +19,14 @@ pub const KNOWN_KEYS: &[&str] = &[
     "auto_init",
     "default_branch",
     "hook_timeout_secs",
+    "server.quick_filters",
 ];
 
 /// Keys that may only be set in the global config (not in a repo `rdm.toml`).
 pub const GLOBAL_ONLY_KEYS: &[&str] = &["root", "auto_init"];
+
+/// Keys that may only be set in the repo config (not in the global config).
+pub const REPO_ONLY_KEYS: &[&str] = &["server.quick_filters"];
 
 /// Where a configuration value was resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,6 +357,18 @@ pub fn parse_quick_filters_env(value: &str) -> Result<Vec<QuickFilter>> {
         .collect()
 }
 
+/// Formats a list of [`QuickFilter`]s back into the `Label:tag,...` form
+/// accepted by [`parse_quick_filters_env`].
+///
+/// Returns an empty string for an empty slice.
+pub fn format_quick_filters(filters: &[QuickFilter]) -> String {
+    filters
+        .iter()
+        .map(|f| format!("{}:{}", f.label, f.tag))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Validates that a `default_format` value (if present) is one of the known formats.
 fn validate_format(format: &Option<String>) -> Result<()> {
     if let Some(f) = format
@@ -488,6 +504,34 @@ quick_filters = [
     fn parse_quick_filters_env_empty_side_rejected() {
         assert!(parse_quick_filters_env("Bugs:").is_err());
         assert!(parse_quick_filters_env(":bug").is_err());
+    }
+
+    #[test]
+    fn format_quick_filters_basic() {
+        let filters = vec![
+            QuickFilter {
+                label: "Bugs".to_string(),
+                tag: "bug".to_string(),
+            },
+            QuickFilter {
+                label: "UI".to_string(),
+                tag: "ui".to_string(),
+            },
+        ];
+        assert_eq!(format_quick_filters(&filters), "Bugs:bug,UI:ui");
+    }
+
+    #[test]
+    fn format_quick_filters_empty() {
+        assert_eq!(format_quick_filters(&[]), "");
+    }
+
+    #[test]
+    fn quick_filters_format_parse_round_trip() {
+        let filters = parse_quick_filters_env("Bugs:bug,Refactor:refactor").unwrap();
+        let formatted = format_quick_filters(&filters);
+        let reparsed = parse_quick_filters_env(&formatted).unwrap();
+        assert_eq!(reparsed, filters);
     }
 
     #[test]

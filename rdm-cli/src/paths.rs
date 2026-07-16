@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use rdm_core::config::{ConfigSource, GLOBAL_ONLY_KEYS, GlobalConfig, KNOWN_KEYS, ResolvedValue};
+use rdm_core::config::{
+    ConfigSource, GLOBAL_ONLY_KEYS, GlobalConfig, KNOWN_KEYS, REPO_ONLY_KEYS, ResolvedValue,
+    format_quick_filters, parse_quick_filters_env,
+};
 
 /// Returns the path to the global config file.
 ///
@@ -263,6 +266,15 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
         "default_branch" => config.default_branch.clone(),
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
+        // NOTE: a malformed RDM_SERVER_QUICK_FILTERS env value is echoed
+        // back raw with "(source: environment variable)" by the generic
+        // resolution chain in commands/config.rs — a pre-existing quirk of
+        // how config get/list check the env var directly, shared with every
+        // other key. Not fixed here; out of scope for this phase.
+        "server.quick_filters" => config
+            .server
+            .as_ref()
+            .map(|s| format_quick_filters(&s.quick_filters)),
         _ => None,
     }
 }
@@ -304,6 +316,19 @@ pub fn set_config_field(
         "hook_timeout_secs" => {
             config.hook_timeout_secs = Some(parse_u64(key, value)?);
         }
+        "server.quick_filters" => {
+            let filters = parse_quick_filters_env(value).map_err(|_| {
+                anyhow::anyhow!(
+                    "invalid value '{value}' for 'server.quick_filters' — use the \
+                     'Label:tag,Label2:tag2' form (e.g. 'Bug:bug,Refactor:refactor'); \
+                     pass an empty string to clear all chips"
+                )
+            })?;
+            config
+                .server
+                .get_or_insert_with(Default::default)
+                .quick_filters = filters;
+        }
         "root" | "auto_init" => bail!("'{key}' can only be set in global config — use --global"),
         _ => bail!(
             "unknown config key: {key} — valid keys: {}",
@@ -336,6 +361,9 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
         "hook_timeout_secs" => {
             config.hook_timeout_secs = Some(parse_u64(key, value)?);
         }
+        "server.quick_filters" => {
+            bail!("'{key}' can only be set in repo config — omit --global")
+        }
         _ => bail!(
             "unknown config key: {key} — valid keys: {}",
             KNOWN_KEYS.join(", ")
@@ -362,6 +390,11 @@ pub fn validate_key(key: &str) -> Result<()> {
 /// Checks if a key is global-only.
 pub fn is_global_only(key: &str) -> bool {
     GLOBAL_ONLY_KEYS.contains(&key)
+}
+
+/// Checks if a key is repo-only (cannot be set with `--global`).
+pub fn is_repo_only(key: &str) -> bool {
+    REPO_ONLY_KEYS.contains(&key)
 }
 
 fn parse_bool(s: &str) -> Result<bool> {

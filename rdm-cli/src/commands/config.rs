@@ -39,6 +39,9 @@ pub fn run(
             paths::validate_key(&key)?;
 
             if global {
+                if paths::is_repo_only(&key) {
+                    bail!("'{key}' can only be set in repo config — omit --global");
+                }
                 let mut config = global_config.clone();
                 paths::set_global_config_field(&mut config, &key, &value)?;
                 paths::save_global_config(&config)?;

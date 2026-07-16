@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resolving a dispatch step (`plan`, `implement`, `review-find`,
   `review-verify`, `mechanical`) to a concrete model id, or inspecting the
   full resolved policy (tier bindings, review floor, per-step models).
+- `rdm config set server.quick_filters "Label1:tag1,Label2:tag2"` (plus matching `rdm config get`/`rdm config list` support) configures HTML quick-filter chips without hand-editing `rdm.toml`. An empty value clears all chips; the key is repo-only (`--global` is rejected).
 
 ### Changed
 

@@ -1085,14 +1085,17 @@ pub(crate) enum WorktreeCommand {
 pub(crate) enum ConfigCommand {
     /// Get the resolved value of a config key.
     Get {
-        /// Config key (e.g. default_project, default_format, remote.default, root).
+        /// Config key (e.g. default_project, default_format, remote.default,
+        /// root, server.quick_filters).
         key: String,
     },
     /// Set a config key.
     Set {
         /// Config key to set.
         key: String,
-        /// Value to set.
+        /// Value to set. For `server.quick_filters`, use the
+        /// `Label:tag,Label2:tag2` form (e.g. `Bug:bug,Refactor:refactor`);
+        /// an empty string clears all chips.
         value: String,
         /// Write to global config instead of repo config.
         #[arg(long)]

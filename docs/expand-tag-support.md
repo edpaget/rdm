@@ -90,7 +90,14 @@ Content-Type: application/json
 
 #### Quick-filter chips (HTML views)
 
-The HTML roadmap, phase, and task list views render a chip group above the table for one-click filtering by tag. Define the chips per plan-repo in `rdm.toml`:
+The HTML roadmap, phase, and task list views render a chip group above the table for one-click filtering by tag. Define the chips per plan-repo with `rdm config set`:
+
+```bash
+rdm config set server.quick_filters "Bugs:bug,UI work:ui"
+rdm config get server.quick_filters
+```
+
+An empty value clears all chips (`rdm config set server.quick_filters ""`). This is a repo-only key — `--global` is rejected. Equivalently, you can hand-edit `rdm.toml` directly:
 
 ```toml
 [[server.quick_filters]]
@@ -144,7 +151,7 @@ The in-repo Claude Code skills (`.claude/skills/rdm-do`, `.claude/skills/rdm-roa
 - **Data model**: `Phase` and `Roadmap` in `rdm-core` gained a `tags: Option<Vec<String>>` field with the same `serde(skip_serializing_if = "Option::is_none")` pattern already used on `Task`. Frontmatter round-trips unchanged for items with no tags. Existing tag-less files still parse, so this is a backward-compatible addition.
 - **Promote**: `rdm promote <task>` carries the source task's tags onto the seed phase of the new roadmap, so context isn't lost on conversion.
 - **Search**: `SearchFilter.tags: Option<Vec<String>>` is a hard pre-filter applied before fuzzy scoring. AND semantics — every listed tag must be present. `Some(vec![])` and `None` both mean "no tag constraint".
-- **Server config**: a new `[server]` table in `rdm.toml` with a `quick_filters` list. Resolved per-request via the new `AppState.quick_filters` field. Full replacement (not merge) at every precedence level so you can override the project default for a one-off run.
+- **Server config**: a new `[server]` table in `rdm.toml` with a `quick_filters` list, settable via `rdm config set server.quick_filters`. Resolved per-request via the new `AppState.quick_filters` field. Full replacement (not merge) at every precedence level so you can override the project default for a one-off run.
 - **Clear semantics**: across all surfaces, the core ops treat `Some(empty Vec)` as "clear" and `None` as "preserve". The HTTP and MCP layers expose this as a `clear_tags: true` boolean (because JSON omits-vs-empty is awkward), and the CLI exposes it as `--tags ""`.
 
 ## Limitations
