@@ -75,6 +75,14 @@ pub(crate) enum Command {
         /// `RDM_PLAN_REPO_TOKEN` if not passed explicitly.
         #[arg(long, env = "RDM_PLAN_REPO_TOKEN", hide_env_values = true)]
         token: Option<String>,
+        /// Print only the resolved plan-repo path to stdout; all other output
+        /// (the human banner, fetch/clone narration) moves to stderr. Designed
+        /// for `$(...)` capture in shell hooks. Takes precedence over `--format`
+        /// when both are given — even for `--format table`/`--format markdown`.
+        /// The printed path mirrors `--path` as given (a relative `--path`
+        /// prints relative); the default location is always absolute.
+        #[arg(long)]
+        print_root: bool,
         #[command(subcommand)]
         command: Option<BootstrapSubcommand>,
     },

@@ -13,8 +13,9 @@ plan repo had always been there.
 2. The sandbox boots and the `SessionStart` hook fires.
 3. The hook script:
    - installs rdm from a GitHub Release if it's not on `PATH`;
-   - runs `rdm bootstrap --plan-repo "$RDM_PLAN_REPO"` to clone or fast-forward
-     the plan repo into `$XDG_DATA_HOME/rdm/plan-repo`;
+   - runs `rdm bootstrap --plan-repo "$RDM_PLAN_REPO" --print-root` to clone or
+     fast-forward the plan repo into `$XDG_DATA_HOME/rdm/plan-repo` and
+     capture the resolved path directly (no output-parsing);
    - writes `root` (and optionally `default_project`) into the global rdm
      config so later calls don't need `$RDM_ROOT` in the shell env.
 4. Claude Code tools run normally for the rest of the session; `rdm` commands

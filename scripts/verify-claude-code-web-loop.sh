@@ -113,6 +113,15 @@ SANDBOX_PLAN="$SANDBOX_XDG_DATA/rdm/plan-repo"
 [ -f "$SANDBOX_PLAN/rdm.toml" ] || fail "no rdm.toml in sandbox plan repo clone"
 ok "plan repo cloned into $SANDBOX_PLAN"
 
+CONFIG_ROOT=$(env HOME="$SANDBOX_HOME" XDG_CONFIG_HOME="$SANDBOX_XDG_CONFIG" \
+    "$RDM_BIN" config get root)
+printf '%s' "$CONFIG_ROOT" | grep -qF "$SANDBOX_PLAN" ||
+    {
+        printf '%s\n' "$CONFIG_ROOT" >&2
+        fail "global config root was not set to the bootstrapped plan-repo path"
+    }
+ok "global config root correctly set via --print-root"
+
 # ----------------------------------------------------------------------------
 # Step 3: verify rdm commands work against the bootstrapped clone.
 # ----------------------------------------------------------------------------

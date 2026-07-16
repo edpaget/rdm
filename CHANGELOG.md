@@ -28,6 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `review-verify`, `mechanical`) to a concrete model id, or inspecting the
   full resolved policy (tier bindings, review floor, per-step models).
 - `rdm config set server.quick_filters "Label1:tag1,Label2:tag2"` (plus matching `rdm config get`/`rdm config list` support) configures HTML quick-filter chips without hand-editing `rdm.toml`. An empty value clears all chips; the key is repo-only (`--global` is rejected).
+- `rdm bootstrap` gained a `--print-root` flag (prints only the resolved
+  plan-repo path to stdout, with all narration moved to stderr) and
+  `--format json` support (`{"path", "status", "commits_merged"}`), for
+  reliable scripting in session-start hooks instead of parsing the human
+  success banner. `--print-root` takes precedence over `--format` when
+  both are given. `templates/claude-code-web/.claude/hooks/SessionStart.sh`
+  now uses `--print-root` instead of a `sed`-based parse of bootstrap's
+  stdout.
 
 ### Changed
 

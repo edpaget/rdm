@@ -4,7 +4,9 @@ use tempfile::TempDir;
 
 fn rdm() -> Command {
     let mut cmd = Command::cargo_bin("rdm").unwrap();
-    cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent");
+    cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_ROOT");
     cmd
 }
 
@@ -474,5 +476,479 @@ fn doctor_ssh_url_reports_no_token_needed() {
     assert!(
         combined.contains("SSH URL"),
         "expected SSH-no-token message, got: {combined}"
+    );
+}
+
+// ----------------------------------------------------------------------------
+// --print-root / --format json / precedence
+// ----------------------------------------------------------------------------
+
+#[test]
+fn bootstrap_print_root_prints_only_path_to_stdout() {
+    let (_source, bare) = make_plan_repo_with_bare();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .arg("--print-root")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(stdout.trim(), target.display().to_string());
+    assert!(!stdout.contains("Cloning"), "stdout leaked: {stdout}");
+    assert!(
+        !stdout.contains("Plan repo ready"),
+        "stdout leaked: {stdout}"
+    );
+    assert!(
+        stderr.contains("Plan repo ready at"),
+        "expected banner on stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("export RDM_ROOT="),
+        "expected export line on stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn bootstrap_print_root_fast_forward_reports_only_path() {
+    let (source, bare) = make_plan_repo_with_bare();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .assert()
+        .success();
+
+    // Add a new commit in the source and push it to the bare.
+    rdm()
+        .arg("--root")
+        .arg(source.path())
+        .arg("project")
+        .arg("create")
+        .arg("demo")
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(source.path())
+        .args(["commit", "-m", "feat: add demo project"])
+        .assert()
+        .success();
+    let status = git_cmd()
+        .args(["-C"])
+        .arg(source.path())
+        .args(["push", "origin", "HEAD"])
+        .status();
+    if !status.map(|s| s.success()).unwrap_or(false) {
+        let s = git_cmd()
+            .args(["-C"])
+            .arg(source.path())
+            .args(["push"])
+            .arg(bare.path())
+            .arg("HEAD:refs/heads/main")
+            .status()
+            .unwrap();
+        assert!(s.success(), "failed to push new commit to bare repo");
+    }
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .arg("--print-root")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stdout.trim(), target.display().to_string());
+    assert!(
+        stderr.contains("Fast-forwarded"),
+        "expected fast-forward note on stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn bootstrap_format_json_emits_structured_status_for_fresh_clone() {
+    let (_source, bare) = make_plan_repo_with_bare();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(json["status"], "cloned");
+    assert_eq!(json["path"], target.display().to_string());
+    assert!(json["commits_merged"].is_null());
+}
+
+#[test]
+fn bootstrap_format_json_reports_initialized_for_empty_remote_with_init() {
+    let bare = make_empty_bare_repo();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .arg("--init")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(json["status"], "initialized");
+    assert_eq!(json["path"], target.display().to_string());
+}
+
+#[test]
+fn bootstrap_format_json_reports_fast_forwarded_with_commits_merged() {
+    let (source, bare) = make_plan_repo_with_bare();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(source.path())
+        .arg("project")
+        .arg("create")
+        .arg("demo")
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(source.path())
+        .args(["commit", "-m", "feat: add demo project"])
+        .assert()
+        .success();
+    let status = git_cmd()
+        .args(["-C"])
+        .arg(source.path())
+        .args(["push", "origin", "HEAD"])
+        .status();
+    if !status.map(|s| s.success()).unwrap_or(false) {
+        let s = git_cmd()
+            .args(["-C"])
+            .arg(source.path())
+            .args(["push"])
+            .arg(bare.path())
+            .arg("HEAD:refs/heads/main")
+            .status()
+            .unwrap();
+        assert!(s.success(), "failed to push new commit to bare repo");
+    }
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(json["status"], "fast-forwarded");
+    assert_eq!(json["path"], target.display().to_string());
+    assert_eq!(
+        json["commits_merged"].as_u64(),
+        Some(1),
+        "expected exactly one merged commit, got: {json}"
+    );
+}
+
+#[test]
+fn bootstrap_format_json_reports_up_to_date() {
+    let (_source, bare) = make_plan_repo_with_bare();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .assert()
+        .success();
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(json["status"], "up-to-date");
+    assert_eq!(json["path"], target.display().to_string());
+    assert!(json["commits_merged"].is_null());
+}
+
+#[test]
+fn bootstrap_format_json_reports_no_remote() {
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    rdm()
+        .arg("--root")
+        .arg(&target)
+        .arg("init")
+        .assert()
+        .success();
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg("https://example.invalid/unused.git")
+        .arg("--path")
+        .arg(&target)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(json["status"], "no-remote");
+    assert_eq!(json["path"], target.display().to_string());
+    assert!(json["commits_merged"].is_null());
+}
+
+#[test]
+fn bootstrap_format_table_rejected() {
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg("https://example.invalid/unused.git")
+        .arg("--path")
+        .arg(&target)
+        .arg("--format")
+        .arg("table")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not supported for 'bootstrap'"))
+        .stderr(predicate::str::contains("--format json"));
+}
+
+#[test]
+fn bootstrap_format_markdown_rejected() {
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg("https://example.invalid/unused.git")
+        .arg("--path")
+        .arg(&target)
+        .arg("--format")
+        .arg("markdown")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not supported for 'bootstrap'"))
+        .stderr(predicate::str::contains("--format json"));
+}
+
+#[test]
+fn bootstrap_ambient_global_default_format_table_does_not_reject_unflagged_run() {
+    let (_source, bare) = make_plan_repo_with_bare();
+    let xdg = TempDir::new().unwrap();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    // Write default_format = "table" into global config via `config set --global`.
+    Command::cargo_bin("rdm")
+        .unwrap()
+        .env("HOME", xdg.path())
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "default_format", "table", "--global"])
+        .assert()
+        .success();
+
+    // Unflagged bootstrap invocation — no --format on the command line, no
+    // --root — the ambient root falls back to this xdg's default data dir,
+    // unrelated to --path/target. Must NOT trigger the table/markdown rejection.
+    Command::cargo_bin("rdm")
+        .unwrap()
+        .env("HOME", xdg.path())
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_FORMAT")
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Plan repo ready at"));
+}
+
+#[test]
+fn bootstrap_ambient_env_rdm_format_table_does_not_reject_unflagged_run() {
+    let (_source, bare) = make_plan_repo_with_bare();
+    let xdg = TempDir::new().unwrap();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    Command::cargo_bin("rdm")
+        .unwrap()
+        .env("HOME", xdg.path())
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env_remove("RDM_ROOT")
+        .env("RDM_FORMAT", "table")
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Plan repo ready at"));
+}
+
+#[test]
+fn bootstrap_print_root_overrides_format_json() {
+    let (_source, bare) = make_plan_repo_with_bare();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .arg("--print-root")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), target.display().to_string());
+    assert!(!stdout.trim_start().starts_with('{'));
+    assert!(serde_json::from_str::<serde_json::Value>(stdout.trim()).is_err());
+}
+
+#[test]
+fn bootstrap_print_root_overrides_format_table() {
+    let (_source, bare) = make_plan_repo_with_bare();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    let output = rdm()
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .arg("--print-root")
+        .arg("--format")
+        .arg("table")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), target.display().to_string());
+}
+
+#[test]
+fn bootstrap_doctor_ignores_print_root_and_format_flags() {
+    let xdg = TempDir::new().unwrap();
+    let output = Command::cargo_bin("rdm")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("HOME", xdg.path())
+        .env_remove("RDM_PLAN_REPO")
+        .env_remove("RDM_PLAN_REPO_TOKEN")
+        .arg("bootstrap")
+        .arg("--print-root")
+        .arg("--format")
+        .arg("json")
+        .arg("doctor")
+        .output()
+        .unwrap();
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("rdm bootstrap doctor"),
+        "expected doctor checklist output, got: {combined}"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&combined).is_err(),
+        "doctor output should not be JSON, got: {combined}"
     );
 }

@@ -40,16 +40,9 @@ if [ -n "${RDM_PLAN_REPO_PATH:-}" ]; then
 fi
 
 # shellcheck disable=SC2086  # intentional word-splitting on BOOTSTRAP_ARGS
-BOOTSTRAP_OUTPUT=$(rdm bootstrap $BOOTSTRAP_ARGS)
-echo "$BOOTSTRAP_OUTPUT"
-
-RDM_ROOT_RESOLVED=$(
-    echo "$BOOTSTRAP_OUTPUT" |
-        sed -n 's/^Plan repo ready at //p' |
-        head -n1
-)
+RDM_ROOT_RESOLVED=$(rdm bootstrap $BOOTSTRAP_ARGS --print-root)
 if [ -z "$RDM_ROOT_RESOLVED" ]; then
-    echo "[rdm hook] could not parse RDM_ROOT from bootstrap output; continuing." >&2
+    echo "[rdm hook] rdm bootstrap did not print a resolved path; continuing." >&2
     exit 0
 fi
 

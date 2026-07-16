@@ -96,8 +96,11 @@ fn run() -> Result<()> {
             branch,
             init,
             token,
+            print_root,
             command,
-        } => commands::bootstrap::run_command(plan_repo, path, branch, init, token, command)?,
+        } => commands::bootstrap::run_command(
+            plan_repo, path, branch, init, token, command, print_root, cli.format,
+        )?,
 
         Command::Index => commands::index::run(&root)?,
 

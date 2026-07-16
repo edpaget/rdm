@@ -3,16 +3,23 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::BootstrapSubcommand;
+use crate::OutputFormat;
 use crate::paths;
 
 /// Dispatches the `rdm bootstrap` command: runs the `doctor` subcommand (and
 /// exits with its status code) or performs the clone/fast-forward.
+///
+/// `print_root` and `format` are the raw `--print-root`/`--format` flags from
+/// this invocation (`format` is `None` unless a literal `--format` token was
+/// given — never the ambient-resolved format every other subcommand
+/// consumes). Both are ignored by the `doctor` subcommand.
 ///
 /// # Errors
 ///
 /// Returns an error if no `--plan-repo` is given for the clone path, or if the
 /// clone/fast-forward fails. The `doctor` subcommand never returns — it exits
 /// the process with its own status code.
+#[allow(clippy::too_many_arguments)]
 pub fn run_command(
     plan_repo: Option<String>,
     path: Option<PathBuf>,
@@ -20,6 +27,8 @@ pub fn run_command(
     init: bool,
     token: Option<String>,
     command: Option<BootstrapSubcommand>,
+    print_root: bool,
+    format: Option<OutputFormat>,
 ) -> Result<()> {
     match command {
         Some(BootstrapSubcommand::Doctor {
@@ -36,7 +45,15 @@ pub fn run_command(
             let url = plan_repo.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("--plan-repo is required (or pass a subcommand like `doctor`)")
             })?;
-            run(url, path, branch, init, token.as_deref())
+            run(
+                url,
+                path,
+                branch,
+                init,
+                token.as_deref(),
+                print_root,
+                format,
+            )
         }
     }
 }
@@ -52,27 +69,39 @@ pub fn run_command(
 /// into the URL used for cloning but never printed. SSH URLs are cloned
 /// as-is with a warning. Plain HTTP URLs are rejected when a token is
 /// present to avoid cleartext leakage.
+///
+/// `print_root` and `format` control how the result is rendered: with
+/// `print_root` set, only the resolved path is printed to stdout (all
+/// narration moves to stderr) and `format` is ignored entirely; otherwise
+/// `format` selects between the human banner (`None`/`Some(Human)`) and a
+/// structured JSON payload (`Some(Json)`) — `Some(Table)`/`Some(Markdown)`
+/// are rejected as unsupported for this command.
 pub fn run(
     plan_repo_url: &str,
     path_override: Option<PathBuf>,
     branch: Option<String>,
     init_if_empty: bool,
     token: Option<&str>,
+    print_root: bool,
+    format: Option<OutputFormat>,
 ) -> Result<()> {
+    let mode = resolve_render_mode(print_root, format)?;
+
     let target = resolve_target_path(path_override)?;
     let state = classify_target(&target)?;
 
     let clone_url = resolve_clone_url(plan_repo_url, token)?;
 
-    let final_path = match state {
+    let outcome = match state {
         TargetState::Empty => clone_fresh(
             plan_repo_url,
             &clone_url,
             &target,
             branch.as_deref(),
             init_if_empty,
+            mode,
         )?,
-        TargetState::PlanRepo => update_existing(&target)?,
+        TargetState::PlanRepo => update_existing(&target, mode)?,
         TargetState::NonPlanGitRepo => bail!(
             "target '{}' is a git repo but is not an rdm plan repo (no rdm.toml). \
              Pick a different --path, or delete this directory and re-run.",
@@ -85,7 +114,127 @@ pub fn run(
         ),
     };
 
-    print_success(&final_path);
+    render_outcome(&outcome, mode)
+}
+
+/// How `bootstrap`'s result should be rendered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootstrapRenderMode {
+    /// The pre-existing human banner on stdout (default).
+    Human,
+    /// Only the resolved path on stdout; narration moves to stderr.
+    PrintRoot,
+    /// A single pretty-printed JSON object on stdout; narration suppressed.
+    Json,
+}
+
+/// Resolves the render mode from the raw `--print-root`/`--format` flags.
+///
+/// `format` is the raw `--format` flag (`cli.format`), not main.rs's
+/// ambient-resolved value — `None` means "no `--format` on this invocation"
+/// and always falls back to `Human`, regardless of what `RDM_FORMAT` or a
+/// repo/global `default_format` say (AC3b). Only an explicit
+/// `Some(Table)`/`Some(Markdown)` is rejected (AC3a). `print_root` always
+/// wins over `format`, even for `Table`/`Markdown` (AC4).
+///
+/// # Errors
+///
+/// Returns an error if `format` is `Some(Table)` or `Some(Markdown)` and
+/// `print_root` is `false`.
+fn resolve_render_mode(
+    print_root: bool,
+    format: Option<OutputFormat>,
+) -> Result<BootstrapRenderMode> {
+    if print_root {
+        return Ok(BootstrapRenderMode::PrintRoot);
+    }
+    match format {
+        None | Some(OutputFormat::Human) => Ok(BootstrapRenderMode::Human),
+        Some(OutputFormat::Json) => Ok(BootstrapRenderMode::Json),
+        Some(fmt @ (OutputFormat::Table | OutputFormat::Markdown)) => bail!(
+            "--format {fmt} is not supported for 'bootstrap'; use --format json, or omit --format"
+        ),
+    }
+}
+
+/// Emits a narration line to the sink appropriate for `mode`: stdout in
+/// `Human` mode, stderr in `PrintRoot` mode, suppressed entirely in `Json`
+/// mode.
+fn note(mode: BootstrapRenderMode, msg: &str) {
+    match mode {
+        BootstrapRenderMode::Json => {}
+        BootstrapRenderMode::PrintRoot => eprintln!("{msg}"),
+        BootstrapRenderMode::Human => println!("{msg}"),
+    }
+}
+
+/// The result of a `clone_fresh`/`update_existing` call: the resolved plan
+/// repo path plus what happened to get there.
+struct BootstrapOutcome {
+    path: PathBuf,
+    status: BootstrapStatus,
+}
+
+/// What kind of operation `clone_fresh`/`update_existing` performed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootstrapStatus {
+    /// A fresh clone of an existing plan repo.
+    Cloned,
+    /// A fresh clone of an empty remote, initialized via `--init`.
+    Initialized,
+    /// An existing plan repo with no configured remote — nothing to fetch.
+    NoRemote,
+    /// An existing plan repo already up to date with its remote.
+    UpToDate,
+    /// An existing plan repo fast-forwarded by `commits_merged` commit(s).
+    FastForwarded {
+        /// Number of commits merged by the fast-forward.
+        commits_merged: usize,
+    },
+}
+
+impl BootstrapStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cloned => "cloned",
+            Self::Initialized => "initialized",
+            Self::NoRemote => "no-remote",
+            Self::UpToDate => "up-to-date",
+            Self::FastForwarded { .. } => "fast-forwarded",
+        }
+    }
+}
+
+/// Renders a [`BootstrapOutcome`] according to `mode`.
+///
+/// # Errors
+///
+/// Returns an error if JSON serialization fails (should not happen in
+/// practice — the payload is a simple struct of strings/numbers).
+fn render_outcome(outcome: &BootstrapOutcome, mode: BootstrapRenderMode) -> Result<()> {
+    match mode {
+        BootstrapRenderMode::Human => print_success(&outcome.path),
+        BootstrapRenderMode::PrintRoot => {
+            print_success_stderr(&outcome.path);
+            println!("{}", outcome.path.display());
+        }
+        BootstrapRenderMode::Json => {
+            let commits_merged = match outcome.status {
+                BootstrapStatus::FastForwarded { commits_merged } => Some(commits_merged),
+                _ => None,
+            };
+            let json = serde_json::json!({
+                "path": outcome.path.display().to_string(),
+                "status": outcome.status.as_str(),
+                "commits_merged": commits_merged,
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json)
+                    .context("failed to serialize bootstrap result")?
+            );
+        }
+    }
     Ok(())
 }
 
@@ -208,8 +357,12 @@ fn clone_fresh(
     target: &Path,
     branch: Option<&str>,
     init_if_empty: bool,
-) -> Result<PathBuf> {
-    println!("Cloning {display_url} → {}", target.display());
+    mode: BootstrapRenderMode,
+) -> Result<BootstrapOutcome> {
+    note(
+        mode,
+        &format!("Cloning {display_url} → {}", target.display()),
+    );
     match rdm_store_git::GitStore::clone_remote(clone_url, target, branch) {
         Ok(s) => drop(s),
         Err(e) => {
@@ -222,7 +375,10 @@ fn clone_fresh(
     }
 
     if target.join("rdm.toml").exists() {
-        return Ok(target.to_path_buf());
+        return Ok(BootstrapOutcome {
+            path: target.to_path_buf(),
+            status: BootstrapStatus::Cloned,
+        });
     }
 
     if !init_if_empty {
@@ -238,11 +394,14 @@ fn clone_fresh(
     store
         .commit_now("rdm: initialize plan repo via bootstrap --init")
         .context("failed to commit initial plan repo state")?;
-    Ok(target.to_path_buf())
+    Ok(BootstrapOutcome {
+        path: target.to_path_buf(),
+        status: BootstrapStatus::Initialized,
+    })
 }
 
 /// Fast-forwards an existing plan-repo clone.
-fn update_existing(target: &Path) -> Result<PathBuf> {
+fn update_existing(target: &Path, mode: BootstrapRenderMode) -> Result<BootstrapOutcome> {
     let mut store =
         rdm_store_git::GitStore::new(target).context("failed to open existing plan repo")?;
 
@@ -256,30 +415,46 @@ fn update_existing(target: &Path) -> Result<PathBuf> {
         .map(|r| r.name.clone())
         .or_else(|| remotes.first().map(|r| r.name.clone()));
     let Some(remote_name) = remote_name else {
-        println!(
-            "Plan repo already present at {} (no remote configured, skipping fetch).",
-            target.display()
+        note(
+            mode,
+            &format!(
+                "Plan repo already present at {} (no remote configured, skipping fetch).",
+                target.display()
+            ),
         );
-        return Ok(target.to_path_buf());
+        return Ok(BootstrapOutcome {
+            path: target.to_path_buf(),
+            status: BootstrapStatus::NoRemote,
+        });
     };
 
-    println!(
-        "Plan repo already at {}; fetching {remote_name}…",
-        target.display()
+    note(
+        mode,
+        &format!(
+            "Plan repo already at {}; fetching {remote_name}…",
+            target.display()
+        ),
     );
-    match store
+    let status = match store
         .git_mut()
         .git_pull(&remote_name)
         .context("failed to fast-forward plan repo")?
     {
         rdm_store_git::PullOutcome::Success(result) => {
             if result.changed {
-                println!(
-                    "Fast-forwarded {} commit(s) from {}/{}.",
-                    result.commits_merged, result.remote, result.branch
+                note(
+                    mode,
+                    &format!(
+                        "Fast-forwarded {} commit(s) from {}/{}.",
+                        result.commits_merged, result.remote, result.branch
+                    ),
                 );
+                BootstrapStatus::FastForwarded {
+                    commits_merged: result.commits_merged,
+                }
             } else {
-                println!("Already up to date.");
+                note(mode, "Already up to date.");
+                BootstrapStatus::UpToDate
             }
         }
         rdm_store_git::PullOutcome::Conflict(conflict) => {
@@ -290,15 +465,25 @@ fn update_existing(target: &Path) -> Result<PathBuf> {
                 target.display()
             );
         }
-    }
-    Ok(target.to_path_buf())
+    };
+    Ok(BootstrapOutcome {
+        path: target.to_path_buf(),
+        status,
+    })
 }
 
-/// Prints the post-bootstrap success banner.
+/// Prints the post-bootstrap success banner to stdout (`Human` mode only).
 fn print_success(path: &Path) {
     println!();
     println!("Plan repo ready at {}", path.display());
     println!("  export RDM_ROOT=\"{}\"", path.display());
+}
+
+/// Prints the post-bootstrap success banner to stderr (`PrintRoot` mode).
+fn print_success_stderr(path: &Path) {
+    eprintln!();
+    eprintln!("Plan repo ready at {}", path.display());
+    eprintln!("  export RDM_ROOT=\"{}\"", path.display());
 }
 
 // ============================================================================
@@ -654,5 +839,74 @@ mod tests {
             interpret_github_status("500"),
             GitHubCheck::Inconclusive(_)
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // resolve_render_mode / BootstrapStatus
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn resolve_render_mode_print_root_wins_over_any_format() {
+        for format in [
+            None,
+            Some(crate::OutputFormat::Human),
+            Some(crate::OutputFormat::Json),
+            Some(crate::OutputFormat::Table),
+            Some(crate::OutputFormat::Markdown),
+        ] {
+            let mode = resolve_render_mode(true, format).unwrap();
+            assert_eq!(
+                mode,
+                BootstrapRenderMode::PrintRoot,
+                "expected PrintRoot for format {format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_render_mode_none_defaults_to_human() {
+        let mode = resolve_render_mode(false, None).unwrap();
+        assert_eq!(mode, BootstrapRenderMode::Human);
+    }
+
+    #[test]
+    fn resolve_render_mode_human_default() {
+        let mode = resolve_render_mode(false, Some(crate::OutputFormat::Human)).unwrap();
+        assert_eq!(mode, BootstrapRenderMode::Human);
+    }
+
+    #[test]
+    fn resolve_render_mode_json() {
+        let mode = resolve_render_mode(false, Some(crate::OutputFormat::Json)).unwrap();
+        assert_eq!(mode, BootstrapRenderMode::Json);
+    }
+
+    #[test]
+    fn resolve_render_mode_table_and_markdown_rejected() {
+        let err = resolve_render_mode(false, Some(crate::OutputFormat::Table))
+            .expect_err("table should be rejected");
+        assert!(
+            err.to_string().contains("not supported for 'bootstrap'"),
+            "got: {err}"
+        );
+
+        let err = resolve_render_mode(false, Some(crate::OutputFormat::Markdown))
+            .expect_err("markdown should be rejected");
+        assert!(
+            err.to_string().contains("not supported for 'bootstrap'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn bootstrap_status_as_str_variants() {
+        assert_eq!(BootstrapStatus::Cloned.as_str(), "cloned");
+        assert_eq!(BootstrapStatus::Initialized.as_str(), "initialized");
+        assert_eq!(BootstrapStatus::NoRemote.as_str(), "no-remote");
+        assert_eq!(BootstrapStatus::UpToDate.as_str(), "up-to-date");
+        assert_eq!(
+            BootstrapStatus::FastForwarded { commits_merged: 3 }.as_str(),
+            "fast-forwarded"
+        );
     }
 }
