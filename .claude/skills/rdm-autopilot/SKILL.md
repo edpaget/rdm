@@ -37,6 +37,21 @@ This skill is non-interactive. Launch unattended runs with `--permission-mode au
 
 Each iteration runs on **bounded state**: the only things the loop retains across iterations are the latest `./target/debug/rdm next` result and the small structured outcome JSON returned by each dispatched phase. It never accumulates the plan, plan-review, implementation, or code-review detail of the phases it has already run — that stays behind the subagent boundary (see step 2). This is what keeps the loop context flat across a long roadmap instead of growing with every phase.
 
+### Mandatory dispatch — no inline work
+
+Dispatch is a **MUST**, not a suggestion, and it does not degrade based on how capable the current session feels. You (the loop) MUST NOT plan, implement, or review any phase's work yourself in this context — every phase's work MUST happen inside the `Agent` subagent dispatched in step 2. The loop's only job is orchestration: read `./target/debug/rdm next`, dispatch, interpret the returned outcome, repeat.
+
+**Failure mode to avoid — inline-collapse:** reading the phase, then estimating, planning, implementing, or reviewing it yourself in this same context — treating "dispatch a subagent" as narration rather than an actual `Agent` tool call, or reporting a result as if a subagent produced it when none was spawned. This is **inline-collapse**: it silently discards the context isolation and independent review the whole design depends on. It MUST NOT happen, regardless of model or session.
+
+Before step 2's `Agent` call, and again before treating its result as final, you MUST complete this checklist:
+
+1. **Declare** which subagent you are about to dispatch and its role (e.g. "Dispatching phase subagent for `<slug>/<phase-stem>`").
+2. **Call** the `Agent` tool synchronously for that dispatch — never narrate it, actually invoke it.
+3. **Block** until it returns; do not advance on any other signal (no polling, no assuming completion).
+4. **Verify** the returned result is the structured `{roadmap, phase, outcome, summary, findings}` JSON described in step 2 before proceeding to step 3. If no `Agent` call actually happened, stop and redo this step — do not substitute your own inline work for the missing subagent's output.
+
+This checklist runs fresh for every phase the loop dispatches — it is per-iteration, not once per run.
+
 1. **Ask for the next actionable phase:**
    ```bash
    ./target/debug/rdm next --roadmap <slug> --format json --project rdm
@@ -53,6 +68,7 @@ Each iteration runs on **bounded state**: the only things the loop retains acros
    - The subagent then runs the `rdm-dispatch-phase` skill (`<slug> <phase>`), which runs the phase end-to-end in the roadmap's shared worktree on its model tier — plan, independent plan gate, implement, code-review — and produces a structured `reviewed | rework | escalated` outcome.
    - Under `--plan-only`, the subagent stops the dispatch after its plan gate and reports the gate verdict instead of implementing.
    - The subagent returns **only** the structured `{roadmap, phase, outcome, summary, findings}` JSON. That blob — not the transcript — is all that crosses back into the loop.
+   - **Self-check before proceeding:** you MUST NOT continue to step 3 until you have confirmed the `Agent` call above actually happened and returned this JSON. If you find yourself drafting a phase's plan, code, or review directly in this loop's context, stop immediately — that is the inline-collapse failure above, and this step MUST be redone with a real dispatch.
 
    **Why the boundary.** The `Skill` tool runs **inline** in this conversation, so invoking `rdm-estimate`/`rdm-dispatch-phase`/`rdm-review` directly from the loop would pour every phase's estimate, plan, plan-review, implementation, and code-review detail into the loop context — growing it roughly quadratically over a multi-phase run and diluting attention on later phases. Dispatching each phase as its own `Agent` subagent keeps that detail inside the subagent; only the outcome JSON returns. This mirrors the isolation `rdm-dispatch-phase` already applies one level down (its own **Context isolation** section, where the planner, plan reviewer, and implementer are three separate subagents). **Never** invoke `rdm-estimate`, `rdm-dispatch-phase`, or `rdm-review` directly with the `Skill` tool from this loop — that reintroduces the inline-accumulation trap.
 

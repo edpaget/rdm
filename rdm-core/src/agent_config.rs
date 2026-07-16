@@ -1462,6 +1462,15 @@ mod tests {
         assert!(!content.contains("Done: <roadmap-slug>/<phase-stem>"));
         // Unattended-permission guidance.
         assert!(content.contains("--permission-mode auto"));
+        // Mandatory dispatch enforcement: non-skippable MUST, inline-collapse
+        // negative example, self-check gate, and consistency with phase 1's
+        // synchronous-dispatch contract.
+        assert!(content.contains("Mandatory dispatch"));
+        assert!(content.contains("inline-collapse"));
+        assert!(content.contains("MUST NOT"));
+        assert!(content.contains("Self-check before proceeding"));
+        assert!(content.contains("dispatched synchronously"));
+        assert!(content.contains("SendMessage"));
     }
 
     #[test]
@@ -1521,6 +1530,15 @@ mod tests {
         // Dispatches subagents and isolates their context.
         assert!(content.contains("Agent"));
         assert!(content.contains("Context isolation"));
+        // Mandatory dispatch enforcement: non-skippable MUST, inline-collapse
+        // negative example, self-check gate, and consistency with phase 1's
+        // synchronous-dispatch contract.
+        assert!(content.contains("Mandatory dispatch"));
+        assert!(content.contains("inline-collapse"));
+        assert!(content.contains("MUST NOT"));
+        assert!(content.contains("Self-check before proceeding"));
+        assert!(content.contains("dispatched synchronously"));
+        assert!(content.contains("SendMessage"));
     }
 
     #[test]
@@ -2367,6 +2385,15 @@ mod tests {
         assert!(!frontmatter.contains("  - Bash"));
         assert!(frontmatter.contains("mcp__rdm__rdm_next"));
         assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
+        // Mandatory dispatch enforcement: non-skippable MUST, inline-collapse
+        // negative example, self-check gate, and consistency with phase 1's
+        // synchronous-dispatch contract.
+        assert!(content.contains("Mandatory dispatch"));
+        assert!(content.contains("inline-collapse"));
+        assert!(content.contains("MUST NOT"));
+        assert!(content.contains("Self-check before proceeding"));
+        assert!(content.contains("dispatched synchronously"));
+        assert!(content.contains("SendMessage"));
     }
 
     #[test]
@@ -2421,6 +2448,15 @@ mod tests {
         assert!(content.contains("reason:"));
         assert!(content.contains("[plan]"));
         assert!(content.contains("[code]"));
+        // Mandatory dispatch enforcement: non-skippable MUST, inline-collapse
+        // negative example, self-check gate, and consistency with phase 1's
+        // synchronous-dispatch contract.
+        assert!(content.contains("Mandatory dispatch"));
+        assert!(content.contains("inline-collapse"));
+        assert!(content.contains("MUST NOT"));
+        assert!(content.contains("Self-check before proceeding"));
+        assert!(content.contains("dispatched synchronously"));
+        assert!(content.contains("SendMessage"));
     }
 
     #[test]

@@ -38,6 +38,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   model resolve review-verify` for the refute pass. Every dispatched agent is
   now given an explicit `model`, closing the session-model-inheritance leak.
 - `rdm-autopilot` and `rdm-dispatch-phase` skills now state an explicit **synchronous dispatch contract**: every subagent (per-phase dispatch, planner, plan reviewer, implementer) is spawned synchronously and its returned result is the sole channel back — no background-and-poll, no resume-by-message, and no `SendMessage` to a parent (`"claude"` does not resolve); rework always spawns a fresh subagent.
+- `rdm-autopilot` and `rdm-dispatch-phase` skills now make subagent dispatch a
+  non-skippable **MUST**: a new "Mandatory dispatch — no inline work" section
+  in each skill explicitly prohibits doing the planning/implementation/review
+  inline, requires a pre-action declaration of which subagent/role is being
+  dispatched, and adds a "Self-check before proceeding" checkpoint restated
+  at each dispatch point (`rdm-autopilot` step 2; `rdm-dispatch-phase` steps
+  4-6), plus a "mandatory, not best-effort" lead-in on `rdm-dispatch-phase`'s
+  Context isolation section and a named negative example
+  ("inline-collapse") of the failure this closes. The CLI and MCP-variant
+  templates under `rdm-core/src/templates/` are brought into sync with both
+  this change and phase 1's synchronous-dispatch wording, which they had
+  been missing. See `docs/subagent-dispatch-enforcement.md` for the
+  evaluated techniques and rationale.
 - `rdm-dispatch-phase` and `rdm-autopilot` skills now include explicit guidance on safe operations under `--permission-mode auto`: use `Edit` (surgical) rather than `Write` (whole-file overwrite) when modifying existing tracked files, and never run destructive git operations (`git stash -u`, `git reset --hard`, `git clean -fdx`) that trigger the auto-mode permission classifier and stall unattended runs. The guidance points to the per-roadmap worktree isolation as the alternative (commit a WIP commit instead of stashing; clean up the worktree after the phase is done).
 - `rdm worktree add` without `--base` now defaults the new branch to the invoking checkout's current branch instead of always basing off `main`'s `HEAD`, so a worktree created while on a feature branch builds on that branch's work. Detached HEAD (or the invoking branch matching the item's own target branch) still falls back to the prior `HEAD` default; an explicit `--base <ref>` always takes precedence.
 
