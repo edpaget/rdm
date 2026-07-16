@@ -54,6 +54,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `rdm-dispatch-phase` and `rdm-autopilot` skills now include explicit guidance on safe operations under `--permission-mode auto`: use `Edit` (surgical) rather than `Write` (whole-file overwrite) when modifying existing tracked files, and never run destructive git operations (`git stash -u`, `git reset --hard`, `git clean -fdx`) that trigger the auto-mode permission classifier and stall unattended runs. The guidance points to the per-roadmap worktree isolation as the alternative (commit a WIP commit instead of stashing; clean up the worktree after the phase is done).
 - `rdm worktree add` without `--base` now defaults the new branch to the invoking checkout's current branch instead of always basing off `main`'s `HEAD`, so a worktree created while on a feature branch builds on that branch's work. Detached HEAD (or the invoking branch matching the item's own target branch) still falls back to the prior `HEAD` default; an explicit `--base <ref>` always takes precedence.
 
+### Fixed
+
+- When running a non-init command against an uninitialized plan repo (no
+  `rdm.toml` at the resolved root), the error now clearly guides users to
+  `rdm init`: "no plan repo found at {path} — run `rdm init` to create one",
+  instead of the opaque "failed to open git repository" error. Commands that
+  do not require a repo (`rdm init`, `rdm describe`, `rdm agent-config`, `rdm
+  model`, and `rdm bootstrap` and `rdm hook` when git is enabled) proceed
+  normally without requiring `rdm.toml`.
+
 ## [0.16.0] - 2026-07-04
 
 ### Security

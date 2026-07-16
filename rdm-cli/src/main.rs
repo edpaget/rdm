@@ -43,6 +43,36 @@ fn run() -> Result<()> {
         .parse::<OutputFormat>()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // Guard: non-init commands require rdm.toml to exist at the resolved root.
+    // Exempt commands (Init, Bootstrap, Describe, AgentConfig, Hook, Model, Mcp)
+    // are allowed to proceed without rdm.toml.
+    let rdm_toml_exists = root.join("rdm.toml").exists();
+    if !rdm_toml_exists {
+        match &cli.command {
+            Command::Init { .. }
+            | Command::Describe { .. }
+            | Command::AgentConfig { .. }
+            | Command::Model { .. } => {
+                // These commands are exempt; proceed.
+            }
+            #[cfg(feature = "git")]
+            Command::Bootstrap { .. } | Command::Hook { .. } => {
+                // These commands are exempt; proceed.
+            }
+            #[cfg(feature = "mcp")]
+            Command::Mcp => {
+                // This command is exempt; proceed.
+            }
+            _ => {
+                // All other commands require rdm.toml.
+                anyhow::bail!(
+                    "no plan repo found at {} — run `rdm init` to create one",
+                    root.display()
+                );
+            }
+        }
+    }
+
     match cli.command {
         Command::Config { .. } => unreachable!("handled above"),
         Command::Init {

@@ -123,7 +123,9 @@ fn helpful_error_when_no_repo() {
         .env("RDM_PROJECT", "test")
         .args(["roadmap", "list"])
         .assert()
-        .failure();
+        .failure()
+        .stderr(predicate::str::contains("no plan repo found"))
+        .stderr(predicate::str::contains("rdm init"));
 }
 
 #[test]
