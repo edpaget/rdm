@@ -49,6 +49,14 @@ pub fn run(
     }
 }
 
+/// Creates (or reuses) a worktree for `raw_item`.
+///
+/// When `base` is not supplied, the new branch defaults to the invoking
+/// checkout's current branch (resolved via [`rdm_git::current_branch_at`])
+/// rather than always basing off `HEAD` at the main working tree. This falls
+/// back to the prior `HEAD` default when the invoking checkout is in
+/// detached HEAD, or when its branch is the item's own target branch (the
+/// self/idempotent case). An explicit `base` always takes precedence.
 fn add(
     root: &Path,
     repo_config: &rdm_core::config::Config,
@@ -62,7 +70,35 @@ fn add(
     let item = worktree::resolve_item(&store, &project, raw_item).map_err(map_err)?;
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let repo = worktree::discover_distinct_project_repo(&cwd, root).map_err(map_err)?;
-    let info = worktree::add(&repo, &item, &item.branch_name(), base).map_err(map_err)?;
+    // Default the base to the invoking checkout's current branch rather than
+    // always resolving HEAD at the main working tree. `.ok().flatten()`
+    // degrades to the prior `HEAD` default on any error (never a git repo,
+    // etc.) or detached HEAD; the first `.filter` drops the self-referential
+    // case where the invoking branch is already the item's own target branch;
+    // the second drops an unborn branch (symbolic-ref reports a branch name
+    // before its first commit, but that name is not a usable base ref).
+    let resolved_base: Option<String> = match base {
+        Some(explicit) => Some(explicit.to_string()),
+        None => rdm_git::current_branch_at(&cwd)
+            .ok()
+            .flatten()
+            .filter(|b| b != &item.branch_name())
+            .filter(|b| {
+                rdm_git::run_git_at(
+                    &cwd,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{b}"),
+                    ],
+                )
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+            }),
+    };
+    let info = worktree::add(&repo, &item, &item.branch_name(), resolved_base.as_deref())
+        .map_err(map_err)?;
 
     match format {
         OutputFormat::Json => {

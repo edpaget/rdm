@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now given an explicit `model`, closing the session-model-inheritance leak.
 - `rdm-autopilot` and `rdm-dispatch-phase` skills now state an explicit **synchronous dispatch contract**: every subagent (per-phase dispatch, planner, plan reviewer, implementer) is spawned synchronously and its returned result is the sole channel back — no background-and-poll, no resume-by-message, and no `SendMessage` to a parent (`"claude"` does not resolve); rework always spawns a fresh subagent.
 - `rdm-dispatch-phase` and `rdm-autopilot` skills now include explicit guidance on safe operations under `--permission-mode auto`: use `Edit` (surgical) rather than `Write` (whole-file overwrite) when modifying existing tracked files, and never run destructive git operations (`git stash -u`, `git reset --hard`, `git clean -fdx`) that trigger the auto-mode permission classifier and stall unattended runs. The guidance points to the per-roadmap worktree isolation as the alternative (commit a WIP commit instead of stashing; clean up the worktree after the phase is done).
+- `rdm worktree add` without `--base` now defaults the new branch to the invoking checkout's current branch instead of always basing off `main`'s `HEAD`, so a worktree created while on a feature branch builds on that branch's work. Detached HEAD (or the invoking branch matching the item's own target branch) still falls back to the prior `HEAD` default; an explicit `--base <ref>` always takes precedence.
 
 ## [0.16.0] - 2026-07-04
 

@@ -1023,7 +1023,8 @@ pub(crate) enum WorktreeCommand {
     Add {
         /// Plan item to key the worktree/branch to.
         item: String,
-        /// Base ref to branch from (defaults to current HEAD).
+        /// Base ref to branch from (defaults to the invoking checkout's
+        /// current branch, falling back to HEAD if detached).
         #[arg(long)]
         base: Option<String>,
         /// Project to resolve the item against.

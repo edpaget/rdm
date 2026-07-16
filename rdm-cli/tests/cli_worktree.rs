@@ -124,6 +124,18 @@ fn worktree_cmd(plan: &TempDir, project: &TempDir) -> Command {
     cmd
 }
 
+/// Builds an `rdm worktree` command rooted at `plan`, running in an arbitrary
+/// `cwd` — used when the invoking checkout is a linked worktree rather than
+/// the project's main working tree.
+fn worktree_cmd_at(plan: &TempDir, cwd: &Path) -> Command {
+    let mut cmd = rdm();
+    cmd.arg("--root")
+        .arg(plan.path())
+        .current_dir(cwd)
+        .arg("worktree");
+    cmd
+}
+
 #[test]
 fn add_prints_path_and_is_idempotent() {
     let plan = init_plan_repo();
@@ -566,4 +578,152 @@ fn inside_plan_repo_errors() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("plan repo"));
+}
+
+/// Stands up a project repo with a second linked worktree on branch
+/// `feature-x` that has diverged from `main` by one commit (`feature.txt`).
+/// Returns `(plan, project, wt_dir, feature_path)`; `wt_dir` must be kept
+/// alive by the caller for the duration of the test (its `Drop` cleans up
+/// the linked worktree's directory).
+fn setup_diverged_feature_worktree() -> (TempDir, TempDir, TempDir, std::path::PathBuf) {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    let wt_dir = TempDir::new().unwrap();
+    let feature_path = wt_dir.path().join("feature-wt");
+
+    git(
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature-x",
+            feature_path.to_str().unwrap(),
+            "main",
+        ],
+    );
+    fs::write(feature_path.join("feature.txt"), "wip").unwrap();
+    git(&feature_path, &["add", "."]);
+    git(&feature_path, &["commit", "-m", "feature work"]);
+
+    (plan, project, wt_dir, feature_path)
+}
+
+#[test]
+fn add_defaults_base_to_invoking_checkout_branch() {
+    let (plan, _project, _wt_dir, feature_path) = setup_diverged_feature_worktree();
+
+    // No --base: the new worktree should be based on feature-x, not main, so
+    // it should inherit feature.txt.
+    let assert = worktree_cmd_at(&plan, &feature_path)
+        .args(["add", "task/fix-bug", "--project", "demo"])
+        .assert()
+        .success();
+    let path = String::from_utf8_lossy(&assert.get_output().stdout)
+        .trim()
+        .to_string();
+    assert!(
+        Path::new(&path).join("feature.txt").exists(),
+        "new worktree should be based on the invoking checkout's branch (feature-x), \
+         not main — feature.txt should be present"
+    );
+}
+
+#[test]
+fn add_base_flag_overrides_invoking_branch() {
+    let (plan, _project, _wt_dir, feature_path) = setup_diverged_feature_worktree();
+
+    // Explicit --base main should win over the invoking checkout's branch.
+    let assert = worktree_cmd_at(&plan, &feature_path)
+        .args(["add", "task/fix-bug", "--project", "demo", "--base", "main"])
+        .assert()
+        .success();
+    let path = String::from_utf8_lossy(&assert.get_output().stdout)
+        .trim()
+        .to_string();
+    assert!(
+        !Path::new(&path).join("feature.txt").exists(),
+        "--base main should override the invoking branch default"
+    );
+}
+
+#[test]
+fn add_detached_head_falls_back_to_head_default() {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    let wt_dir = TempDir::new().unwrap();
+    let detached_path = wt_dir.path().join("detached-wt");
+
+    git(
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            detached_path.to_str().unwrap(),
+            "main",
+        ],
+    );
+
+    // Advance `main` past the detached checkout's commit so the fallback ref
+    // (HEAD at the main working tree) is distinguishable from the detached
+    // SHA: only a worktree based on the fallback contains `main-only.txt`.
+    fs::write(project.path().join("main-only.txt"), "post-detach").unwrap();
+    git(project.path(), &["add", "."]);
+    git(
+        project.path(),
+        &["commit", "-m", "advance main past detach"],
+    );
+
+    let assert = worktree_cmd_at(&plan, &detached_path)
+        .args(["add", "task/fix-bug", "--project", "demo"])
+        .assert()
+        .success();
+    let path = String::from_utf8_lossy(&assert.get_output().stdout)
+        .trim()
+        .to_string();
+    assert!(
+        Path::new(&path).join("main-only.txt").exists(),
+        "detached HEAD should fall back to the prior default (HEAD at the \
+         main working tree), not the detached checkout's own commit"
+    );
+}
+
+#[test]
+fn add_unborn_invoking_branch_falls_back_to_head_default() {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    let wt_dir = TempDir::new().unwrap();
+    let orphan_path = wt_dir.path().join("orphan-wt");
+
+    // An orphan linked worktree: `git symbolic-ref HEAD` reports the branch
+    // name (`scratch`) even though it has no commits, so it cannot be used
+    // as a base ref — the add must fall back to the prior HEAD default
+    // instead of failing with `fatal: invalid reference: scratch`.
+    git(
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "--orphan",
+            "-b",
+            "scratch",
+            orphan_path.to_str().unwrap(),
+        ],
+    );
+
+    let assert = worktree_cmd_at(&plan, &orphan_path)
+        .args(["add", "task/fix-bug", "--project", "demo"])
+        .assert()
+        .success();
+    let path = String::from_utf8_lossy(&assert.get_output().stdout)
+        .trim()
+        .to_string();
+    assert!(
+        Path::new(&path).join("README.md").exists(),
+        "unborn invoking branch should fall back to the prior HEAD default"
+    );
 }
