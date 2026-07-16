@@ -25,6 +25,8 @@ This skill is non-interactive. Launch unattended runs with `--permission-mode au
 
 `main` is **never touched** unless `--land` is passed (see below). The default run leaves `main` exactly as it found it.
 
+**Safe operations note:** Each dispatched phase runs under the same `--permission-mode auto` constraints. The `rdm-dispatch-phase` skill (which implements each phase) includes detailed guidance on safe operations — specifically using `Edit` instead of `Write` for existing files and avoiding destructive git operations that would stall an unattended run. Familiarize yourself with that guidance; it applies to all work here.
+
 ## Flags / run modes
 
 - `--max-phases N` — bounded run: dispatch at most `N` phases this pass, then stop and summarize. Use it to take a roadmap a few phases at a time.

@@ -110,6 +110,13 @@ The whole point is a *fresh* per-phase agent, and the isolation holds at three b
 
 **Subagents never `SendMessage` their orchestrator.** The planner, plan reviewer, and implementer subagents must not attempt to `SendMessage` back to this dispatcher — there is no resolvable parent name (`"claude"` does not resolve). The dispatcher reads each subagent's returned result; that result is the sole channel for outcomes to flow back.
 
+## Safe operations under --permission-mode auto
+
+Unattended autonomous runs (launched with `--permission-mode auto` or equivalent) depend on explicit operational guardrails. The auto-mode permission classifier treats certain operations as **irreversible local destruction** and denies them, blocking a hands-off run indefinitely unless human intervention occurs — defeating the point of unattended execution. This phase dispatches via `rdm-dispatch-phase`, which may run under `--permission-mode auto`, so implementer subagents must follow these rules:
+
+- **Modify existing files with `Edit`, never `Write`** — a `Write` operation that overwrites an existing tracked file triggers the auto-mode destructive-action classifier and stalls the run. Use the `Edit` tool for surgical changes to files already in the repo, even if you are replacing large sections. Reserve `Write` only for creating new files.
+- **Never run `git stash -u`, `git reset --hard`, or `git clean -fdx`** — these are classified as irreversible local destruction and are denied under `--permission-mode auto`. The per-roadmap worktree isolation means destructive whole-tree resets are unnecessary. If work must be set aside, commit a WIP commit (e.g. `git commit -m "wip: <description>"`) on the phase branch instead of stashing untracked files. The worktree can be pruned or reset later when the phase is done or parked.
+
 ## Side-work
 
 If you discover bugs or unrelated improvements while working, do not fix them inline — create a tagged task instead so the work is findable later:
