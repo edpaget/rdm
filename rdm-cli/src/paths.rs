@@ -20,9 +20,25 @@ pub fn default_data_dir() -> Option<PathBuf> {
 
 /// Loads the global config from disk, returning `Default` if the file is missing.
 ///
-/// Delegates to [`rdm_core::root::load_global_config`].
+/// Emits a warning to stderr if the config file contains invalid TOML.
 pub fn load_global_config() -> GlobalConfig {
-    rdm_core::root::load_global_config()
+    let Some(path) = rdm_core::root::global_config_path() else {
+        return GlobalConfig::default();
+    };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return GlobalConfig::default();
+    };
+    match GlobalConfig::from_toml(&contents) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!(
+                "warning: ignoring malformed config at {}: {}",
+                path.display(),
+                e
+            );
+            GlobalConfig::default()
+        }
+    }
 }
 
 /// Resolves the plan repo root using the priority chain:
@@ -134,12 +150,24 @@ pub fn resolve_remote_name(
 }
 
 /// Loads the repo config from `<root>/rdm.toml`, returning `Default` if missing.
+///
+/// Emits a warning to stderr if the config file contains invalid TOML.
 pub fn load_repo_config(root: &Path) -> rdm_core::config::Config {
     let config_path = root.join("rdm.toml");
-    std::fs::read_to_string(&config_path)
-        .ok()
-        .and_then(|s| rdm_core::config::Config::from_toml(&s).ok())
-        .unwrap_or_default()
+    let Ok(contents) = std::fs::read_to_string(&config_path) else {
+        return rdm_core::config::Config::default();
+    };
+    match rdm_core::config::Config::from_toml(&contents) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!(
+                "warning: ignoring malformed config at {}: {}",
+                config_path.display(),
+                e
+            );
+            rdm_core::config::Config::default()
+        }
+    }
 }
 
 /// Resolves the output format from the CLI flag, `RDM_FORMAT` env var, and config.
@@ -528,5 +556,36 @@ mod tests {
         // Nothing available → actionable error.
         let err = resolve_review_author_inner(None, None, None).unwrap_err();
         assert!(err.to_string().contains("--author"));
+    }
+
+    #[test]
+    fn load_repo_config_falls_back_on_malformed_toml() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_path = temp.path().join("rdm.toml");
+        // Write malformed TOML
+        std::fs::write(&config_path, "invalid = [").unwrap();
+
+        let config = load_repo_config(temp.path());
+        assert_eq!(config, rdm_core::config::Config::default());
+    }
+
+    #[test]
+    fn load_repo_config_silent_on_missing_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // Don't create rdm.toml
+
+        let config = load_repo_config(temp.path());
+        assert_eq!(config, rdm_core::config::Config::default());
+    }
+
+    #[test]
+    fn load_repo_config_silent_on_valid_toml() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_path = temp.path().join("rdm.toml");
+        let valid_toml = "default_project = \"my-proj\"\n";
+        std::fs::write(&config_path, valid_toml).unwrap();
+
+        let config = load_repo_config(temp.path());
+        assert_eq!(config.default_project, Some("my-proj".to_string()));
     }
 }
