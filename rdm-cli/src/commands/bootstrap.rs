@@ -620,16 +620,56 @@ fn exit_code(critical_failures: u32) -> i32 {
     if critical_failures == 0 { 0 } else { 1 }
 }
 
-/// Walk `$PATH` looking for an executable named `name`.
-fn which_on_path(name: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
+/// Generates candidate executable names for the given base name.
+///
+/// On Windows, if the name has no extension (no dot), returns the name with
+/// possible extensions: `[name, name.exe, name.bat, name.cmd]`.
+/// On non-Windows, returns just the name.
+/// If the name already contains a dot (indicating it has an extension),
+/// returns only the exact name regardless of platform.
+fn candidate_names(name: &str) -> Vec<String> {
+    if name.contains('.') {
+        // Name already has an extension, return as-is
+        return vec![name.to_string()];
+    }
+
+    #[cfg(windows)]
+    {
+        vec![
+            name.to_string(),
+            format!("{}.exe", name),
+            format!("{}.bat", name),
+            format!("{}.cmd", name),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    {
+        vec![name.to_string()]
+    }
+}
+
+/// Walk `path_var` (if provided) looking for an executable named `name`,
+/// checking multiple candidate extensions on Windows.
+///
+/// Returns the path to the first matching file found, or `None` if no
+/// match is discovered.
+fn which_in_paths(name: &str, path_var: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let path_var = path_var?;
+    for dir in std::env::split_paths(path_var) {
+        for candidate in &candidate_names(name) {
+            let candidate_path = dir.join(candidate);
+            if candidate_path.is_file() {
+                return Some(candidate_path);
+            }
         }
     }
     None
+}
+
+/// Walk `$PATH` looking for an executable named `name`.
+fn which_on_path(name: &str) -> Option<PathBuf> {
+    which_in_paths(name, std::env::var_os("PATH").as_deref())
 }
 
 /// Resolves the configured plan-repo root, if any, and confirms it has an
@@ -907,6 +947,93 @@ mod tests {
         assert_eq!(
             BootstrapStatus::FastForwarded { commits_merged: 3 }.as_str(),
             "fast-forwarded"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Windows PATH extension detection
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_candidate_names_generation() {
+        // On Windows, should generate [base, .exe, .bat, .cmd] for names without extension
+        if cfg!(windows) {
+            let candidates = candidate_names("rdm");
+            assert_eq!(candidates, vec!["rdm", "rdm.exe", "rdm.bat", "rdm.cmd"]);
+        } else {
+            let candidates = candidate_names("rdm");
+            assert_eq!(candidates, vec!["rdm"]);
+        }
+
+        // Names that already have an extension should only return the exact name
+        let candidates_with_ext = candidate_names("rdm.exe");
+        assert_eq!(candidates_with_ext, vec!["rdm.exe"]);
+
+        let candidates_other_ext = candidate_names("script.sh");
+        assert_eq!(candidates_other_ext, vec!["script.sh"]);
+    }
+
+    #[test]
+    fn test_which_in_paths_finds_binary_on_path() {
+        use tempfile::TempDir;
+
+        // Create a temporary directory with a fake executable
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let exe_path = temp_dir.path().join("test_exe");
+
+        // Create a fake executable file
+        std::fs::write(&exe_path, b"#!/bin/sh\necho hello").expect("failed to write test file");
+
+        // Make it executable (Unix-like systems)
+        #[cfg(unix)]
+        {
+            use std::fs::Permissions;
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&exe_path, Permissions::from_mode(0o755))
+                .expect("failed to set permissions");
+        }
+
+        // Build a mock PATH value (portable: a single-entry PATH is the dir itself)
+        let path_os = temp_dir.path().as_os_str();
+
+        // Test that which_in_paths finds the binary
+        let result = which_in_paths("test_exe", Some(path_os));
+        assert_eq!(result, Some(exe_path));
+
+        // Test that which_in_paths returns None when binary doesn't exist
+        let not_found = which_in_paths("nonexistent", Some(path_os));
+        assert_eq!(not_found, None);
+
+        // Test that which_in_paths returns None when PATH is None
+        let no_path = which_in_paths("test_exe", None);
+        assert_eq!(no_path, None);
+    }
+
+    #[test]
+    fn test_which_in_paths_multi_dir_first_match_wins() {
+        use tempfile::TempDir;
+
+        let dir_a = TempDir::new().expect("failed to create temp dir a");
+        let dir_b = TempDir::new().expect("failed to create temp dir b");
+
+        // Binary exists only in the second directory: search must walk past
+        // the first directory and find it.
+        let exe_b = dir_b.path().join("test_exe");
+        std::fs::write(&exe_b, b"b").expect("failed to write test file");
+
+        let joined = std::env::join_paths([dir_a.path(), dir_b.path()])
+            .expect("failed to join mock PATH entries");
+        assert_eq!(
+            which_in_paths("test_exe", Some(joined.as_os_str())),
+            Some(exe_b.clone())
+        );
+
+        // Binary exists in both directories: the earlier PATH entry wins.
+        let exe_a = dir_a.path().join("test_exe");
+        std::fs::write(&exe_a, b"a").expect("failed to write test file");
+        assert_eq!(
+            which_in_paths("test_exe", Some(joined.as_os_str())),
+            Some(exe_a)
         );
     }
 }

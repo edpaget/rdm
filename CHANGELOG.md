@@ -66,6 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `rdm bootstrap doctor` now correctly detects rdm on PATH on Windows by checking for `.exe`, `.bat`, and `.cmd` extensions in addition to the unextended name.
 - When running a non-init command against an uninitialized plan repo (no
   `rdm.toml` at the resolved root), the error now clearly guides users to
   `rdm init`: "no plan repo found at {path} — run `rdm init` to create one",
