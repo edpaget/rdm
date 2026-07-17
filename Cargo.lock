@@ -2950,6 +2950,7 @@ dependencies = [
  "rdm-core",
  "rdm-git",
  "rdm-store-fs",
+ "static_assertions",
  "tempfile",
 ]
 

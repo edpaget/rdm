@@ -11,6 +11,7 @@ rdm-core = { path = "../rdm-core" }
 rdm-git = { path = "../rdm-git" }
 rdm-store-fs = { path = "../rdm-store-fs" }
 gix = { version = "0.85", default-features = false, features = ["basic", "index", "revision", "parallel", "sha1"] }
+static_assertions = "1.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

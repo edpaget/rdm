@@ -332,6 +332,13 @@ impl VersionedStore for GitStore {
         self.git.fetch_body_at(path, sha)
     }
 }
+
+// Compile-time assertion: GitStore must implement Send + Sync.
+// Catch regressions at the store crate level (not just downstream in rdm-mcp
+// when wrapping GitStore in Mutex<AppStore>). Fails at library build time
+// if GitStore loses either trait.
+static_assertions::assert_impl_all!(GitStore: Send, Sync);
+
 #[cfg(test)]
 mod tests {
     use super::*;
