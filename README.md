@@ -100,13 +100,15 @@ rdm agent-config claude --skills --hooks --out .
 
 This writes `.claude/hooks/rdm-review-on-finalize.sh` (executable) and registers it under `hooks.Stop` in `.claude/settings.json`, merging non-destructively into any existing settings (other keys are preserved; re-running is idempotent). The hook calls `rdm` on your `PATH` and relies on standard project resolution (`RDM_PROJECT` env var or `default_project` in `rdm.toml`). Use `--user` instead of `--out` to install into `~/.claude/`.
 
-`--hooks` also works for Pi, which has no `settings.json` hooks — the equivalent is a TypeScript extension that subscribes to the `agent_end` lifecycle event:
+`--hooks` also writes a second Stop hook, `.claude/hooks/rdm-plan-review-on-create.sh`, which reprompts the agent to run the `rdm-plan-review` skill while any roadmap, phase, or task carries the `needs-plan-review` sentinel tag — the tag `roadmap create` / `phase create` / `task create` stamp onto new items when the `plan_review` config key is enabled (`rdm config set plan_review true`). Both hooks register their own `hooks.Stop` entry via the same non-destructive, idempotent merge, so they coexist in one `settings.json`.
+
+`--hooks` also works for Pi, which has no `settings.json` hooks — the equivalent is a pair of TypeScript extensions that subscribe to the `agent_end` lifecycle event:
 
 ```bash
 rdm agent-config pi --skills --hooks --out .
 ```
 
-This writes `.pi/extensions/rdm-review.ts`, which Pi auto-discovers from its extensions directory (no registration step). On every `agent_end` it calls `rdm` on your `PATH` (standard project resolution) and re-prompts the agent to run the `rdm-review` skill while any item is in `needs-review`. Use `--user` instead of `--out` to install into `~/.pi/agent/extensions/`.
+This writes `.pi/extensions/rdm-review.ts` and `.pi/extensions/rdm-plan-review.ts`, which Pi auto-discovers from its extensions directory (no registration step). On every `agent_end`, `rdm-review.ts` calls `rdm` on your `PATH` (standard project resolution) and re-prompts the agent to run the `rdm-review` skill while any item is in `needs-review`; `rdm-plan-review.ts` does the same for the `rdm-plan-review` skill while any item carries the `needs-plan-review` tag. Use `--user` instead of `--out` to install into `~/.pi/agent/extensions/`.
 
 #### Headless / unattended runs
 

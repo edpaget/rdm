@@ -728,8 +728,16 @@ Read `{path}` before starting implementation work. It contains project conventio
 /// This is the exact `command` string the hook entry carries; it is used both when
 /// writing the registration and when checking (for idempotency) whether the hook is
 /// already present.
-const CLAUDE_STOP_HOOK_COMMAND: &str =
+const CLAUDE_REVIEW_STOP_HOOK_COMMAND: &str =
     "$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh";
+
+/// The command registered in `.claude/settings.json` for the plan-review Stop hook.
+///
+/// This is the exact `command` string the hook entry carries; it is used both when
+/// writing the registration and when checking (for idempotency) whether the hook is
+/// already present.
+const CLAUDE_PLAN_REVIEW_STOP_HOOK_COMMAND: &str =
+    "$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-plan-review-on-create.sh";
 
 /// Returns the generalized auto-review Stop hook script for Claude Code.
 ///
@@ -761,6 +769,10 @@ pub struct ClaudeHookFiles {
     pub script_content: &'static str,
     /// Relative path for the Claude Code settings file (`settings.json`).
     pub settings_relative_path: &'static str,
+    /// The `command` string to register under `hooks.Stop` in
+    /// [`ClaudeHookFiles::settings_relative_path`], via
+    /// [`merge_stop_hook_into_settings`].
+    pub stop_hook_command: &'static str,
 }
 
 /// Returns the file plan for the Claude auto-review Stop hook.
@@ -784,6 +796,7 @@ pub fn generate_claude_hook() -> ClaudeHookFiles {
         script_relative_path: "hooks/rdm-review-on-finalize.sh",
         script_content: generate_claude_stop_hook_script(),
         settings_relative_path: "settings.json",
+        stop_hook_command: CLAUDE_REVIEW_STOP_HOOK_COMMAND,
     }
 }
 
@@ -818,15 +831,17 @@ impl std::error::Error for AgentConfigError {
     }
 }
 
-/// Merges the auto-review Stop hook registration into Claude Code settings JSON.
+/// Merges a Stop hook registration for `command` into Claude Code settings JSON.
 ///
 /// Given the existing `settings.json` content (or `None` to start from `{}`), returns
-/// pretty-printed JSON with a `hooks.Stop` entry registering
-/// `$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh`. All other keys are
-/// preserved.
+/// pretty-printed JSON with a `hooks.Stop` entry registering the given `command`. All
+/// other keys — including any other Stop hook entries already present — are preserved,
+/// so calling this repeatedly with different commands (e.g. once for the auto-review
+/// hook, once for the plan-review hook) composes multiple Stop hooks into the same
+/// settings file.
 ///
-/// The merge is idempotent: if the Stop hook command is already registered, the input
-/// is returned unchanged so re-running `--hooks` never duplicates the entry.
+/// The merge is idempotent: if `command` is already registered, the input is returned
+/// unchanged so re-running `--hooks` never duplicates the entry.
 ///
 /// Only top-level objecthood is enforced as an invariant. If `hooks` exists but is not
 /// an object, or `hooks.Stop` exists but is not an array, that wrong-typed value is
@@ -844,12 +859,18 @@ impl std::error::Error for AgentConfigError {
 /// ```
 /// use rdm_core::agent_config::merge_stop_hook_into_settings;
 ///
-/// let merged = merge_stop_hook_into_settings(None).unwrap();
-/// assert!(merged.contains("rdm-review-on-finalize.sh"));
+/// let merged = merge_stop_hook_into_settings(None, "/path/to/hook.sh").unwrap();
+/// assert!(merged.contains("/path/to/hook.sh"));
 /// // Idempotent: merging again changes nothing.
-/// assert_eq!(merge_stop_hook_into_settings(Some(&merged)).unwrap(), merged);
+/// assert_eq!(
+///     merge_stop_hook_into_settings(Some(&merged), "/path/to/hook.sh").unwrap(),
+///     merged
+/// );
 /// ```
-pub fn merge_stop_hook_into_settings(existing: Option<&str>) -> Result<String, AgentConfigError> {
+pub fn merge_stop_hook_into_settings(
+    existing: Option<&str>,
+    command: &str,
+) -> Result<String, AgentConfigError> {
     let mut root: serde_json::Value = match existing {
         Some(s) if !s.trim().is_empty() => {
             serde_json::from_str(s).map_err(AgentConfigError::InvalidJson)?
@@ -881,9 +902,9 @@ pub fn merge_stop_hook_into_settings(existing: Option<&str>) -> Result<String, A
             .get("hooks")
             .and_then(|h| h.as_array())
             .map(|hooks| {
-                hooks.iter().any(|h| {
-                    h.get("command").and_then(|c| c.as_str()) == Some(CLAUDE_STOP_HOOK_COMMAND)
-                })
+                hooks
+                    .iter()
+                    .any(|h| h.get("command").and_then(|c| c.as_str()) == Some(command))
             })
             .unwrap_or(false)
     });
@@ -900,7 +921,7 @@ pub fn merge_stop_hook_into_settings(existing: Option<&str>) -> Result<String, A
             "hooks": [
                 {
                     "type": "command",
-                    "command": CLAUDE_STOP_HOOK_COMMAND,
+                    "command": command,
                 }
             ]
         }));
@@ -962,6 +983,100 @@ pub fn generate_pi_extension() -> PiExtensionFiles {
     PiExtensionFiles {
         extension_relative_path: "extensions/rdm-review.ts",
         extension_content: generate_pi_extension_script(),
+    }
+}
+
+// ---------- Claude plan-review Stop hook ----------
+
+/// Returns the generalized plan-review Stop hook script for Claude Code.
+///
+/// The script re-prompts the agent to run the `rdm-plan-review` skill while any rdm
+/// item carries the `needs-plan-review` sentinel tag (stamped by `roadmap create` /
+/// `phase create` / `task create` when the `plan_review` config flag is enabled). It
+/// calls `rdm` on `PATH` and relies on the standard project resolution chain
+/// (`RDM_PROJECT` / `default_project`), so it is portable across end-user plan repos.
+/// It is the plan-review analog of [`generate_claude_stop_hook_script`].
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_claude_plan_review_hook_script;
+///
+/// let script = generate_claude_plan_review_hook_script();
+/// assert!(script.contains("needs-plan-review"));
+/// ```
+pub fn generate_claude_plan_review_hook_script() -> &'static str {
+    include_str!("templates/hook-plan-review-on-create.sh")
+}
+
+/// Returns the file plan for the Claude plan-review Stop hook.
+///
+/// The caller writes [`ClaudeHookFiles::script_content`] to
+/// [`ClaudeHookFiles::script_relative_path`] (setting the executable bit), then merges
+/// the Stop hook registration into the file at
+/// [`ClaudeHookFiles::settings_relative_path`] via [`merge_stop_hook_into_settings`],
+/// alongside any other Stop hook (such as the one from [`generate_claude_hook`]) already
+/// registered there.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_claude_plan_review_hook;
+///
+/// let files = generate_claude_plan_review_hook();
+/// assert_eq!(files.script_relative_path, "hooks/rdm-plan-review-on-create.sh");
+/// ```
+pub fn generate_claude_plan_review_hook() -> ClaudeHookFiles {
+    ClaudeHookFiles {
+        script_relative_path: "hooks/rdm-plan-review-on-create.sh",
+        script_content: generate_claude_plan_review_hook_script(),
+        settings_relative_path: "settings.json",
+        stop_hook_command: CLAUDE_PLAN_REVIEW_STOP_HOOK_COMMAND,
+    }
+}
+
+// ---------- Pi plan-review extension ----------
+
+/// Returns the plan-review extension script for the Pi coding agent.
+///
+/// The extension subscribes to Pi's `agent_end` lifecycle event and re-prompts the agent
+/// to run the `rdm-plan-review` skill while any rdm item carries the
+/// `needs-plan-review` sentinel tag. It calls `rdm` on `PATH` and relies on the standard
+/// project resolution chain (`RDM_PROJECT` / `default_project`), so it is portable
+/// across end-user plan repos. It is the Pi analog of
+/// [`generate_claude_plan_review_hook_script`].
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_pi_plan_review_extension_script;
+///
+/// let script = generate_pi_plan_review_extension_script();
+/// assert!(script.contains("agent_end"));
+/// assert!(script.contains("needs-plan-review"));
+/// ```
+pub fn generate_pi_plan_review_extension_script() -> &'static str {
+    include_str!("templates/extension-plan-review-on-create.ts")
+}
+
+/// Returns the file plan for the Pi plan-review extension.
+///
+/// The caller writes [`PiExtensionFiles::extension_content`] to
+/// [`PiExtensionFiles::extension_relative_path`]. No executable bit and no settings
+/// merge are needed — the file is a TypeScript module auto-discovered by Pi.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_pi_plan_review_extension;
+///
+/// let files = generate_pi_plan_review_extension();
+/// assert_eq!(files.extension_relative_path, "extensions/rdm-plan-review.ts");
+/// ```
+pub fn generate_pi_plan_review_extension() -> PiExtensionFiles {
+    PiExtensionFiles {
+        extension_relative_path: "extensions/rdm-plan-review.ts",
+        extension_content: generate_pi_plan_review_extension_script(),
     }
 }
 
@@ -3052,32 +3167,35 @@ mod tests {
         );
         assert_eq!(files.settings_relative_path, "settings.json");
         assert!(files.script_content.contains("needs-review"));
+        assert_eq!(files.stop_hook_command, CLAUDE_REVIEW_STOP_HOOK_COMMAND);
     }
 
     #[test]
     fn merge_into_none_produces_stop_hook() {
-        let merged = merge_stop_hook_into_settings(None).unwrap();
+        let merged = merge_stop_hook_into_settings(None, CLAUDE_REVIEW_STOP_HOOK_COMMAND).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
         let cmd = parsed["hooks"]["Stop"][0]["hooks"][0]["command"]
             .as_str()
             .expect("command should be a string");
-        assert_eq!(cmd, CLAUDE_STOP_HOOK_COMMAND);
+        assert_eq!(cmd, CLAUDE_REVIEW_STOP_HOOK_COMMAND);
     }
 
     #[test]
     fn merge_into_empty_object_produces_stop_hook() {
-        let merged = merge_stop_hook_into_settings(Some("{}")).unwrap();
+        let merged =
+            merge_stop_hook_into_settings(Some("{}"), CLAUDE_REVIEW_STOP_HOOK_COMMAND).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
         assert_eq!(
             parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
-            CLAUDE_STOP_HOOK_COMMAND
+            CLAUDE_REVIEW_STOP_HOOK_COMMAND
         );
     }
 
     #[test]
     fn merge_preserves_unrelated_keys() {
         let existing = r#"{"model":"x","hooks":{"PreToolUse":[{"matcher":"Bash"}]}}"#;
-        let merged = merge_stop_hook_into_settings(Some(existing)).unwrap();
+        let merged =
+            merge_stop_hook_into_settings(Some(existing), CLAUDE_REVIEW_STOP_HOOK_COMMAND).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
         // Unrelated top-level key survives.
         assert_eq!(parsed["model"], "x");
@@ -3085,14 +3203,15 @@ mod tests {
         assert_eq!(parsed["hooks"]["PreToolUse"][0]["matcher"], "Bash");
         assert_eq!(
             parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
-            CLAUDE_STOP_HOOK_COMMAND
+            CLAUDE_REVIEW_STOP_HOOK_COMMAND
         );
     }
 
     #[test]
     fn merge_is_idempotent() {
-        let once = merge_stop_hook_into_settings(None).unwrap();
-        let twice = merge_stop_hook_into_settings(Some(&once)).unwrap();
+        let once = merge_stop_hook_into_settings(None, CLAUDE_REVIEW_STOP_HOOK_COMMAND).unwrap();
+        let twice =
+            merge_stop_hook_into_settings(Some(&once), CLAUDE_REVIEW_STOP_HOOK_COMMAND).unwrap();
         // Re-running returns the input verbatim — no duplicate entry.
         assert_eq!(once, twice);
         let parsed: serde_json::Value = serde_json::from_str(&twice).unwrap();
@@ -3105,31 +3224,106 @@ mod tests {
         // A top-level object with `hooks` of the wrong type: the nested shape is
         // rebuilt (not preserved), but the merge still succeeds and registers Stop.
         // Top-level objecthood is the only structural invariant we enforce.
-        let merged = merge_stop_hook_into_settings(Some(r#"{"hooks":"oops"}"#)).unwrap();
+        let merged = merge_stop_hook_into_settings(
+            Some(r#"{"hooks":"oops"}"#),
+            CLAUDE_REVIEW_STOP_HOOK_COMMAND,
+        )
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
         assert_eq!(
             parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
-            CLAUDE_STOP_HOOK_COMMAND
+            CLAUDE_REVIEW_STOP_HOOK_COMMAND
         );
 
         // `Stop` present but not an array is likewise rebuilt into a single-entry array.
-        let merged = merge_stop_hook_into_settings(Some(r#"{"hooks":{"Stop":{}}}"#)).unwrap();
+        let merged = merge_stop_hook_into_settings(
+            Some(r#"{"hooks":{"Stop":{}}}"#),
+            CLAUDE_REVIEW_STOP_HOOK_COMMAND,
+        )
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
         let stop = parsed["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 1);
-        assert_eq!(stop[0]["hooks"][0]["command"], CLAUDE_STOP_HOOK_COMMAND);
+        assert_eq!(
+            stop[0]["hooks"][0]["command"],
+            CLAUDE_REVIEW_STOP_HOOK_COMMAND
+        );
     }
 
     #[test]
     fn merge_rejects_non_object_json() {
-        let err = merge_stop_hook_into_settings(Some("[1, 2, 3]")).unwrap_err();
+        let err = merge_stop_hook_into_settings(Some("[1, 2, 3]"), CLAUDE_REVIEW_STOP_HOOK_COMMAND)
+            .unwrap_err();
         assert!(matches!(err, AgentConfigError::NotAnObject));
     }
 
     #[test]
     fn merge_rejects_invalid_json() {
-        let err = merge_stop_hook_into_settings(Some("{not json")).unwrap_err();
+        let err = merge_stop_hook_into_settings(Some("{not json"), CLAUDE_REVIEW_STOP_HOOK_COMMAND)
+            .unwrap_err();
         assert!(matches!(err, AgentConfigError::InvalidJson(_)));
+    }
+
+    #[test]
+    fn merge_composes_multiple_stop_hook_commands() {
+        let with_review =
+            merge_stop_hook_into_settings(None, CLAUDE_REVIEW_STOP_HOOK_COMMAND).unwrap();
+        let composed =
+            merge_stop_hook_into_settings(Some(&with_review), CLAUDE_PLAN_REVIEW_STOP_HOOK_COMMAND)
+                .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&composed).unwrap();
+        let stop = parsed["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2, "both Stop hooks should coexist");
+
+        let commands: Vec<&str> = stop
+            .iter()
+            .filter_map(|entry| entry["hooks"][0]["command"].as_str())
+            .collect();
+        assert!(
+            commands.contains(&CLAUDE_REVIEW_STOP_HOOK_COMMAND),
+            "review command missing: {commands:?}"
+        );
+        assert!(
+            commands.contains(&CLAUDE_PLAN_REVIEW_STOP_HOOK_COMMAND),
+            "plan-review command missing: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn merge_composed_settings_is_idempotent() {
+        let with_review =
+            merge_stop_hook_into_settings(None, CLAUDE_REVIEW_STOP_HOOK_COMMAND).unwrap();
+        let composed_once =
+            merge_stop_hook_into_settings(Some(&with_review), CLAUDE_PLAN_REVIEW_STOP_HOOK_COMMAND)
+                .unwrap();
+
+        // Re-apply both merges against the already-composed string.
+        let reapplied_review =
+            merge_stop_hook_into_settings(Some(&composed_once), CLAUDE_REVIEW_STOP_HOOK_COMMAND)
+                .unwrap();
+        let reapplied_both = merge_stop_hook_into_settings(
+            Some(&reapplied_review),
+            CLAUDE_PLAN_REVIEW_STOP_HOOK_COMMAND,
+        )
+        .unwrap();
+
+        assert_eq!(reapplied_both, composed_once);
+        let parsed: serde_json::Value = serde_json::from_str(&reapplied_both).unwrap();
+        assert_eq!(parsed["hooks"]["Stop"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn merge_still_preserves_unrelated_keys_when_composing() {
+        let existing = r#"{"model":"x","hooks":{"PreToolUse":[{"matcher":"Bash"}]}}"#;
+        let with_review =
+            merge_stop_hook_into_settings(Some(existing), CLAUDE_REVIEW_STOP_HOOK_COMMAND).unwrap();
+        let composed =
+            merge_stop_hook_into_settings(Some(&with_review), CLAUDE_PLAN_REVIEW_STOP_HOOK_COMMAND)
+                .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&composed).unwrap();
+        assert_eq!(parsed["model"], "x");
+        assert_eq!(parsed["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+        assert_eq!(parsed["hooks"]["Stop"].as_array().unwrap().len(), 2);
     }
 
     // --- Pi auto-review extension tests ---
@@ -3161,6 +3355,70 @@ mod tests {
     fn generate_pi_extension_paths() {
         let files = generate_pi_extension();
         assert_eq!(files.extension_relative_path, "extensions/rdm-review.ts");
+        assert!(files.extension_content.contains("agent_end"));
+    }
+
+    // --- Claude plan-review Stop hook tests ---
+
+    #[test]
+    fn plan_review_hook_script_is_generalized() {
+        let script = generate_claude_plan_review_hook_script();
+        assert!(script.contains("stop_hook_active"));
+        assert!(script.contains("needs-plan-review"));
+        assert!(script.contains("rdm search"));
+        // Generalized: no dev-binary path and no hard-coded project.
+        assert!(
+            !script.contains("--project"),
+            "script should not hard-code a project"
+        );
+        assert!(
+            !script.contains("target/debug/rdm"),
+            "script should call rdm on PATH, not the dev binary"
+        );
+    }
+
+    #[test]
+    fn generate_claude_plan_review_hook_paths() {
+        let files = generate_claude_plan_review_hook();
+        assert_eq!(
+            files.script_relative_path,
+            "hooks/rdm-plan-review-on-create.sh"
+        );
+        assert_eq!(files.settings_relative_path, "settings.json");
+        assert_eq!(
+            files.stop_hook_command,
+            CLAUDE_PLAN_REVIEW_STOP_HOOK_COMMAND
+        );
+        assert!(files.script_content.contains("needs-plan-review"));
+    }
+
+    // --- Pi plan-review extension tests ---
+
+    #[test]
+    fn plan_review_extension_script_is_generalized() {
+        let script = generate_pi_plan_review_extension_script();
+        assert!(script.contains("agent_end"));
+        assert!(script.contains("needs-plan-review"));
+        assert!(script.contains("pi.exec"));
+        assert!(script.contains("sendUserMessage"));
+        assert!(script.contains("export default"));
+        assert!(
+            !script.contains("--project"),
+            "extension should not hard-code a project"
+        );
+        assert!(
+            !script.contains("target/debug"),
+            "extension should call rdm on PATH, not the dev binary"
+        );
+    }
+
+    #[test]
+    fn generate_pi_plan_review_extension_paths() {
+        let files = generate_pi_plan_review_extension();
+        assert_eq!(
+            files.extension_relative_path,
+            "extensions/rdm-plan-review.ts"
+        );
         assert!(files.extension_content.contains("agent_end"));
     }
 }

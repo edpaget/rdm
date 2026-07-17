@@ -94,6 +94,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `rdm task create ... --tags plan-review` tasks. On PASS or PASS WITH
   CONCERNS it clears the `needs-plan-review` tag (Phase 1's sentinel); on
   REWORK it leaves the tag in place and reports what must change.
+- `rdm agent-config claude --hooks` and `rdm agent-config pi --hooks` now also
+  emit a plan-review Stop hook/extension (`.claude/hooks/rdm-plan-review-on-create.sh`
+  registered in `.claude/settings.json`, or `.pi/extensions/rdm-plan-review.ts`
+  for Pi) that reprompts the agent to run the `rdm-plan-review` skill while any
+  roadmap, phase, or task carries the `needs-plan-review` sentinel tag (stamped
+  when `plan_review` is enabled). It honors `stop_hook_active` the same way the
+  existing `needs-review` hook does, and fails open on any query error.
+  `merge_stop_hook_into_settings` now composes multiple Stop hooks
+  non-destructively and idempotently, so both hooks coexist in the same
+  `settings.json`.
 
 ### Changed
 

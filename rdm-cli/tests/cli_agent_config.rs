@@ -678,24 +678,81 @@ fn agent_config_hooks_writes_script_and_settings() {
     assert!(!content.contains("--project"));
     assert!(!content.contains("target/debug/rdm"));
 
-    // Script is executable (unix).
+    // The plan-review hook is also written.
+    let plan_review_script = dir
+        .path()
+        .join(".claude/hooks/rdm-plan-review-on-create.sh");
+    assert!(
+        plan_review_script.exists(),
+        "expected {}",
+        plan_review_script.display()
+    );
+    let plan_review_content = std::fs::read_to_string(&plan_review_script).unwrap();
+    assert!(plan_review_content.contains("needs-plan-review"));
+    assert!(!plan_review_content.contains("--project"));
+    assert!(!plan_review_content.contains("target/debug/rdm"));
+
+    // Both scripts are executable (unix).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&script).unwrap().permissions().mode();
         assert_eq!(mode & 0o111, 0o111, "script should be executable");
+        let plan_review_mode = std::fs::metadata(&plan_review_script)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            plan_review_mode & 0o111,
+            0o111,
+            "plan-review script should be executable"
+        );
     }
 
     let settings = dir.path().join(".claude/settings.json");
     assert!(settings.exists(), "expected {}", settings.display());
     let parsed: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
-    assert_eq!(
-        parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
-        "$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh"
-    );
+    let stop = parsed["hooks"]["Stop"].as_array().unwrap();
+    assert_eq!(stop.len(), 2, "both Stop hooks should be registered");
+    let commands: Vec<&str> = stop
+        .iter()
+        .filter_map(|entry| entry["hooks"][0]["command"].as_str())
+        .collect();
+    assert!(commands.contains(&"$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh"));
+    assert!(commands.contains(&"$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-plan-review-on-create.sh"));
 
     // No Pi artifacts leak from the Claude path (reciprocal of the pi hook test).
     assert!(!dir.path().join(".pi").exists());
+}
+
+#[test]
+fn agent_config_hooks_rerun_is_idempotent_with_both_hooks() {
+    let dir = TempDir::new().unwrap();
+    let run = || {
+        rdm()
+            .arg("agent-config")
+            .arg("claude")
+            .arg("--hooks")
+            .arg("--out")
+            .arg(dir.path())
+            .assert()
+            .success();
+    };
+
+    run();
+    let settings_path = dir.path().join(".claude/settings.json");
+    let first = std::fs::read_to_string(&settings_path).unwrap();
+    let first_parsed: Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(first_parsed["hooks"]["Stop"].as_array().unwrap().len(), 2);
+
+    run();
+    let second = std::fs::read_to_string(&settings_path).unwrap();
+    assert_eq!(
+        first, second,
+        "settings.json should be byte-identical across reruns"
+    );
+    let second_parsed: Value = serde_json::from_str(&second).unwrap();
+    assert_eq!(second_parsed["hooks"]["Stop"].as_array().unwrap().len(), 2);
 }
 
 #[test]
@@ -724,11 +781,15 @@ fn agent_config_hooks_is_non_destructive() {
     // Unrelated key and existing hooks bucket survive.
     assert_eq!(parsed["model"], "sonnet");
     assert_eq!(parsed["hooks"]["PreToolUse"][0]["matcher"], "Bash");
-    // Stop hook is registered.
-    assert_eq!(
-        parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
-        "$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh"
-    );
+    // Both Stop hooks are registered alongside the pre-existing keys.
+    let stop = parsed["hooks"]["Stop"].as_array().unwrap();
+    assert_eq!(stop.len(), 2);
+    let commands: Vec<&str> = stop
+        .iter()
+        .filter_map(|entry| entry["hooks"][0]["command"].as_str())
+        .collect();
+    assert!(commands.contains(&"$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-review-on-finalize.sh"));
+    assert!(commands.contains(&"$CLAUDE_PROJECT_DIR/.claude/hooks/rdm-plan-review-on-create.sh"));
 }
 
 #[test]
@@ -748,6 +809,11 @@ fn agent_config_hooks_with_skills_writes_both() {
     assert!(
         dir.path()
             .join(".claude/hooks/rdm-review-on-finalize.sh")
+            .exists()
+    );
+    assert!(
+        dir.path()
+            .join(".claude/hooks/rdm-plan-review-on-create.sh")
             .exists()
     );
     assert!(dir.path().join(".claude/settings.json").exists());
@@ -800,6 +866,14 @@ fn agent_config_hooks_user_writes_to_claude_dir() {
 
     let script = home.path().join(".claude/hooks/rdm-review-on-finalize.sh");
     assert!(script.exists(), "expected {}", script.display());
+    let plan_review_script = home
+        .path()
+        .join(".claude/hooks/rdm-plan-review-on-create.sh");
+    assert!(
+        plan_review_script.exists(),
+        "expected {}",
+        plan_review_script.display()
+    );
     let settings = home.path().join(".claude/settings.json");
     assert!(settings.exists(), "expected {}", settings.display());
 }
@@ -828,6 +902,19 @@ fn agent_config_pi_hooks_writes_extension() {
     assert!(!content.contains("--project"));
     assert!(!content.contains("target/debug"));
 
+    // The plan-review extension is also written.
+    let plan_review_ext = dir.path().join(".pi/extensions/rdm-plan-review.ts");
+    assert!(
+        plan_review_ext.exists(),
+        "expected {}",
+        plan_review_ext.display()
+    );
+    let plan_review_content = std::fs::read_to_string(&plan_review_ext).unwrap();
+    assert!(plan_review_content.contains("agent_end"));
+    assert!(plan_review_content.contains("needs-plan-review"));
+    assert!(!plan_review_content.contains("--project"));
+    assert!(!plan_review_content.contains("target/debug"));
+
     // No Claude artifacts and no settings file for Pi (auto-discovered).
     assert!(!dir.path().join(".claude").exists());
     assert!(!dir.path().join(".pi/settings.json").exists());
@@ -849,6 +936,13 @@ fn agent_config_pi_hooks_user_writes_to_pi_agent_dir() {
     assert!(ext.exists(), "expected {}", ext.display());
     let content = std::fs::read_to_string(&ext).unwrap();
     assert!(content.contains("agent_end"));
+
+    let plan_review_ext = home.path().join(".pi/agent/extensions/rdm-plan-review.ts");
+    assert!(
+        plan_review_ext.exists(),
+        "expected {}",
+        plan_review_ext.display()
+    );
 }
 
 #[test]
@@ -866,6 +960,11 @@ fn agent_config_pi_hooks_with_skills_writes_both() {
 
     assert!(dir.path().join(".pi/skills/rdm-do/SKILL.md").exists());
     assert!(dir.path().join(".pi/extensions/rdm-review.ts").exists());
+    assert!(
+        dir.path()
+            .join(".pi/extensions/rdm-plan-review.ts")
+            .exists()
+    );
 }
 
 #[test]
