@@ -732,6 +732,33 @@ pub(crate) enum TaskCommand {
         /// Git commit SHA to associate with this task.
         #[arg(long)]
         commit: Option<String>,
+        /// Reason to record when closing/retiring this task (e.g. why it was
+        /// marked wont-fix). Preserved across later status changes.
+        #[arg(long, conflicts_with = "clear_reason")]
+        reason: Option<String>,
+        /// Remove the recorded close reason from this task.
+        #[arg(long, conflicts_with = "reason")]
+        clear_reason: bool,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
+    /// Merge one or more duplicate tasks into a survivor.
+    ///
+    /// Unions the sources' tags into the survivor, appends each source body to
+    /// the survivor under a `## Merged from task <slug>` heading, and closes
+    /// every source `wont-fix` with a `superseded by task/<survivor>` pointer.
+    /// Idempotent: re-running the same merge is a no-op.
+    Merge {
+        /// Survivor task slug (the task that absorbs the sources).
+        survivor: String,
+        /// Source task slug(s) to fold into the survivor (repeatable,
+        /// comma-separated).
+        #[arg(long = "from", value_delimiter = ',', required = true, num_args = 1..)]
+        from: Vec<String>,
+        /// Project the tasks belong to.
+        #[arg(long)]
+        project: Option<String>,
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,

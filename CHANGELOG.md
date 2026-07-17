@@ -48,6 +48,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   roadmap, or a task that is already `done`/`wont-fix`, fails with an
   actionable error. The existing `--roadmap-slug` (create-new-roadmap) form
   is unchanged.
+- `rdm task merge <survivor> --from <a> --from <b>` (comma-separated or
+  repeated) folds one or more duplicate tasks into a survivor: it unions the
+  sources' tags into the survivor, appends each source body under a `## Merged
+  from task <slug>` heading (in `--from` order), and closes every source
+  `wont-fix` with a `superseded by task/<survivor>` pointer note. Merged
+  sources drop out of the active `task list` but stay inspectable with their
+  provenance intact. The merge is idempotent — re-running it is a no-op — and
+  self-merges, unknown survivors, unknown sources, and empty `--from` all fail
+  with actionable errors before any change is written.
+- `rdm task update --reason <text>` / `--clear-reason` records (or clears) a
+  persisted close reason on a task — e.g. why it was retired as `wont-fix`.
+  The reason survives read-back, is shown by `task show` and included in
+  `task show --format json` (`close_reason`), and is preserved across later
+  status changes until explicitly cleared.
 
 ### Changed
 

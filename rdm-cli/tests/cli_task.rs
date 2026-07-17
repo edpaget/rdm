@@ -1549,3 +1549,312 @@ fn task_update_empty_title_rejected() {
         .success()
         .stdout(predicate::str::contains("Keep Task Title"));
 }
+
+#[test]
+fn task_merge_folds_sources() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "survivor",
+            "--title",
+            "Survivor",
+            "--project",
+            "fbm",
+            "--tags",
+            "bug",
+            "--body",
+            "Survivor body.",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "dup-a",
+            "--title",
+            "Dup A",
+            "--project",
+            "fbm",
+            "--tags",
+            "ui",
+            "--body",
+            "Dup A body.",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "dup-b",
+            "--title",
+            "Dup B",
+            "--project",
+            "fbm",
+            "--body",
+            "Dup B body.",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "merge",
+            "survivor",
+            "--from",
+            "dup-a,dup-b",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Merged 2 task(s) into 'survivor'"));
+
+    // Survivor absorbed tags and bodies.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "survivor", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Tags: bug, ui")
+                .and(predicate::str::contains("## Merged from task `dup-a`"))
+                .and(predicate::str::contains("Dup A body."))
+                .and(predicate::str::contains("## Merged from task `dup-b`")),
+        );
+
+    // Sources dropped from the active list.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "list", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("dup-a")
+                .not()
+                .and(predicate::str::contains("dup-b").not()),
+        );
+
+    // But remain inspectable with provenance intact.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "dup-a", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Status: wont-fix")
+                .and(predicate::str::contains(
+                    "Close reason: superseded by task/survivor",
+                ))
+                .and(predicate::str::contains("Superseded by task `survivor`.")),
+        );
+}
+
+#[test]
+fn task_update_wont_fix_reason_shown() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "retire-me", "Retire Me");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "retire-me",
+            "--status",
+            "wont-fix",
+            "--reason",
+            "obsolete after redesign",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "retire-me", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Status: wont-fix").and(predicate::str::contains(
+                "Close reason: obsolete after redesign",
+            )),
+        );
+}
+
+#[test]
+fn task_update_clear_reason() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "retire-me", "Retire Me");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "retire-me",
+            "--status",
+            "wont-fix",
+            "--reason",
+            "temporary",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "retire-me",
+            "--clear-reason",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "retire-me", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Close reason:").not());
+}
+
+#[test]
+fn task_update_reason_and_clear_reason_conflict() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "t", "T");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "t",
+            "--reason",
+            "x",
+            "--clear-reason",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn task_merge_self_fails() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "survivor", "Survivor");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "merge",
+            "survivor",
+            "--from",
+            "survivor",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("into itself"));
+}
+
+#[test]
+fn task_merge_unknown_source_fails() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "survivor", "Survivor");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "merge",
+            "survivor",
+            "--from",
+            "ghost",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("task not found: ghost"));
+}
+
+#[test]
+fn task_merge_twice_is_safe() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "survivor", "Survivor");
+    create_task(&dir, "dup", "Dup");
+
+    for _ in 0..2 {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args([
+                "task",
+                "merge",
+                "survivor",
+                "--from",
+                "dup",
+                "--project",
+                "fbm",
+            ])
+            .assert()
+            .success();
+    }
+
+    // Provenance appears exactly once despite the double merge.
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "survivor", "--project", "fbm"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    assert_eq!(text.matches("## Merged from task `dup`").count(), 1);
+}

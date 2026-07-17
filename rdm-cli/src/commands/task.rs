@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use rdm_core::config::Config;
 use rdm_core::display;
 use rdm_core::json;
-use rdm_core::ops::{BodyUpdate, TagsUpdate, TitleUpdate};
+use rdm_core::ops::{BodyUpdate, ReasonUpdate, TagsUpdate, TitleUpdate};
 
 use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
 use crate::paths;
@@ -91,6 +91,8 @@ pub fn run(
             body,
             clear_body,
             commit,
+            reason,
+            clear_reason,
             no_edit,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
@@ -101,6 +103,8 @@ pub fn run(
                 BodyUpdate::from_args(resolve_body(body, no_edit)?, false)?
             };
             let tags = TagsUpdate::from_args(tags, false)?;
+            let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
+            let has_reason = !matches!(reason_update, ReasonUpdate::Keep);
             // Stamp the source-repo HEAD SHA when entering needs-review, so the
             // review can later be scoped to the branch/worktree that produced
             // it. No commit yet (unstamped) → fail open downstream.
@@ -147,7 +151,7 @@ pub fn run(
             #[cfg(not(feature = "git"))]
             let needs_review_warning: Option<String> = None;
             let doc = commit_mutation(store, &project, no_index, "failed to update task", |s| {
-                rdm_core::ops::task::update_task(
+                let mut doc = rdm_core::ops::task::update_task(
                     s,
                     &project,
                     &slug,
@@ -159,7 +163,16 @@ pub fn run(
                     review_sha,
                     review_branch,
                     title,
-                )
+                )?;
+                if has_reason {
+                    doc = rdm_core::ops::task::set_task_close_reason(
+                        s,
+                        &project,
+                        &slug,
+                        reason_update,
+                    )?;
+                }
+                Ok(doc)
             })
             .map_err(map_body_clobber)?;
             println!(
@@ -168,6 +181,28 @@ pub fn run(
             );
             if let Some(warning) = needs_review_warning {
                 eprintln!("{warning}");
+            }
+        }
+        TaskCommand::Merge {
+            survivor,
+            from,
+            project,
+            no_edit: _,
+        } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            let (_survivor_doc, closed) =
+                commit_mutation(store, &project, no_index, "failed to merge tasks", |s| {
+                    rdm_core::ops::task::merge_tasks(s, &project, &survivor, &from)
+                })?;
+            // Report the count actually folded this call (deduped, minus any
+            // already-superseded sources skipped as a no-op), not the raw input.
+            let folded = closed.len();
+            if folded == 0 {
+                println!(
+                    "No tasks merged into '{survivor}' — all specified sources were already folded."
+                );
+            } else {
+                println!("Merged {folded} task(s) into '{survivor}'.");
             }
         }
         TaskCommand::List {

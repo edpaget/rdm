@@ -715,6 +715,29 @@ mod tests {
     }
 
     #[test]
+    fn task_to_json_carries_close_reason() {
+        let mut doc = make_task_doc("dup", "acme");
+        doc.frontmatter.status = TaskStatus::WontFix;
+        doc.frontmatter.close_reason = Some("superseded by task/survivor".to_string());
+        let json = task_to_json("dup", &doc, None);
+        assert_eq!(
+            json.close_reason.as_deref(),
+            Some("superseded by task/survivor")
+        );
+        let serialized = serde_json::to_string(&json).unwrap();
+        assert!(serialized.contains("\"close_reason\":\"superseded by task/survivor\""));
+    }
+
+    #[test]
+    fn close_reason_skipped_when_none() {
+        let doc = make_task_doc("t", "p");
+        let json = task_to_json("t", &doc, None);
+        assert!(json.close_reason.is_none());
+        let serialized = serde_json::to_string(&json).unwrap();
+        assert!(!serialized.contains("close_reason"));
+    }
+
+    #[test]
     fn phase_summary_fields() {
         let doc = make_phase_doc(3, "Review", PhaseStatus::NotStarted);
         let s = phase_summary_to_json("phase-3-review", &doc);
