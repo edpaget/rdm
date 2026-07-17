@@ -42,19 +42,19 @@ For each comment with `status: open`, branch on the anchor:
 
 ### 4. Apply the edit and capture the commit
 
-Apply the change through the matching update command (never edit plan files directly):
+Apply the change through the matching update command (never edit plan files directly). Pass the full revised body with `--body` — `update` does **not** read stdin, so a heredoc is silently ignored. Capture the multiline body into a shell variable with a quoted heredoc (which keeps backticks, `$`, and punctuation literal), then pass `--body "$body"`:
 
 ```bash
-./target/debug/rdm phase update <stem-or-number> --roadmap <slug> --no-edit --project rdm <<'EOF'
+body=$(cat <<'EOF'
 ...full revised body...
 EOF
-./target/debug/rdm task update <slug> --no-edit --project rdm <<'EOF'
-...full revised body...
-EOF
-./target/debug/rdm roadmap update <slug> --no-edit --project rdm <<'EOF'
-...full revised body...
-EOF
+)
+./target/debug/rdm phase update <stem-or-number> --roadmap <slug> --body "$body" --no-edit --project rdm
+# or: ./target/debug/rdm task update <slug> --body "$body" --no-edit --project rdm
+# or: ./target/debug/rdm roadmap update <slug> --body "$body" --no-edit --project rdm
 ```
+
+`--body` is authoritative: rdm takes the value verbatim and never touches stdin.
 
 Each mutation only **stages** the change — it does not commit. Land it immediately, before moving to the next comment:
 

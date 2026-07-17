@@ -105,7 +105,9 @@ For `phase create`, pass a bare slug like `hook-commit-bug` — rdm prepends `ph
 
 ## Body content
 
-Use `--body` for short inline content. `--body` is **authoritative**: when you pass it, rdm uses the value verbatim and ignores stdin. This includes backticks, em-dashes, curly quotes, and other Unicode/punctuation — none of it triggers stdin reads or hangs. For multiline content, pipe via stdin instead (do not also pass `--body`):
+Use `--body` for inline content. `--body` is **authoritative**: when you pass it, rdm uses the value verbatim and ignores stdin. This includes backticks, em-dashes, curly quotes, and other Unicode/punctuation — none of it triggers stdin reads or hangs.
+
+On **`create`**, multiline content may instead be piped via stdin (do not also pass `--body` — stdin is ignored when `--body` is present):
 
 ```bash
 rdm task create <slug> --title "Title" --no-edit {proj_flag} <<'EOF'
@@ -113,6 +115,18 @@ Multi-line body content goes here.
 
 It supports full Markdown.
 EOF
+```
+
+On **`update`** (`roadmap`/`phase`/`task`), the body is set **only** via `--body` — stdin is never read, so a tags-only or status-only update can't hang on an open pipe. `update` does **not** accept a piped-stdin body (a heredoc is silently ignored). To pass multiline body content on an update, capture it into a shell variable with a quoted heredoc — which keeps backticks, `$`, and punctuation literal — then pass `--body`:
+
+```bash
+body=$(cat <<'EOF'
+Multi-line body content goes here.
+
+It supports full Markdown.
+EOF
+)
+rdm task update <slug> --body "$body" --no-edit {proj_flag}
 ```
 
 To intentionally empty an existing body on `phase update`, `task update`, or `roadmap update`, pass `--clear-body` (mutually exclusive with `--body`). Passing `--body ""` against a non-empty body is rejected to prevent silent clobber from a truncated heredoc or empty command substitution.

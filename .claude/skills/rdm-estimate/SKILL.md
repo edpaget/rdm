@@ -26,11 +26,13 @@ Estimate the difficulty of one or more rdm phases. `$ARGUMENTS` is either a road
 
       <difficulty> — <one-line justification>
       ```
-      then write the difficulty and the updated body in a single update, piping the full body via stdin:
+      then write the difficulty and the updated body in a single update. `update` does **not** read stdin, so pass the body with `--body`: capture the full body into a shell variable with a quoted heredoc (which keeps backticks, `$`, and punctuation literal), then pass `--body "$body"`:
       ```bash
-      ./target/debug/rdm phase update <stem-or-number> --difficulty <difficulty> --no-edit --roadmap <slug> --project rdm <<'EOF'
+      body=$(cat <<'EOF'
       <full phase body, with the appended ## Estimate section>
       EOF
+      )
+      ./target/debug/rdm phase update <stem-or-number> --difficulty <difficulty> --body "$body" --no-edit --roadmap <slug> --project rdm
       ```
       Do **not** pass `--model`: the model tier is derived automatically from the difficulty (`trivial`/`easy` → small, `moderate` → medium, `hard` → large).
 5. **Report** what was estimated: list each phase with its assigned difficulty, the derived model tier, and the one-line justification. Note any phases that were skipped because they already had a difficulty.

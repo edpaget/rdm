@@ -124,13 +124,16 @@ say "Drift construction: reword comment 3's span after submit (context kept)"
 # The review's created_commit points at the pre-edit body; rewording only
 # the quoted span (its surrounding context survives) makes the anchor
 # resolve as drifted rather than unresolved.
-rdm task update fix-login --no-edit --project "$PROJ" >/dev/null <<'EOF'
+body=$(
+    cat <<'EOF'
 The login flow rejects valid tokens when the clock skews.
 
 Repro: post a token minted with generous clock skew.
 
 Cleanup: the retry helper duplicates backoff logic.
 EOF
+)
+rdm task update fix-login --body "$body" --no-edit --project "$PROJ" >/dev/null
 
 rdm review show "$REVIEW_ID" --format json --project "$PROJ" >"$TMP/show0.json"
 [ "$(grep -c '"state": "resolved"' "$TMP/show0.json")" = "1" ] ||
@@ -147,13 +150,16 @@ ok "resolutions: 1 resolved, 1 drifted, 2 whole-document"
 say "A. Resolved anchor: edit, capture the commit, mark addressed"
 # ---------------------------------------------------------------------------
 
-rdm task update fix-login --no-edit --project "$PROJ" >/dev/null <<'EOF'
+body=$(
+    cat <<'EOF'
 The login flow rejects valid tokens with error AUTH-401 when the clock skews.
 
 Repro: post a token minted with generous clock skew.
 
 Cleanup: the retry helper duplicates backoff logic.
 EOF
+)
+rdm task update fix-login --body "$body" --no-edit --project "$PROJ" >/dev/null
 SHA_A=$(plan_head)
 
 rdm review update "$REVIEW_ID" --comment 1 --status addressed \
@@ -172,7 +178,8 @@ ok "comment 1 addressed with applied_commit $SHA_A"
 say "B. Whole-document comment: work it wholistically, note the missing anchor"
 # ---------------------------------------------------------------------------
 
-rdm task update fix-login --no-edit --project "$PROJ" >/dev/null <<'EOF'
+body=$(
+    cat <<'EOF'
 The login flow rejects valid tokens with error AUTH-401 when the clock skews.
 
 Repro: post a token minted with generous clock skew.
@@ -181,6 +188,8 @@ Repro: post a token minted with generous clock skew.
 
 Cleanup: the retry helper duplicates backoff logic.
 EOF
+)
+rdm task update fix-login --body "$body" --no-edit --project "$PROJ" >/dev/null
 SHA_B=$(plan_head)
 
 rdm review update "$REVIEW_ID" --comment 2 --status addressed \
@@ -249,7 +258,8 @@ ok "comment 4 wont-fix with reasoning and no applied commit"
 say "E. Completion: resolve the clarified comment, close, queue drains"
 # ---------------------------------------------------------------------------
 
-rdm task update fix-login --no-edit --project "$PROJ" >/dev/null <<'EOF'
+body=$(
+    cat <<'EOF'
 The login flow rejects valid tokens with error AUTH-401 when the clock skews.
 
 Repro: post a token minted with generous clock skew (the five-second window
@@ -259,6 +269,8 @@ in the original report was an observation, not a requirement).
 
 Cleanup: the retry helper duplicates backoff logic.
 EOF
+)
+rdm task update fix-login --body "$body" --no-edit --project "$PROJ" >/dev/null
 SHA_E=$(plan_head)
 
 rdm review update "$REVIEW_ID" --comment 3 --status addressed \

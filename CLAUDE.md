@@ -281,7 +281,7 @@ Always pass `--no-edit` to suppress the interactive editor.
 
 `--body` is **authoritative**: when you pass `--body`, rdm uses that value verbatim and ignores stdin. This includes backticks, em-dashes, curly quotes, and other Unicode/punctuation — none of it triggers stdin reads or hangs. To intentionally empty an existing body on `phase update`, `task update`, or `roadmap update`, pass `--clear-body` (mutually exclusive with `--body`); passing `--body ""` against a non-empty body is rejected with an actionable error to prevent silent clobber from a truncated heredoc or empty command substitution.
 
-For multiline content, pipe via stdin (do not also pass `--body` — stdin is ignored when `--body` is present):
+For multiline content on **`create`**, pipe via stdin (do not also pass `--body` — stdin is ignored when `--body` is present):
 
 ```bash
 ./target/debug/rdm task create <slug> --title "Title" --no-edit --project rdm <<'EOF'
@@ -289,6 +289,18 @@ Multi-line body content goes here.
 
 It supports full Markdown.
 EOF
+```
+
+`update` (`roadmap`/`phase`/`task`) does **not** read stdin — this is deliberate, so a tags-only or status-only update can't hang on an open pipe. A heredoc piped into `update` is silently ignored. To set a multiline body on an update, capture it into a shell variable with a quoted heredoc (which keeps backticks, `$`, and punctuation literal), then pass `--body`:
+
+```bash
+body=$(cat <<'EOF'
+Multi-line body content goes here.
+
+It supports full Markdown.
+EOF
+)
+./target/debug/rdm task update <slug> --body "$body" --no-edit --project rdm
 ```
 
 ### Planning workflow
