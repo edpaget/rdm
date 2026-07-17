@@ -4,7 +4,7 @@
 
 ## Executive Summary
 
-As of gitoxide v0.55.0 (June 2024), reftable ref format support is **not yet implemented**. rdm currently uses gix v0.85, which continues to initialize repositories with the files-based ref format. No immediate upgrade is required.
+As of gix v0.85.0 (June 22, 2026), reftable ref format support is **not yet implemented**. rdm currently uses gix v0.85, which continues to initialize repositories with the files-based ref format. No immediate upgrade is required.
 
 ## Investigation Details
 
@@ -19,11 +19,12 @@ As of gitoxide v0.55.0 (June 2024), reftable ref format support is **not yet imp
 **GitHub Issue:** [GitoxideLabs/gitoxide#109](https://github.com/GitoxideLabs/gitoxide/issues/109)
 - Opened: June 25, 2021
 - Status: Still open; described as a "tracking issue" for reftable support
-- No linked PRs indicating active implementation
+- Most recent activity: 2026-05-05 — discussion explores approaches to bringing the reftable format to gitoxide (e.g. translating the existing Go/C implementations to Rust); no implementation has landed and no PRs are linked
 
-**Latest Release:** v0.55.0 (June 22, 2024)
+**Latest gix Release:** v0.85.0 (June 22, 2026)
 - No mentions of reftable in release notes
 - Focus remains on bug fixes and incremental feature work
+- (Note: gitoxide CLI crate is separate; this refers to the gix library crate used by rdm)
 
 **Gitoxide Changelog:**
 - Searched current HEAD and recent history; no reftable entries found

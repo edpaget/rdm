@@ -1968,9 +1968,11 @@ mod tests {
     /// format (not reftable). This test documents the current ref format
     /// behavior and will help detect if that changes in future gix versions.
     ///
-    /// The test checks for the presence of `.git/HEAD` as a regular file
-    /// (files format indicator) and the absence of `.git/reftable/` directory
-    /// (reftable format indicator).
+    /// Note: a reftable-format repo still writes `.git/HEAD` as a regular
+    /// symref-style file for backward compatibility, so the HEAD checks below
+    /// are only sanity checks of a conventional repo layout. The sole
+    /// discriminator between the two formats is the presence or absence of
+    /// the `.git/reftable/` directory, asserted last.
     #[test]
     fn gix_init_uses_files_ref_format() {
         let dir = TempDir::new().unwrap();
@@ -1979,18 +1981,17 @@ mod tests {
         let git_dir = dir.path().join(".git");
         assert!(git_dir.exists(), "expected .git directory to exist");
 
-        // Files format uses a regular file for HEAD
+        // Sanity: HEAD exists as a regular symref-style file. (True under
+        // both files and reftable formats — not a format discriminator.)
         let head_file = git_dir.join("HEAD");
-        assert!(
-            head_file.exists(),
-            "expected .git/HEAD file to exist (files format)"
-        );
+        assert!(head_file.exists(), "expected .git/HEAD file to exist");
         assert!(
             head_file.is_file(),
-            "expected .git/HEAD to be a regular file (files format)"
+            "expected .git/HEAD to be a regular file"
         );
 
-        // Verify the HEAD file contains a ref pointer (not a hash)
+        // Sanity: HEAD contains a ref pointer (not a hash). Also true under
+        // reftable, which keeps a symref-style HEAD for backward compat.
         let head_content =
             std::fs::read_to_string(&head_file).expect("should be able to read HEAD file");
         assert!(
@@ -1999,7 +2000,8 @@ mod tests {
             head_content
         );
 
-        // Reftable format would create a .git/reftable/ directory
+        // The actual ref-format discriminator: reftable format creates a
+        // .git/reftable/ directory; the files format does not.
         let reftable_dir = git_dir.join("reftable");
         assert!(
             !reftable_dir.exists(),
