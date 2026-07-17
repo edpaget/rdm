@@ -201,6 +201,8 @@ pub fn run(
             let body = resolve_body(body, no_edit)?;
             let difficulty_update = DifficultyUpdate::from_args(difficulty, false)?;
             let model_update = ModelTierUpdate::from_args(model, false)?;
+            let plan_review = paths::resolve_plan_review(repo_config)?;
+            let tags = rdm_core::tags::stamp_plan_review_tag(tags, plan_review);
             let doc = commit_mutation(store, &project, no_index, "failed to create phase", |s| {
                 rdm_core::ops::phase::create_phase(
                     s,

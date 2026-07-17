@@ -31,6 +31,8 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
+            let plan_review = paths::resolve_plan_review(repo_config)?;
+            let tags = rdm_core::tags::stamp_plan_review_tag(tags, plan_review);
             commit_mutation(store, &project, no_index, "failed to create roadmap", |s| {
                 rdm_core::ops::roadmap::create_roadmap(
                     s,

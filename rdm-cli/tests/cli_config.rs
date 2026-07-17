@@ -62,7 +62,8 @@ fn config_list_shows_defaults() {
         .stdout(predicate::str::contains("default_format"))
         .stdout(predicate::str::contains("remote.default"))
         .stdout(predicate::str::contains("root"))
-        .stdout(predicate::str::contains("default_branch"));
+        .stdout(predicate::str::contains("default_branch"))
+        .stdout(predicate::str::contains("plan_review"));
 }
 
 #[test]
@@ -540,6 +541,109 @@ fn config_set_hook_timeout_rejects_non_integer() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("non-negative integer"));
+}
+
+// -- plan_review config round-trips --
+
+#[test]
+fn config_set_and_get_plan_review() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "plan_review", "true"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo config"));
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "plan_review"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("true"))
+        .stdout(predicate::str::contains("repo config"));
+}
+
+#[test]
+fn config_set_and_get_global_plan_review() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "plan_review", "true", "--global"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("global config"));
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "plan_review"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("true"))
+        .stdout(predicate::str::contains("global config"));
+}
+
+#[test]
+fn config_repo_plan_review_overrides_global() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "plan_review", "true", "--global"])
+        .assert()
+        .success();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "plan_review", "false"])
+        .assert()
+        .success();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "plan_review"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("false"))
+        .stdout(predicate::str::contains("repo config"));
+}
+
+#[test]
+fn config_set_plan_review_rejects_invalid() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "plan_review", "yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("true").or(predicate::str::contains("false")));
 }
 
 // -- server.quick_filters config round-trips --

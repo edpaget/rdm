@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use rdm_core::config::{
     ConfigSource, GLOBAL_ONLY_KEYS, GlobalConfig, KNOWN_KEYS, REPO_ONLY_KEYS, ResolvedValue,
-    format_quick_filters, parse_quick_filters_env,
+    format_quick_filters, parse_plan_review_env, parse_quick_filters_env,
 };
 
 /// Returns the path to the global config file.
@@ -173,6 +173,31 @@ pub fn load_repo_config(root: &Path) -> rdm_core::config::Config {
     }
 }
 
+/// Resolves whether plan-review tag stamping is enabled, from the
+/// `RDM_PLAN_REVIEW` env var and config.
+///
+/// The `config` should already have global defaults merged via
+/// [`rdm_core::config::Config::with_global_defaults`]. Priority: env →
+/// config `plan_review` → `false`.
+///
+/// # Errors
+///
+/// Returns an error if `RDM_PLAN_REVIEW` is set to a value other than the
+/// literal `"true"` or `"false"`.
+pub fn resolve_plan_review(config: &rdm_core::config::Config) -> Result<bool> {
+    resolve_plan_review_inner(std::env::var("RDM_PLAN_REVIEW").ok(), config)
+}
+
+fn resolve_plan_review_inner(
+    env_value: Option<String>,
+    config: &rdm_core::config::Config,
+) -> Result<bool> {
+    if let Some(v) = env_value {
+        return parse_plan_review_env(&v).map_err(|e| anyhow::anyhow!("{e}"));
+    }
+    Ok(config.plan_review.unwrap_or(false))
+}
+
 /// Resolves the output format from the CLI flag, `RDM_FORMAT` env var, and config.
 ///
 /// Priority: flag → env → config `default_format` → Human (as string `"human"`).
@@ -266,6 +291,7 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
         "default_branch" => config.default_branch.clone(),
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
+        "plan_review" => config.plan_review.map(|b| b.to_string()),
         // NOTE: a malformed RDM_SERVER_QUICK_FILTERS env value is echoed
         // back raw with "(source: environment variable)" by the generic
         // resolution chain in commands/config.rs — a pre-existing quirk of
@@ -289,6 +315,7 @@ pub fn get_global_config_field(config: &GlobalConfig, key: &str) -> Option<Strin
         "auto_init" => config.auto_init.map(|b| b.to_string()),
         "default_branch" => config.default_branch.clone(),
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
+        "plan_review" => config.plan_review.map(|b| b.to_string()),
         _ => None,
     }
 }
@@ -315,6 +342,9 @@ pub fn set_config_field(
         "default_branch" => config.default_branch = Some(value.to_string()),
         "hook_timeout_secs" => {
             config.hook_timeout_secs = Some(parse_u64(key, value)?);
+        }
+        "plan_review" => {
+            config.plan_review = Some(parse_bool(value)?);
         }
         "server.quick_filters" => {
             let filters = parse_quick_filters_env(value).map_err(|_| {
@@ -360,6 +390,9 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
         "default_branch" => config.default_branch = Some(value.to_string()),
         "hook_timeout_secs" => {
             config.hook_timeout_secs = Some(parse_u64(key, value)?);
+        }
+        "plan_review" => {
+            config.plan_review = Some(parse_bool(value)?);
         }
         "server.quick_filters" => {
             bail!("'{key}' can only be set in repo config — omit --global")
@@ -589,6 +622,50 @@ mod tests {
         // Nothing available → actionable error.
         let err = resolve_review_author_inner(None, None, None).unwrap_err();
         assert!(err.to_string().contains("--author"));
+    }
+
+    #[test]
+    fn resolve_plan_review_env_true_wins_over_config() {
+        let config = rdm_core::config::Config {
+            plan_review: Some(false),
+            ..Default::default()
+        };
+        let result = resolve_plan_review_inner(Some("true".to_string()), &config).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn resolve_plan_review_env_false_wins_over_config() {
+        let config = rdm_core::config::Config {
+            plan_review: Some(true),
+            ..Default::default()
+        };
+        let result = resolve_plan_review_inner(Some("false".to_string()), &config).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn resolve_plan_review_config_fallback() {
+        let config = rdm_core::config::Config {
+            plan_review: Some(true),
+            ..Default::default()
+        };
+        let result = resolve_plan_review_inner(None, &config).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn resolve_plan_review_default_false() {
+        let config = rdm_core::config::Config::default();
+        let result = resolve_plan_review_inner(None, &config).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn resolve_plan_review_env_invalid_errors() {
+        let config = rdm_core::config::Config::default();
+        let err = resolve_plan_review_inner(Some("yes".to_string()), &config).unwrap_err();
+        assert!(err.to_string().contains("RDM_PLAN_REVIEW"));
     }
 
     #[test]

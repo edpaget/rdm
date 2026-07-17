@@ -45,5 +45,7 @@ pub mod root;
 pub mod search;
 /// Storage abstraction layer for plan repo data.
 pub mod store;
+/// Reserved-tag primitives (e.g. the `needs-plan-review` sentinel).
+pub mod tags;
 /// Hierarchical tree view of plan repo contents.
 pub mod tree;

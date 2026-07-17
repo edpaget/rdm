@@ -75,6 +75,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The reason survives read-back, is shown by `task show` and included in
   `task show --format json` (`close_reason`), and is preserved across later
   status changes until explicitly cleared.
+- New `plan_review` config key (`rdm.toml` and global config, `RDM_PLAN_REVIEW`
+  env override, default `false`). When enabled, `rdm roadmap create`, `rdm
+  phase create`, and `rdm task create` stamp a reserved `needs-plan-review`
+  tag onto new items alongside any user-supplied `--tags`, so pending items
+  can be listed with `rdm search "" --tag needs-plan-review --type
+  phase|task --format json`. Not yet consumed by any skill or hook — this
+  lays the sentinel-tag foundation an upcoming plan-review skill will act on.
 
 ### Changed
 

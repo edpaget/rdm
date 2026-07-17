@@ -20,6 +20,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "default_branch",
     "hook_timeout_secs",
     "server.quick_filters",
+    "plan_review",
 ];
 
 /// Keys that may only be set in the global config (not in a repo `rdm.toml`).
@@ -181,6 +182,13 @@ pub struct GlobalConfig {
     /// Model-tier sizing policy (`[models]` table).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<ModelsConfig>,
+
+    /// When `true`, `roadmap create`/`phase create`/`task create` stamp the
+    /// reserved `needs-plan-review` tag on new items so an agent-driven plan
+    /// review can find and clear them later. See [`Config::plan_review`] for
+    /// the repo-level counterpart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_review: Option<bool>,
 }
 
 impl GlobalConfig {
@@ -255,6 +263,15 @@ pub struct Config {
     /// Model-tier sizing policy (`[models]` table).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<ModelsConfig>,
+
+    /// When `true`, `roadmap create`/`phase create`/`task create` stamp the
+    /// reserved `needs-plan-review` tag on new items (in addition to any
+    /// user-supplied `--tags`) so an agent-driven plan review can find and
+    /// clear them later via `rdm search --tag needs-plan-review`. Defaults
+    /// to `false`. See [`crate::tags`] for the tag-manipulation primitives
+    /// this flag gates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_review: Option<bool>,
 }
 
 impl Config {
@@ -312,6 +329,7 @@ impl Config {
             server: self.server.clone(),
             hook_timeout_secs: self.hook_timeout_secs.or(global.hook_timeout_secs),
             models: self.models.clone().or_else(|| global.models.clone()),
+            plan_review: self.plan_review.or(global.plan_review),
         }
     }
 }
@@ -367,6 +385,29 @@ pub fn format_quick_filters(filters: &[QuickFilter]) -> String {
         .map(|f| format!("{}:{}", f.label, f.tag))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// Parses the `RDM_PLAN_REVIEW` env var override.
+///
+/// Accepts only the literal, case-sensitive strings `"true"` and `"false"` —
+/// this is a loud override, not a fuzzy boolean parse, so a typo (`"1"`,
+/// `"yes"`, `"True"`, an empty string) surfaces as an error instead of
+/// silently resolving to `false`.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfigValue`] if `value` is anything other than
+/// `"true"` or `"false"`.
+pub fn parse_plan_review_env(value: &str) -> Result<bool> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(Error::InvalidConfigValue {
+            key: "RDM_PLAN_REVIEW".to_string(),
+            value: other.to_string(),
+            valid: "true or false".to_string(),
+        }),
+    }
 }
 
 /// Validates that a `default_format` value (if present) is one of the known formats.
@@ -562,6 +603,7 @@ default = "upstream"
         assert_eq!(config.remote, None);
         assert_eq!(config.default_branch, None);
         assert_eq!(config.models, None);
+        assert_eq!(config.plan_review, None);
     }
 
     #[test]
@@ -937,6 +979,65 @@ mechanical = "small"
         let models = config.models.expect("models section parsed");
         let steps = models.steps.expect("steps section parsed");
         assert_eq!(steps, StepTiersConfig::default());
+    }
+
+    // --- plan_review tests ---
+
+    #[test]
+    fn parse_plan_review_env_true_and_false() {
+        assert!(parse_plan_review_env("true").unwrap());
+        assert!(!parse_plan_review_env("false").unwrap());
+    }
+
+    #[test]
+    fn parse_plan_review_env_invalid_rejected() {
+        for bad in ["1", "yes", "True", "FALSE", ""] {
+            let err = parse_plan_review_env(bad).unwrap_err();
+            match err {
+                Error::InvalidConfigValue { key, value, .. } => {
+                    assert_eq!(key, "RDM_PLAN_REVIEW");
+                    assert_eq!(value, bad);
+                }
+                other => panic!("unexpected error for '{bad}': {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn config_with_plan_review_round_trip() {
+        let config = Config {
+            plan_review: Some(true),
+            ..Default::default()
+        };
+        let toml_str = config.to_toml().unwrap();
+        let parsed = Config::from_toml(&toml_str).unwrap();
+        assert_eq!(parsed, config);
+        assert_eq!(parsed.plan_review, Some(true));
+    }
+
+    #[test]
+    fn with_global_defaults_includes_plan_review() {
+        let repo_config = Config::default();
+        let global = GlobalConfig {
+            plan_review: Some(true),
+            ..Default::default()
+        };
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(merged.plan_review, Some(true));
+    }
+
+    #[test]
+    fn with_global_defaults_repo_plan_review_wins() {
+        let repo_config = Config {
+            plan_review: Some(false),
+            ..Default::default()
+        };
+        let global = GlobalConfig {
+            plan_review: Some(true),
+            ..Default::default()
+        };
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(merged.plan_review, Some(false));
     }
 
     #[test]
