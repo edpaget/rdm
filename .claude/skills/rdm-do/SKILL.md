@@ -11,6 +11,7 @@ allowed-tools:
   - EnterPlanMode
   - ExitPlanMode
   - EnterWorktree
+  - Agent
 ---
 
 Implement a roadmap phase or work on a task. One shared flow: find the target → mark in-progress → plan → execute → review with the user → finalize into `needs-review`.
@@ -60,10 +61,13 @@ For unattended Claude Code runs (where no human is present to approve permission
 6. **Enter plan mode** with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
    - Break the phase/task into concrete implementation steps based on its description and acceptance criteria.
    - Include a final step: "Review changes with user and finalize".
-7. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
-8. **Execute the plan**: implement each step, following the plan and any acceptance criteria.
-9. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
-10. **Finalize:** on user acceptance, commit the implementation changes — a plain `git commit` of the code diff in the **source repo**, on the worktree's branch — then transition the item to `needs-review`:
+7. **Review the implementation plan** _(both modes)_: run the `rdm-plan-review` skill with `--implementation-plan` against the plan drafted in the previous step, covering coherence and architectural fit.
+   - **interactive**: surface the verdict and findings alongside the plan, before the approval gate.
+   - **`--auto`**: never wait on the verdict — fold every surviving **blocking** finding back into the plan text before continuing to the execute step. If a blocking finding can't be resolved by editing the plan (genuine ambiguity or an architectural decision), don't drop it silently: file it via the Side-work convention (`./target/debug/rdm task create ... --tags plan-review`).
+8. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
+9. **Execute the plan**: implement each step, following the plan and any acceptance criteria.
+10. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
+11. **Finalize:** on user acceptance, commit the implementation changes — a plain `git commit` of the code diff in the **source repo**, on the worktree's branch — then transition the item to `needs-review`:
     - phase: `./target/debug/rdm phase update <phase> --status needs-review --no-edit --roadmap <slug> --project rdm`
     - task: `./target/debug/rdm task update <slug> --status needs-review --no-edit --project rdm`
     - land the plan-repo status change: `./target/debug/rdm commit -m "chore(plan): finalize <phase-or-task>"`

@@ -407,6 +407,41 @@ fn agent_config_skills_include_principles() {
 }
 
 #[test]
+fn agent_config_do_skill_references_implementation_plan_review() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    let content =
+        std::fs::read_to_string(dir.path().join(".claude/skills/rdm-do/SKILL.md")).unwrap();
+    assert!(content.contains("rdm-plan-review"));
+    assert!(content.contains("--implementation-plan"));
+}
+
+#[test]
+fn agent_config_roadmap_skill_notes_plan_review() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    let content =
+        std::fs::read_to_string(dir.path().join(".claude/skills/rdm-roadmap/SKILL.md")).unwrap();
+    assert!(content.contains("needs-plan-review"));
+}
+
+#[test]
 fn agent_config_skills_does_not_require_plan_repo() {
     let dir = TempDir::new().unwrap();
     let out = TempDir::new().unwrap();

@@ -21,7 +21,7 @@ The review runs as a pipeline: **find → consolidate → categorize & act → g
    - `--task <slug>` — review a task's plan.
    - `--roadmap <slug>` — review the whole roadmap: its own body plus every phase, gated individually.
    - `<roadmap-slug> [phase-number]` — review a single phase. If `phase-number` is omitted, review the roadmap the same as `--roadmap <slug>`.
-   - `--implementation-plan` — review an `rdm-do` plan document handed to you directly in context, ahead of implementation. There is no persisted rdm item backing this mode, so it produces a verdict and findings report only — **no tag-gate step** (skip step 5 entirely for this mode).
+   - `--implementation-plan` — review an `rdm-do` plan document handed to you directly in context, ahead of implementation. There is no persisted rdm item backing this mode, so it produces a verdict and findings report only — **no tag-gate step** (skip step 5 entirely for this mode), and skips step 4's fix-application half the same way (see the carve-out there).
 2. **Read the target artifact**:
    - Phase: `rdm phase show <phase-number> --roadmap <slug> {proj_flag}` for the body, and `rdm phase show <phase-number> --roadmap <slug> --format json {proj_flag}` for its `tags`.
    - Task: `rdm task show <slug> {proj_flag}` for the body, and `rdm task show <slug> --format json {proj_flag}` for its `tags`.
@@ -34,7 +34,7 @@ Dispatch the applicable reviewers **in parallel**. Each is **read-only** — it 
 
 - **Coherence reviewer** — runs for every target type (phase, task, roadmap, implementation plan). Checks internal consistency, completeness, and whether steps and acceptance criteria are concrete and actionable. An empty or ambiguous plan document is itself a REWORK-worthy finding — never guess intent on the orchestrator's behalf.
 - **Architectural-fit reviewer** — runs for every target type. Reads the project's principles file via the mechanism above, and — since architectural fit must not silently go unchecked just because `--principles-file` was never configured — falls back to reading `CLAUDE.md` or `AGENTS.md` directly in the project root when no principles note is present. Flags any plan step that would violate a stated convention.
-- **Unit-of-work reviewer** — *phases only.* Skipped for `--task` and for a standalone roadmap-body review; run once per phase when reviewing `--roadmap <slug>` (this can fan out to many parallel agents on a large roadmap — no hard cap is required, but be mindful of the cost). Judges whether the phase is independently deliverable and testable — neither too large to land safely nor too trivial to warrant its own phase.
+- **Unit-of-work reviewer** — *phases only.* Skipped for `--task`, `--implementation-plan`, and for a standalone roadmap-body review; run once per phase when reviewing `--roadmap <slug>` (this can fan out to many parallel agents on a large roadmap — no hard cap is required, but be mindful of the cost). Judges whether the phase is independently deliverable and testable — neither too large to land safely nor too trivial to warrant its own phase.
 
 Each dispatched agent returns one finding block per issue:
 
@@ -63,6 +63,8 @@ For a `--roadmap <slug>` review, consolidate **per phase** as well as for the ro
 ### 4. Categorize & act — only the orchestrator edits, never a sub-agent
 
 Report first, then act. The dispatched reviewers never apply fixes; only the orchestrator does, and only after consolidation.
+
+**`--implementation-plan` mode**: findings are still reported using the finding-block format from step 2, but the *act* half below is skipped entirely — there is no persisted rdm item to write to or file against in this mode. Resolving or folding surviving findings back into the plan text is left to the caller (e.g. `rdm-do`'s own `--auto`-mode step).
 
 For each surviving finding, classify it:
 

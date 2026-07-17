@@ -1818,6 +1818,56 @@ mod tests {
     }
 
     #[test]
+    fn skill_plan_review_implementation_plan_mode_skips_step4_mutations() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("the *act* half below is skipped entirely"));
+        assert!(content.contains("left to the caller (e.g. `rdm-do`'s own `--auto`-mode step)"));
+        assert!(content.contains("skips step 4's fix-application half the same way"));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_implementation_plan_mode_skips_step4_mutations() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("the *act* half below is skipped entirely"));
+        assert!(content.contains("left to the caller (e.g. `rdm-do`'s own `--auto`-mode step)"));
+        assert!(content.contains("skips step 4's fix-application half the same way"));
+    }
+
+    #[test]
+    fn skill_plan_review_unit_of_work_reviewer_skips_implementation_plan() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content
+            .contains("Skipped for `--task`, `--implementation-plan`, and for a standalone roadmap-body review"));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_unit_of_work_reviewer_skips_implementation_plan() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[9].content;
+        assert!(content
+            .contains("Skipped for `--task`, `--implementation-plan`, and for a standalone roadmap-body review"));
+    }
+
+    #[test]
     fn skill_plan_review_leaves_tag_on_rework() {
         let skills = generate_skills(&SkillOptions {
             project: None,
@@ -2231,6 +2281,115 @@ mod tests {
     }
 
     #[test]
+    fn skill_do_runs_implementation_plan_review() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("rdm-plan-review"));
+        assert!(content.contains("--implementation-plan"));
+    }
+
+    #[test]
+    fn mcp_skill_do_runs_implementation_plan_review() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("rdm-plan-review"));
+        assert!(content.contains("--implementation-plan"));
+    }
+
+    #[test]
+    fn skill_do_implementation_plan_review_precedes_approval_gate() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[1].content;
+        let plan_pos = content
+            .find("Enter plan mode")
+            .expect("missing Enter plan mode step");
+        let review_pos = content
+            .find("rdm-plan-review")
+            .expect("missing rdm-plan-review reference");
+        let approval_pos = content
+            .find("Wait for user approval")
+            .expect("missing Wait for user approval step");
+        assert!(
+            plan_pos < review_pos,
+            "implementation-plan review step should come after drafting the plan"
+        );
+        assert!(
+            review_pos < approval_pos,
+            "implementation-plan review step should come before the approval gate"
+        );
+    }
+
+    #[test]
+    fn skill_do_auto_mode_folds_blocking_findings() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("--auto"));
+        assert!(content.contains("blocking"));
+        assert!(content.contains("fold every surviving"));
+        assert!(content.contains("plan-review"));
+    }
+
+    #[test]
+    fn mcp_skill_do_auto_mode_folds_blocking_findings() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("--auto"));
+        assert!(content.contains("blocking"));
+        assert!(content.contains("fold every surviving"));
+        assert!(content.contains("plan-review"));
+    }
+
+    #[test]
+    fn skill_do_has_agent_tool() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let frontmatter = skills[1]
+            .content
+            .split("---")
+            .nth(1)
+            .expect("missing frontmatter");
+        assert!(frontmatter.contains("Agent"));
+    }
+
+    #[test]
+    fn mcp_skill_do_has_agent_tool() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let frontmatter = skills[1]
+            .content
+            .split("---")
+            .nth(1)
+            .expect("missing frontmatter");
+        assert!(frontmatter.contains("Agent"));
+    }
+
+    #[test]
     fn skill_roadmap_no_write_edit_tools() {
         let skills = generate_skills(&SkillOptions {
             project: None,
@@ -2245,6 +2404,18 @@ mod tests {
             .expect("missing frontmatter");
         assert!(!frontmatter.contains("Write"));
         assert!(!frontmatter.contains("Edit"));
+    }
+
+    #[test]
+    fn skill_roadmap_notes_plan_review_gate() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[0].content;
+        assert!(content.contains("needs-plan-review"));
+        assert!(content.contains("plan_review"));
     }
 
     #[test]
@@ -3025,6 +3196,18 @@ mod tests {
     }
 
     #[test]
+    fn mcp_skill_roadmap_notes_plan_review_gate() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[0].content;
+        assert!(content.contains("needs-plan-review"));
+        assert!(content.contains("plan_review"));
+    }
+
+    #[test]
     fn mcp_skills_use_project_param() {
         let skills = generate_skills(&SkillOptions {
             project: Some("myproj".to_string()),
@@ -3100,6 +3283,33 @@ mod tests {
         let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
         assert!(frontmatter.contains("mcp__rdm__rdm_worktree_current"));
         assert!(frontmatter.contains("mcp__rdm__rdm_worktree_add"));
+    }
+
+    #[test]
+    fn mcp_skill_do_implementation_plan_review_precedes_approval_gate() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[1].content;
+        let plan_pos = content
+            .find("Enter plan mode")
+            .expect("missing Enter plan mode step");
+        let review_pos = content
+            .find("rdm-plan-review")
+            .expect("missing rdm-plan-review reference");
+        let approval_pos = content
+            .find("Wait for user approval")
+            .expect("missing Wait for user approval step");
+        assert!(
+            plan_pos < review_pos,
+            "implementation-plan review step should come after drafting the plan"
+        );
+        assert!(
+            review_pos < approval_pos,
+            "implementation-plan review step should come before the approval gate"
+        );
     }
 
     #[test]
