@@ -52,3 +52,4 @@ Every persistent item (roadmaps, phases, tasks, projects) is stored as a markdow
 
 - [File Formats](file-formats.md) — directory layout, frontmatter fields, and file conventions
 - [Architectural Principles](principles.md) — the full set of design principles governing the codebase
+- [gix Migration Spike](gix-migration-spike.md) — evaluation of consolidating `rdm-git`/`rdm-store-git`'s CLI shell-outs onto `gix` alone (no-go, as of 2026-07-16)
