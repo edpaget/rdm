@@ -159,6 +159,12 @@ If a task becomes large enough to warrant multiple phases, promote it to a roadm
 rdm promote <task-slug> --roadmap-slug <new-roadmap-slug> {proj_flag}
 ```
 
+If the task instead belongs inside an already-existing thematic roadmap, fold it in as a new trailing phase instead of creating a new roadmap:
+
+```bash
+rdm promote <task-slug> --into <existing-roadmap-slug> {proj_flag}
+```
+
 ## Status transitions
 
 Transitions are not enforced — any status can move to any other. The flow

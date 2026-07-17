@@ -3129,6 +3129,305 @@ fn promote_task_duplicate_roadmap() {
     assert!(matches!(result, Err(Error::DuplicateSlug(_))));
 }
 
+// -- consolidate_task_into_roadmap tests --
+
+#[test]
+fn consolidate_appends_phase_with_number_body_tags_and_provenance() {
+    let mut store = setup_with_project();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "theme-rm",
+            title: "Theme Roadmap",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "theme-rm",
+            slug: "existing",
+            title: "Existing Phase",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let task = Document {
+        frontmatter: Task {
+            project: "fbm".to_string(),
+            title: "Fold Me".to_string(),
+            status: TaskStatus::Open,
+            priority: Priority::Medium,
+            created: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+            tags: Some(vec!["infra".to_string()]),
+            completed: None,
+            commit: None,
+            review_sha: None,
+            review_branch: None,
+        },
+        body: "Original task body.".to_string(),
+    };
+    rdm_core::io::write_task(&mut store, "fbm", "fold-me", &task).unwrap();
+
+    let (phase_doc, task_doc) = rdm_core::ops::task::consolidate_task_into_roadmap(
+        &mut store, "fbm", "fold-me", "theme-rm", None,
+    )
+    .unwrap();
+
+    assert_eq!(phase_doc.frontmatter.phase, 2);
+    assert_eq!(phase_doc.frontmatter.title, "Fold Me");
+    assert_eq!(phase_doc.frontmatter.tags, Some(vec!["infra".to_string()]));
+    assert!(phase_doc.body.contains("Consolidated from task `fold-me`"));
+    assert!(phase_doc.body.contains("Original task body."));
+
+    let loaded_rm = rdm_core::io::load_roadmap(&store, "fbm", "theme-rm").unwrap();
+    assert_eq!(
+        loaded_rm.frontmatter.phases,
+        vec![
+            "phase-1-existing".to_string(),
+            "phase-2-fold-me".to_string()
+        ]
+    );
+
+    assert_eq!(task_doc.frontmatter.status, TaskStatus::Done);
+    assert!(task_doc.frontmatter.completed.is_some());
+    assert!(task_doc.body.contains("Original task body."));
+    assert!(task_doc.body.contains("phase-2-fold-me"));
+    assert!(task_doc.body.contains("theme-rm"));
+
+    let reloaded_task = rdm_core::io::load_task(&store, "fbm", "fold-me").unwrap();
+    assert_eq!(reloaded_task.frontmatter.status, TaskStatus::Done);
+    assert!(reloaded_task.frontmatter.completed.is_some());
+    assert!(reloaded_task.body.contains("Original task body."));
+    assert!(reloaded_task.body.contains("phase-2-fold-me"));
+}
+
+#[test]
+fn consolidate_into_empty_roadmap_creates_phase_1() {
+    let mut store = setup_with_project();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "empty-rm",
+            title: "Empty Roadmap",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "solo-task",
+            title: "Solo Task",
+            priority: Priority::Low,
+            body: Some("Body."),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let (phase_doc, _) = rdm_core::ops::task::consolidate_task_into_roadmap(
+        &mut store,
+        "fbm",
+        "solo-task",
+        "empty-rm",
+        None,
+    )
+    .unwrap();
+    assert_eq!(phase_doc.frontmatter.phase, 1);
+}
+
+#[test]
+fn consolidate_with_body_override() {
+    let mut store = setup_with_project();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "theme-rm",
+            title: "Theme Roadmap",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "override-task",
+            title: "Override Task",
+            priority: Priority::Low,
+            body: Some("Original body."),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let (phase_doc, _) = rdm_core::ops::task::consolidate_task_into_roadmap(
+        &mut store,
+        "fbm",
+        "override-task",
+        "theme-rm",
+        Some("Custom."),
+    )
+    .unwrap();
+    assert!(phase_doc.body.contains("Custom."));
+    assert!(!phase_doc.body.contains("Original body."));
+    assert!(
+        phase_doc
+            .body
+            .contains("Consolidated from task `override-task`")
+    );
+}
+
+#[test]
+fn consolidate_preserves_no_tags() {
+    let mut store = setup_with_project();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "theme-rm",
+            title: "Theme Roadmap",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "no-tags-task",
+            title: "No Tags Task",
+            priority: Priority::Low,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let (phase_doc, _) = rdm_core::ops::task::consolidate_task_into_roadmap(
+        &mut store,
+        "fbm",
+        "no-tags-task",
+        "theme-rm",
+        None,
+    )
+    .unwrap();
+    assert_eq!(phase_doc.frontmatter.tags, None);
+}
+
+#[test]
+fn consolidate_missing_task_errors() {
+    let mut store = setup_with_project();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "theme-rm",
+            title: "Theme Roadmap",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let result = rdm_core::ops::task::consolidate_task_into_roadmap(
+        &mut store, "fbm", "nope", "theme-rm", None,
+    );
+    assert!(matches!(result, Err(Error::TaskNotFound(_))));
+
+    let loaded_rm = rdm_core::io::load_roadmap(&store, "fbm", "theme-rm").unwrap();
+    assert!(loaded_rm.frontmatter.phases.is_empty());
+}
+
+#[test]
+fn consolidate_missing_roadmap_errors() {
+    let mut store = setup_with_project();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "untouched-task",
+            title: "Untouched Task",
+            priority: Priority::Low,
+            body: Some("Keep me."),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let result = rdm_core::ops::task::consolidate_task_into_roadmap(
+        &mut store,
+        "fbm",
+        "untouched-task",
+        "does-not-exist",
+        None,
+    );
+    assert!(matches!(result, Err(Error::RoadmapNotFound(_))));
+
+    let reloaded = rdm_core::io::load_task(&store, "fbm", "untouched-task").unwrap();
+    assert_eq!(reloaded.frontmatter.status, TaskStatus::Open);
+    assert!(reloaded.body.contains("Keep me."));
+}
+
+#[test]
+fn consolidate_already_terminal_task_errors() {
+    for status in [TaskStatus::Done, TaskStatus::WontFix] {
+        let mut store = setup_with_project();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "fbm",
+                slug: "theme-rm",
+                title: "Theme Roadmap",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let task = Document {
+            frontmatter: Task {
+                project: "fbm".to_string(),
+                title: "Terminal Task".to_string(),
+                status,
+                priority: Priority::Medium,
+                created: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+                tags: None,
+                completed: Some(NaiveDate::from_ymd_opt(2026, 3, 16).unwrap()),
+                commit: None,
+                review_sha: None,
+                review_branch: None,
+            },
+            body: "Body.".to_string(),
+        };
+        rdm_core::io::write_task(&mut store, "fbm", "terminal-task", &task).unwrap();
+
+        let result = rdm_core::ops::task::consolidate_task_into_roadmap(
+            &mut store,
+            "fbm",
+            "terminal-task",
+            "theme-rm",
+            None,
+        );
+        assert!(
+            matches!(result, Err(Error::TaskAlreadyConsolidated(_))),
+            "expected TaskAlreadyConsolidated for status {status:?}, got {result:?}"
+        );
+
+        let loaded_rm = rdm_core::io::load_roadmap(&store, "fbm", "theme-rm").unwrap();
+        assert!(loaded_rm.frontmatter.phases.is_empty());
+        assert!(!store.exists(&rdm_core::paths::phase_path(
+            "fbm",
+            "theme-rm",
+            "phase-1-terminal-task"
+        )));
+    }
+}
+
 // -- Dependency tests --
 
 #[test]

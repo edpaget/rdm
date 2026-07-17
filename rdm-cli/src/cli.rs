@@ -111,13 +111,25 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: TaskCommand,
     },
-    /// Promote a task to a roadmap.
+    /// Promote a task to a new roadmap, or consolidate it into an existing one.
     Promote {
         /// Task slug to promote.
         task_slug: String,
-        /// Roadmap slug for the new roadmap.
+        /// Roadmap slug for a brand-new roadmap (1:1 promotion). Mutually
+        /// exclusive with `--into`.
+        #[arg(long, conflicts_with = "into")]
+        roadmap_slug: Option<String>,
+        /// Slug of an existing roadmap to fold the task into as a new
+        /// trailing phase. Mutually exclusive with `--roadmap-slug`.
+        #[arg(long, conflicts_with = "roadmap_slug")]
+        into: Option<String>,
+        /// Phase body content when consolidating via `--into`. Accepts any
+        /// text verbatim and always takes precedence over stdin.
         #[arg(long)]
-        roadmap_slug: String,
+        body: Option<String>,
+        /// Suppress interactive editor for phase body content (applies to `--into`).
+        #[arg(long)]
+        no_edit: bool,
         /// Project the task belongs to.
         #[arg(long)]
         project: Option<String>,

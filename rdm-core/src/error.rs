@@ -23,6 +23,12 @@ pub enum Error {
     PhaseNotFound(String),
     /// The specified task was not found.
     TaskNotFound(String),
+    /// The task is already in a terminal status ([`TaskStatus::Done`] or
+    /// [`TaskStatus::WontFix`](crate::model::TaskStatus::WontFix)) and cannot
+    /// be consolidated into a roadmap — a task can only be folded once.
+    ///
+    /// [`TaskStatus::Done`]: crate::model::TaskStatus::Done
+    TaskAlreadyConsolidated(String),
     /// The specified review was not found.
     ReviewNotFound(String),
     /// The plan item a review would target does not exist.
@@ -211,6 +217,12 @@ impl std::fmt::Display for Error {
             }
             Error::TaskNotFound(name) => {
                 write!(f, "task not found: {name}")
+            }
+            Error::TaskAlreadyConsolidated(slug) => {
+                write!(
+                    f,
+                    "task '{slug}' is already terminal and cannot be consolidated into a roadmap"
+                )
             }
             Error::ReviewNotFound(id) => {
                 write!(f, "review not found: {id}")

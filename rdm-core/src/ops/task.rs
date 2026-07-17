@@ -353,6 +353,92 @@ pub fn promote_task(
     Ok(roadmap_doc)
 }
 
+/// Consolidates a task into an existing roadmap as a new trailing phase.
+///
+/// Unlike [`promote_task`] (which creates a brand-new 1:1 roadmap), this folds
+/// a task into an already-existing roadmap: a new phase is appended (auto-
+/// numbered after the roadmap's current last phase) carrying the task's title,
+/// tags, and body — prefixed with a provenance line naming the source task —
+/// via [`super::phase::create_phase`]. The source task is **not** deleted;
+/// instead it is marked [`TaskStatus::Done`] and its body gets a pointer note
+/// naming the roadmap and the new phase stem, so it reads as "folded" rather
+/// than abandoned and drops out of the active `task list`.
+///
+/// `body_override`, when `Some`, replaces the task's own body as the phase
+/// content (still prefixed with the provenance line); when `None`, the task's
+/// existing body is used.
+///
+/// A task can only be consolidated once: if it is already in a terminal
+/// status ([`TaskStatus::is_terminal`]), this returns
+/// [`Error::TaskAlreadyConsolidated`] before any phase is created or the task
+/// is touched, so a rejected call never leaves partial mutation behind.
+///
+/// # Errors
+///
+/// Returns [`Error::TaskNotFound`] if the task doesn't exist,
+/// [`Error::TaskAlreadyConsolidated`] if the task is already `Done` or
+/// `WontFix`,
+/// [`Error::RoadmapNotFound`] if the target roadmap doesn't exist,
+/// [`Error::DuplicateSlug`] if a phase with the task's slug already exists in
+/// the roadmap,
+/// [`Error::Io`] if file operations fail, or
+/// [`Error::FrontmatterParse`] if frontmatter serialization fails.
+pub fn consolidate_task_into_roadmap(
+    store: &mut impl Store,
+    project: &str,
+    task_slug: &str,
+    roadmap_slug: &str,
+    body_override: Option<&str>,
+) -> Result<(Document<Phase>, Document<Task>)> {
+    let task_path = crate::paths::task_path(project, task_slug);
+    if !store.exists(&task_path) {
+        return Err(Error::TaskNotFound(task_slug.to_string()));
+    }
+
+    let task_doc = crate::io::load_task(store, project, task_slug)?;
+    if task_doc.frontmatter.status.is_terminal() {
+        return Err(Error::TaskAlreadyConsolidated(task_slug.to_string()));
+    }
+
+    let source_body = body_override.unwrap_or(&task_doc.body);
+    let phase_body = format!("Consolidated from task `{task_slug}`.\n\n{source_body}");
+
+    let phase_doc = super::phase::create_phase(
+        store,
+        super::phase::CreatePhase {
+            project,
+            roadmap: roadmap_slug,
+            slug: task_slug,
+            title: &task_doc.frontmatter.title,
+            body: Some(&phase_body),
+            tags: task_doc.frontmatter.tags.clone(),
+            ..Default::default()
+        },
+    )?;
+
+    let phase_stem = crate::model::phase_stem(phase_doc.frontmatter.phase, task_slug);
+    let pointer_body = format!(
+        "{}\n\nConsolidated into roadmap `{roadmap_slug}` as `{phase_stem}`.",
+        task_doc.body
+    );
+
+    let updated_task = update_task(
+        store,
+        project,
+        task_slug,
+        Some(TaskStatus::Done),
+        None,
+        TagsUpdate::Keep,
+        BodyUpdate::Set(pointer_body),
+        None,
+        None,
+        None,
+        TitleUpdate::Keep,
+    )?;
+
+    Ok((phase_doc, updated_task))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

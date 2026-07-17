@@ -521,6 +521,262 @@ fn promote_nonexistent_task() {
 }
 
 #[test]
+fn promote_into_existing_roadmap() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "create", "theme-rm", "--project", "fbm"])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "existing",
+            "--roadmap",
+            "theme-rm",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    create_task(&dir, "fold-me", "Fold Me");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "promote",
+            "fold-me",
+            "--into",
+            "theme-rm",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Consolidated task 'fold-me'")
+                .and(predicate::str::contains("theme-rm"))
+                .and(predicate::str::contains("phase-2-fold-me")),
+        );
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["phase", "list", "--roadmap", "theme-rm", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("phase-2-fold-me"));
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-2-fold-me",
+            "--roadmap",
+            "theme-rm",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Fold Me")
+                .and(predicate::str::contains("Consolidated from task")),
+        );
+
+    // Task still exists (not deleted) but is closed with a pointer note.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "fold-me", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Status: done")
+                .and(predicate::str::contains("phase-2-fold-me")),
+        );
+
+    // The folded task drops out of the default (active) task list...
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "list", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fold-me").not());
+
+    // ...but remains discoverable with --status all.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "list", "--status", "all", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fold-me"));
+}
+
+#[test]
+fn promote_into_missing_roadmap_fails() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "orphan-task", "Orphan Task");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "promote",
+            "orphan-task",
+            "--into",
+            "does-not-exist",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("roadmap not found"));
+}
+
+#[test]
+fn promote_requires_roadmap_slug_or_into() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "no-target-task", "No Target Task");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["promote", "no-target-task", "--project", "fbm"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "provide either --roadmap-slug <new> to create a roadmap or --into <existing> to consolidate into one",
+        ));
+}
+
+#[test]
+fn promote_rejects_both_roadmap_slug_and_into() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "both-flags-task", "Both Flags Task");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "promote",
+            "both-flags-task",
+            "--roadmap-slug",
+            "new-rm",
+            "--into",
+            "some-rm",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn promote_rejects_body_or_no_edit_on_roadmap_slug_path() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "legacy-task", "Legacy Task");
+
+    // --body only applies to --into, not the create-new-roadmap path.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "promote",
+            "legacy-task",
+            "--roadmap-slug",
+            "new-rm",
+            "--body",
+            "Should be rejected.",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("only apply to --into"));
+
+    // --no-edit likewise is rejected on the --roadmap-slug path.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "promote",
+            "legacy-task",
+            "--roadmap-slug",
+            "new-rm",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("only apply to --into"));
+}
+
+#[test]
+fn promote_body_override_via_into() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "create", "theme-rm2", "--project", "fbm"])
+        .assert()
+        .success();
+    create_task(&dir, "override-task", "Override Task");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "promote",
+            "override-task",
+            "--into",
+            "theme-rm2",
+            "--body",
+            "Custom phase body",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-override-task",
+            "--roadmap",
+            "theme-rm2",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Custom phase body"));
+}
+
+#[test]
 fn task_create_with_body_flag() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);

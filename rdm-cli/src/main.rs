@@ -127,6 +127,9 @@ fn run() -> Result<()> {
         Command::Promote {
             task_slug,
             roadmap_slug,
+            into,
+            body,
+            no_edit,
             project,
         } => commands::promote::run(
             &root,
@@ -134,6 +137,9 @@ fn run() -> Result<()> {
             cli.no_index,
             task_slug,
             roadmap_slug,
+            into,
+            body,
+            no_edit,
             project,
         )?,
 

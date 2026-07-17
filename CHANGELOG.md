@@ -37,6 +37,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   both are given. `templates/claude-code-web/.claude/hooks/SessionStart.sh`
   now uses `--print-root` instead of a `sed`-based parse of bootstrap's
   stdout.
+- `rdm promote <task-slug> --into <existing-roadmap-slug>` consolidates a task
+  into an already-existing roadmap as a new trailing phase (auto-numbered),
+  carrying over the task's body (prefixed with a provenance line naming the
+  source task) and tags, instead of creating a brand-new 1:1 roadmap. `--body`
+  and `--no-edit` are supported to override the phase body content. The
+  source task is not deleted — it is closed as `done` with a pointer note
+  naming the new roadmap and phase, so it drops out of the active `task
+  list` while remaining inspectable. Consolidating into a nonexistent
+  roadmap, or a task that is already `done`/`wont-fix`, fails with an
+  actionable error. The existing `--roadmap-slug` (create-new-roadmap) form
+  is unchanged.
 
 ### Changed
 

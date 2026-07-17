@@ -175,6 +175,15 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("'{slug}' already exists")),
                 instance: None,
             },
+            Error::TaskAlreadyConsolidated(slug) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(format!(
+                    "task '{slug}' is already terminal and cannot be consolidated into a roadmap"
+                )),
+                instance: None,
+            },
             Error::CyclicDependency(msg) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),

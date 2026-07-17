@@ -309,6 +309,12 @@ If a task becomes large enough to warrant multiple phases, promote it to a roadm
 ./target/debug/rdm promote <task-slug> --roadmap-slug <new-roadmap-slug> --project rdm
 ```
 
+If the task instead belongs inside an already-existing thematic roadmap, fold it in as a new trailing phase instead of creating a new roadmap:
+
+```bash
+./target/debug/rdm promote <task-slug> --into <existing-roadmap-slug> --project rdm
+```
+
 ### Status transitions
 
 **Phase statuses:** `not-started` → `in-progress` → `needs-review` → `reviewed` → `done` (or `blocked`, or `wont-fix`). `done` and `wont-fix` are terminal.
