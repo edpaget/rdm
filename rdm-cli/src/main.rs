@@ -241,6 +241,11 @@ fn run() -> Result<()> {
         Command::Model { command } => {
             commands::model::run(command, &repo_config, format)?;
         }
+
+        Command::Backlog { command } => {
+            let mut store = commands::make_store(&root)?;
+            commands::backlog::run(command, &mut store, &repo_config, format)?;
+        }
     }
 
     Ok(())

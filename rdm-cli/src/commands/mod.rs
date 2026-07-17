@@ -18,6 +18,7 @@ use crate::paths;
 use crate::{AppStore, ItemKindArg, OutputFormat};
 
 pub mod agent_config;
+pub mod backlog;
 pub mod config;
 pub mod describe;
 pub mod index;

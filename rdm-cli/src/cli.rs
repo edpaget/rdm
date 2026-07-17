@@ -290,6 +290,32 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ModelCommand,
     },
+    /// Backlog grooming signals (stale tasks, duplicates, tag clusters, archivable roadmaps).
+    Backlog {
+        #[command(subcommand)]
+        command: BacklogCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BacklogCommand {
+    /// Print a read-only backlog grooming report.
+    ///
+    /// Surfaces stale tasks, likely-duplicate task clusters (via the existing
+    /// fuzzy search matcher), thematic tag clusters, and archivable roadmaps.
+    /// Performs zero writes.
+    Report {
+        /// Staleness threshold in days: a task is flagged once its `created`
+        /// date is at least this many days in the past. Default: 60.
+        #[arg(long, default_value_t = rdm_core::ops::backlog::DEFAULT_STALE_THRESHOLD_DAYS as u32)]
+        older_than: u32,
+        /// Restrict every section to items carrying this tag.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Project to report on.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

@@ -28,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `review-verify`, `mechanical`) to a concrete model id, or inspecting the
   full resolved policy (tier bindings, review floor, per-step models).
 - `rdm config set server.quick_filters "Label1:tag1,Label2:tag2"` (plus matching `rdm config get`/`rdm config list` support) configures HTML quick-filter chips without hand-editing `rdm.toml`. An empty value clears all chips; the key is repo-only (`--global` is rejected).
+- `rdm backlog report [--older-than <days>] [--tag <tag>] [--project <project>]` — a read-only backlog grooming sensor. Prints stale tasks (`open`/`in-progress` tasks past a staleness threshold, default 60 days), likely-duplicate task clusters (via the existing fuzzy `search` matcher — no new similarity engine), thematic tag clusters among active tasks, and archivable roadmaps (every phase terminal, not yet archived). Supports `--format json` for structured output alongside the default human/markdown rendering. Performs zero writes and requires no plan-repo schema change.
 - `rdm bootstrap` gained a `--print-root` flag (prints only the resolved
   plan-repo path to stdout, with all narration moved to stderr) and
   `--format json` support (`{"path", "status", "commits_merged"}`), for
