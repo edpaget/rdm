@@ -104,6 +104,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `merge_stop_hook_into_settings` now composes multiple Stop hooks
   non-destructively and idempotently, so both hooks coexist in the same
   `settings.json`.
+- Dogfood the `rdm-plan-review` skill and Stop hook:
+  `.claude/skills/rdm-plan-review/SKILL.md` and
+  `.claude/hooks/rdm-plan-review-on-create.sh` (registered in
+  `.claude/settings.json` alongside the existing
+  `rdm-review-on-finalize.sh` Stop hook). Enabled `plan_review = true` for
+  rdm's own plan repo, so newly created roadmaps/phases/tasks are tagged
+  `needs-plan-review` and gated by `rdm-plan-review` before implementation
+  begins, composing with the existing post-implementation
+  `rdm-review`/`needs-review` gate.
 
 ### Changed
 

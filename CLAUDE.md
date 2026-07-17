@@ -21,7 +21,7 @@ Core is the source of truth. CLI and server are thin layers. New interfaces (TUI
 - **Roadmaps** contain ordered **phases** (not-started | in-progress | needs-review | reviewed | done | blocked | wont-fix)
 - **Tasks** are standalone work items (open | in-progress | needs-review | reviewed | done | wont-fix)
 - Agent integration: `rdm agent-config` generates config for AI agents to interact via CLI
-- **Claude Code skills** (`.claude/skills/`): `rdm-roadmap` (create roadmaps), `rdm-do` (implement phases / work on tasks; finalize → needs-review), `rdm-document` (generate docs from completed roadmaps), `rdm-revise` (act on document reviews requesting changes), `rdm-backlog` (propose-only batched backlog grooming plan)
+- **Claude Code skills** (`.claude/skills/`): `rdm-roadmap` (create roadmaps), `rdm-do` (implement phases / work on tasks; finalize → needs-review), `rdm-document` (generate docs from completed roadmaps), `rdm-revise` (act on document reviews requesting changes), `rdm-plan-review` (review a plan before implementation begins), `rdm-backlog` (propose-only batched backlog grooming plan)
 
 ## Development Practices
 
@@ -171,6 +171,7 @@ For sessions running in a sandboxed Claude Code web environment (no local plan r
 - Auto-review Stop hook harness: `bash scripts/verify-auto-review-hook-loop.sh` — hermetic FIRE / OUT-OF-SCOPE / LOOP-GUARD / CLEARED regression driving the real `.claude/hooks/rdm-review-on-finalize.sh` (all four states) plus the shipped `rdm-core/src/templates/hook-review-on-finalize.sh` loop-guard and reviewed-cleared cases, against the Claude Code Stop payload contract. Run it after touching either hook script, `rdm review pending`/`restamp`, or `--project`/root resolution.
 - Review revision-loop harness: `bash scripts/verify-review-revision-loop.sh` — hermetic end-to-end regression for the LLM revision workflow (the `rdm-revise` loop): a submitted request-changes review is worked comment by comment against a temp git-backed plan repo, covering the resolved-anchor, whole-document, drifted-anchor-clarification (blocks close), wont-fix, and completion paths with explicit `--applied-commit` provenance. Run it after touching the review resolution model (`ops/reviews.rs` update paths, anchor drift resolution, `rdm review requests`/`update`, the MCP review tools, or the `rdm-revise` skill templates).
 - Backlog grooming harness: `bash scripts/verify-backlog-groom-loop.sh` — hermetic end-to-end regression for the grooming loop (`rdm-backlog` skill's command surface): seeds stale tasks, a duplicate pair, a tag cluster, and a fully-terminal roadmap, then drives `rdm backlog report`, `rdm promote --into`, `rdm task merge`, `rdm task update --reason`, and `rdm roadmap archive` against the real binary end to end. Run it after touching `rdm-core/src/ops/backlog.rs`, `consolidate_task_into_roadmap`/`merge_tasks` in `rdm-core/src/ops/task.rs`, `rdm roadmap archive`, or the `rdm-backlog` skill template.
+- Plan-review Stop hook harness: `bash scripts/verify-plan-review-hook-loop.sh` — hermetic FIRE / LOOP-GUARD / CLEARED / FAIL-OPEN regression driving the shipped `rdm-core/src/templates/hook-plan-review-on-create.sh` template against a hermetic temp plan + source repo (the dogfooded copy's own loop is covered by the manual reproduction recipe in `.claude/hooks/rdm-plan-review-on-create.sh`'s header). Run it after touching the hook template, `plan_review`/`needs-plan-review` stamping, or `rdm search --tag`.
 
 ### *** DEVELOPMENT BUILD REQUIREMENT ***
 
@@ -250,6 +251,20 @@ Structured feedback on a roadmap, phase, or task document, with comments anchore
 ```
 
 `--quote` must match the document text exactly; it is located in the document **as of the review's `created_commit`**, so it stays valid after later edits. An ambiguous quote fails with a 1-based occurrence list — re-run with `--occurrence <n>`. On a roadmap review, `--doc phase/<stem-or-number>` scopes a comment to one of the roadmap's phases. `rdm search <query> --type review --project rdm` matches review summaries and comment bodies.
+
+### Plan review
+
+A second, earlier gate than the document-review flow above: it reviews a roadmap/phase/task's **plan** before implementation begins, rather than the diff after implementation. Controlled by the `plan_review` config flag (`./target/debug/rdm config set plan_review true`, `RDM_PLAN_REVIEW` env override, default `false`) — enabled for this repo's own plan data. While the flag is on, `roadmap create` / `phase create` / `task create` automatically stamp a reserved `needs-plan-review` tag onto every new item, alongside any user-supplied `--tags`.
+
+List pending items with:
+
+```bash
+./target/debug/rdm search "" --tag needs-plan-review --project rdm
+```
+
+Run the `rdm-plan-review` skill against a pending item to review it: it dispatches parallel read-only sub-agents for coherence, architectural fit, and (for phases) unit-of-work sizing, then consolidates a **PASS** / **PASS WITH CONCERNS** / **REWORK** verdict. On PASS or PASS WITH CONCERNS it clears the `needs-plan-review` tag; on REWORK it leaves the tag in place and reports what must change. A Stop hook (`.claude/hooks/rdm-plan-review-on-create.sh`) reprompts the agent to run the skill while any item still carries the tag.
+
+This gate composes with, and is independent from, the existing `needs-review` gate above: `plan_review`/`needs-plan-review` gates **before** implementation begins (on the plan document), while `rdm-review`/`needs-review` gates **after** implementation (on the diff). Both Stop hooks are active in this repo (`rdm-plan-review-on-create.sh` and `rdm-review-on-finalize.sh`) and fire independently of each other.
 
 ### Creating items
 
