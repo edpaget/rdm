@@ -47,8 +47,7 @@ pub fn run(
         // Commit the config update.
         let store = rdm_store_git::GitStore::new(root).context("failed to open cloned repo")?;
         store
-            .git()
-            .git_commit("rdm: configure remote.default = origin")
+            .commit_now("rdm: configure remote.default = origin")
             .context("failed to commit remote config")?;
 
         // Save global config (best-effort, required if --default-format).
