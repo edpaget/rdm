@@ -1019,12 +1019,21 @@ async fn roadmap_detail_html_renders_body() {
 
 // ── ?at=<sha> revision-history tests ─────────────────────────────────────────
 //
-// The server uses `FsStore`, whose `fetch_body_at` always returns
-// `Error::HistoryUnavailable`. That covers the wire-shape concerns at the
-// HTTP layer: `?at=<sha>` is accepted, parsed, and routed through the
-// `fetch_body_at` path, with errors surfaced as 404 Problem+JSON. The
+// `spawn_server`'s temp dir is seeded via a plain `FsStore::new` and is
+// never `git init`-ed, so `AppState::default()`'s store factory (which
+// tries a git-backed `GitStore` first, see
+// `rdm_server::state::default_store_factory`) falls back to `FsStore`
+// here, whose `fetch_body_at` always returns `Error::HistoryUnavailable`.
+// That covers the wire-shape concerns at the HTTP layer: `?at=<sha>` is
+// accepted, parsed, and routed through the `fetch_body_at` path, with
+// errors surfaced as 404 Problem+JSON. Since the fixture never becomes a
+// git repo, these three tests exercise the fallback branch unchanged
+// regardless of the default factory's git-first preference. The
 // historical-body happy path is exercised end-to-end against `GitStore` in
-// `rdm-cli/tests/cli_{roadmap,phase,task}.rs`.
+// `rdm-cli/tests/cli_{roadmap,phase,task}.rs` and, for the server's own
+// default factory specifically, in
+// `rdm-server/tests/git_history.rs`'s
+// `default_store_factory_uses_git_store_for_git_repo`.
 
 #[tokio::test]
 async fn roadmap_show_at_revision_with_fs_store_returns_404() {

@@ -103,6 +103,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `rdm serve` now resolves `?at=<sha>` historical-revision requests against the plan repo's real git history by default (when the plan root is a git repository), instead of always returning 404 "the store has no history available." Non-git plan roots keep the previous behavior. Note: this applies to the git-featured build shipped via `rdm-cli` (the default); a standalone `rdm-server` build without the new `git` cargo feature keeps FsStore-only (always-404) behavior.
 - `rdm bootstrap doctor` now correctly detects rdm on PATH on Windows by checking for `.exe`, `.bat`, and `.cmd` extensions in addition to the unextended name.
 - When running a non-init command against an uninitialized plan repo (no
   `rdm.toml` at the resolved root), the error now clearly guides users to

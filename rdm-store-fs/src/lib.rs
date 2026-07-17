@@ -250,6 +250,11 @@ impl Store for FsStore {
 /// that callers generic over revision-aware reads (e.g. the server's
 /// `?at=<sha>` path) type-check against a filesystem backend; such reads
 /// surface as a "history unavailable" error rather than real history.
+///
+/// rdm-server prefers a real, git-backed `rdm_store_git::GitStore` by
+/// default (see its `default_store_factory`), so this impl is now reached
+/// only as the fallback: when the plan root is not (yet) a git repository,
+/// or when the server is built without its `git` cargo feature.
 impl VersionedStore for FsStore {
     fn head_sha(&self) -> Result<String> {
         Err(Error::HistoryUnavailable)

@@ -5,10 +5,18 @@
 //! `FsStore`, whose `VersionedStore` impl always returns
 //! `Error::HistoryUnavailable` — so its `?at=<sha>` tests only prove the
 //! wire shape of a *failed* pinned read (404 Problem+JSON). This file
-//! backs the server with a real `rdm_store_git::GitStore` (via
-//! `AppState::with_store_factory`) and proves the *successful* path: a
-//! historical SHA resolves to the historical body and is surfaced in the
-//! `revision` field / HTML badge.
+//! backs the server with a real `rdm_store_git::GitStore` and proves the
+//! *successful* path: a historical SHA resolves to the historical body and
+//! is surfaced in the `revision` field / HTML badge.
+//!
+//! Most tests here go through an explicit
+//! `AppState::with_store_factory(GitStore::new)` override to pin the
+//! backend deterministically. `default_store_factory_uses_git_store_for_git_repo`
+//! (gated on the `git` cargo feature) instead exercises
+//! `AppState::default()` with no override, proving that `rdm serve`'s own
+//! default factory — not just an explicitly-injected one — resolves
+//! `?at=<sha>` against real git history when the plan root is a git
+//! repository.
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -218,4 +226,129 @@ async fn task_show_at_revision_returns_historical_body_and_revision() {
     let json: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(json["revision"], old_sha);
     assert_eq!(json["body"], "original-body-marker\n");
+}
+
+/// Proves the git-backed store's *unknown revision* error path at the HTTP
+/// layer: unlike `FsStore` (which reports a blanket `HistoryUnavailable`
+/// regardless of the SHA), a real `GitStore` looks the revision up and
+/// fails with `RevisionUnknown`, which must still surface as a 404
+/// Problem+JSON — never a 500 or a panic.
+#[tokio::test]
+async fn roadmap_show_at_unknown_revision_with_git_store_returns_404() {
+    let (_dir, addr, client, _old_sha) = spawn_git_backed_server().await;
+
+    let unknown_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let resp = client
+        .get(url(
+            addr,
+            &format!("/projects/demo/roadmaps/api?at={unknown_sha}"),
+        ))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    assert_eq!(resp.headers()["content-type"], "application/problem+json");
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(json["status"], 404);
+    assert_eq!(
+        json["detail"],
+        format!("revision '{unknown_sha}' is not known to the store")
+    );
+}
+
+/// Proves `rdm_server::state::AppState::default()` — with NO
+/// `with_store_factory` override — resolves `?at=<sha>` against a real
+/// git-backed store when the plan root is a git repository. This is the
+/// production path (`rdm serve` opens `AppState::default()` and only
+/// overrides `plan_root`/`quick_filters`); the other tests in this file
+/// exercise the same wire behavior but via an explicit
+/// `with_store_factory(GitStore::new)` override, which proves the HTTP
+/// contract without touching `AppState`'s own default. Only meaningful
+/// when built with the `git` cargo feature, since that's what compiles
+/// `default_store_factory`'s `GitStore` branch in; without it the default
+/// factory always falls back to `FsStore` and `?at=` would 404 (covered by
+/// `rdm-server/tests/integration.rs`'s `..._with_fs_store_returns_404`
+/// tests).
+#[cfg(feature = "git")]
+#[tokio::test]
+async fn default_store_factory_uses_git_store_for_git_repo() {
+    let dir = TempDir::new().unwrap();
+    let mut store = GitStore::init(dir.path()).unwrap();
+
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "demo",
+            slug: "api",
+            title: "API Roadmap",
+            body: Some("original-body-marker"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    Store::commit(&mut store).unwrap();
+    store.commit_now("seed original body").unwrap();
+    let old_sha = VersionedStore::head_sha(&store).unwrap();
+
+    // Second commit changes the body, so the "current" read (no ?at=) would
+    // show different content than the pinned "old" read.
+    rdm_core::ops::roadmap::update_roadmap(
+        &mut store,
+        "demo",
+        "api",
+        BodyUpdate::Set("new-body-marker".to_string()),
+        PriorityUpdate::Keep,
+        TagsUpdate::Keep,
+        TitleUpdate::Keep,
+    )
+    .unwrap();
+    Store::commit(&mut store).unwrap();
+    store.commit_now("overwrite body with new marker").unwrap();
+
+    // No `.with_store_factory(...)` override: exercises
+    // `default_store_factory` exactly as `rdm serve` would.
+    let state = rdm_server::state::AppState {
+        plan_root: dir.path().to_path_buf(),
+        quick_filters: Vec::new(),
+        ..Default::default()
+    };
+
+    let app = rdm_server::router::build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let client = Client::new();
+    let resp = client
+        .get(url(
+            addr,
+            &format!("/projects/demo/roadmaps/api?at={old_sha}"),
+        ))
+        .header("accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(json["revision"], old_sha);
+
+    let resp = client
+        .get(url(
+            addr,
+            &format!("/projects/demo/roadmaps/api?at={old_sha}"),
+        ))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("original-body-marker"));
+    assert!(!body.contains("new-body-marker"));
 }

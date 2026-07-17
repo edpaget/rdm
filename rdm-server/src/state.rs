@@ -10,9 +10,12 @@ use crate::templates::{QuickFilterView, quick_filter_views};
 /// Constructs a fresh [`VersionedStore`] instance rooted at the given path.
 ///
 /// Called once per request/lookup by [`AppState::store`]; defaults to
-/// [`FsStore`]. Tests may override it via [`AppState::with_store_factory`]
-/// to inject a real [`VersionedStore`] backend (e.g. a git-backed store),
-/// exercising the `?at=<sha>` historical-read path end-to-end.
+/// [`default_store_factory`], which prefers a real git-backed
+/// [`rdm_store_git::GitStore`] when the plan root is a git repository
+/// (built with the `git` feature) and falls back to [`FsStore`] otherwise.
+/// Tests may override it via [`AppState::with_store_factory`] for
+/// deterministic control over which backend serves the `?at=<sha>`
+/// historical-read path.
 pub type StoreFactory = Arc<dyn Fn(&Path) -> Box<dyn VersionedStore + Send + Sync> + Send + Sync>;
 
 /// Shared application state for the rdm server.
@@ -27,15 +30,40 @@ pub struct AppState {
     pub quick_filters: Vec<QuickFilter>,
     /// Constructs the [`VersionedStore`] backend used by [`AppState::store`].
     ///
-    /// Defaults to [`FsStore`]. This field is `pub` (rather than
-    /// crate-private) so that `AppState { .. , ..Default::default() }`
-    /// struct-update syntax — used pervasively by production call sites and
-    /// test fixtures across crate boundaries (`rdm-cli`, `rdm-server`'s own
-    /// `tests/` integration binaries) — type-checks regardless of module or
-    /// crate visibility. Prefer [`AppState::with_store_factory`] over setting
-    /// this directly; it reads as intent ("inject a store backend") rather
-    /// than a raw field assignment.
+    /// Defaults to [`default_store_factory`]: a real git-backed
+    /// [`rdm_store_git::GitStore`] when the plan root is a git repository
+    /// (built with the `git` feature), falling back to [`FsStore`]
+    /// otherwise. This field is `pub` (rather than crate-private) so that
+    /// `AppState { .. , ..Default::default() }` struct-update syntax — used
+    /// pervasively by production call sites and test fixtures across crate
+    /// boundaries (`rdm-cli`, `rdm-server`'s own `tests/` integration
+    /// binaries) — type-checks regardless of module or crate visibility.
+    /// Prefer [`AppState::with_store_factory`] over setting this directly
+    /// for deterministic test control (e.g. forcing `FsStore` or a
+    /// non-default backend); it reads as intent ("inject a store backend")
+    /// rather than a raw field assignment.
     pub store_factory: StoreFactory,
+}
+
+/// Constructs the server's default [`VersionedStore`] backend for `root`.
+///
+/// Tries a real, git-backed [`rdm_store_git::GitStore`] first (the normal
+/// case, since every rdm plan repo is git-managed) so `?at=<sha>` and
+/// review-anchor drift resolution see real committed history. Falls back
+/// to the non-versioned [`FsStore`] — whose [`VersionedStore`] impl always
+/// reports [`rdm_core::error::Error::HistoryUnavailable`] — when `root` is
+/// not (yet) a git repository, or when built without the `git` feature. Any
+/// `GitStore::new` failure (not just "not a git repo") deliberately falls
+/// back silently — the server is a best-effort viewer and treats missing
+/// history as a degraded capability, not a fatal error.
+fn default_store_factory(root: &Path) -> Box<dyn VersionedStore + Send + Sync> {
+    #[cfg(feature = "git")]
+    {
+        if let Ok(store) = rdm_store_git::GitStore::new(root) {
+            return Box::new(store);
+        }
+    }
+    Box::new(FsStore::new(root))
 }
 
 impl std::fmt::Debug for AppState {
@@ -52,7 +80,7 @@ impl Default for AppState {
         Self {
             plan_root: PathBuf::new(),
             quick_filters: Vec::new(),
-            store_factory: Arc::new(|root| Box::new(FsStore::new(root))),
+            store_factory: Arc::new(default_store_factory),
         }
     }
 }
@@ -60,8 +88,12 @@ impl Default for AppState {
 impl AppState {
     /// Opens the configured [`VersionedStore`] backend at the plan root.
     ///
-    /// Defaults to [`FsStore`] (no history). Overridden by
-    /// [`AppState::with_store_factory`] in tests that need real history.
+    /// Defaults to [`default_store_factory`]: a real git-backed store when
+    /// the plan root is a git repository (with the `git` feature enabled),
+    /// falling back to [`FsStore`] (no history) otherwise. Overridden by
+    /// [`AppState::with_store_factory`] for deterministic test control
+    /// (e.g. forcing a specific backend) rather than as the only way to
+    /// get real history.
     pub fn store(&self) -> Box<dyn VersionedStore + Send + Sync> {
         (self.store_factory)(&self.plan_root)
     }
