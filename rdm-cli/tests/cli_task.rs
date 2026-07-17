@@ -838,6 +838,115 @@ fn task_update_with_body_flag() {
 }
 
 #[test]
+fn task_update_tags_ignores_stdin() {
+    // Regression: a tags-only update must not consult stdin at all. Before the
+    // fix, `update` unconditionally read stdin when `--body` was absent, so a
+    // never-closing pipe (e.g. from a git-subprocess hook) would hang, and a
+    // pipe that did carry bytes would silently clobber the body. Feeding stdin
+    // here must leave the existing body untouched.
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix the bug",
+            "--project",
+            "fbm",
+            "--body",
+            "Original body.",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--tags",
+            "audit",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .write_stdin("SNEAKY STDIN BODY")
+        .assert()
+        .success();
+
+    let task_file = dir.path().join("projects/fbm/tasks/fix-bug.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    assert!(
+        content.contains("Original body."),
+        "tags-only update must preserve the existing body, got: {content}"
+    );
+    assert!(
+        !content.contains("SNEAKY STDIN BODY"),
+        "tags-only update must not read stdin into the body, got: {content}"
+    );
+}
+
+#[test]
+fn task_update_status_ignores_stdin() {
+    // Regression: a status-only update (the exact shape the `Done:` hook runs
+    // as a git subprocess) must not read stdin.
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix the bug",
+            "--project",
+            "fbm",
+            "--body",
+            "Original body.",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--status",
+            "done",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .write_stdin("SNEAKY STDIN BODY")
+        .assert()
+        .success();
+
+    let task_file = dir.path().join("projects/fbm/tasks/fix-bug.md");
+    let content = fs::read_to_string(&task_file).unwrap();
+    assert!(
+        content.contains("Original body."),
+        "status-only update must preserve the existing body, got: {content}"
+    );
+    assert!(
+        !content.contains("SNEAKY STDIN BODY"),
+        "status-only update must not read stdin into the body, got: {content}"
+    );
+}
+
+#[test]
 fn task_create_with_stdin_pipe() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);

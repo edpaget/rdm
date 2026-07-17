@@ -144,6 +144,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `rdm roadmap update`, `rdm phase update`, and `rdm task update` no longer read
+  stdin or open the interactive editor when neither `--body` nor `--clear-body`
+  is given. A tags-only or status-only update (e.g. `rdm task update <slug>
+  --status done --no-edit`) previously blocked indefinitely reading stdin when
+  stdin was an open pipe that never closed — the exact environment the installed
+  `Done:` post-merge/post-commit hooks run in as git subprocesses. Now the body
+  is consulted only when explicitly requested: `--body` sets it, `--clear-body`
+  clears it, otherwise it is left untouched. **Behavior change:** the previously
+  legal `update --tags x < body.md` form (piping a body into an update via stdin)
+  is retired — pass `--body` to set body content on an update, which composes
+  with `--tags`, `--status`, and the other update flags. `create` is unaffected
+  and still accepts a piped-stdin body.
 - `rdm serve` now resolves `?at=<sha>` historical-revision requests against the plan repo's real git history by default (when the plan root is a git repository), instead of always returning 404 "the store has no history available." Non-git plan roots keep the previous behavior. Note: this applies to the git-featured build shipped via `rdm-cli` (the default); a standalone `rdm-server` build without the new `git` cargo feature keeps FsStore-only (always-404) behavior.
 - `rdm bootstrap doctor` now correctly detects rdm on PATH on Windows by checking for `.exe`, `.bat`, and `.cmd` extensions in addition to the unextended name.
 - When running a non-init command against an uninitialized plan repo (no

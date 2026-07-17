@@ -1324,6 +1324,59 @@ fn roadmap_update_body_flag_beats_stdin() {
     );
 }
 
+#[test]
+fn roadmap_update_tags_ignores_stdin() {
+    // Regression: a tags-only roadmap update must not consult stdin — feeding a
+    // pipe must not clobber the body (and a never-closing pipe must not hang).
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way",
+            "--project",
+            "fbm",
+            "--body",
+            "Original roadmap body.",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "update",
+            "two-way",
+            "--project",
+            "fbm",
+            "--tags",
+            "audit",
+            "--no-edit",
+        ])
+        .write_stdin("SNEAKY STDIN BODY")
+        .assert()
+        .success();
+
+    let file = dir.path().join("projects/fbm/roadmaps/two-way/roadmap.md");
+    let content = fs::read_to_string(&file).unwrap();
+    assert!(
+        content.contains("Original roadmap body."),
+        "tags-only update must preserve the existing body, got: {content}"
+    );
+    assert!(
+        !content.contains("SNEAKY STDIN BODY"),
+        "tags-only update must not read stdin into the body, got: {content}"
+    );
+}
+
 /// Body content covering the reported hang triggers: backticks, em-dash,
 /// curly quotes/ellipsis, shell metacharacters, and a literal `--no-edit`
 /// substring embedded in the value (not passed as a separate flag).

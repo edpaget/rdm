@@ -1780,6 +1780,65 @@ fn phase_update_clear_body_succeeds() {
 }
 
 #[test]
+fn phase_update_tags_ignores_stdin() {
+    // Regression: a tags-only phase update must not consult stdin — feeding a
+    // pipe must not clobber the body (and a never-closing pipe must not hang).
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "Original phase body.",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--tags",
+            "audit",
+            "--no-edit",
+        ])
+        .write_stdin("SNEAKY STDIN BODY")
+        .assert()
+        .success();
+
+    let phase_file = dir
+        .path()
+        .join("projects/fbm/roadmaps/two-way/phase-1-core.md");
+    let content = fs::read_to_string(&phase_file).unwrap();
+    assert!(
+        content.contains("Original phase body."),
+        "tags-only update must preserve the existing body, got: {content}"
+    );
+    assert!(
+        !content.contains("SNEAKY STDIN BODY"),
+        "tags-only update must not read stdin into the body, got: {content}"
+    );
+}
+
+#[test]
 fn phase_update_empty_body_ok_when_already_empty() {
     let dir = TempDir::new().unwrap();
     init_with_roadmap(&dir);

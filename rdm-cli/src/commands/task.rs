@@ -95,15 +95,19 @@ pub fn run(
             commit,
             reason,
             clear_reason,
-            no_edit,
+            no_edit: _,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let title = TitleUpdate::from_args(title);
-            let body = if clear_body {
-                BodyUpdate::Clear
-            } else {
-                BodyUpdate::from_args(resolve_body(body, no_edit)?, false)?
-            };
+            // `update` consults the body only when the user is explicit:
+            // `--body` sets it, `--clear-body` clears it, otherwise it is left
+            // untouched. Unlike `create`, this never reads stdin or opens the
+            // editor, so a tags-only/status-only update can't hang on an open
+            // pipe or clobber the body from stray stdin bytes. This is
+            // load-bearing for the `Done:` hook: the installed post-merge/
+            // post-commit hooks run `task update --status done --no-edit` as git
+            // subprocesses with inherited pipes — exactly what would hang before.
+            let body = BodyUpdate::from_args(body, clear_body)?;
             let tags = TagsUpdate::from_args(tags, false)?;
             let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
             let has_reason = !matches!(reason_update, ReasonUpdate::Keep);

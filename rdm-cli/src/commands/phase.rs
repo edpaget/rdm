@@ -327,7 +327,7 @@ pub fn run(
             reason,
             clear_reason,
             commit,
-            no_edit,
+            no_edit: _,
         } => {
             if commit.is_some() && !matches!(status, Some(s) if s.is_terminal()) {
                 anyhow::bail!("--commit can only be used with --status done or --status wont-fix");
@@ -335,11 +335,13 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
                 .context("failed to resolve phase")?;
-            let body = if clear_body {
-                BodyUpdate::Clear
-            } else {
-                BodyUpdate::from_args(resolve_body(body, no_edit)?, false)?
-            };
+            // `update` consults the body only when the user is explicit:
+            // `--body` sets it, `--clear-body` clears it, otherwise it is left
+            // untouched. Unlike `create`, this never reads stdin or opens the
+            // editor, so a tags-only/status-only update can't hang on an open
+            // pipe or clobber the body from stray stdin bytes. (Retires the old
+            // `update --tags x < body.md` form; compose `--body` with `--tags`.)
+            let body = BodyUpdate::from_args(body, clear_body)?;
             let tags = TagsUpdate::from_args(tags, false)?;
             // Stamp the source-repo HEAD SHA when entering needs-review, so the
             // review can later be scoped to the branch/worktree that produced
