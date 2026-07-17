@@ -1963,4 +1963,48 @@ mod tests {
             other => panic!("expected RevisionUnknown, got {other:?}"),
         }
     }
+
+    /// Verifies that gix initializes repositories with the files-based ref
+    /// format (not reftable). This test documents the current ref format
+    /// behavior and will help detect if that changes in future gix versions.
+    ///
+    /// The test checks for the presence of `.git/HEAD` as a regular file
+    /// (files format indicator) and the absence of `.git/reftable/` directory
+    /// (reftable format indicator).
+    #[test]
+    fn gix_init_uses_files_ref_format() {
+        let dir = TempDir::new().unwrap();
+        let _store = GitStore::init(dir.path()).unwrap();
+
+        let git_dir = dir.path().join(".git");
+        assert!(git_dir.exists(), "expected .git directory to exist");
+
+        // Files format uses a regular file for HEAD
+        let head_file = git_dir.join("HEAD");
+        assert!(
+            head_file.exists(),
+            "expected .git/HEAD file to exist (files format)"
+        );
+        assert!(
+            head_file.is_file(),
+            "expected .git/HEAD to be a regular file (files format)"
+        );
+
+        // Verify the HEAD file contains a ref pointer (not a hash)
+        let head_content =
+            std::fs::read_to_string(&head_file).expect("should be able to read HEAD file");
+        assert!(
+            head_content.starts_with("ref: "),
+            "expected HEAD to contain a ref pointer, got: {}",
+            head_content
+        );
+
+        // Reftable format would create a .git/reftable/ directory
+        let reftable_dir = git_dir.join("reftable");
+        assert!(
+            !reftable_dir.exists(),
+            "did not expect .git/reftable/ directory (reftable format); \
+             gix appears to be using reftable now"
+        );
+    }
 }
