@@ -2847,7 +2847,7 @@ dependencies = [
 
 [[package]]
 name = "rdm-cli"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2873,7 +2873,7 @@ dependencies = [
 
 [[package]]
 name = "rdm-core"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "nucleo-matcher",
@@ -2895,7 +2895,7 @@ dependencies = [
 
 [[package]]
 name = "rdm-mcp"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "rdm-core",
@@ -2912,7 +2912,7 @@ dependencies = [
 
 [[package]]
 name = "rdm-server"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "askama",
@@ -2956,7 +2956,7 @@ dependencies = [
 
 [[package]]
 name = "rdm-tui"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "chrono",
