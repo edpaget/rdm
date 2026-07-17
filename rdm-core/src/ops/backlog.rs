@@ -802,6 +802,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn moderately_similar_distinct_titles_do_not_cluster() {
+        // Pins the discriminating power of DUPLICATE_SCORE_RATIO at the margin:
+        // two active tasks that share vocabulary but describe distinct work must
+        // NOT be flagged as duplicates. Without this, a loosened ratio (or a
+        // scoring change) that started merging overlapping-but-distinct tasks
+        // would still pass every other duplicate test, since those only cover
+        // near-identical (one trailing word) positives and wildly-dissimilar
+        // negatives — nothing in the 0.0..RATIO band that this guards.
+        let mut store = setup_store();
+        crate::ops::task::create_task(
+            &mut store,
+            crate::ops::task::CreateTask {
+                project: "acme",
+                slug: "dark-mode-toggle",
+                title: "Add dark mode toggle to settings screen",
+                priority: Priority::Medium,
+                tags: None,
+                body: None,
+            },
+        )
+        .unwrap();
+        crate::ops::task::create_task(
+            &mut store,
+            crate::ops::task::CreateTask {
+                project: "acme",
+                slug: "export-csv",
+                title: "Add CSV export button to reports screen",
+                priority: Priority::Medium,
+                tags: None,
+                body: None,
+            },
+        )
+        .unwrap();
+        let report = report(&store, "acme", &ReportOptions::default()).unwrap();
+        assert!(
+            report.duplicate_clusters.is_empty(),
+            "distinct tasks that merely share vocabulary must not cluster: {:?}",
+            report.duplicate_clusters
+        );
+    }
+
     // -- tag clusters --
 
     #[test]
@@ -905,6 +947,62 @@ mod tests {
         .unwrap();
         let report = report(&store, "acme", &ReportOptions::default()).unwrap();
         assert!(!report.tag_clusters.iter().any(|c| c.tag == "unique"));
+    }
+
+    #[test]
+    fn tag_clusters_respect_tag_scope() {
+        // The `--tag` scope must restrict tag clustering to the scoped tasks:
+        // a cluster for a tag carried only by out-of-scope tasks must not appear.
+        let mut store = setup_store();
+        for slug in ["billing-1", "billing-2"] {
+            crate::ops::task::create_task(
+                &mut store,
+                crate::ops::task::CreateTask {
+                    project: "acme",
+                    slug,
+                    title: slug,
+                    priority: Priority::Medium,
+                    tags: Some(vec!["billing".to_string()]),
+                    body: None,
+                },
+            )
+            .unwrap();
+        }
+        for slug in ["auth-1", "auth-2"] {
+            crate::ops::task::create_task(
+                &mut store,
+                crate::ops::task::CreateTask {
+                    project: "acme",
+                    slug,
+                    title: slug,
+                    priority: Priority::Medium,
+                    tags: Some(vec!["auth".to_string()]),
+                    body: None,
+                },
+            )
+            .unwrap();
+        }
+        // Without scoping, both a billing and an auth cluster exist.
+        let unscoped = report(&store, "acme", &ReportOptions::default()).unwrap();
+        assert!(unscoped.tag_clusters.iter().any(|c| c.tag == "billing"));
+        assert!(unscoped.tag_clusters.iter().any(|c| c.tag == "auth"));
+        // Scoped to "auth": the billing tasks are out of scope, so no billing
+        // cluster may appear; only the in-scope auth cluster survives.
+        let opts = ReportOptions {
+            older_than_days: DEFAULT_STALE_THRESHOLD_DAYS,
+            tag: Some("auth".to_string()),
+        };
+        let scoped = report(&store, "acme", &opts).unwrap();
+        assert!(
+            !scoped.tag_clusters.iter().any(|c| c.tag == "billing"),
+            "out-of-scope tag must not cluster under --tag auth: {:?}",
+            scoped.tag_clusters
+        );
+        assert!(
+            scoped.tag_clusters.iter().any(|c| c.tag == "auth"),
+            "in-scope auth cluster must survive scoping: {:?}",
+            scoped.tag_clusters
+        );
     }
 
     // -- archivable roadmaps --
