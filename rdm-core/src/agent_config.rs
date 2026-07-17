@@ -257,7 +257,7 @@ pub struct SkillOptions {
 ///     principles_file: None,
 ///     mcp: false,
 /// });
-/// assert_eq!(skills.len(), 9);
+/// assert_eq!(skills.len(), 10);
 /// assert!(skills[0].content.contains("--project myproj"));
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
@@ -287,6 +287,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_autopilot(&proj_flag, principles_note.as_deref()),
             skill_land(&proj_flag, principles_note.as_deref()),
             skill_revise(&proj_flag, principles_note.as_deref()),
+            skill_backlog(&proj_flag, principles_note.as_deref()),
         ]
     }
 }
@@ -410,6 +411,18 @@ fn skill_revise(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
         relative_path: "rdm-revise/SKILL.md",
         content: render_skill(
             include_str!("templates/skill-revise-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
+        ),
+    }
+}
+
+fn skill_backlog(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-backlog/SKILL.md",
+        content: render_skill(
+            include_str!("templates/skill-backlog-cli.md"),
             "{proj_flag}",
             proj_flag,
             principles_note,
@@ -1267,13 +1280,13 @@ mod tests {
     // --- Skill generation tests ---
 
     #[test]
-    fn generate_skills_returns_nine_files() {
+    fn generate_skills_returns_ten_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
-        assert_eq!(skills.len(), 9);
+        assert_eq!(skills.len(), 10);
     }
 
     #[test]
@@ -1292,6 +1305,38 @@ mod tests {
         assert_eq!(skills[6].relative_path, "rdm-autopilot/SKILL.md");
         assert_eq!(skills[7].relative_path, "rdm-land/SKILL.md");
         assert_eq!(skills[8].relative_path, "rdm-revise/SKILL.md");
+        assert_eq!(skills[9].relative_path, "rdm-backlog/SKILL.md");
+    }
+
+    #[test]
+    fn skill_backlog_documents_the_grooming_plan() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("name: rdm-backlog"));
+        assert!(content.contains("$ARGUMENTS"));
+        // Read-and-propose: runs backlog report, mutates nothing.
+        assert!(content.contains("rdm backlog report --format json"));
+        assert!(content.contains("Non-mutation guarantee"));
+        assert!(content.contains("never runs"));
+        // Each category maps to a literal proposed command.
+        assert!(content.contains("task update <slug> --status wont-fix"));
+        assert!(content.contains("task merge <survivor> --from"));
+        assert!(content.contains("promote <slug> --into <roadmap>"));
+        assert!(content.contains("roadmap archive <roadmap>"));
+        // Never force-archive; the candidates never need it.
+        assert!(content.contains("Never** add `--force`"));
+        // Ambiguity degrades to open questions, not blind actions.
+        assert!(content.contains("## Open questions"));
+        assert!(content.contains("file it as an open question instead"));
+        // Empty case is handled explicitly.
+        assert!(content.contains("Nothing to groom"));
+        // Autopilot-ready framing: proposed phase bodies carry the standard headings.
+        assert!(content.contains("## Context` / `## Steps` / `## Acceptance Criteria"));
+        assert!(content.contains("rdm-autopilot"));
     }
 
     #[test]

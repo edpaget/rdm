@@ -21,7 +21,7 @@ Core is the source of truth. CLI and server are thin layers. New interfaces (TUI
 - **Roadmaps** contain ordered **phases** (not-started | in-progress | needs-review | reviewed | done | blocked | wont-fix)
 - **Tasks** are standalone work items (open | in-progress | needs-review | reviewed | done | wont-fix)
 - Agent integration: `rdm agent-config` generates config for AI agents to interact via CLI
-- **Claude Code skills** (`.claude/skills/`): `rdm-roadmap` (create roadmaps), `rdm-do` (implement phases / work on tasks; finalize → needs-review), `rdm-document` (generate docs from completed roadmaps), `rdm-revise` (act on document reviews requesting changes)
+- **Claude Code skills** (`.claude/skills/`): `rdm-roadmap` (create roadmaps), `rdm-do` (implement phases / work on tasks; finalize → needs-review), `rdm-document` (generate docs from completed roadmaps), `rdm-revise` (act on document reviews requesting changes), `rdm-backlog` (propose-only batched backlog grooming plan)
 
 ## Development Practices
 

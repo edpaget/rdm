@@ -289,7 +289,7 @@ fn agent_config_skills_requires_out() {
 }
 
 #[test]
-fn agent_config_skills_generates_nine_files() {
+fn agent_config_skills_generates_ten_files() {
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("agent-config")
@@ -299,7 +299,7 @@ fn agent_config_skills_generates_nine_files() {
         .arg(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(9));
+        .stdout(predicate::str::contains("Wrote").count(10));
 
     let skills_dir = dir.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -311,6 +311,7 @@ fn agent_config_skills_generates_nine_files() {
     assert!(skills_dir.join("rdm-autopilot/SKILL.md").exists());
     assert!(skills_dir.join("rdm-land/SKILL.md").exists());
     assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-backlog/SKILL.md").exists());
 }
 
 #[test]
@@ -629,7 +630,7 @@ fn agent_config_user_skills_writes_to_claude_skills() {
         .arg("--user")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(9));
+        .stdout(predicate::str::contains("Wrote").count(10));
 
     let skills_dir = home.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -641,6 +642,7 @@ fn agent_config_user_skills_writes_to_claude_skills() {
     assert!(skills_dir.join("rdm-autopilot/SKILL.md").exists());
     assert!(skills_dir.join("rdm-land/SKILL.md").exists());
     assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-backlog/SKILL.md").exists());
 }
 
 // --hooks flag tests
@@ -944,7 +946,7 @@ fn agent_config_pi_user_writes_to_dot_pi_agent() {
 }
 
 #[test]
-fn agent_config_pi_skills_out_writes_nine_files() {
+fn agent_config_pi_skills_out_writes_ten_files() {
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("agent-config")
@@ -954,7 +956,7 @@ fn agent_config_pi_skills_out_writes_nine_files() {
         .arg(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(9));
+        .stdout(predicate::str::contains("Wrote").count(10));
 
     let skills_dir = dir.path().join(".pi/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -966,6 +968,7 @@ fn agent_config_pi_skills_out_writes_nine_files() {
     assert!(skills_dir.join("rdm-autopilot/SKILL.md").exists());
     assert!(skills_dir.join("rdm-land/SKILL.md").exists());
     assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-backlog/SKILL.md").exists());
 }
 
 #[test]
@@ -1048,7 +1051,7 @@ fn agent_config_pi_skills_user_writes_to_pi_agent_skills() {
         .arg("--user")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(9));
+        .stdout(predicate::str::contains("Wrote").count(10));
 
     let skills_dir = home.path().join(".pi/agent/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -1060,6 +1063,7 @@ fn agent_config_pi_skills_user_writes_to_pi_agent_skills() {
     assert!(skills_dir.join("rdm-autopilot/SKILL.md").exists());
     assert!(skills_dir.join("rdm-land/SKILL.md").exists());
     assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-backlog/SKILL.md").exists());
 }
 
 #[test]

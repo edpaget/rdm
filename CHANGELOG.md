@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `rdm-backlog` Claude Code skill: a propose-only backlog grooming pass. It
+  reads `rdm backlog report` and emits a single batched, human-reviewable plan
+  that pairs each proposed consolidate / merge / retire / archive action with the
+  literal `rdm` command that would carry it out and a one-line rationale, framing
+  proposed roadmaps to be `/rdm-autopilot`-ready. It performs zero mutations
+  (no create/update/merge/archive, no staging, no `rdm commit`), handles the
+  empty-backlog case, and surfaces ambiguous or destructive-if-wrong decisions as
+  open questions rather than acting on them. `rdm agent-config claude --skills`
+  and `rdm agent-config pi --skills` now emit 10 skill files instead of 9; the
+  `--mcp` variant is unchanged at 9 pending a dedicated `rdm_backlog_report` MCP
+  tool.
 - rdm now emits a warning to stderr when the global config (~/.config/rdm/config.toml) or repo config (rdm.toml) contains invalid TOML, instead of silently falling back to defaults.
 - New `[models]` config table schema (`small`/`medium`/`large` model ids,
   `review_floor`, and per-step `[models.steps]` overrides) in `rdm.toml` and
