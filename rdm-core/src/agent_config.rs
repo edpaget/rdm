@@ -257,7 +257,7 @@ pub struct SkillOptions {
 ///     principles_file: None,
 ///     mcp: false,
 /// });
-/// assert_eq!(skills.len(), 10);
+/// assert_eq!(skills.len(), 11);
 /// assert!(skills[0].content.contains("--project myproj"));
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
@@ -274,6 +274,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_autopilot_mcp(&proj, principles_note.as_deref()),
             skill_land_mcp(&proj, principles_note.as_deref()),
             skill_revise_mcp(&proj, principles_note.as_deref()),
+            skill_plan_review_mcp(&proj, principles_note.as_deref()),
         ]
     } else {
         let proj_flag = proj_flag_str(opts.project.as_deref());
@@ -287,6 +288,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_autopilot(&proj_flag, principles_note.as_deref()),
             skill_land(&proj_flag, principles_note.as_deref()),
             skill_revise(&proj_flag, principles_note.as_deref()),
+            skill_plan_review(&proj_flag, principles_note.as_deref()),
             skill_backlog(&proj_flag, principles_note.as_deref()),
         ]
     }
@@ -423,6 +425,18 @@ fn skill_backlog(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
         relative_path: "rdm-backlog/SKILL.md",
         content: render_skill(
             include_str!("templates/skill-backlog-cli.md"),
+            "{proj_flag}",
+            proj_flag,
+            principles_note,
+        ),
+    }
+}
+
+fn skill_plan_review(proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-plan-review/SKILL.md",
+        content: render_skill(
+            include_str!("templates/skill-plan-review-cli.md"),
             "{proj_flag}",
             proj_flag,
             principles_note,
@@ -655,6 +669,27 @@ fn skill_revise_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_review_complete", "rdm_review_complete"),
                 ("t_phase_update", "rdm_phase_update"),
                 ("t_task_update", "rdm_task_update"),
+                ("t_roadmap_update", "rdm_roadmap_update"),
+                ("t_commit", "rdm_commit"),
+            ],
+        ),
+    }
+}
+
+fn skill_plan_review_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
+    SkillFile {
+        relative_path: "rdm-plan-review/SKILL.md",
+        content: render_mcp_skill(
+            include_str!("templates/skill-plan-review-mcp.md"),
+            proj,
+            principles_note,
+            &[
+                ("t_phase_show", "rdm_phase_show"),
+                ("t_phase_update", "rdm_phase_update"),
+                ("t_task_show", "rdm_task_show"),
+                ("t_task_update", "rdm_task_update"),
+                ("t_task_create", "rdm_task_create"),
+                ("t_roadmap_show", "rdm_roadmap_show"),
                 ("t_roadmap_update", "rdm_roadmap_update"),
                 ("t_commit", "rdm_commit"),
             ],
@@ -1280,13 +1315,13 @@ mod tests {
     // --- Skill generation tests ---
 
     #[test]
-    fn generate_skills_returns_ten_files() {
+    fn generate_skills_returns_eleven_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
-        assert_eq!(skills.len(), 10);
+        assert_eq!(skills.len(), 11);
     }
 
     #[test]
@@ -1305,7 +1340,8 @@ mod tests {
         assert_eq!(skills[6].relative_path, "rdm-autopilot/SKILL.md");
         assert_eq!(skills[7].relative_path, "rdm-land/SKILL.md");
         assert_eq!(skills[8].relative_path, "rdm-revise/SKILL.md");
-        assert_eq!(skills[9].relative_path, "rdm-backlog/SKILL.md");
+        assert_eq!(skills[9].relative_path, "rdm-plan-review/SKILL.md");
+        assert_eq!(skills[10].relative_path, "rdm-backlog/SKILL.md");
     }
 
     #[test]
@@ -1315,7 +1351,7 @@ mod tests {
             principles_file: None,
             mcp: false,
         });
-        let content = &skills[9].content;
+        let content = &skills[10].content;
         assert!(content.contains("name: rdm-backlog"));
         assert!(content.contains("$ARGUMENTS"));
         // Read-and-propose: runs backlog report, mutates nothing.
@@ -1418,6 +1454,289 @@ mod tests {
         assert!(frontmatter.contains("mcp__rdm__rdm_review_requests"));
         assert!(frontmatter.contains("mcp__rdm__rdm_review_address_comment"));
         assert!(frontmatter.contains("mcp__rdm__rdm_task_update"));
+    }
+
+    // --- rdm-plan-review skill tests ---
+
+    #[test]
+    fn skill_plan_review_has_correct_name() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        assert!(skills[9].content.contains("name: rdm-plan-review"));
+    }
+
+    #[test]
+    fn skill_plan_review_has_agent_tool() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        assert!(skills[9].content.contains("Agent"));
+    }
+
+    #[test]
+    fn skill_plan_review_contains_arguments_variable() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        assert!(skills[9].content.contains("$ARGUMENTS"));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_has_correct_name() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(skills[9].content.contains("name: rdm-plan-review"));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_contains_arguments_variable() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        assert!(skills[9].content.contains("$ARGUMENTS"));
+    }
+
+    #[test]
+    fn skill_plan_review_covers_three_dimensions() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("Coherence"));
+        assert!(content.contains("Architectural"));
+        assert!(content.contains("Unit-of-work"));
+        // Unit-of-work reviewer is scoped to phases only.
+        assert!(content.contains("phases only"));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_covers_three_dimensions() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("Coherence"));
+        assert!(content.contains("Architectural"));
+        assert!(content.contains("Unit-of-work"));
+        assert!(content.contains("phases only"));
+    }
+
+    #[test]
+    fn skill_plan_review_architecture_reviewer_falls_back_to_claude_md() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("CLAUDE.md"));
+        assert!(content.contains("AGENTS.md"));
+    }
+
+    #[test]
+    fn skill_plan_review_dispatches_read_only_reviewers() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("read-only"));
+        assert!(content.contains("parallel"));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_dispatches_read_only_reviewers() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("read-only"));
+        assert!(content.contains("parallel"));
+    }
+
+    #[test]
+    fn skill_plan_review_consolidates_single_verdict() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("**PASS WITH CONCERNS**"));
+        assert!(content.contains("**REWORK**"));
+        // Distinctly-bounded PASS token (not merely a substring of PASS WITH CONCERNS).
+        assert!(content.contains("**PASS**"));
+        assert!(content.contains("the first matching rule wins"));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_consolidates_single_verdict() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("**PASS WITH CONCERNS**"));
+        assert!(content.contains("**REWORK**"));
+        assert!(content.contains("**PASS**"));
+        assert!(content.contains("the first matching rule wins"));
+    }
+
+    #[test]
+    fn skill_plan_review_categorizes_findings() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("Small"));
+        assert!(content.contains("Large"));
+        // Large findings are filed as tasks; small findings are applied via
+        // the plan document's own update command.
+        assert!(content.contains("rdm task create"));
+        assert!(content.contains("rdm phase update"));
+        assert!(content.contains("--body"));
+    }
+
+    #[test]
+    fn skill_plan_review_orchestrator_applies_fixes_not_subagents() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("never edits"));
+        assert!(content.contains("orchestrator"));
+        assert!(content.contains("only the orchestrator edits"));
+    }
+
+    #[test]
+    fn skill_plan_review_clears_tag_on_pass() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("needs-plan-review"));
+        assert!(content.contains("--format json"));
+        assert!(content.contains("--tags"));
+        assert!(content.contains("PASS or PASS WITH CONCERNS"));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_clears_tag_on_pass() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("needs-plan-review"));
+        assert!(content.contains("PASS or PASS WITH CONCERNS"));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_uses_array_tags_not_string() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[9].content;
+        // The MCP tags parameter is a JSON array (Option<Vec<String>>), never
+        // the CLI's comma-joined string convention.
+        assert!(content.contains("tags: [\"<remaining-tag-1>\", \"<remaining-tag-2>\"]"));
+        assert!(content.contains("tags: []"));
+        assert!(!content.contains("tags: \"<comma-joined-remaining-tags>\""));
+        assert!(!content.contains("tags: \"\""));
+    }
+
+    #[test]
+    fn skill_plan_review_implementation_plan_mode_skips_gate() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("--implementation-plan"));
+        assert!(content.contains("no tag-gate step"));
+        assert!(content.contains("skip step 5 entirely for this mode"));
+        assert!(content.contains("Skip this step entirely in `--implementation-plan` mode"));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_implementation_plan_mode_skips_gate() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("--implementation-plan"));
+        assert!(content.contains("no tag-gate step"));
+        assert!(content.contains("skip step 5 entirely for this mode"));
+        assert!(content.contains("Skip this step entirely in `--implementation-plan` mode"));
+    }
+
+    #[test]
+    fn skill_plan_review_leaves_tag_on_rework() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains(
+            "**REWORK**: do **not** call `update --tags`. `needs-plan-review` is left unchanged in place."
+        ));
+    }
+
+    #[test]
+    fn mcp_skill_plan_review_leaves_tag_on_rework() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains(
+            "**REWORK**: do **not** call the update tool with `tags`. `needs-plan-review` is left unchanged in place."
+        ));
+    }
+
+    #[test]
+    fn skill_plan_review_explains_tags_replace_semantics() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[9].content;
+        assert!(content.contains("`--tags` replaces the whole list"));
     }
 
     #[test]
@@ -2326,13 +2645,13 @@ mod tests {
     // --- MCP skill generation tests ---
 
     #[test]
-    fn mcp_skills_returns_nine_files() {
+    fn mcp_skills_returns_ten_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: true,
         });
-        assert_eq!(skills.len(), 9);
+        assert_eq!(skills.len(), 10);
     }
 
     #[test]
@@ -2351,6 +2670,7 @@ mod tests {
         assert_eq!(skills[6].relative_path, "rdm-autopilot/SKILL.md");
         assert_eq!(skills[7].relative_path, "rdm-land/SKILL.md");
         assert_eq!(skills[8].relative_path, "rdm-revise/SKILL.md");
+        assert_eq!(skills[9].relative_path, "rdm-plan-review/SKILL.md");
     }
 
     #[test]

@@ -18,7 +18,7 @@ structured outcome. The loop never runs those skills directly with the `Skill`
 tool — see [Context isolation](#context-isolation) for why.
 
 The skill is emitted by `rdm agent-config --skills` in both CLI and MCP
-variants, alongside the other seven skills:
+variants, alongside the other generated skills:
 
 ```bash
 rdm agent-config claude --skills --project <proj> --out .

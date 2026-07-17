@@ -299,7 +299,7 @@ fn agent_config_skills_generates_ten_files() {
         .arg(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(10));
+        .stdout(predicate::str::contains("Wrote").count(11));
 
     let skills_dir = dir.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -311,6 +311,7 @@ fn agent_config_skills_generates_ten_files() {
     assert!(skills_dir.join("rdm-autopilot/SKILL.md").exists());
     assert!(skills_dir.join("rdm-land/SKILL.md").exists());
     assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-plan-review/SKILL.md").exists());
     assert!(skills_dir.join("rdm-backlog/SKILL.md").exists());
 }
 
@@ -335,6 +336,7 @@ fn agent_config_skills_have_valid_frontmatter() {
         "rdm-dispatch-phase",
         "rdm-autopilot",
         "rdm-land",
+        "rdm-plan-review",
     ] {
         let path = dir.path().join(format!(".claude/skills/{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
@@ -373,6 +375,7 @@ fn agent_config_skills_embed_project_flag() {
         "rdm-dispatch-phase",
         "rdm-autopilot",
         "rdm-land",
+        "rdm-plan-review",
     ] {
         let path = dir.path().join(format!(".claude/skills/{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
@@ -521,6 +524,13 @@ fn agent_config_mcp_skills_writes_skills_and_mcp_json() {
     assert!(skill_content.contains("mcp__rdm__"));
     assert!(!skill_content.contains("  - Bash"));
 
+    // The new plan-review skill is also written, with MCP tool references and no Bash.
+    let plan_review_content =
+        std::fs::read_to_string(out.path().join(".claude/skills/rdm-plan-review/SKILL.md"))
+            .unwrap();
+    assert!(plan_review_content.contains("mcp__rdm__"));
+    assert!(!plan_review_content.contains("  - Bash"));
+
     // Should also write .mcp.json at the project root, not under .claude/skills/
     let mcp_path = out.path().join(".mcp.json");
     assert!(mcp_path.exists());
@@ -630,7 +640,7 @@ fn agent_config_user_skills_writes_to_claude_skills() {
         .arg("--user")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(10));
+        .stdout(predicate::str::contains("Wrote").count(11));
 
     let skills_dir = home.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -642,6 +652,7 @@ fn agent_config_user_skills_writes_to_claude_skills() {
     assert!(skills_dir.join("rdm-autopilot/SKILL.md").exists());
     assert!(skills_dir.join("rdm-land/SKILL.md").exists());
     assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-plan-review/SKILL.md").exists());
     assert!(skills_dir.join("rdm-backlog/SKILL.md").exists());
 }
 
@@ -956,7 +967,7 @@ fn agent_config_pi_skills_out_writes_ten_files() {
         .arg(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(10));
+        .stdout(predicate::str::contains("Wrote").count(11));
 
     let skills_dir = dir.path().join(".pi/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -968,6 +979,7 @@ fn agent_config_pi_skills_out_writes_ten_files() {
     assert!(skills_dir.join("rdm-autopilot/SKILL.md").exists());
     assert!(skills_dir.join("rdm-land/SKILL.md").exists());
     assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-plan-review/SKILL.md").exists());
     assert!(skills_dir.join("rdm-backlog/SKILL.md").exists());
 }
 
@@ -992,6 +1004,7 @@ fn agent_config_pi_skills_have_valid_frontmatter() {
         "rdm-dispatch-phase",
         "rdm-autopilot",
         "rdm-land",
+        "rdm-plan-review",
     ] {
         let path = dir.path().join(format!(".pi/skills/{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1030,6 +1043,7 @@ fn agent_config_pi_skills_embed_project_flag() {
         "rdm-dispatch-phase",
         "rdm-autopilot",
         "rdm-land",
+        "rdm-plan-review",
     ] {
         let path = dir.path().join(format!(".pi/skills/{name}/SKILL.md"));
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1051,7 +1065,7 @@ fn agent_config_pi_skills_user_writes_to_pi_agent_skills() {
         .arg("--user")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(10));
+        .stdout(predicate::str::contains("Wrote").count(11));
 
     let skills_dir = home.path().join(".pi/agent/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -1063,6 +1077,7 @@ fn agent_config_pi_skills_user_writes_to_pi_agent_skills() {
     assert!(skills_dir.join("rdm-autopilot/SKILL.md").exists());
     assert!(skills_dir.join("rdm-land/SKILL.md").exists());
     assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-plan-review/SKILL.md").exists());
     assert!(skills_dir.join("rdm-backlog/SKILL.md").exists());
 }
 
