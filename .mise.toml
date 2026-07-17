@@ -8,6 +8,9 @@ hk = "1.45"
 pkl = "latest"
 shellcheck = "latest"
 shfmt = "latest"
+# node hosts the dogfood-only workflow-review harness (scripts/verify-workflow-review.sh).
+# Dev/CI toolchain only — never a runtime or crate dependency, not shipped in the binary.
+node = "24"
 
 [env]
 RUSTFLAGS = "-D warnings"
