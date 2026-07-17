@@ -435,6 +435,7 @@ mod tests {
                     commit: None,
                     review_sha: None,
                     review_branch: None,
+                    close_reason: None,
                 },
                 body: body.to_string(),
             };

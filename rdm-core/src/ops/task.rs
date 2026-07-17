@@ -5,7 +5,7 @@ use chrono::Local;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus, Priority, Roadmap, Task, TaskStatus, TaskStatusFilter};
-use crate::ops::update::{BodyUpdate, TagsUpdate, TitleUpdate};
+use crate::ops::update::{BodyUpdate, ReasonUpdate, TagsUpdate, TitleUpdate};
 use crate::store::{DirEntryKind, Store};
 
 /// Criteria for filtering a list of tasks.
@@ -138,6 +138,7 @@ pub fn create_task(store: &mut impl Store, req: CreateTask<'_>) -> Result<Docume
             commit: None,
             review_sha: None,
             review_branch: None,
+            close_reason: None,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -439,10 +440,293 @@ pub fn consolidate_task_into_roadmap(
     Ok((phase_doc, updated_task))
 }
 
+/// Sets (or clears) a task's close reason — the retire/supersede note recorded
+/// when a task is closed.
+///
+/// Kept separate from [`update_task`] (like [`set_phase_blocked_reason`]) so the
+/// status/priority/tags/body signature stays untouched. The reason follows the
+/// keep/set/clear protocol via [`ReasonUpdate`]: it is preserved across status
+/// transitions unless explicitly cleared, so reopening a retired task never
+/// loses the record of why it was closed. This function does not itself change
+/// the task status — callers set the status via [`update_task`] and record the
+/// reason here in the same mutation.
+///
+/// [`set_phase_blocked_reason`]: super::phase::set_phase_blocked_reason
+///
+/// # Errors
+///
+/// Returns [`Error::TaskNotFound`] if the task file doesn't exist,
+/// [`Error::Io`] if reading or writing fails, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the existing
+/// task file has invalid frontmatter.
+pub fn set_task_close_reason(
+    store: &mut impl Store,
+    project: &str,
+    slug: &str,
+    reason: ReasonUpdate,
+) -> Result<Document<Task>> {
+    let path = crate::paths::task_path(project, slug);
+    if !store.exists(&path) {
+        return Err(Error::TaskNotFound(slug.to_string()));
+    }
+
+    let mut doc = crate::io::load_task(store, project, slug)?;
+    reason.apply(&mut doc.frontmatter.close_reason);
+    crate::io::write_task(store, project, slug, &doc)?;
+    Ok(doc)
+}
+
+/// Merges one or more source tasks into a survivor task, then retires the
+/// sources with a superseded-by pointer.
+///
+/// This folds duplicate work items into a single canonical task: the survivor
+/// unions in each source's tags, gains an attributed copy of each source body
+/// under a `## Merged from task <slug>` heading (in `--from` order), and each
+/// source is closed [`TaskStatus::WontFix`] with its `close_reason` set to the
+/// machine string `superseded by task/<survivor>` and a
+/// `Superseded by task <survivor>.` note appended to its body.
+///
+/// The operation validates before mutating (like
+/// [`consolidate_task_into_roadmap`]): sources are de-duplicated preserving
+/// first-seen order, and the survivor plus every source must exist before any
+/// write happens, so a rejected call never leaves partial mutation behind.
+///
+/// It is idempotent. A source that is already terminal **and** already carries
+/// `close_reason == "superseded by task/<survivor>"` is skipped entirely — no
+/// tag re-union, no survivor body re-append, no re-close — so re-running the
+/// same merge is a no-op. A source superseded by a *different* survivor is not
+/// skipped: it is merged and re-closed with the new pointer.
+///
+/// Returns the updated survivor document and the closed source documents (only
+/// those actually folded this call, in encounter order).
+///
+/// # Errors
+///
+/// Returns [`Error::TaskMergeNoSources`] if `sources` is empty (after dedupe),
+/// [`Error::TaskMergeIntoSelf`] if `survivor` appears among `sources`,
+/// [`Error::TaskNotFound`] if the survivor or any source doesn't exist,
+/// [`Error::Io`] if reading or writing fails, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a task file has
+/// invalid frontmatter.
+pub fn merge_tasks(
+    store: &mut impl Store,
+    project: &str,
+    survivor: &str,
+    sources: &[String],
+) -> Result<(Document<Task>, Vec<Document<Task>>)> {
+    // 1. Dedupe sources, preserving first-seen order.
+    let mut deduped: Vec<String> = Vec::new();
+    for s in sources {
+        if !deduped.iter().any(|d| d == s) {
+            deduped.push(s.clone());
+        }
+    }
+
+    // 2. Empty → error.
+    if deduped.is_empty() {
+        return Err(Error::TaskMergeNoSources);
+    }
+
+    // 3. Self-merge → error.
+    if deduped.iter().any(|s| s == survivor) {
+        return Err(Error::TaskMergeIntoSelf(survivor.to_string()));
+    }
+
+    // 4. Pre-flight existence: survivor first, then every source. No writes
+    //    until all pass.
+    if !store.exists(&crate::paths::task_path(project, survivor)) {
+        return Err(Error::TaskNotFound(survivor.to_string()));
+    }
+    for s in &deduped {
+        if !store.exists(&crate::paths::task_path(project, s)) {
+            return Err(Error::TaskNotFound(s.clone()));
+        }
+    }
+
+    // 5. Load survivor; seed the tag and body accumulators from it.
+    let survivor_doc = crate::io::load_task(store, project, survivor)?;
+    let mut tags: Vec<String> = survivor_doc.frontmatter.tags.clone().unwrap_or_default();
+    let mut body = survivor_doc.body.clone();
+
+    // The machine string that marks a source as already folded into *this*
+    // survivor — both the close_reason value and the idempotency key.
+    let superseded_reason = format!("superseded by task/{survivor}");
+
+    let mut closed: Vec<Document<Task>> = Vec::new();
+
+    // 6. Fold each source in encounter order.
+    for source in &deduped {
+        let source_doc = crate::io::load_task(store, project, source)?;
+
+        // Idempotency: a source already terminal and already superseded by this
+        // exact survivor is skipped entirely.
+        if source_doc.frontmatter.status.is_terminal()
+            && source_doc.frontmatter.close_reason.as_deref() == Some(superseded_reason.as_str())
+        {
+            continue;
+        }
+
+        // Union the source's tags (append not-already-present, preserve order).
+        if let Some(source_tags) = &source_doc.frontmatter.tags {
+            for t in source_tags {
+                if !tags.iter().any(|existing| existing == t) {
+                    tags.push(t.clone());
+                }
+            }
+        }
+
+        // Append the attributed source body under a heading.
+        if source_doc.body.trim().is_empty() {
+            body.push_str(&format!("\n\n## Merged from task `{source}`"));
+        } else {
+            body.push_str(&format!(
+                "\n\n## Merged from task `{source}`\n\n{}",
+                source_doc.body
+            ));
+        }
+
+        // Close the source: WontFix, keep its tags, append the superseded note
+        // to its body, then stamp the close_reason pointer.
+        let source_pointer_body =
+            format!("{}\n\nSuperseded by task `{survivor}`.", source_doc.body);
+        update_task(
+            store,
+            project,
+            source,
+            Some(TaskStatus::WontFix),
+            None,
+            TagsUpdate::Keep,
+            BodyUpdate::Set(source_pointer_body),
+            None,
+            None,
+            None,
+            TitleUpdate::Keep,
+        )?;
+        let closed_doc = set_task_close_reason(
+            store,
+            project,
+            source,
+            ReasonUpdate::Set(superseded_reason.clone()),
+        )?;
+        closed.push(closed_doc);
+    }
+
+    // 7. Write the survivor once with the unioned tags and accumulated body.
+    let survivor_updated = update_task(
+        store,
+        project,
+        survivor,
+        None,
+        None,
+        TagsUpdate::Set(tags),
+        BodyUpdate::Set(body),
+        None,
+        None,
+        None,
+        TitleUpdate::Keep,
+    )?;
+
+    // 8. Return survivor + the sources folded this call.
+    Ok((survivor_updated, closed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::MemoryStore;
     use chrono::NaiveDate;
+
+    fn setup() -> MemoryStore {
+        let mut store = MemoryStore::new();
+        crate::ops::init::init(&mut store).unwrap();
+        crate::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
+        store
+    }
+
+    fn seed(store: &mut MemoryStore, slug: &str, tags: &[&str], body: &str) {
+        create_task(
+            store,
+            CreateTask {
+                project: "demo",
+                slug,
+                title: slug,
+                priority: Priority::Medium,
+                tags: if tags.is_empty() {
+                    None
+                } else {
+                    Some(tags.iter().map(|s| s.to_string()).collect())
+                },
+                body: Some(body),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn merge_dedups_overlapping_tags() {
+        let mut store = setup();
+        seed(&mut store, "survivor", &["a", "b"], "S.");
+        seed(&mut store, "dup", &["b", "c"], "D.");
+        let (survivor, _) =
+            merge_tasks(&mut store, "demo", "survivor", &["dup".to_string()]).unwrap();
+        // Union preserves survivor order first, appends only new tags.
+        assert_eq!(
+            survivor.frontmatter.tags,
+            Some(vec!["a".to_string(), "b".to_string(), "c".to_string()])
+        );
+    }
+
+    #[test]
+    fn merge_dedups_repeated_from_slugs() {
+        let mut store = setup();
+        seed(&mut store, "survivor", &[], "S.");
+        seed(&mut store, "dup", &["x"], "D.");
+        // The same source named twice folds in exactly once.
+        let (survivor, closed) = merge_tasks(
+            &mut store,
+            "demo",
+            "survivor",
+            &["dup".to_string(), "dup".to_string()],
+        )
+        .unwrap();
+        assert_eq!(closed.len(), 1);
+        assert_eq!(
+            survivor.body.matches("## Merged from task `dup`").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn set_close_reason_arms() {
+        let mut store = setup();
+        seed(&mut store, "t", &[], "Body.");
+
+        // Set records a reason.
+        let doc = set_task_close_reason(
+            &mut store,
+            "demo",
+            "t",
+            ReasonUpdate::Set("retired".to_string()),
+        )
+        .unwrap();
+        assert_eq!(doc.frontmatter.close_reason.as_deref(), Some("retired"));
+
+        // Keep leaves it untouched.
+        let doc = set_task_close_reason(&mut store, "demo", "t", ReasonUpdate::Keep).unwrap();
+        assert_eq!(doc.frontmatter.close_reason.as_deref(), Some("retired"));
+
+        // Clear drops it.
+        let doc = set_task_close_reason(&mut store, "demo", "t", ReasonUpdate::Clear).unwrap();
+        assert_eq!(doc.frontmatter.close_reason, None);
+    }
+
+    #[test]
+    fn set_close_reason_unknown_task_errors() {
+        let mut store = setup();
+        let err =
+            set_task_close_reason(&mut store, "demo", "ghost", ReasonUpdate::Clear).unwrap_err();
+        assert!(matches!(err, Error::TaskNotFound(ref s) if s == "ghost"));
+    }
 
     fn task(status: TaskStatus, priority: Priority, tags: &[&str]) -> Task {
         Task {
@@ -460,6 +744,7 @@ mod tests {
             commit: None,
             review_sha: None,
             review_branch: None,
+            close_reason: None,
         }
     }
 

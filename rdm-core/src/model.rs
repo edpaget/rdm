@@ -479,6 +479,15 @@ pub struct Task {
     /// firing checkout's branch) rather than by SHA reachability alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_branch: Option<String>,
+    /// Reason the task was closed (a retire/supersede note), if any.
+    ///
+    /// Recorded when a task is retired — for example marked
+    /// [`TaskStatus::WontFix`] via `task update --reason`, or closed as a merge
+    /// source with a `superseded by task/<survivor>` pointer. Mirrors
+    /// [`Phase::blocked_reason`]: it is preserved across status changes until
+    /// explicitly cleared, so reopening a task never loses why it was retired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_reason: Option<String>,
 }
 
 /// Frontmatter for a roadmap file.
@@ -1381,6 +1390,41 @@ created: 2026-01-01
 "#;
         let task: Task = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(task.tags, None);
+    }
+
+    #[test]
+    fn task_round_trips_close_reason() {
+        // Some(reason) round-trips through YAML.
+        let task = Task {
+            project: "fbm".to_string(),
+            title: "Retired task".to_string(),
+            status: TaskStatus::WontFix,
+            priority: Priority::Low,
+            created: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            tags: None,
+            completed: None,
+            commit: None,
+            review_sha: None,
+            review_branch: None,
+            close_reason: Some("superseded by task/survivor".to_string()),
+        };
+        let yaml = serde_yaml::to_string(&task).unwrap();
+        assert!(yaml.contains("close_reason: superseded by task/survivor"));
+        let parsed: Task = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            parsed.close_reason.as_deref(),
+            Some("superseded by task/survivor")
+        );
+
+        // None is omitted from the serialized form.
+        let task = Task {
+            close_reason: None,
+            ..task
+        };
+        let yaml = serde_yaml::to_string(&task).unwrap();
+        assert!(!yaml.contains("close_reason"));
+        let parsed: Task = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.close_reason, None);
     }
 
     #[test]

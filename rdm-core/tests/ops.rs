@@ -84,6 +84,7 @@ fn write_and_load_task() {
             commit: None,
             review_sha: None,
             review_branch: None,
+            close_reason: None,
         },
         body: "Details.\n".to_string(),
     };
@@ -3061,6 +3062,7 @@ fn promote_task_to_roadmap() {
             commit: None,
             review_sha: None,
             review_branch: None,
+            close_reason: None,
         },
         body: "Task body content.\n".to_string(),
     };
@@ -3168,6 +3170,7 @@ fn consolidate_appends_phase_with_number_body_tags_and_provenance() {
             commit: None,
             review_sha: None,
             review_branch: None,
+            close_reason: None,
         },
         body: "Original task body.".to_string(),
     };
@@ -3401,6 +3404,7 @@ fn consolidate_already_terminal_task_errors() {
                 commit: None,
                 review_sha: None,
                 review_branch: None,
+                close_reason: None,
             },
             body: "Body.".to_string(),
         };
@@ -7967,5 +7971,297 @@ fn generate_index_addressed_or_wont_fix_comments_are_not_open() {
     assert!(
         content.contains("| fix-login | medium | open | 1 | 1 |"),
         "only the remaining open comment should count, got:\n{content}"
+    );
+}
+
+// -- merge_tasks / set_task_close_reason tests --
+
+/// Seeds a task in project `fbm` with the given tags and body via the create op.
+fn seed_merge_task(store: &mut MemoryStore, slug: &str, tags: &[&str], body: &str) {
+    rdm_core::ops::task::create_task(
+        store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug,
+            title: slug,
+            priority: Priority::Medium,
+            tags: if tags.is_empty() {
+                None
+            } else {
+                Some(tags.iter().map(|s| s.to_string()).collect())
+            },
+            body: Some(body),
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn merge_unions_tags_appends_bodies_and_closes_sources() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "survivor", &["bug"], "Survivor body.");
+    seed_merge_task(&mut store, "dup-a", &["bug", "ui"], "Dup A body.");
+    seed_merge_task(&mut store, "dup-b", &["backend"], "Dup B body.");
+
+    let (survivor, closed) = rdm_core::ops::task::merge_tasks(
+        &mut store,
+        "fbm",
+        "survivor",
+        &["dup-a".to_string(), "dup-b".to_string()],
+    )
+    .unwrap();
+
+    // Tags union survivor-first, then encounter order, no duplicates.
+    assert_eq!(
+        survivor.frontmatter.tags,
+        Some(vec![
+            "bug".to_string(),
+            "ui".to_string(),
+            "backend".to_string()
+        ])
+    );
+    // Attributed bodies appended in --from order.
+    assert!(survivor.frontmatter.status == TaskStatus::Open);
+    assert!(survivor.body.contains("Survivor body."));
+    assert!(survivor.body.contains("## Merged from task `dup-a`"));
+    assert!(survivor.body.contains("Dup A body."));
+    assert!(survivor.body.contains("## Merged from task `dup-b`"));
+    assert!(survivor.body.contains("Dup B body."));
+    let a_pos = survivor.body.find("Merged from task `dup-a`").unwrap();
+    let b_pos = survivor.body.find("Merged from task `dup-b`").unwrap();
+    assert!(a_pos < b_pos, "sources appended in --from order");
+
+    // Sources closed wont-fix with superseded pointer + close_reason.
+    assert_eq!(closed.len(), 2);
+    for (doc, slug) in closed.iter().zip(["dup-a", "dup-b"]) {
+        assert_eq!(doc.frontmatter.status, TaskStatus::WontFix);
+        assert_eq!(
+            doc.frontmatter.close_reason.as_deref(),
+            Some("superseded by task/survivor")
+        );
+        assert!(doc.body.contains("Superseded by task `survivor`."));
+        let reloaded = rdm_core::io::load_task(&store, "fbm", slug).unwrap();
+        assert_eq!(reloaded.frontmatter.status, TaskStatus::WontFix);
+        assert_eq!(
+            reloaded.frontmatter.close_reason.as_deref(),
+            Some("superseded by task/survivor")
+        );
+    }
+}
+
+#[test]
+fn merge_single_source() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "survivor", &[], "Survivor.");
+    seed_merge_task(&mut store, "dup", &["x"], "Dup.");
+
+    let (survivor, closed) =
+        rdm_core::ops::task::merge_tasks(&mut store, "fbm", "survivor", &["dup".to_string()])
+            .unwrap();
+    assert_eq!(survivor.frontmatter.tags, Some(vec!["x".to_string()]));
+    assert_eq!(closed.len(), 1);
+    assert!(survivor.body.contains("## Merged from task `dup`"));
+}
+
+#[test]
+fn merge_empty_source_body_appends_heading_only() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "survivor", &[], "Survivor.");
+    seed_merge_task(&mut store, "empty", &[], "");
+
+    let (survivor, _) =
+        rdm_core::ops::task::merge_tasks(&mut store, "fbm", "survivor", &["empty".to_string()])
+            .unwrap();
+    assert!(survivor.body.contains("## Merged from task `empty`"));
+    // Only the heading, no trailing body content section for the empty source.
+    let after = survivor
+        .body
+        .split("## Merged from task `empty`")
+        .nth(1)
+        .unwrap();
+    assert!(after.trim().is_empty());
+}
+
+#[test]
+fn update_wont_fix_with_reason_persists() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "retire-me", &[], "Body.");
+
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "retire-me",
+        Some(TaskStatus::WontFix),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    let doc = rdm_core::ops::task::set_task_close_reason(
+        &mut store,
+        "fbm",
+        "retire-me",
+        rdm_core::ops::ReasonUpdate::Set("obsolete after redesign".to_string()),
+    )
+    .unwrap();
+    assert_eq!(
+        doc.frontmatter.close_reason.as_deref(),
+        Some("obsolete after redesign")
+    );
+
+    let reloaded = rdm_core::io::load_task(&store, "fbm", "retire-me").unwrap();
+    assert_eq!(reloaded.frontmatter.status, TaskStatus::WontFix);
+    assert_eq!(
+        reloaded.frontmatter.close_reason.as_deref(),
+        Some("obsolete after redesign")
+    );
+}
+
+#[test]
+fn merge_into_self_errors() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "survivor", &[], "Body.");
+    seed_merge_task(&mut store, "dup", &[], "Body.");
+    let err = rdm_core::ops::task::merge_tasks(
+        &mut store,
+        "fbm",
+        "survivor",
+        &["dup".to_string(), "survivor".to_string()],
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::TaskMergeIntoSelf(ref s) if s == "survivor"));
+}
+
+#[test]
+fn merge_unknown_survivor_errors() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "dup", &[], "Body.");
+    let err = rdm_core::ops::task::merge_tasks(&mut store, "fbm", "ghost", &["dup".to_string()])
+        .unwrap_err();
+    assert!(matches!(err, Error::TaskNotFound(ref s) if s == "ghost"));
+}
+
+#[test]
+fn merge_unknown_source_errors() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "survivor", &[], "Body.");
+    let err =
+        rdm_core::ops::task::merge_tasks(&mut store, "fbm", "survivor", &["ghost".to_string()])
+            .unwrap_err();
+    assert!(matches!(err, Error::TaskNotFound(ref s) if s == "ghost"));
+    // Validate-before-mutate: the survivor is untouched.
+    let survivor = rdm_core::io::load_task(&store, "fbm", "survivor").unwrap();
+    assert_eq!(survivor.frontmatter.status, TaskStatus::Open);
+}
+
+#[test]
+fn merge_empty_sources_errors() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "survivor", &[], "Body.");
+    let err = rdm_core::ops::task::merge_tasks(&mut store, "fbm", "survivor", &[]).unwrap_err();
+    assert!(matches!(err, Error::TaskMergeNoSources));
+}
+
+#[test]
+fn merged_sources_leave_active_list() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "survivor", &[], "Survivor.");
+    seed_merge_task(&mut store, "dup", &[], "Dup.");
+    rdm_core::ops::task::merge_tasks(&mut store, "fbm", "survivor", &["dup".to_string()]).unwrap();
+
+    let all = rdm_core::ops::task::list_tasks(&store, "fbm").unwrap();
+    let active =
+        rdm_core::ops::task::filter_tasks(all.clone(), &rdm_core::ops::task::TaskFilter::default());
+    let active_slugs: Vec<&str> = active.iter().map(|(s, _)| s.as_str()).collect();
+    assert!(active_slugs.contains(&"survivor"));
+    assert!(!active_slugs.contains(&"dup"));
+    // But the retired source remains inspectable with provenance intact.
+    let dup = rdm_core::io::load_task(&store, "fbm", "dup").unwrap();
+    assert_eq!(dup.frontmatter.status, TaskStatus::WontFix);
+    assert_eq!(
+        dup.frontmatter.close_reason.as_deref(),
+        Some("superseded by task/survivor")
+    );
+}
+
+#[test]
+fn merge_is_idempotent() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "survivor", &["bug"], "Survivor.");
+    seed_merge_task(&mut store, "dup", &["ui"], "Dup.");
+
+    rdm_core::ops::task::merge_tasks(&mut store, "fbm", "survivor", &["dup".to_string()]).unwrap();
+    let after_first = rdm_core::io::load_task(&store, "fbm", "survivor").unwrap();
+
+    // Re-running the same merge is a no-op: no re-append, no tag re-union.
+    let (survivor, closed) =
+        rdm_core::ops::task::merge_tasks(&mut store, "fbm", "survivor", &["dup".to_string()])
+            .unwrap();
+    assert!(closed.is_empty(), "already-merged source is skipped");
+    assert_eq!(survivor.body, after_first.body);
+    assert_eq!(survivor.frontmatter.tags, after_first.frontmatter.tags);
+    assert_eq!(
+        survivor.body.matches("## Merged from task `dup`").count(),
+        1
+    );
+}
+
+#[test]
+fn re_retire_preserves_completed_and_reason() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "survivor", &[], "Survivor.");
+    seed_merge_task(&mut store, "dup", &[], "Dup.");
+    rdm_core::ops::task::merge_tasks(&mut store, "fbm", "survivor", &["dup".to_string()]).unwrap();
+    let first = rdm_core::io::load_task(&store, "fbm", "dup").unwrap();
+    let completed = first.frontmatter.completed;
+
+    // Re-close the already-terminal source: completed date and reason survive.
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "dup",
+        Some(TaskStatus::WontFix),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    let after = rdm_core::io::load_task(&store, "fbm", "dup").unwrap();
+    assert_eq!(after.frontmatter.completed, completed);
+    assert_eq!(
+        after.frontmatter.close_reason.as_deref(),
+        Some("superseded by task/survivor")
+    );
+}
+
+#[test]
+fn merge_source_superseded_by_different_survivor_is_not_skipped() {
+    let mut store = setup_with_project();
+    seed_merge_task(&mut store, "survivor-one", &[], "One.");
+    seed_merge_task(&mut store, "survivor-two", &[], "Two.");
+    seed_merge_task(&mut store, "dup", &["x"], "Dup.");
+
+    // First fold dup into survivor-one.
+    rdm_core::ops::task::merge_tasks(&mut store, "fbm", "survivor-one", &["dup".to_string()])
+        .unwrap();
+    // Folding the same (now terminal) dup into a different survivor re-closes it
+    // with the new pointer rather than skipping.
+    let (survivor_two, closed) =
+        rdm_core::ops::task::merge_tasks(&mut store, "fbm", "survivor-two", &["dup".to_string()])
+            .unwrap();
+    assert_eq!(closed.len(), 1);
+    assert!(survivor_two.body.contains("## Merged from task `dup`"));
+    let dup = rdm_core::io::load_task(&store, "fbm", "dup").unwrap();
+    assert_eq!(
+        dup.frontmatter.close_reason.as_deref(),
+        Some("superseded by task/survivor-two")
     );
 }

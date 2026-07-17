@@ -29,6 +29,11 @@ pub enum Error {
     ///
     /// [`TaskStatus::Done`]: crate::model::TaskStatus::Done
     TaskAlreadyConsolidated(String),
+    /// A task merge named the survivor as one of its own sources — a task
+    /// cannot be merged into itself. Carries the offending slug.
+    TaskMergeIntoSelf(String),
+    /// A task merge was requested with no source tasks to fold in.
+    TaskMergeNoSources,
     /// The specified review was not found.
     ReviewNotFound(String),
     /// The plan item a review would target does not exist.
@@ -222,6 +227,18 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "task '{slug}' is already terminal and cannot be consolidated into a roadmap"
+                )
+            }
+            Error::TaskMergeIntoSelf(slug) => {
+                write!(
+                    f,
+                    "cannot merge task '{slug}' into itself — remove it from --from"
+                )
+            }
+            Error::TaskMergeNoSources => {
+                write!(
+                    f,
+                    "no source tasks to merge — pass at least one --from <slug>"
                 )
             }
             Error::ReviewNotFound(id) => {

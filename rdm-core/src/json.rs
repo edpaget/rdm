@@ -115,6 +115,9 @@ pub struct TaskJson {
     /// Git commit SHA that completed this task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// Reason the task was closed (a retire/supersede note), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_reason: Option<String>,
     /// Markdown body content.
     pub body: String,
     /// Git revision the body was read from (only set when this view was
@@ -307,6 +310,7 @@ pub fn task_to_json(slug: &str, doc: &Document<Task>, revision: Option<&str>) ->
         tags: fm.tags.clone(),
         completed: fm.completed,
         commit: fm.commit.clone(),
+        close_reason: fm.close_reason.clone(),
         body: doc.body.clone(),
         revision: revision.map(String::from),
     }
@@ -636,6 +640,7 @@ mod tests {
                 commit: None,
                 review_sha: None,
                 review_branch: None,
+                close_reason: None,
             },
             body: String::new(),
         }

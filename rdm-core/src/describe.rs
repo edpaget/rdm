@@ -272,6 +272,13 @@ impl Describe for crate::model::Task {
                     enum_values: &[],
                     description: "Git commit SHA that completed this task.",
                 },
+                FieldInfo {
+                    name: "close_reason",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Reason the task was closed (a retire/supersede note), if any.",
+                },
             ],
         }
     }
@@ -514,6 +521,7 @@ mod tests {
             commit: Some("abc123".to_string()),
             review_sha: None,
             review_branch: None,
+            close_reason: Some("superseded by task/other".to_string()),
         };
         assert_fields_match(&sample);
     }

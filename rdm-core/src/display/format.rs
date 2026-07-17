@@ -427,6 +427,9 @@ fn build_task_detail(
             if let Some(commit) = &fm.commit {
                 items.push(meta_bullet("Commit", commit));
             }
+            if let Some(reason) = &fm.close_reason {
+                items.push(meta_bullet("Close reason", reason));
+            }
             if let Some(tags) = &fm.tags {
                 items.push(meta_bullet("Tags", &tags.join(", ")));
             }
@@ -445,6 +448,9 @@ fn build_task_detail(
             }
             if let Some(commit) = &fm.commit {
                 d.paragraph(&format!("Commit: {commit}"));
+            }
+            if let Some(reason) = &fm.close_reason {
+                d.paragraph(&format!("Close reason: {reason}"));
             }
             if let Some(tags) = &fm.tags {
                 d.paragraph(&format!("Tags: {}", tags.join(", ")));
@@ -850,6 +856,7 @@ mod tests {
                 commit: None,
                 review_sha: None,
                 review_branch: None,
+                close_reason: None,
             },
             body: String::new(),
         }

@@ -191,6 +191,20 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("cyclic dependency: {msg}")),
                 instance: None,
             },
+            Error::TaskMergeIntoSelf(slug) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(format!("cannot merge task '{slug}' into itself")),
+                instance: None,
+            },
+            Error::TaskMergeNoSources => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some("no source tasks to merge".to_string()),
+                instance: None,
+            },
             Error::AlreadyInitialized => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),
