@@ -4,6 +4,9 @@
 //! All functions take `&impl Store` or `&mut impl Store` and are
 //! usable with any [`Store`](crate::store::Store) implementation.
 
+/// Read-only backlog grooming report: stale tasks, duplicate clusters, tag
+/// clusters, archivable roadmaps.
+pub mod backlog;
 /// Index generation operations.
 pub mod index;
 /// Plan repo initialization.
