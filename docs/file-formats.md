@@ -208,13 +208,7 @@ rdm index
 
 ### Merge driver
 
-Because `INDEX.md` is generated, it can cause merge conflicts when multiple branches modify plan data. Install the merge driver to auto-regenerate on merge:
-
-```bash
-rdm install-merge-driver
-```
-
-This adds an entry to `.gitattributes` and `.git/config` so that git runs `rdm index` instead of attempting a three-way merge on `INDEX.md`.
+Because `INDEX.md` is generated, it can cause merge conflicts when multiple branches modify plan data. `rdm init` and `rdm init --remote` (and every command that opens the plan repo) automatically configure a git merge driver so conflicts on `INDEX.md` and `projects/*/INDEX.md` are resolved by regenerating the file from source-of-truth markdown instead of a three-way text merge. No setup command is needed — this is fully automatic. The configuration lives in `.gitattributes` (tracked, so it travels with clones) and the repo-local `.git/config` (untracked, added on open if missing).
 
 ## Dates
 

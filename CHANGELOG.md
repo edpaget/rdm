@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and `rdm agent-config pi --skills` now emit 10 skill files instead of 9; the
   `--mcp` variant is unchanged at 9 pending a dedicated `rdm_backlog_report` MCP
   tool.
+- rdm now automatically configures a git merge driver so conflicts on auto-generated `INDEX.md`/`projects/*/INDEX.md` files are resolved by regeneration instead of requiring manual `rdm resolve`. `rdm init` writes the tracked `.gitattributes` entries (which travel with clones); every command that opens the plan repo adds the untracked, repo-local `.git/config` driver definition if missing (best-effort — a read-only `.git/config` warns instead of failing the command). (The previously-documented but never-implemented `rdm install-merge-driver` command reference has been removed from the docs — nothing to migrate.)
+
 - rdm now emits a warning to stderr when the global config (~/.config/rdm/config.toml) or repo config (rdm.toml) contains invalid TOML, instead of silently falling back to defaults.
 - New `[models]` config table schema (`small`/`medium`/`large` model ids,
   `review_floor`, and per-step `[models.steps]` overrides) in `rdm.toml` and

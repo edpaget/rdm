@@ -485,6 +485,140 @@ fn mutation_only_rewrites_targeted_project_index() {
 }
 
 #[test]
+fn index_merge_output_writes_regenerated_root_index() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    let out_file = dir.path().join("merge-output.tmp");
+    std::fs::write(&out_file, "stale content").unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "index",
+            "--merge-output",
+            out_file.to_str().unwrap(),
+            "--merge-path",
+            "INDEX.md",
+        ])
+        .assert()
+        .success();
+
+    let root_index = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    let merge_output = std::fs::read_to_string(&out_file).unwrap();
+    assert_eq!(merge_output, root_index);
+}
+
+#[test]
+fn index_merge_output_writes_regenerated_project_index() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--no-index")
+        .args(["roadmap", "create", "alpha", "--project", "fbm"])
+        .assert()
+        .success();
+
+    let out_file = dir.path().join("merge-output.tmp");
+    std::fs::write(&out_file, "stale content").unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "index",
+            "--merge-output",
+            out_file.to_str().unwrap(),
+            "--merge-path",
+            "projects/fbm/INDEX.md",
+        ])
+        .assert()
+        .success();
+
+    let project_index = std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
+    let root_index = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
+    let merge_output = std::fs::read_to_string(&out_file).unwrap();
+    assert_eq!(merge_output, project_index);
+    assert_ne!(
+        merge_output, root_index,
+        "merge output should match the targeted project index, not the root index"
+    );
+}
+
+#[test]
+fn index_merge_output_without_merge_path_rejected() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["index", "--merge-output", "/tmp/does-not-matter"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn index_merge_path_without_merge_output_rejected() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["index", "--merge-path", "INDEX.md"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn index_merge_path_nonexistent_index_fails_with_context() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    let out_file = dir.path().join("merge-output.tmp");
+
+    // A syntactically valid path that no regeneration ever writes: the
+    // driver must fail cleanly (git then treats the file as an unresolved
+    // conflict), not panic or silently succeed.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "index",
+            "--merge-output",
+            out_file.to_str().unwrap(),
+            "--merge-path",
+            "projects/ghost/INDEX.md",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("projects/ghost/INDEX.md"));
+
+    assert!(
+        !out_file.exists(),
+        "no merge output should be written when the index path doesn't exist"
+    );
+}
+
+#[test]
+fn index_bare_still_prints_generated_message() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Generated INDEX.md"));
+}
+
+#[test]
 fn index_after_promote() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);

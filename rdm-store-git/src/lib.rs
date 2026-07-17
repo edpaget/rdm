@@ -151,9 +151,16 @@ impl GitStore {
         let repo = gix::open(&root)
             .map_err(|e| Error::Git(e.to_string()))?
             .into_sync();
+        let git = GitRepo::new(root.clone(), repo);
+        // Best-effort: a repo with an unwritable .git/config (read-only
+        // mount, restrictive CI checkout) must still open for reads — the
+        // merge driver is a convenience, not a prerequisite for the store.
+        if let Err(e) = git.ensure_merge_driver_config() {
+            eprintln!("warning: could not install INDEX.md merge driver: {e}");
+        }
         Ok(Self {
             inner: FsStore::new(&root),
-            git: GitRepo::new(root, repo),
+            git,
         })
     }
 
@@ -189,9 +196,12 @@ impl GitStore {
             }
         }
 
+        let git = GitRepo::new(root.clone(), repo.into_sync());
+        git.ensure_gitattributes()?;
+        git.ensure_merge_driver_config()?;
         Ok(Self {
             inner: FsStore::new(&root),
-            git: GitRepo::new(root, repo.into_sync()),
+            git,
         })
     }
 
@@ -245,9 +255,15 @@ impl GitStore {
         let repo = gix::open(&root)
             .map_err(|e| Error::Git(format!("failed to open cloned repo: {e}")))?
             .into_sync();
+        let git = GitRepo::new(root.clone(), repo);
+        // Best-effort, mirroring `GitStore::new`: never fail a successful
+        // clone over an unwritable .git/config.
+        if let Err(e) = git.ensure_merge_driver_config() {
+            eprintln!("warning: could not install INDEX.md merge driver: {e}");
+        }
         Ok(Self {
             inner: FsStore::new(&root),
-            git: GitRepo::new(root, repo),
+            git,
         })
     }
 
@@ -361,11 +377,169 @@ mod tests {
     }
 
     #[test]
+    fn init_writes_gitattributes_merge_entries() {
+        let dir = TempDir::new().unwrap();
+        let _store = GitStore::init(dir.path()).unwrap();
+        let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+        assert!(
+            attrs.contains("INDEX.md merge=rdm-index"),
+            "expected root INDEX.md merge entry, got: {attrs}"
+        );
+        assert!(
+            attrs.contains("**/INDEX.md merge=rdm-index"),
+            "expected wildcard INDEX.md merge entry, got: {attrs}"
+        );
+    }
+
+    #[test]
+    fn init_writes_merge_driver_git_config() {
+        let dir = TempDir::new().unwrap();
+        let _store = GitStore::init(dir.path()).unwrap();
+        let config = std::fs::read_to_string(dir.path().join(".git").join("config")).unwrap();
+        assert!(
+            config.contains("[merge \"rdm-index\"]"),
+            "expected merge driver section, got: {config}"
+        );
+        assert!(
+            config.contains("driver = rdm --root . index"),
+            "expected driver command to invoke rdm index with an explicit --root . \
+             (the driver subprocess has no ambient RDM_ROOT/cwd discovery), got: {config}"
+        );
+        assert!(
+            config.contains("%A") && config.contains("%P"),
+            "expected driver command to use %A/%P placeholders, got: {config}"
+        );
+    }
+
+    #[test]
+    fn init_gitattributes_and_config_are_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let _store1 = GitStore::init(dir.path()).unwrap();
+        let _store2 = GitStore::init(dir.path()).unwrap();
+
+        let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+        assert_eq!(
+            attrs.matches("merge=rdm-index").count(),
+            2,
+            "expected exactly two merge=rdm-index entries (root + wildcard), got: {attrs}"
+        );
+
+        let config = std::fs::read_to_string(dir.path().join(".git").join("config")).unwrap();
+        assert_eq!(
+            config.matches("[merge \"rdm-index\"]").count(),
+            1,
+            "expected exactly one merge driver section, got: {config}"
+        );
+    }
+
+    #[test]
+    fn init_preserves_existing_gitattributes_content() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".gitattributes"), "*.bin binary").unwrap();
+        let _store = GitStore::init(dir.path()).unwrap();
+
+        let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+        assert!(
+            attrs.contains("*.bin binary"),
+            "expected pre-existing content to survive, got: {attrs}"
+        );
+        assert!(attrs.contains("INDEX.md merge=rdm-index"));
+        assert!(attrs.contains("**/INDEX.md merge=rdm-index"));
+    }
+
+    #[test]
     fn new_opens_existing_repo() {
         let dir = TempDir::new().unwrap();
         gix::init(dir.path()).unwrap();
         let store = GitStore::new(dir.path());
         assert!(store.is_ok());
+    }
+
+    #[test]
+    fn new_adds_merge_driver_config_to_legacy_repo() {
+        let dir = TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let _store = GitStore::new(dir.path()).unwrap();
+
+        let config = std::fs::read_to_string(dir.path().join(".git").join("config")).unwrap();
+        assert!(
+            config.contains("[merge \"rdm-index\"]"),
+            "expected merge driver section to be added on open, got: {config}"
+        );
+    }
+
+    /// A repo whose `.git/config` is unwritable (read-only mount, restrictive
+    /// CI checkout) must still open for reads — the merge-driver install is
+    /// best-effort, never a prerequisite for the store.
+    #[cfg(unix)]
+    #[test]
+    fn new_succeeds_when_git_config_is_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let config_path = dir.path().join(".git").join("config");
+        let mut perms = std::fs::metadata(&config_path).unwrap().permissions();
+        perms.set_mode(0o444);
+        std::fs::set_permissions(&config_path, perms).unwrap();
+
+        let store = GitStore::new(dir.path());
+        assert!(
+            store.is_ok(),
+            "read-only .git/config must not prevent opening the store: {:?}",
+            store.err()
+        );
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            !config.contains("[merge \"rdm-index\"]"),
+            "driver section must not appear when config is unwritable"
+        );
+
+        // Restore write permission so TempDir cleanup can't be affected.
+        let mut perms = std::fs::metadata(&config_path).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&config_path, perms).unwrap();
+    }
+
+    #[test]
+    fn new_is_idempotent_across_repeated_opens() {
+        let dir = TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let _store1 = GitStore::new(dir.path()).unwrap();
+        let _store2 = GitStore::new(dir.path()).unwrap();
+
+        let config = std::fs::read_to_string(dir.path().join(".git").join("config")).unwrap();
+        assert_eq!(
+            config.matches("[merge \"rdm-index\"]").count(),
+            1,
+            "expected exactly one merge driver section after repeated opens, got: {config}"
+        );
+    }
+
+    #[test]
+    fn new_preserves_existing_custom_merge_driver_section() {
+        let dir = TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let config_path = dir.path().join(".git").join("config");
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&config_path)
+                .unwrap();
+            writeln!(file, "\n[merge \"rdm-index\"]\n\tdriver = custom-driver %A").unwrap();
+        }
+        let _store = GitStore::new(dir.path()).unwrap();
+
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(
+            config.matches("[merge \"rdm-index\"]").count(),
+            1,
+            "expected the custom section not to be duplicated, got: {config}"
+        );
+        assert!(
+            config.contains("custom-driver"),
+            "expected pre-existing custom driver to survive, got: {config}"
+        );
     }
 
     #[test]
@@ -1581,6 +1755,28 @@ mod tests {
         // Should have "origin" remote
         let remotes = store.git().git_remote_list().unwrap();
         assert!(remotes.iter().any(|r| r.name == "origin"));
+    }
+
+    #[test]
+    fn clone_remote_adds_merge_driver_config() {
+        let (_source, bare) = make_bare_plan_repo();
+        let target = TempDir::new().unwrap();
+        let target_path = target.path().join("cloned");
+
+        let _store =
+            GitStore::clone_remote(bare.path().to_str().unwrap(), &target_path, None).unwrap();
+
+        let config = std::fs::read_to_string(target_path.join(".git").join("config")).unwrap();
+        assert!(
+            config.contains("[merge \"rdm-index\"]"),
+            "expected merge driver section after clone, got: {config}"
+        );
+
+        let attrs = std::fs::read_to_string(target_path.join(".gitattributes")).unwrap();
+        assert!(
+            attrs.contains("merge=rdm-index"),
+            "expected cloned .gitattributes to carry the merge entries from source, got: {attrs}"
+        );
     }
 
     #[test]

@@ -857,6 +857,172 @@ fn remote_pull_regenerates_index() {
 }
 
 #[test]
+fn pull_with_conflicting_index_md_auto_resolves_via_merge_driver() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Seed a shared project before diverging so both sides touch the same
+    // project-level INDEX.md as well as the root one.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "create", "demo"])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "add demo project"])
+        .assert()
+        .success();
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+
+    // Fetch to establish tracking refs.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("remote")
+        .arg("fetch")
+        .arg("origin")
+        .assert()
+        .success();
+
+    // Push a divergent roadmap from a separate clone.
+    let clone_dir = tempfile::TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone"])
+        .arg(bare_dir.path())
+        .arg(clone_dir.path())
+        .output()
+        .unwrap();
+    rdm()
+        .arg("--root")
+        .arg(clone_dir.path())
+        .args(["roadmap", "create", "clone-roadmap", "--project", "demo"])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(clone_dir.path())
+        .args(["commit", "-m", "add clone-roadmap"])
+        .assert()
+        .success();
+    git_cmd()
+        .args(["push"])
+        .current_dir(clone_dir.path())
+        .output()
+        .unwrap();
+
+    // Make a locally-divergent roadmap that also touches INDEX.md and
+    // projects/demo/INDEX.md.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "create", "local-roadmap", "--project", "demo"])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "add local-roadmap"])
+        .assert()
+        .success();
+
+    // The merge driver is configured as a bare `rdm index ...` command, so
+    // the `rdm` binary must be resolvable on PATH for git to invoke it.
+    let bin_dir = std::path::Path::new(env!("CARGO_BIN_EXE_rdm"))
+        .parent()
+        .unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    // Re-fetch so the tracking ref sees the just-pushed clone-roadmap commit,
+    // then merge directly via `git merge` (bypassing `rdm remote pull`'s own
+    // porcelain, which — independent of the merge driver, and unrelated to
+    // this phase — always regenerates INDEX.md again after a successful pull
+    // and flushes it straight to disk without re-staging into git; that step
+    // would otherwise mask what we're isolating here). This exercises AC1-3
+    // directly: the auto-installed driver must resolve the INDEX.md/
+    // projects/demo/INDEX.md conflict without leaving the merge blocked.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .env("PATH", &path)
+        .arg("remote")
+        .arg("fetch")
+        .arg("origin")
+        .assert()
+        .success();
+
+    let merge_output = git_cmd()
+        .env("PATH", &path)
+        .args(["merge", "--no-edit", "origin/main"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        merge_output.status.success(),
+        "expected the merge driver to auto-resolve the INDEX.md conflict, got: {}",
+        String::from_utf8_lossy(&merge_output.stderr)
+    );
+
+    // Consistency check: with the driver installed, the working tree is
+    // self-consistent with what git just committed — no leftover conflict
+    // markers, no diff between the merge commit and disk. Note this
+    // assertion is NOT by itself a regression guard for the %A/%P design:
+    // in this scenario (both sides create brand-new roadmaps) the driver's
+    // regeneration coincides with the stale "ours" blob because the sibling
+    // roadmap file isn't materialized when the driver runs, so a bare
+    // `driver = rdm index` would produce the same clean status here. The
+    // %A/%P wiring is guarded by `init_writes_merge_driver_git_config`
+    // (rdm-store-git) asserting the placeholders are present, and by the
+    // `index_merge_output_*` CLI tests exercising the flags behaviorally.
+    let status = git_cmd()
+        .args(["status", "--porcelain"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let status_out = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status_out.trim().is_empty(),
+        "expected a clean working tree immediately after the merge driver ran \
+         (no stale %A content), got: {status_out}"
+    );
+
+    // The merge driver regenerates from whatever's on disk at the moment it
+    // runs; because git's merge machinery doesn't guarantee every
+    // concurrently-merged sibling file is materialized in the working tree
+    // before drivers run for other conflicting paths, the driver's own
+    // regeneration can be transiently stale immediately post-merge (a known,
+    // accepted limitation — see the plan's "mid-merge sibling-content
+    // caveat"). A follow-up `rdm index` (exactly what `rdm remote pull`
+    // already does after every successful pull) always converges to the
+    // fully correct state.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
+        .assert()
+        .success();
+
+    let project_index = std::fs::read_to_string(dir.path().join("projects/demo/INDEX.md")).unwrap();
+    assert!(
+        project_index.contains("clone-roadmap"),
+        "expected clone-roadmap in the fully-converged project index, got: {project_index}"
+    );
+    assert!(
+        project_index.contains("local-roadmap"),
+        "expected local-roadmap in the fully-converged project index, got: {project_index}"
+    );
+
+    let _ = bare_dir;
+}
+
+#[test]
 fn status_with_fetch_flag() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);

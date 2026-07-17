@@ -135,7 +135,17 @@ pub(crate) enum Command {
         project: Option<String>,
     },
     /// Generate INDEX.md from current repo state.
-    Index,
+    Index {
+        /// Internal: path git substitutes for `%A` when `rdm index` is
+        /// invoked as the auto-installed `rdm-index` merge driver. Not
+        /// intended for direct interactive use.
+        #[arg(long, requires = "merge_path")]
+        merge_output: Option<PathBuf>,
+        /// Internal: path git substitutes for `%P` when `rdm index` is
+        /// invoked as the auto-installed `rdm-index` merge driver.
+        #[arg(long, requires = "merge_output")]
+        merge_path: Option<String>,
+    },
     /// Generate agent configuration for AI coding assistants.
     AgentConfig {
         /// Target platform (claude, agents-md, cursor, copilot, pi).
