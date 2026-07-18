@@ -138,10 +138,12 @@ finding — the finder never grades its own work.
 | `confidence` | integer 0–100 (required) | the refuter's confidence in **its verdict** (advisory) |
 | `rationale`  | string                   | why the finding was or was not refuted                 |
 
-### `OUTCOME`
+### `OUTCOME` (review pipeline)
 
 The value `buildReviewPipeline(mode)(context)` resolves to: a **ranked** array of
 the surviving `FINDING`s (the standalone wrapper returns `{ mode, survivors }`).
+The dispatch-phase keystone (below) consumes this array at each of its two review
+gates and folds it into its own, differently-shaped `OUTCOME`.
 
 **Survival rule (`survives`).** A finding survives iff it was **not** refuted
 (`verdict.refuted !== true`) **and** its own `confidence >= CONFIDENCE_FLOOR`
@@ -180,6 +182,83 @@ Returns an async `runReview(context)` that composes
 prompt, so the review material reaches the agents. `deps` (`{ agent, pipeline,
 parallel, log }`) is omitted in the Workflow runtime (the ambient globals are
 used) and injected by the verify harness to drive the pipeline with fakes.
+
+## dispatch-phase contracts
+
+`dispatch-phase` (`.claude/workflows/dispatch-phase.js`) is the keystone per-phase
+unit of autonomous execution: a deterministic 4-stage pipeline
+`Plan → PlanReview → Implement → CodeReview`. Its plan-review and code-review
+stages call `buildReviewPipeline('plan')` / `buildReviewPipeline('code')` inline
+(from the stamped review block — never via a nested `workflow()` call). Its pure
+decision core lives once in `lib/dispatch-phase.mjs` and is copied byte-identical
+into the workflow script (gated by `scripts/verify-workflow-dispatch.sh`).
+
+### `PHASE_META`
+
+What the Stage-0 mechanical fetch agent returns from `rdm phase show … --format
+json` (the Workflow runtime has no `process`/`child_process`, so it cannot shell
+out itself — a Bash-capable agent does).
+
+| field    | type              | notes                                             |
+| -------- | ----------------- | ------------------------------------------------- |
+| `roadmap`| string (required) | roadmap slug                                      |
+| `phase`  | string (required) | the stem-or-number that was dispatched            |
+| `stem`   | string (required) | the phase's canonical stem                        |
+| `model`  | string (required) | the tier (`small` \| `medium` \| `large`)         |
+| `body`   | string (required) | the full phase markdown; empty ⇒ fetch failure    |
+
+### `PLAN_DOC`
+
+The plan document the planner agent produces from **only** the phase body (no
+worktree, no code). Rendered to text and fed to the plan-review gate, then — once
+approved — to the implementer. A vague or empty plan is flagged `blocking` by the
+plan-review `coherence` dimension and escalates before any implementation.
+
+| field              | type                                    | notes                                    |
+| ------------------ | --------------------------------------- | ---------------------------------------- |
+| `steps_per_ac`     | array of `{ ac, steps[] }` (required)   | ordered steps for each acceptance criterion |
+| `file_map`         | array of `{ path, change }` (required)  | files to create/edit and how             |
+| `tests_per_ac`     | array of `{ ac, test }` (required)      | the test that proves each criterion      |
+| `edge_cases`       | array of string (required)              | edge cases the implementation must handle|
+| `cross_phase_deps` | array of string (required)              | what this phase consumes from / provides to siblings |
+| `summary`          | string (required)                       | one-paragraph plan summary               |
+
+### `OUTCOME` (dispatch-phase)
+
+The top-level return of `dispatch-phase`. Distinct from the review pipeline's
+`OUTCOME` array above — this is the phase-level verdict consumed by the Phase 3
+autopilot and Phase 4 `rdm-do --auto`.
+
+| field     | type                                      | notes                                          |
+| --------- | ----------------------------------------- | ---------------------------------------------- |
+| `roadmap` | string                                    | echoed from the dispatch args                  |
+| `phase`   | string                                    | echoed from the dispatch args                  |
+| `outcome` | `reviewed` \| `rework` \| `escalated`     | the phase verdict (see the decision tree below)|
+| `summary` | string                                    | deterministic one-liner from outcome + top finding |
+| `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
+
+**Decision tree (`classifyOutcome`, total and deterministic).** Tier-scaled via
+`hasBlocking(findings, tier)`: only `blocking` counts as blocking, except at the
+`large` tier where a surviving `concern` blocks too (a one-directional tightening
+— the gate can only get stricter, never looser).
+
+1. **Plan gate.** If the plan-review findings are blocking → `escalated` (findings
+   = the plan findings). An empty/ambiguous plan lands here via a blocking
+   `coherence` finding. `fetchError` short-circuits here too (`phase fetch
+   failed`). The pipeline never implements on a failed plan.
+2. **Code gate** (plan approved, implement ran, code-review ran):
+   - clean first pass → `reviewed`;
+   - else the **one** bounded rework ran: if its re-review is clean → `reviewed`,
+     otherwise → `rework` (findings = the post-rework code findings).
+
+Both loops are bounded to exactly one extra pass (≤1 plan-revise, ≤1 code-rework),
+so the classifier — which consumes only the first-pass and one-rework arrays —
+always reaches a terminal value. Because the deterministic pipeline cannot
+classify a code finding's *nature* (the `FINDING` schema carries severity but no
+fixable/decision flag), a code defect surviving the one rework resolves to
+`rework`, and genuine decisions surface earlier at the plan gate as `escalated`;
+that is why the code stage yields only `reviewed`/`rework`. `dispatch-phase` never
+emits a `Done:` line — landing is a separate, later step.
 
 ## Testing convention
 

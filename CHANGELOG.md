@@ -10,6 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `dispatch-phase` workflow (`.claude/workflows/dispatch-phase.js`): the
+  keystone per-phase unit of autonomous execution, a deterministic 4-stage
+  pipeline (plan → plan-review → implement → code-review). It seeds a fresh
+  implementer with only the phase body plus an independently reviewed plan
+  document, runs both review gates through Phase 1's stamped
+  `buildReviewPipeline`, bounds itself to at most one plan-revise and one
+  code-rework pass, and returns an `{ roadmap, phase, outcome, summary, findings }`
+  OUTCOME with `outcome` one of `reviewed` | `rework` | `escalated`. It never
+  emits a `Done:` line (landing is a separate, later step). Gated by
+  `scripts/verify-workflow-dispatch.sh` (all three outcome branches) plus
+  `scripts/verify-workflow-review.sh`. Dogfood-only — not emitted by
+  `agent-config`.
 - New `rdm-backlog` Claude Code skill: a propose-only backlog grooming pass. It
   reads `rdm backlog report` and emits a single batched, human-reviewable plan
   that pairs each proposed consolidate / merge / retire / archive action with the

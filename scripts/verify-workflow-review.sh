@@ -93,6 +93,9 @@ mkdir -p "$SCRATCH/scripts" "$SCRATCH/.claude/workflows/lib"
 cp "$GEN" "$SCRATCH/scripts/gen-workflow-review.sh"
 cp "$LIB" "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs"
 cp "$WF_DIR/review-refute-fix.js" "$SCRATCH/.claude/workflows/review-refute-fix.js"
+# gen-workflow-review.sh lists every consumer; the scratch tree must carry them
+# all or the scratch --check fails on a missing consumer rather than on drift.
+cp "$WF_DIR/dispatch-phase.js" "$SCRATCH/.claude/workflows/dispatch-phase.js"
 sh "$SCRATCH/scripts/gen-workflow-review.sh" --check >/dev/null 2>&1 ||
     fail "scratch --check should pass on a clean copy"
 # Mutate a line INSIDE the generated block, portably (no in-place sed).
