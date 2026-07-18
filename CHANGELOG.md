@@ -10,6 +10,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `autopilot` workflow (`.claude/workflows/autopilot.js`): the active driver
+  of the autonomous lane. Given one roadmap slug it runs an estimate pre-pass over
+  the roadmap's unestimated phases (one `parallel()` fan-out, persisting each
+  difficulty so the model tier auto-derives), then loops `rdm next` → the
+  `dispatch-phase` workflow (via the one allowed level of `workflow()` nesting) →
+  interpret the OUTCOME → PERSIST status: a `reviewed` phase advances
+  (`rdm phase update --status reviewed`), a `rework` phase re-dispatches against a
+  per-phase budget and then parks `blocked [code]`, and an `escalated` phase parks
+  `blocked [plan]`. It bounds the run with a global step budget and `--max-phases`,
+  supports `--plan-only` (each dispatch stops after its plan gate, guarded against
+  re-vetting), always ends with a batched summary (phases completed, escalations
+  tagged plan/code pointing at `rdm review blocked`, stop reason), and never
+  touches `main` — landing stays the separate `rdm-land` skill. `dispatch-phase`
+  now accepts a `planOnly` arg and returns early once the plan gate passes. The
+  dogfood `rdm-autopilot` skill is rewritten as a thin shim that parses the
+  invocation and hands off to the workflow. Gated by
+  `scripts/verify-workflow-autopilot.sh` (pure helpers + a state-backed driven
+  loop: drive-to-reviewed, rework→park, escalated, budget stops, the estimate
+  pre-pass, `--plan-only`, and mid-tier defaulting). Dogfood-only — not emitted by
+  `agent-config`.
 - New `dispatch-phase` workflow (`.claude/workflows/dispatch-phase.js`): the
   keystone per-phase unit of autonomous execution, a deterministic 4-stage
   pipeline (plan → plan-review → implement → code-review). It seeds a fresh

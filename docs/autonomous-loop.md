@@ -29,6 +29,32 @@ It is invoked with a **required roadmap slug** (from `$ARGUMENTS`), optionally
 followed by flags. The loop never roams to another roadmap — choosing *which*
 roadmap to advance stays a human decision.
 
+## Two implementations: the prose skill and the workflow lane
+
+This document describes the **prose** `rdm-autopilot` lane, where the loop is an
+LLM following these instructions and dispatching each phase behind an `Agent`
+subagent boundary. rdm's own dogfood repo also runs a **workflow** lane —
+`.claude/workflows/autopilot.js` (see [`docs/workflow-schemas.md`](./workflow-schemas.md)) —
+where the loop, budgets, and stop conditions are real JS control flow calling the
+`dispatch-phase` workflow via `workflow()`. The two share this document's model;
+the workflow lane makes three mechanics explicit and worth calling out:
+
+- **It drives off *persisted* status.** `dispatch-phase` persists no status, and
+  `rdm next` returns only `not-started`/`in-progress` phases, so the workflow
+  writes status itself: `reviewed` → `rdm phase update --status reviewed`
+  (advance), rework-exhausted or `escalated` → `--status blocked --reason
+  "[code|plan] …"` (park). `rdm next` reading that status back is what steps the
+  loop forward and is the **normal-mode termination oracle** (it eventually
+  returns `nothing`). There is no in-memory `seen` Set in normal mode.
+- **`--plan-only` uses a re-return guard.** Because a plan-only dispatch never
+  advances status, `rdm next` keeps returning the same phase; a `planOnlySeen`
+  Set stops the run when a vetted phase comes back, rather than re-vetting it
+  forever.
+- **The `Done:` line stays with `rdm-review` / landing.** The workflow's advance
+  step writes only `--status reviewed`; it never emits a `Done:` line, lands, or
+  touches `main` — exactly as the prose lane leaves that to `rdm-review` and
+  `rdm-land`.
+
 ## End-to-end flow
 
 ```
@@ -165,8 +191,10 @@ The needs-review **Stop hook** (Claude Code) and the Pi **`agent_end`
 extension** are the **passive safety net**: they only re-prompt when an item is
 *left* in `needs-review`, catching a finalize that was never reviewed. The two
 are complementary — the driver does the work, the net catches anything dropped
-on the floor. Both leave the `Done:` line to `rdm-review`; autopilot writes one
-only via the dispatched `rdm-review`, never by hand.
+on the floor. The workflow lane never emits a `Done:` line — `dispatch-phase`'s
+review is an inline pipeline (not the `rdm-review` skill), and autopilot's
+advance step writes only `--status reviewed`. The `Done:` line is supplied later
+by `rdm-review` or at landing.
 
 See also [`docs/escalation-protocol.md`](./escalation-protocol.md) for the
 shared rule on what escalates, what retries, and how parked escalations are

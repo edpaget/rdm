@@ -260,6 +260,97 @@ fixable/decision flag), a code defect surviving the one rework resolves to
 that is why the code stage yields only `reviewed`/`rework`. `dispatch-phase` never
 emits a `Done:` line — landing is a separate, later step.
 
+## autopilot contract
+
+`autopilot` (`.claude/workflows/autopilot.js`) is the **active driver**: given one
+roadmap slug it drives every actionable phase to `reviewed` by calling
+`dispatch-phase` via `workflow()` — the one allowed level of nesting (no deeper
+`workflow()` call lives inside `dispatch-phase`). Its pure control core lives once
+in `lib/autopilot.mjs` between `autopilot-loop:begin` / `autopilot-loop:end`
+markers and is copied byte-identical into the workflow script (gated by
+`scripts/verify-workflow-autopilot.sh`). The block names **no** ambient runtime
+global — every side effect is reached through an injected `deps` object — so the
+module imports cleanly in Node for unit testing and the harness drives the whole
+loop with state-backed fakes.
+
+### The core fix: the loop advances off PERSISTED status
+
+`dispatch-phase` persists **no** phase status, and `rdm next` returns only
+`not-started`/`in-progress` phases (it skips `reviewed`/`blocked`/…). So the loop
+persists status **itself**, which is what makes `rdm next` step forward and
+eventually return `nothing`:
+
+- a `reviewed` OUTCOME (normal mode) → `advance` dep runs
+  `rdm phase update <stem> --status reviewed`;
+- a rework-exhausted or `escalated` OUTCOME → `park` dep runs
+  `rdm phase update <stem> --status blocked --reason "[code|plan] …"`.
+
+There is **no** normal-mode in-memory `seen` Set; progress is driven entirely by
+the persisted status the selector reads back.
+
+### Config (`parseAutopilotArgs`)
+
+| field         | type               | notes                                                   |
+| ------------- | ------------------ | ------------------------------------------------------- |
+| `roadmap`     | string (required)  | the single roadmap slug; the loop never roams elsewhere |
+| `maxPhases`   | positive int \| null | the `--max-phases` bound (null = unbounded by count)  |
+| `planOnly`    | boolean            | `--plan-only`: each dispatch stops after its plan gate  |
+| `globalBudget`| int                | total-dispatch cap per run (defaults to a sane constant)|
+
+It never yields a `--land` flag — landing is the separate `rdm-land` skill.
+
+### Dep interface (`buildAutopilot(deps)` → `runAutopilot(config)`)
+
+The block reaches the runtime only through these injected deps; the real ones
+(built outside the block) close over `agent()`/`parallel()`/`workflow()`/`log()`:
+
+| dep                                   | effect                                                                                  |
+| ------------------------------------- | --------------------------------------------------------------------------------------- |
+| `estimateList(slug)`                  | Bash agent: `rdm phase list … --format json`                                            |
+| `parallelEstimate(unestimated)`       | one `parallel()` fan-out of estimator agents → `{ stem, difficulty }[]`                  |
+| `estimateWriteback(stem, diff, slug)` | Bash agent: `rdm phase update <stem> --difficulty <diff>` (tier auto-derives)           |
+| `fetchNext(slug)`                     | Bash agent: `rdm next … --format json` → parsed JSON                                     |
+| `dispatch(slug, stem, planOnly)`      | `workflow('dispatch-phase', { roadmap, phase, planOnly })` → the dispatch-phase OUTCOME  |
+| `advance(stem, slug)`                 | Bash agent: `rdm phase update <stem> --status reviewed`                                  |
+| `park(stem, reason, slug)`            | Bash agent: `rdm phase update <stem> --status blocked --reason "<reason>"`               |
+| `log(msg)`                            | progress line                                                                            |
+
+### OUTCOME-driven transitions (`interpretOutcome`)
+
+The `dispatch-phase` OUTCOME string drives the next loop action:
+
+| OUTCOME      | mode        | action                                                          |
+| ------------ | ----------- | -------------------------------------------------------------- |
+| `reviewed`   | normal      | `advance` → `--status reviewed`; record completed              |
+| `reviewed`   | `--plan-only` | `noop-vetted` → record vetted, do NOT advance                |
+| `rework`     | under budget| `retry` → re-dispatch the same phase                           |
+| `rework`     | budget spent| `park` → `--status blocked --reason "[code] …"`                |
+| `escalated`  | —           | `park` → `--status blocked --reason "[plan] …"`                |
+
+Retained loop state is bounded: the latest `fetchNext` result, the current
+OUTCOME, per-phase rework/advance counters, the running dispatch count, the
+ordered `completed[]` and `escalations[]` arrays, and (only under `--plan-only`) a
+`planOnlySeen` Set. A mid-tier default (`resolveTier(model || 'medium')`) covers
+any unset tier at dispatch. The run stops on `nothing` /
+`blocked-on-dependencies`, on the global step budget or `--max-phases`, or (under
+`--plan-only`) when a vetted phase is re-returned.
+
+### Summary (`buildSummary`, always emitted)
+
+Every run — whatever stopped it — returns a deterministic summary string: the
+phases completed in order, the escalations each tagged `plan`/`code` with their
+reason and a pointer at `./target/debug/rdm review blocked --project rdm`, the
+stop reason, and a note that reviewed work is left on the `roadmap/<slug>` branch
+and `main` is **never** touched.
+
+### `dispatch-phase` `planOnly`
+
+`dispatch-phase` accepts an optional `planOnly` arg. When set, once the plan gate
+passes it returns early — `{ outcome: 'reviewed', summary: 'plan-only: plan gate
+passed', findings: <planFindings> }` — before implementing, so autopilot can vet
+the plan half cheaply. This early return lives in the driver, outside the copied
+`dispatch-outcome` block, and adds no new nested `workflow()` call.
+
 ## Testing convention
 
 `scripts/verify-workflow-review.sh` is the hermetic gate. It uses **Node standard

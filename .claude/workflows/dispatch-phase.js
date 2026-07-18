@@ -502,6 +502,7 @@ function renderPlanDoc(planDoc) {
 // --- Driver -------------------------------------------------------------------
 const roadmap = (args && args.roadmap) || ''
 const phaseArg = (args && args.phase) || ''
+const planOnly = !!(args && args.planOnly)
 
 // Stage 0: fetch the phase metadata + body via a mechanical Bash agent.
 // NOTE: this local is `phaseMeta`, NOT `meta` — the top-level `export const meta`
@@ -552,6 +553,15 @@ if (hasBlocking(planFindings, tier)) {
 if (hasBlocking(planFindings, tier)) {
   log('dispatch-phase: plan gate escalated for ' + roadmap + '/' + stem)
   return buildOutcome({ roadmap: roadmap, phase: phaseArg, planFindings: planFindings, tier: tier })
+}
+
+// --plan-only: the plan gate passed — stop before implementing and report the
+// vetted plan as `reviewed` (autopilot's estimate/plan-vet pass). This early
+// return is NOT part of the copied dispatch-outcome block.
+if (planOnly) {
+  const o = { roadmap: roadmap, phase: phaseArg, outcome: 'reviewed', summary: 'plan-only: plan gate passed', findings: planFindings }
+  log('dispatch-phase (' + roadmap + '/' + stem + '): plan-only — plan approved')
+  return o
 }
 
 // Stage C: implement in the shared per-roadmap worktree. A FRESH implementer
