@@ -227,7 +227,10 @@ plan-review `coherence` dimension and escalates before any implementation.
 
 The top-level return of `dispatch-phase`. Distinct from the review pipeline's
 `OUTCOME` array above — this is the phase-level verdict consumed by the Phase 3
-autopilot and Phase 4 `rdm-do --auto`.
+autopilot and Phase 4 `rdm-do --auto`. The `rdm-do --auto` wiring into this
+contract is regression-tested by `scripts/verify-workflow-do-auto.sh` (SKILL.md
+static invariants, the OUTCOME→status contract against the real binary, and a
+prose-only self-test of the distributed template).
 
 | field     | type                                      | notes                                          |
 | --------- | ----------------------------------------- | ---------------------------------------------- |
