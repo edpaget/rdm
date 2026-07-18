@@ -36,11 +36,40 @@ module, to decide how `review-refute-fix` is shared between the standalone
 wrapper and dispatch-phase without a cross-`workflow()` call (which would exceed
 the one-level `workflow()` nesting limit).
 
-**Result: it cannot.** A zero-agent spike workflow tried `import()` of an absolute
-`file://` URL, a bare absolute path, and a relative path — all three failed with
-`import() is not available in workflow scripts.`, and `typeof require` was
-`undefined`. Workflow scripts run in a sandbox with **no module resolution and no
-filesystem access**.
+**Result: it cannot — and there is no runtime workaround.** A zero-agent spike
+workflow tried `import()` of an absolute `file://` URL, a bare absolute path, and a
+relative path — all three failed with `import() is not available in workflow
+scripts.`, and `typeof require` was `undefined`. A follow-up spike probed every
+other way to load code into the runtime, and all are closed:
+
+| Vector                                            | Result                                                       |
+| ------------------------------------------------- | ------------------------------------------------------------ |
+| `import()` — relative / absolute / `file:` / `data:` / `https:` | `import() is not available in workflow scripts.` |
+| `eval('…')`                                       | `Code generation from strings disallowed for this context`   |
+| `new Function('…')()`                             | `Code generation from strings disallowed for this context`   |
+| source injected via `args`, then `eval`'d         | same — code generation is disabled                           |
+| `require` / `module` / `exports`                  | `undefined`                                                  |
+| `process` / `Deno` / `Bun` / `fetch`              | `undefined`                                                  |
+
+The entire global scope is `log`, `phase`, `console`, `budget`, `setTimeout`,
+`clearTimeout`, `Date`, `agent`, `parallel`, `pipeline`, `workflow`, `args`, plus
+pure JS built-ins (`Object`, `Array`, `JSON`, `Math`, `Reflect`, typed arrays…) —
+nothing that loads or generates code. This is a **hardened V8 isolate** with two
+independent locks: `import()` is host-guarded *and* code-generation-from-strings is
+disabled (`SetAllowCodeGenerationFromStrings(false)`). Any code sharing must
+therefore happen **before** the script reaches the runtime — there is no in-runtime
+hack.
+
+**Prior art.** This is a well-known sandbox posture, not a rough edge. Temporal's
+TypeScript SDK runs workflow code in a deterministic V8 isolate that throws the
+identical `Code generation from strings disallowed` error and blocks `eval` /
+`import()`; its official model is to author normal modules with real imports and
+let a **build-time bundler (webpack/esbuild) inline everything into a single file**
+before it enters the sandbox — for the same reasons (security, deterministic
+replay, full code visibility). The same error and the same "bundle at build time,
+never eval/import at runtime" resolution recur in isolated-vm, Deno, Cloudflare
+Workers, and n8n. Our generated-copy stamper is the minimal form of exactly this
+pattern: a bundler's output *is* an inlined copy.
 
 **Chosen mechanism — single-source-of-truth generated copy.** The shared pipeline
 is authored once in `lib/review-refute-fix.mjs` between
@@ -54,6 +83,19 @@ This is distinct from a cross-`workflow()` call: sharing is a **compile-time cop
 of a helper block, not a runtime sub-workflow invocation, so it does not consume
 the one allowed level of `workflow()` nesting. dispatch-phase (Phase 2) embeds the
 same block in its plan-review and code-review stages the same way.
+
+**Upgrade path (if sharing grows) — a real bundler.** The awk stamper is the
+zero-dependency form of build-time inlining, chosen because we share a single
+~130-line block and rdm values having no toolchain beyond the compiled binary. If
+the shared surface grows to multiple modules, transitive helpers, or npm
+dependencies, the drop-in scale-up is to author consumers with a real
+`import './lib/review-refute-fix.mjs'` and replace the generator with
+`esbuild --bundle --format=esm` — the same category (compile-time inlining), just
+authored with real ESM imports instead of marker blocks. The cost is adding
+`esbuild` + `node_modules` as a dev dependency, which is why we defer it until the
+one-block stamper stops being enough. Either way the author's source has no
+duplication; the copy exists only in the generated artifact, exactly like a
+bundler's `dist/`.
 
 The lib exposes its bindings to Node via an `export { … }` statement placed
 **outside** the markers, so the generator never copies it (a bare `export`
