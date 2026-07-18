@@ -12,6 +12,7 @@ allowed-tools:
   - ExitPlanMode
   - EnterWorktree
   - Agent
+  - Workflow
 ---
 
 Implement a roadmap phase or work on a task. One shared flow: find the target → mark in-progress → plan → execute → review with the user → finalize into `needs-review`.
@@ -23,9 +24,13 @@ Implement a roadmap phase or work on a task. One shared flow: find the target �
 `$ARGUMENTS` may include `--auto` to select the run mode:
 
 - **interactive** (default): plan → wait for approval → implement → review with the user → finalize. The approval and review gates pause for human input.
-- **`--auto`** (non-interactive): skip the approval and review gates and proceed autonomously — build the plan, implement it, and finalize without waiting for a human.
+- **`--auto`** (non-interactive): skip the approval and review gates and proceed autonomously. This splits by flow:
+  - **phase flow** (`--auto <roadmap-slug> [phase-number]`): after marking the phase in-progress and entering its worktree (steps 1-5 below, unchanged), route straight into the `dispatch-phase` Workflow instead of re-running the prose plan/implement/review steps — see `## Auto phase dispatch` below.
+  - **task flow** (`--auto --task <slug>`): unchanged — still runs the existing prose steps 6-11 (plan, plan-review, implement, finalize) autonomously, without the approval/review gates.
 
 For unattended Claude Code runs (where no human is present to approve permission prompts), launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so worktree edits and bash commands don't block on prompts.
+
+**Dogfood-only note:** the `--auto` phase-flow → `dispatch-phase` Workflow wiring above is a local-only edit to this file (`.claude/skills/rdm-do/SKILL.md`), not propagated to the distributed `rdm-core/src/templates/skill-do-cli.md` / `skill-do-mcp.md` templates this roadmap ships — those templates stay prose-only for now, to be updated in a future distribution follow-up. The divergence is intentional and recorded in the `workflow-orchestration` roadmap body (phase 4).
 
 ## Argument forms
 
@@ -58,7 +63,7 @@ For unattended Claude Code runs (where no human is present to approve permission
    **Tasks keep their own per-task worktree.** For the task flow, run `./target/debug/rdm worktree add task/<slug> --project rdm` and enter the printed `path` the same way (one-time `EnterWorktree` convenience, or `cd`/launch).
 
    After entering, run `cargo build` in the worktree and use **that worktree's** `./target/debug/rdm` for all later rdm commands — this exercises your changes where you made them. Do the rest of the work in this worktree.
-6. **Enter plan mode** with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
+6. **For `--auto` + phase flow, skip steps 6-11 below and jump straight to `## Auto phase dispatch` — steps 6-11 are the interactive/task-flow prose path and stay unchanged.** Enter plan mode with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
    - Break the phase/task into concrete implementation steps based on its description and acceptance criteria.
    - Include a final step: "Review changes with user and finalize".
 7. **Review the implementation plan** _(both modes)_: run the `rdm-plan-review` skill with `--implementation-plan` against the plan drafted in the previous step, covering coherence and architectural fit.
@@ -75,6 +80,20 @@ For unattended Claude Code runs (where no human is present to approve permission
     This `rdm commit` is a **separate, plan-repo** git commit — distinct from the source-repo `git commit` of the implementation diff above. Do not conflate the two: one lands your code, the other lands the plan-repo status update.
 
     **Do NOT emit a `Done:` line in the commit message YET** — `rdm-review` adds it on a passing review as the final step. This is a deferred two-stage `Done:` protocol, not a contradiction: finalize defers the `Done:` line, review completes it. An item sitting in `needs-review` is the sentinel that signals a review is pending. Use the exact roadmap slug / phase stem / task slug from the rdm commands you ran earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch, which is left for merge to main (review takes it `needs-review` → `reviewed`, and the merge hook flips it to `done`).
+
+## Auto phase dispatch (--auto, phase flow only)
+
+1. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`) via the `Workflow` tool with `{ roadmap: <slug>, phase: <stem> }`; block for its returned OUTCOME.
+2. Interpret the OUTCOME and persist status (mirrors autopilot's advance/park contract), then land it:
+   - `reviewed` → `./target/debug/rdm phase update <phase> --status reviewed --no-edit --roadmap <slug> --project rdm` then `./target/debug/rdm commit -m "chore(plan): finalize <phase>"`
+   - `rework` → `./target/debug/rdm phase update <phase> --status blocked --reason "[code] <outcome.summary>" --no-edit --roadmap <slug> --project rdm` then `./target/debug/rdm commit -m "chore(plan): park <phase>"`
+   - `escalated` → `./target/debug/rdm phase update <phase> --status blocked --reason "[plan] <outcome.summary>" --no-edit --roadmap <slug> --project rdm` then `./target/debug/rdm commit -m "chore(plan): park <phase>"`
+   - Do NOT add a `Done:` line here — same deferred two-stage protocol as the interactive path above.
+3. Return the OUTCOME JSON verbatim as the final message.
+
+This section applies only to `--auto` + the phase flow. Interactive `rdm-do` and `--auto --task <slug>` are unaffected and keep the steps above unchanged.
+
+**Single-item scope:** unlike the `autopilot` workflow's advance/park loop, this single-item entry point parks on the first `rework`/`escalated` OUTCOME rather than re-dispatching against a rework budget — re-run `rdm-do --auto <roadmap> <phase>` by hand to retry. Skipping the outer rework-retry here is intentional, not an oversight.
 
 ## Side-work
 
