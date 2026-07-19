@@ -151,6 +151,13 @@ assert.throws(() => parseAutopilotArgs({ roadmap: 'rm', maxPhases: 0 }), /positi
 assert.throws(() => parseAutopilotArgs({ roadmap: 'rm', maxPhases: -1 }), /positive integer/, 'maxPhases negative rejected');
 assert.equal(parseAutopilotArgs({ roadmap: 'rm', planOnly: true }).planOnly, true, 'planOnly boolean');
 assert.equal(parseAutopilotArgs({ roadmap: 'rm', globalBudget: 5 }).globalBudget, 5, 'globalBudget override');
+// A caller may stringify the Workflow tool payload; coerce it instead of failing.
+assert.equal(parseAutopilotArgs('{"roadmap":"rm"}').roadmap, 'rm', 'stringified JSON args coerced');
+assert.equal(parseAutopilotArgs('{"roadmap":"rm","maxPhases":"2"}').maxPhases, 2, 'stringified args keep field coercion');
+assert.throws(() => parseAutopilotArgs('not json'), /roadmap slug is required/, 'non-JSON string falls back to actionable error');
+assert.throws(() => parseAutopilotArgs('{}'), /roadmap slug is required/, 'stringified empty object still rejected');
+assert.throws(() => parseAutopilotArgs('"rm"'), /roadmap slug is required/, 'JSON string primitive rejected, not dereferenced');
+assert.throws(() => parseAutopilotArgs('null'), /roadmap slug is required/, 'JSON null rejected without a TypeError');
 
 // --- selectUnestimated -------------------------------------------------------
 assert.deepEqual(

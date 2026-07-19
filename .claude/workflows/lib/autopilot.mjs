@@ -52,8 +52,20 @@ const DEFAULT_MAX_ADVANCE_ATTEMPTS = 2;
 // positive integer or null (unbounded by phase count). planOnly is a boolean.
 // globalBudget defaults to DEFAULT_GLOBAL_BUDGET. It NEVER yields a --land flag —
 // landing is a separate skill, out of autopilot's scope.
+// Defensive: a caller may stringify the Workflow tool payload, so a JSON-string
+// `args` is parsed back into an object. A non-JSON or non-object value falls back
+// to {} so the actionable required-slug error surfaces rather than an opaque
+// SyntaxError or a TypeError on a primitive.
 function parseAutopilotArgs(args) {
-  const a = args || {};
+  let a = args || {};
+  if (typeof a === 'string') {
+    try {
+      a = JSON.parse(a) || {};
+    } catch (e) {
+      a = {};
+    }
+  }
+  if (!a || typeof a !== 'object') a = {};
   const roadmap = a.roadmap || '';
   if (!roadmap) {
     throw new Error('autopilot: a roadmap slug is required (pass { roadmap: "<slug>" }) — the loop never roams');

@@ -374,6 +374,19 @@ if grep -oE "label: '[^']+'" "$WF" | grep -q "label: 'plan:.*implement"; then
 fi
 pass "AC-2: $NLABELS distinct agent labels; separate fetch/plan/implement calls"
 
+# Driver arg hardening: dispatch-phase is invoked DIRECTLY via the Workflow tool
+# (rdm-do --auto, hand-run single phases), so an LLM-authored stringified `args`
+# payload must be coerced before roadmap/phase/planOnly are derived from it.
+grep -q "typeof dispatchArgs === 'string'" "$WF" ||
+    fail "driver must coerce a stringified args payload before deriving roadmap/phase/planOnly"
+grep -q 'JSON.parse(dispatchArgs)' "$WF" ||
+    fail "driver must JSON.parse a stringified args payload"
+if grep -n 'args && args\.roadmap' "$WF" >/dev/null 2>&1; then
+    grep -n 'args && args\.roadmap' "$WF" >&2 || true
+    fail "driver still derives roadmap from the un-coerced args — derive from dispatchArgs instead"
+fi
+pass "driver coerces a stringified args payload; un-coerced form is gone"
+
 # AC-2 (seeding nuance / plan-review strengthening): the implementer prompt is
 # built from the phase body + approved plan doc ONLY — it must never interpolate
 # the plan-review findings/transcript (`planFindings`). Code-review findings on

@@ -27,7 +27,7 @@ This skill is **non-interactive**. Launch unattended runs with `--permission-mod
    - `roadmap` — the required slug (the first positional argument).
    - `maxPhases` — the positive integer following `--max-phases`, when present (omit otherwise).
    - `planOnly` — `true` when `--plan-only` is present (omit otherwise).
-3. **Invoke the `autopilot` workflow** via the Workflow tool with `{ roadmap, maxPhases, planOnly }` (omit `maxPhases`/`planOnly` when not supplied). The workflow:
+3. **Invoke the `autopilot` workflow** via the Workflow tool with `{ roadmap, maxPhases, planOnly }` (omit `maxPhases`/`planOnly` when not supplied). Pass `args` as a JSON object, never a stringified value. The workflow:
    - runs the **estimate pre-pass** over the roadmap's unestimated phases in one parallel fan-out, persisting each difficulty (the model tier derives automatically);
    - loops `./target/debug/rdm next` → the `dispatch-phase` workflow (via the one allowed level of `workflow()` nesting) → interpret the OUTCOME;
    - **advances** a `reviewed` phase (`rdm phase update --status reviewed`, so `rdm next` steps past it), **re-dispatches** a `rework` phase against a per-phase budget and **parks** it `blocked [code]` when the budget is spent, and **parks** an `escalated` phase `blocked [plan]`;

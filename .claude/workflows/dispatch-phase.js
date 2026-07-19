@@ -500,9 +500,21 @@ function renderPlanDoc(planDoc) {
 }
 
 // --- Driver -------------------------------------------------------------------
-const roadmap = (args && args.roadmap) || ''
-const phaseArg = (args && args.phase) || ''
-const planOnly = !!(args && args.planOnly)
+// The Workflow tool contract forbids stringified args, but LLM callers (rdm-do
+// --auto and hand-run single phases) invoke dispatch-phase DIRECTLY and have
+// delivered a JSON string; coerce once, then derive every field from it.
+let dispatchArgs = args || {}
+if (typeof dispatchArgs === 'string') {
+  try {
+    dispatchArgs = JSON.parse(dispatchArgs) || {}
+  } catch (e) {
+    dispatchArgs = {}
+  }
+}
+if (!dispatchArgs || typeof dispatchArgs !== 'object') dispatchArgs = {}
+const roadmap = dispatchArgs.roadmap || ''
+const phaseArg = dispatchArgs.phase || ''
+const planOnly = !!dispatchArgs.planOnly
 
 // Stage 0: fetch the phase metadata + body via a mechanical Bash agent.
 // NOTE: this local is `phaseMeta`, NOT `meta` — the top-level `export const meta`
