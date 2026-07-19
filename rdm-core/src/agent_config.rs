@@ -1747,6 +1747,91 @@ mod tests {
         assert!(content.contains("only the orchestrator edits"));
     }
 
+    /// Suggested default tags paired with the leading fragment of each gloss.
+    /// Bare tag names would match vacuously (`bug` already occurs ~10x per
+    /// template), so assertions anchor to tag+gloss pairs.
+    const DEFAULT_TAG_GLOSSES: &[&str] = &[
+        "`bug` (defect",
+        "`enhancement` (new capability",
+        "`cli` (rdm-cli",
+        "`core` (rdm-core",
+        "`server` (HTTP/MCP",
+        "`web-ui` (browser",
+        "`docs` (documentation",
+    ];
+
+    #[test]
+    fn cli_instructions_instruct_tagging_on_create() {
+        let content = agent_instructions(None, None);
+        assert!(content.contains("**Always pass `--tags` when you create**"));
+        assert!(content.contains("untagged items are invisible to tag-filtered queries"));
+        assert!(content.contains("replaces the existing list"));
+    }
+
+    #[test]
+    fn mcp_instructions_instruct_tagging_on_create() {
+        let content = agent_instructions_mcp(None, None);
+        assert!(content.contains("**Always pass `tags` when you create**"));
+        assert!(content.contains("untagged items are invisible to tag-filtered queries"));
+        assert!(content.contains("replaces the existing list"));
+    }
+
+    #[test]
+    fn instructions_suggest_default_tag_vocabulary() {
+        let cli = agent_instructions(None, None);
+        let mcp = agent_instructions_mcp(None, None);
+        for pair in DEFAULT_TAG_GLOSSES {
+            assert!(cli.contains(pair), "CLI instructions missing gloss {pair}");
+            assert!(mcp.contains(pair), "MCP instructions missing gloss {pair}");
+        }
+        assert!(cli.contains("not a closed set"));
+        assert!(mcp.contains("not a closed set"));
+        assert!(cli.contains("--tags bug,cli"));
+        assert!(mcp.contains("tags: [\"bug\", \"cli\"]"));
+    }
+
+    #[test]
+    fn cli_instructions_teach_tag_list_discovery() {
+        let content = agent_instructions(None, None);
+        assert!(content.contains("rdm tag list --project <PROJECT>"));
+        assert!(
+            content.contains("Tags are compared verbatim — `CLI` and `cli` are different tags.")
+        );
+        // Superseded discovery phrasing is gone.
+        assert!(!content.contains("rdm search \"\" --tag <candidate>"));
+
+        let scoped = agent_instructions(Some("myproj"), None);
+        assert!(scoped.contains("rdm tag list --project myproj"));
+    }
+
+    #[test]
+    fn mcp_instructions_teach_tag_list_discovery() {
+        let content = agent_instructions_mcp(None, None);
+        assert!(content.contains("rdm tag list"));
+        // No such MCP tool exists — don't invent one.
+        assert!(!content.contains("rdm_tag_list"));
+    }
+
+    #[test]
+    fn instructions_leave_no_unsubstituted_placeholders() {
+        for content in [
+            agent_instructions(None, None),
+            agent_instructions(Some("myproj"), None),
+        ] {
+            assert!(!content.contains("{proj_flag}"));
+            assert!(!content.contains("{proj_param}"));
+        }
+        for content in [
+            agent_instructions_mcp(None, None),
+            agent_instructions_mcp(Some("myproj"), None),
+        ] {
+            // `agent_instructions_mcp` only substitutes `{proj_param}`; a
+            // `{proj_flag}` in the MCP template would leak verbatim.
+            assert!(!content.contains("{proj_flag}"));
+            assert!(!content.contains("{proj_param}"));
+        }
+    }
+
     #[test]
     fn skill_plan_review_clears_tag_on_pass() {
         let skills = generate_skills(&SkillOptions {

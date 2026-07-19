@@ -9,6 +9,7 @@ The plan repo location is set via `RDM_ROOT` environment variable or `--root` fl
 ## Discovering work
 
 ```bash
+rdm tag list {proj_flag}                   # list every tag in use, with counts
 rdm roadmap list {proj_flag}              # list all roadmaps with progress
 rdm roadmap list {proj_flag} --tag auth    # list roadmaps carrying tag "auth"
 rdm task list {proj_flag}                  # list open/in-progress tasks
@@ -105,11 +106,24 @@ For `phase create`, pass a bare slug like `hook-commit-bug` — rdm prepends `ph
 
 `--tags` is comma-separated. Pass `--tags ""` (or omit it) for no tags. On `update`, `--tags` replaces the existing list.
 
+**Always pass `--tags` when you create** a roadmap, phase, or task — untagged items are invisible to tag-filtered queries. Because `--tags` on `update` replaces the existing list rather than adding to it, pass the full set (old tags plus the new one) whenever you retro-fit a tag.
+
 ## Tagging convention
 
+- Tag at create time, not later: every `roadmap create` / `phase create` / `task create` should carry at least one `--tags` value, so the item is discoverable from the moment it exists.
 - Tag work to make it findable across roadmaps, phases, and tasks (e.g. all auth-related items get `auth`).
 - Use lowercase kebab-case (`bug`, `auth`, `tech-debt`).
-- Prefer existing tags in the project — run `rdm search "" --tag <candidate> {proj_flag}` to check what's already in use before inventing a new one.
+- Suggested starting vocabulary (suggestions, not a closed set — rdm does not validate tags):
+  - `bug` (defect in existing behavior)
+  - `enhancement` (new capability or improvement)
+  - `cli` (rdm-cli surface)
+  - `core` (rdm-core library)
+  - `server` (HTTP/MCP server surface)
+  - `web-ui` (browser UI)
+  - `docs` (documentation)
+
+  Combine freely (e.g. `--tags bug,cli`); prefer a project-specific tag that already exists over a new one.
+- Before inventing a new tag, run `rdm tag list {proj_flag}` to see every tag already in use with its item count, and reuse a match. Tags are compared verbatim — `CLI` and `cli` are different tags.
 
 ## Body content
 

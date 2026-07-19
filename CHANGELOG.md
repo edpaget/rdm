@@ -35,6 +35,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   agent consumption. This answers "which tags exist?"; `rdm search "" --tag <name>`
   answers "what carries this tag?".
 
+### Changed
+
+- `rdm agent-config` output (both the CLI and `--mcp` variants) now teaches
+  tagging as a create-time habit: it tells agents to always pass `--tags` /
+  `tags: [...]` when creating a roadmap, phase, or task, warns that `--tags` on
+  update *replaces* the existing list, suggests a starting vocabulary of `bug`,
+  `enhancement`, `cli`, `core`, `server`, `web-ui`, and `docs` (framed as
+  suggestions, not a closed set), and points at `rdm tag list` — instead of the
+  previous `rdm search "" --tag <candidate>` — for discovering the tags a project
+  already uses before inventing a new one.
+
 ### Added
 
 - Tasks can now be `blocked`. `TaskStatus` gains a `blocked` variant, mirroring

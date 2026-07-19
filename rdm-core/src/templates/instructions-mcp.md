@@ -50,6 +50,8 @@ Use `rdm_search` for fuzzy matching against titles and body content. Tags are a 
 
 The `body` parameter accepts full Markdown including multiline content. The `tags` parameter is optional. On `*_update`, passing `tags: [...]` replaces the existing list, and `clear_tags: true` removes all tags (roadmap and phase only; task uses `tags: []`).
 
+**Always pass `tags` when you create** — on `rdm_roadmap_create` / `rdm_phase_create` / `rdm_task_create`, e.g. `tags: ["bug", "cli"]` — untagged items are invisible to tag-filtered queries. Because `tags` on `*_update` replaces the existing list rather than adding to it, pass the full set (old tags plus the new one) whenever you retro-fit a tag.
+
 `*_update`, `*_create`, and other mutation tools only **stage** their change to disk — none of them commit to git on their own (see "Committing changes" below). Capture the `Commit: <sha>` line from `rdm_commit`'s response, not from the mutation tool, when the edit resolves a review comment (see "Document reviews" below).
 
 ## Committing changes
@@ -70,9 +72,20 @@ Reviews are structured feedback on a roadmap, phase, or task document, with inli
 
 ## Tagging convention
 
+- Tag at create time, not later: every `rdm_roadmap_create` / `rdm_phase_create` / `rdm_task_create` call should carry at least one `tags` value, so the item is discoverable from the moment it exists.
 - Tag work to make it findable across roadmaps, phases, and tasks (e.g. all auth-related items get `auth`).
 - Use lowercase kebab-case (`bug`, `auth`, `tech-debt`).
-- Prefer existing tags in the project — call `rdm_search` with `query: "", tags: ["<candidate>"], project: {proj_param}` to check what's already in use before inventing a new one.
+- Suggested starting vocabulary (suggestions, not a closed set — rdm does not validate tags):
+  - `bug` (defect in existing behavior)
+  - `enhancement` (new capability or improvement)
+  - `cli` (rdm-cli surface)
+  - `core` (rdm-core library)
+  - `server` (HTTP/MCP server surface)
+  - `web-ui` (browser UI)
+  - `docs` (documentation)
+
+  Combine freely (e.g. `tags: ["bug", "cli"]`); prefer a project-specific tag that already exists over a new one.
+- Before inventing a new tag, check what already exists: call `rdm_search` with `query: "", tags: ["<candidate>"], project: {proj_param}`. If you have a shell, `rdm tag list` (CLI) prints the full tag inventory with counts. Tags are compared verbatim — `CLI` and `cli` are different tags.
 
 ## Planning workflow
 

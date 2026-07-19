@@ -213,6 +213,119 @@ fn agent_config_mcp_demonstrates_tags() {
         .stdout(predicate::str::contains("kebab-case"));
 }
 
+/// The seven suggested default tags, each paired with the leading fragment of
+/// its gloss. Assertions anchor to tag+gloss pairs rather than bare tag names —
+/// bare `bug`/`cli`/`server` already occur many times in both templates, so a
+/// bare `contains` would pass vacuously.
+const DEFAULT_TAG_GLOSSES: &[&str] = &[
+    "`bug` (defect",
+    "`enhancement` (new capability",
+    "`cli` (rdm-cli",
+    "`core` (rdm-core",
+    "`server` (HTTP/MCP",
+    "`web-ui` (browser",
+    "`docs` (documentation",
+];
+
+#[test]
+fn agent_config_cli_instructs_tagging_on_create() {
+    rdm()
+        .arg("agent-config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "**Always pass `--tags` when you create**",
+        ))
+        .stdout(predicate::str::contains(
+            "untagged items are invisible to tag-filtered queries",
+        ))
+        .stdout(predicate::str::contains("replaces the existing list"));
+}
+
+#[test]
+fn agent_config_mcp_instructs_tagging_on_create() {
+    rdm()
+        .arg("agent-config")
+        .arg("--mcp")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "**Always pass `tags` when you create**",
+        ))
+        .stdout(predicate::str::contains(
+            "untagged items are invisible to tag-filtered queries",
+        ))
+        .stdout(predicate::str::contains("replaces the existing list"));
+}
+
+#[test]
+fn agent_config_cli_suggests_default_tags() {
+    let out = rdm().arg("agent-config").assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    for pair in DEFAULT_TAG_GLOSSES {
+        assert!(
+            stdout.contains(pair),
+            "CLI agent-config output is missing the suggested tag gloss {pair}"
+        );
+    }
+    assert!(stdout.contains("not a closed set"));
+    assert!(stdout.contains("--tags bug,cli"));
+}
+
+#[test]
+fn agent_config_mcp_suggests_default_tags() {
+    let out = rdm().arg("agent-config").arg("--mcp").assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    for pair in DEFAULT_TAG_GLOSSES {
+        assert!(
+            stdout.contains(pair),
+            "MCP agent-config output is missing the suggested tag gloss {pair}"
+        );
+    }
+    assert!(stdout.contains("not a closed set"));
+    assert!(stdout.contains("tags: [\"bug\", \"cli\"]"));
+}
+
+#[test]
+fn agent_config_cli_teaches_tag_list_discovery() {
+    rdm()
+        .arg("agent-config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rdm tag list --project <PROJECT>"))
+        .stdout(predicate::str::contains(
+            "Tags are compared verbatim — `CLI` and `cli` are different tags.",
+        ))
+        // The superseded discovery phrasing is gone from this template.
+        .stdout(predicate::str::contains("rdm search \"\" --tag <candidate>").not());
+}
+
+#[test]
+fn agent_config_tag_list_respects_project_flag() {
+    rdm()
+        .arg("agent-config")
+        .arg("--project")
+        .arg("myproj")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rdm tag list --project myproj"));
+}
+
+#[test]
+fn agent_config_mcp_teaches_tag_list_discovery() {
+    rdm()
+        .arg("agent-config")
+        .arg("--mcp")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rdm tag list"))
+        // There is no `rdm_tag_list` MCP tool — don't invent one.
+        .stdout(predicate::str::contains("rdm_tag_list").not())
+        // The MCP renderer never substitutes `{proj_flag}`; a stray placeholder
+        // would leak verbatim into agent-facing output.
+        .stdout(predicate::str::contains("{proj_flag}").not());
+}
+
 #[test]
 fn agent_config_contains_status_transitions() {
     rdm()
