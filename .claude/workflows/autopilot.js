@@ -438,21 +438,31 @@ const NEXT_SCHEMA = {
   },
 }
 
-// PHASE_LIST — the parsed `rdm phase list` JSON for the estimate pre-pass.
+// PHASE_LIST — the parsed `rdm phase list` JSON for the estimate pre-pass,
+// wrapped under a `phases` key. Anthropic custom tools require
+// input_schema.type === 'object'; a top-level `type: 'array'` 400s, so the
+// array is nested under `phases` and unwrapped in the estimateList realDep.
 const PHASE_LIST_SCHEMA = {
-  type: 'array',
-  items: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['stem', 'status'],
-    properties: {
-      number: { type: 'integer' },
-      stem: { type: 'string' },
-      title: { type: 'string' },
-      status: { type: 'string' },
-      tags: { type: 'array', items: { type: 'string' } },
-      difficulty: { type: 'string' },
-      model: { type: 'string' },
+  type: 'object',
+  additionalProperties: false,
+  required: ['phases'],
+  properties: {
+    phases: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['stem', 'status'],
+        properties: {
+          number: { type: 'integer' },
+          stem: { type: 'string' },
+          title: { type: 'string' },
+          status: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          difficulty: { type: 'string' },
+          model: { type: 'string' },
+        },
+      },
     },
   },
 }
@@ -491,7 +501,19 @@ const realDeps = {
     log(msg)
   },
   estimateList: async function (slug) {
-    return agent(buildEstimateListPrompt(slug), { label: 'estimate:list', phase: 'Fetch', schema: PHASE_LIST_SCHEMA })
+    // The in-block prompt builder buildEstimateListPrompt ("Return the parsed
+    // JSON array verbatim") is deliberately left unchanged: the StructuredOutput
+    // tool schema — not the prompt text — governs the agent's output shape, and
+    // editing that prompt would land inside the byte-copied autopilot-loop block
+    // and force a matching lib/autopilot.mjs edit + re-stamp (out of scope here).
+    // We wrap the array under `phases` in PHASE_LIST_SCHEMA and unwrap it here so
+    // the in-block selectUnestimated still receives a plain array.
+    const r = await agent(buildEstimateListPrompt(slug), {
+      label: 'estimate:list',
+      phase: 'Fetch',
+      schema: PHASE_LIST_SCHEMA,
+    })
+    return (r && r.phases) || []
   },
   parallelEstimate: async function (unestimated) {
     return parallel(

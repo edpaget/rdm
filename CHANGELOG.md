@@ -227,6 +227,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The `autopilot` Workflow's estimate pre-pass now persists per-phase difficulty
+  and model tiers instead of silently no-opping. Its `[estimate:list]` agent was
+  handed a StructuredOutput schema with a top-level `type: 'array'`, which the
+  Anthropic tool API rejects (`input_schema.type` must be `'object'`); every call
+  400'd, so no tiers were recorded and all phases dispatched at the default
+  `medium` tier. The phase-list schema now wraps the array under a `phases` key
+  and the pre-pass unwraps it, so a live autopilot run over an unestimated
+  roadmap records real Difficulty/Model tiers.
 - `rdm roadmap update`, `rdm phase update`, and `rdm task update` no longer read
   stdin or open the interactive editor when neither `--body` nor `--clear-body`
   is given. A tags-only or status-only update (e.g. `rdm task update <slug>

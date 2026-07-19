@@ -25,7 +25,9 @@
 #   3. STATIC INVARIANTS — grep-based assertions: exactly one nested
 #                   workflow('dispatch-phase') call; dispatch-phase.js nests none;
 #                   no import/require; both markers; advance/park status writes; no
-#                   land/merge/main-mutation prompt string; meta.phases parity.
+#                   land/merge/main-mutation prompt string; no *_SCHEMA handed to
+#                   agent() uses a top-level type:'array' (Anthropic tools require
+#                   'object') with a planted-mutation self-test; meta.phases parity.
 #   4. MODULE PARSE — autopilot.js loads under module semantics (no SyntaxError),
 #                   with a planted duplicate-meta self-test.
 #
@@ -629,6 +631,40 @@ done
 printf 'git merge main\n' >"$TMP/planted-merge.js"
 grep -qF -- 'git merge' "$TMP/planted-merge.js" || fail "main-mutation detector broken — grep missed a planted 'git merge'"
 pass "AC-6: advance/park status writes present; no git-merge/push/checkout-main/Done string; detector catches a planted one"
+
+# StructuredOutput schema shape: NO top-level *_SCHEMA handed to agent() may
+# declare `type: 'array'`. Anthropic custom tools require input_schema.type ===
+# 'object'; a top-level array 400s the StructuredOutput tool (this is the bug
+# that silently no-op'd autopilot's estimate pre-pass — every [estimate:list]
+# call 400'd, so no difficulty/model tiers persisted). The detector anchors to
+# the TOP-LEVEL type ONLY: it reads the line immediately following each
+# `const NAME_SCHEMA = {` header, so legitimately-nested `type: 'array'`
+# properties (unmet, tags, phases) are never flagged. Formatting assumption:
+# each schema is written as `const NAME_SCHEMA = {` with its top-level `type` on
+# the immediately following line (NEXT/PHASE_LIST/ESTIMATE/ACK all follow this
+# shape); a reflowed single-line definition would evade the grep.
+schema_array_offenders() {
+    awk '
+        /^const [A-Za-z_]+_SCHEMA = \{/ { name = $2; expect = 1; next }
+        expect == 1 { if ($0 ~ /type: .array./) print name; expect = 0 }
+    ' "$1"
+}
+OFFENDERS=$(schema_array_offenders "$WF" || true)
+if [ -n "$OFFENDERS" ]; then
+    printf 'top-level type:array schema(s): %s\n' "$(echo "$OFFENDERS" | tr '\n' ' ')" >&2
+    fail "no *_SCHEMA handed to agent() may use a top-level type:'array' (Anthropic tools require 'object'); offending: $OFFENDERS"
+fi
+# The unwrap half: estimateList must peel the PHASE_LIST_SCHEMA wrapper so the
+# in-block selectUnestimated still receives a plain array.
+grep -q 'r.phases' "$WF" || fail "estimateList must unwrap the PHASE_LIST_SCHEMA wrapper (expected 'r.phases' in autopilot.js)"
+# Planted-mutation self-test: flip every top-level `type: 'object'` back to
+# 'array' in a scratch copy and confirm the detector fires (proving it is not a
+# no-op).
+sed "s/^  type: 'object',/  type: 'array',/" "$WF" >"$TMP/wf.array.scratch"
+if [ -z "$(schema_array_offenders "$TMP/wf.array.scratch")" ]; then
+    fail "top-level-array detector did NOT fire on a planted type:'array' schema"
+fi
+pass "no *_SCHEMA uses a top-level type:'array'; estimateList unwraps r.phases; detector catches a planted array schema"
 
 # meta.phases must list EXACTLY the distinct emitted `phase:` literals.
 DECLARED_PHASES=$(declared_phases "$WF")
