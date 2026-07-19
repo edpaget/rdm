@@ -6,7 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.17.0] - 2026-07-17
+### Added
+
+- Tasks can now be `blocked`. `TaskStatus` gains a `blocked` variant, mirroring
+  phases: `rdm task update <slug> --status blocked --reason "…"` parks a task with
+  a recorded reason (stored in the task's `close_reason`, preserved across later
+  status changes and cleared with `--clear-reason`). `blocked` is non-terminal, so
+  a blocked task still shows in the default `rdm task list` "active work" view, and
+  it is accepted anywhere a task status is parsed (CLI `--status` filter, MCP
+  `rdm_task_update`/`rdm_task_list`, and the web status dropdown). This lets the
+  autonomous workflow lane park a task the same way it parks a phase.
 
 ### Added
 

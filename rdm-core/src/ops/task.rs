@@ -12,13 +12,14 @@ use crate::store::{DirEntryKind, Store};
 ///
 /// Each field narrows the result set independently; a task is kept only if it
 /// satisfies all populated criteria. The default value (all fields empty) keeps
-/// the "active work" set — open, in-progress, needs-review, or reviewed tasks
-/// of any priority and tags.
+/// the "active work" set — every non-terminal task (open, in-progress,
+/// needs-review, reviewed, or blocked) of any priority and tags.
 #[derive(Debug, Clone, Default)]
 pub struct TaskFilter {
-    /// Status criterion. `None` keeps active tasks — open, in-progress,
-    /// needs-review, or reviewed (the "active work" default); `Some(All)` keeps
-    /// any status; `Some(Status(s))` keeps only tasks with exactly status `s`.
+    /// Status criterion. `None` keeps active tasks — every non-terminal task
+    /// (open, in-progress, needs-review, reviewed, or blocked; the "active work"
+    /// default); `Some(All)` keeps any status; `Some(Status(s))` keeps only
+    /// tasks with exactly status `s`.
     pub status: Option<TaskStatusFilter>,
     /// Priority criterion. `None` keeps tasks of any priority; `Some(p)` keeps
     /// only tasks with exactly priority `p`.
@@ -31,8 +32,9 @@ pub struct TaskFilter {
 /// Returns whether `task` satisfies every populated criterion in `filter`.
 ///
 /// Status semantics match the CLI's `task list`: `filter.status` of `None`
-/// keeps active tasks (open, in-progress, needs-review, or reviewed), `Some(All)`
-/// keeps any status, and `Some(Status(s))` keeps an exact match. Priority of
+/// keeps active tasks (every non-terminal task — open, in-progress, needs-review,
+/// reviewed, or blocked), `Some(All)` keeps any status, and `Some(Status(s))`
+/// keeps an exact match. Priority of
 /// `None` matches any. Tags are matched as a logical AND — every tag in
 /// `filter.tags` must be present on the task (an empty list imposes no tag constraint).
 pub fn task_matches(task: &Task, filter: &TaskFilter) -> bool {

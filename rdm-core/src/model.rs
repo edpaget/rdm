@@ -120,6 +120,8 @@ pub enum TaskStatus {
     Reviewed,
     /// Task is complete.
     Done,
+    /// Task is blocked by an external dependency or an undecided question.
+    Blocked,
     /// Task was closed without completing.
     WontFix,
 }
@@ -143,6 +145,7 @@ impl fmt::Display for TaskStatus {
             TaskStatus::NeedsReview => write!(f, "needs-review"),
             TaskStatus::Reviewed => write!(f, "reviewed"),
             TaskStatus::Done => write!(f, "done"),
+            TaskStatus::Blocked => write!(f, "blocked"),
             TaskStatus::WontFix => write!(f, "wont-fix"),
         }
     }
@@ -158,11 +161,12 @@ impl FromStr for TaskStatus {
             "needs-review" => Ok(TaskStatus::NeedsReview),
             "reviewed" => Ok(TaskStatus::Reviewed),
             "done" => Ok(TaskStatus::Done),
+            "blocked" => Ok(TaskStatus::Blocked),
             "wont-fix" => Ok(TaskStatus::WontFix),
             other => Err(ParseError::new(
                 "task status",
                 other,
-                "open, in-progress, needs-review, reviewed, done, or wont-fix",
+                "open, in-progress, needs-review, reviewed, done, blocked, or wont-fix",
             )),
         }
     }
@@ -996,6 +1000,7 @@ mod tests {
         assert!(!TaskStatus::InProgress.is_terminal());
         assert!(!TaskStatus::NeedsReview.is_terminal());
         assert!(!TaskStatus::Reviewed.is_terminal());
+        assert!(!TaskStatus::Blocked.is_terminal());
     }
 
     #[test]
@@ -1006,6 +1011,7 @@ mod tests {
             (TaskStatus::NeedsReview, "needs-review"),
             (TaskStatus::Reviewed, "reviewed"),
             (TaskStatus::Done, "done"),
+            (TaskStatus::Blocked, "blocked"),
             (TaskStatus::WontFix, "wont-fix"),
         ];
         for (variant, expected) in variants {
@@ -1162,6 +1168,7 @@ mod tests {
             (TaskStatus::NeedsReview, "needs-review"),
             (TaskStatus::Reviewed, "reviewed"),
             (TaskStatus::Done, "done"),
+            (TaskStatus::Blocked, "blocked"),
             (TaskStatus::WontFix, "wont-fix"),
         ];
         for (variant, expected_yaml) in variants {

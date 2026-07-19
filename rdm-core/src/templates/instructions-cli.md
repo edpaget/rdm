@@ -206,6 +206,8 @@ below is the intended review lifecycle, offered as guidance.
 - `needs-review` → `in-progress` — review found changes to make
 - `reviewed` → `done` — merged to main (the `Done:` merge hook flips this)
 - `in-progress` → `done` — work is complete
+- `in-progress` → `blocked` — waiting on an external dependency
+- `blocked` → `in-progress` — blocker resolved
 - `in-progress` → `wont-fix` — decided not to do
 - `open` → `wont-fix` — decided not to do before starting
 - `done` and `wont-fix` are terminal

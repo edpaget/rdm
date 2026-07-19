@@ -172,7 +172,7 @@ struct TaskShowParams {
 struct TaskListParams {
     /// The project name.
     project: String,
-    /// Filter by status (e.g. "open", "in-progress", "needs-review", "reviewed", "done", "wont-fix", or "all"). Omit for default (open + in-progress).
+    /// Filter by status (e.g. "open", "in-progress", "needs-review", "reviewed", "done", "blocked", "wont-fix", or "all"). Omit for default (open + in-progress).
     status: Option<String>,
     /// Filter by priority (e.g. "low", "medium", "high", "critical").
     priority: Option<String>,
@@ -330,7 +330,7 @@ struct TaskUpdateParams {
     project: String,
     /// The task slug.
     task: String,
-    /// New status: "open", "in-progress", "needs-review", "reviewed", "done", or "wont-fix".
+    /// New status: "open", "in-progress", "needs-review", "reviewed", "done", "blocked", or "wont-fix".
     status: Option<String>,
     /// New priority: "low", "medium", "high", or "critical".
     priority: Option<String>,

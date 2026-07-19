@@ -71,6 +71,7 @@ pub fn task_status_class(status: &rdm_core::model::TaskStatus) -> &'static str {
         rdm_core::model::TaskStatus::NeedsReview => "needs-review",
         rdm_core::model::TaskStatus::Reviewed => "reviewed",
         rdm_core::model::TaskStatus::Done => "done",
+        rdm_core::model::TaskStatus::Blocked => "blocked",
         rdm_core::model::TaskStatus::WontFix => "wont-fix",
     }
 }
@@ -117,8 +118,8 @@ pub fn phase_status_options(current: &rdm_core::model::PhaseStatus) -> Vec<Statu
 /// Build the option list for a task status `<select>`, in lifecycle order.
 ///
 /// Returns all task statuses (`open`, `in-progress`, `needs-review`,
-/// `reviewed`, `done`, `wont-fix`), marking the entry matching `current`
-/// as selected.
+/// `reviewed`, `done`, `blocked`, `wont-fix`), marking the entry matching
+/// `current` as selected.
 /// Values are the canonical kebab-case strings parsed by `TaskStatus::from_str`;
 /// labels are sentence-case for display.
 pub fn task_status_options(current: &rdm_core::model::TaskStatus) -> Vec<StatusOption> {
@@ -129,6 +130,7 @@ pub fn task_status_options(current: &rdm_core::model::TaskStatus) -> Vec<StatusO
         ("needs-review", "Needs review", TaskStatus::NeedsReview),
         ("reviewed", "Reviewed", TaskStatus::Reviewed),
         ("done", "Done", TaskStatus::Done),
+        ("blocked", "Blocked", TaskStatus::Blocked),
         ("wont-fix", "Won't fix", TaskStatus::WontFix),
     ]
     .into_iter()
@@ -760,6 +762,7 @@ mod tests {
                 "needs-review",
                 "reviewed",
                 "done",
+                "blocked",
                 "wont-fix"
             ]
         );

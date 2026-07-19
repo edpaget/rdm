@@ -178,6 +178,7 @@ pub fn task_status_label(status: TaskStatus) -> String {
         TaskStatus::NeedsReview => ("[?]", "needs-review"),
         TaskStatus::Reviewed => ("[+]", "reviewed"),
         TaskStatus::Done => ("[x]", "done"),
+        TaskStatus::Blocked => ("[!]", "blocked"),
         TaskStatus::WontFix => ("[-]", "wont-fix"),
     };
     format!("{symbol} {label}")
@@ -253,6 +254,7 @@ mod tests {
         );
         assert_eq!(task_status_label(TaskStatus::Reviewed), "[+] reviewed");
         assert_eq!(task_status_label(TaskStatus::Done), "[x] done");
+        assert_eq!(task_status_label(TaskStatus::Blocked), "[!] blocked");
         assert_eq!(task_status_label(TaskStatus::WontFix), "[-] wont-fix");
     }
 
@@ -264,6 +266,7 @@ mod tests {
             TaskStatus::NeedsReview,
             TaskStatus::Reviewed,
             TaskStatus::Done,
+            TaskStatus::Blocked,
             TaskStatus::WontFix,
         ] {
             assert!(task_status_label(status).is_ascii());

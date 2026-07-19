@@ -371,7 +371,7 @@ If the task instead belongs inside an already-existing thematic roadmap, fold it
 
 **Phase statuses:** `not-started` → `in-progress` → `needs-review` → `reviewed` → `done` (or `blocked`, or `wont-fix`). `done` and `wont-fix` are terminal.
 
-**Task statuses:** `open` → `in-progress` → `needs-review` → `reviewed` → `done` (or `wont-fix`). `done` and `wont-fix` are terminal.
+**Task statuses:** `open` → `in-progress` → `needs-review` → `reviewed` → `done` (or `blocked`, or `wont-fix`). `done` and `wont-fix` are terminal.
 
 ### Workflow
 

@@ -742,8 +742,9 @@ pub(crate) enum TaskCommand {
         /// Git commit SHA to associate with this task.
         #[arg(long)]
         commit: Option<String>,
-        /// Reason to record when closing/retiring this task (e.g. why it was
-        /// marked wont-fix). Preserved across later status changes.
+        /// Reason to record when parking this task blocked or closing/retiring it
+        /// (e.g. why it is blocked, or why it was marked wont-fix). Preserved
+        /// across later status changes.
         #[arg(long, conflicts_with = "clear_reason")]
         reason: Option<String>,
         /// Remove the recorded close reason from this task.
@@ -778,7 +779,7 @@ pub(crate) enum TaskCommand {
         /// Project to list tasks for.
         #[arg(long)]
         project: Option<String>,
-        /// Filter by status (open, in-progress, needs-review, reviewed, done, wont-fix, or all).
+        /// Filter by status (open, in-progress, needs-review, reviewed, done, blocked, wont-fix, or all).
         #[arg(long)]
         status: Option<TaskStatusFilter>,
         /// Filter by priority.

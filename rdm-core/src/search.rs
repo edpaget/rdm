@@ -108,7 +108,7 @@ impl FromStr for ItemStatus {
             (None, None) => Err(ParseError::new(
                 "status",
                 s,
-                "a phase status (not-started, in-progress, needs-review, reviewed, done, blocked, or wont-fix) or a task status (open, in-progress, needs-review, reviewed, done, or wont-fix)",
+                "a phase status (not-started, in-progress, needs-review, reviewed, done, blocked, or wont-fix) or a task status (open, in-progress, needs-review, reviewed, done, blocked, or wont-fix)",
             )),
         }
     }
@@ -433,10 +433,15 @@ mod tests {
             "done".parse::<ItemStatus>().unwrap(),
             ItemStatus::Either(PhaseStatus::Done, TaskStatus::Done)
         );
-        // "blocked" is phase-only; "open" is task-only.
+        // "blocked" is valid for both phases and tasks → kind-agnostic.
         assert_eq!(
             "blocked".parse::<ItemStatus>().unwrap(),
-            ItemStatus::Phase(PhaseStatus::Blocked)
+            ItemStatus::Either(PhaseStatus::Blocked, TaskStatus::Blocked)
+        );
+        // "not-started" is phase-only; "open" is task-only.
+        assert_eq!(
+            "not-started".parse::<ItemStatus>().unwrap(),
+            ItemStatus::Phase(PhaseStatus::NotStarted)
         );
         assert_eq!(
             "open".parse::<ItemStatus>().unwrap(),
