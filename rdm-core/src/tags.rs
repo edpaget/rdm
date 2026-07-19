@@ -1,10 +1,15 @@
-//! Reserved-tag primitives.
+//! Tag primitives: the shared tag-filter predicate plus reserved-tag helpers.
 //!
-//! Some tags carry internal, tool-managed meaning rather than being purely
-//! user-facing labels. This module defines those reserved names and the pure
-//! helpers that stamp/clear them, so callers (CLI command handlers today,
-//! skills/hooks in later phases) manipulate them consistently instead of
-//! hand-rolling `Vec<String>` mutations.
+//! [`matches_all_tags`] is the single source of truth for `--tag` filtering
+//! across every rdm surface, so AND semantics, case sensitivity, and the
+//! empty-filter contract cannot drift between the CLI, core ops, search, and
+//! the MCP tools.
+//!
+//! Some tags additionally carry internal, tool-managed meaning rather than
+//! being purely user-facing labels. This module also defines those reserved
+//! names and the pure helpers that stamp/clear them, so callers (CLI command
+//! handlers today, skills/hooks in later phases) manipulate them consistently
+//! instead of hand-rolling `Vec<String>` mutations.
 //!
 //! This is a documentation-level contract, not an enforced one: nothing
 //! prevents a user from passing a reserved tag via `--tags` themselves (the
@@ -18,6 +23,51 @@
 /// Internal/reserved: user code should treat this name as owned by rdm's
 /// plan-review workflow rather than inventing a tag that collides with it.
 pub const NEEDS_PLAN_REVIEW_TAG: &str = "needs-plan-review";
+
+/// Returns whether `item_tags` carries **every** tag in `required` (logical
+/// AND).
+///
+/// This is the single source of truth for tag filtering across every rdm
+/// surface (`task list`, `roadmap list`, `rdm list`, `search`, and the MCP
+/// list tools), so the semantics below cannot drift between them:
+///
+/// - An empty `required` imposes no constraint and always matches — zero
+///   `--tag` flags is the identity filter, never "items with no tags".
+/// - An item with `None` tags, or an empty tag list, never matches a
+///   non-empty `required`.
+/// - Matching is **exact and case-sensitive**: `--tag Bug` does not match an
+///   item tagged `bug`. This deliberately differs from the fuzzy matching
+///   `search` applies to its query text; tags are a hard pre-filter.
+/// - Repeating a tag in `required` is idempotent.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::tags::matches_all_tags;
+///
+/// let item = vec!["bug".to_string(), "ui".to_string()];
+/// assert!(matches_all_tags(Some(&item), &[]));
+/// assert!(matches_all_tags(Some(&item), &["bug".to_string()]));
+/// assert!(matches_all_tags(
+///     Some(&item),
+///     &["bug".to_string(), "ui".to_string()]
+/// ));
+/// assert!(!matches_all_tags(
+///     Some(&item),
+///     &["bug".to_string(), "perf".to_string()]
+/// ));
+/// assert!(!matches_all_tags(None, &["bug".to_string()]));
+/// ```
+#[must_use]
+pub fn matches_all_tags(item_tags: Option<&[String]>, required: &[String]) -> bool {
+    if required.is_empty() {
+        return true;
+    }
+    match item_tags {
+        None => false,
+        Some(tags) => required.iter().all(|t| tags.iter().any(|it| it == t)),
+    }
+}
 
 /// Stamps [`NEEDS_PLAN_REVIEW_TAG`] onto `tags` when `enabled` is `true`.
 ///
@@ -64,6 +114,61 @@ pub fn clear_plan_review_tag(tags: Option<Vec<String>>) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tags(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn matches_all_tags_empty_required_always_matches() {
+        assert!(matches_all_tags(None, &[]));
+        assert!(matches_all_tags(Some(&[]), &[]));
+        assert!(matches_all_tags(Some(&tags(&["bug"])), &[]));
+    }
+
+    #[test]
+    fn matches_all_tags_single_tag_match() {
+        assert!(matches_all_tags(
+            Some(&tags(&["bug", "ui"])),
+            &tags(&["ui"])
+        ));
+    }
+
+    #[test]
+    fn matches_all_tags_requires_every_tag() {
+        let item = tags(&["ui", "bug", "perf"]);
+        assert!(matches_all_tags(Some(&item), &tags(&["bug", "ui"])));
+        // Partial match is not enough.
+        assert!(!matches_all_tags(
+            Some(&tags(&["bug"])),
+            &tags(&["bug", "ui"])
+        ));
+    }
+
+    #[test]
+    fn matches_all_tags_none_item_tags_never_match_non_empty_filter() {
+        assert!(!matches_all_tags(None, &tags(&["bug"])));
+    }
+
+    #[test]
+    fn matches_all_tags_empty_item_tags_never_match_non_empty_filter() {
+        assert!(!matches_all_tags(Some(&[]), &tags(&["bug"])));
+    }
+
+    #[test]
+    fn matches_all_tags_duplicate_required_is_idempotent() {
+        let item = tags(&["bug"]);
+        assert_eq!(
+            matches_all_tags(Some(&item), &tags(&["bug"])),
+            matches_all_tags(Some(&item), &tags(&["bug", "bug"])),
+        );
+        assert!(matches_all_tags(Some(&item), &tags(&["bug", "bug"])));
+    }
+
+    #[test]
+    fn matches_all_tags_is_case_sensitive() {
+        assert!(!matches_all_tags(Some(&tags(&["bug"])), &tags(&["Bug"])));
+    }
 
     #[test]
     fn stamp_plan_review_tag_disabled_is_noop() {

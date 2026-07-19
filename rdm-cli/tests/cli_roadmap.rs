@@ -1721,3 +1721,193 @@ fn roadmap_update_empty_title_rejected() {
         .success()
         .stdout(predicate::str::contains("Keep Me"));
 }
+
+fn create_tagged_roadmap(dir: &TempDir, slug: &str, title: &str, tags: &str) {
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            slug,
+            "--title",
+            title,
+            "--project",
+            "fbm",
+            "--tags",
+            tags,
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+}
+
+fn create_plain_roadmap(dir: &TempDir, slug: &str, title: &str) {
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            slug,
+            "--title",
+            title,
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn roadmap_list_filter_by_tag() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "auth-rm", "Auth", "auth");
+    create_plain_roadmap(&dir, "misc-rm", "Misc");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "list", "--project", "fbm", "--tag", "auth"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("auth-rm").and(predicate::str::contains("misc-rm").not()));
+}
+
+#[test]
+fn roadmap_list_multi_tag_is_and() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "both-rm", "Both", "bug,ui");
+    create_tagged_roadmap(&dir, "bug-only-rm", "Bug only", "bug");
+    create_tagged_roadmap(&dir, "ui-only-rm", "UI only", "ui");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "list",
+            "--project",
+            "fbm",
+            "--tag",
+            "bug",
+            "--tag",
+            "ui",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("both-rm")
+                .and(predicate::str::contains("bug-only-rm").not())
+                .and(predicate::str::contains("ui-only-rm").not()),
+        );
+}
+
+#[test]
+fn roadmap_list_no_tag_flag_is_noop() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "auth-rm", "Auth", "auth");
+    create_plain_roadmap(&dir, "misc-rm", "Misc");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "list", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("auth-rm").and(predicate::str::contains("misc-rm")));
+}
+
+#[test]
+fn roadmap_list_tag_filter_with_no_match_prints_empty_state() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "auth-rm", "Auth", "auth");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "list", "--project", "fbm", "--tag", "nope"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No roadmaps found."));
+}
+
+#[test]
+fn roadmap_list_tag_filter_applies_to_archived() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "auth-rm", "Auth", "auth");
+    create_plain_roadmap(&dir, "misc-rm", "Misc");
+
+    for slug in ["auth-rm", "misc-rm"] {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args(["roadmap", "archive", slug, "--project", "fbm"])
+            .assert()
+            .success();
+    }
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "list",
+            "--project",
+            "fbm",
+            "--archived",
+            "--tag",
+            "auth",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("auth-rm").and(predicate::str::contains("misc-rm").not()));
+}
+
+#[test]
+fn roadmap_list_shows_tags_suffix_when_tagged() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "tagged-rm", "Tagged", "bug,ui");
+    create_plain_roadmap(&dir, "plain-rm", "Plain");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "list", "--project", "fbm"])
+        .assert()
+        .success()
+        // The default (Human) roadmap list is paragraph-shaped, so tags render
+        // as a per-line suffix, not a column.
+        .stdout(
+            predicate::str::contains("[tags: bug, ui]").and(predicate::str::contains("Tags").not()),
+        );
+}
+
+#[test]
+fn roadmap_list_markdown_shows_tags_column_when_tagged() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "tagged-rm", "Tagged", "bug,ui");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "--format",
+            "markdown",
+            "roadmap",
+            "list",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tags").and(predicate::str::contains("bug, ui")));
+}

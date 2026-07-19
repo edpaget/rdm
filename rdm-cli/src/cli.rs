@@ -297,6 +297,9 @@ pub(crate) enum Command {
         /// List all projects and roadmaps.
         #[arg(long)]
         all: bool,
+        /// Filter by tag. Repeat to require multiple tags (AND).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
     },
     /// Show the next actionable phase in a roadmap.
     Next {
@@ -480,6 +483,9 @@ pub(crate) enum RoadmapCommand {
         /// Filter by priority level.
         #[arg(long)]
         priority: Option<Priority>,
+        /// Filter by tag. Repeat to require multiple tags (AND).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
     },
     /// Add a dependency on another roadmap.
     Depend {
@@ -804,9 +810,9 @@ pub(crate) enum TaskCommand {
         /// Filter by priority.
         #[arg(long)]
         priority: Option<Priority>,
-        /// Filter by tag.
-        #[arg(long)]
-        tag: Option<String>,
+        /// Filter by tag. Repeat to require multiple tags (AND).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
     },
 }
 

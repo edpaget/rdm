@@ -188,3 +188,128 @@ fn list_no_project_fails() {
         .failure()
         .stderr(predicate::str::contains("no project specified"));
 }
+
+fn create_tagged_roadmap(dir: &TempDir, project: &str, slug: &str, tags: Option<&str>) {
+    let mut cmd = rdm();
+    cmd.arg("--root").arg(dir.path()).args([
+        "roadmap",
+        "create",
+        slug,
+        "--title",
+        slug,
+        "--project",
+        project,
+        "--no-edit",
+    ]);
+    if let Some(tags) = tags {
+        cmd.args(["--tags", tags]);
+    }
+    cmd.assert().success();
+}
+
+#[test]
+fn list_filters_by_tag() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "fbm", "auth-rm", Some("auth"));
+    create_tagged_roadmap(&dir, "fbm", "misc-rm", None);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["list", "--project", "fbm", "--tag", "auth"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("auth-rm").and(predicate::str::contains("misc-rm").not()));
+}
+
+#[test]
+fn list_multi_tag_is_and() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "fbm", "both-rm", Some("bug,ui"));
+    create_tagged_roadmap(&dir, "fbm", "bug-only-rm", Some("bug"));
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["list", "--project", "fbm", "--tag", "bug", "--tag", "ui"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("both-rm").and(predicate::str::contains("bug-only-rm").not()),
+        );
+}
+
+#[test]
+fn list_all_applies_tag_filter_per_project() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "create", "other"])
+        .assert()
+        .success();
+    create_tagged_roadmap(&dir, "fbm", "auth-rm", Some("auth"));
+    create_tagged_roadmap(&dir, "other", "other-rm", None);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["list", "--all", "--tag", "auth"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("auth-rm")
+                .and(predicate::str::contains("other-rm").not())
+                // Every project still prints its header, even with no matches.
+                .and(predicate::str::contains("Project: other")),
+        );
+}
+
+#[test]
+fn list_json_applies_tag_filter_before_serialization() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "fbm", "auth-rm", Some("auth"));
+    create_tagged_roadmap(&dir, "fbm", "misc-rm", None);
+
+    let out = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "--format",
+            "json",
+            "list",
+            "--project",
+            "fbm",
+            "--tag",
+            "auth",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "expected one roadmap, got {json}");
+    assert_eq!(arr[0]["slug"], "auth-rm");
+}
+
+#[test]
+fn list_shows_tags_suffix_when_tagged() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_roadmap(&dir, "fbm", "tagged-rm", Some("bug,ui"));
+    create_tagged_roadmap(&dir, "fbm", "plain-rm", None);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["list", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[tags: bug, ui]"));
+}

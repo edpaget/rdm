@@ -14,6 +14,10 @@ The rdm MCP server is connected and provides tools for plan repo operations. Mos
 - `rdm_task_list` with `project: {proj_param}, status: "all"` — list all tasks including done
 - `rdm_task_list` with `project: {proj_param}, tag: "bug"` — list open tasks carrying tag "bug"
 
+`tag` is a single exact, case-sensitive tag on these list tools. When any listed
+item carries tags, `rdm_task_list` output gains a trailing `Tags` column and
+`rdm_roadmap_list` output gains a ` [tags: a, b]` suffix on each tagged line.
+
 ## Reading details
 
 - `rdm_roadmap_show` with `project: {proj_param}, roadmap: "<slug>"` — show roadmap with phases and body

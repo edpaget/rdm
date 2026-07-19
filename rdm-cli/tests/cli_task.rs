@@ -310,6 +310,7 @@ fn task_list_filter_by_tag() {
         .assert()
         .success();
 
+    create_tagged_task(&dir, "other-task", "Other", "ui");
     create_task(&dir, "untagged-task", "Untagged");
 
     rdm()
@@ -320,8 +321,137 @@ fn task_list_filter_by_tag() {
         .success()
         .stdout(
             predicate::str::contains("tagged-task")
+                .and(predicate::str::contains("other-task").not())
                 .and(predicate::str::contains("untagged-task").not()),
         );
+}
+
+fn create_tagged_task(dir: &TempDir, slug: &str, title: &str, tags: &str) {
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            slug,
+            "--title",
+            title,
+            "--project",
+            "fbm",
+            "--tags",
+            tags,
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn task_list_multi_tag_is_and() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "both-task", "Both", "bug,ui");
+    create_tagged_task(&dir, "bug-only-task", "Bug only", "bug");
+    create_tagged_task(&dir, "ui-only-task", "UI only", "ui");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "list",
+            "--project",
+            "fbm",
+            "--tag",
+            "bug",
+            "--tag",
+            "ui",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("both-task")
+                .and(predicate::str::contains("bug-only-task").not())
+                .and(predicate::str::contains("ui-only-task").not()),
+        );
+}
+
+#[test]
+fn task_list_no_tag_flag_is_noop() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "tagged-task", "Tagged", "bug");
+    create_task(&dir, "untagged-task", "Untagged");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "list", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("tagged-task").and(predicate::str::contains("untagged-task")),
+        );
+}
+
+#[test]
+fn task_list_tag_filter_with_no_match_prints_empty_state() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "tagged-task", "Tagged", "bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "list", "--project", "fbm", "--tag", "nope"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No tasks found."));
+}
+
+#[test]
+fn task_list_tag_filter_is_case_sensitive() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "tagged-task", "Tagged", "bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "list", "--project", "fbm", "--tag", "Bug"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tagged-task").not());
+}
+
+#[test]
+fn task_list_shows_tags_column_when_tagged() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "tagged-task", "Tagged", "bug,ui");
+    create_task(&dir, "untagged-task", "Untagged");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "list", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tags").and(predicate::str::contains("bug, ui")));
+}
+
+#[test]
+fn task_list_omits_tags_column_when_nothing_tagged() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "untagged-task", "Untagged");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "list", "--project", "fbm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tags").not());
 }
 
 #[test]

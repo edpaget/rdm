@@ -323,12 +323,47 @@ pub fn format_phase_list_md(phases: &[(String, Document<Phase>)]) -> String {
     build_phase_list(phases, RenderFlavor::Markdown).to_string()
 }
 
+/// Returns whether `tags` holds at least one tag.
+///
+/// Used to decide whether a list view gains a `Tags` column at all: the column
+/// is omitted entirely when no listed item is tagged, so untagged plan repos
+/// keep their existing output shape.
+fn has_tags(tags: &Option<Vec<String>>) -> bool {
+    tags.as_ref().is_some_and(|t| !t.is_empty())
+}
+
+/// Renders a tag list as a comma-space joined cell (`bug, ui`); absent or
+/// empty tags render as the empty string.
+fn join_tags(tags: Option<&[String]>) -> String {
+    tags.map(|t| t.join(", ")).unwrap_or_default()
+}
+
+/// Renders a trailing ` [tags: bug, ui]` suffix for paragraph-shaped views,
+/// or the empty string when the item carries no tags.
+fn tags_suffix(tags: Option<&[String]>) -> String {
+    match tags {
+        Some(t) if !t.is_empty() => format!(" [tags: {}]", t.join(", ")),
+        _ => String::new(),
+    }
+}
+
 /// Builds a roadmap list document.
 ///
 /// The terminal flavor renders one progress paragraph per roadmap (keeping its
 /// distinct parenthesized `(N/M done)` / `(no phases)` wording); the Markdown
 /// flavor renders a table whose progress column uses
 /// [`roadmap_progress_label`](crate::display::roadmap_progress_label).
+///
+/// Tags are surfaced per flavor, because the two flavors have different
+/// shapes:
+///
+/// - **Markdown**: a trailing `Tags` column after `Priority`, present only
+///   when at least one listed roadmap carries a non-empty tag list. Cells are
+///   comma-space joined (`bug, ui`); untagged rows render an empty cell.
+/// - **Terminal**: there is no table, so tags render as a per-roadmap
+///   ` [tags: bug, ui]` suffix appended after the priority suffix, and only on
+///   roadmaps that actually carry tags. An untagged roadmap in a mixed list
+///   simply has no suffix.
 fn build_roadmap_list(entries: &[RoadmapWithPhases], flavor: RenderFlavor) -> ast::Document {
     let mut d = ast::Document::new();
     if entries.is_empty() {
@@ -345,14 +380,15 @@ fn build_roadmap_list(entries: &[RoadmapWithPhases], flavor: RenderFlavor) -> as
                     .count();
                 let total = phases.len();
                 let priority_tag = rm.priority.map(|p| format!(" [{p}]")).unwrap_or_default();
+                let tags_suffix = tags_suffix(rm.tags.as_deref());
                 if total > 0 {
                     d.paragraph(&format!(
-                        "{} — {} ({}/{} done){priority_tag}",
+                        "{} — {} ({}/{} done){priority_tag}{tags_suffix}",
                         rm.roadmap, rm.title, done, total
                     ));
                 } else {
                     d.paragraph(&format!(
-                        "{} — {} (no phases){priority_tag}",
+                        "{} — {} (no phases){priority_tag}{tags_suffix}",
                         rm.roadmap, rm.title
                     ));
                 }
@@ -361,6 +397,7 @@ fn build_roadmap_list(entries: &[RoadmapWithPhases], flavor: RenderFlavor) -> as
         RenderFlavor::Markdown => {
             d.heading(2, "Roadmaps");
             d.push(ast::Block::BlankLine);
+            let show_tags = entries.iter().any(|(rm, _)| has_tags(&rm.frontmatter.tags));
             let rows = entries
                 .iter()
                 .map(|(roadmap_doc, phases)| {
@@ -371,16 +408,24 @@ fn build_roadmap_list(entries: &[RoadmapWithPhases], flavor: RenderFlavor) -> as
                         .count();
                     let progress = crate::display::roadmap_progress_label(done, phases.len());
                     let priority = rm.priority.map(|p| p.to_string()).unwrap_or_default();
-                    vec![
+                    let mut row = vec![
                         vec![ast::Inline::Text(rm.roadmap.clone())],
                         vec![ast::Inline::Text(rm.title.clone())],
                         vec![ast::Inline::Text(progress)],
                         vec![ast::Inline::Text(priority)],
-                    ]
+                    ];
+                    if show_tags {
+                        row.push(vec![ast::Inline::Text(join_tags(rm.tags.as_deref()))]);
+                    }
+                    row
                 })
                 .collect();
+            let mut headers = vec!["Slug", "Title", "Progress", "Priority"];
+            if show_tags {
+                headers.push("Tags");
+            }
             d.push(ast::Block::Table {
-                headers: header_cells(&["Slug", "Title", "Progress", "Priority"]),
+                headers: header_cells(&headers),
                 rows,
                 aligns: vec![],
             });
@@ -484,6 +529,11 @@ pub fn format_task_detail_md(slug: &str, doc: &Document<Task>, revision: Option<
 }
 
 /// Builds a task list document (table of slug, title, status, priority).
+///
+/// Both flavors share this one table. A trailing `Tags` column is appended
+/// after `Priority` only when at least one listed task carries a non-empty tag
+/// list; cells are comma-space joined (`bug, ui`) and untagged rows render an
+/// empty cell. The existing column order is never disturbed.
 fn build_task_list(tasks: &[(String, Document<Task>)], flavor: RenderFlavor) -> ast::Document {
     let mut d = ast::Document::new();
     if tasks.is_empty() {
@@ -494,20 +544,29 @@ fn build_task_list(tasks: &[(String, Document<Task>)], flavor: RenderFlavor) -> 
         d.heading(2, "Tasks");
         d.push(ast::Block::BlankLine);
     }
+    let show_tags = tasks.iter().any(|(_, td)| has_tags(&td.frontmatter.tags));
     let rows = tasks
         .iter()
         .map(|(slug, td)| {
             let fm = &td.frontmatter;
-            vec![
+            let mut row = vec![
                 vec![ast::Inline::Text(slug.clone())],
                 vec![ast::Inline::Text(fm.title.clone())],
                 vec![ast::Inline::Text(fm.status.to_string())],
                 vec![ast::Inline::Text(fm.priority.to_string())],
-            ]
+            ];
+            if show_tags {
+                row.push(vec![ast::Inline::Text(join_tags(fm.tags.as_deref()))]);
+            }
+            row
         })
         .collect();
+    let mut headers = vec!["Slug", "Title", "Status", "Priority"];
+    if show_tags {
+        headers.push("Tags");
+    }
     d.push(ast::Block::Table {
-        headers: header_cells(&["Slug", "Title", "Status", "Priority"]),
+        headers: header_cells(&headers),
         rows,
         aligns: vec![],
     });
@@ -860,6 +919,120 @@ mod tests {
             },
             body: String::new(),
         }
+    }
+
+    fn make_roadmap_doc_tagged(slug: &str, tags: Option<Vec<String>>) -> Document<Roadmap> {
+        let mut doc = make_roadmap_doc("fbm", slug, slug);
+        doc.frontmatter.tags = tags;
+        doc
+    }
+
+    #[test]
+    fn task_list_omits_tags_column_when_no_tags() {
+        let tasks = vec![(
+            "plain".to_string(),
+            make_task_doc("Plain", TaskStatus::Open, Priority::Medium, None),
+        )];
+        let out = format_task_list(&tasks);
+        assert!(!out.contains("Tags"), "unexpected Tags column in:\n{out}");
+        let md = format_task_list_md(&tasks);
+        assert!(!md.contains("Tags"), "unexpected Tags column in:\n{md}");
+    }
+
+    #[test]
+    fn task_list_shows_tags_column_when_any_row_tagged() {
+        let tasks = vec![
+            (
+                "tagged".to_string(),
+                make_task_doc(
+                    "Tagged",
+                    TaskStatus::Open,
+                    Priority::Medium,
+                    Some(vec!["bug".to_string(), "ui".to_string()]),
+                ),
+            ),
+            (
+                "plain".to_string(),
+                make_task_doc("Plain", TaskStatus::Open, Priority::Medium, None),
+            ),
+        ];
+        for out in [format_task_list(&tasks), format_task_list_md(&tasks)] {
+            assert!(out.contains("Tags"), "missing Tags column in:\n{out}");
+            assert!(out.contains("bug, ui"), "missing joined tags in:\n{out}");
+        }
+    }
+
+    #[test]
+    fn roadmap_list_md_shows_tags_column_when_any_row_tagged() {
+        let entries = vec![
+            (
+                make_roadmap_doc_tagged(
+                    "tagged-rm",
+                    Some(vec!["bug".to_string(), "ui".to_string()]),
+                ),
+                vec![],
+            ),
+            (make_roadmap_doc_tagged("plain-rm", None), vec![]),
+        ];
+        let out = format_roadmap_list_md(&entries);
+        assert!(out.contains("Tags"), "missing Tags column in:\n{out}");
+        assert!(out.contains("bug, ui"), "missing joined tags in:\n{out}");
+    }
+
+    #[test]
+    fn roadmap_list_md_omits_tags_column_when_no_tags() {
+        let entries = vec![(make_roadmap_doc_tagged("plain-rm", None), vec![])];
+        let out = format_roadmap_list_md(&entries);
+        assert!(!out.contains("Tags"), "unexpected Tags column in:\n{out}");
+    }
+
+    #[test]
+    fn roadmap_list_terminal_appends_tags_suffix() {
+        let entries = vec![
+            (
+                make_roadmap_doc_tagged(
+                    "tagged-rm",
+                    Some(vec!["bug".to_string(), "ui".to_string()]),
+                ),
+                vec![(
+                    "phase-1-core".to_string(),
+                    make_phase_doc(1, "Core", PhaseStatus::Done),
+                )],
+            ),
+            (make_roadmap_doc_tagged("plain-rm", None), vec![]),
+        ];
+        let out = format_roadmap_list(&entries);
+        assert!(
+            out.contains("(1/1 done) [tags: bug, ui]"),
+            "missing tags suffix in:\n{out}"
+        );
+        assert!(
+            !out.contains("Tags"),
+            "terminal roadmap list must not gain a Tags column:\n{out}"
+        );
+        assert!(
+            out.contains("plain-rm — plain-rm (no phases)\n"),
+            "untagged roadmap should carry no suffix:\n{out}"
+        );
+    }
+
+    #[test]
+    fn roadmap_list_terminal_no_suffix_when_untagged() {
+        let entries = vec![(make_roadmap_doc_tagged("plain-rm", None), vec![])];
+        let out = format_roadmap_list(&entries);
+        assert!(!out.contains("[tags:"), "unexpected tags suffix in:\n{out}");
+    }
+
+    #[test]
+    fn roadmap_list_terminal_tags_suffix_follows_priority() {
+        let mut doc = make_roadmap_doc_tagged("tagged-rm", Some(vec!["bug".to_string()]));
+        doc.frontmatter.priority = Some(Priority::High);
+        let entries = vec![(doc, vec![])];
+        let out = format_roadmap_list(&entries);
+        assert!(
+            out.contains("(no phases) [high] [tags: bug]"),
+            "tags suffix must follow the priority suffix in:\n{out}"
+        );
     }
 
     #[test]

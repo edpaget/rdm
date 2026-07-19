@@ -2931,3 +2931,151 @@ fn stage_status_commit_discard_roundtrip() {
         "discarded roadmap must be gone: {show}"
     );
 }
+
+// ==================== Tag filtering + Tags rendering (tagging-support) ====================
+
+#[test]
+fn task_list_filter_by_tag_excludes_untagged() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_task_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "tagged-task",
+            "title": "Tagged Task",
+            "tags": ["needle"],
+        }),
+    );
+    h.call_tool(
+        "rdm_task_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "plain-task",
+            "title": "Plain Task",
+        }),
+    );
+
+    let response = h.call_tool(
+        "rdm_task_list",
+        serde_json::json!({"project": "test-proj", "tag": "needle"}),
+    );
+    let text = result_text(&response);
+    assert!(text.contains("tagged-task"), "tagged task missing: {text}");
+    assert!(
+        !text.contains("plain-task"),
+        "untagged task should be excluded: {text}"
+    );
+}
+
+#[test]
+fn task_list_renders_tags_column_only_when_tagged() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_task_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "plain-task",
+            "title": "Plain Task",
+        }),
+    );
+    let resp_before = h.call_tool("rdm_task_list", serde_json::json!({"project": "test-proj"}));
+    let before = result_text(&resp_before);
+    assert!(
+        !before.contains("Tags"),
+        "Tags column should be absent when nothing is tagged: {before}"
+    );
+
+    h.call_tool(
+        "rdm_task_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "tagged-task",
+            "title": "Tagged Task",
+            "tags": ["bug", "ui"],
+        }),
+    );
+    let resp_after = h.call_tool("rdm_task_list", serde_json::json!({"project": "test-proj"}));
+    let after = result_text(&resp_after);
+    assert!(
+        after.contains("Tags"),
+        "Tags column should appear once a task is tagged: {after}"
+    );
+    assert!(
+        after.contains("bug, ui"),
+        "tags should render comma-joined: {after}"
+    );
+}
+
+#[test]
+fn roadmap_list_renders_tags_suffix_only_when_tagged() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let resp_before = h.call_tool(
+        "rdm_roadmap_list",
+        serde_json::json!({"project": "test-proj"}),
+    );
+    let before = result_text(&resp_before);
+    assert!(
+        !before.contains("[tags:"),
+        "no tags suffix expected before tagging: {before}"
+    );
+
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "tagged-rm",
+            "title": "Tagged Roadmap",
+            "tags": ["bug", "ui"],
+        }),
+    );
+    let resp_after = h.call_tool(
+        "rdm_roadmap_list",
+        serde_json::json!({"project": "test-proj"}),
+    );
+    let after = result_text(&resp_after);
+    assert!(
+        after.contains("[tags: bug, ui]"),
+        "roadmap list should carry a tags suffix: {after}"
+    );
+}
+
+#[test]
+fn phase_list_filter_by_tag_excludes_untagged() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_phase_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "roadmap": "auth",
+            "slug": "audited",
+            "title": "Audited Phase",
+            "number": 9,
+            "tags": ["needle"],
+        }),
+    );
+    let response = h.call_tool(
+        "rdm_phase_list",
+        serde_json::json!({"project": "test-proj", "roadmap": "auth", "tag": "needle"}),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Audited Phase"),
+        "tagged phase missing: {text}"
+    );
+    assert!(
+        !text.contains("phase-1"),
+        "untagged phases should be excluded: {text}"
+    );
+}

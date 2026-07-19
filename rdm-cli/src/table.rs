@@ -14,10 +14,18 @@ fn terminal_width() -> usize {
         .unwrap_or(120)
 }
 
+/// Renders roadmaps as a table.
+///
+/// A trailing `Tags` column is appended after `Priority` only when at least
+/// one listed roadmap carries a non-empty tag list; untagged rows render an
+/// empty cell.
 pub fn format_roadmap_table(entries: &[RoadmapWithPhases]) -> String {
     if entries.is_empty() {
         return "No roadmaps found.\n".to_string();
     }
+    let show_tags = entries
+        .iter()
+        .any(|(doc, _)| has_tags(&doc.frontmatter.tags));
     let rows = entries
         .iter()
         .map(|(doc, phases)| {
@@ -26,7 +34,7 @@ pub fn format_roadmap_table(entries: &[RoadmapWithPhases]) -> String {
                 .iter()
                 .filter(|(_, p)| p.frontmatter.status.is_terminal())
                 .count();
-            [
+            let mut row = vec![
                 doc.frontmatter.roadmap.clone(),
                 doc.frontmatter.title.clone(),
                 format!("{done}/{total} phases done"),
@@ -34,10 +42,18 @@ pub fn format_roadmap_table(entries: &[RoadmapWithPhases]) -> String {
                     .priority
                     .map(|p| p.to_string())
                     .unwrap_or_default(),
-            ]
+            ];
+            if show_tags {
+                row.push(join_tags(doc.frontmatter.tags.as_deref()));
+            }
+            row
         })
         .collect();
-    build_table(["Slug", "Title", "Progress", "Priority"], rows)
+    let mut headers = vec!["Slug", "Title", "Progress", "Priority"];
+    if show_tags {
+        headers.push("Tags");
+    }
+    build_table_dyn(headers, rows)
 }
 
 pub fn format_phase_table(phases: &[(String, Document<Phase>)]) -> String {
@@ -58,22 +74,36 @@ pub fn format_phase_table(phases: &[(String, Document<Phase>)]) -> String {
     build_table(["#", "Phase", "Status", "Stem"], rows)
 }
 
+/// Renders tasks as a table.
+///
+/// A trailing `Tags` column is appended after `Priority` only when at least
+/// one listed task carries a non-empty tag list; untagged rows render an
+/// empty cell.
 pub fn format_task_table(tasks: &[(String, Document<Task>)]) -> String {
     if tasks.is_empty() {
         return "No tasks found.\n".to_string();
     }
+    let show_tags = tasks.iter().any(|(_, doc)| has_tags(&doc.frontmatter.tags));
     let rows = tasks
         .iter()
         .map(|(slug, doc)| {
-            [
+            let mut row = vec![
                 slug.clone(),
                 doc.frontmatter.title.clone(),
                 doc.frontmatter.status.to_string(),
                 doc.frontmatter.priority.to_string(),
-            ]
+            ];
+            if show_tags {
+                row.push(join_tags(doc.frontmatter.tags.as_deref()));
+            }
+            row
         })
         .collect();
-    build_table(["Slug", "Title", "Status", "Priority"], rows)
+    let mut headers = vec!["Slug", "Title", "Status", "Priority"];
+    if show_tags {
+        headers.push("Tags");
+    }
+    build_table_dyn(headers, rows)
 }
 
 #[cfg(feature = "git")]
@@ -126,7 +156,28 @@ pub fn format_search_table(results: &[SearchResult]) -> String {
     build_table(["#", "Type", "Title", "Identifier", "Snippet"], rows)
 }
 
+/// Returns whether `tags` holds at least one tag — the gate for emitting a
+/// conditional trailing `Tags` column.
+fn has_tags(tags: &Option<Vec<String>>) -> bool {
+    tags.as_ref().is_some_and(|t| !t.is_empty())
+}
+
+/// Renders a tag list as a comma-space joined cell (`bug, ui`); absent or
+/// empty tags render as the empty string.
+fn join_tags(tags: Option<&[String]>) -> String {
+    tags.map(|t| t.join(", ")).unwrap_or_default()
+}
+
 pub fn build_table<const N: usize>(headers: [&str; N], rows: Vec<[String; N]>) -> String {
+    build_table_dyn(headers.to_vec(), rows.into_iter().map(Vec::from).collect())
+}
+
+/// Builds a table with a column count only known at runtime.
+///
+/// Same styling and truncation policy as [`build_table`]; used by the views
+/// that append a conditional trailing `Tags` column, which cannot be expressed
+/// with the const-generic column count.
+pub fn build_table_dyn(headers: Vec<&str>, rows: Vec<Vec<String>>) -> String {
     let mut builder = Builder::default();
     builder.push_record(headers);
     for row in rows {
@@ -146,6 +197,81 @@ mod tests {
     use rdm_core::model::{
         Review, ReviewComment, ReviewCommentStatus, ReviewState, ReviewTarget, Verdict,
     };
+
+    fn task_doc(slug: &str, tags: Option<Vec<String>>) -> (String, Document<Task>) {
+        use rdm_core::model::{Priority, TaskStatus};
+        let doc = Document {
+            frontmatter: Task {
+                project: "fbm".to_string(),
+                title: slug.to_string(),
+                status: TaskStatus::Open,
+                priority: Priority::Medium,
+                created: chrono::NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+                tags,
+                completed: None,
+                commit: None,
+                review_sha: None,
+                review_branch: None,
+                close_reason: None,
+            },
+            body: String::new(),
+        };
+        (slug.to_string(), doc)
+    }
+
+    fn roadmap_entry(slug: &str, tags: Option<Vec<String>>) -> RoadmapWithPhases {
+        use rdm_core::model::Roadmap;
+        let doc = Document {
+            frontmatter: Roadmap {
+                project: "fbm".to_string(),
+                roadmap: slug.to_string(),
+                title: slug.to_string(),
+                phases: Vec::new(),
+                dependencies: None,
+                priority: None,
+                tags,
+            },
+            body: String::new(),
+        };
+        (doc, Vec::new())
+    }
+
+    #[test]
+    fn task_table_appends_tags_column_only_when_tagged() {
+        let untagged = vec![task_doc("plain", None)];
+        let out = format_task_table(&untagged);
+        assert!(!out.contains("Tags"), "unexpected Tags column in:\n{out}");
+
+        let mixed = vec![
+            task_doc("tagged", Some(vec!["bug".to_string(), "ui".to_string()])),
+            task_doc("plain", None),
+        ];
+        let out = format_task_table(&mixed);
+        assert!(out.contains("Tags"), "missing Tags column in:\n{out}");
+        assert!(out.contains("bug, ui"), "missing joined tags in:\n{out}");
+    }
+
+    #[test]
+    fn roadmap_table_appends_tags_column_only_when_tagged() {
+        let untagged = vec![roadmap_entry("plain-rm", None)];
+        let out = format_roadmap_table(&untagged);
+        assert!(!out.contains("Tags"), "unexpected Tags column in:\n{out}");
+
+        let mixed = vec![
+            roadmap_entry("tagged-rm", Some(vec!["bug".to_string(), "ui".to_string()])),
+            roadmap_entry("plain-rm", None),
+        ];
+        let out = format_roadmap_table(&mixed);
+        assert!(out.contains("Tags"), "missing Tags column in:\n{out}");
+        assert!(out.contains("bug, ui"), "missing joined tags in:\n{out}");
+    }
+
+    #[test]
+    fn tags_column_omitted_for_empty_tag_lists() {
+        let tasks = vec![task_doc("empty", Some(vec![]))];
+        let out = format_task_table(&tasks);
+        assert!(!out.contains("Tags"), "unexpected Tags column in:\n{out}");
+    }
 
     fn review_doc() -> (String, Document<Review>) {
         let doc = Document {

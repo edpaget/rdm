@@ -238,8 +238,8 @@ fn run() -> Result<()> {
             commands::review::run(command, &mut store, &repo_config, format, cli.no_index)?;
         }
 
-        Command::List { project, all } => {
-            commands::list::run(&root, &repo_config, format, project, all)?
+        Command::List { project, all, tags } => {
+            commands::list::run(&root, &repo_config, format, project, all, &tags)?
         }
 
         Command::Next { roadmap, project } => {

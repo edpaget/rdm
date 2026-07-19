@@ -44,10 +44,7 @@ pub fn task_matches(task: &Task, filter: &TaskFilter) -> bool {
         None => !task.status.is_terminal(),
     };
     let priority_ok = filter.priority.is_none_or(|p| task.priority == p);
-    let tags_ok = filter
-        .tags
-        .iter()
-        .all(|t| task.tags.as_ref().is_some_and(|tags| tags.contains(t)));
+    let tags_ok = crate::tags::matches_all_tags(task.tags.as_deref(), &filter.tags);
     status_ok && priority_ok && tags_ok
 }
 

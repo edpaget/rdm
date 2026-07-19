@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Tag filtering across the list surfaces. `rdm roadmap list --tag <tag>` and the
+  top-level `rdm list --tag <tag>` are new; `rdm task list --tag <tag>` and
+  `rdm search --tag <tag>` now accept the flag **repeatedly**, and repeats combine
+  with AND (`--tag bug --tag ui` keeps only items carrying both). Matching is
+  exact and case-sensitive, passing no `--tag` imposes no constraint, and a filter
+  that matches nothing prints the usual empty-state line and exits 0. `--tag`
+  composes with the existing `--status`/`--priority`/`--sort` filters, and is
+  allowed alongside `roadmap list --archived` (unlike `--sort`/`--priority`).
+- List output now surfaces tags when any listed item has them. `rdm task list`
+  (text, table, and Markdown) and the Markdown `rdm roadmap list` gain a trailing
+  `Tags` column; the default (human) `rdm roadmap list` / `rdm list` view is
+  paragraph-shaped and instead appends a ` [tags: bug, ui]` suffix after the
+  priority suffix on each tagged line. Untagged items render an empty cell / no
+  suffix, and the column is omitted entirely when nothing is tagged. Because
+  these renderers are shared, this also changes the MCP `rdm_task_list` and
+  `rdm_roadmap_list` tool results. JSON output is unchanged.
+
 - New `rdm tag list --project <name>` command: a read-only inventory of every tag
   in use across a project's roadmaps and tasks, printed most-used-first as
   `cli (3)` / `web-ui (5)` lines (or `No tags in use.` when there are none).

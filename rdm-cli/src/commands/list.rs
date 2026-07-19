@@ -10,6 +10,9 @@ use crate::paths;
 
 /// Lists roadmaps and their progress, optionally across all projects.
 ///
+/// `tags` is a tag filter applied per project: a roadmap is listed only if it
+/// carries **every** tag (logical AND). An empty slice imposes no constraint.
+///
 /// # Errors
 ///
 /// Returns an error if the project cannot be resolved, the store cannot be
@@ -20,6 +23,7 @@ pub fn run(
     format: OutputFormat,
     project: Option<String>,
     all: bool,
+    tags: &[String],
 ) -> Result<()> {
     let store = commands::make_store(root)?;
     let projects = if all {
@@ -36,7 +40,7 @@ pub fn run(
         if all && format != OutputFormat::Json {
             println!("Project: {project}");
         }
-        let entries = roadmap::collect_entries(&store, project, None, None)?;
+        let entries = roadmap::collect_entries(&store, project, None, None, tags)?;
         if format == OutputFormat::Json {
             for (doc, phases) in &entries {
                 all_summaries.push(json::roadmap_summary_to_json(doc, phases));

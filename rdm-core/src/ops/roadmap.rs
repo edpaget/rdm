@@ -208,6 +208,46 @@ pub fn update_roadmap(
     Ok(doc)
 }
 
+/// Criteria for filtering a list of roadmaps.
+///
+/// Mirrors [`crate::ops::task::TaskFilter`]: loading and filtering stay
+/// separable, so [`list_roadmaps`] never applies tag filtering itself and
+/// callers can filter before paying for any per-roadmap phase I/O. The
+/// default value (all fields empty) keeps every roadmap.
+#[derive(Debug, Clone, Default)]
+pub struct RoadmapFilter {
+    /// Tag criterion. Empty keeps roadmaps regardless of tags; otherwise a
+    /// roadmap is kept only if it carries **all** of these tags (logical
+    /// AND, exact and case-sensitive).
+    pub tags: Vec<String>,
+}
+
+/// Returns whether `roadmap` satisfies every populated criterion in `filter`.
+///
+/// Tags are matched as a logical AND via [`crate::tags::matches_all_tags`] —
+/// every tag in `filter.tags` must be present on the roadmap, and an empty
+/// list imposes no constraint.
+#[must_use]
+pub fn roadmap_matches(roadmap: &Roadmap, filter: &RoadmapFilter) -> bool {
+    crate::tags::matches_all_tags(roadmap.tags.as_deref(), &filter.tags)
+}
+
+/// Filters `roadmaps` to those satisfying `filter`, preserving order.
+///
+/// An owned convenience wrapper over [`roadmap_matches`] for callers that
+/// hold the `Vec<Document<Roadmap>>` produced by [`list_roadmaps`] or
+/// [`list_archived_roadmaps`].
+#[must_use]
+pub fn filter_roadmaps(
+    roadmaps: Vec<Document<Roadmap>>,
+    filter: &RoadmapFilter,
+) -> Vec<Document<Roadmap>> {
+    roadmaps
+        .into_iter()
+        .filter(|doc| roadmap_matches(&doc.frontmatter, filter))
+        .collect()
+}
+
 /// Lists all roadmaps for a project.
 ///
 /// Results are sorted by `sort` (defaults to alphabetical by slug).
@@ -763,6 +803,97 @@ fn has_cycle(adj: &std::collections::HashMap<&str, Vec<&str>>, start: &str) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn roadmap_doc(slug: &str, tags: Option<&[&str]>) -> Document<Roadmap> {
+        Document {
+            frontmatter: Roadmap {
+                project: "p".to_string(),
+                roadmap: slug.to_string(),
+                title: slug.to_string(),
+                phases: Vec::new(),
+                dependencies: None,
+                priority: None,
+                tags: tags.map(|t| t.iter().map(|s| (*s).to_string()).collect()),
+            },
+            body: String::new(),
+        }
+    }
+
+    fn slugs(docs: &[Document<Roadmap>]) -> Vec<String> {
+        docs.iter().map(|d| d.frontmatter.roadmap.clone()).collect()
+    }
+
+    #[test]
+    fn filter_roadmaps_empty_filter_is_identity() {
+        let docs = vec![
+            roadmap_doc("a", Some(&["bug"])),
+            roadmap_doc("b", None),
+            roadmap_doc("c", Some(&[])),
+        ];
+        let out = filter_roadmaps(docs, &RoadmapFilter::default());
+        assert_eq!(slugs(&out), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn filter_roadmaps_single_tag() {
+        let docs = vec![
+            roadmap_doc("auth-rm", Some(&["auth"])),
+            roadmap_doc("misc-rm", None),
+        ];
+        let out = filter_roadmaps(
+            docs,
+            &RoadmapFilter {
+                tags: vec!["auth".to_string()],
+            },
+        );
+        assert_eq!(slugs(&out), vec!["auth-rm"]);
+    }
+
+    #[test]
+    fn filter_roadmaps_multiple_tags_are_anded() {
+        let docs = vec![
+            roadmap_doc("both", Some(&["bug", "ui", "perf"])),
+            roadmap_doc("one", Some(&["bug"])),
+        ];
+        let out = filter_roadmaps(
+            docs,
+            &RoadmapFilter {
+                tags: vec!["bug".to_string(), "ui".to_string()],
+            },
+        );
+        assert_eq!(slugs(&out), vec!["both"]);
+    }
+
+    #[test]
+    fn filter_roadmaps_drops_untagged() {
+        let docs = vec![
+            roadmap_doc("untagged", None),
+            roadmap_doc("empty", Some(&[])),
+        ];
+        let out = filter_roadmaps(
+            docs,
+            &RoadmapFilter {
+                tags: vec!["bug".to_string()],
+            },
+        );
+        assert!(
+            out.is_empty(),
+            "expected no roadmaps, got {:?}",
+            slugs(&out)
+        );
+    }
+
+    #[test]
+    fn filter_roadmaps_no_match_yields_empty() {
+        let docs = vec![roadmap_doc("a", Some(&["bug"]))];
+        let out = filter_roadmaps(
+            docs,
+            &RoadmapFilter {
+                tags: vec!["nope".to_string()],
+            },
+        );
+        assert!(out.is_empty());
+    }
 
     #[test]
     fn computed_status_empty_is_not_started() {

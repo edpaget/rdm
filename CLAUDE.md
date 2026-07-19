@@ -218,10 +218,18 @@ Do NOT use the Read, Glob, Grep, or Bash tools to read, search, list, or modify 
 
 ```bash
 ./target/debug/rdm roadmap list --project rdm              # list all roadmaps with progress
+./target/debug/rdm roadmap list --project rdm --tag auth    # list roadmaps carrying tag "auth"
 ./target/debug/rdm task list --project rdm                  # list active tasks (open, in-progress, needs-review, reviewed)
 ./target/debug/rdm task list --project rdm --status all     # list all tasks including done
 ./target/debug/rdm task list --project rdm --tag bug        # list active tasks carrying tag "bug"
+./target/debug/rdm task list --project rdm --tag bug --tag ui  # ANDs across tags
 ```
+
+`--tag` is repeatable on `roadmap list`, `task list`, the top-level `rdm list`,
+and `search`; repeats AND together, matching is exact and case-sensitive, and
+passing none imposes no constraint. When any listed item is tagged, list output
+gains a trailing `Tags` column (or a ` [tags: a, b]` line suffix in the default
+`roadmap list` view).
 
 ### Reading details
 

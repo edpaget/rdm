@@ -144,15 +144,13 @@ pub struct SearchFilter {
 /// Returns `true` if `item_tags` contains every tag in `required`.
 ///
 /// `required` empty → always matches. An item with `None` tags never
-/// matches a non-empty `required`.
+/// matches a non-empty `required`. Matching is exact and case-sensitive —
+/// tags are a hard pre-filter and are never fuzzy-matched like the query.
+///
+/// A thin wrapper over [`crate::tags::matches_all_tags`], the single source
+/// of truth for tag filtering across every rdm surface.
 fn matches_required_tags(item_tags: Option<&[String]>, required: &[String]) -> bool {
-    if required.is_empty() {
-        return true;
-    }
-    match item_tags {
-        None => false,
-        Some(tags) => required.iter().all(|t| tags.iter().any(|it| it == t)),
-    }
+    crate::tags::matches_all_tags(item_tags, required)
 }
 
 /// A single search result.

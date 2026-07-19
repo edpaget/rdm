@@ -689,18 +689,15 @@ impl RdmMcpServer {
             Err(e) => return core_err(e),
         };
 
-        let filtered_roadmaps: Vec<_> = match &params.tag {
-            Some(tag) => roadmaps
-                .into_iter()
-                .filter(|doc| {
-                    doc.frontmatter
-                        .tags
-                        .as_ref()
-                        .is_some_and(|tags| tags.iter().any(|t| t == tag))
-                })
-                .collect(),
-            None => roadmaps,
-        };
+        // Tag filtering goes through core's shared predicate so MCP can never
+        // drift from the CLI's `--tag` semantics.
+        let required_tags: Vec<String> = params.tag.iter().cloned().collect();
+        let filtered_roadmaps = rdm_core::ops::roadmap::filter_roadmaps(
+            roadmaps,
+            &rdm_core::ops::roadmap::RoadmapFilter {
+                tags: required_tags,
+            },
+        );
 
         let mut entries = Vec::new();
         for roadmap_doc in filtered_roadmaps {
@@ -755,18 +752,13 @@ impl RdmMcpServer {
                 Ok(p) => p,
                 Err(e) => return core_err(e),
             };
-        let filtered: Vec<_> = match &params.tag {
-            Some(tag) => phases
-                .into_iter()
-                .filter(|(_, doc)| {
-                    doc.frontmatter
-                        .tags
-                        .as_ref()
-                        .is_some_and(|tags| tags.iter().any(|t| t == tag))
-                })
-                .collect(),
-            None => phases,
-        };
+        let required_tags: Vec<String> = params.tag.iter().cloned().collect();
+        let filtered: Vec<_> = phases
+            .into_iter()
+            .filter(|(_, doc)| {
+                rdm_core::tags::matches_all_tags(doc.frontmatter.tags.as_deref(), &required_tags)
+            })
+            .collect();
         ok_text(display::format_phase_list(&filtered))
     }
 
@@ -814,6 +806,7 @@ impl RdmMcpServer {
             Err(e) => return core_err(e),
         };
 
+        let required_tags: Vec<String> = params.tag.iter().cloned().collect();
         let filtered: Vec<_> = all_tasks
             .into_iter()
             .filter(|(_slug, doc)| {
@@ -829,14 +822,10 @@ impl RdmMcpServer {
                     Some(p) => doc.frontmatter.priority.to_string() == *p,
                     None => true,
                 };
-                let tag_ok = match &params.tag {
-                    Some(tag) => doc
-                        .frontmatter
-                        .tags
-                        .as_ref()
-                        .is_some_and(|tags| tags.contains(tag)),
-                    None => true,
-                };
+                let tag_ok = rdm_core::tags::matches_all_tags(
+                    doc.frontmatter.tags.as_deref(),
+                    &required_tags,
+                );
                 status_ok && priority_ok && tag_ok
             })
             .collect();

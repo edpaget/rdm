@@ -560,3 +560,161 @@ fn search_type_review_matches_summary_and_comment_bodies() {
         .failure()
         .stderr(predicate::str::contains("rdm review list --state"));
 }
+
+fn create_tagged_task(dir: &TempDir, slug: &str, title: &str, tags: &str) {
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            slug,
+            "--title",
+            title,
+            "--project",
+            "acme",
+            "--tags",
+            tags,
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn search_filters_by_tag() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "login-bug", "Login is broken", "bug");
+    create_task(&dir, "login-polish", "Login polish");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "login", "--project", "acme", "--tag", "bug"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("login-bug")
+                .and(predicate::str::contains("login-polish").not()),
+        );
+}
+
+#[test]
+fn search_empty_query_with_tag_lists_tagged_items() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "login-bug", "Login is broken", "bug");
+    create_task(&dir, "login-polish", "Login polish");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "", "--project", "acme", "--tag", "bug"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("login-bug")
+                .and(predicate::str::contains("login-polish").not()),
+        );
+}
+
+#[test]
+fn search_multi_tag_is_and() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "login-both", "Login both", "bug,ui");
+    create_tagged_task(&dir, "login-bug-only", "Login bug only", "bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "search",
+            "login",
+            "--project",
+            "acme",
+            "--tag",
+            "bug",
+            "--tag",
+            "ui",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("login-both")
+                .and(predicate::str::contains("login-bug-only").not()),
+        );
+}
+
+#[test]
+fn search_tag_filter_matches_roadmaps_and_phases() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "login-rm",
+            "--title",
+            "Login roadmap",
+            "--project",
+            "acme",
+            "--tags",
+            "bug",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "login-phase",
+            "--title",
+            "Login phase",
+            "--roadmap",
+            "login-rm",
+            "--project",
+            "acme",
+            "--number",
+            "1",
+            "--tags",
+            "bug",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+    create_roadmap(&dir, "login-plain-rm", "Login plain roadmap");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "login", "--project", "acme", "--tag", "bug"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("login-rm")
+                .and(predicate::str::contains("login-phase"))
+                .and(predicate::str::contains("login-plain-rm").not()),
+        );
+}
+
+#[test]
+fn search_tag_filter_with_no_match_prints_empty_state() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "login-bug", "Login is broken", "bug");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["search", "login", "--project", "acme", "--tag", "nope"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No results found"));
+}

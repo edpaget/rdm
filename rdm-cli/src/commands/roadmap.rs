@@ -141,6 +141,7 @@ pub fn run(
             archived,
             sort,
             priority,
+            tags,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             if archived && (sort.is_some() || priority.is_some()) {
@@ -149,6 +150,12 @@ pub fn run(
             let entries = if archived {
                 let roadmaps = rdm_core::ops::roadmap::list_archived_roadmaps(store, &project)
                     .context("failed to list archived roadmaps")?;
+                // `--tag` needs no sorting and is well-defined on archived
+                // roadmaps, so (unlike `--sort`/`--priority`) it applies here too.
+                let roadmaps = rdm_core::ops::roadmap::filter_roadmaps(
+                    roadmaps,
+                    &rdm_core::ops::roadmap::RoadmapFilter { tags },
+                );
                 let mut entries = Vec::new();
                 for roadmap_doc in roadmaps {
                     let slug = &roadmap_doc.frontmatter.roadmap;
@@ -161,7 +168,7 @@ pub fn run(
                 }
                 entries
             } else {
-                collect_entries(store, &project, sort, priority)?
+                collect_entries(store, &project, sort, priority, &tags)?
             };
             print_entries(&entries, format)?;
             maybe_print_uncommitted_hint(store);
@@ -279,6 +286,11 @@ pub fn run(
 /// Shared by `rdm roadmap list` and the top-level `rdm list` so the
 /// load-roadmaps + per-roadmap load-phases loop lives in one place.
 ///
+/// `tags` is a tag filter: a roadmap is kept only if it carries **every**
+/// listed tag (logical AND, exact and case-sensitive); an empty slice imposes
+/// no constraint. Filtering runs before the per-roadmap phase load, so an
+/// excluded roadmap costs no phase I/O.
+///
 /// # Errors
 ///
 /// Returns an error if the roadmaps cannot be listed or if any roadmap's
@@ -288,9 +300,18 @@ pub(crate) fn collect_entries(
     project: &str,
     sort: Option<rdm_core::model::RoadmapSort>,
     priority: Option<rdm_core::model::Priority>,
+    tags: &[String],
 ) -> Result<Vec<rdm_core::display::RoadmapWithPhases>> {
     let roadmaps = rdm_core::ops::roadmap::list_roadmaps(store, project, sort, priority)
         .context("failed to list roadmaps")?;
+    // Filter before the per-roadmap phase load: a roadmap excluded by the tag
+    // filter must cost no phase I/O.
+    let roadmaps = rdm_core::ops::roadmap::filter_roadmaps(
+        roadmaps,
+        &rdm_core::ops::roadmap::RoadmapFilter {
+            tags: tags.to_vec(),
+        },
+    );
     let mut entries = Vec::new();
     for roadmap_doc in roadmaps {
         let slug = &roadmap_doc.frontmatter.roadmap;

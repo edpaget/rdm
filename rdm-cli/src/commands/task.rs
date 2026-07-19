@@ -215,7 +215,7 @@ pub fn run(
             project,
             status,
             priority,
-            tag,
+            tags,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let all_tasks =
@@ -226,7 +226,7 @@ pub fn run(
                 &rdm_core::ops::task::TaskFilter {
                     status,
                     priority,
-                    tags: tag.into_iter().collect(),
+                    tags,
                 },
             );
 
