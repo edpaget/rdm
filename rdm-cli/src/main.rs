@@ -255,6 +255,10 @@ fn run() -> Result<()> {
             let mut store = commands::make_store(&root)?;
             commands::backlog::run(command, &mut store, &repo_config, format)?;
         }
+        Command::Tag { command } => {
+            let mut store = commands::make_store(&root)?;
+            commands::tag::run(command, &mut store, &repo_config, format)?;
+        }
     }
 
     Ok(())

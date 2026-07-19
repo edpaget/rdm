@@ -24,6 +24,9 @@ pub mod review;
 pub mod reviews;
 /// Roadmap operations: create, update, delete, list, archive, split, dependencies.
 pub mod roadmap;
+/// Tag inventory: tags in use across a project's roadmaps and tasks, with
+/// counts.
+pub mod tag;
 /// Task operations: create, update, list, promote.
 pub mod task;
 /// Request types for the `update` operations (`BodyUpdate` / `TitleUpdate` /

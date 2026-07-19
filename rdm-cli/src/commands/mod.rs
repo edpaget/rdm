@@ -31,6 +31,7 @@ pub mod project;
 pub mod promote;
 pub mod roadmap;
 pub mod search;
+pub mod tag;
 pub mod task;
 pub mod tree;
 

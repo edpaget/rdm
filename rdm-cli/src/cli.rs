@@ -317,6 +317,25 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: BacklogCommand,
     },
+    /// Inspect tags in use across a project.
+    Tag {
+        #[command(subcommand)]
+        command: TagCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum TagCommand {
+    /// List every tag in use with a count of items carrying it.
+    ///
+    /// Counts roadmaps and tasks (all statuses, including terminal ones);
+    /// phases and archived roadmaps are not scanned. Tags are compared
+    /// verbatim — `CLI` and `cli` are distinct tags. Performs zero writes.
+    List {
+        /// Project to list tags for.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

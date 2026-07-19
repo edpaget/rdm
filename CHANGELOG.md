@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `rdm tag list --project <name>` command: a read-only inventory of every tag
+  in use across a project's roadmaps and tasks, printed most-used-first as
+  `cli (3)` / `web-ui (5)` lines (or `No tags in use.` when there are none).
+  Counts cover roadmaps and tasks of every status — including `done` and
+  `wont-fix` — but not phases or archived roadmaps, and tags are compared
+  verbatim, so `CLI` and `cli` are listed separately. Pass `--format json` for a
+  machine-readable array of `{"tag", "count", "roadmaps", "tasks"}` objects for
+  agent consumption. This answers "which tags exist?"; `rdm search "" --tag <name>`
+  answers "what carries this tag?".
+
+### Added
+
 - Tasks can now be `blocked`. `TaskStatus` gains a `blocked` variant, mirroring
   phases: `rdm task update <slug> --status blocked --reason "…"` parks a task with
   a recorded reason (stored in the task's `close_reason`, preserved across later
