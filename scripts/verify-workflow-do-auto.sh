@@ -4,7 +4,7 @@
 # workflow-orchestration phase 4 wires the phase-flow branch of `--auto` in
 # `.claude/skills/rdm-do/SKILL.md` into the `dispatch-phase` Workflow instead of
 # re-implementing plan -> plan-review -> implement -> code-review in prose
-# (interactive `rdm-do` and `--auto --task <slug>` are untouched). This is a
+# (interactive `rdm-do` is untouched; `--auto --task` routes in the same way). This is a
 # dogfood-only, local edit to the skill file — it is NOT propagated to the
 # distributed `rdm-core/src/templates/skill-do-cli.md` / `skill-do-mcp.md`
 # templates, which stay prose-only. This harness gates three things:
@@ -15,7 +15,8 @@
 #      OUTCOME -> status mapping (`--status reviewed`, `--status blocked`,
 #      `[code]`, `[plan]`) is present; the interactive plan-mode path
 #      (`EnterPlanMode`/`ExitPlanMode`) is preserved; the `--auto --task`
-#      deferral is stated in prose; the dogfood note is present; and the
+#      flow is wired into the Workflow (`{ task: <slug> }` + its OUTCOME ->
+#      status map) with no stale prose-path claims; the dogfood note is present; and the
 #      distributed templates stay prose-only (do NOT mention `dispatch-phase`),
 #      with a planted-mutation self-test proving that last detector fires.
 #   2. DYNAMIC OUTCOME CONTRACT — against the real binary in a hermetic temp
@@ -103,10 +104,27 @@ grep -q 'EnterPlanMode' "$SKILL" || fail "SKILL.md must still reference EnterPla
 grep -q 'ExitPlanMode' "$SKILL" || fail "SKILL.md must still reference ExitPlanMode (interactive path preserved)"
 pass "interactive plan-mode path (EnterPlanMode/ExitPlanMode) preserved"
 
-# Task-flow deferral stated near --auto --task.
-grep -qF 'are unaffected and keep the steps above unchanged' "$SKILL" ||
-    fail "SKILL.md must state that '--auto --task' is unaffected/unchanged"
-pass "task-flow deferral ('--auto --task' unaffected) stated"
+# Task-flow wiring: --auto --task routes into the Workflow, not the prose loop.
+grep -q '## Auto task dispatch' "$SKILL" ||
+    fail "SKILL.md must document an '## Auto task dispatch' section"
+grep -qF '{ task: <slug> }' "$SKILL" ||
+    fail "SKILL.md must state the task flow invokes the Workflow with '{ task: <slug> }'"
+grep -q 'rdm task update <slug> --status reviewed' "$SKILL" ||
+    fail "SKILL.md must map the task 'reviewed' OUTCOME to 'task update --status reviewed'"
+grep -qF 'task update <slug> --status blocked --reason "[code]' "$SKILL" ||
+    fail "SKILL.md must map the task 'rework' OUTCOME to blocked with a [code] reason"
+grep -qF 'task update <slug> --status blocked --reason "[plan]' "$SKILL" ||
+    fail "SKILL.md must map the task 'escalated' OUTCOME to blocked with a [plan] reason"
+pass "task-flow wiring (Workflow '{ task: <slug> }' + OUTCOME -> status map) stated"
+
+# The task flow must NOT still be described as the deferred prose path.
+if grep -qF 'still runs the existing prose steps 6-11' "$SKILL"; then
+    fail "SKILL.md still describes '--auto --task' as running the prose loop"
+fi
+if grep -qF 'interactive/task-flow prose path' "$SKILL"; then
+    fail "SKILL.md step 6 still calls steps 6-11 the task-flow prose path"
+fi
+pass "no stale '--auto --task is prose' assertions remain"
 
 # Dogfood note present.
 grep -qi 'dogfood' "$SKILL" || fail "SKILL.md must record the dogfood-only nature of this edit"

@@ -166,6 +166,14 @@ const revRework = buildOutcome({
   tier: 'medium',
 });
 assert.equal(revRework.outcome, 'reviewed', 'blocking code fixed by the one rework → reviewed');
+// Pin the ternary's TRUE side: a cleared rework must surface the POST-rework
+// findings, never the stale pre-rework blockers. Without this, flipping
+// `hasBlocking(...) ? codeFindingsAfterRework : codeFindings` survives the suite.
+assert.deepEqual(revRework.findings, [], 'reviewed-after-rework surfaces the post-rework findings');
+assert.ok(
+  !revRework.summary.includes('blocking'),
+  'a reviewed summary never names a stale pre-rework blocker'
+);
 
 // Blocking code surviving the one rework → rework (budget exhausted).
 const rw = buildOutcome({
@@ -253,9 +261,101 @@ assert.equal(summarizeFindings([]), 'no surviving findings');
 assert.ok(summarizeFindings([B('bug')]).includes('blocking'), 'summary names the top severity');
 
 // ============================================================================
+// buildTaskOutcome — the task-shaped OUTCOME contract. Keyed by `task` slug
+// instead of roadmap/phase; reuses the same pure classification core.
+// ============================================================================
+const { buildTaskOutcome } = mod;
+assert.equal(typeof buildTaskOutcome, 'function', 'buildTaskOutcome is exported from the lib');
+
+const TASK_SHAPE = ['findings', 'outcome', 'summary', 'task'];
+
+// reviewed — clean code review on the first pass.
+const tRev = buildTaskOutcome({
+  task: 'my-task',
+  planFindings: [],
+  codeFindings: [],
+  codeFindingsAfterRework: [],
+  tier: 'medium',
+});
+assert.equal(tRev.outcome, 'reviewed', 'clean task review → reviewed');
+assert.equal(tRev.task, 'my-task', 'task OUTCOME is keyed by slug');
+assert.deepEqual(Object.keys(tRev).sort(), TASK_SHAPE, 'task OUTCOME shape is task-keyed');
+assert.ok(!('roadmap' in tRev) && !('phase' in tRev), 'task OUTCOME carries no roadmap/phase keys');
+
+// rework — a blocking code finding survives the one bounded rework.
+const tRw = buildTaskOutcome({
+  task: 'my-task',
+  planFindings: [],
+  codeFindings: [B('leak')],
+  codeFindingsAfterRework: [B('leak')],
+  tier: 'medium',
+});
+assert.equal(tRw.outcome, 'rework', 'unresolved blocking code finding → rework');
+assert.deepEqual(tRw.findings.map((f) => f.id), ['leak'], 'rework surfaces post-rework findings');
+
+// escalated — a blocking plan finding short-circuits before implementation.
+const tEsc = buildTaskOutcome({
+  task: 'my-task',
+  planFindings: [B('vague')],
+  codeFindings: [],
+  codeFindingsAfterRework: [],
+  tier: 'medium',
+});
+assert.equal(tEsc.outcome, 'escalated', 'blocking plan finding → escalated');
+assert.deepEqual(tEsc.findings.map((f) => f.id), ['vague'], 'escalated surfaces plan findings');
+
+// fetchError short-circuits to escalated with the task-shaped identifier.
+const tFe = buildTaskOutcome({ task: 'my-task', fetchError: true });
+assert.equal(tFe.outcome, 'escalated', 'task fetchError → escalated');
+assert.equal(tFe.summary, 'task fetch failed', 'task fetchError summary is fixed');
+assert.deepEqual(tFe.findings, [], 'task fetchError findings empty');
+assert.deepEqual(Object.keys(tFe).sort(), TASK_SHAPE, 'task fetchError keeps the task shape');
+
+// Tasks always run at the fixed `medium` tier, so the `large` tightening (which
+// promotes a surviving `concern` to blocking) must NOT apply to them.
+const tConcern = buildTaskOutcome({
+  task: 'my-task',
+  planFindings: [],
+  codeFindings: [C('nit')],
+  codeFindingsAfterRework: [],
+  tier: 'medium',
+});
+assert.equal(tConcern.outcome, 'reviewed', 'a concern alone never blocks a medium-tier task');
+
+// The task twin of revRework: a blocking finding on the first pass, cleared by
+// the one bounded rework, must land `reviewed` surfacing the POST-rework array.
+const tRevRework = buildTaskOutcome({
+  task: 'my-task',
+  planFindings: [],
+  codeFindings: [B('sqli')],
+  codeFindingsAfterRework: [],
+  tier: 'medium',
+});
+assert.equal(tRevRework.outcome, 'reviewed', 'task: blocking first pass cleared by rework → reviewed');
+assert.deepEqual(tRevRework.findings, [], 'task reviewed-after-rework surfaces post-rework findings');
+assert.ok(
+  !tRevRework.summary.includes('blocking'),
+  'a reviewed task summary never names a stale pre-rework blocker'
+);
+
+// Determinism — two calls on the same input are byte-identical.
+const tDet = {
+  task: 'my-task',
+  planFindings: [],
+  codeFindings: [B('a'), C('b')],
+  codeFindingsAfterRework: [B('a')],
+  tier: 'medium',
+};
+assert.equal(
+  JSON.stringify(buildTaskOutcome(tDet)),
+  JSON.stringify(buildTaskOutcome(tDet)),
+  'buildTaskOutcome is deterministic across runs'
+);
+
+// ============================================================================
 // No OUTCOME ever carries a land-time completion (`Done:`) directive.
 // ============================================================================
-for (const o of [rev, revRework, rw, esc, fe]) {
+for (const o of [rev, revRework, rw, esc, fe, tRev, tRw, tEsc, tFe]) {
   assert.ok(!JSON.stringify(o).includes('Done:'), 'OUTCOME never contains a Done: directive');
 }
 

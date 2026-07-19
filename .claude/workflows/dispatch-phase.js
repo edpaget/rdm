@@ -365,6 +365,45 @@ function buildOutcome(input) {
   }
   return { roadmap: roadmap, phase: phase, outcome: outcome, summary: summary, findings: findings };
 }
+
+// buildTaskOutcome — the task-shaped OUTCOME contract { task, outcome, summary,
+// findings }. A task is keyed by slug and belongs to no roadmap, so it emits a
+// `task` identifier instead of `roadmap`/`phase`; the decision core
+// (classifyOutcome / hasBlocking / summarizeFindings) is shared UNCHANGED with
+// the phase path. Tasks always dispatch at the fixed `medium` tier, so the
+// `large` gate-tightening in hasBlocking never applies to them. fetchError
+// short-circuits to escalated. Never emits a land-time completion directive.
+function buildTaskOutcome(input) {
+  const i = input || {};
+  const task = i.task;
+  const tier = i.tier;
+  if (i.fetchError === true) {
+    return { task: task, outcome: 'escalated', summary: 'task fetch failed', findings: [] };
+  }
+  const planFindings = i.planFindings || [];
+  const codeFindings = i.codeFindings || [];
+  const codeFindingsAfterRework = i.codeFindingsAfterRework || [];
+  const outcome = classifyOutcome({
+    planFindings: planFindings,
+    codeFindings: codeFindings,
+    codeFindingsAfterRework: codeFindingsAfterRework,
+    tier: tier,
+  });
+  let findings;
+  let summary;
+  if (outcome === 'escalated') {
+    findings = planFindings;
+    summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
+  } else if (outcome === 'rework') {
+    findings = codeFindingsAfterRework;
+    summary = 'code rework unresolved: ' + summarizeFindings(codeFindingsAfterRework);
+  } else {
+    // reviewed — surface whichever pass came back clean of blockers.
+    findings = hasBlocking(codeFindings, tier) ? codeFindingsAfterRework : codeFindings;
+    summary = 'task reviewed clean: ' + summarizeFindings(findings);
+  }
+  return { task: task, outcome: outcome, summary: summary, findings: findings };
+}
 // >>> dispatch-outcome:end <<<
 
 // --- Schemas (dispatch-specific; see docs/workflow-schemas.md) ----------------
@@ -379,6 +418,18 @@ const PHASE_META_SCHEMA = {
     phase: { type: 'string' },
     stem: { type: 'string' },
     model: { type: 'string' }, // the tier: small | medium | large
+    body: { type: 'string' },
+  },
+}
+
+// TASK_META — the task-mode twin of PHASE_META. A task has no roadmap and no
+// difficulty/model tier, so neither field appears here.
+const TASK_META_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['task', 'body'],
+  properties: {
+    task: { type: 'string' },
     body: { type: 'string' },
   },
 }
@@ -437,6 +488,16 @@ function buildFetchPrompt(roadmap, phase) {
   ].join('\n')
 }
 
+function buildTaskFetchPrompt(slug) {
+  return [
+    'You are a mechanical fetch agent. Do not plan or implement anything.',
+    'Run exactly this command in the repo root and read its JSON output:',
+    '  ./target/debug/rdm task show ' + slug + ' --project rdm --format json',
+    'Return a TASK_META object: task (the slug you were given) and body (the task JSON `body` verbatim).',
+    'If the command fails or the body is empty, return an empty body.',
+  ].join('\n')
+}
+
 // Stage A: the planner is seeded with ONLY the phase body — no worktree, no code.
 function buildPlanPrompt(phaseBody) {
   return [
@@ -472,11 +533,11 @@ function buildPlanRevisePrompt(phaseBody, planDocText, rankedPlanFindings) {
 // approved plan doc (+ optional code-review findings on the rework pass). It is
 // NEVER given the planner's or plan-reviewer's context/transcript. `reworkNotes`
 // carries CODE-review findings only — never plan-review findings.
-function buildImplementPrompt(roadmapSlug, phaseBody, planDocText, reworkNotes) {
+function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes) {
   const lines = [
-    'You are an implementation agent. You are seeded with ONLY the phase body and the approved plan below.',
-    'First, create/enter the shared per-roadmap worktree and work THERE:',
-    '  ./target/debug/rdm worktree add ' + roadmapSlug + ' --project rdm',
+    'You are an implementation agent. You are seeded with ONLY the item body and the approved plan below.',
+    'First, create/enter the worktree for this item and work THERE:',
+    '  ./target/debug/rdm worktree add ' + worktreeRef + ' --project rdm',
     'then `cd` into the path it prints. Do all edits and the commit in that worktree.',
     '--- PHASE BODY ---',
     phaseBody,
@@ -514,31 +575,80 @@ if (typeof dispatchArgs === 'string') {
 if (!dispatchArgs || typeof dispatchArgs !== 'object') dispatchArgs = {}
 const roadmap = dispatchArgs.roadmap || ''
 const phaseArg = dispatchArgs.phase || ''
+// Task mode: `{ task: <slug> }` dispatches a standalone task instead of a phase.
+// A task belongs to no roadmap, carries no difficulty/model tier, and lives in
+// its own `task/<slug>` worktree — see the deltas handled below.
+const taskSlug = dispatchArgs.task || ''
+const isTask = !!taskSlug
 const planOnly = !!dispatchArgs.planOnly
 
-// Stage 0: fetch the phase metadata + body via a mechanical Bash agent.
+// itemOutcome — emit the identifier-correct OUTCOME for whichever mode is
+// active. Keeps every downstream return site mode-agnostic.
+function itemOutcome(fields) {
+  const f = fields || {}
+  if (isTask) {
+    return buildTaskOutcome({
+      task: taskSlug,
+      fetchError: f.fetchError,
+      planFindings: f.planFindings,
+      codeFindings: f.codeFindings,
+      codeFindingsAfterRework: f.codeFindingsAfterRework,
+      tier: f.tier,
+    })
+  }
+  return buildOutcome({
+    roadmap: roadmap,
+    phase: phaseArg,
+    fetchError: f.fetchError,
+    planFindings: f.planFindings,
+    codeFindings: f.codeFindings,
+    codeFindingsAfterRework: f.codeFindingsAfterRework,
+    tier: f.tier,
+  })
+}
+
+// A pre-fetch label for logs emitted BEFORE the fetch resolves the stem. Only
+// the fetch-failure log can use this; every later log uses the resolved
+// `itemLabel` below, which matches the pre-dual-mode behaviour.
+const itemLabelRaw = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
+
+// Stage 0: fetch the phase/task metadata + body via a mechanical Bash agent.
 // NOTE: this local is `phaseMeta`, NOT `meta` — the top-level `export const meta`
 // (the workflow contract) already owns that identifier in this module scope.
 let phaseMeta = null
 try {
-  phaseMeta = await agent(buildFetchPrompt(roadmap, phaseArg), {
-    label: 'fetch:phase-meta',
-    phase: 'Plan',
-    schema: PHASE_META_SCHEMA,
-  })
+  phaseMeta = isTask
+    ? await agent(buildTaskFetchPrompt(taskSlug), {
+        label: 'fetch:task-meta',
+        phase: 'Plan',
+        schema: TASK_META_SCHEMA,
+      })
+    : await agent(buildFetchPrompt(roadmap, phaseArg), {
+        label: 'fetch:phase-meta',
+        phase: 'Plan',
+        schema: PHASE_META_SCHEMA,
+      })
 } catch (e) {
   phaseMeta = null
 }
 
 if (!phaseMeta || !phaseMeta.body || String(phaseMeta.body).trim() === '') {
-  log('dispatch-phase: phase fetch failed for ' + roadmap + '/' + phaseArg)
-  return buildOutcome({ roadmap: roadmap, phase: phaseArg, fetchError: true })
+  log('dispatch-phase: ' + (isTask ? 'task' : 'phase') + ' fetch failed for ' + itemLabelRaw)
+  return itemOutcome({ fetchError: true })
 }
 
 const phaseBody = String(phaseMeta.body)
-const stem = phaseMeta.stem || phaseArg
+const stem = isTask ? taskSlug : phaseMeta.stem || phaseArg
 const roadmapSlug = phaseMeta.roadmap || roadmap
-const tier = phaseMeta.model || 'medium'
+// Tasks carry no difficulty/model, so they always dispatch at the fixed
+// `medium` tier — the `large` gate-tightening never applies to a task.
+const tier = isTask ? 'medium' : phaseMeta.model || 'medium'
+// Stage C works in the per-task worktree for tasks, the shared per-roadmap
+// worktree for phases.
+const worktreeRef = isTask ? 'task/' + taskSlug : roadmapSlug
+// Resolved log label: phase mode logs the resolved `stem`, not the raw
+// stem-or-number the caller passed, matching the pre-dual-mode behaviour.
+const itemLabel = isTask ? 'task/' + taskSlug : roadmap + '/' + stem
 
 // Stage A: author the plan from ONLY the phase body.
 let planDoc = await agent(buildPlanPrompt(phaseBody), {
@@ -563,49 +673,50 @@ if (hasBlocking(planFindings, tier)) {
 
 // Plan gate: never implement on a blocking plan.
 if (hasBlocking(planFindings, tier)) {
-  log('dispatch-phase: plan gate escalated for ' + roadmap + '/' + stem)
-  return buildOutcome({ roadmap: roadmap, phase: phaseArg, planFindings: planFindings, tier: tier })
+  log('dispatch-phase: plan gate escalated for ' + itemLabel)
+  return itemOutcome({ planFindings: planFindings, tier: tier })
 }
 
 // --plan-only: the plan gate passed — stop before implementing and report the
 // vetted plan as `reviewed` (autopilot's estimate/plan-vet pass). This early
-// return is NOT part of the copied dispatch-outcome block.
+// return is NOT part of the copied dispatch-outcome block, so it must carry the
+// identifier for the active mode itself (task-keyed vs roadmap/phase-keyed).
 if (planOnly) {
-  const o = { roadmap: roadmap, phase: phaseArg, outcome: 'reviewed', summary: 'plan-only: plan gate passed', findings: planFindings }
-  log('dispatch-phase (' + roadmap + '/' + stem + '): plan-only — plan approved')
+  const o = isTask
+    ? { task: taskSlug, outcome: 'reviewed', summary: 'plan-only: plan gate passed', findings: planFindings }
+    : { roadmap: roadmap, phase: phaseArg, outcome: 'reviewed', summary: 'plan-only: plan gate passed', findings: planFindings }
+  log('dispatch-phase (' + itemLabel + '): plan-only — plan approved')
   return o
 }
 
 // Stage C: implement in the shared per-roadmap worktree. A FRESH implementer
 // seeded with ONLY the phase body + approved plan doc — not the planner context.
 const approvedPlanText = renderPlanDoc(planDoc)
-await agent(buildImplementPrompt(roadmapSlug, phaseBody, approvedPlanText), {
+await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText), {
   label: 'implement:worktree',
   phase: 'Implement',
 })
 
 // Stage D: code-review via the same stamped pipeline, called inline.
 const runCodeReview = buildReviewPipeline('code')
-const reviewTarget = roadmapSlug + '/' + stem
+const reviewTarget = isTask ? 'task/' + taskSlug : roadmapSlug + '/' + stem
 const codeFindings = await runCodeReview({ target: reviewTarget })
 
 // Bounded to exactly ONE rework pass.
 let codeFindingsAfterRework = []
 if (hasBlocking(codeFindings, tier)) {
-  await agent(buildImplementPrompt(roadmapSlug, phaseBody, approvedPlanText, codeFindings), {
+  await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, codeFindings), {
     label: 'implement:rework',
     phase: 'Implement',
   })
   codeFindingsAfterRework = await runCodeReview({ target: reviewTarget })
 }
 
-const outcome = buildOutcome({
-  roadmap: roadmap,
-  phase: phaseArg,
+const outcome = itemOutcome({
   planFindings: planFindings,
   codeFindings: codeFindings,
   codeFindingsAfterRework: codeFindingsAfterRework,
   tier: tier,
 })
-log('dispatch-phase (' + roadmap + '/' + stem + '): ' + outcome.outcome + ' — ' + outcome.summary)
+log('dispatch-phase (' + itemLabel + '): ' + outcome.outcome + ' — ' + outcome.summary)
 return outcome

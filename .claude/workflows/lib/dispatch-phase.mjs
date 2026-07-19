@@ -109,8 +109,47 @@ function buildOutcome(input) {
   }
   return { roadmap: roadmap, phase: phase, outcome: outcome, summary: summary, findings: findings };
 }
+
+// buildTaskOutcome — the task-shaped OUTCOME contract { task, outcome, summary,
+// findings }. A task is keyed by slug and belongs to no roadmap, so it emits a
+// `task` identifier instead of `roadmap`/`phase`; the decision core
+// (classifyOutcome / hasBlocking / summarizeFindings) is shared UNCHANGED with
+// the phase path. Tasks always dispatch at the fixed `medium` tier, so the
+// `large` gate-tightening in hasBlocking never applies to them. fetchError
+// short-circuits to escalated. Never emits a land-time completion directive.
+function buildTaskOutcome(input) {
+  const i = input || {};
+  const task = i.task;
+  const tier = i.tier;
+  if (i.fetchError === true) {
+    return { task: task, outcome: 'escalated', summary: 'task fetch failed', findings: [] };
+  }
+  const planFindings = i.planFindings || [];
+  const codeFindings = i.codeFindings || [];
+  const codeFindingsAfterRework = i.codeFindingsAfterRework || [];
+  const outcome = classifyOutcome({
+    planFindings: planFindings,
+    codeFindings: codeFindings,
+    codeFindingsAfterRework: codeFindingsAfterRework,
+    tier: tier,
+  });
+  let findings;
+  let summary;
+  if (outcome === 'escalated') {
+    findings = planFindings;
+    summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
+  } else if (outcome === 'rework') {
+    findings = codeFindingsAfterRework;
+    summary = 'code rework unresolved: ' + summarizeFindings(codeFindingsAfterRework);
+  } else {
+    // reviewed — surface whichever pass came back clean of blockers.
+    findings = hasBlocking(codeFindings, tier) ? codeFindingsAfterRework : codeFindings;
+    summary = 'task reviewed clean: ' + summarizeFindings(findings);
+  }
+  return { task: task, outcome: outcome, summary: summary, findings: findings };
+}
 // >>> dispatch-outcome:end <<<
 
 // Node-only exports for the verify harness. NOT part of the copied block — the
 // marker END is above this line, so a copy never carries these.
-export { hasBlocking, summarizeFindings, classifyOutcome, buildOutcome };
+export { hasBlocking, summarizeFindings, classifyOutcome, buildOutcome, buildTaskOutcome };
