@@ -13,9 +13,14 @@
 #
 #   1. BEHAVIOR — the pure decision logic, driven in Node with fabricated ranked
 #                 finding arrays (zero LLM calls): all three outcome branches
-#                 (reviewed / rework / escalated), tier-scaling, the bounded
-#                 one-revise/one-rework loops reaching a terminal, determinism,
-#                 and that no OUTCOME ever carries a `Done:` directive.
+#                 (reviewed / rework / escalated), tier-scaling, determinism, and
+#                 that no OUTCOME ever carries a `Done:` directive. Section 1c
+#                 additionally DRIVES the two budget-bounded gates
+#                 (runPlanGate / runCodeGate) under injected fakes: per-budget
+#                 agent-call counts, budget independence, the null-plan and
+#                 null-revise short-circuits, budget validation, and the
+#                 boundedness proof (a never-clean stage terminates at exactly
+#                 `budget + 1` reviews).
 #   2. BLOCK DRIFT — the `dispatch-outcome` region is byte-identical between the
 #                 lib source of truth and the stamped workflow script (with a
 #                 planted-mutation self-test proving the gate is not a no-op).
@@ -25,11 +30,15 @@
 #                 stamped review markers present; no import/require/nested
 #                 workflow() call; distinct planner/implementer/fetch agent labels;
 #                 the implementer prompt seeded from phase body + plan doc only,
-#                 never the plan-review findings; no unbounded loop construct).
+#                 never the plan-review findings; and the marker-scoped loop rules
+#                 — no `while` in the driver region, `for` only from an exact
+#                 allowlist, "bounded" itself being proven semantically in 1c).
+#   5. DOC AGREEMENT — docs/escalation-protocol.md § Budgets names all four
+#                 budgets with exactly the values the two libs declare.
 #
 # NOTE ON THE DETERMINISTIC MODEL: the pipeline cannot classify a code finding's
 # *nature* (the FINDING schema has severity but no fixable/decision flag), so a
-# code defect that survives the one bounded rework resolves to `rework`, and
+# code defect that survives the bounded reworks resolves to `rework`, and
 # genuine decisions surface earlier at the plan gate as `escalated`. That is why
 # the code stage yields only reviewed|rework here.
 #
@@ -368,6 +377,339 @@ else
     fail "dispatch-phase behavior assertions failed"
 fi
 
+# --- 1c. DRIVEN GATES --------------------------------------------------------
+say "1c. Driven gates: budget-bounded plan/code loops under injected fakes"
+
+cat >"$TMP/gates.mjs" <<'NODE_TEST'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const libPath = process.argv[2];
+const mod = await import(pathToFileURL(libPath).href);
+const {
+  DEFAULT_MAX_PLAN_REVISE,
+  DEFAULT_MAX_CODE_REWORK,
+  parseBudget,
+  parseDispatchArgs,
+  runPlanGate,
+  runCodeGate,
+  classifyOutcome,
+  buildOutcome,
+  buildTaskOutcome,
+} = mod;
+
+const B = (id) => ({ id, concern: 'x', severity: 'blocking', confidence: 90, what_fails: id });
+
+// The declared defaults are the values the docs and the escalation protocol
+// quote; pin them so a silent change to either has to update both.
+assert.equal(DEFAULT_MAX_PLAN_REVISE, 2, 'plan-revise budget defaults to 2');
+assert.equal(DEFAULT_MAX_CODE_REWORK, 2, 'code-rework budget defaults to 2');
+
+// Fakes: every stage records into a shared callLog and the reviewer is scripted.
+// `reviewScript` is consumed per review call, repeating its last entry.
+function makePlanFakes(o) {
+  const opts = o || {};
+  const callLog = [];
+  let reviewIdx = 0;
+  const script = opts.reviewScript || [[B('never-clean')]];
+  return {
+    callLog,
+    deps: {
+      plan: async () => {
+        callLog.push('plan');
+        return opts.planNull ? null : { doc: 0 };
+      },
+      revise: async (doc, findings) => {
+        callLog.push('revise');
+        assert.ok(Array.isArray(findings), 'revise receives the findings it must address');
+        if (opts.reviseNull) return null;
+        return { doc: (doc.doc || 0) + 1 };
+      },
+      review: async (doc) => {
+        assert.ok(doc !== null && doc !== undefined, 'a null plan doc must NEVER reach the reviewer');
+        callLog.push('review');
+        const r = script[Math.min(reviewIdx, script.length - 1)];
+        reviewIdx++;
+        return r;
+      },
+    },
+  };
+}
+
+function makeCodeFakes(o) {
+  const opts = o || {};
+  const callLog = [];
+  let reviewIdx = 0;
+  const script = opts.reviewScript || [[B('never-clean')]];
+  return {
+    callLog,
+    deps: {
+      implement: async (notes) => {
+        callLog.push(notes == null ? 'implement' : 'rework');
+      },
+      review: async () => {
+        callLog.push('review');
+        const r = script[Math.min(reviewIdx, script.length - 1)];
+        reviewIdx++;
+        return r;
+      },
+    },
+  };
+}
+
+const count = (log, kind) => log.filter((c) => c === kind).length;
+
+// ============================================================================
+// AC1 — agent-call COUNTS per budget, not just the terminal outcome.
+// ============================================================================
+for (const b of [0, 1, 2]) {
+  const h = makePlanFakes({});
+  const res = await runPlanGate({ maxRevise: b, tier: 'medium' }, h.deps);
+  assert.equal(count(h.callLog, 'plan'), 1, 'budget ' + b + ': the plan is authored exactly once');
+  assert.equal(count(h.callLog, 'revise'), b, 'budget ' + b + ': exactly ' + b + ' revise agent calls');
+  assert.equal(res.reviseCount, b, 'budget ' + b + ': reviseCount matches the budget');
+  assert.equal(res.fetchError, false, 'budget ' + b + ': a never-clean plan is not a fetchError');
+  assert.equal(
+    classifyOutcome({ planFindings: res.findings, tier: 'medium' }),
+    'escalated',
+    'budget ' + b + ': a plan that never clears escalates'
+  );
+
+  const c = makeCodeFakes({});
+  const cres = await runCodeGate({ maxRework: b, tier: 'medium' }, c.deps);
+  assert.equal(count(c.callLog, 'implement'), 1, 'budget ' + b + ': the first implement runs exactly once');
+  assert.equal(count(c.callLog, 'rework'), b, 'budget ' + b + ': exactly ' + b + ' rework implement calls');
+  assert.equal(cres.reworkCount, b, 'budget ' + b + ': reworkCount matches the budget');
+  assert.equal(
+    classifyOutcome({ planFindings: [], codeReviews: cres.rounds, maxRework: b, tier: 'medium' }),
+    'rework',
+    'budget ' + b + ': code that never clears is rework'
+  );
+}
+
+// Budget 0 explicitly: NO revise / NO rework agent call at all.
+{
+  const h = makePlanFakes({});
+  await runPlanGate({ maxRevise: 0, tier: 'medium' }, h.deps);
+  assert.equal(count(h.callLog, 'revise'), 0, 'budget 0: zero revise calls (zero tokens burned on revision)');
+  const c = makeCodeFakes({});
+  await runCodeGate({ maxRework: 0, tier: 'medium' }, c.deps);
+  assert.equal(count(c.callLog, 'rework'), 0, 'budget 0: zero rework implement calls');
+}
+
+// Early break: a clean first review stops the loop below its budget.
+{
+  const h = makePlanFakes({ reviewScript: [[]] });
+  const res = await runPlanGate({ maxRevise: 2, tier: 'medium' }, h.deps);
+  assert.equal(count(h.callLog, 'revise'), 0, 'a clean first plan review never revises');
+  assert.equal(res.reviewCount, 1, 'a clean first plan review runs exactly one review');
+}
+{
+  const h = makePlanFakes({ reviewScript: [[B('x')], []] });
+  const res = await runPlanGate({ maxRevise: 2, tier: 'medium' }, h.deps);
+  assert.equal(res.reviseCount, 1, 'a plan cleared by revision 1 does not spend revision 2');
+  assert.equal(res.reviewCount, 2, 'and runs exactly two reviews');
+  assert.equal(classifyOutcome({ planFindings: res.findings, tier: 'medium' }), 'reviewed');
+}
+
+// null-plan short-circuit: no review, no revise, fetchError at stage 'plan'.
+{
+  const h = makePlanFakes({ planNull: true });
+  const res = await runPlanGate({ maxRevise: 2, tier: 'medium' }, h.deps);
+  assert.equal(res.fetchError, true, 'a null plan doc short-circuits to fetchError');
+  assert.equal(res.stage, 'plan', 'the null is attributed to the plan stage');
+  assert.equal(count(h.callLog, 'review'), 0, 'a null plan is NEVER reviewed as an empty plan');
+  assert.equal(count(h.callLog, 'revise'), 0, 'a null plan is never revised');
+  assert.equal(buildOutcome({ roadmap: 'rm', phase: 'p', fetchError: res.fetchError }).outcome, 'escalated');
+}
+
+// null-revise short-circuit: the guard runs BEFORE the reassignment and BEFORE
+// the next review, so the null neither reaches the reviewer nor clobbers the
+// last good plan doc.
+{
+  const h = makePlanFakes({ reviseNull: true });
+  const res = await runPlanGate({ maxRevise: 2, tier: 'medium' }, h.deps);
+  assert.equal(res.fetchError, true, 'a null revise result short-circuits to fetchError');
+  assert.equal(res.stage, 'revise', 'the null is attributed to the revise stage');
+  assert.equal(res.reviseCount, 1, 'reviseCount counts the attempt that failed');
+  assert.equal(count(h.callLog, 'review'), 1, 'the null revised doc is NEVER reviewed');
+  assert.deepEqual(res.planDoc, { doc: 0 }, 'the last good plan doc survives a null revise');
+  assert.equal(buildOutcome({ roadmap: 'rm', phase: 'p', fetchError: true }).outcome, 'escalated');
+}
+
+// ============================================================================
+// AC2 — the budget-0 classifier hole: a blocking FIRST-pass code review must be
+// `rework`, never `reviewed`. Before the fix the empty codeFindingsAfterRework
+// slot marked a failing review clean.
+// ============================================================================
+assert.equal(
+  classifyOutcome({ planFindings: [], codeFindings: [B('bug')], codeFindingsAfterRework: [], maxRework: 0, tier: 'medium' }),
+  'rework',
+  'blocking first-pass code review at budget 0 must NOT classify reviewed'
+);
+{
+  const o = buildOutcome({
+    roadmap: 'rm',
+    phase: 'p',
+    planFindings: [],
+    codeFindings: [B('bug')],
+    codeFindingsAfterRework: [],
+    maxRework: 0,
+    tier: 'medium',
+  });
+  assert.equal(o.outcome, 'rework', 'buildOutcome: budget-0 blocking review → rework');
+  assert.deepEqual(o.findings.map((f) => f.id), ['bug'], 'budget-0 rework surfaces the failing review findings');
+  assert.ok(o.summary.startsWith('code rework unresolved: '), 'budget-0 rework keeps the summary prefix');
+  const t = buildTaskOutcome({
+    task: 't',
+    planFindings: [],
+    codeFindings: [B('bug')],
+    codeFindingsAfterRework: [],
+    maxRework: 0,
+    tier: 'medium',
+  });
+  assert.equal(t.outcome, 'rework', 'buildTaskOutcome: budget-0 blocking review → rework');
+  assert.ok(!('roadmap' in t) && !('phase' in t), 'task-shaped OUTCOME carries no roadmap/phase keys');
+}
+// The same shape at the DEFAULT budget still means "fixed by the rework" —
+// the fix must not invert the legacy fixture.
+assert.equal(
+  classifyOutcome({ planFindings: [], codeFindings: [B('bug')], codeFindingsAfterRework: [], tier: 'medium' }),
+  'reviewed',
+  'legacy two-slot input under the default budget still classifies reviewed'
+);
+// And the driven equivalent: budget 0 + a blocking review → rework via rounds.
+{
+  const c = makeCodeFakes({ reviewScript: [[B('bug')]] });
+  const cres = await runCodeGate({ maxRework: 0, tier: 'medium' }, c.deps);
+  assert.equal(
+    buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], codeReviews: cres.rounds, maxRework: 0, tier: 'medium' }).outcome,
+    'rework',
+    'driven budget-0 code gate yields rework'
+  );
+}
+
+// ============================================================================
+// AC3 — the two budgets are independent: exhausting one leaves the other whole.
+// ============================================================================
+{
+  const p = makePlanFakes({});
+  const c = makeCodeFakes({ reviewScript: [[]] });
+  const pres = await runPlanGate({ maxRevise: 2, tier: 'medium' }, p.deps);
+  const cres = await runCodeGate({ maxRework: 2, tier: 'medium' }, c.deps);
+  assert.equal(pres.reviseCount, 2, 'the plan budget is fully spent');
+  assert.equal(cres.reworkCount, 0, 'a spent plan budget consumes NO code-rework budget');
+  assert.equal(cres.reviewCount, 1, 'the code stage still reviews exactly once');
+}
+{
+  const p = makePlanFakes({ reviewScript: [[]] });
+  const c = makeCodeFakes({});
+  const pres = await runPlanGate({ maxRevise: 2, tier: 'medium' }, p.deps);
+  const cres = await runCodeGate({ maxRework: 2, tier: 'medium' }, c.deps);
+  assert.equal(pres.reviseCount, 0, 'a clean plan spends no plan budget');
+  assert.equal(pres.reviewCount, 1, 'and reviews exactly once');
+  assert.equal(cres.reworkCount, 2, 'while the code budget is independently exhausted');
+  assert.ok(!('reworkCount' in pres), 'the plan gate exposes only its own counters');
+  assert.ok(!('reviseCount' in cres), 'the code gate exposes only its own counters');
+}
+
+// ============================================================================
+// AC4 — boundedness proof: a stage that never comes back clean terminates at
+// EXACTLY budget + 1 review calls (assert.equal, not <=). A hung loop fails the
+// harness by never resolving.
+// ============================================================================
+for (const b of [0, 1, 2, 5]) {
+  const p = makePlanFakes({});
+  const pres = await runPlanGate({ maxRevise: b, tier: 'medium' }, p.deps);
+  assert.equal(pres.reviewCount, b + 1, 'plan gate: never-clean terminates at exactly budget + 1 reviews');
+  assert.equal(count(p.callLog, 'review'), b + 1, 'plan gate: review call count matches reviewCount');
+
+  const c = makeCodeFakes({});
+  const cres = await runCodeGate({ maxRework: b, tier: 'medium' }, c.deps);
+  assert.equal(cres.rounds.length, b + 1, 'code gate: never-clean terminates at exactly budget + 1 rounds');
+  assert.equal(cres.reviewCount, b + 1, 'code gate: reviewCount == rounds.length');
+}
+// The null-revise early exit terminates BELOW budget + 1 — an exit, not a hang.
+{
+  const h = makePlanFakes({ reviseNull: true });
+  const res = await runPlanGate({ maxRevise: 2, tier: 'medium' }, h.deps);
+  assert.ok(res.reviewCount < 3, 'a null revise exits strictly below budget + 1 reviews');
+}
+
+// The `large` tightening applies inside the loops: a surviving concern blocks.
+{
+  const C = (id) => ({ id, concern: 'x', severity: 'concern', confidence: 90, what_fails: id });
+  const h = makePlanFakes({ reviewScript: [[C('nit')]] });
+  const res = await runPlanGate({ maxRevise: 2, tier: 'large' }, h.deps);
+  assert.equal(res.reviseCount, 2, 'large tier: a surviving concern exhausts the plan budget');
+  const m = makePlanFakes({ reviewScript: [[C('nit')]] });
+  const mres = await runPlanGate({ maxRevise: 2, tier: 'medium' }, m.deps);
+  assert.equal(mres.reviseCount, 0, 'medium tier: a concern alone never spends budget');
+}
+
+// ============================================================================
+// AC8 — budget validation: 0 accepted, negatives/non-integers rejected with an
+// actionable message naming the flag.
+// ============================================================================
+assert.equal(parseBudget(0, 'maxCodeRework', 2), 0, '0 is a meaningful budget, never "unset"');
+assert.equal(parseBudget('0', 'maxCodeRework', 2), 0, "'0' parses to 0, not the default");
+assert.equal(parseBudget(undefined, 'maxPlanRevise', 2), 2, 'unset falls back to the default');
+assert.equal(parseBudget(null, 'maxPlanRevise', 2), 2, 'null falls back to the default');
+assert.equal(parseBudget('', 'maxPlanRevise', 2), 2, 'empty string falls back to the default');
+assert.equal(parseBudget('3', 'maxPlanRevise', 2), 3, 'a numeric string parses');
+for (const bad of [-1, '-1', 1.5, '1.5', 'abc', '2abc', NaN, Infinity, true, [], {}, -0]) {
+  assert.throws(
+    () => parseBudget(bad, 'maxPlanRevise', 2),
+    /maxPlanRevise must be a non-negative integer/,
+    'rejected: ' + String(bad)
+  );
+}
+try {
+  parseBudget('2abc', 'maxCodeRework', 2);
+  assert.fail('parseInt coercion trap: "2abc" must be rejected, not read as 2');
+} catch (e) {
+  assert.match(e.message, /maxCodeRework/, 'the message names the offending flag');
+  assert.match(e.message, /non-negative integer/, 'the message states what a valid value is');
+  assert.match(e.message, /0 means no reworks/, 'the message explains that 0 is legal');
+}
+
+// parseDispatchArgs — the same validation at the args boundary, plus coercion.
+{
+  const d = parseDispatchArgs({ roadmap: 'r', phase: 'p' });
+  assert.equal(d.maxPlanRevise, DEFAULT_MAX_PLAN_REVISE, 'unset args take the default plan budget');
+  assert.equal(d.maxCodeRework, DEFAULT_MAX_CODE_REWORK, 'unset args take the default code budget');
+  assert.equal(d.planOnly, false, 'planOnly defaults false');
+  const z = parseDispatchArgs({ roadmap: 'r', phase: 'p', maxCodeRework: 0, maxPlanRevise: 0 });
+  assert.equal(z.maxCodeRework, 0, 'an explicit 0 survives the args boundary');
+  assert.equal(z.maxPlanRevise, 0, 'an explicit 0 survives the args boundary (plan)');
+  assert.throws(
+    () => parseDispatchArgs({ roadmap: 'r', phase: 'p', maxCodeRework: -1 }),
+    /maxCodeRework must be a non-negative integer/,
+    'an invalid budget is rejected at parse time, before any agent() call'
+  );
+  // A stringified payload is coerced ONCE and its budgets are still validated.
+  const s = parseDispatchArgs(JSON.stringify({ roadmap: 'r', phase: 'p', maxPlanRevise: 3 }));
+  assert.equal(s.roadmap, 'r', 'a stringified payload is coerced');
+  assert.equal(s.maxPlanRevise, 3, 'a budget inside a stringified payload is read');
+  assert.throws(
+    () => parseDispatchArgs(JSON.stringify({ roadmap: 'r', maxPlanRevise: 'nope' })),
+    /maxPlanRevise must be a non-negative integer/,
+    'a budget inside a stringified payload is still validated'
+  );
+  const t = parseDispatchArgs({ task: 'my-task' });
+  assert.equal(t.task, 'my-task', 'task mode survives the parse');
+  assert.equal(t.roadmap, '', 'task mode carries no roadmap');
+}
+
+console.log('all dispatch-phase gate assertions passed');
+NODE_TEST
+
+if run_node "$TMP/gates.mjs" "$LIB"; then
+    pass "budget-bounded gates verified (per-budget call counts, budget-0 regression, independence, boundedness, validation)"
+else
+    fail "dispatch-phase gate assertions failed"
+fi
+
 # --- 2. BLOCK DRIFT GATE -----------------------------------------------------
 say "2. Block drift: the dispatch-outcome region is byte-identical (lib vs workflow)"
 
@@ -413,6 +755,15 @@ fi
 cp "$WF" "$TMP/wf.scratch"
 blocks_equal "$TMP/lib.scratch" "$TMP/wf.scratch" || fail "restore did not heal the byte-equality gate"
 pass "drift detector fails on a planted mutation and heals on restore"
+
+# Non-vacuity: byte-equality between two EMPTY extractions would also "pass", so
+# assert the region actually carries the budget machinery in BOTH files. A
+# partial hand-mirror cannot slip through by extracting nothing.
+for sym in runPlanGate runCodeGate parseBudget parseDispatchArgs codeReviewRounds DEFAULT_MAX_PLAN_REVISE DEFAULT_MAX_CODE_REWORK; do
+    grep -q "$sym" "$TMP/lib-block" || fail "dispatch-outcome block in the LIB is missing $sym"
+    grep -q "$sym" "$TMP/wf-block" || fail "dispatch-outcome block in the WORKFLOW is missing $sym (partial mirror?)"
+done
+pass "dispatch-outcome block carries the budget gates + validators in both files"
 
 # --- 3. STATIC INVARIANTS ----------------------------------------------------
 say "3. Static invariants on the workflow source (AC-1 / AC-2 / AC-3 / AC-5)"
@@ -571,11 +922,14 @@ if grep -q "no agent() call uses it" "$TMP/agent-blocks"; then
 fi
 pass "AC-MODEL: extractor skips prose comments mentioning agent()"
 
-# AC-NULLGUARD: the two DRIVER-level null guards exist and gate a real code path.
+# AC-NULLGUARD: both null guards exist and gate a real code path.
 #
-# These live in the un-exported top-level driver body (ambient agent/top-level
-# await), so no Node unit test can reach them — a static structural gate is the
-# only thing standing between them and silent deletion. They are the safety net
+# The unresolved-model guard lives in the un-exported top-level driver body
+# (ambient agent/top-level await), so no Node unit test can reach it — a static
+# structural gate is the only thing standing between it and silent deletion. The
+# null-plan/null-revise guard now lives inside runPlanGate in the copied block
+# (section 1c drives it behaviorally); this static check keeps a second, cheaper
+# lock on it. They are the safety net
 # for spike consequence 3: agent() RESOLVES to null on an unknown model id, so
 # without them a misconfigured [models] binding yields a null plan / an
 # all-inherited-model dispatch with nothing objecting.
@@ -655,15 +1009,108 @@ if assert_tier_scoping "$TMP/tier-task-mutant"; then
 fi
 pass "AC-TIER: detector fires when --tier is added to the task prompt"
 
-# AC-4 (driver-level reinforcement): no unbounded loop construct wraps the
-# revise/rework agent() calls — they are single bounded if-guards, not loops.
-if grep -nE '(^|[^A-Za-z_])(for|while)[[:space:]]*\(' "$WF" >/dev/null 2>&1; then
-    grep -nE '(^|[^A-Za-z_])(for|while)[[:space:]]*\(' "$WF" >&2 || true
-    fail "AC-4: dispatch-phase.js must contain no loop construct (revise/rework are single bounded if-guards)"
+# AC-4 (driver-level reinforcement): the retry loops are BOUNDED. "Bounded" is a
+# dataflow property no grep can decide, so the check is split in two:
+#
+#   * SEMANTIC half — section 1c drives runPlanGate/runCodeGate in Node and
+#     proves a never-clean stage terminates at exactly `budget + 1` reviews.
+#   * SYNTACTIC half (here) — the DRIVER REGION carries no `while` at all, and
+#     only `for` headers on an exact literal allowlist. A loose "looks bounded"
+#     regex would ratchet the guard down to nothing, so the allowlist is exact.
+#
+# Scope: the two stamped lib blocks (`review-refute-fix`, `dispatch-outcome`) are
+# deliberately EXCLUDED — the budget loops legitimately live in the dispatch-
+# outcome block, and this phase does not own the review block. Scoping is by
+# MARKER TOKEN, never line numbers, so it survives either block growing.
+driver_region() {
+    awk '
+        index($0, ">>> review-refute-fix:begin") { skip = 1 }
+        index($0, ">>> dispatch-outcome:begin") { skip = 1 }
+        !skip { print }
+        index($0, ">>> review-refute-fix:end") { skip = 0 }
+        index($0, ">>> dispatch-outcome:end") { skip = 0 }
+    ' "$1"
+}
+
+# The ONLY `for` headers permitted in the driver region, as exact literals.
+ALLOWED_FOR_HEADERS='for (let i = 0; i < maxPlanRevise; i++) {
+for (let i = 0; i < maxCodeRework; i++) {'
+
+assert_no_while_in_driver() {
+    driver_region "$1" | grep -qE '(^|[^A-Za-z_])while[[:space:]]*\(' && return 1
+    return 0
+}
+
+driver_for_headers() {
+    driver_region "$1" |
+        grep -oE '(^|[^A-Za-z_])for[[:space:]]*\(.*' |
+        sed -e 's/^[^A-Za-z_]*//' -e 's/[[:space:]]*$//'
+}
+
+assert_for_headers_allowlisted() {
+    driver_for_headers "$1" >"$TMP/for-headers"
+    bad=0
+    while IFS= read -r hdr; do
+        [ -n "$hdr" ] || continue
+        printf '%s\n' "$ALLOWED_FOR_HEADERS" | grep -Fxq -- "$hdr" || {
+            printf 'disallowed for-header: %s\n' "$hdr" >&2
+            bad=1
+        }
+    done <"$TMP/for-headers"
+    [ "$bad" -eq 0 ]
+}
+
+assert_no_while_in_driver "$WF" ||
+    fail "AC-4: no 'while' is permitted in dispatch-phase.js's DRIVER REGION (the stamped review-refute-fix and dispatch-outcome blocks are deliberately out of scope — this phase does not own them; the budget loops belong in the dispatch-outcome block)"
+assert_for_headers_allowlisted "$WF" ||
+    fail "AC-4: a 'for' header in dispatch-phase.js's DRIVER REGION is not on the allowlist (only the two budget loops are permitted, and only in the dispatch-outcome block — the stamped blocks themselves are out of scope)"
+pass "AC-4: driver region has no 'while' and only allowlisted 'for' headers"
+
+# Self-test A: a planted `while (true)` in the driver region trips the while rule
+# and NOT the for rule.
+cp "$WF" "$TMP/mutant-while.js"
+printf '\nwhile (true) {}\n' >>"$TMP/mutant-while.js"
+if assert_no_while_in_driver "$TMP/mutant-while.js"; then
+    fail "AC-4: while rule missed a planted 'while (true)' in the driver region"
 fi
-printf 'for (let i = 0; i < 3; i++) {}\n' >"$TMP/planted-loop.js"
-grep -qE '(^|[^A-Za-z_])(for|while)[[:space:]]*\(' "$TMP/planted-loop.js" || fail "AC-4 loop detector broken"
-pass "AC-4: no unbounded loop construct; detector catches a planted one"
+assert_for_headers_allowlisted "$TMP/mutant-while.js" ||
+    fail "AC-4: the for rule wrongly fired on a planted while — the two rules must trip independently"
+
+# Self-test B: a planted unbounded `for (;;)` trips the for rule and NOT the
+# while rule.
+cp "$WF" "$TMP/mutant-for.js"
+printf '\nfor (;;) {}\n' >>"$TMP/mutant-for.js"
+if assert_for_headers_allowlisted "$TMP/mutant-for.js" 2>/dev/null; then
+    fail "AC-4: for allowlist missed a planted unbounded 'for (;;)' in the driver region"
+fi
+assert_no_while_in_driver "$TMP/mutant-for.js" ||
+    fail "AC-4: the while rule wrongly fired on a planted for — the two rules must trip independently"
+
+# Self-test B2: a bare-literal bound is still NOT on the allowlist.
+cp "$WF" "$TMP/mutant-for-literal.js"
+printf '\nfor (let i = 0; i < 3; i++) {}\n' >>"$TMP/mutant-for-literal.js"
+if assert_for_headers_allowlisted "$TMP/mutant-for-literal.js" 2>/dev/null; then
+    fail "AC-4: for allowlist accepted a non-allowlisted bare-literal loop header"
+fi
+
+# Self-test C (negative case): a LEGAL budget-bounded for header passes both.
+cp "$WF" "$TMP/mutant-for-legal.js"
+printf '\nfor (let i = 0; i < maxPlanRevise; i++) {\n}\n' >>"$TMP/mutant-for-legal.js"
+assert_no_while_in_driver "$TMP/mutant-for-legal.js" ||
+    fail "AC-4: while rule wrongly fired on a legal budget-bounded for"
+assert_for_headers_allowlisted "$TMP/mutant-for-legal.js" ||
+    fail "AC-4: for allowlist wrongly rejected an allowlisted budget-bounded header"
+
+# Self-test D (scoping is real): a `while (true)` INSIDE the dispatch-outcome
+# markers must NOT trip the driver-region rules.
+awk '
+  { print }
+  index($0, ">>> dispatch-outcome:begin") { print "while (true) { break }" }
+' "$WF" >"$TMP/mutant-inblock.js"
+grep -q 'while (true)' "$TMP/mutant-inblock.js" || fail "AC-4 scoping self-test did not plant its loop"
+assert_no_while_in_driver "$TMP/mutant-inblock.js" ||
+    fail "AC-4: driver-region scoping is not real — a loop inside the stamped block tripped the driver rule"
+pass "AC-4: while/for mutants trip their own rule independently; in-block loops are correctly out of scope"
 
 # meta.phases must list EXACTLY the distinct `phase:` values the driver + the
 # inlined review block emit — no emitted-but-undeclared phase (e.g. Find/Refute
@@ -708,5 +1155,65 @@ if parse_workflow "$WF" >/dev/null 2>&1; then
 else
     fail "parse gate regressed on the unmodified file after the self-test"
 fi
+
+# --- 5. DOC / CONSTANT AGREEMENT ---------------------------------------------
+say "5. docs/escalation-protocol.md § Budgets states the same numbers the code uses"
+
+DOC="$REPO_ROOT/docs/escalation-protocol.md"
+AUTOPILOT_LIB="$REPO_ROOT/.claude/workflows/lib/autopilot.mjs"
+[ -f "$DOC" ] || fail "escalation protocol doc not found: $DOC"
+[ -f "$AUTOPILOT_LIB" ] || fail "autopilot lib not found: $AUTOPILOT_LIB"
+
+const_value() {
+    grep -oE "const $2 = [0-9]+" "$1" | head -1 | grep -oE '[0-9]+$'
+}
+
+assert_doc_agrees() {
+    doc=$1
+    pr=$(const_value "$LIB" DEFAULT_MAX_PLAN_REVISE)
+    cr=$(const_value "$LIB" DEFAULT_MAX_CODE_REWORK)
+    ar=$(const_value "$AUTOPILOT_LIB" DEFAULT_MAX_REWORK)
+    gb=$(const_value "$AUTOPILOT_LIB" DEFAULT_GLOBAL_BUDGET)
+    [ -n "$pr" ] && [ -n "$cr" ] && [ -n "$ar" ] && [ -n "$gb" ] || return 1
+    grep -qF "Plan-revise budget = $pr" "$doc" || {
+        printf 'doc does not state: Plan-revise budget = %s\n' "$pr" >&2
+        return 1
+    }
+    grep -qF "Code-rework budget = $cr" "$doc" || {
+        printf 'doc does not state: Code-rework budget = %s\n' "$cr" >&2
+        return 1
+    }
+    grep -qF "Autopilot rework re-dispatch budget = $ar" "$doc" || {
+        printf 'doc does not state: Autopilot rework re-dispatch budget = %s\n' "$ar" >&2
+        return 1
+    }
+    grep -qF "Autopilot global step budget = $gb" "$doc" || {
+        printf 'doc does not state: Autopilot global step budget = %s\n' "$gb" >&2
+        return 1
+    }
+    return 0
+}
+
+assert_doc_agrees "$DOC" ||
+    fail "docs/escalation-protocol.md § Budgets disagrees with the constants in lib/dispatch-phase.mjs / lib/autopilot.mjs"
+pass "all four budgets are named in the doc with exactly the values the code declares"
+
+# The doc must also spell out the attempt sequence, the independence of the two
+# in-run budgets, the per-run override names, and the which-lane divergence note.
+for needle in 'revise 1' 'revise 2' 'escalate' 'independent' 'maxPlanRevise' 'maxCodeRework' 'rdm-core/src/templates/'; do
+    grep -qF -- "$needle" "$DOC" || fail "docs/escalation-protocol.md § Budgets must mention: $needle"
+done
+# The which-lane note must record that the shipped prose templates remain at 1.
+grep -qE 'rdm-core/src/templates/' "$DOC" || fail "missing the which-lane note"
+grep -qE 'remain at 1|stay at 1|still 1' "$DOC" ||
+    fail "the which-lane note must state that the shipped prose templates remain at 1"
+pass "doc carries the attempt sequence, independence, override names, and the which-lane note"
+
+# Self-test: a doc whose numbers were rewritten must FAIL the agreement check.
+sed 's/budget = 2/budget = 1/g' "$DOC" >"$TMP/doc.scratch"
+if assert_doc_agrees "$TMP/doc.scratch" 2>/dev/null; then
+    fail "doc/constant agreement check did NOT fire on a doc with rewritten budget values"
+fi
+pass "doc/constant agreement detector fires on rewritten budget values"
 
 say "verify-workflow-dispatch.sh: ALL GREEN"

@@ -35,8 +35,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   agent consumption. This answers "which tags exist?"; `rdm search "" --tag <name>`
   answers "what carries this tag?".
 
+### Fixed
+
+- The workflow lane's dispatch outcome classifier no longer marks a phase
+  `reviewed` on a failing code review when no rework round ran. It previously
+  hard-coded a two-slot "first pass + exactly one rework" shape, so with a
+  code-rework budget of 0 the empty post-rework slot made a blocking first-pass
+  review classify clean. The classifier now judges the last review round that
+  actually ran, however many there were (including zero).
+
 ### Changed
 
+- The autonomous workflow lane's two in-run retry budgets are raised from 1 to 2
+  and are now overridable per run. `dispatch-phase` accepts `maxPlanRevise` and
+  `maxCodeRework` (default 2 each, counted independently: budget N means N
+  reworks after the original attempt, i.e. N + 1 attempts), and autopilot
+  forwards them from `--max-plan-revise N` / `--max-code-rework N`. A budget of
+  `0` is legal and means "terminate on the first blocking review"; a negative or
+  non-integer budget is rejected up front with an actionable message. Autopilot's
+  own roadmap-level rework re-dispatch budget (1) and global step budget (50) are
+  unchanged. `docs/escalation-protocol.md` § Budgets now documents all four
+  budgets, the attempt sequences, and notes that the shipped
+  `rdm-core/src/templates/` prose skills remain at 1 pending a follow-up — so
+  `agent-config` consumers are unaffected by this change.
 - `rdm agent-config` output (both the CLI and `--mcp` variants) now teaches
   tagging as a create-time habit: it tells agents to always pass `--tags` /
   `tags: [...]` when creating a roadmap, phase, or task, warns that `--tags` on

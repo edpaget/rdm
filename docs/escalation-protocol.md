@@ -41,16 +41,84 @@ Every escalation is tagged with the **stage** that raised it:
 
 ## Budgets (the retry triggers)
 
-The dispatch flow is bounded so it never loops indefinitely. Exhausting either
-budget is itself an escalation (kind: *exhausted budget*):
+The dispatch flow is bounded so it never loops indefinitely. Exhausting a budget
+is itself an escalation (kind: *exhausted budget*).
 
-- **Plan-revise budget = 1.** The plan gate allows at most one `revise` round.
-  If the plan still does not satisfy the AC after the single revision, escalate
-  (stage `plan`) rather than revising again.
-- **Rework-retry budget = 1.** A failing `rdm-review` allows one rework pass. If
-  review still fails, the phase returns to `in-progress` (routine rework) — but
-  if the *reason* review keeps failing is a decision/blocker rather than a
-  fixable defect, escalate (stage `code`) instead of retrying.
+There are **four** distinct budgets. Two are *in-run* (inside a single
+`dispatch-phase` run) and two are *roadmap-level* (autopilot's own).
+
+### 1. Plan-revise budget = 2 — in-run, per dispatch
+
+The plan gate allows at most **two** `revise` rounds. The attempt sequence is:
+
+```
+original plan → review → revise 1 → review → revise 2 → review → escalate
+```
+
+A budget of N means N revisions **after** the original attempt, i.e. N + 1 plan
+attempts in total. The loop breaks early the moment a review comes back with no
+blocking findings. If the plan still does not satisfy the AC after the last
+revision, escalate (stage `plan`) rather than revising again.
+
+### 2. Code-rework budget = 2 — in-run, per dispatch
+
+A failing code review allows at most **two** rework passes, counted
+**independently** of the plan budget — a plan that took two revisions consumes no
+code-rework budget, and vice versa. The attempt sequence is:
+
+```
+implement → review → rework 1 → review → rework 2 → review → rework outcome
+```
+
+Same shape: budget N = N + 1 implementation attempts, with an early break on a
+clean review. If review still fails, the phase returns for rework (routine) — but
+if the *reason* review keeps failing is a decision/blocker rather than a fixable
+defect, escalate (stage `code`) instead of retrying.
+
+**0 is legal and meaningful** for either budget: no reworks at all — terminate on
+the first blocking review. It is never confused with "unset".
+
+**Early exit other than a clean review.** A plan or revise agent that resolves to
+`null` (an unknown or unavailable model id) short-circuits the whole dispatch to
+`escalated` via the `fetchError` path, consuming no further budget. The null
+document is never reviewed as an empty plan and never replaces the last good one.
+
+**Per-run overrides.** Both in-run budgets are overridable per run via the
+`dispatch-phase` workflow args `maxPlanRevise` and `maxCodeRework` (non-negative
+integers; anything else is rejected at parse time, before any agent runs). They
+are threaded from autopilot's `--max-plan-revise` / `--max-code-rework`. An
+absurdly large override is accepted by validation but bounded in practice by the
+global step budget below.
+
+### 3. Autopilot rework re-dispatch budget = 1 — roadmap-level
+
+`DEFAULT_MAX_REWORK` in `.claude/workflows/lib/autopilot.mjs`: how many times a
+`rework` OUTCOME is re-dispatched before the phase is parked `blocked [code]`.
+**Unchanged** by the in-run budget raise.
+
+### 4. Autopilot global step budget = 50 — roadmap-level
+
+`DEFAULT_GLOBAL_BUDGET` in `.claude/workflows/lib/autopilot.mjs`: the maximum
+total phase dispatches per autopilot run, so a pathological roadmap can never
+loop forever. **Unchanged.**
+
+### Composed worst case
+
+At both in-run budgets = 2, a single dispatch runs up to **3 plan attempts and 3
+code attempts**, and autopilot may re-dispatch a `rework` outcome once more — so
+at most **2 dispatches per phase**, i.e. ≤ 2 × phase-count dispatches per run.
+`DEFAULT_GLOBAL_BUDGET = 50` therefore still bounds a 25-phase roadmap even in
+the fully-pathological case, and is confirmed as the intended backstop at the new
+rates rather than silently inherited.
+
+### Which lane these numbers describe
+
+**2 / independent / per-run-overridable describes the workflow lane**
+(`.claude/workflows/`: `dispatch-phase.js`, `autopilot.js` and their libs). The
+shipped prose skill templates under `rdm-core/src/templates/`
+(`skill-dispatch-phase-cli.md` and its MCP twin, which hardcode "at most one
+revise round") **remain at 1** pending the distribution follow-up, so
+`agent-config` consumers still get 1/1 until those templates are updated.
 
 ## Decision rule: auto-handle vs park vs raise
 

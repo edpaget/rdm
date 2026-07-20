@@ -45,6 +45,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 LIB="$REPO_ROOT/.claude/workflows/lib/autopilot.mjs"
 WF="$REPO_ROOT/.claude/workflows/autopilot.js"
 DISPATCH_WF="$REPO_ROOT/.claude/workflows/dispatch-phase.js"
+DISPATCH_LIB="$REPO_ROOT/.claude/workflows/lib/dispatch-phase.mjs"
 
 # Clear rdm-related env vars inherited from the caller's shell for hermeticity.
 unset RDM_ROOT RDM_PROJECT RDM_STAGE RDM_FORMAT RDM_PLAN_REPO RDM_PLAN_REPO_TOKEN RDM_PLAN_REPO_PATH 2>/dev/null || true
@@ -143,7 +144,18 @@ const {
 assert.throws(() => parseAutopilotArgs({}), /roadmap slug is required/, 'roadmap slug is required');
 assert.throws(() => parseAutopilotArgs({ roadmap: '' }), /roadmap slug is required/, 'empty roadmap rejected');
 const base = parseAutopilotArgs({ roadmap: 'rm' });
-assert.deepEqual(base, { roadmap: 'rm', maxPhases: null, planOnly: false, globalBudget: DEFAULT_GLOBAL_BUDGET }, 'defaults');
+assert.deepEqual(
+  base,
+  {
+    roadmap: 'rm',
+    maxPhases: null,
+    planOnly: false,
+    globalBudget: DEFAULT_GLOBAL_BUDGET,
+    maxPlanRevise: null,
+    maxCodeRework: null,
+  },
+  'defaults (both dispatch-phase budget overrides unset)'
+);
 assert.ok(!('land' in base), 'parsed config never carries a land flag');
 assert.equal(parseAutopilotArgs({ roadmap: 'rm', maxPhases: 3 }).maxPhases, 3, 'maxPhases int');
 assert.equal(parseAutopilotArgs({ roadmap: 'rm', maxPhases: '2' }).maxPhases, 2, 'maxPhases coerced from string');
@@ -541,11 +553,72 @@ function makeFakes(opts) {
   );
 }
 
+// === budget passthrough: dispatch-phase's two in-run budgets are forwarded ====
+// Behavioral on BOTH halves: the override is observed by a recording dispatch
+// fake, and the payload realDeps.dispatch would build from it is fed through
+// dispatch-phase's OWN parseDispatchArgs — never a grep for a constant.
+{
+  const seen = [];
+  const h = makeFakes({ phases: [{ stem: 'phase-1-a', status: 'not-started' }] });
+  h.fakes.dispatch = async (slug, stem, planOnly, budgets) => {
+    seen.push(budgets);
+    return { roadmap: slug, phase: stem, outcome: 'reviewed', summary: 's', findings: [] };
+  };
+  await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20, maxPlanRevise: 0, maxCodeRework: 3 });
+  assert.equal(seen.length, 1, 'the phase was dispatched once');
+  assert.deepEqual(seen[0], { maxPlanRevise: 0, maxCodeRework: 3 }, 'both overrides reach dispatch verbatim (0 is not dropped)');
+
+  const dispatchLib = await import(pathToFileURL(process.argv[3]).href);
+  const payload = Object.assign({ roadmap: 'rm', phase: 'phase-1-a', planOnly: false }, seen[0]);
+  const parsed = dispatchLib.parseDispatchArgs(payload);
+  assert.equal(parsed.maxPlanRevise, 0, 'dispatch-phase observes the maxPlanRevise override end to end');
+  assert.equal(parsed.maxCodeRework, 3, 'dispatch-phase observes the maxCodeRework override end to end');
+
+  // No override → no keys forwarded → dispatch-phase applies its OWN defaults.
+  const seen2 = [];
+  const h2 = makeFakes({ phases: [{ stem: 'phase-1-a', status: 'not-started' }] });
+  h2.fakes.dispatch = async (slug, stem, planOnly, budgets) => {
+    seen2.push(budgets);
+    return { roadmap: slug, phase: stem, outcome: 'reviewed', summary: 's', findings: [] };
+  };
+  await buildAutopilot(h2.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  assert.deepEqual(seen2[0], {}, 'an un-overridden run forwards no budget keys');
+  const defaulted = dispatchLib.parseDispatchArgs(Object.assign({ roadmap: 'rm', phase: 'p' }, seen2[0]));
+  assert.equal(defaulted.maxPlanRevise, dispatchLib.DEFAULT_MAX_PLAN_REVISE, 'dispatch-phase falls back to its own plan default');
+  assert.equal(defaulted.maxCodeRework, dispatchLib.DEFAULT_MAX_CODE_REWORK, 'dispatch-phase falls back to its own code default');
+}
+
+// === arg validation for the two new budget flags =============================
+{
+  const { parseAutopilotArgs } = m;
+  const c = parseAutopilotArgs({ roadmap: 'rm', maxPlanRevise: 0, maxCodeRework: '3' });
+  assert.equal(c.maxPlanRevise, 0, '0 is a meaningful budget, not "unset"');
+  assert.equal(c.maxCodeRework, 3, 'a numeric string parses');
+  const unset = parseAutopilotArgs({ roadmap: 'rm' });
+  assert.equal(unset.maxPlanRevise, null, 'an unset plan budget is null so the key can be omitted downstream');
+  assert.equal(unset.maxCodeRework, null, 'an unset code budget is null so the key can be omitted downstream');
+  for (const bad of [-1, 1.5, 'abc', '2abc', NaN, Infinity, {}]) {
+    assert.throws(
+      () => parseAutopilotArgs({ roadmap: 'rm', maxPlanRevise: bad }),
+      /--max-plan-revise must be a non-negative integer/,
+      'rejected maxPlanRevise: ' + String(bad)
+    );
+    assert.throws(
+      () => parseAutopilotArgs({ roadmap: 'rm', maxCodeRework: bad }),
+      /--max-code-rework must be a non-negative integer/,
+      'rejected maxCodeRework: ' + String(bad)
+    );
+  }
+  // autopilot's OWN budgets are untouched by this passthrough.
+  assert.equal(m.DEFAULT_MAX_REWORK, 1, 'the roadmap-level rework re-dispatch budget is unchanged');
+  assert.equal(m.DEFAULT_GLOBAL_BUDGET, 50, 'the global step budget is unchanged');
+}
+
 console.log('all autopilot driven-loop assertions passed');
 NODE_TEST
 
-if run_node "$TMP/driven.mjs" "$LIB"; then
-    pass "loop drives to reviewed / parks / budgets / pre-pass / plan-only / mid-tier off persisted status"
+if run_node "$TMP/driven.mjs" "$LIB" "$DISPATCH_LIB"; then
+    pass "loop drives to reviewed / parks / budgets / pre-pass / plan-only / mid-tier / budget passthrough"
 else
     fail "autopilot driven-loop assertions failed"
 fi

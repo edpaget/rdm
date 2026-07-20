@@ -14,7 +14,7 @@ Decisions and blockers are **batched, not raised mid-run**: a phase that cannot 
 
 ## Contract
 
-**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--max-phases N` and/or `--plan-only`. The slug names the single roadmap this run drives; the loop **never roams to another roadmap** — choosing which roadmap to advance stays a human decision. If no slug is given, stop and say so.
+**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--max-phases N`, `--plan-only`, `--max-plan-revise N`, and/or `--max-code-rework N`. The slug names the single roadmap this run drives; the loop **never roams to another roadmap** — choosing which roadmap to advance stays a human decision. If no slug is given, stop and say so.
 
 This skill is **non-interactive**. Launch unattended runs with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so the workflow's dispatched agents and bash commands don't block on permission prompts.
 
@@ -27,7 +27,9 @@ This skill is **non-interactive**. Launch unattended runs with `--permission-mod
    - `roadmap` — the required slug (the first positional argument).
    - `maxPhases` — the positive integer following `--max-phases`, when present (omit otherwise).
    - `planOnly` — `true` when `--plan-only` is present (omit otherwise).
-3. **Invoke the `autopilot` workflow** via the Workflow tool with `{ roadmap, maxPhases, planOnly }` (omit `maxPhases`/`planOnly` when not supplied). Pass `args` as a JSON object, never a stringified value. The workflow:
+   - `maxPlanRevise` — the non-negative integer following `--max-plan-revise`, when present (omit otherwise).
+   - `maxCodeRework` — the non-negative integer following `--max-code-rework`, when present (omit otherwise).
+3. **Invoke the `autopilot` workflow** via the Workflow tool with `{ roadmap, maxPhases, planOnly, maxPlanRevise, maxCodeRework }` (omit any of `maxPhases`/`planOnly`/`maxPlanRevise`/`maxCodeRework` when not supplied). Pass `args` as a JSON object, never a stringified value. The workflow:
    - runs the **estimate pre-pass** over the roadmap's unestimated phases in one parallel fan-out, persisting each difficulty (the model tier derives automatically);
    - loops `./target/debug/rdm next` → the `dispatch-phase` workflow (via the one allowed level of `workflow()` nesting) → interpret the OUTCOME;
    - **advances** a `reviewed` phase (`rdm phase update --status reviewed`, so `rdm next` steps past it), **re-dispatches** a `rework` phase against a per-phase budget and **parks** it `blocked [code]` when the budget is spent, and **parks** an `escalated` phase `blocked [plan]`;
@@ -38,6 +40,7 @@ This skill is **non-interactive**. Launch unattended runs with `--permission-mod
 
 - `--max-phases N` — bounded run: dispatch at most `N` phases this pass, then stop and summarize. Use it to take a roadmap a few phases at a time.
 - `--plan-only` — dry-run the planning half: each dispatch stops after its plan gate, so you get cheap plan vetting without writing any code.
+- `--max-plan-revise N` / `--max-code-rework N` — override `dispatch-phase`'s two **in-run** retry budgets, which are counted **independently** of each other and default to **2** each (budget N = N reworks after the original attempt, i.e. N + 1 attempts). `0` is legal and means "terminate on the first blocking review" — no revise/rework agent runs at all. These are distinct from autopilot's own roadmap-level rework re-dispatch budget and its global step budget; see [`docs/escalation-protocol.md`](../../../docs/escalation-protocol.md) § Budgets for all four.
 
 ## Relation to the other lanes
 

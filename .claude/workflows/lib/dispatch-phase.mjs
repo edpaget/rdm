@@ -46,12 +46,178 @@ function summarizeFindings(findings) {
   return list.length + ' finding(s); top: [' + sev + '] ' + what;
 }
 
+// DEFAULT_MAX_PLAN_REVISE / DEFAULT_MAX_CODE_REWORK — the two in-run retry
+// budgets. They are counted INDEPENDENTLY: a plan that took two revisions
+// consumes no code-rework budget, and vice versa.
+//
+// A budget of N means N reworks AFTER the original attempt, i.e. N + 1 attempts:
+//   plan: plan → review → revise 1 → review → revise 2 → review → escalate
+//   code: implement → review → rework 1 → review → rework 2 → review → rework
+//
+// 0 is legal and MEANINGFUL: no reworks at all — terminate on the first blocking
+// review. It must never be conflated with "unset" by a falsy check.
+const DEFAULT_MAX_PLAN_REVISE = 2;
+const DEFAULT_MAX_CODE_REWORK = 2;
+
+// parseBudget(value, flag, fallback) — validate a per-run budget override.
+// Unset (null/undefined/'') falls back to the caller's default. Anything else
+// must be a non-negative integer; a non-integer string is REJECTED rather than
+// silently coerced (parseInt('2abc') === 2 is exactly the trap to avoid).
+function parseBudget(value, flag, fallback) {
+  if (value === null || value === undefined || value === '') return fallback;
+  let n = NaN;
+  if (typeof value === 'number') {
+    n = value;
+  } else if (typeof value === 'string' && /^[+-]?[0-9]+$/.test(value.trim())) {
+    n = parseInt(value.trim(), 10);
+  }
+  if (!Number.isInteger(n) || n < 0 || Object.is(n, -0)) {
+    throw new Error(
+      'dispatch-phase: ' +
+        flag +
+        ' must be a non-negative integer (got "' +
+        String(value) +
+        '") — 0 means no reworks, terminate on the first blocking review'
+    );
+  }
+  return n;
+}
+
+// parseDispatchArgs(args) — coerce and validate the whole args payload.
+//
+// The Workflow tool contract forbids stringified args, but LLM callers (rdm-do
+// --auto and hand-run single phases) invoke dispatch-phase DIRECTLY and have
+// delivered a JSON string; coerce once, then derive every field from it. Budget
+// validation runs HERE, at parse time — before any agent() call — so an invalid
+// budget can never burn tokens.
+function parseDispatchArgs(args) {
+  let dispatchArgs = args || {};
+  if (typeof dispatchArgs === 'string') {
+    try {
+      dispatchArgs = JSON.parse(dispatchArgs) || {};
+    } catch (e) {
+      dispatchArgs = {};
+    }
+  }
+  if (!dispatchArgs || typeof dispatchArgs !== 'object') dispatchArgs = {};
+  return {
+    roadmap: dispatchArgs.roadmap || '',
+    phase: dispatchArgs.phase || '',
+    // Task mode: `{ task: <slug> }` dispatches a standalone task instead of a
+    // phase — no roadmap, no tier, its own `task/<slug>` worktree.
+    task: dispatchArgs.task || '',
+    planOnly: !!dispatchArgs.planOnly,
+    maxPlanRevise: parseBudget(dispatchArgs.maxPlanRevise, 'maxPlanRevise', DEFAULT_MAX_PLAN_REVISE),
+    maxCodeRework: parseBudget(dispatchArgs.maxCodeRework, 'maxCodeRework', DEFAULT_MAX_CODE_REWORK),
+  };
+}
+
+// runPlanGate(config, deps) — the bounded plan stage. Author a plan, review it,
+// and revise up to `config.maxRevise` times, breaking early the moment a review
+// comes back with no blockers. Returns
+// { fetchError, stage, planDoc, findings, reviewCount, reviseCount }.
+//
+// Every side effect is reached through the injected `deps` (d.plan / d.revise /
+// d.review), so this block names NO ambient runtime global and the module
+// imports cleanly in Node — the lib/autopilot.mjs precedent, which is what makes
+// the budget loop testable at all.
+//
+// agent() RESOLVES to null on an unknown/unavailable model id rather than
+// throwing (spike consequence 3), so BOTH the initial plan and EVERY revise
+// result are null-guarded. The revise guard runs before the reassignment and
+// before the next review, so a null doc is never reviewed as an empty plan and
+// never clobbers the last good one.
+async function runPlanGate(config, deps) {
+  const c = config || {};
+  const d = deps || {};
+  const maxRevise = c.maxRevise != null ? c.maxRevise : DEFAULT_MAX_PLAN_REVISE;
+  const tier = c.tier;
+  let planDoc = await d.plan();
+  if (planDoc === null || planDoc === undefined) {
+    return { fetchError: true, stage: 'plan', planDoc: null, findings: [], reviewCount: 0, reviseCount: 0 };
+  }
+  let findings = await d.review(planDoc);
+  let reviewCount = 1;
+  let reviseCount = 0;
+  for (let i = 0; i < maxRevise; i++) {
+    if (!hasBlocking(findings, tier)) break;
+    const revised = await d.revise(planDoc, findings);
+    reviseCount++;
+    if (revised === null || revised === undefined) {
+      return {
+        fetchError: true,
+        stage: 'revise',
+        planDoc: planDoc,
+        findings: findings,
+        reviewCount: reviewCount,
+        reviseCount: reviseCount,
+      };
+    }
+    planDoc = revised;
+    findings = await d.review(planDoc);
+    reviewCount++;
+  }
+  return {
+    fetchError: false,
+    stage: null,
+    planDoc: planDoc,
+    findings: findings,
+    reviewCount: reviewCount,
+    reviseCount: reviseCount,
+  };
+}
+
+// runCodeGate(config, deps) — the bounded code stage. Implement, review, and
+// rework up to `config.maxRework` times, breaking early on a clean review.
+// Returns { findings, rounds, reworkCount, reviewCount } where `rounds` is the
+// per-round review findings in order (always at least one entry).
+//
+// No null guard is needed here: `implement` returns no document the pipeline
+// consumes, and the review pipeline already converts an all-null finder sweep
+// into a blocking finding.
+async function runCodeGate(config, deps) {
+  const c = config || {};
+  const d = deps || {};
+  const maxRework = c.maxRework != null ? c.maxRework : DEFAULT_MAX_CODE_REWORK;
+  const tier = c.tier;
+  await d.implement(null);
+  let findings = await d.review();
+  const rounds = [findings];
+  let reworkCount = 0;
+  for (let i = 0; i < maxRework; i++) {
+    if (!hasBlocking(findings, tier)) break;
+    await d.implement(findings);
+    reworkCount++;
+    findings = await d.review();
+    rounds.push(findings);
+  }
+  return { findings: findings, rounds: rounds, reworkCount: reworkCount, reviewCount: rounds.length };
+}
+
+// codeReviewRounds(input) — the per-round code-review findings, newest last.
+//
+// The modern caller passes `codeReviews` (runCodeGate's `rounds`), which already
+// records exactly the rounds that ran — however many, INCLUDING zero reworks.
+// The legacy two-slot shape (`codeFindings` + `codeFindingsAfterRework`) is
+// derived: a second round only existed if the rework budget was non-zero AND the
+// first pass was blocking. That guard is the fix for the budget-0 hole, where an
+// always-empty `codeFindingsAfterRework` used to mark a failing first review
+// clean.
+function codeReviewRounds(input) {
+  const i = input || {};
+  if (Array.isArray(i.codeReviews) && i.codeReviews.length) return i.codeReviews;
+  const first = i.codeFindings || [];
+  const maxRework = i.maxRework != null ? i.maxRework : DEFAULT_MAX_CODE_REWORK;
+  if (maxRework > 0 && hasBlocking(first, i.tier)) return [first, i.codeFindingsAfterRework || []];
+  return [first];
+}
+
 // classifyOutcome — the total, deterministic decision tree. Returns one of
 // 'escalated' | 'reviewed' | 'rework'.
 //
 // The deterministic pipeline cannot classify a code finding's *nature* (the
 // FINDING schema carries severity but no fixable/decision flag), so a code
-// defect that survives the one bounded rework resolves to 'rework'; genuine
+// defect that survives the bounded reworks resolves to 'rework'; genuine
 // decisions surface earlier at the plan gate as 'escalated'. That is why the
 // code stage yields only reviewed|rework and escalated originates at the plan
 // gate.
@@ -59,19 +225,16 @@ function classifyOutcome(input) {
   const i = input || {};
   const tier = i.tier;
   const planFindings = i.planFindings || [];
-  const codeFindings = i.codeFindings || [];
-  const codeFindingsAfterRework = i.codeFindingsAfterRework || [];
   // 1. Plan gate: a blocking plan finding escalates before any implementation.
   //    An empty/ambiguous plan is surfaced as a blocking coherence finding by
   //    the plan-review stage, so that case lands here too.
   if (hasBlocking(planFindings, tier)) return 'escalated';
-  // 2. Plan approved → implement ran → code-review ran.
-  //    Clean first pass → reviewed.
-  if (!hasBlocking(codeFindings, tier)) return 'reviewed';
-  //    Otherwise the one bounded rework ran; judge its result.
-  if (!hasBlocking(codeFindingsAfterRework, tier)) return 'reviewed';
-  //    Budget exhausted with a surviving defect → rework (phase back to work).
-  return 'rework';
+  // 2. Plan approved → implement ran → code-review ran (once per round). The
+  //    LAST review's findings decide, for any number of rework rounds including
+  //    zero: still blocking → rework, otherwise reviewed.
+  const rounds = codeReviewRounds(i);
+  const last = rounds[rounds.length - 1] || [];
+  return hasBlocking(last, tier) ? 'rework' : 'reviewed';
 }
 
 // buildOutcome — the OUTCOME contract { roadmap, phase, outcome, summary,
@@ -86,26 +249,30 @@ function buildOutcome(input) {
     return { roadmap: roadmap, phase: phase, outcome: 'escalated', summary: 'phase fetch failed', findings: [] };
   }
   const planFindings = i.planFindings || [];
-  const codeFindings = i.codeFindings || [];
-  const codeFindingsAfterRework = i.codeFindingsAfterRework || [];
-  const outcome = classifyOutcome({
+  const classifierInput = {
     planFindings: planFindings,
-    codeFindings: codeFindings,
-    codeFindingsAfterRework: codeFindingsAfterRework,
+    codeFindings: i.codeFindings,
+    codeFindingsAfterRework: i.codeFindingsAfterRework,
+    codeReviews: i.codeReviews,
+    maxRework: i.maxRework,
     tier: tier,
-  });
+  };
+  const outcome = classifyOutcome(classifierInput);
+  // The LAST code-review round is what both the rework and reviewed payloads
+  // report — never a stale earlier pass, whatever the rework budget was.
+  const rounds = codeReviewRounds(classifierInput);
+  const lastRound = rounds[rounds.length - 1] || [];
   let findings;
   let summary;
   if (outcome === 'escalated') {
     findings = planFindings;
     summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
   } else if (outcome === 'rework') {
-    findings = codeFindingsAfterRework;
-    summary = 'code rework unresolved: ' + summarizeFindings(codeFindingsAfterRework);
+    findings = lastRound;
+    summary = 'code rework unresolved: ' + summarizeFindings(lastRound);
   } else {
-    // reviewed — surface whichever pass came back clean of blockers.
-    findings = hasBlocking(codeFindings, tier) ? codeFindingsAfterRework : codeFindings;
-    summary = 'phase reviewed clean: ' + summarizeFindings(findings);
+    findings = lastRound;
+    summary = 'phase reviewed clean: ' + summarizeFindings(lastRound);
   }
   return { roadmap: roadmap, phase: phase, outcome: outcome, summary: summary, findings: findings };
 }
@@ -125,26 +292,28 @@ function buildTaskOutcome(input) {
     return { task: task, outcome: 'escalated', summary: 'task fetch failed', findings: [] };
   }
   const planFindings = i.planFindings || [];
-  const codeFindings = i.codeFindings || [];
-  const codeFindingsAfterRework = i.codeFindingsAfterRework || [];
-  const outcome = classifyOutcome({
+  const classifierInput = {
     planFindings: planFindings,
-    codeFindings: codeFindings,
-    codeFindingsAfterRework: codeFindingsAfterRework,
+    codeFindings: i.codeFindings,
+    codeFindingsAfterRework: i.codeFindingsAfterRework,
+    codeReviews: i.codeReviews,
+    maxRework: i.maxRework,
     tier: tier,
-  });
+  };
+  const outcome = classifyOutcome(classifierInput);
+  const rounds = codeReviewRounds(classifierInput);
+  const lastRound = rounds[rounds.length - 1] || [];
   let findings;
   let summary;
   if (outcome === 'escalated') {
     findings = planFindings;
     summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
   } else if (outcome === 'rework') {
-    findings = codeFindingsAfterRework;
-    summary = 'code rework unresolved: ' + summarizeFindings(codeFindingsAfterRework);
+    findings = lastRound;
+    summary = 'code rework unresolved: ' + summarizeFindings(lastRound);
   } else {
-    // reviewed — surface whichever pass came back clean of blockers.
-    findings = hasBlocking(codeFindings, tier) ? codeFindingsAfterRework : codeFindings;
-    summary = 'task reviewed clean: ' + summarizeFindings(findings);
+    findings = lastRound;
+    summary = 'task reviewed clean: ' + summarizeFindings(lastRound);
   }
   return { task: task, outcome: outcome, summary: summary, findings: findings };
 }
@@ -152,4 +321,17 @@ function buildTaskOutcome(input) {
 
 // Node-only exports for the verify harness. NOT part of the copied block — the
 // marker END is above this line, so a copy never carries these.
-export { hasBlocking, summarizeFindings, classifyOutcome, buildOutcome, buildTaskOutcome };
+export {
+  DEFAULT_MAX_PLAN_REVISE,
+  DEFAULT_MAX_CODE_REWORK,
+  parseBudget,
+  parseDispatchArgs,
+  runPlanGate,
+  runCodeGate,
+  codeReviewRounds,
+  hasBlocking,
+  summarizeFindings,
+  classifyOutcome,
+  buildOutcome,
+  buildTaskOutcome,
+};

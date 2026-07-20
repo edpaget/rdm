@@ -62,6 +62,26 @@ const DEFAULT_MAX_REWORK = 1;
 // cycle cannot livelock (the global step budget is the ultimate backstop).
 const DEFAULT_MAX_ADVANCE_ATTEMPTS = 2;
 
+// parseAutopilotBudget(value, flag) — validate an optional per-run dispatch
+// budget override that is forwarded verbatim to dispatch-phase. `null` means
+// UNSET: the key is then omitted from the dispatch payload so dispatch-phase
+// applies its own default. 0 is meaningful (no reworks — terminate on the first
+// blocking review), so it must never be conflated with unset by a falsy check.
+// A non-integer string is rejected rather than silently coerced.
+function parseAutopilotBudget(value, flag) {
+  if (value === null || value === undefined || value === '') return null;
+  let n = NaN;
+  if (typeof value === 'number') {
+    n = value;
+  } else if (typeof value === 'string' && /^[+-]?[0-9]+$/.test(value.trim())) {
+    n = parseInt(value.trim(), 10);
+  }
+  if (!Number.isInteger(n) || n < 0 || Object.is(n, -0)) {
+    throw new Error('autopilot: ' + flag + ' must be a non-negative integer (got "' + String(value) + '")');
+  }
+  return n;
+}
+
 // parseAutopilotArgs(args) — validate and normalize the run config. A roadmap
 // slug is REQUIRED (the loop never roams to another roadmap). maxPhases is a
 // positive integer or null (unbounded by phase count). planOnly is a boolean.
@@ -97,7 +117,18 @@ function parseAutopilotArgs(args) {
     const g = parseInt(a.globalBudget, 10);
     if (g > 0) globalBudget = g;
   }
-  return { roadmap: roadmap, maxPhases: maxPhases, planOnly: planOnly, globalBudget: globalBudget };
+  // dispatch-phase's two in-run retry budgets, forwarded per run. Unset (null)
+  // means "let dispatch-phase apply its own default".
+  const maxPlanRevise = parseAutopilotBudget(a.maxPlanRevise, '--max-plan-revise');
+  const maxCodeRework = parseAutopilotBudget(a.maxCodeRework, '--max-code-rework');
+  return {
+    roadmap: roadmap,
+    maxPhases: maxPhases,
+    planOnly: planOnly,
+    globalBudget: globalBudget,
+    maxPlanRevise: maxPlanRevise,
+    maxCodeRework: maxCodeRework,
+  };
 }
 
 // selectUnestimated(phaseList) — the stems of phases with NO difficulty and NO
@@ -314,6 +345,13 @@ function buildAutopilot(deps) {
     const planOnly = !!cfg.planOnly;
     const globalBudget = cfg.globalBudget != null ? cfg.globalBudget : DEFAULT_GLOBAL_BUDGET;
     const maxRework = cfg.maxRework != null ? cfg.maxRework : DEFAULT_MAX_REWORK;
+    // dispatch-phase's OWN in-run budgets — distinct from maxRework (this loop's
+    // roadmap-level re-dispatch budget) and from globalBudget. Only the keys the
+    // caller actually set are forwarded, so an unset budget lets dispatch-phase
+    // apply its own default rather than receiving an explicit null.
+    const budgets = {};
+    if (cfg.maxPlanRevise != null) budgets.maxPlanRevise = cfg.maxPlanRevise;
+    if (cfg.maxCodeRework != null) budgets.maxCodeRework = cfg.maxCodeRework;
 
     // Estimate pre-pass — ONCE, before the drive loop. Rate every unestimated
     // phase in a single parallel fan-out, then persist each tier. A wholesale
@@ -373,7 +411,7 @@ function buildAutopilot(deps) {
         dispatchCount++;
         let outcome;
         try {
-          outcome = await d.dispatch(roadmap, stem, planOnly);
+          outcome = await d.dispatch(roadmap, stem, planOnly, budgets);
         } catch (e) {
           const reason = buildParkReason('code', 'dispatch failed: ' + ((e && e.message) || 'error'));
           await d.park(stem, reason, roadmap);
@@ -557,8 +595,15 @@ const realDeps = {
   fetchNext: async function (slug) {
     return agent(buildFetchNextPrompt(slug), { label: 'fetch:next', phase: 'Fetch', schema: NEXT_SCHEMA })
   },
-  dispatch: async function (slug, stem, planOnly) {
-    return workflow('dispatch-phase', { roadmap: slug, phase: stem, planOnly: planOnly })
+  dispatch: async function (slug, stem, planOnly, budgets) {
+    // Forward dispatch-phase's two in-run retry budgets ONLY when this run set
+    // them, so an unset budget lets dispatch-phase apply its own default rather
+    // than receiving an explicit null.
+    const b = budgets || {}
+    const payload = { roadmap: slug, phase: stem, planOnly: planOnly }
+    if (b.maxPlanRevise != null) payload.maxPlanRevise = b.maxPlanRevise
+    if (b.maxCodeRework != null) payload.maxCodeRework = b.maxCodeRework
+    return workflow('dispatch-phase', payload)
   },
   advance: async function (stem, slug) {
     return agent(buildAdvancePrompt(stem, slug), { label: 'advance:' + stem, phase: 'Advance', schema: ACK_SCHEMA })

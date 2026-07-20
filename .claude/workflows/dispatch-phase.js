@@ -353,12 +353,178 @@ function summarizeFindings(findings) {
   return list.length + ' finding(s); top: [' + sev + '] ' + what;
 }
 
+// DEFAULT_MAX_PLAN_REVISE / DEFAULT_MAX_CODE_REWORK — the two in-run retry
+// budgets. They are counted INDEPENDENTLY: a plan that took two revisions
+// consumes no code-rework budget, and vice versa.
+//
+// A budget of N means N reworks AFTER the original attempt, i.e. N + 1 attempts:
+//   plan: plan → review → revise 1 → review → revise 2 → review → escalate
+//   code: implement → review → rework 1 → review → rework 2 → review → rework
+//
+// 0 is legal and MEANINGFUL: no reworks at all — terminate on the first blocking
+// review. It must never be conflated with "unset" by a falsy check.
+const DEFAULT_MAX_PLAN_REVISE = 2;
+const DEFAULT_MAX_CODE_REWORK = 2;
+
+// parseBudget(value, flag, fallback) — validate a per-run budget override.
+// Unset (null/undefined/'') falls back to the caller's default. Anything else
+// must be a non-negative integer; a non-integer string is REJECTED rather than
+// silently coerced (parseInt('2abc') === 2 is exactly the trap to avoid).
+function parseBudget(value, flag, fallback) {
+  if (value === null || value === undefined || value === '') return fallback;
+  let n = NaN;
+  if (typeof value === 'number') {
+    n = value;
+  } else if (typeof value === 'string' && /^[+-]?[0-9]+$/.test(value.trim())) {
+    n = parseInt(value.trim(), 10);
+  }
+  if (!Number.isInteger(n) || n < 0 || Object.is(n, -0)) {
+    throw new Error(
+      'dispatch-phase: ' +
+        flag +
+        ' must be a non-negative integer (got "' +
+        String(value) +
+        '") — 0 means no reworks, terminate on the first blocking review'
+    );
+  }
+  return n;
+}
+
+// parseDispatchArgs(args) — coerce and validate the whole args payload.
+//
+// The Workflow tool contract forbids stringified args, but LLM callers (rdm-do
+// --auto and hand-run single phases) invoke dispatch-phase DIRECTLY and have
+// delivered a JSON string; coerce once, then derive every field from it. Budget
+// validation runs HERE, at parse time — before any agent() call — so an invalid
+// budget can never burn tokens.
+function parseDispatchArgs(args) {
+  let dispatchArgs = args || {};
+  if (typeof dispatchArgs === 'string') {
+    try {
+      dispatchArgs = JSON.parse(dispatchArgs) || {};
+    } catch (e) {
+      dispatchArgs = {};
+    }
+  }
+  if (!dispatchArgs || typeof dispatchArgs !== 'object') dispatchArgs = {};
+  return {
+    roadmap: dispatchArgs.roadmap || '',
+    phase: dispatchArgs.phase || '',
+    // Task mode: `{ task: <slug> }` dispatches a standalone task instead of a
+    // phase — no roadmap, no tier, its own `task/<slug>` worktree.
+    task: dispatchArgs.task || '',
+    planOnly: !!dispatchArgs.planOnly,
+    maxPlanRevise: parseBudget(dispatchArgs.maxPlanRevise, 'maxPlanRevise', DEFAULT_MAX_PLAN_REVISE),
+    maxCodeRework: parseBudget(dispatchArgs.maxCodeRework, 'maxCodeRework', DEFAULT_MAX_CODE_REWORK),
+  };
+}
+
+// runPlanGate(config, deps) — the bounded plan stage. Author a plan, review it,
+// and revise up to `config.maxRevise` times, breaking early the moment a review
+// comes back with no blockers. Returns
+// { fetchError, stage, planDoc, findings, reviewCount, reviseCount }.
+//
+// Every side effect is reached through the injected `deps` (d.plan / d.revise /
+// d.review), so this block names NO ambient runtime global and the module
+// imports cleanly in Node — the lib/autopilot.mjs precedent, which is what makes
+// the budget loop testable at all.
+//
+// agent() RESOLVES to null on an unknown/unavailable model id rather than
+// throwing (spike consequence 3), so BOTH the initial plan and EVERY revise
+// result are null-guarded. The revise guard runs before the reassignment and
+// before the next review, so a null doc is never reviewed as an empty plan and
+// never clobbers the last good one.
+async function runPlanGate(config, deps) {
+  const c = config || {};
+  const d = deps || {};
+  const maxRevise = c.maxRevise != null ? c.maxRevise : DEFAULT_MAX_PLAN_REVISE;
+  const tier = c.tier;
+  let planDoc = await d.plan();
+  if (planDoc === null || planDoc === undefined) {
+    return { fetchError: true, stage: 'plan', planDoc: null, findings: [], reviewCount: 0, reviseCount: 0 };
+  }
+  let findings = await d.review(planDoc);
+  let reviewCount = 1;
+  let reviseCount = 0;
+  for (let i = 0; i < maxRevise; i++) {
+    if (!hasBlocking(findings, tier)) break;
+    const revised = await d.revise(planDoc, findings);
+    reviseCount++;
+    if (revised === null || revised === undefined) {
+      return {
+        fetchError: true,
+        stage: 'revise',
+        planDoc: planDoc,
+        findings: findings,
+        reviewCount: reviewCount,
+        reviseCount: reviseCount,
+      };
+    }
+    planDoc = revised;
+    findings = await d.review(planDoc);
+    reviewCount++;
+  }
+  return {
+    fetchError: false,
+    stage: null,
+    planDoc: planDoc,
+    findings: findings,
+    reviewCount: reviewCount,
+    reviseCount: reviseCount,
+  };
+}
+
+// runCodeGate(config, deps) — the bounded code stage. Implement, review, and
+// rework up to `config.maxRework` times, breaking early on a clean review.
+// Returns { findings, rounds, reworkCount, reviewCount } where `rounds` is the
+// per-round review findings in order (always at least one entry).
+//
+// No null guard is needed here: `implement` returns no document the pipeline
+// consumes, and the review pipeline already converts an all-null finder sweep
+// into a blocking finding.
+async function runCodeGate(config, deps) {
+  const c = config || {};
+  const d = deps || {};
+  const maxRework = c.maxRework != null ? c.maxRework : DEFAULT_MAX_CODE_REWORK;
+  const tier = c.tier;
+  await d.implement(null);
+  let findings = await d.review();
+  const rounds = [findings];
+  let reworkCount = 0;
+  for (let i = 0; i < maxRework; i++) {
+    if (!hasBlocking(findings, tier)) break;
+    await d.implement(findings);
+    reworkCount++;
+    findings = await d.review();
+    rounds.push(findings);
+  }
+  return { findings: findings, rounds: rounds, reworkCount: reworkCount, reviewCount: rounds.length };
+}
+
+// codeReviewRounds(input) — the per-round code-review findings, newest last.
+//
+// The modern caller passes `codeReviews` (runCodeGate's `rounds`), which already
+// records exactly the rounds that ran — however many, INCLUDING zero reworks.
+// The legacy two-slot shape (`codeFindings` + `codeFindingsAfterRework`) is
+// derived: a second round only existed if the rework budget was non-zero AND the
+// first pass was blocking. That guard is the fix for the budget-0 hole, where an
+// always-empty `codeFindingsAfterRework` used to mark a failing first review
+// clean.
+function codeReviewRounds(input) {
+  const i = input || {};
+  if (Array.isArray(i.codeReviews) && i.codeReviews.length) return i.codeReviews;
+  const first = i.codeFindings || [];
+  const maxRework = i.maxRework != null ? i.maxRework : DEFAULT_MAX_CODE_REWORK;
+  if (maxRework > 0 && hasBlocking(first, i.tier)) return [first, i.codeFindingsAfterRework || []];
+  return [first];
+}
+
 // classifyOutcome — the total, deterministic decision tree. Returns one of
 // 'escalated' | 'reviewed' | 'rework'.
 //
 // The deterministic pipeline cannot classify a code finding's *nature* (the
 // FINDING schema carries severity but no fixable/decision flag), so a code
-// defect that survives the one bounded rework resolves to 'rework'; genuine
+// defect that survives the bounded reworks resolves to 'rework'; genuine
 // decisions surface earlier at the plan gate as 'escalated'. That is why the
 // code stage yields only reviewed|rework and escalated originates at the plan
 // gate.
@@ -366,19 +532,16 @@ function classifyOutcome(input) {
   const i = input || {};
   const tier = i.tier;
   const planFindings = i.planFindings || [];
-  const codeFindings = i.codeFindings || [];
-  const codeFindingsAfterRework = i.codeFindingsAfterRework || [];
   // 1. Plan gate: a blocking plan finding escalates before any implementation.
   //    An empty/ambiguous plan is surfaced as a blocking coherence finding by
   //    the plan-review stage, so that case lands here too.
   if (hasBlocking(planFindings, tier)) return 'escalated';
-  // 2. Plan approved → implement ran → code-review ran.
-  //    Clean first pass → reviewed.
-  if (!hasBlocking(codeFindings, tier)) return 'reviewed';
-  //    Otherwise the one bounded rework ran; judge its result.
-  if (!hasBlocking(codeFindingsAfterRework, tier)) return 'reviewed';
-  //    Budget exhausted with a surviving defect → rework (phase back to work).
-  return 'rework';
+  // 2. Plan approved → implement ran → code-review ran (once per round). The
+  //    LAST review's findings decide, for any number of rework rounds including
+  //    zero: still blocking → rework, otherwise reviewed.
+  const rounds = codeReviewRounds(i);
+  const last = rounds[rounds.length - 1] || [];
+  return hasBlocking(last, tier) ? 'rework' : 'reviewed';
 }
 
 // buildOutcome — the OUTCOME contract { roadmap, phase, outcome, summary,
@@ -393,26 +556,30 @@ function buildOutcome(input) {
     return { roadmap: roadmap, phase: phase, outcome: 'escalated', summary: 'phase fetch failed', findings: [] };
   }
   const planFindings = i.planFindings || [];
-  const codeFindings = i.codeFindings || [];
-  const codeFindingsAfterRework = i.codeFindingsAfterRework || [];
-  const outcome = classifyOutcome({
+  const classifierInput = {
     planFindings: planFindings,
-    codeFindings: codeFindings,
-    codeFindingsAfterRework: codeFindingsAfterRework,
+    codeFindings: i.codeFindings,
+    codeFindingsAfterRework: i.codeFindingsAfterRework,
+    codeReviews: i.codeReviews,
+    maxRework: i.maxRework,
     tier: tier,
-  });
+  };
+  const outcome = classifyOutcome(classifierInput);
+  // The LAST code-review round is what both the rework and reviewed payloads
+  // report — never a stale earlier pass, whatever the rework budget was.
+  const rounds = codeReviewRounds(classifierInput);
+  const lastRound = rounds[rounds.length - 1] || [];
   let findings;
   let summary;
   if (outcome === 'escalated') {
     findings = planFindings;
     summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
   } else if (outcome === 'rework') {
-    findings = codeFindingsAfterRework;
-    summary = 'code rework unresolved: ' + summarizeFindings(codeFindingsAfterRework);
+    findings = lastRound;
+    summary = 'code rework unresolved: ' + summarizeFindings(lastRound);
   } else {
-    // reviewed — surface whichever pass came back clean of blockers.
-    findings = hasBlocking(codeFindings, tier) ? codeFindingsAfterRework : codeFindings;
-    summary = 'phase reviewed clean: ' + summarizeFindings(findings);
+    findings = lastRound;
+    summary = 'phase reviewed clean: ' + summarizeFindings(lastRound);
   }
   return { roadmap: roadmap, phase: phase, outcome: outcome, summary: summary, findings: findings };
 }
@@ -432,26 +599,28 @@ function buildTaskOutcome(input) {
     return { task: task, outcome: 'escalated', summary: 'task fetch failed', findings: [] };
   }
   const planFindings = i.planFindings || [];
-  const codeFindings = i.codeFindings || [];
-  const codeFindingsAfterRework = i.codeFindingsAfterRework || [];
-  const outcome = classifyOutcome({
+  const classifierInput = {
     planFindings: planFindings,
-    codeFindings: codeFindings,
-    codeFindingsAfterRework: codeFindingsAfterRework,
+    codeFindings: i.codeFindings,
+    codeFindingsAfterRework: i.codeFindingsAfterRework,
+    codeReviews: i.codeReviews,
+    maxRework: i.maxRework,
     tier: tier,
-  });
+  };
+  const outcome = classifyOutcome(classifierInput);
+  const rounds = codeReviewRounds(classifierInput);
+  const lastRound = rounds[rounds.length - 1] || [];
   let findings;
   let summary;
   if (outcome === 'escalated') {
     findings = planFindings;
     summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
   } else if (outcome === 'rework') {
-    findings = codeFindingsAfterRework;
-    summary = 'code rework unresolved: ' + summarizeFindings(codeFindingsAfterRework);
+    findings = lastRound;
+    summary = 'code rework unresolved: ' + summarizeFindings(lastRound);
   } else {
-    // reviewed — surface whichever pass came back clean of blockers.
-    findings = hasBlocking(codeFindings, tier) ? codeFindingsAfterRework : codeFindings;
-    summary = 'task reviewed clean: ' + summarizeFindings(findings);
+    findings = lastRound;
+    summary = 'task reviewed clean: ' + summarizeFindings(lastRound);
   }
   return { task: task, outcome: outcome, summary: summary, findings: findings };
 }
@@ -652,26 +821,23 @@ function renderPlanDoc(planDoc) {
 }
 
 // --- Driver -------------------------------------------------------------------
-// The Workflow tool contract forbids stringified args, but LLM callers (rdm-do
-// --auto and hand-run single phases) invoke dispatch-phase DIRECTLY and have
-// delivered a JSON string; coerce once, then derive every field from it.
-let dispatchArgs = args || {}
-if (typeof dispatchArgs === 'string') {
-  try {
-    dispatchArgs = JSON.parse(dispatchArgs) || {}
-  } catch (e) {
-    dispatchArgs = {}
-  }
-}
-if (!dispatchArgs || typeof dispatchArgs !== 'object') dispatchArgs = {}
-const roadmap = dispatchArgs.roadmap || ''
-const phaseArg = dispatchArgs.phase || ''
+// Args are coerced (a stringified payload is JSON.parsed once) and validated by
+// parseDispatchArgs, from the copied block above — including both retry budgets,
+// so an invalid budget throws before a single agent() call burns tokens.
+const dispatchArgs = parseDispatchArgs(args)
+const roadmap = dispatchArgs.roadmap
+const phaseArg = dispatchArgs.phase
 // Task mode: `{ task: <slug> }` dispatches a standalone task instead of a phase.
 // A task belongs to no roadmap, carries no difficulty/model tier, and lives in
 // its own `task/<slug>` worktree — see the deltas handled below.
-const taskSlug = dispatchArgs.task || ''
+const taskSlug = dispatchArgs.task
 const isTask = !!taskSlug
-const planOnly = !!dispatchArgs.planOnly
+const planOnly = dispatchArgs.planOnly
+// The two in-run retry budgets, counted INDEPENDENTLY (each feeds exactly one
+// gate). Defaults DEFAULT_MAX_PLAN_REVISE / DEFAULT_MAX_CODE_REWORK; overridable
+// per run via the maxPlanRevise / maxCodeRework args.
+const maxPlanRevise = dispatchArgs.maxPlanRevise
+const maxCodeRework = dispatchArgs.maxCodeRework
 
 // itemOutcome — emit the identifier-correct OUTCOME for whichever mode is
 // active. Keeps every downstream return site mode-agnostic.
@@ -682,8 +848,8 @@ function itemOutcome(fields) {
       task: taskSlug,
       fetchError: f.fetchError,
       planFindings: f.planFindings,
-      codeFindings: f.codeFindings,
-      codeFindingsAfterRework: f.codeFindingsAfterRework,
+      codeReviews: f.codeReviews,
+      maxRework: f.maxRework,
       tier: f.tier,
     })
   }
@@ -692,8 +858,8 @@ function itemOutcome(fields) {
     phase: phaseArg,
     fetchError: f.fetchError,
     planFindings: f.planFindings,
-    codeFindings: f.codeFindings,
-    codeFindingsAfterRework: f.codeFindingsAfterRework,
+    codeReviews: f.codeReviews,
+    maxRework: f.maxRework,
     tier: f.tier,
   })
 }
@@ -742,9 +908,10 @@ const worktreeRef = isTask ? 'task/' + taskSlug : roadmapSlug
 // dispatching every agent on the inherited session model, which is the silent
 // no-op this whole change exists to remove.
 const models = phaseMeta.models || {}
-// Expressed with .filter() rather than a `for`/`while` on purpose: AC-4 forbids
-// any loop construct in this driver so the revise/rework stages stay provably
-// single bounded if-guards.
+// Expressed with .filter() rather than a `for`/`while` on purpose: the driver
+// region carries NO `while` at all and only allowlisted `for` headers (gated by
+// verify-workflow-dispatch.sh). The two budget-bounded retry loops live in the
+// copied dispatch-outcome block, where the Node harness can drive them.
 const unresolvedStep = ['plan', 'implement', 'review_find', 'review_verify'].filter(
   (k) => typeof models[k] !== 'string' || models[k] === ''
 )[0]
@@ -757,36 +924,44 @@ const reviewModels = { findModel: models.review_find, verifyModel: models.review
 // stem-or-number the caller passed, matching the pre-dual-mode behaviour.
 const itemLabel = isTask ? 'task/' + taskSlug : roadmap + '/' + stem
 
-// Stage A: author the plan from ONLY the phase body.
-let planDoc = await agent(buildPlanPrompt(phaseBody), {
-  label: 'plan:author',
-  phase: 'Plan',
-  schema: PLAN_DOC_SCHEMA,
-  model: models.plan,
-})
+// Stages A + B: author the plan from ONLY the phase body, review it via the
+// stamped shared pipeline, and revise it up to the plan-revise budget. The loop
+// itself lives in runPlanGate (copied block) so it is driveable from Node; this
+// driver only supplies the side effects.
+const runPlanReview = buildReviewPipeline('plan')
+const planGate = await runPlanGate(
+  { maxRevise: maxPlanRevise, tier: tier },
+  {
+    plan: async () =>
+      agent(buildPlanPrompt(phaseBody), {
+        label: 'plan:author',
+        phase: 'Plan',
+        schema: PLAN_DOC_SCHEMA,
+        model: models.plan,
+      }),
+    revise: async (doc, findings) =>
+      agent(buildPlanRevisePrompt(phaseBody, renderPlanDoc(doc), findings), {
+        label: 'plan:revise',
+        phase: 'PlanReview',
+        schema: PLAN_DOC_SCHEMA,
+        model: models.plan,
+      }),
+    review: async (doc) => runPlanReview({ target: renderPlanDoc(doc), ...reviewModels }),
+  }
+)
 
 // agent() RESOLVES to null on an unknown/unavailable model id rather than
-// throwing (spike consequence 3), so a null plan must be caught explicitly or
-// the pipeline would review an empty plan and call it clean.
-if (planDoc === null || planDoc === undefined) {
-  log('dispatch-phase: plan agent returned null on ' + itemLabelRaw + ' (model: ' + models.plan + ')')
+// throwing (spike consequence 3). runPlanGate guards BOTH the initial plan and
+// every revise result and reports which stage produced the null, so the failure
+// is diagnosable instead of silently escalating.
+if (planGate.fetchError === true) {
+  const nullStage = planGate.stage === 'revise' ? 'plan revise' : 'plan'
+  log('dispatch-phase: ' + nullStage + ' agent returned null on ' + itemLabelRaw + ' (model: ' + models.plan + ')')
   return itemOutcome({ fetchError: true })
 }
 
-// Stage B: plan-review via the stamped shared pipeline, called inline.
-const runPlanReview = buildReviewPipeline('plan')
-let planFindings = await runPlanReview({ target: renderPlanDoc(planDoc), ...reviewModels })
-
-// Bounded to ONE revise round: revise once, then re-review once.
-if (hasBlocking(planFindings, tier)) {
-  planDoc = await agent(buildPlanRevisePrompt(phaseBody, renderPlanDoc(planDoc), planFindings), {
-    label: 'plan:revise',
-    phase: 'PlanReview',
-    schema: PLAN_DOC_SCHEMA,
-    model: models.plan,
-  })
-  planFindings = await runPlanReview({ target: renderPlanDoc(planDoc), ...reviewModels })
-}
+const planDoc = planGate.planDoc
+const planFindings = planGate.findings
 
 // Plan gate: never implement on a blocking plan.
 if (hasBlocking(planFindings, tier)) {
@@ -806,35 +981,36 @@ if (planOnly) {
   return o
 }
 
-// Stage C: implement in the shared per-roadmap worktree. A FRESH implementer
-// seeded with ONLY the phase body + approved plan doc — not the planner context.
+// Stages C + D: implement in the shared per-roadmap worktree (a FRESH
+// implementer seeded with ONLY the phase body + approved plan doc — not the
+// planner context), code-review via the same stamped pipeline, and rework up to
+// the code-rework budget. As with the plan gate, the loop lives in runCodeGate.
 const approvedPlanText = renderPlanDoc(planDoc)
-await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText), {
-  model: models.implement,
-  label: 'implement:worktree',
-  phase: 'Implement',
-})
-
-// Stage D: code-review via the same stamped pipeline, called inline.
 const runCodeReview = buildReviewPipeline('code')
 const reviewTarget = isTask ? 'task/' + taskSlug : roadmapSlug + '/' + stem
-const codeFindings = await runCodeReview({ target: reviewTarget, ...reviewModels })
-
-// Bounded to exactly ONE rework pass.
-let codeFindingsAfterRework = []
-if (hasBlocking(codeFindings, tier)) {
-  await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, codeFindings), {
-    model: models.implement,
-    label: 'implement:rework',
-    phase: 'Implement',
-  })
-  codeFindingsAfterRework = await runCodeReview({ target: reviewTarget, ...reviewModels })
-}
+const codeGate = await runCodeGate(
+  { maxRework: maxCodeRework, tier: tier },
+  {
+    implement: async (notes) =>
+      notes == null
+        ? agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText), {
+            model: models.implement,
+            label: 'implement:worktree',
+            phase: 'Implement',
+          })
+        : agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, notes), {
+            model: models.implement,
+            label: 'implement:rework',
+            phase: 'Implement',
+          }),
+    review: async () => runCodeReview({ target: reviewTarget, ...reviewModels }),
+  }
+)
 
 const outcome = itemOutcome({
   planFindings: planFindings,
-  codeFindings: codeFindings,
-  codeFindingsAfterRework: codeFindingsAfterRework,
+  codeReviews: codeGate.rounds,
+  maxRework: maxCodeRework,
   tier: tier,
 })
 log('dispatch-phase (' + itemLabel + '): ' + outcome.outcome + ' — ' + outcome.summary)
