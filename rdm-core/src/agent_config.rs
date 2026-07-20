@@ -1493,7 +1493,10 @@ mod tests {
         assert!(content.contains("needs-plan-review"));
         assert!(content.contains("--format json"));
         assert!(content.contains("--tags"));
-        assert!(content.contains("On **reviewed**, read the target's current tags"));
+        assert!(content.contains(
+            "On **reviewed** — when the plan is clean or only has concerns/suggestions:"
+        ));
+        assert!(content.contains("Read the target's current tags"));
         assert!(content.contains("| **reviewed** | cleared | none |"));
         assert!(
             content.contains("rdm commit -m \"chore(plan): clear needs-plan-review on <target>\"")
@@ -1509,7 +1512,10 @@ mod tests {
         });
         let content = &skills[9].content;
         assert!(content.contains("needs-plan-review"));
-        assert!(content.contains("On **reviewed**, read the target's current tags"));
+        assert!(content.contains(
+            "On **reviewed** — when the plan is clean or only has concerns/suggestions:"
+        ));
+        assert!(content.contains("Read the target's current tags via"));
         assert!(content.contains("| **reviewed** | cleared | none |"));
     }
 
@@ -1631,8 +1637,9 @@ mod tests {
             mcp: false,
         });
         let content = &skills[9].content;
+        assert!(content.contains("On **rework** or **escalated** — when changes are needed:"));
         assert!(content.contains(
-            "On **rework** and **escalated**, do **not** call `update --tags`. `needs-plan-review` is left unchanged in place."
+            "Do **not** call `update --tags`. The `needs-plan-review` tag is left unchanged in place."
         ));
         // Backed by the generated gate spec so it survives regeneration.
         assert!(content.contains("| **rework** | left in place | none |"));
@@ -1647,8 +1654,9 @@ mod tests {
             mcp: true,
         });
         let content = &skills[9].content;
+        assert!(content.contains("On **rework** or **escalated** — when changes are needed:"));
         assert!(content.contains(
-            "On **rework** and **escalated**, do **not** call the update tool with `tags`. `needs-plan-review` is left unchanged in place."
+            "Do **not** call the update tool with `tags`. The `needs-plan-review` tag is left unchanged in place."
         ));
         assert!(content.contains("| **rework** | left in place | none |"));
         assert!(content.contains("| **escalated** | left in place | none |"));
