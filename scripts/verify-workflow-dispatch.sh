@@ -108,12 +108,15 @@ parse_workflow() {
         run_node --check --input-type=module -
 }
 
-# Distinct `phase: '<name>',` literals the workflow actually emits (driver agent()
-# calls + the inlined review block), one per line, sorted-unique. The alpha-name +
-# trailing-comma shape matches only real agent-option keys, excluding prose like
-# the `phase: '<stem-or-number>'` placeholder in the module's doc comment.
+# Distinct `phase: '<Name>',` literals the workflow actually emits (driver agent()
+# calls + the inlined review block), one per line, sorted-unique. Real
+# agent-option phase names are TitleCase with a trailing comma, which excludes
+# prose like the `phase: '<stem-or-number>'` placeholder in the module's doc
+# comment AND the review block's lowercase STATUS_MAPPING rows
+# (`phase: 'reviewed'`, `phase: 'blocked'`), which are rdm statuses, not
+# workflow phases.
 emitted_phases() {
-    grep -oE "phase: '[A-Za-z]+'," "$1" | sed "s/phase: '//;s/',//" | sort -u
+    grep -oE "phase: '[A-Z][A-Za-z]*'," "$1" | sed "s/phase: '//;s/',//" | sort -u
 }
 
 # Distinct `{ title: '<name>' }` entries declared in the `meta.phases` array. The
@@ -748,7 +751,7 @@ say "2b. Block drift detector fires on planted drift (self-test)"
 cp "$LIB" "$TMP/lib.scratch"
 cp "$WF" "$TMP/wf.scratch"
 blocks_equal "$TMP/lib.scratch" "$TMP/wf.scratch" || fail "scratch copies should match before mutation"
-sed 's/no surviving findings/planted drift/' "$TMP/wf.scratch" >"$TMP/wf.mut" && mv "$TMP/wf.mut" "$TMP/wf.scratch"
+sed 's/phase fetch failed/planted drift/' "$TMP/wf.scratch" >"$TMP/wf.mut" && mv "$TMP/wf.mut" "$TMP/wf.scratch"
 if blocks_equal "$TMP/lib.scratch" "$TMP/wf.scratch"; then
     fail "byte-equality gate did NOT detect a planted mutation inside the block"
 fi
@@ -768,14 +771,53 @@ pass "dispatch-outcome block carries the budget gates + validators in both files
 # --- 3. STATIC INVARIANTS ----------------------------------------------------
 say "3. Static invariants on the workflow source (AC-1 / AC-2 / AC-3 / AC-5)"
 
-# AC-1: the workflow source contains NO land-time completion (`Done:`) directive.
-if grep -n 'Done:' "$WF" >/dev/null 2>&1; then
-    grep -n 'Done:' "$WF" >&2 || true
-    fail "AC-1: dispatch-phase.js must not contain a 'Done:' line (land-time only)"
+# AC-1: no land-time completion (`Done:`) directive inside a STAMPED region.
+#
+# Scoped, not whole-file: the canonical review source now carries a skill-only
+# `review-gate-spec` section documenting the trailer, and that section sits
+# OUTSIDE the stamped block (so it is never copied here). A whole-file grep would
+# therefore be both over-broad and, worse, would push authors to omit the policy
+# from the shared source entirely. Extract exactly the two stamped regions and
+# grep only those.
+extract_stamped_regions() {
+    awk '
+        index($0, ">>> review-refute-fix:begin") { inr = 1; next }
+        index($0, ">>> review-refute-fix:end")   { inr = 0; next }
+        index($0, ">>> dispatch-outcome:begin")  { inr = 1; next }
+        index($0, ">>> dispatch-outcome:end")    { inr = 0; next }
+        inr { print }
+    ' "$1"
+}
+extract_stamped_regions "$WF" >"$TMP/stamped-regions"
+[ -s "$TMP/stamped-regions" ] ||
+    fail "AC-1: extracted an EMPTY stamped region from $WF — the extractor or the markers are broken"
+if grep -n 'Done:' "$TMP/stamped-regions" >&2; then
+    fail "AC-1: the stamped regions of dispatch-phase.js must not contain a 'Done:' line (land-time only)"
 fi
-printf 'Done: rm/phase-1-x\n' >"$TMP/planted-done.js"
-grep -q 'Done:' "$TMP/planted-done.js" || fail "AC-1 detector broken — grep 'Done:' missed a planted directive"
-pass "AC-1: no 'Done:' directive present; detector catches a planted one"
+
+# Self-test A: a directive planted INSIDE a stamped region must fire the detector.
+{
+    printf '// >>> review-refute-fix:begin <<<\n'
+    printf '// Done: rm/phase-1-x\n'
+    printf '// >>> review-refute-fix:end <<<\n'
+} >"$TMP/planted-inside.js"
+extract_stamped_regions "$TMP/planted-inside.js" >"$TMP/planted-inside-region"
+grep -q 'Done:' "$TMP/planted-inside-region" ||
+    fail "AC-1 detector broken — a directive planted INSIDE a stamped region was not detected"
+
+# Self-test B: gate prose carrying the literal OUTSIDE every stamped region must
+# NOT fire — that is exactly where the canonical source keeps the policy.
+{
+    printf '// >>> review-refute-fix:begin <<<\n'
+    printf 'const clean = true\n'
+    printf '// >>> review-refute-fix:end <<<\n'
+    printf '// gate prose: amend Done: <roadmap>/<phase> at land time\n'
+} >"$TMP/planted-outside.js"
+extract_stamped_regions "$TMP/planted-outside.js" >"$TMP/planted-outside-region"
+if grep -q 'Done:' "$TMP/planted-outside-region"; then
+    fail "AC-1 detector is over-broad — prose outside every stamped region must not be flagged"
+fi
+pass "AC-1: no 'Done:' directive in either stamped region; detector fires inside and stays silent outside"
 
 # AC-5: shared per-roadmap worktree entered via `rdm worktree add` in a prompt;
 # `isolation:` (the isolation:'worktree' agent option) must NOT be used.
@@ -1161,8 +1203,12 @@ say "5. docs/escalation-protocol.md § Budgets states the same numbers the code 
 
 DOC="$REPO_ROOT/docs/escalation-protocol.md"
 AUTOPILOT_LIB="$REPO_ROOT/.claude/workflows/lib/autopilot.mjs"
+# DEFAULT_MAX_CODE_REWORK was lifted into the canonical review source alongside
+# classifyOutcome; the plan-revise budget stays with the dispatch decision core.
+REVIEW_LIB="$REPO_ROOT/.claude/workflows/lib/review.mjs"
 [ -f "$DOC" ] || fail "escalation protocol doc not found: $DOC"
 [ -f "$AUTOPILOT_LIB" ] || fail "autopilot lib not found: $AUTOPILOT_LIB"
+[ -f "$REVIEW_LIB" ] || fail "canonical review lib not found: $REVIEW_LIB"
 
 const_value() {
     grep -oE "const $2 = [0-9]+" "$1" | head -1 | grep -oE '[0-9]+$'
@@ -1171,7 +1217,7 @@ const_value() {
 assert_doc_agrees() {
     doc=$1
     pr=$(const_value "$LIB" DEFAULT_MAX_PLAN_REVISE)
-    cr=$(const_value "$LIB" DEFAULT_MAX_CODE_REWORK)
+    cr=$(const_value "$REVIEW_LIB" DEFAULT_MAX_CODE_REWORK)
     ar=$(const_value "$AUTOPILOT_LIB" DEFAULT_MAX_REWORK)
     gb=$(const_value "$AUTOPILOT_LIB" DEFAULT_GLOBAL_BUDGET)
     [ -n "$pr" ] && [ -n "$cr" ] && [ -n "$ar" ] && [ -n "$gb" ] || return 1
@@ -1195,7 +1241,7 @@ assert_doc_agrees() {
 }
 
 assert_doc_agrees "$DOC" ||
-    fail "docs/escalation-protocol.md § Budgets disagrees with the constants in lib/dispatch-phase.mjs / lib/autopilot.mjs"
+    fail "docs/escalation-protocol.md § Budgets disagrees with the constants in lib/dispatch-phase.mjs / lib/review.mjs / lib/autopilot.mjs"
 pass "all four budgets are named in the doc with exactly the values the code declares"
 
 # The doc must also spell out the attempt sequence, the independence of the two

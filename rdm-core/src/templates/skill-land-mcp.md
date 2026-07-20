@@ -43,7 +43,15 @@ The **git landing itself (steps 2–5) and the batch prune have no MCP equivalen
 Before touching `main`, confirm all of:
 
 1. **The item is `reviewed`.** Read it with `{t_phase_show}` (`project: {proj_param}, roadmap: "<slug>", phase: "<phase>"`) or `{t_task_show}`. If it is not `reviewed` — e.g. still `needs-review`, `blocked`, or already `done` — stop: only reviewed work lands.
-2. **The branch carries the `Done:` line.** The reviewed commit must include `Done: <roadmap>/<phase>` (or `Done: task/<slug>`); that line is what the post-commit hook reads. The subagent inspects it with `git log`.
+2. **The branch carries the `Done:` line — synthesize it if it is missing.** The reviewed commit must include `Done: <roadmap>/<phase>` (or `Done: task/<slug>`); that line is what the post-commit hook reads. The subagent inspects it with `git log`.
+
+   The **autonomous** lane deliberately never writes the trailer: `rdm-dispatch-phase` / `rdm-autopilot` return a structured outcome carrying the item's identifiers, and the workflow scripts are forbidden from emitting the directive. A missing trailer is therefore **not** an abort condition when you know the identifiers — this skill is the land-time writer. There is no MCP equivalent for the amend, so instruct the Bash-capable subagent to source the exact line from rdm (never hand-typing the format) and amend it onto the branch tip before the rebase:
+   ```bash
+   git commit --amend -m "$(git log -1 --pretty=%B)
+
+   $(rdm hook done-line --roadmap <slug> --phase <stem>)"   # or: --task <slug>
+   ```
+   Amend **only** when the branch tip is the un-landed reviewed commit — amending rewrites history, so if the tip is already pushed and shared, or is not the reviewed commit, abort and escalate instead. Abort as well when the item's identifiers are unknown, since a synthesized trailer would be a guess.
 3. **The worktree is clean** (no uncommitted changes — the subagent checks `git status --porcelain`).
 4. **The CI-equivalent checks pass on the rebased branch** — see below. Checked *after* rebasing, not before.
 

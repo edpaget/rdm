@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm hook done-line` prints the land-time `Done:` commit trailer for a phase
+  (`--roadmap <slug> --phase <stem>`) or a task (`--task <slug>`). It is now the
+  single home of that format string, so the review gate and `rdm-land` amend its
+  output onto the branch commit instead of hand-typing the format. It rejects
+  both-or-neither of `--phase`/`--task`, an embedded `/`, and `task` used as a
+  roadmap slug (a reserved prefix), each with an actionable error.
+- The `rdm-review` skill gains a **security** review dimension, triggered when a
+  change touches auth, input parsing/validation, path or file handling,
+  subprocess/shell invocation, secrets and credentials, deserialization, network
+  code, or `unsafe` blocks. It reviews injection, path traversal, secret leakage,
+  missing authorization, and unsafe-invariant violations. The pre-existing
+  dimensions (`ac`, `correctness`, `tests`, `architecture`, `api-docs`,
+  `changelog`) are unchanged, so this is strictly added coverage.
+
 - Tag filtering across the list surfaces. `rdm roadmap list --tag <tag>` and the
   top-level `rdm list --tag <tag>` are new; `rdm task list --tag <tag>` and
   `rdm search --tag <tag>` now accept the flag **repeatedly**, and repeats combine
@@ -45,6 +59,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   actually ran, however many there were (including zero).
 
 ### Changed
+
+- The `rdm-review` skill now reports a single outcome — **reviewed**, **rework**,
+  or **escalated** — retiring the old PASS / PASS WITH CONCERNS / BLOCKED / FAIL
+  quartet. PASS and PASS WITH CONCERNS collapse to `reviewed`, FAIL becomes
+  `rework`, and BLOCKED becomes `escalated`; this is the same vocabulary
+  `rdm-dispatch-phase` and `rdm-autopilot` already returned, so every surface now
+  speaks one language. An **escalated task** is set to `blocked` (with a `[code]`
+  reason prefix) rather than being downgraded to `in-progress` — tasks have
+  supported `blocked` for some time, and the skill's claim to the contrary was
+  stale. Phase behavior is unchanged.
+- `rdm-land` no longer aborts when a reviewed branch is missing its `Done:`
+  trailer. Autonomous runs deliberately never write one, so landing now
+  synthesizes it via `rdm hook done-line` from the item's identifiers and amends
+  it onto the branch tip before rebasing — aborting only when the identifiers are
+  unknown or the tip is not the un-landed reviewed commit.
 
 - The autonomous workflow lane's two in-run retry budgets are raised from 1 to 2
   and are now overridable per run. `dispatch-phase` accepts `maxPlanRevise` and

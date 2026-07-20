@@ -16,6 +16,23 @@
 //! OUTSIDE the markers so it is never copied into the workflow script (whose only
 //! permitted export is `meta`). The verify harness imports this module and unit-
 //! tests the pure logic with fabricated ranked finding arrays — zero LLM calls.
+//!
+//! The verdict half of the decision core — `classifyOutcome` and its helpers
+//! `hasBlocking`, `summarizeFindings`, `codeReviewRounds`, and
+//! `DEFAULT_MAX_CODE_REWORK` — was LIFTED into `lib/review.mjs`, the canonical
+//! review source, so every surface shares one classifier. In the `.js` consumer
+//! those names arrive via the stamped review block (which is positioned BEFORE
+//! this block, since `const DEFAULT_MAX_CODE_REWORK` is TDZ-bound and, unlike a
+//! function declaration, does not hoist). In Node they arrive via the import
+//! below, which lives OUTSIDE the markers and is re-exported for the harness.
+
+import {
+  classifyOutcome,
+  codeReviewRounds,
+  hasBlocking,
+  summarizeFindings,
+  DEFAULT_MAX_CODE_REWORK,
+} from './review.mjs';
 
 // >>> dispatch-outcome:begin <<<
 // Pure, deterministic decision logic for the dispatch-phase pipeline.
@@ -25,30 +42,16 @@
 // .claude/workflows/dispatch-phase.js (the Workflow runtime cannot load modules
 // at run time). scripts/verify-workflow-dispatch.sh gates the two copies for
 // drift. No Date.now / Math.random — pure array/string ops only.
+//
+// `hasBlocking`, `summarizeFindings`, `codeReviewRounds`, `classifyOutcome`, and
+// `DEFAULT_MAX_CODE_REWORK` are NOT declared here: they belong to the canonical
+// review source (lib/review.mjs) and reach this block from the stamped review
+// block that precedes it in the workflow consumer.
 
-// hasBlocking(findings, tier) — is there a blocking finding, tier-scaled?
-// For the `large` tier a surviving `concern` is treated as blocking too (a
-// one-directional tightening — the gate can only get stricter, never looser).
-function hasBlocking(findings, tier) {
-  const list = Array.isArray(findings) ? findings : [];
-  const blockers = tier === 'large' ? ['blocking', 'concern'] : ['blocking'];
-  return list.some((f) => f && blockers.indexOf(f.severity) !== -1);
-}
-
-// summarizeFindings(findings) — a deterministic one-line label. The array is
-// assumed already ranked (most-severe first), so the top finding is list[0].
-function summarizeFindings(findings) {
-  const list = Array.isArray(findings) ? findings : [];
-  if (list.length === 0) return 'no surviving findings';
-  const top = list[0] || {};
-  const sev = top.severity || 'finding';
-  const what = top.what_fails || top.concern || top.id || 'unspecified';
-  return list.length + ' finding(s); top: [' + sev + '] ' + what;
-}
-
-// DEFAULT_MAX_PLAN_REVISE / DEFAULT_MAX_CODE_REWORK — the two in-run retry
-// budgets. They are counted INDEPENDENTLY: a plan that took two revisions
-// consumes no code-rework budget, and vice versa.
+// DEFAULT_MAX_PLAN_REVISE — the in-run plan-revision budget. It is counted
+// INDEPENDENTLY of the code-rework budget (DEFAULT_MAX_CODE_REWORK, which lives
+// in the review source): a plan that took two revisions consumes no code-rework
+// budget, and vice versa.
 //
 // A budget of N means N reworks AFTER the original attempt, i.e. N + 1 attempts:
 //   plan: plan → review → revise 1 → review → revise 2 → review → escalate
@@ -57,7 +60,6 @@ function summarizeFindings(findings) {
 // 0 is legal and MEANINGFUL: no reworks at all — terminate on the first blocking
 // review. It must never be conflated with "unset" by a falsy check.
 const DEFAULT_MAX_PLAN_REVISE = 2;
-const DEFAULT_MAX_CODE_REWORK = 2;
 
 // parseBudget(value, flag, fallback) — validate a per-run budget override.
 // Unset (null/undefined/'') falls back to the caller's default. Anything else
@@ -192,49 +194,6 @@ async function runCodeGate(config, deps) {
     rounds.push(findings);
   }
   return { findings: findings, rounds: rounds, reworkCount: reworkCount, reviewCount: rounds.length };
-}
-
-// codeReviewRounds(input) — the per-round code-review findings, newest last.
-//
-// The modern caller passes `codeReviews` (runCodeGate's `rounds`), which already
-// records exactly the rounds that ran — however many, INCLUDING zero reworks.
-// The legacy two-slot shape (`codeFindings` + `codeFindingsAfterRework`) is
-// derived: a second round only existed if the rework budget was non-zero AND the
-// first pass was blocking. That guard is the fix for the budget-0 hole, where an
-// always-empty `codeFindingsAfterRework` used to mark a failing first review
-// clean.
-function codeReviewRounds(input) {
-  const i = input || {};
-  if (Array.isArray(i.codeReviews) && i.codeReviews.length) return i.codeReviews;
-  const first = i.codeFindings || [];
-  const maxRework = i.maxRework != null ? i.maxRework : DEFAULT_MAX_CODE_REWORK;
-  if (maxRework > 0 && hasBlocking(first, i.tier)) return [first, i.codeFindingsAfterRework || []];
-  return [first];
-}
-
-// classifyOutcome — the total, deterministic decision tree. Returns one of
-// 'escalated' | 'reviewed' | 'rework'.
-//
-// The deterministic pipeline cannot classify a code finding's *nature* (the
-// FINDING schema carries severity but no fixable/decision flag), so a code
-// defect that survives the bounded reworks resolves to 'rework'; genuine
-// decisions surface earlier at the plan gate as 'escalated'. That is why the
-// code stage yields only reviewed|rework and escalated originates at the plan
-// gate.
-function classifyOutcome(input) {
-  const i = input || {};
-  const tier = i.tier;
-  const planFindings = i.planFindings || [];
-  // 1. Plan gate: a blocking plan finding escalates before any implementation.
-  //    An empty/ambiguous plan is surfaced as a blocking coherence finding by
-  //    the plan-review stage, so that case lands here too.
-  if (hasBlocking(planFindings, tier)) return 'escalated';
-  // 2. Plan approved → implement ran → code-review ran (once per round). The
-  //    LAST review's findings decide, for any number of rework rounds including
-  //    zero: still blocking → rework, otherwise reviewed.
-  const rounds = codeReviewRounds(i);
-  const last = rounds[rounds.length - 1] || [];
-  return hasBlocking(last, tier) ? 'rework' : 'reviewed';
 }
 
 // buildOutcome — the OUTCOME contract { roadmap, phase, outcome, summary,

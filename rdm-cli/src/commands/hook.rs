@@ -106,6 +106,30 @@ pub fn run(command: HookCommand, root: &Path) -> Result<()> {
                 logger.log("post-commit", "wrapper-error", &[("error", msg.as_str())]);
             }
         }
+        HookCommand::DoneLine {
+            roadmap,
+            phase,
+            task,
+        } => {
+            let directive = match (roadmap, phase, task) {
+                (Some(roadmap), Some(phase), None) => {
+                    rdm_core::hook::DoneDirective::Phase { roadmap, phase }
+                }
+                (None, None, Some(slug)) => rdm_core::hook::DoneDirective::Task { slug },
+                (Some(_), None, None) => bail!(
+                    "--roadmap needs --phase; pass `--roadmap <slug> --phase <stem>` for a phase, or `--task <slug>` for a task"
+                ),
+                (None, None, None) => bail!(
+                    "specify what to complete: `--roadmap <slug> --phase <stem>` for a phase, or `--task <slug>` for a task"
+                ),
+                _ => bail!(
+                    "--task cannot be combined with --roadmap/--phase; pass exactly one of the two forms"
+                ),
+            };
+            let line = rdm_core::hook::format_done_directive(&directive)
+                .context("cannot build a Done: trailer from those identifiers")?;
+            println!("{line}");
+        }
     }
     Ok(())
 }

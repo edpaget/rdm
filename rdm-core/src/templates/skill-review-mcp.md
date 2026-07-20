@@ -18,7 +18,9 @@ allowed-tools:
 
 Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task.
 {principles}
-The review runs as a pipeline: **find → verify → filter → report → act → gate**. Findings are never surfaced, fixed, or acted on until a *separate* agent has tried to refute them. The agent that finds an issue is never the agent that confirms it.
+The review runs as a pipeline: **find → refute → filter → verdict → act → gate**. Findings are never surfaced, fixed, or acted on until a *separate* agent has tried to refute them. The agent that finds an issue is never the agent that confirms it.
+
+The specification of that pipeline — which dimensions run, how findings are graded, and what each outcome means — is **generated from the canonical review source** and is identical across every rdm surface (the interactive skill, `rdm-dispatch-phase`, and `rdm-autopilot`). It appears under "Review specification" below. The steps here wire it to the rdm MCP tools.
 
 ## Steps
 
@@ -28,126 +30,225 @@ The review runs as a pipeline: **find → verify → filter → report → act �
    - If the first argument is `--task`, the next argument is a task slug.
    - Otherwise, the first argument is a roadmap slug and the second is a phase number.
 2. **Read the acceptance criteria**:
-   - For a phase: use `rdm_phase_show` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase-number>"`
-   - For a task: use `rdm_task_show` with `project: {proj_param}, task: "<slug>"`
+   - For a phase: use `{t_phase_show}` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase-number>"`
+   - For a task: use `{t_task_show}` with `project: {proj_param}, task: "<slug>"`
    Extract the acceptance criteria, steps, and any other requirements from the body.
-3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task. Note the diff size, which modules it touches, and whether it changes public API, `unsafe` constructs, dependencies, or user-facing behavior — these drive which conditional agents you launch in step 2.
+3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task. Note the diff size, which modules it touches, and whether it changes public API, `unsafe` constructs, dependencies, or user-facing behavior — these are the **trigger signals** for the conditional dimensions in the Review specification.
 
    From those same diff signals, derive a **tier hint** for step 2's fleet: `small` (localized, single module, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one module, a bugfix), or `large` (touches public API, `unsafe`, spans multiple modules/crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
 
-### 2. Find — dispatch an adaptive review fleet (parallel)
+### 2. Find — dispatch the review fleet (parallel)
 
-Scale the fleet to what the diff actually touches. Always run the **base** agents; add **conditional** agents only when the diff hits their surface. This keeps a 10-line phase cheap while a cross-cutting change still gets full coverage. Each agent is **read-only** — it reviews and reports, it never edits.
+Dispatch one **read-only** `Agent` per applicable dimension, per **Review specification § Dimensions** below. Run the always-on dimensions unconditionally; add each triggered dimension when its trigger fires against the diff from step 1. State which dimensions you launched, and why, in the report.
 
-**Base (always run):**
+**Model sizing.** Every dispatched agent in this step runs on an **explicitly resolved** model — never the inherited session model. For each finder agent, resolve `rdm model resolve review-find --tier <hint>` using the tier hint derived in step 1, and pass `model` explicitly when dispatching that agent with the `Agent` tool. Purely mechanical checks (e.g. a scripted presence/lint check with no judgment involved) may instead resolve `rdm model resolve mechanical`, or run inline without a subagent at all. Resolution reads the `[models]` config table (tier→model-id bindings, review floor, and per-step overrides), falling back to built-in defaults (`small`→haiku, `medium`→sonnet, `large`→opus) when unset.
 
-- **AC Compliance** — for each acceptance criterion, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is ambiguous or untestable.
-- **Correctness & error handling** — logic bugs, edge cases, race conditions, error paths. Check error handling against the project's conventions (CLAUDE.md / AGENTS.md); user-facing errors must be actionable.
+### 3. Refute — per-finding refute pass (parallel)
 
-**Conditional (add when the trigger is present):**
+Dispatch a **fresh** `Agent` per finding, per **Review specification § Refute**. Run these concurrently; the finder is never the refuter. Suggestions may skip refutation (low stakes) but are still subject to the confidence floor.
 
-- **Tests** — *trigger: diff adds/changes any non-trivial logic, or adds no test files.* Do tests exist and cover the key behaviors and edge cases? Was a test-first discipline followed (test describes desired behavior)? Are there untested branches?
-- **Public API docs** — *trigger: diff changes public API surface.* Are public items documented per the project's conventions (CLAUDE.md / AGENTS.md)? Are error, panic, and safety conditions called out where the project requires it?
-- **Architecture** — *trigger: diff touches more than one module/layer, or moves logic between layers.* Does logic live where the project's architecture says it should, with thin layers on top? No duplicated logic across interfaces?
-- **Language safety & conventions** — *trigger: diff contains unsafe/low-level constructs, new dependencies, or non-trivial new modules.* Are unsafe or risky constructs justified per the project's conventions? Commit message, scope, and lint/format discipline followed?
-- **Changelog & docs** — *trigger: the change is user-facing (CLI commands, API endpoints, MCP tools, config options, observable behavior).* If the project requires a changelog/docs update for user-facing changes (CLAUDE.md / AGENTS.md), is it present in the same change? Flag a missing or non-user-facing entry as a finding.
+The refute agent also runs on an explicitly resolved model, never the inherited session model: resolve `rdm model resolve review-verify` once (its default tier is already floored to the top review tier, so no `--tier` hint is needed) and pass `model` when dispatching each refute agent.
 
-Decide triggers from the `git diff` and file list in step 1. When in doubt about a trigger, include the agent — a spurious agent that finds nothing is cheaper than a missed concern. State which agents you launched and why in the report.
+### 4. Filter, consolidate & decide the outcome
 
-**Model sizing.** Every dispatched agent in this step runs on an **explicitly resolved** model — never the inherited session model. For each finder agent (AC Compliance, Correctness, and any conditional agent launched above), resolve:
-```bash
-model=$(rdm model resolve review-find --tier <hint>)
-```
-using the tier hint derived in step 1, and pass `model` explicitly when dispatching that agent with the `Agent` tool. Purely mechanical checks (e.g. a scripted presence/lint check with no judgment involved) may instead resolve `rdm model resolve mechanical`, or run inline without a subagent at all. Resolution reads the `[models]` config table (tier→model-id bindings, review floor, and per-step overrides), falling back to built-in defaults (`small`→haiku, `medium`→sonnet, `large`→opus) when unset.
-
-**Each agent returns structured findings**, one block per finding:
-
-```
-- id: <short-slug>
-  concern: <ac|correctness|tests|api-docs|architecture|safety|changelog>
-  file: <path>:<line>
-  severity: blocking | concern | suggestion
-  confidence: 0-100
-  what-fails: <the specific problem>
-  why: <root cause / which rule or AC it violates>
-  impact: <what breaks or degrades>
-  recommendation: <concrete fix>
-```
-
-The AC agent additionally returns the per-criterion PASS/FAIL/PARTIAL table. Calibrate for signal: **one strong finding beats five weak ones.** Do not report pure style/formatting nitpicks unless they violate an explicit project rule.
-
-**Severity scale** (this drives the overall verdict in step 5):
-
-- `blocking` — the implementation must not advance to `reviewed` as-is: a logic error, an unmet acceptance criterion, or a mandatory process violation (e.g. a missing required changelog entry). Any single surviving blocking finding forces the overall verdict to **BLOCKED**.
-- `concern` — does not block merging but must be recorded; yields **PASS WITH CONCERNS** when no blockers exist.
-- `suggestion` — minor optional improvement (subject to the confidence filter; never blocks).
-
-### 3. Verify — per-finding refute pass (parallel)
-
-For every finding with `severity` of blocking or concern (and every AC FAIL/PARTIAL verdict), dispatch a **fresh** `Agent` whose job is to **refute** it. The refute agent:
-
-- Starts from the stance "this is NOT a real issue unless the code proves otherwise."
-- Reads the actual code at the cited location and surrounding context.
-- Returns `verdict: confirmed | refuted | uncertain`, a corrected `confidence` (0-100), and one line of evidence.
-
-Run these concurrently. The finder is never the verifier. Suggestions may skip verification (low stakes) but are still subject to the confidence filter.
-
-The refute agent also runs on an explicitly resolved model, never the inherited session model: resolve `model=$(rdm model resolve review-verify)` once (its default tier is already floored to the top review tier, so no `--tier` hint is needed) and pass `model` when dispatching each refute agent.
-
-### 4. Filter & consolidate
-
-- **Drop** any finding the refute pass marked `refuted`, or whose post-verification confidence is **below 70**.
-- **Dedup** findings that point at the same file:line / same root cause (the fleet covers overlapping ground by design).
-- **Rank** survivors by severity, then confidence.
-- Keep the AC table intact (it is the contract); surviving AC FAIL/PARTIAL items become findings.
+Apply **Review specification § Filter & consolidate**, then **§ Verdict** to reach exactly one outcome: `reviewed`, `rework`, or `escalated`.
 
 ### 5. Report
 
 Present a single structured report:
 - The AC table: each criterion with PASS / FAIL / PARTIAL and evidence.
 - Surviving findings grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation.
-- An overall verdict: **PASS**, **PASS WITH CONCERNS**, **BLOCKED**, or **FAIL**.
+- The outcome: **reviewed**, **rework**, or **escalated**, and the one rule that decided it.
 
-**Determine the overall verdict in this strict order — the first matching rule wins:**
+### 6. Act
 
-1. **BLOCKED** — if **any** surviving finding has `severity: blocking`. A single blocking finding always escalates the whole review to BLOCKED; it can never be downgraded to "pass with concerns".
-2. **FAIL** — else if the AC table contains any FAIL or PARTIAL criterion (acceptance criteria are the contract).
-3. **PASS WITH CONCERNS** — else if any surviving finding has `severity: concern` (non-blocking concerns exist, but no blockers and all AC pass).
-4. **PASS** — else (no blocking findings, no AC failures, no concerns).
+Apply **Review specification § Act**. File large findings as tasks with `{t_task_create}`: `project: {proj_param}, slug: "<slug>", title: "Review finding: description", body: "Details."`
 
-### 6. Act — only on verified findings
+### 7. Gate — transition by outcome
+
+This skill owns the `needs-review` → `reviewed` gate. Persist the status from **Review specification § Gate** — the mapped status is `reviewed`, `in-progress`, or `blocked`:
+
+- phase: use `{t_phase_update}` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "<status>"`. On `escalated`, pass `status: "blocked", reason: "[code] <the decision or blocker>"` — the recorded `reason` field, not the commit message, is what the blocked queue reads.
+- task: use `{t_task_update}` with `project: {proj_param}, task: "<slug>", status: "<status>"`. On `escalated`, pass `status: "blocked", reason: "[code] <the decision or blocker>"` the same way.
+- land the plan-repo status change: call `{t_commit}` with `message: "chore(plan): <outcome> <phase-or-task>"`.
+
+On `reviewed` **only**, add the completion trailer to the branch commit with `git commit --amend` — a **separate**, source-repo operation, with no MCP equivalent. Source the trailer line from `rdm hook done-line --roadmap <slug> --phase <stem>` (or `rdm hook done-line --task <slug>`), using the exact slugs/stems from the rdm tools above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
+
+## Review specification
+
+<!-- rdm:review-spec:begin (generated by scripts/gen-skill-review.sh — edit .claude/workflows/lib/review.mjs, not this region) -->
+
+### Dimensions — the adaptive review fleet
+
+Scale the fleet to what the change actually touches. **Always-on** dimensions
+run for every review; **triggered** dimensions run only when the change hits
+their surface. This keeps a 10-line change cheap while a cross-cutting change
+still gets full coverage. Each dimension is reviewed by its own **read-only**
+agent — it reviews and reports, it never edits. When in doubt about a trigger,
+include the dimension: a spurious agent that finds nothing is cheaper than a
+missed defect. State which dimensions you ran, and why, in the report.
+
+**Confidence floor.** Drop any finding whose post-refutation confidence is
+below **70**, even when no refuter knocked it down.
+
+**Severity scale** (drives the verdict):
+
+- `blocking` — the work must not advance as-is: a logic error, an unmet
+  acceptance criterion, or a mandatory process violation (e.g. a missing
+  required changelog entry).
+- `concern` — recorded but non-gating; it never by itself holds the work back.
+- `suggestion` — minor optional improvement (subject to the confidence floor).
+
+Rank survivors most-severe first, then by confidence descending, then by id.
+
+**Code review dimensions:**
+
+- **ac** — *always.* For each acceptance criterion, rate PASS / FAIL /
+  PARTIAL with evidence (file:line, test name). Flag any criterion that is
+  unmet, ambiguous, or untestable. The per-criterion table is the contract
+  and is reported intact.
+- **correctness** — *always.* Logic bugs, edge cases, race conditions, and
+  error paths, judged against the project's error-handling conventions
+  (CLAUDE.md / AGENTS.md). User-facing errors must be actionable.
+- **tests** — *trigger: the diff adds or changes non-trivial logic, or adds
+  no test files.* Do tests exist and cover the key behaviors and edge
+  cases? Was a test-first discipline followed? Are there untested branches?
+- **architecture** — *trigger: the diff touches more than one module/layer,
+  or moves logic between layers.* Does logic live where the project's
+  architecture says it should, with thin layers on top? No duplicated logic
+  across interfaces?
+- **api-docs** — *trigger: the diff changes a public `rdm-core` item.* Are
+  public items documented per the project's conventions
+  (`#![warn(missing_docs)]`)? Are `# Errors`, `# Panics`, and `# Safety`
+  sections present where the project requires them?
+- **changelog** — *trigger: the diff makes a user-facing change (CLI
+  commands, API endpoints, MCP tools, config options, observable
+  behavior).* A user-facing change MUST carry a `CHANGELOG.md` entry in the
+  same commit; a missing entry is **blocking**, per the project's
+  conventions. The entry must read from a user's perspective, not describe
+  internals.
+- **security** — *trigger: the diff touches auth, input parsing or
+  validation, path/file handling, subprocess or shell invocation, secrets
+  and credentials, deserialization, network code, or `unsafe` blocks.*
+  Injection, path traversal, secret leakage, missing authorization, and
+  unsafe-invariant violations. Every `unsafe` block needs a `// SAFETY:`
+  comment stating the invariant it upholds; an unjustified or risky
+  construct is a finding.
+
+### Find — one read-only agent per applicable dimension, in parallel
+
+Each finder agent is told: you are a READ-ONLY reviewer, do not edit any
+files; review exactly one dimension; report only findings you can back with
+concrete evidence — **one strong finding beats five weak ones**; return an
+empty finding list if the dimension is clean. Do not report pure
+style/formatting nitpicks unless they violate an explicit project rule.
+
+Each finding is reported as:
+
+```
+- id: <short-slug>
+  concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
+  location: <path>:<line>
+  severity: blocking | concern | suggestion
+  confidence: 0-100
+  what-fails: <the specific problem>
+  why: <root cause / which rule or AC it violates>
+  recommendation: <concrete fix>
+```
+
+### Refute — a FRESH agent per finding, in parallel
+
+For every finding, dispatch a **separate** read-only refuter. The agent that
+found an issue is never the agent that confirms it. The refuter starts from
+the stance *"this is NOT a real issue unless the code proves otherwise"*,
+reads the actual cited location and its surrounding context, and returns
+`refuted` (boolean), a corrected `confidence` (0-100), and a rationale.
+
+### Filter & consolidate
+
+- **Drop** any finding a refuter refuted, and any whose post-refutation
+  confidence is below the confidence floor (70).
+- A refuter that *crashes* is not proof of refutation — keep such a finding as
+  un-refuted rather than silently dropping it.
+- **Dedup** findings pointing at the same location / same root cause (the
+  fleet covers overlapping ground by design).
+- **Rank** survivors by severity, then confidence, then id.
+- Keep the AC table intact; surviving AC FAIL/PARTIAL items become findings.
+
+### Verdict — one outcome vocabulary: `reviewed` | `rework` | `escalated`
+
+Determine the outcome in this strict order — the first matching rule wins:
+
+1. **escalated** — a surviving blocker that needs a *human decision* rather
+   than a code change: the goal, approach, or scope is wrong, the work
+   violates a stated architectural constraint, or the acceptance criteria
+   themselves are missing, contradictory, or unimplementable as written.
+2. **rework** — else if any surviving finding is `blocking`, or the AC table
+   contains any FAIL or PARTIAL criterion. The defect is fixable in place; the
+   work goes back for another round.
+3. **reviewed** — else. Clean, or clean after small fixes. Surviving
+   `concern` and `suggestion` findings are recorded and do **not** gate.
+
+Never downgrade a surviving `blocking` finding to "reviewed with concerns" —
+a blocker always yields `rework` or `escalated`.
+
+### Act — only on verified findings
 
 Report first, then act. Never fix or file an unverified finding.
 
-- **Small** — localized, low-risk, no new acceptance criteria (a typo, a missing doc comment, a tightened error message, an extra test). Fix it inline: apply with `Edit`/`Write`, run the relevant tests, then fold it into the implementation commit with `git commit --amend --no-edit`.
-- **Large** — new modules, cross-cutting changes, or anything that warrants its own acceptance criterion. Do NOT fix inline. File a task with `rdm_task_create`: `project: {proj_param}, slug: "<slug>", title: "Review finding: description", body: "Details."`
+- **Small** — localized, low-risk, no new acceptance criteria (a typo, a
+  missing doc comment, a tightened error message, an extra test). Fix it
+  inline, run the relevant tests, then fold it into the implementation commit.
+- **Large** — new modules, cross-cutting changes, or anything that warrants
+  its own acceptance criterion. Do **NOT** fix inline: file it as a task.
 
-For each finding, state how it was handled (fixed-inline / filed-as-task `<slug>`).
+For each finding, state how it was handled (fixed-inline / filed-as-task).
 
-### 7. Gate — transition by verdict
+### Gate — status mapping
 
-This skill owns the `needs-review` → `reviewed` gate.
+The review owns the `needs-review` → `reviewed` gate. Persist the status the
+outcome maps to, for the item's kind:
 
-- **Pass / Pass with concerns** (verdict PASS or PASS WITH CONCERNS — clean, or clean after small fixes, with no blocking findings): set the item to `reviewed`, then amend a `Done:` line into the branch commit — this completes the deferred `Done:` directive from the rdm-do (or rdm-dispatch-phase) finalize step, not a contradiction of it — so the merge-to-main hook flips it to `done` later. Recorded concerns do not block this transition.
-  - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "reviewed"`
-  - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "reviewed"`
-  - land the plan-repo status change: call `{t_commit}` with `message: "chore(plan): mark <phase-or-task> reviewed"`
-  - then `git commit --amend` — a **separate**, source-repo op — to add the `Done:` line to the branch commit message, completing the finalize step's deferred directive: `Done: <roadmap-slug>/<phase-stem>` (phase) or `Done: task/<slug>` (task), using the exact slugs/stems from the rdm tools above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
-- **Blocked** (verdict BLOCKED — one or more surviving blocking findings): do NOT advance to `reviewed` and write **no** `Done:` line. The transition depends on the item kind, because tasks have no `blocked` status:
-  - **Phase**: set it to `blocked` with the escalation reason (use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "blocked"`), so the blocked-phase queue surfaces it for a human decision. Land it: call `{t_commit}` with `message: "chore(plan): block <phase-or-task>: <reason>"`.
-  - **Task**: tasks support only `open | in-progress | done | wont-fix`, so there is no `blocked` status. Return the task to `in-progress` instead (use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "in-progress"`), and state clearly in the report that review found **blocking** findings and the work is **not done** (this is not a clean rework — the blockers must be resolved before re-review). Land it: call `{t_commit}` with `message: "chore(plan): block <phase-or-task>: <reason>"`.
-- **Rework** (verdict FAIL — acceptance criteria unmet, substantial changes needed): return the item to `in-progress` and write **no** `Done:` line.
-  - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`
-  - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "in-progress"`
-  - land it: call `{t_commit}` with `message: "chore(plan): return <phase-or-task> to in-progress"`
+| Outcome | When | Phase status | Task status | Completion trailer |
+|---|---|---|---|---|
+| **reviewed** | clean, or clean after small fixes | `reviewed` | `reviewed` | write it |
+| **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | do **not** write it |
+| **escalated** | a blocker needing a human decision | `blocked` | `blocked` | do **not** write it |
 
-## Guidelines
+Tasks and phases map identically — `blocked` is a valid task status, so an
+escalated task is *not* downgraded to `in-progress`. On `escalated`, prefix
+the recorded reason with `[code]` so the blocked queue shows which gate
+escalated it.
 
-- Be objective — evaluate against the stated AC, not personal preferences.
+Never set the item to `done` directly — that flip is owned by the
+merge-to-main hook.
+
+**The completion trailer.** On `reviewed` only, amend the land-time
+completion trailer into the branch commit; this completes the directive
+deliberately deferred by the finalize step, so the merge-to-main hook flips
+the item `reviewed → done` later. Never hand-type the trailer format — ask rdm
+for it, so the format string has exactly one home:
+
+```bash
+rdm hook done-line --roadmap <slug> --phase <stem>   # prints: Done: <slug>/<stem>
+rdm hook done-line --task <slug>                     # prints: Done: task/<slug>
+```
+
+On `rework` and `escalated`, write **no** trailer.
+
+### Guidelines
+
+- Be objective — evaluate against the stated acceptance criteria, not personal
+  preferences.
 - Provide specific evidence (file:line, test name) for every finding.
-- **No finding is surfaced, fixed, or filed until a separate refute agent has confirmed it.** The finder never grades its own work.
-- Filter hard: drop refuted findings and anything below 70 confidence. One strong finding beats five weak ones.
-- Distinguish blocking issues from minor concerns: any surviving `blocking` finding forces the overall verdict to **BLOCKED** (never "pass with concerns"); unmet acceptance criteria yield **FAIL**; non-blocking concerns with no blockers and all AC passing yield **PASS WITH CONCERNS**.
-- The dispatched sub-agents only review and report — they never modify code. The orchestrator (this skill) applies small fixes, and only after verification.
+- **No finding is surfaced, fixed, or filed until a separate refuter agent has
+  failed to refute it.** The finder never grades its own work.
+- Filter hard: drop refuted findings and anything below 70 confidence. One
+  strong finding beats five weak ones.
+- The dispatched sub-agents only review and report — they never modify code.
+  The orchestrator applies small fixes, and only after refutation.
 - Never fix large changes inline — file them as tasks.
-- If AC are missing or vague, note this as a finding rather than guessing intent.
+- If acceptance criteria are missing or vague, report it as a finding rather
+  than guessing intent.
+
+<!-- rdm:review-spec:end -->

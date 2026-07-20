@@ -1,44 +1,57 @@
-// dispatch-phase — the keystone per-phase unit of autonomous execution.
-//
-// A deterministic 4-stage pipeline for a single roadmap phase:
-//   Plan → PlanReview → Implement → CodeReview → OUTCOME.
-// It replaces rdm-dispatch-phase's prose orchestration with a mechanical driver.
-//
-// Invoke with args: { roadmap: '<roadmap-slug>', phase: '<stem-or-number>' }.
-// Returns the OUTCOME contract { roadmap, phase, outcome, summary, findings },
-// outcome ∈ { reviewed, rework, escalated }. It NEVER emits a land-time
-// completion directive — landing is a separate, later step. See
-// docs/workflow-schemas.md.
-//
-// This script embeds TWO copied blocks, because the Workflow runtime cannot load
-// helper modules at run time (docs/workflow-schemas.md § "Import spike"):
-//   1. the review-refute-fix block — stamped from lib/review.mjs by
-//      scripts/gen-workflow-review.sh; its `buildReviewPipeline(mode)` is called
-//      inline for BOTH review gates (NOT via a nested sub-workflow call).
-//   2. the dispatch-outcome block — copied BYTE-IDENTICAL from
-//      lib/dispatch-phase.mjs; scripts/verify-workflow-dispatch.sh gates it.
+//! review — the single canonical review implementation for every rdm surface.
+//!
+//! This module is the **one source of truth** for the whole review:
+//! **find → refute → filter → verdict → gate/completion policy**. Every surface
+//! consumes it, so an improvement to review lands once and is usable everywhere:
+//!
+//!   * the autonomous workflow lane — `.claude/workflows/review-refute-fix.js`
+//!     and `.claude/workflows/dispatch-phase.js` — receives the marked block
+//!     below VERBATIM, stamped by `scripts/gen-workflow-review.sh` (the Claude
+//!     Code Workflow runtime cannot `import`/`require`; see
+//!     docs/workflow-schemas.md § "Import spike");
+//!   * the interactive skill lane — `rdm-core/src/templates/skill-review-*.md`
+//!     — receives the literate `//|` prose rendered to markdown by
+//!     `scripts/gen-skill-review.sh`.
+//!
+//! Edit HERE — never in a consumer — then re-run BOTH generators.
+//! `scripts/verify-workflow-review.sh` fails on drift in either direction.
+//!
+//! ## Two marker systems
+//!
+//! NOTE: the marker tokens are deliberately NOT spelled out in full anywhere in
+//! this header — `gen-workflow-review.sh` locates the stamped block by a plain
+//! substring match, so an incidental prose mention of its begin token would
+//! silently truncate extraction. Read the real marker comments below instead.
+//!
+//! 1. The **stamped block** (`review-refute-fix` markers). Copied verbatim into
+//!    every workflow-script consumer. Self-contained: no imports, no ambient
+//!    globals named at module scope, no `Date.now` / `Math.random`. It must
+//!    NEVER contain a land-time completion directive literal — the dispatch
+//!    harness greps the stamped region for exactly that.
+//! 2. The **skill-renderable spec**: a `review-spec` region NESTED inside the
+//!    stamped block, and a `review-gate-spec` region OUTSIDE and AFTER it.
+//!    `gen-skill-review.sh` emits only the `//| ` literate comment lines from
+//!    these two regions, in that order. The nested markers are inert to
+//!    `gen-workflow-review.sh` (whose awk matches only the outer token), so they
+//!    ride along as harmless comments in the stamped copy.
+//!
+//! Everything after the `review-spec` end marker and inside the stamped block is
+//! **machinery**: JSON schemas, `survives`/`rankFindings`, dimension selection,
+//! the outcome classifier, and the status mapping. Machinery is never rendered
+//! into a skill.
+//!
+//! The stamped block runs in two contexts unchanged:
+//!   1. The Workflow runtime, where `agent`/`pipeline`/`parallel`/`log` are
+//!      ambient globals — `buildReviewPipeline(mode)` picks them up by default.
+//!   2. Node (this file, imported by the verify harness), where those globals
+//!      do not exist — the harness injects fakes via the `deps` argument, so the
+//!      pure composition and filtering logic is testable with zero LLM calls.
+//!
+//! The `export { ... }` at the bottom lives OUTSIDE every marker: it exists only
+//! for Node's importer and is never copied into a workflow consumer (a bare
+//! `export` mid-body would break a workflow script, whose only permitted export
+//! is `meta`).
 
-export const meta = {
-  name: 'dispatch-phase',
-  description:
-    'Deterministic 4-stage per-phase pipeline: plan → plan-review → implement → code-review → OUTCOME (reviewed|rework|escalated)',
-  // Must list exactly the distinct `phase:` values the driver + the inlined
-  // review-refute-fix block actually emit. Both review gates run their finders
-  // under 'Find' and refuters under 'Refute' (from the stamped block), so those
-  // appear here; there is no 'CodeReview' phase because no agent() call uses it.
-  // verify-workflow-dispatch.sh asserts this list matches the emitted phases.
-  phases: [
-    { title: 'Plan' },
-    { title: 'PlanReview' },
-    { title: 'Implement' },
-    { title: 'Find' },
-    { title: 'Refute' },
-  ],
-}
-
-// The block below is GENERATED from .claude/workflows/lib/review.mjs by
-// scripts/gen-workflow-review.sh — do NOT edit it here. Edit the lib and re-run the
-// generator; scripts/verify-workflow-review.sh fails the build on drift.
 // >>> review-refute-fix:begin (generated into workflow consumers by scripts/gen-workflow-review.sh — edit the lib, not the copy) <<<
 // >>> review-spec:begin (the `//|` lines below are rendered into the shipped review skills by scripts/gen-skill-review.sh) <<<
 //| ### Dimensions — the adaptive review fleet
@@ -712,646 +725,94 @@ function buildReviewPipeline(mode, deps) {
 }
 // >>> review-refute-fix:end <<<
 
-// The block below is copied BYTE-IDENTICAL from
-// .claude/workflows/lib/dispatch-phase.mjs — do NOT edit it here. Edit the lib and
-// scripts/verify-workflow-dispatch.sh fails the build on drift.
-// >>> dispatch-outcome:begin <<<
-// Pure, deterministic decision logic for the dispatch-phase pipeline.
-//
-// This block is the single source of truth in
-// .claude/workflows/lib/dispatch-phase.mjs and is copied BYTE-IDENTICAL into
-// .claude/workflows/dispatch-phase.js (the Workflow runtime cannot load modules
-// at run time). scripts/verify-workflow-dispatch.sh gates the two copies for
-// drift. No Date.now / Math.random — pure array/string ops only.
-//
-// `hasBlocking`, `summarizeFindings`, `codeReviewRounds`, `classifyOutcome`, and
-// `DEFAULT_MAX_CODE_REWORK` are NOT declared here: they belong to the canonical
-// review source (lib/review.mjs) and reach this block from the stamped review
-// block that precedes it in the workflow consumer.
+// >>> review-gate-spec:begin (skill-only prose — NEVER stamped into a workflow script) <<<
+// This region sits OUTSIDE the stamped block on purpose: it is the only place
+// the land-time completion trailer may be named, because the dispatch harness
+// forbids that literal anywhere inside a stamped region.
+//|
+//| ### Act — only on verified findings
+//|
+//| Report first, then act. Never fix or file an unverified finding.
+//|
+//| - **Small** — localized, low-risk, no new acceptance criteria (a typo, a
+//|   missing doc comment, a tightened error message, an extra test). Fix it
+//|   inline, run the relevant tests, then fold it into the implementation commit.
+//| - **Large** — new modules, cross-cutting changes, or anything that warrants
+//|   its own acceptance criterion. Do **NOT** fix inline: file it as a task.
+//|
+//| For each finding, state how it was handled (fixed-inline / filed-as-task).
+//|
+//| ### Gate — status mapping
+//|
+//| The review owns the `needs-review` → `reviewed` gate. Persist the status the
+//| outcome maps to, for the item's kind:
+//|
+//| | Outcome | When | Phase status | Task status | Completion trailer |
+//| |---|---|---|---|---|
+//| | **reviewed** | clean, or clean after small fixes | `reviewed` | `reviewed` | write it |
+//| | **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | do **not** write it |
+//| | **escalated** | a blocker needing a human decision | `blocked` | `blocked` | do **not** write it |
+//|
+//| Tasks and phases map identically — `blocked` is a valid task status, so an
+//| escalated task is *not* downgraded to `in-progress`. On `escalated`, prefix
+//| the recorded reason with `[code]` so the blocked queue shows which gate
+//| escalated it.
+//|
+//| Never set the item to `done` directly — that flip is owned by the
+//| merge-to-main hook.
+//|
+//| **The completion trailer.** On `reviewed` only, amend the land-time
+//| completion trailer into the branch commit; this completes the directive
+//| deliberately deferred by the finalize step, so the merge-to-main hook flips
+//| the item `reviewed → done` later. Never hand-type the trailer format — ask rdm
+//| for it, so the format string has exactly one home:
+//|
+//| ```bash
+//| rdm hook done-line --roadmap <slug> --phase <stem>   # prints: Done: <slug>/<stem>
+//| rdm hook done-line --task <slug>                     # prints: Done: task/<slug>
+//| ```
+//|
+//| On `rework` and `escalated`, write **no** trailer.
+//|
+//| ### Guidelines
+//|
+//| - Be objective — evaluate against the stated acceptance criteria, not personal
+//|   preferences.
+//| - Provide specific evidence (file:line, test name) for every finding.
+//| - **No finding is surfaced, fixed, or filed until a separate refuter agent has
+//|   failed to refute it.** The finder never grades its own work.
+//| - Filter hard: drop refuted findings and anything below 70 confidence. One
+//|   strong finding beats five weak ones.
+//| - The dispatched sub-agents only review and report — they never modify code.
+//|   The orchestrator applies small fixes, and only after refutation.
+//| - Never fix large changes inline — file them as tasks.
+//| - If acceptance criteria are missing or vague, report it as a finding rather
+//|   than guessing intent.
+// >>> review-gate-spec:end <<<
 
-// DEFAULT_MAX_PLAN_REVISE — the in-run plan-revision budget. It is counted
-// INDEPENDENTLY of the code-rework budget (DEFAULT_MAX_CODE_REWORK, which lives
-// in the review source): a plan that took two revisions consumes no code-rework
-// budget, and vice versa.
-//
-// A budget of N means N reworks AFTER the original attempt, i.e. N + 1 attempts:
-//   plan: plan → review → revise 1 → review → revise 2 → review → escalate
-//   code: implement → review → rework 1 → review → rework 2 → review → rework
-//
-// 0 is legal and MEANINGFUL: no reworks at all — terminate on the first blocking
-// review. It must never be conflated with "unset" by a falsy check.
-const DEFAULT_MAX_PLAN_REVISE = 2;
-
-// parseBudget(value, flag, fallback) — validate a per-run budget override.
-// Unset (null/undefined/'') falls back to the caller's default. Anything else
-// must be a non-negative integer; a non-integer string is REJECTED rather than
-// silently coerced (parseInt('2abc') === 2 is exactly the trap to avoid).
-function parseBudget(value, flag, fallback) {
-  if (value === null || value === undefined || value === '') return fallback;
-  let n = NaN;
-  if (typeof value === 'number') {
-    n = value;
-  } else if (typeof value === 'string' && /^[+-]?[0-9]+$/.test(value.trim())) {
-    n = parseInt(value.trim(), 10);
-  }
-  if (!Number.isInteger(n) || n < 0 || Object.is(n, -0)) {
-    throw new Error(
-      'dispatch-phase: ' +
-        flag +
-        ' must be a non-negative integer (got "' +
-        String(value) +
-        '") — 0 means no reworks, terminate on the first blocking review'
-    );
-  }
-  return n;
-}
-
-// parseDispatchArgs(args) — coerce and validate the whole args payload.
-//
-// The Workflow tool contract forbids stringified args, but LLM callers (rdm-do
-// --auto and hand-run single phases) invoke dispatch-phase DIRECTLY and have
-// delivered a JSON string; coerce once, then derive every field from it. Budget
-// validation runs HERE, at parse time — before any agent() call — so an invalid
-// budget can never burn tokens.
-function parseDispatchArgs(args) {
-  let dispatchArgs = args || {};
-  if (typeof dispatchArgs === 'string') {
-    try {
-      dispatchArgs = JSON.parse(dispatchArgs) || {};
-    } catch (e) {
-      dispatchArgs = {};
-    }
-  }
-  if (!dispatchArgs || typeof dispatchArgs !== 'object') dispatchArgs = {};
-  return {
-    roadmap: dispatchArgs.roadmap || '',
-    phase: dispatchArgs.phase || '',
-    // Task mode: `{ task: <slug> }` dispatches a standalone task instead of a
-    // phase — no roadmap, no tier, its own `task/<slug>` worktree.
-    task: dispatchArgs.task || '',
-    planOnly: !!dispatchArgs.planOnly,
-    maxPlanRevise: parseBudget(dispatchArgs.maxPlanRevise, 'maxPlanRevise', DEFAULT_MAX_PLAN_REVISE),
-    maxCodeRework: parseBudget(dispatchArgs.maxCodeRework, 'maxCodeRework', DEFAULT_MAX_CODE_REWORK),
-  };
-}
-
-// runPlanGate(config, deps) — the bounded plan stage. Author a plan, review it,
-// and revise up to `config.maxRevise` times, breaking early the moment a review
-// comes back with no blockers. Returns
-// { fetchError, stage, planDoc, findings, reviewCount, reviseCount }.
-//
-// Every side effect is reached through the injected `deps` (d.plan / d.revise /
-// d.review), so this block names NO ambient runtime global and the module
-// imports cleanly in Node — the lib/autopilot.mjs precedent, which is what makes
-// the budget loop testable at all.
-//
-// agent() RESOLVES to null on an unknown/unavailable model id rather than
-// throwing (spike consequence 3), so BOTH the initial plan and EVERY revise
-// result are null-guarded. The revise guard runs before the reassignment and
-// before the next review, so a null doc is never reviewed as an empty plan and
-// never clobbers the last good one.
-async function runPlanGate(config, deps) {
-  const c = config || {};
-  const d = deps || {};
-  const maxRevise = c.maxRevise != null ? c.maxRevise : DEFAULT_MAX_PLAN_REVISE;
-  const tier = c.tier;
-  let planDoc = await d.plan();
-  if (planDoc === null || planDoc === undefined) {
-    return { fetchError: true, stage: 'plan', planDoc: null, findings: [], reviewCount: 0, reviseCount: 0 };
-  }
-  let findings = await d.review(planDoc);
-  let reviewCount = 1;
-  let reviseCount = 0;
-  for (let i = 0; i < maxRevise; i++) {
-    if (!hasBlocking(findings, tier)) break;
-    const revised = await d.revise(planDoc, findings);
-    reviseCount++;
-    if (revised === null || revised === undefined) {
-      return {
-        fetchError: true,
-        stage: 'revise',
-        planDoc: planDoc,
-        findings: findings,
-        reviewCount: reviewCount,
-        reviseCount: reviseCount,
-      };
-    }
-    planDoc = revised;
-    findings = await d.review(planDoc);
-    reviewCount++;
-  }
-  return {
-    fetchError: false,
-    stage: null,
-    planDoc: planDoc,
-    findings: findings,
-    reviewCount: reviewCount,
-    reviseCount: reviseCount,
-  };
-}
-
-// runCodeGate(config, deps) — the bounded code stage. Implement, review, and
-// rework up to `config.maxRework` times, breaking early on a clean review.
-// Returns { findings, rounds, reworkCount, reviewCount } where `rounds` is the
-// per-round review findings in order (always at least one entry).
-//
-// No null guard is needed here: `implement` returns no document the pipeline
-// consumes, and the review pipeline already converts an all-null finder sweep
-// into a blocking finding.
-async function runCodeGate(config, deps) {
-  const c = config || {};
-  const d = deps || {};
-  const maxRework = c.maxRework != null ? c.maxRework : DEFAULT_MAX_CODE_REWORK;
-  const tier = c.tier;
-  await d.implement(null);
-  let findings = await d.review();
-  const rounds = [findings];
-  let reworkCount = 0;
-  for (let i = 0; i < maxRework; i++) {
-    if (!hasBlocking(findings, tier)) break;
-    await d.implement(findings);
-    reworkCount++;
-    findings = await d.review();
-    rounds.push(findings);
-  }
-  return { findings: findings, rounds: rounds, reworkCount: reworkCount, reviewCount: rounds.length };
-}
-
-// buildOutcome — the OUTCOME contract { roadmap, phase, outcome, summary,
-// findings }. fetchError short-circuits to escalated. Never emits a land-time
-// completion directive.
-function buildOutcome(input) {
-  const i = input || {};
-  const roadmap = i.roadmap;
-  const phase = i.phase;
-  const tier = i.tier;
-  if (i.fetchError === true) {
-    return { roadmap: roadmap, phase: phase, outcome: 'escalated', summary: 'phase fetch failed', findings: [] };
-  }
-  const planFindings = i.planFindings || [];
-  const classifierInput = {
-    planFindings: planFindings,
-    codeFindings: i.codeFindings,
-    codeFindingsAfterRework: i.codeFindingsAfterRework,
-    codeReviews: i.codeReviews,
-    maxRework: i.maxRework,
-    tier: tier,
-  };
-  const outcome = classifyOutcome(classifierInput);
-  // The LAST code-review round is what both the rework and reviewed payloads
-  // report — never a stale earlier pass, whatever the rework budget was.
-  const rounds = codeReviewRounds(classifierInput);
-  const lastRound = rounds[rounds.length - 1] || [];
-  let findings;
-  let summary;
-  if (outcome === 'escalated') {
-    findings = planFindings;
-    summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
-  } else if (outcome === 'rework') {
-    findings = lastRound;
-    summary = 'code rework unresolved: ' + summarizeFindings(lastRound);
-  } else {
-    findings = lastRound;
-    summary = 'phase reviewed clean: ' + summarizeFindings(lastRound);
-  }
-  return { roadmap: roadmap, phase: phase, outcome: outcome, summary: summary, findings: findings };
-}
-
-// buildTaskOutcome — the task-shaped OUTCOME contract { task, outcome, summary,
-// findings }. A task is keyed by slug and belongs to no roadmap, so it emits a
-// `task` identifier instead of `roadmap`/`phase`; the decision core
-// (classifyOutcome / hasBlocking / summarizeFindings) is shared UNCHANGED with
-// the phase path. Tasks always dispatch at the fixed `medium` tier, so the
-// `large` gate-tightening in hasBlocking never applies to them. fetchError
-// short-circuits to escalated. Never emits a land-time completion directive.
-function buildTaskOutcome(input) {
-  const i = input || {};
-  const task = i.task;
-  const tier = i.tier;
-  if (i.fetchError === true) {
-    return { task: task, outcome: 'escalated', summary: 'task fetch failed', findings: [] };
-  }
-  const planFindings = i.planFindings || [];
-  const classifierInput = {
-    planFindings: planFindings,
-    codeFindings: i.codeFindings,
-    codeFindingsAfterRework: i.codeFindingsAfterRework,
-    codeReviews: i.codeReviews,
-    maxRework: i.maxRework,
-    tier: tier,
-  };
-  const outcome = classifyOutcome(classifierInput);
-  const rounds = codeReviewRounds(classifierInput);
-  const lastRound = rounds[rounds.length - 1] || [];
-  let findings;
-  let summary;
-  if (outcome === 'escalated') {
-    findings = planFindings;
-    summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
-  } else if (outcome === 'rework') {
-    findings = lastRound;
-    summary = 'code rework unresolved: ' + summarizeFindings(lastRound);
-  } else {
-    findings = lastRound;
-    summary = 'task reviewed clean: ' + summarizeFindings(lastRound);
-  }
-  return { task: task, outcome: outcome, summary: summary, findings: findings };
-}
-// >>> dispatch-outcome:end <<<
-
-// --- Schemas (dispatch-specific; see docs/workflow-schemas.md) ----------------
-
-// PHASE_META — what the Stage-0 fetch agent returns from `rdm phase show`.
-const PHASE_META_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['roadmap', 'phase', 'stem', 'model', 'body', 'models'],
-  properties: {
-    roadmap: { type: 'string' },
-    phase: { type: 'string' },
-    stem: { type: 'string' },
-    model: { type: 'string' }, // the tier: small | medium | large
-    body: { type: 'string' },
-    models: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['plan', 'implement', 'review_find', 'review_verify'],
-      properties: {
-        plan: { type: 'string' },
-        implement: { type: 'string' },
-        review_find: { type: 'string' },
-        review_verify: { type: 'string' },
-      },
-    },
-  },
-}
-
-// TASK_META — the task-mode twin of PHASE_META. A task has no roadmap and no
-// difficulty/model tier, so neither field appears here.
-const TASK_META_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['task', 'body', 'models'],
-  properties: {
-    task: { type: 'string' },
-    body: { type: 'string' },
-    models: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['plan', 'implement', 'review_find', 'review_verify'],
-      properties: {
-        plan: { type: 'string' },
-        implement: { type: 'string' },
-        review_find: { type: 'string' },
-        review_verify: { type: 'string' },
-      },
-    },
-  },
-}
-
-// PLAN_DOC — the plan document the planner agent produces from ONLY the phase body.
-const PLAN_DOC_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['steps_per_ac', 'file_map', 'tests_per_ac', 'edge_cases', 'cross_phase_deps', 'summary'],
-  properties: {
-    steps_per_ac: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['ac', 'steps'],
-        properties: { ac: { type: 'string' }, steps: { type: 'array', items: { type: 'string' } } },
-      },
-    },
-    file_map: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['path', 'change'],
-        properties: { path: { type: 'string' }, change: { type: 'string' } },
-      },
-    },
-    tests_per_ac: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['ac', 'test'],
-        properties: { ac: { type: 'string' }, test: { type: 'string' } },
-      },
-    },
-    edge_cases: { type: 'array', items: { type: 'string' } },
-    cross_phase_deps: { type: 'array', items: { type: 'string' } },
-    summary: { type: 'string' },
-  },
-}
-
-// --- Prompt builders ----------------------------------------------------------
-
-// Stage 0: a mechanical Bash agent reads the phase JSON (the runtime cannot shell
-// out itself). Sized to the small/mechanical tier.
-function buildFetchPrompt(roadmap, phase) {
-  return [
-    'You are a mechanical fetch agent. Do not plan or implement anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
-    '  ./target/debug/rdm phase show --roadmap ' + roadmap + ' ' + phase + ' --project rdm --format json',
-    'Return a PHASE_META object: roadmap (the roadmap slug), phase (the stem-or-number you were given),',
-    'stem (the phase JSON `stem`), model (the phase JSON `model` tier: small|medium|large),',
-    'and body (the phase JSON `body` verbatim). If the command fails or the body is empty, return an empty body.',
-    'Then resolve the models for this dispatch. Let T be the phase JSON `model` field.',
-    'If T is a non-empty string, run these two WITH the tier hint:',
-    '  ./target/debug/rdm model resolve plan --tier T',
-    '  ./target/debug/rdm model resolve implement --tier T',
-    'If T is empty or missing, run the same two with NO --tier argument.',
-    'ALWAYS run these two with NO --tier argument, whatever T is:',
-    '  ./target/debug/rdm model resolve review-find',
-    '  ./target/debug/rdm model resolve review-verify',
-    'Return the four resulting model ids verbatim in a `models` object with keys',
-    'plan, implement, review_find, review_verify. Do not invent ids; if a command fails, return an empty body.',
-  ].join('\n')
-}
-
-function buildTaskFetchPrompt(slug) {
-  return [
-    'You are a mechanical fetch agent. Do not plan or implement anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
-    '  ./target/debug/rdm task show ' + slug + ' --project rdm --format json',
-    'Return a TASK_META object: task (the slug you were given) and body (the task JSON `body` verbatim).',
-    'If the command fails or the body is empty, return an empty body.',
-    'Then resolve the models for this dispatch. A task carries NO tier, so run all four',
-    'resolver commands with NO --tier argument:',
-    '  ./target/debug/rdm model resolve plan',
-    '  ./target/debug/rdm model resolve implement',
-    '  ./target/debug/rdm model resolve review-find',
-    '  ./target/debug/rdm model resolve review-verify',
-    'Return the four resulting model ids verbatim in a `models` object with keys',
-    'plan, implement, review_find, review_verify. Do not invent ids; if a command fails, return an empty body.',
-  ].join('\n')
-}
-
-// Stage A: the planner is seeded with ONLY the phase body — no worktree, no code.
-function buildPlanPrompt(phaseBody) {
-  return [
-    'You are a planning agent. Produce an implementation PLAN only — write NO code and touch NO files.',
-    'You are given ONLY the phase body below; plan strictly from it.',
-    '--- PHASE BODY ---',
-    phaseBody,
-    '--- END PHASE BODY ---',
-    'Return a PLAN_DOC: steps_per_ac (steps for each acceptance criterion), file_map (path + change per file),',
-    'tests_per_ac (a test per acceptance criterion), edge_cases, cross_phase_deps, and a one-paragraph summary.',
-    'Be concrete and actionable — a vague or empty plan will be rejected at plan-review.',
-  ].join('\n')
-}
-
-// Stage B revise: the planner revises its own plan against the ranked plan
-// findings. One bounded round only.
-function buildPlanRevisePrompt(phaseBody, planDocText, rankedPlanFindings) {
-  return [
-    'You are a planning agent revising an earlier PLAN. Write NO code and touch NO files.',
-    'Phase body (authoritative source):',
-    '--- PHASE BODY ---',
-    phaseBody,
-    '--- END PHASE BODY ---',
-    'Your previous plan:',
-    planDocText,
-    'Plan-review raised these ranked findings — address every blocking one:',
-    JSON.stringify(rankedPlanFindings, null, 2),
-    'Return a corrected PLAN_DOC in the same schema.',
-  ].join('\n')
-}
-
-// Stage C / D-rework: a FRESH implementer seeded ONLY with the phase body + the
-// approved plan doc (+ optional code-review findings on the rework pass). It is
-// NEVER given the planner's or plan-reviewer's context/transcript. `reworkNotes`
-// carries CODE-review findings only — never plan-review findings.
-function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes) {
-  const lines = [
-    'You are an implementation agent. You are seeded with ONLY the item body and the approved plan below.',
-    'First, create/enter the worktree for this item and work THERE:',
-    '  ./target/debug/rdm worktree add ' + worktreeRef + ' --project rdm',
-    'then `cd` into the path it prints. Do all edits and the commit in that worktree.',
-    '--- PHASE BODY ---',
-    phaseBody,
-    '--- END PHASE BODY ---',
-    '--- APPROVED PLAN ---',
-    planDocText,
-    '--- END APPROVED PLAN ---',
-    'Implement the approved plan, run the project checks, then stage and commit with a conventional-commit message.',
-    'Do NOT add any land-time completion directive to the commit message — landing happens later, not here.',
-    'If you discover side-work and file it as a task (per "Discovering bugs or side-work" in CLAUDE.md): you are working in the ' +
-      worktreeRef +
-      ' worktree, not main. If the side-task body cites a file or behavior introduced by this worktree\'s not-yet-landed work, tag it `depends-unlanded` and phrase the body as "<file/behavior>, introduced by ' +
-      worktreeRef +
-      ', not yet on main" — e.g. `./target/debug/rdm task create sweep-x --title "..." --body "rdm-core/src/ops/tag.rs, introduced by ' +
-      worktreeRef +
-      ', not yet on main. ..." --tags depends-unlanded --no-edit --project rdm`.',
-  ]
-  if (reworkNotes) {
-    lines.push('Code-review found these ranked issues on the prior pass — fix every blocking one:')
-    lines.push(JSON.stringify(reworkNotes, null, 2))
-  }
-  return lines.join('\n')
-}
-
-// Render a PLAN_DOC object to deterministic text for review + implementer seeding.
-function renderPlanDoc(planDoc) {
-  return JSON.stringify(planDoc, null, 2)
-}
-
-// --- Driver -------------------------------------------------------------------
-// Args are coerced (a stringified payload is JSON.parsed once) and validated by
-// parseDispatchArgs, from the copied block above — including both retry budgets,
-// so an invalid budget throws before a single agent() call burns tokens.
-const dispatchArgs = parseDispatchArgs(args)
-const roadmap = dispatchArgs.roadmap
-const phaseArg = dispatchArgs.phase
-// Task mode: `{ task: <slug> }` dispatches a standalone task instead of a phase.
-// A task belongs to no roadmap, carries no difficulty/model tier, and lives in
-// its own `task/<slug>` worktree — see the deltas handled below.
-const taskSlug = dispatchArgs.task
-const isTask = !!taskSlug
-const planOnly = dispatchArgs.planOnly
-// The two in-run retry budgets, counted INDEPENDENTLY (each feeds exactly one
-// gate). Defaults DEFAULT_MAX_PLAN_REVISE / DEFAULT_MAX_CODE_REWORK; overridable
-// per run via the maxPlanRevise / maxCodeRework args.
-const maxPlanRevise = dispatchArgs.maxPlanRevise
-const maxCodeRework = dispatchArgs.maxCodeRework
-
-// itemOutcome — emit the identifier-correct OUTCOME for whichever mode is
-// active. Keeps every downstream return site mode-agnostic.
-function itemOutcome(fields) {
-  const f = fields || {}
-  if (isTask) {
-    return buildTaskOutcome({
-      task: taskSlug,
-      fetchError: f.fetchError,
-      planFindings: f.planFindings,
-      codeReviews: f.codeReviews,
-      maxRework: f.maxRework,
-      tier: f.tier,
-    })
-  }
-  return buildOutcome({
-    roadmap: roadmap,
-    phase: phaseArg,
-    fetchError: f.fetchError,
-    planFindings: f.planFindings,
-    codeReviews: f.codeReviews,
-    maxRework: f.maxRework,
-    tier: f.tier,
-  })
-}
-
-// A pre-fetch label for logs emitted BEFORE the fetch resolves the stem. Only
-// the fetch-failure log can use this; every later log uses the resolved
-// `itemLabel` below, which matches the pre-dual-mode behaviour.
-const itemLabelRaw = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
-
-// Stage 0: fetch the phase/task metadata + body via a mechanical Bash agent.
-// NOTE: this local is `phaseMeta`, NOT `meta` — the top-level `export const meta`
-// (the workflow contract) already owns that identifier in this module scope.
-let phaseMeta = null
-try {
-  phaseMeta = isTask
-    ? await agent(buildTaskFetchPrompt(taskSlug), {
-        label: 'fetch:task-meta',
-        phase: 'Plan',
-        schema: TASK_META_SCHEMA,
-      })
-    : await agent(buildFetchPrompt(roadmap, phaseArg), {
-        label: 'fetch:phase-meta',
-        phase: 'Plan',
-        schema: PHASE_META_SCHEMA,
-      })
-} catch (e) {
-  phaseMeta = null
-}
-
-if (!phaseMeta || !phaseMeta.body || String(phaseMeta.body).trim() === '') {
-  log('dispatch-phase: ' + (isTask ? 'task' : 'phase') + ' fetch failed for ' + itemLabelRaw)
-  return itemOutcome({ fetchError: true })
-}
-
-const phaseBody = String(phaseMeta.body)
-const stem = isTask ? taskSlug : phaseMeta.stem || phaseArg
-const roadmapSlug = phaseMeta.roadmap || roadmap
-// Tasks carry no difficulty/model, so they always dispatch at the fixed
-// `medium` tier — the `large` gate-tightening never applies to a task.
-const tier = isTask ? 'medium' : phaseMeta.model || 'medium'
-// Stage C works in the per-task worktree for tasks, the shared per-roadmap
-// worktree for phases.
-const worktreeRef = isTask ? 'task/' + taskSlug : roadmapSlug
-// Explicitly resolved models for this dispatch, from the single Stage-0 batch.
-// An incomplete map means the resolver did not run: fail loudly rather than
-// dispatching every agent on the inherited session model, which is the silent
-// no-op this whole change exists to remove.
-const models = phaseMeta.models || {}
-// Expressed with .filter() rather than a `for`/`while` on purpose: the driver
-// region carries NO `while` at all and only allowlisted `for` headers (gated by
-// verify-workflow-dispatch.sh). The two budget-bounded retry loops live in the
-// copied dispatch-outcome block, where the Node harness can drive them.
-const unresolvedStep = ['plan', 'implement', 'review_find', 'review_verify'].filter(
-  (k) => typeof models[k] !== 'string' || models[k] === ''
-)[0]
-if (unresolvedStep) {
-  log('dispatch-phase: unresolved model for step "' + unresolvedStep + '" on ' + itemLabelRaw)
-  return itemOutcome({ fetchError: true })
-}
-const reviewModels = { findModel: models.review_find, verifyModel: models.review_verify }
-// Resolved log label: phase mode logs the resolved `stem`, not the raw
-// stem-or-number the caller passed, matching the pre-dual-mode behaviour.
-const itemLabel = isTask ? 'task/' + taskSlug : roadmap + '/' + stem
-
-// Stages A + B: author the plan from ONLY the phase body, review it via the
-// stamped shared pipeline, and revise it up to the plan-revise budget. The loop
-// itself lives in runPlanGate (copied block) so it is driveable from Node; this
-// driver only supplies the side effects.
-const runPlanReview = buildReviewPipeline('plan')
-const planGate = await runPlanGate(
-  { maxRevise: maxPlanRevise, tier: tier },
-  {
-    plan: async () =>
-      agent(buildPlanPrompt(phaseBody), {
-        label: 'plan:author',
-        phase: 'Plan',
-        schema: PLAN_DOC_SCHEMA,
-        model: models.plan,
-      }),
-    revise: async (doc, findings) =>
-      agent(buildPlanRevisePrompt(phaseBody, renderPlanDoc(doc), findings), {
-        label: 'plan:revise',
-        phase: 'PlanReview',
-        schema: PLAN_DOC_SCHEMA,
-        model: models.plan,
-      }),
-    review: async (doc) => runPlanReview({ target: renderPlanDoc(doc), ...reviewModels }),
-  }
-)
-
-// agent() RESOLVES to null on an unknown/unavailable model id rather than
-// throwing (spike consequence 3). runPlanGate guards BOTH the initial plan and
-// every revise result and reports which stage produced the null, so the failure
-// is diagnosable instead of silently escalating.
-if (planGate.fetchError === true) {
-  const nullStage = planGate.stage === 'revise' ? 'plan revise' : 'plan'
-  log('dispatch-phase: ' + nullStage + ' agent returned null on ' + itemLabelRaw + ' (model: ' + models.plan + ')')
-  return itemOutcome({ fetchError: true })
-}
-
-const planDoc = planGate.planDoc
-const planFindings = planGate.findings
-
-// Plan gate: never implement on a blocking plan.
-if (hasBlocking(planFindings, tier)) {
-  log('dispatch-phase: plan gate escalated for ' + itemLabel)
-  return itemOutcome({ planFindings: planFindings, tier: tier })
-}
-
-// --plan-only: the plan gate passed — stop before implementing and report the
-// vetted plan as `reviewed` (autopilot's estimate/plan-vet pass). This early
-// return is NOT part of the copied dispatch-outcome block, so it must carry the
-// identifier for the active mode itself (task-keyed vs roadmap/phase-keyed).
-if (planOnly) {
-  const o = isTask
-    ? { task: taskSlug, outcome: 'reviewed', summary: 'plan-only: plan gate passed', findings: planFindings }
-    : { roadmap: roadmap, phase: phaseArg, outcome: 'reviewed', summary: 'plan-only: plan gate passed', findings: planFindings }
-  log('dispatch-phase (' + itemLabel + '): plan-only — plan approved')
-  return o
-}
-
-// Stages C + D: implement in the shared per-roadmap worktree (a FRESH
-// implementer seeded with ONLY the phase body + approved plan doc — not the
-// planner context), code-review via the same stamped pipeline, and rework up to
-// the code-rework budget. As with the plan gate, the loop lives in runCodeGate.
-const approvedPlanText = renderPlanDoc(planDoc)
-const runCodeReview = buildReviewPipeline('code')
-const reviewTarget = isTask ? 'task/' + taskSlug : roadmapSlug + '/' + stem
-const codeGate = await runCodeGate(
-  { maxRework: maxCodeRework, tier: tier },
-  {
-    implement: async (notes) =>
-      notes == null
-        ? agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText), {
-            model: models.implement,
-            label: 'implement:worktree',
-            phase: 'Implement',
-          })
-        : agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, notes), {
-            model: models.implement,
-            label: 'implement:rework',
-            phase: 'Implement',
-          }),
-    review: async () => runCodeReview({ target: reviewTarget, ...reviewModels }),
-  }
-)
-
-const outcome = itemOutcome({
-  planFindings: planFindings,
-  codeReviews: codeGate.rounds,
-  maxRework: maxCodeRework,
-  tier: tier,
-})
-log('dispatch-phase (' + itemLabel + '): ' + outcome.outcome + ' — ' + outcome.summary)
-return outcome
+// Node-only exports for the verify harness. NOT part of the generated block —
+// the marker END is above this line, so the generator never copies these.
+export {
+  CONFIDENCE_FLOOR,
+  SEVERITY_RANK,
+  DIMENSIONS,
+  SIGNAL_KEYS,
+  OUTCOMES,
+  STATUS_MAPPING,
+  statusFor,
+  writesCompletion,
+  selectDimensions,
+  deriveSignals,
+  findPrompt,
+  refutePrompt,
+  FINDINGS_SCHEMA,
+  VERDICT_SCHEMA,
+  survives,
+  rankFindings,
+  hasBlocking,
+  summarizeFindings,
+  codeReviewRounds,
+  classifyOutcome,
+  DEFAULT_MAX_CODE_REWORK,
+  buildReviewPipeline,
+};

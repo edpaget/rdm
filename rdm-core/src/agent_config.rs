@@ -2569,9 +2569,15 @@ mod tests {
             mcp: false,
         });
         let content = &skills[2].content;
-        assert!(content.contains("--status reviewed"));
-        assert!(content.contains("Done: <roadmap-slug>/<phase-stem>"));
-        assert!(content.contains("--status in-progress"));
+        // The three canonical outcomes and the statuses they map to.
+        assert!(content.contains("reviewed"));
+        assert!(content.contains("rework"));
+        assert!(content.contains("escalated"));
+        assert!(content.contains("`in-progress`"));
+        assert!(content.contains("`blocked`"));
+        // The completion trailer is never hand-typed: it is sourced from rdm.
+        assert!(content.contains("rdm hook done-line"));
+        assert!(content.contains("git commit --amend"));
     }
 
     #[test]
@@ -2583,9 +2589,19 @@ mod tests {
         });
         let content = &skills[2].content;
         assert!(content.contains("fleet"));
-        assert!(content.contains("AC Compliance"));
-        assert!(content.contains("Correctness"));
-        // Conditional agents are gated on per-agent triggers.
+        // Every canonical dimension is documented, including the new security one.
+        for dim in [
+            "**ac**",
+            "**correctness**",
+            "**tests**",
+            "**architecture**",
+            "**api-docs**",
+            "**changelog**",
+            "**security**",
+        ] {
+            assert!(content.contains(dim), "missing dimension: {dim}");
+        }
+        // Conditional dimensions are gated on per-dimension triggers.
         assert!(content.contains("trigger"));
         // The fleet agents review without editing.
         assert!(content.contains("read-only"));
@@ -2599,12 +2615,13 @@ mod tests {
             mcp: false,
         });
         let content = &skills[2].content;
-        assert!(content.contains("refute"));
-        assert!(content.contains("confirmed | refuted | uncertain"));
-        // Finder is never the verifier.
-        assert!(content.contains("finder is never the verifier"));
-        // Post-verification confidence filter threshold.
-        assert!(content.contains("below 70"));
+        assert!(content.contains("Refute"));
+        // The refuter returns a refuted boolean plus a corrected confidence.
+        assert!(content.contains("`refuted` (boolean)"));
+        // The finder is never the refuter.
+        assert!(content.contains("never the agent that confirms it"));
+        // Post-refutation confidence floor.
+        assert!(content.contains("below **70**"));
     }
 
     #[test]
@@ -2628,8 +2645,17 @@ mod tests {
         });
         let content = &skills[2].content;
         assert!(content.contains("fleet"));
-        assert!(content.contains("AC Compliance"));
-        assert!(content.contains("Correctness"));
+        for dim in [
+            "**ac**",
+            "**correctness**",
+            "**tests**",
+            "**architecture**",
+            "**api-docs**",
+            "**changelog**",
+            "**security**",
+        ] {
+            assert!(content.contains(dim), "missing dimension: {dim}");
+        }
         assert!(content.contains("trigger"));
         assert!(content.contains("read-only"));
     }
@@ -2642,10 +2668,10 @@ mod tests {
             mcp: true,
         });
         let content = &skills[2].content;
-        assert!(content.contains("refute"));
-        assert!(content.contains("confirmed | refuted | uncertain"));
-        assert!(content.contains("finder is never the verifier"));
-        assert!(content.contains("below 70"));
+        assert!(content.contains("Refute"));
+        assert!(content.contains("`refuted` (boolean)"));
+        assert!(content.contains("never the agent that confirms it"));
+        assert!(content.contains("below **70**"));
     }
 
     #[test]
@@ -2670,12 +2696,18 @@ mod tests {
         let content = &skills[2].content;
         // Severity scale drives the verdict.
         assert!(content.contains("Severity scale"));
-        // BLOCKED is one of the four verdicts and has a strict determination order.
-        assert!(content.contains("**BLOCKED**"));
+        // The retired quartet is gone; the canonical trio has a strict order.
+        assert!(!content.contains("PASS WITH CONCERNS"));
+        assert!(!content.contains("**BLOCKED**"));
+        assert!(content.contains("**escalated**"));
+        assert!(content.contains("**rework**"));
+        assert!(content.contains("**reviewed**"));
         assert!(content.contains("the first matching rule wins"));
-        // Gate handles BLOCKED per item kind (phase → blocked, task → in-progress).
-        assert!(content.contains("--status blocked"));
-        assert!(content.contains("tasks have no `blocked` status"));
+        // Escalation maps to `blocked` for BOTH item kinds, with a [code] reason.
+        assert!(content.contains("| **escalated** |"));
+        assert!(!content.contains("tasks have no `blocked` status"));
+        assert!(content.contains("`blocked` is a valid task status"));
+        assert!(content.contains("[code]"));
     }
 
     #[test]
@@ -2687,11 +2719,16 @@ mod tests {
         });
         let content = &skills[2].content;
         assert!(content.contains("Severity scale"));
-        assert!(content.contains("**BLOCKED**"));
+        assert!(!content.contains("PASS WITH CONCERNS"));
+        assert!(!content.contains("**BLOCKED**"));
+        assert!(content.contains("**escalated**"));
+        assert!(content.contains("**rework**"));
+        assert!(content.contains("**reviewed**"));
         assert!(content.contains("the first matching rule wins"));
-        // MCP gate uses the tool call with status "blocked" for phases.
+        // MCP gate uses the tool call with status "blocked" for an escalation.
         assert!(content.contains("status: \"blocked\""));
-        assert!(content.contains("tasks have no `blocked` status"));
+        assert!(!content.contains("tasks have no `blocked` status"));
+        assert!(content.contains("`blocked` is a valid task status"));
     }
 
     #[test]
@@ -3420,15 +3457,48 @@ mod tests {
             mcp: true,
         });
         let content = &skills[2].content;
-        // Transition is driven via the MCP update tools to reviewed / in-progress.
+        // Transition is driven via the MCP update tools; the status comes from
+        // the generated outcome->status mapping (reviewed|in-progress|blocked).
         assert!(content.contains("rdm_phase_update"));
         assert!(content.contains("rdm_task_update"));
-        assert!(content.contains("\"reviewed\""));
-        assert!(content.contains("\"in-progress\""));
+        assert!(content.contains("status: \"<status>\""));
+        assert!(content.contains("`reviewed`, `in-progress`, or `blocked`"));
         // allowed-tools frontmatter lists the new MCP tools.
         let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
         assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
         assert!(frontmatter.contains("mcp__rdm__rdm_task_update"));
+    }
+
+    /// Both review skill variants share the generated review specification:
+    /// the canonical outcome vocabulary, the seven-dimension fleet including
+    /// the new `security` dimension, and a completion trailer sourced from
+    /// `rdm hook done-line` rather than a hand-typed format string.
+    #[test]
+    fn skill_review_shares_the_generated_spec_across_variants() {
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+            let content = &skills[2].content;
+            for needle in [
+                "**security**",
+                "**reviewed**",
+                "**rework**",
+                "**escalated**",
+                "rdm hook done-line",
+                "`blocked` is a valid task status",
+            ] {
+                assert!(content.contains(needle), "mcp={mcp}: missing {needle}");
+            }
+            for retired in ["PASS WITH CONCERNS", "**BLOCKED**", "**FAIL**"] {
+                assert!(
+                    !content.contains(retired),
+                    "mcp={mcp}: retired verdict word still present: {retired}"
+                );
+            }
+        }
     }
 
     // --- Claude auto-review Stop hook tests ---

@@ -1,12 +1,13 @@
 #!/bin/sh
 # Hermetic regression for the review-refute-fix shared workflow pipeline.
 #
-# review-refute-fix is the single-source-of-truth review pipeline in
-# `.claude/workflows/lib/review-refute-fix.mjs`, stamped into workflow-script
-# consumers by `scripts/gen-workflow-review.sh` (the Workflow runtime cannot
-# import a helper module — see docs/workflow-schemas.md § "Import spike"). This
-# harness gates three things so a refactor can't silently break the autonomous
-# review lane:
+# `.claude/workflows/lib/review.mjs` is the single canonical review source —
+# find → refute → filter → verdict → gate. Its stamped block is copied into the
+# workflow-script consumers by `scripts/gen-workflow-review.sh` (the Workflow
+# runtime cannot import a helper module — see docs/workflow-schemas.md
+# § "Import spike"), and its `//|` spec prose is rendered into the shipped review
+# skill templates by `scripts/gen-skill-review.sh`. This harness gates both
+# projections so a refactor can't silently break either review lane:
 #
 #   1. DRIFT   — every consumer is in sync with the source block (gen --check).
 #   2. HYGIENE — no forbidden nondeterministic global (Date.now / Math.random)
@@ -33,8 +34,10 @@ set -eu
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
-LIB="$REPO_ROOT/.claude/workflows/lib/review-refute-fix.mjs"
+LIB="$REPO_ROOT/.claude/workflows/lib/review.mjs"
 GEN="$REPO_ROOT/scripts/gen-workflow-review.sh"
+SKILL_GEN="$REPO_ROOT/scripts/gen-skill-review.sh"
+TEMPLATES="$REPO_ROOT/rdm-core/src/templates"
 WF_DIR="$REPO_ROOT/.claude/workflows"
 
 # Clear rdm-related env vars inherited from the caller's shell for hermeticity.
@@ -49,6 +52,9 @@ pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 
 [ -f "$LIB" ] || fail "source module not found: $LIB"
 [ -f "$GEN" ] || fail "generator not found: $GEN"
+[ -f "$SKILL_GEN" ] || fail "skill generator not found: $SKILL_GEN"
+[ -e "$REPO_ROOT/.claude/workflows/lib/review-refute-fix.mjs" ] &&
+    fail "the canonical source moved to lib/review.mjs — lib/review-refute-fix.mjs must not exist"
 
 # Resolve a node command: prefer PATH, fall back to the mise-pinned toolchain.
 # Fail hard if node is genuinely unavailable (matches the sibling harnesses'
@@ -73,6 +79,45 @@ run_node() {
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 
+# --- 0. MARKER STRUCTURE ------------------------------------------------------
+# The canonical source carries two marker systems. `review-spec` must nest
+# STRICTLY inside the stamped block (so the spec prose rides along in every
+# workflow consumer), while `review-gate-spec` must sit STRICTLY after the
+# stamped block's end (it is the only place the land-time completion trailer may
+# appear, and the dispatch harness forbids that literal inside a stamped region).
+say "0. Marker structure: review-spec nested inside the stamped block, review-gate-spec after it"
+line_of() { grep -n "$1" "$2" | head -1 | cut -d: -f1; }
+BLOCK_BEGIN=$(line_of '>>> review-refute-fix:begin' "$LIB")
+BLOCK_END=$(line_of '>>> review-refute-fix:end' "$LIB")
+SPEC_BEGIN=$(line_of '>>> review-spec:begin' "$LIB")
+SPEC_END=$(line_of '>>> review-spec:end' "$LIB")
+GATE_BEGIN=$(line_of '>>> review-gate-spec:begin' "$LIB")
+GATE_END=$(line_of '>>> review-gate-spec:end' "$LIB")
+for v in BLOCK_BEGIN BLOCK_END SPEC_BEGIN SPEC_END GATE_BEGIN GATE_END; do
+    eval "val=\$$v"
+    [ -n "$val" ] || fail "missing marker in $LIB: $v"
+done
+[ "$BLOCK_BEGIN" -lt "$SPEC_BEGIN" ] || fail "review-spec:begin must come AFTER the stamped block's begin marker"
+[ "$SPEC_BEGIN" -lt "$SPEC_END" ] || fail "review-spec markers are inverted"
+[ "$SPEC_END" -lt "$BLOCK_END" ] || fail "review-spec:end must come BEFORE the stamped block's end marker"
+[ "$BLOCK_END" -lt "$GATE_BEGIN" ] || fail "review-gate-spec must start AFTER the stamped block ends"
+[ "$GATE_BEGIN" -lt "$GATE_END" ] || fail "review-gate-spec markers are inverted"
+
+# The stamped region of the SOURCE must not name the land-time completion
+# trailer: it is copied verbatim into dispatch-phase.js, whose AC-1 forbids it.
+awk -v b=">>> review-refute-fix:begin" -v e=">>> review-refute-fix:end" '
+    index($0, b) { inb = 1; next }
+    index($0, e) { inb = 0 }
+    inb { print }
+' "$LIB" >"$TMP/source-stamped-region"
+[ -s "$TMP/source-stamped-region" ] || fail "extracted an EMPTY stamped region from $LIB"
+if grep -n 'Done:' "$TMP/source-stamped-region" >&2; then
+    fail "the stamped region of $LIB must not contain a 'Done:' trailer literal — put it in review-gate-spec"
+fi
+# The gate region MUST carry it, otherwise the split is pointless.
+grep -q 'Done:' "$LIB" || fail "the review-gate-spec region should document the 'Done:' trailer"
+pass "marker regions nest correctly; the trailer literal lives only outside the stamped block"
+
 # --- 1. DRIFT ----------------------------------------------------------------
 say "1. Drift: every consumer is in sync with the source block"
 if sh "$GEN" --check; then
@@ -91,7 +136,7 @@ say "1b. Drift detector fires on planted drift (self-test)"
 SCRATCH="$TMP/scratch"
 mkdir -p "$SCRATCH/scripts" "$SCRATCH/.claude/workflows/lib"
 cp "$GEN" "$SCRATCH/scripts/gen-workflow-review.sh"
-cp "$LIB" "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs"
+cp "$LIB" "$SCRATCH/.claude/workflows/lib/review.mjs"
 cp "$WF_DIR/review-refute-fix.js" "$SCRATCH/.claude/workflows/review-refute-fix.js"
 # gen-workflow-review.sh lists every consumer; the scratch tree must carry them
 # all or the scratch --check fails on a missing consumer rather than on drift.
@@ -109,6 +154,90 @@ sh "$SCRATCH/scripts/gen-workflow-review.sh" >/dev/null 2>&1
 sh "$SCRATCH/scripts/gen-workflow-review.sh" --check >/dev/null 2>&1 ||
     fail "regeneration did not restore sync in the scratch consumer"
 pass "drift detector fails on drift and heals on regenerate"
+
+# --- 1c. SKILL PROJECTION -----------------------------------------------------
+# The SAME canonical source projects into the shipped review skill templates via
+# scripts/gen-skill-review.sh. Gate it the same way: --check on the real tree,
+# then a planted-drift self-test on a scratch copy.
+say "1c. Skill projection: shipped review templates are in sync with the source"
+if sh "$SKILL_GEN" --check --mode code; then
+    pass "gen-skill-review.sh --check --mode code clean"
+else
+    fail "a review skill template drifted from $LIB — run scripts/gen-skill-review.sh"
+fi
+
+SKSCRATCH="$TMP/skill-scratch"
+mkdir -p "$SKSCRATCH/scripts" "$SKSCRATCH/.claude/workflows/lib" "$SKSCRATCH/rdm-core/src/templates"
+cp "$SKILL_GEN" "$SKSCRATCH/scripts/gen-skill-review.sh"
+cp "$LIB" "$SKSCRATCH/.claude/workflows/lib/review.mjs"
+for t in skill-review-cli.md skill-review-mcp.md skill-plan-review-cli.md skill-plan-review-mcp.md; do
+    cp "$TEMPLATES/$t" "$SKSCRATCH/rdm-core/src/templates/$t"
+done
+sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode code >/dev/null 2>&1 ||
+    fail "scratch skill --check should pass on a clean copy"
+# Mutate one `//|` prose line in the scratch SOURCE: --check must fail, and a
+# regenerate must heal it.
+sed 's/below \*\*70\*\*/below **999**/' "$SKSCRATCH/.claude/workflows/lib/review.mjs" >"$SKSCRATCH/mut" &&
+    mv "$SKSCRATCH/mut" "$SKSCRATCH/.claude/workflows/lib/review.mjs"
+if sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode code >/dev/null 2>&1; then
+    fail 'skill drift gate did NOT detect a planted //| prose change'
+fi
+sh "$SKSCRATCH/scripts/gen-skill-review.sh" --mode code >/dev/null 2>&1
+sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode code >/dev/null 2>&1 ||
+    fail "regeneration did not restore skill sync in the scratch tree"
+pass "skill drift detector fails on planted prose drift and heals on regenerate"
+
+# `--mode plan` must RESOLVE its declared consumers (the plan-review templates
+# already carry the markers) so unify-plan-review can turn it on without
+# touching the generator. Exercised on the scratch tree only — stamping the
+# code-mode spec into the plan templates is that phase's work, not this one's.
+sh "$SKSCRATCH/scripts/gen-skill-review.sh" --mode plan >/dev/null 2>&1 ||
+    fail "gen-skill-review.sh --mode plan did not resolve its declared consumers"
+for t in skill-plan-review-cli.md skill-plan-review-mcp.md; do
+    grep -q 'rdm:review-spec:begin' "$TEMPLATES/$t" ||
+        fail "$t is missing the rdm:review-spec markers --mode plan targets"
+done
+sh "$SKSCRATCH/scripts/gen-skill-review.sh" --mode bogus >/dev/null 2>&1 &&
+    fail "an unknown --mode must be rejected"
+pass "--mode plan resolves its declared consumers; an unknown mode is rejected"
+
+# The generated region is shared byte-for-byte between the cli and mcp
+# templates, so it must be identical in both and free of template placeholders.
+extract_spec_region() {
+    awk '
+        index($0, "<!-- rdm:review-spec:begin") { inr = 1; next }
+        index($0, "<!-- rdm:review-spec:end") { inr = 0 }
+        inr { print }
+    ' "$1"
+}
+extract_spec_region "$TEMPLATES/skill-review-cli.md" >"$TMP/spec-cli"
+extract_spec_region "$TEMPLATES/skill-review-mcp.md" >"$TMP/spec-mcp"
+[ -s "$TMP/spec-cli" ] || fail "the generated spec region in skill-review-cli.md is EMPTY"
+diff -u "$TMP/spec-cli" "$TMP/spec-mcp" >/dev/null 2>&1 ||
+    fail "the generated spec region differs between the cli and mcp review templates"
+if grep -nE '\{proj_flag\}|\{proj_param\}|\{t_[a-z_]+\}|\{principles\}' "$TMP/spec-cli" >&2; then
+    fail "a template placeholder leaked into the shared generated review spec"
+fi
+# Prose <-> DIMENSIONS consistency: every code dimension key must be named in the
+# rendered fleet, and the retired verdict vocabulary must be gone everywhere.
+for key in ac correctness tests architecture api-docs changelog security; do
+    grep -q "\*\*$key\*\*" "$TMP/spec-cli" ||
+        fail "the rendered review spec does not document the '$key' dimension"
+done
+for word in reviewed rework escalated; do
+    grep -q "$word" "$TMP/spec-cli" || fail "the rendered review spec is missing the '$word' outcome"
+done
+for t in skill-review-cli.md skill-review-mcp.md; do
+    if grep -n 'PASS WITH CONCERNS' "$TEMPLATES/$t" >&2; then
+        fail "$t still uses the retired PASS WITH CONCERNS verdict"
+    fi
+    if grep -n 'tasks have no .blocked. status' "$TEMPLATES/$t" >&2; then
+        fail "$t still claims tasks have no blocked status"
+    fi
+    grep -q 'rdm hook done-line' "$TEMPLATES/$t" ||
+        fail "$t must source the completion trailer from 'rdm hook done-line'"
+done
+pass "shared spec region is byte-identical, placeholder-free, and documents all seven dimensions"
 
 # --- 2. HYGIENE --------------------------------------------------------------
 say "2. Hygiene: no forbidden nondeterministic global in workflow scripts"
@@ -132,7 +261,21 @@ import { pathToFileURL } from 'node:url';
 
 const libPath = process.argv[2];
 const mod = await import(pathToFileURL(libPath).href);
-const { buildReviewPipeline, DIMENSIONS, findPrompt, survives, rankFindings, CONFIDENCE_FLOOR } = mod;
+const {
+  buildReviewPipeline,
+  DIMENSIONS,
+  SIGNAL_KEYS,
+  OUTCOMES,
+  statusFor,
+  writesCompletion,
+  selectDimensions,
+  deriveSignals,
+  classifyOutcome,
+  findPrompt,
+  survives,
+  rankFindings,
+  CONFIDENCE_FLOOR,
+} = mod;
 
 // --- reference pipeline/parallel: faithful to the real Workflow runtime -------
 // Both are order-preserving (Promise.all). Their ERROR semantics mirror the
@@ -209,15 +352,15 @@ assert.deepEqual(
 // ============================================================================
 // CODE mode — refutable dropped, low-confidence dropped, real survives.
 // ============================================================================
+// Only `correctness` plants findings; every other dimension comes back clean.
+// With no `context.signals` the pipeline runs ALL code dimensions (fail-open).
+const CODE_DIM_KEYS = DIMENSIONS.code.map((d) => d.key);
 const codeFindings = {
-  ac: [],
   correctness: [
     { id: 'real-bug', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'off-by-one' },
     { id: 'false-alarm', concern: 'correctness', severity: 'concern', confidence: 85, what_fails: 'looks wrong but is fine' },
     { id: 'low-conf', concern: 'correctness', severity: 'suggestion', confidence: 50, what_fails: 'possible nit' },
   ],
-  tests: [],
-  architecture: [],
 };
 const codeVerdicts = {
   'real-bug': { refuted: false, confidence: 95 },
@@ -232,9 +375,13 @@ assert.deepEqual(out.map((f) => f.id), ['real-bug'], 'code: only the real, un-re
 
 const findCalls = spy.calls.filter((c) => c.label.startsWith('find:'));
 const refuteCalls = spy.calls.filter((c) => c.label.startsWith('refute:'));
-assert.equal(findCalls.length, 4, 'one finder per code dimension');
+assert.equal(findCalls.length, CODE_DIM_KEYS.length, 'one finder per code dimension');
 assert.equal(refuteCalls.length, 3, 'a fresh refuter per finding');
-assert.equal(new Set(findCalls.map((c) => c.label)).size, 4, 'finder labels are distinct per dimension');
+assert.equal(
+  new Set(findCalls.map((c) => c.label)).size,
+  CODE_DIM_KEYS.length,
+  'finder labels are distinct per dimension'
+);
 // A fresh refuter grades each finding: every refuter call is distinctly labelled
 // (no collisions even on duplicate ids), and no refuter reuses a finder's prompt.
 assert.equal(new Set(refuteCalls.map((c) => c.label)).size, refuteCalls.length, 'refuter labels are unique per finding');
@@ -279,10 +426,7 @@ assert.equal(JSON.stringify(outA), JSON.stringify(outB), 'code review output is 
 // floor (locks in the module's refuter-error .catch).
 {
   const realOnly = {
-    ac: [],
     correctness: [{ id: 'infra', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'real bug' }],
-    tests: [],
-    architecture: [],
   };
   const spyR = makeSpyAgent(realOnly, {});
   const base = spyR.agent;
@@ -349,7 +493,10 @@ const CODE_PROMPT_BASELINE = {
   tests: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Tests (tests). Do tests exist and cover the key behaviors and edge cases? Was TDD followed? Are there untested branches or newly added logic with no test?\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
   architecture: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Architecture (architecture). Does logic live in rdm-core with cli/server as thin layers? No duplicated logic across interfaces? Correct core/cli/server separation and conventional-commit scope discipline.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
 };
-for (const dim of DIMENSIONS.code) {
+// Scoped to the dimensions that existed when the baseline was captured; the
+// dimensions added later (api-docs, changelog, security) are covered by the
+// coverage-parity assertion below instead.
+for (const dim of DIMENSIONS.code.filter((d) => CODE_PROMPT_BASELINE[d.key])) {
   assert.equal(
     findPrompt('code', dim, CTX),
     CODE_PROMPT_BASELINE[dim.key],
@@ -499,6 +646,163 @@ const cleanSpy = makeSpyAgent({}, {});
 const cleanOut = await buildReviewPipeline('code', deps(cleanSpy))({ ...CTX, findModel: 'haiku', verifyModel: 'opus' });
 assert.deepEqual(cleanOut, [], 'a real clean review still returns [] with models set');
 
+// ============================================================================
+// AC4 — dimension coverage parity + `when` triggers over diff shape AND target
+// type, with the fail-open contract of selectDimensions.
+// ============================================================================
+assert.deepEqual(
+  DIMENSIONS.code.map((d) => d.key).sort(),
+  ['ac', 'api-docs', 'architecture', 'changelog', 'correctness', 'security', 'tests'],
+  'code dimension set is exactly the pre-existing skill fleet plus security — no coverage regression'
+);
+assert.deepEqual(
+  DIMENSIONS.code.filter((d) => !d.when).map((d) => d.key),
+  ['ac', 'correctness'],
+  'ac and correctness are the always-on dimensions'
+);
+
+// (a) Omitted / null / undefined signals → EVERY dimension. This is the
+//     regression test for the `d.when(signals || {})` bug, which would have
+//     returned only ac + correctness exactly when the caller knew least.
+for (const call of [() => selectDimensions('code'), () => selectDimensions('code', null), () => selectDimensions('code', undefined)]) {
+  assert.deepEqual(
+    call().map((d) => d.key),
+    DIMENSIONS.code.map((d) => d.key),
+    'omitted signals must fail OPEN to all dimensions'
+  );
+}
+
+// (b) An explicit `{}` means "computed, nothing triggered" — a DIFFERENT path.
+assert.deepEqual(
+  selectDimensions('code', {}).map((d) => d.key),
+  ['ac', 'correctness'],
+  'an explicit empty signals object selects only the always-on dimensions'
+);
+
+// (c) A docs-only change derived from deriveSignals trips nothing.
+const docsSignals = deriveSignals({ targetType: 'phase', changedFiles: ['docs/workflow-schemas.md'] });
+assert.deepEqual(
+  selectDimensions('code', docsSignals).map((d) => d.key),
+  ['ac', 'correctness'],
+  'a docs-only change runs only the always-on dimensions'
+);
+
+// (d) Each trigger fires on its own signal and only on its own signal.
+const TRIGGER_MATRIX = [
+  ['securitySurface', 'security'],
+  ['hasUnsafe', 'security'],
+  ['publicApiChanged', 'api-docs'],
+  ['userFacing', 'changelog'],
+  ['changesLogic', 'tests'],
+  ['missingTests', 'tests'],
+  ['multiModule', 'architecture'],
+];
+for (const [signal, dim] of TRIGGER_MATRIX) {
+  const on = selectDimensions('code', { [signal]: true }).map((d) => d.key);
+  assert.ok(on.includes(dim), signal + ': true must include the ' + dim + ' dimension');
+  const off = selectDimensions('code', { [signal]: false }).map((d) => d.key);
+  assert.ok(!off.includes(dim), signal + ': false must exclude the ' + dim + ' dimension');
+}
+
+// (e) Target type is a first-class signal: plan-mode unit-of-work is phases-only.
+assert.ok(
+  selectDimensions('plan', { targetType: 'phase' }).map((d) => d.key).includes('unit-of-work'),
+  'plan mode on a phase includes unit-of-work'
+);
+assert.ok(
+  !selectDimensions('plan', { targetType: 'task' }).map((d) => d.key).includes('unit-of-work'),
+  'plan mode on a task excludes unit-of-work'
+);
+assert.deepEqual(
+  selectDimensions('plan', { targetType: 'task' }).map((d) => d.key),
+  ['coherence', 'architectural-fit'],
+  'coherence and architectural-fit stay always-on in plan mode'
+);
+
+// (f) deriveSignals is deterministic and FULLY populated (never a partial object).
+const derivedInput = {
+  targetType: 'phase',
+  changedFiles: ['rdm-core/src/hook.rs', 'rdm-cli/src/commands/hook.rs', 'rdm-cli/tests/cli_hook.rs'],
+  diffText: '+pub fn format_done_directive() {}\n+    let out = std::process::Command::new("git");\n',
+};
+const d1 = deriveSignals(derivedInput);
+const d2 = deriveSignals(derivedInput);
+assert.equal(JSON.stringify(d1), JSON.stringify(d2), 'deriveSignals is deterministic across invocations');
+for (const key of SIGNAL_KEYS) {
+  assert.equal(typeof d1[key], 'boolean', 'deriveSignals must set ' + key + ' to an explicit boolean');
+}
+assert.equal(d1.targetType, 'phase', 'deriveSignals carries the target type through');
+assert.equal(d1.publicApiChanged, true, 'a `+pub` line under rdm-core/src trips publicApiChanged');
+assert.equal(d1.userFacing, true, 'an rdm-cli path trips userFacing');
+assert.equal(d1.multiModule, true, 'files in three directories trip multiModule');
+assert.equal(d1.missingTests, false, 'a changed test file clears missingTests');
+assert.equal(d1.securitySurface, true, 'std::process in the diff trips securitySurface');
+assert.equal(d1.hasUnsafe, false, 'no added `unsafe` line means hasUnsafe stays false');
+assert.equal(
+  deriveSignals({ changedFiles: ['rdm-core/src/model.rs'], diffText: '+    unsafe { ptr.read() }\n' }).hasUnsafe,
+  true,
+  'an added `unsafe` line trips hasUnsafe'
+);
+assert.deepEqual(deriveSignals(), {
+  targetType: null,
+  changedFiles: [],
+  changesLogic: false,
+  missingTests: false,
+  multiModule: false,
+  publicApiChanged: false,
+  userFacing: false,
+  securitySurface: false,
+  hasUnsafe: false,
+}, 'deriveSignals with no input is fully populated and all-false');
+
+// (g) Unknown mode throws in both entry points; the always-on set makes an empty
+//     selection unreachable, but the guard is asserted structurally.
+assert.throws(() => selectDimensions('bogus', {}), /unknown review mode/, 'selectDimensions rejects an unknown mode');
+assert.throws(() => selectDimensions('bogus'), /unknown review mode/, 'selectDimensions rejects an unknown mode with no signals');
+
+// (h) The pipeline actually honours the selection: an explicit `{}` narrows the
+//     fleet to the always-on dimensions.
+{
+  const narrowSpy = makeSpyAgent(codeFindings, codeVerdicts);
+  await buildReviewPipeline('code', deps(narrowSpy))({ ...CTX, signals: {} });
+  const labels = narrowSpy.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label);
+  assert.deepEqual(labels.sort(), ['find:code:ac', 'find:code:correctness'], 'context.signals narrows the dispatched fleet');
+}
+console.log('AC4: dimension coverage parity, `when` triggers, and the selectDimensions fail-open contract hold');
+
+// ============================================================================
+// AC1/AC2 — classifyOutcome in its new home, and the outcome→status mapping.
+// ============================================================================
+assert.deepEqual(OUTCOMES, ['reviewed', 'rework', 'escalated'], 'the canonical outcome vocabulary');
+
+const BLOCKER = [{ id: 'x', severity: 'blocking', confidence: 90, what_fails: 'boom' }];
+assert.equal(classifyOutcome({ planFindings: BLOCKER }), 'escalated', 'a blocking plan finding escalates');
+assert.equal(
+  classifyOutcome({ planFindings: [], codeReviews: [BLOCKER, BLOCKER] }),
+  'rework',
+  'a blocking finding on the LAST code round yields rework'
+);
+assert.equal(classifyOutcome({ planFindings: [], codeReviews: [[]] }), 'reviewed', 'a clean review yields reviewed');
+assert.equal(
+  classifyOutcome({ planFindings: [], codeFindings: BLOCKER, maxRework: 0 }),
+  'rework',
+  'budget-0 with a blocking first pass yields rework, never a laundered reviewed'
+);
+
+assert.equal(statusFor('reviewed', 'phase'), 'reviewed');
+assert.equal(statusFor('reviewed', 'task'), 'reviewed');
+assert.equal(statusFor('rework', 'phase'), 'in-progress');
+assert.equal(statusFor('rework', 'task'), 'in-progress');
+assert.equal(statusFor('escalated', 'phase'), 'blocked');
+assert.equal(statusFor('escalated', 'task'), 'blocked', 'an escalated TASK is blocked, not downgraded to in-progress');
+assert.throws(() => statusFor('PASS', 'phase'), /unknown outcome/, 'a retired verdict word throws');
+assert.throws(() => statusFor('reviewed', 'roadmap'), /unknown item kind/, 'an unknown item kind throws');
+assert.equal(writesCompletion('reviewed'), true, 'only a clean review writes the completion trailer');
+assert.equal(writesCompletion('rework'), false);
+assert.equal(writesCompletion('escalated'), false);
+assert.throws(() => writesCompletion('BLOCKED'), /unknown outcome/);
+console.log('AC1/AC2: classifyOutcome truth table and the outcome->status mapping hold');
+
 console.log('all review-refute-fix behavior assertions passed');
 NODE_TEST
 
@@ -519,7 +823,7 @@ fi
 # passing self-test.
 say "4. Plan calibration mutation self-test (proves the AC1 check would catch a regression)"
 mkdir -p "$SCRATCH/.claude/workflows/lib"
-cp "$LIB" "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs"
+cp "$LIB" "$SCRATCH/.claude/workflows/lib/review.mjs"
 
 # Remove the `const PLAN_SEVERITY_CALIBRATION = ... ;` declaration (spans the
 # `const NAME =` line through the line ending in `;`) and the one line that
@@ -532,10 +836,10 @@ awk '
     skip { next }
     /lines\.push\(PLAN_SEVERITY_CALIBRATION\);/ { next }
     { print }
-' "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs" >"$SCRATCH/mutated-lib.mjs"
-mv "$SCRATCH/mutated-lib.mjs" "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs"
+' "$SCRATCH/.claude/workflows/lib/review.mjs" >"$SCRATCH/mutated-lib.mjs"
+mv "$SCRATCH/mutated-lib.mjs" "$SCRATCH/.claude/workflows/lib/review.mjs"
 
-if grep -q 'PLAN_SEVERITY_CALIBRATION' "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs"; then
+if grep -q 'PLAN_SEVERITY_CALIBRATION' "$SCRATCH/.claude/workflows/lib/review.mjs"; then
     fail "mutation setup did not fully strip PLAN_SEVERITY_CALIBRATION from the scratch copy"
 fi
 
@@ -569,7 +873,7 @@ assert.throws(
 console.log('mutation self-test passed: presence check correctly fails on stripped calibration text');
 NODE_MUTATION_TEST
 
-if run_node "$TMP/mutation-test.mjs" "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs"; then
+if run_node "$TMP/mutation-test.mjs" "$SCRATCH/.claude/workflows/lib/review.mjs"; then
     pass "calibration presence check fires on planted removal (self-test proves it is not vacuous)"
 else
     fail "mutation self-test did not behave as expected — either the mutated file failed to import, or the presence check did not fail on stripped calibration text"

@@ -894,6 +894,23 @@ pub(crate) enum HookCommand {
     /// Run post-commit logic: on the default branch, parse Done: directives
     /// from HEAD and mark phases/tasks done.
     PostCommit,
+    /// Print the land-time `Done:` commit trailer for a phase or a task.
+    ///
+    /// This is the single source of the trailer format — reviewers and the
+    /// landing step amend its output onto the branch commit instead of
+    /// hand-typing the format string.
+    #[command(name = "done-line")]
+    DoneLine {
+        /// Roadmap slug (used with `--phase`).
+        #[arg(long)]
+        roadmap: Option<String>,
+        /// Phase stem or number (requires `--roadmap`).
+        #[arg(long, requires = "roadmap", conflicts_with = "task")]
+        phase: Option<String>,
+        /// Task slug. Mutually exclusive with `--roadmap`/`--phase`.
+        #[arg(long, conflicts_with_all = ["roadmap", "phase"])]
+        task: Option<String>,
+    },
 }
 
 #[cfg(feature = "git")]

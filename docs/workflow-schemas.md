@@ -87,7 +87,7 @@ Three consequences the dispatch path depends on:
    the dangerous one: `[models]` tier bindings are user-configurable, so a binding
    this runtime does not recognise would make every dispatched agent yield `null`
    and the pipeline would proceed into a null plan / silently-clean review. Both
-   `dispatch-phase.js` (plan/implement) and `lib/review-refute-fix.mjs` (finders)
+   `dispatch-phase.js` (plan/implement) and `lib/review.mjs` (finders)
    therefore guard explicitly against a `null` agent result whenever an explicit
    model was supplied, and fail loudly instead. Note a `null` finder result would
    otherwise be laundered into `[]` by the refute stage's `(found && …) || []`,
@@ -115,7 +115,7 @@ Workers, and n8n. Our generated-copy stamper is the minimal form of exactly this
 pattern: a bundler's output *is* an inlined copy.
 
 **Chosen mechanism — single-source-of-truth generated copy.** The shared pipeline
-is authored once in `lib/review-refute-fix.mjs` between
+is authored once in `lib/review.mjs` — the **canonical review source** — between
 `review-refute-fix:begin` / `review-refute-fix:end` marker comments.
 `scripts/gen-workflow-review.sh` extracts that block and stamps it **verbatim**
 into each consumer between matching markers; `--check` mode asserts no consumer
@@ -132,7 +132,7 @@ zero-dependency form of build-time inlining, chosen because we share a single
 ~130-line block and rdm values having no toolchain beyond the compiled binary. If
 the shared surface grows to multiple modules, transitive helpers, or npm
 dependencies, the drop-in scale-up is to author consumers with a real
-`import './lib/review-refute-fix.mjs'` and replace the generator with
+`import './lib/review.mjs'` and replace the generator with
 `esbuild --bundle --format=esm` — the same category (compile-time inlining), just
 authored with real ESM imports instead of marker blocks. The cost is adding
 `esbuild` + `node_modules` as a dev dependency, which is why we defer it until the
@@ -152,7 +152,7 @@ the harness injects fakes through the `deps` argument instead.
 
 Workflow stages exchange schema-typed values. When an `agent()` call passes a
 `schema`, the subagent is forced to return a matching object. The canonical
-shapes below are defined as JSON Schema in `lib/review-refute-fix.mjs`
+shapes below are defined as JSON Schema in `lib/review.mjs`
 (`FINDINGS_SCHEMA`, `VERDICT_SCHEMA`); `OUTCOME` is the pipeline's return value.
 
 ### `FINDING`
@@ -212,11 +212,12 @@ ascending as a stable tiebreaker.
 ## `buildReviewPipeline(mode, deps?)`
 
 Returns an async `runReview(context)` that composes
-`pipeline(DIMENSIONS[mode], find, refute)`:
+`pipeline(selectDimensions(mode, context.signals), find, refute)`:
 
-1. **Find** — one finder `agent()` per dimension, in parallel (`pipeline` stage 1).
-   `code` mode dimensions: `ac`, `correctness`, `tests`, `architecture`.
-   `plan` mode dimensions: `coherence`, `architectural-fit`, `unit-of-work`.
+0. **Select** — the deterministic pre-step `selectDimensions(mode, signals)`
+   decides which dimensions actually run (see below).
+1. **Find** — one finder `agent()` per selected dimension, in parallel
+   (`pipeline` stage 1).
 2. **Refute** — a **fresh** refuter `agent()` per finding, in parallel (stage 2).
 3. **Filter** — drop findings that were refuted or fell below `CONFIDENCE_FLOOR`.
 4. **Rank** — return the survivors via `rankFindings`.
@@ -225,6 +226,92 @@ Returns an async `runReview(context)` that composes
 prompt, so the review material reaches the agents. `deps` (`{ agent, pipeline,
 parallel, log }`) is omitted in the Workflow runtime (the ambient globals are
 used) and injected by the verify harness to drive the pipeline with fakes.
+
+### Dimensions and `when` triggers
+
+Each dimension is either **always-on** (no `when` key) or **triggered** (a
+`when(signals) => boolean` predicate evaluated over both the change's shape and
+the target's type).
+
+| mode | always-on | triggered |
+| --- | --- | --- |
+| `code` | `ac`, `correctness` | `tests`, `architecture`, `api-docs`, `changelog`, `security` |
+| `plan` | `coherence`, `architectural-fit` | `unit-of-work` (phases only) |
+
+`unit-of-work` triggers on `signals.targetType === 'phase'`, which is why target
+type is a first-class signal rather than diff shape alone.
+
+### `context.signals` and `selectDimensions(mode, signals)`
+
+`selectDimensions` has a **three-way contract**, and the fail-open branch is
+load-bearing:
+
+- `signals == null` (omitted, or genuinely unknown) → return **ALL** dimensions
+  for the mode, untouched. A caller that cannot compute a diff knows the least,
+  so it must get the most coverage. The standalone `review-refute-fix.js`
+  consumer and dispatch-phase's inline gates take this path today.
+- an **explicit** signals object — even `{}` — → the always-on dimensions plus
+  exactly those whose `when` fires. `{}` means "computed, nothing triggered".
+- an unknown `mode` → throw.
+
+Do **not** write `d.when(signals || {})`. Substituting `{}` for omitted signals
+makes every conditional predicate read falsy and silently drops the triggered
+dimensions — a strict coverage subset returned precisely when the caller had no
+information. Omitted signals and an empty signals object are deliberately
+different paths, and `verify-workflow-review.sh` asserts both.
+
+### `deriveSignals(input)`
+
+Pure and deterministic (no `Date.now`/`Math.random`, no shell). Maps
+`{ targetType, changedFiles, diffText? }` onto a **fully-populated** signals
+object — every boolean key in `SIGNAL_KEYS` (`changesLogic`, `missingTests`,
+`multiModule`, `publicApiChanged`, `userFacing`, `securitySurface`, `hasUnsafe`)
+is set explicitly. A partially-populated object would make a conditional
+dimension drop out on a *missing* key rather than a real negative, so callers
+that cannot compute a diff must pass **no** signals rather than a partial object.
+
+### Verdict and status mapping
+
+`classifyOutcome(input)` — the total, deterministic decision tree — now lives in
+`lib/review.mjs` alongside `hasBlocking`, `summarizeFindings`,
+`codeReviewRounds`, and `DEFAULT_MAX_CODE_REWORK`, so every surface shares one
+classifier. It returns exactly one of the canonical `OUTCOMES`:
+
+| outcome | when | phase status | task status | writes the completion trailer |
+| --- | --- | --- | --- | --- |
+| `reviewed` | clean, or clean after small fixes | `reviewed` | `reviewed` | yes |
+| `rework` | a fixable defect or an unmet AC | `in-progress` | `in-progress` | no |
+| `escalated` | a blocker needing a human decision | `blocked` | `blocked` | no |
+
+`statusFor(outcome, kind)` and `writesCompletion(outcome)` expose that table and
+throw on an unknown outcome or item kind rather than returning `undefined`. The
+land-time completion trailer is expressed here **only** as the boolean
+`writesCompletion` — never as the literal string — because the stamped block is
+copied into workflow scripts, where `verify-workflow-dispatch.sh` AC-1 forbids
+that literal. The trailer's format string lives in `rdm-core`
+(`rdm_core::hook::format_done_directive`, surfaced as `rdm hook done-line`), and
+is written only by non-stamped code: the interactive skill's gate step and
+`rdm-land`'s land-time synthesis.
+
+### Two projections, two `--check`-gated generators
+
+`lib/review.mjs` carries two marker systems:
+
+- the **stamped block** (`review-refute-fix` markers) — copied verbatim into the
+  workflow consumers by `scripts/gen-workflow-review.sh`;
+- the **skill-renderable spec** — a `review-spec` region nested *inside* the
+  stamped block plus a `review-gate-spec` region *after* it, whose `//| `
+  literate comment lines `scripts/gen-skill-review.sh` renders into
+  `rdm-core/src/templates/skill-review-{cli,mcp}.md` between
+  `<!-- rdm:review-spec:begin/end -->` markers. It is mode-dispatched
+  (`--mode code|plan`) so the plan-review surface can collapse onto the same
+  source. The gate region sits outside the stamped block precisely because it is
+  the one place the completion-trailer literal may appear.
+
+Everything else inside the stamped block is **machinery** (JSON schemas,
+`survives`/`rankFindings`/`selectDimensions`/`deriveSignals`, the classifier and
+status mapping) and is never rendered into a skill. Both generators are
+`--check`-gated by `scripts/verify-workflow-review.sh`, which CI runs.
 
 ## dispatch-phase contracts
 

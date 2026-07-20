@@ -77,6 +77,106 @@ pub fn parse_done_directives(message: &str) -> Vec<DoneDirective> {
     directives
 }
 
+/// Errors returned when formatting a `Done:` directive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormatDoneError {
+    /// A required identifier was empty or whitespace-only.
+    EmptyIdentifier {
+        /// Which identifier was empty (`roadmap`, `phase`, or `task`).
+        field: &'static str,
+    },
+    /// An identifier contained a `/`, which would produce an ambiguous
+    /// directive that [`parse_done_directives`] cannot round-trip.
+    ContainsSlash {
+        /// Which identifier contained the `/`.
+        field: &'static str,
+    },
+    /// `task` was used as a roadmap slug. `task` is a reserved prefix — a
+    /// `Done: task/<x>` line always parses as a task directive.
+    ReservedRoadmapSlug,
+}
+
+impl std::fmt::Display for FormatDoneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyIdentifier { field } => {
+                write!(f, "{field} must not be empty")
+            }
+            Self::ContainsSlash { field } => {
+                write!(
+                    f,
+                    "{field} must not contain '/' — a Done: directive splits on the first '/'"
+                )
+            }
+            Self::ReservedRoadmapSlug => write!(
+                f,
+                "'task' is a reserved prefix and cannot be used as a roadmap slug"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FormatDoneError {}
+
+/// Formats a [`DoneDirective`] as the commit-message trailer line.
+///
+/// This is the single home of the `Done:` format string. Every surface that
+/// writes the trailer — the `rdm-review` skill's gate step, `rdm-land`'s
+/// land-time synthesis — goes through here (via `rdm hook done-line`) rather
+/// than hand-typing the format.
+///
+/// The output round-trips: `parse_done_directives(&format_done_directive(d)?)`
+/// yields `[d]`.
+///
+/// # Errors
+///
+/// - [`FormatDoneError::EmptyIdentifier`] if any identifier is empty or
+///   whitespace-only.
+/// - [`FormatDoneError::ContainsSlash`] if any identifier contains `/`, which
+///   would produce a directive that does not round-trip.
+/// - [`FormatDoneError::ReservedRoadmapSlug`] if the roadmap slug is `task`
+///   (case-insensitive), which would parse back as a task directive.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::hook::{format_done_directive, parse_done_directives, DoneDirective};
+///
+/// let directive = DoneDirective::Phase {
+///     roadmap: "search-feature".to_string(),
+///     phase: "phase-2-indexing".to_string(),
+/// };
+/// let line = format_done_directive(&directive).unwrap();
+/// assert_eq!(line, "Done: search-feature/phase-2-indexing");
+/// assert_eq!(parse_done_directives(&line), vec![directive]);
+/// ```
+pub fn format_done_directive(directive: &DoneDirective) -> Result<String, FormatDoneError> {
+    fn check(value: &str, field: &'static str) -> Result<(), FormatDoneError> {
+        if value.trim().is_empty() {
+            return Err(FormatDoneError::EmptyIdentifier { field });
+        }
+        if value.contains('/') {
+            return Err(FormatDoneError::ContainsSlash { field });
+        }
+        Ok(())
+    }
+
+    match directive {
+        DoneDirective::Phase { roadmap, phase } => {
+            check(roadmap, "roadmap")?;
+            check(phase, "phase")?;
+            if roadmap.trim().eq_ignore_ascii_case("task") {
+                return Err(FormatDoneError::ReservedRoadmapSlug);
+            }
+            Ok(format!("Done: {}/{}", roadmap.trim(), phase.trim()))
+        }
+        DoneDirective::Task { slug } => {
+            check(slug, "task")?;
+            Ok(format!("Done: task/{}", slug.trim()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +342,109 @@ mod tests {
                 slug: "fix-bug".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn format_phase_directive() {
+        let directive = DoneDirective::Phase {
+            roadmap: "search-feature".to_string(),
+            phase: "phase-2-indexing".to_string(),
+        };
+        assert_eq!(
+            format_done_directive(&directive).unwrap(),
+            "Done: search-feature/phase-2-indexing"
+        );
+    }
+
+    #[test]
+    fn format_task_directive() {
+        let directive = DoneDirective::Task {
+            slug: "fix-bug".to_string(),
+        };
+        assert_eq!(
+            format_done_directive(&directive).unwrap(),
+            "Done: task/fix-bug"
+        );
+    }
+
+    #[test]
+    fn format_round_trips_through_parse() {
+        let directives = vec![
+            DoneDirective::Phase {
+                roadmap: "unify-code-review".to_string(),
+                phase: "phase-4-canonical".to_string(),
+            },
+            DoneDirective::Task {
+                slug: "done-trailer".to_string(),
+            },
+        ];
+        for directive in directives {
+            let line = format_done_directive(&directive).unwrap();
+            assert_eq!(parse_done_directives(&line), vec![directive]);
+        }
+    }
+
+    #[test]
+    fn format_trims_surrounding_whitespace() {
+        let directive = DoneDirective::Phase {
+            roadmap: "  r  ".to_string(),
+            phase: "  p  ".to_string(),
+        };
+        assert_eq!(format_done_directive(&directive).unwrap(), "Done: r/p");
+    }
+
+    #[test]
+    fn format_rejects_empty_identifiers() {
+        assert_eq!(
+            format_done_directive(&DoneDirective::Phase {
+                roadmap: "  ".to_string(),
+                phase: "p".to_string(),
+            }),
+            Err(FormatDoneError::EmptyIdentifier { field: "roadmap" })
+        );
+        assert_eq!(
+            format_done_directive(&DoneDirective::Phase {
+                roadmap: "r".to_string(),
+                phase: String::new(),
+            }),
+            Err(FormatDoneError::EmptyIdentifier { field: "phase" })
+        );
+        assert_eq!(
+            format_done_directive(&DoneDirective::Task {
+                slug: String::new()
+            }),
+            Err(FormatDoneError::EmptyIdentifier { field: "task" })
+        );
+    }
+
+    #[test]
+    fn format_rejects_embedded_slash() {
+        assert_eq!(
+            format_done_directive(&DoneDirective::Phase {
+                roadmap: "a/b".to_string(),
+                phase: "p".to_string(),
+            }),
+            Err(FormatDoneError::ContainsSlash { field: "roadmap" })
+        );
+        assert_eq!(
+            format_done_directive(&DoneDirective::Task {
+                slug: "a/b".to_string(),
+            }),
+            Err(FormatDoneError::ContainsSlash { field: "task" })
+        );
+    }
+
+    #[test]
+    fn format_rejects_task_as_roadmap_slug() {
+        for slug in ["task", "Task", "TASK"] {
+            assert_eq!(
+                format_done_directive(&DoneDirective::Phase {
+                    roadmap: slug.to_string(),
+                    phase: "p".to_string(),
+                }),
+                Err(FormatDoneError::ReservedRoadmapSlug),
+                "failed for: {slug}"
+            );
+        }
     }
 }

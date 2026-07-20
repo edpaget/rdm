@@ -4,8 +4,10 @@
 # The Claude Code Workflow runtime cannot import/require a helper module (proven
 # by the P1 import spike — see docs/workflow-schemas.md § "Import spike"), so the
 # shared review pipeline is kept single-source in
-# `.claude/workflows/lib/review-refute-fix.mjs` and copied VERBATIM into each
-# consumer between matching marker comments. Edit the lib, then run this script.
+# `.claude/workflows/lib/review.mjs` (the canonical review source) and copied
+# VERBATIM into each consumer between matching marker comments. Edit the lib,
+# then run this script. Its sibling `scripts/gen-skill-review.sh` renders the
+# `//|` spec prose from the SAME source into the shipped review skill templates.
 #
 # Usage:
 #   scripts/gen-workflow-review.sh           # rewrite consumers in place
@@ -19,7 +21,7 @@ set -eu
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
-SOURCE="$REPO_ROOT/.claude/workflows/lib/review-refute-fix.mjs"
+SOURCE="$REPO_ROOT/.claude/workflows/lib/review.mjs"
 BEGIN='review-refute-fix:begin'
 END='review-refute-fix:end'
 

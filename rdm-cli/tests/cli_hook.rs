@@ -2379,3 +2379,76 @@ fn hook_post_commit_all_directives_skipped_creates_no_commit() {
         "an all-skipped batch must not create a plan-repo commit"
     );
 }
+
+// --- `rdm hook done-line` -----------------------------------------------------
+// The single source of the land-time `Done:` trailer format. The review gate and
+// rdm-land amend its output onto the branch commit rather than hand-typing it.
+
+#[test]
+fn done_line_prints_phase_trailer() {
+    rdm()
+        .args([
+            "hook",
+            "done-line",
+            "--roadmap",
+            "search-feature",
+            "--phase",
+            "phase-2-indexing",
+        ])
+        .assert()
+        .success()
+        .stdout("Done: search-feature/phase-2-indexing\n");
+}
+
+#[test]
+fn done_line_prints_task_trailer() {
+    rdm()
+        .args(["hook", "done-line", "--task", "fix-bug"])
+        .assert()
+        .success()
+        .stdout("Done: task/fix-bug\n");
+}
+
+#[test]
+fn done_line_requires_an_identifier() {
+    rdm()
+        .args(["hook", "done-line"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--roadmap <slug> --phase <stem>"));
+}
+
+#[test]
+fn done_line_rejects_roadmap_without_phase() {
+    rdm()
+        .args(["hook", "done-line", "--roadmap", "r"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--roadmap needs --phase"));
+}
+
+#[test]
+fn done_line_rejects_task_combined_with_phase() {
+    rdm()
+        .args([
+            "hook",
+            "done-line",
+            "--task",
+            "t",
+            "--roadmap",
+            "r",
+            "--phase",
+            "p",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn done_line_rejects_reserved_task_roadmap_slug() {
+    rdm()
+        .args(["hook", "done-line", "--roadmap", "task", "--phase", "p"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("reserved prefix"));
+}
