@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The `rdm-plan-review` skill's documentation has been reorganized and clarified.
+  The review pipeline steps (Setup → Find → Consolidate → Categorize & act → Gate)
+  now have clear, permanent hand-authored sections that document plan-review's
+  domain-specific logic (argument parsing, verdict-determination, and
+  `needs-plan-review` tag-clearing gating). The Gate section is now more explicit
+  about its fundamentally different role compared to code-review's status-transition
+  gate: plan-review gates by clearing or leaving the `needs-plan-review` tag, never
+  writing rdm status or land-time completion directives. Full automation of plan
+  review dimensions (removal of hand-authored Consolidate and Find prose) is
+  deferred pending completion of Phase 1 work in `.claude/workflows/lib/review.mjs`
+  and `scripts/gen-skill-review.sh`. **No behavior change**; all verdict categories,
+  gating logic, and per-phase handling remain unchanged.
+
 ### Removed
 
 - **Breaking:** the plan-review Stop hook (`rdm agent-config claude --hooks`'s

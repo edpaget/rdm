@@ -41,23 +41,19 @@ The specification of that pipeline — which dimensions run, how findings are gr
 
 Dispatch one **read-only** `Agent` per applicable dimension, per **Review specification § Dimensions** below. Run the always-on dimensions unconditionally; add `unit-of-work` only when the target type from step 1 is a phase — including once per phase when reviewing `--roadmap <slug>`. State which dimensions you launched, and why, in the report.
 
-### 3. Refute — per-finding refute pass (parallel)
+### 3. Consolidate — refute findings, filter, and reach a verdict
 
 Dispatch a **fresh** `Agent` per finding, per **Review specification § Refute**. Run these concurrently; the finder is never the refuter. Suggestions may skip refutation (low stakes) but are still subject to the confidence floor.
 
-### 4. Filter, consolidate & decide the outcome
-
-Apply **Review specification § Filter & consolidate**, then **§ Verdict** to reach exactly one outcome: `reviewed`, `rework`, or `escalated`.
+Then apply **Review specification § Filter & consolidate**, then **§ Verdict** to reach exactly one outcome: `reviewed`, `rework`, or `escalated`.
 
 For a `--roadmap <slug>` review, consolidate **per phase** as well as for the roadmap body as a whole — one phase's `rework` does not decide the outcome of a phase that came back clean (see the Gate step's per-phase handling).
-
-### 5. Report
 
 Present a single structured report:
 - Surviving findings grouped by severity (blocking → concern → suggestion), each with a location, confidence, and recommendation.
 - The outcome: **reviewed**, **rework**, or **escalated**, and the one rule that decided it.
 
-### 6. Act — only the orchestrator edits, never a sub-agent
+### 4. Categorize & act — only the orchestrator edits, never a sub-agent
 
 Apply **Review specification § Act**. The dispatched reviewers never apply fixes; only the orchestrator (this skill) does, and only after refutation.
 
@@ -71,20 +67,29 @@ Small fixes are written back as a whole body (bodies are whole-document-authorit
 
 Large findings are filed as tasks instead: use `{t_task_create}` with `project: {proj_param}, slug: "<slug>", title: "Plan review finding: description", body: "Details."`, then land it: call `{t_commit}` with `message: "chore(plan): file plan review finding as task"`.
 
-### 7. Gate — clear or leave `needs-plan-review`
+### 5. Gate — clear or leave `needs-plan-review`
 
-Apply **Review specification § Gate**. Skip this step entirely in `--implementation-plan` mode — there is no persisted rdm item to gate; report the outcome and findings only.
+**Overview:** This step gates based on the plan review's verdict. It is fundamentally different from code-review's status-transition gate (which manages `needs-review` status and completion trailers) — plan-review's gate manages the reserved `needs-plan-review` tag. It never writes an rdm status and never writes a land-time completion directive.
 
-On **reviewed**, read the target's current tags via `{t_phase_show}` / `{t_task_show}` / `{t_roadmap_show}`, filter `needs-plan-review` out by exact string match, and write the complete remaining list back — **the `tags` field replaces the whole list**, so always read-then-filter-then-set:
+Skip this step entirely in `--implementation-plan` mode — there is no persisted rdm item to gate; report the outcome and findings only.
 
-- phase: use `{t_phase_update}` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase-number>", tags: ["<remaining-tag-1>", "<remaining-tag-2>"]` (or `tags: []` when `needs-plan-review` was the only tag present — the `tags` field is a JSON array of strings, never a comma-joined string)
-- task: use `{t_task_update}` with `project: {proj_param}, task: "<slug>", tags: ["<remaining-tag-1>", "<remaining-tag-2>"]` (or `tags: []`)
-- roadmap: use `{t_roadmap_update}` with `project: {proj_param}, roadmap: "<slug>", tags: ["<remaining-tag-1>", "<remaining-tag-2>"]` (or `tags: []`)
-- land it: call `{t_commit}` with `message: "chore(plan): clear needs-plan-review on <target>"`
+On **reviewed** — when the plan is clean or only has concerns/suggestions:
 
-Under `--roadmap <slug>`, gate each phase **individually** — a phase whose own outcome is `rework` or `escalated` keeps its `needs-plan-review` tag even when every other phase in the roadmap reaches `reviewed`.
+1. Read the target's current tags via `{t_phase_show}` / `{t_task_show}` / `{t_roadmap_show}`.
 
-On **rework** and **escalated**, do **not** call the update tool with `tags`. `needs-plan-review` is left unchanged in place. State explicitly in the report that the tag was left and enumerate exactly what must change before the next review pass.
+2. Filter `needs-plan-review` out by exact string match and write the complete remaining list back — **the `tags` field replaces the whole list**, so always read-then-filter-then-set:
+   - phase: use `{t_phase_update}` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase-number>", tags: ["<remaining-tag-1>", "<remaining-tag-2>"]` (or `tags: []` when `needs-plan-review` was the only tag present — the `tags` field is a JSON array of strings, never a comma-joined string)
+   - task: use `{t_task_update}` with `project: {proj_param}, task: "<slug>", tags: ["<remaining-tag-1>", "<remaining-tag-2>"]` (or `tags: []`)
+   - roadmap: use `{t_roadmap_update}` with `project: {proj_param}, roadmap: "<slug>", tags: ["<remaining-tag-1>", "<remaining-tag-2>"]` (or `tags: []`)
+   - land it: call `{t_commit}` with `message: "chore(plan): clear needs-plan-review on <target>"`
+
+On **rework** or **escalated** — when changes are needed:
+
+Do **not** call the update tool with `tags`. The `needs-plan-review` tag is left unchanged in place. State explicitly in the report that the tag was left, and enumerate exactly what must change before the next review pass. On `escalated`, describe what human decision or architectural constraint resolution is required.
+
+**Per-phase gating** (`--roadmap <slug>` reviews):
+
+Under `--roadmap <slug>`, gate each phase **individually** — a phase whose own outcome is `rework` or `escalated` keeps its `needs-plan-review` tag even when every other phase in the roadmap reaches `reviewed`. The roadmap body itself is gated separately.
 
 ## Guidelines
 
@@ -97,10 +102,9 @@ On **rework** and **escalated**, do **not** call the update tool with `tags`. `n
 
 ## Review specification
 
-Generated from the canonical review source (`.claude/workflows/lib/review.mjs`)
-by `scripts/gen-skill-review.sh --mode plan` — the single home of the
-dimensions, severity scale, refute pass, verdict rules, and gate policy shared
-with `rdm-review`. Edit the source, not this region.
+**Hand-authored sections:** Setup, Find, Consolidate, Categorize & act, and Gate above are hand-authored and permanent. They implement plan-review's domain-specific logic (argument parsing, verdict-determination, and tag-clearing gating) and will not be overwritten by generator updates. The generated marker block below will eventually contain plan-mode review dimensions (coherence, architectural-fit, unit-of-work), refutation logic, filtering, and verdict rules once Phase 1 work in `.claude/workflows/lib/review.mjs` and `scripts/gen-skill-review.sh` completes; currently, it contains code-mode content (ac, correctness, tests, architecture, api-docs, changelog, security dimensions and status-transition gate rules) because those prerequisites have not yet landed.
+
+**To regenerate this block:** Edit `.claude/workflows/lib/review.mjs` and run `scripts/gen-skill-review.sh --mode plan`, not this document. The single home of dimensions, severity scale, refute pass, verdict rules, and gate policy is the canonical review source.
 
 <!-- rdm:review-spec:begin (generated by scripts/gen-skill-review.sh --mode plan — edit .claude/workflows/lib/review.mjs, not this region) -->
 
