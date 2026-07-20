@@ -25,9 +25,9 @@ The specification of that pipeline — which dimensions run, how findings are gr
    - `<roadmap-slug> [phase-number]` — review a single phase. If `phase-number` is omitted, review the roadmap the same as `--roadmap <slug>`.
    - `--implementation-plan` — review an `rdm-do` plan document handed to you directly in context, ahead of implementation. There is no persisted rdm item backing this mode, so it produces an outcome and findings report only — **no tag-gate step** (skip the Gate step entirely for this mode), and it skips the Act step's fix-application half the same way (see the carve-out there).
 2. **Read the target artifact** — this also establishes the **target type**, which is the trigger signal for the `unit-of-work` dimension in the Review specification:
-   - Phase (target type `phase`): `rdm phase show <phase-number> --roadmap <slug> --project <PROJECT>` for the body, and `rdm phase show <phase-number> --roadmap <slug> --format json --project <PROJECT>` for its `tags`.
-   - Task (target type `task`): `rdm task show <slug> --project <PROJECT>` for the body, and `rdm task show <slug> --format json --project <PROJECT>` for its `tags`.
-   - Roadmap (target type `roadmap`): `rdm roadmap show <slug> --format json --project <PROJECT>` returns the roadmap body plus every phase's summary (body, tags) in one call; also fetch each phase's full body with `rdm phase show <n> --roadmap <slug> --project <PROJECT>`, since each phase is reviewed as a `phase` target in its own right.
+   - Phase (target type `phase`): `rdm phase show <phase-number> --roadmap <slug> --project rdm` for the body, and `rdm phase show <phase-number> --roadmap <slug> --format json --project rdm` for its `tags`.
+   - Task (target type `task`): `rdm task show <slug> --project rdm` for the body, and `rdm task show <slug> --format json --project rdm` for its `tags`.
+   - Roadmap (target type `roadmap`): `rdm roadmap show <slug> --format json --project rdm` returns the roadmap body plus every phase's summary (body, tags) in one call; also fetch each phase's full body with `rdm phase show <n> --roadmap <slug> --project rdm`, since each phase is reviewed as a `phase` target in its own right.
    - `--implementation-plan` (target type `implementation-plan`): read the plan text already provided in context; no `rdm` command is needed.
 
 ### 2. Find — dispatch the review fleet (parallel)
@@ -54,15 +54,15 @@ Skip this step's fix-application half entirely in `--implementation-plan` mode �
 
 Small fixes are written back as a whole body (`--body` is whole-document-authoritative — there is no patch/diff mechanism):
 ```bash
-rdm phase update <phase-number> --roadmap <slug> --body "<full updated body>" --no-edit --project <PROJECT>
-# or: rdm task update <slug> --body "<full updated body>" --no-edit --project <PROJECT>
-# or: rdm roadmap update <slug> --body "<full updated body>" --no-edit --project <PROJECT>
+rdm phase update <phase-number> --roadmap <slug> --body "<full updated body>" --no-edit --project rdm
+# or: rdm task update <slug> --body "<full updated body>" --no-edit --project rdm
+# or: rdm roadmap update <slug> --body "<full updated body>" --no-edit --project rdm
 rdm commit -m "chore(plan): address plan review finding on <target>"
 ```
 
 Large findings are filed as tasks instead:
 ```bash
-rdm task create <slug> --title "Plan review finding: description" --body "Details." --tags plan-review --no-edit --project <PROJECT>
+rdm task create <slug> --title "Plan review finding: description" --body "Details." --tags plan-review --no-edit --project rdm
 rdm commit -m "chore(plan): file plan review finding as task"
 ```
 
@@ -76,16 +76,16 @@ On **reviewed** — when the plan is clean or only has concerns/suggestions:
 
 1. Read the target's current tags:
 ```bash
-rdm phase show <phase-number> --roadmap <slug> --format json --project <PROJECT>   # read `tags`
-# or: rdm task show <slug> --format json --project <PROJECT>
-# or: rdm roadmap show <slug> --format json --project <PROJECT>
+rdm phase show <phase-number> --roadmap <slug> --format json --project rdm   # read `tags`
+# or: rdm task show <slug> --format json --project rdm
+# or: rdm roadmap show <slug> --format json --project rdm
 ```
 
 2. Filter `needs-plan-review` out by exact string match and write the complete remaining list back — **`--tags` replaces the whole list**, so always read-then-filter-then-set:
 ```bash
-rdm phase update <phase-number> --roadmap <slug> --tags <comma-joined-remaining-tags> --no-edit --project <PROJECT>
+rdm phase update <phase-number> --roadmap <slug> --tags <comma-joined-remaining-tags> --no-edit --project rdm
 # or, when needs-plan-review was the only tag present:
-rdm phase update <phase-number> --roadmap <slug> --tags "" --no-edit --project <PROJECT>
+rdm phase update <phase-number> --roadmap <slug> --tags "" --no-edit --project rdm
 rdm commit -m "chore(plan): clear needs-plan-review on <target>"
 ```
 
