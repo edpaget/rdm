@@ -51,6 +51,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The workflow lane's `dispatch-phase` now stamps a phase (or task) `in-progress`
+  (best-effort) when it begins working it, right after fetching the item and
+  resolving models and before planning starts. Previously a direct `Workflow`
+  invocation of `dispatch-phase` — and therefore every autopilot-driven phase —
+  jumped straight from `not-started` to `reviewed`/`blocked` with no observable
+  in-progress signal in `rdm phase list`, a status search, or the TUI while the
+  run was executing, so a crashed or cancelled run looked untouched instead of
+  attempted. A `--plan-only` pass is unaffected — it never implements, so it
+  never stamps.
+
 - An autonomously produced branch now reaches `rdm-land` ready to land, with no
   manual rebase. `rdm-dispatch-phase` / `rdm-autopilot` deliberately never write
   the `Done:` commit trailer, and their outcome now says so explicitly — it

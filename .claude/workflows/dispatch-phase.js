@@ -1107,6 +1107,16 @@ const TASK_META_SCHEMA = {
   },
 }
 
+// STAMP_ACK — what the mechanical in-progress-stamp agent reports back: did the
+// status-update command it ran exit 0? No retry — the stamp is best-effort
+// observability, not a gated step (see buildStampInProgressPrompt below).
+const STAMP_ACK_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['ok'],
+  properties: { ok: { type: 'boolean' } },
+}
+
 // PLAN_DOC — the plan document the planner agent produces from ONLY the phase body.
 const PLAN_DOC_SCHEMA = {
   type: 'object',
@@ -1186,6 +1196,27 @@ function buildTaskFetchPrompt(slug) {
     '  ./target/debug/rdm model resolve review-verify',
     'Return the four resulting model ids verbatim in a `models` object with keys',
     'plan, implement, review_find, review_verify. Do not invent ids; if a command fails, return an empty body.',
+  ].join('\n')
+}
+
+// Observability stamp: a mechanical agent marks the phase/task in-progress the
+// moment real work begins on it. Best-effort — never gated, never retried; see
+// the driver call site (right after Stage 0, before the plan gate) for the
+// try/catch that keeps a failed stamp from affecting control flow.
+function buildStampInProgressPrompt(isTaskFlag, roadmapSlugArg, target) {
+  const cmd = isTaskFlag
+    ? './target/debug/rdm task update ' + target + ' --status in-progress --no-edit --project rdm'
+    : './target/debug/rdm phase update ' +
+      target +
+      ' --status in-progress --no-edit --roadmap ' +
+      roadmapSlugArg +
+      ' --project rdm'
+  return [
+    'You are a mechanical status agent. Do not plan, implement, or review anything.',
+    'Run exactly this command in the repo root:',
+    '  ' + cmd,
+    'Return a STAMP_ACK object: { ok: true } if the command exited 0, otherwise { ok: false }.',
+    'Do not retry on failure — report the result of the single attempt.',
   ].join('\n')
 }
 
@@ -1387,6 +1418,36 @@ const reviewModels = { findModel: models.review_find, verifyModel: models.review
 // Resolved log label: phase mode logs the resolved `stem`, not the raw
 // stem-or-number the caller passed, matching the pre-dual-mode behaviour.
 const itemLabel = isTask ? 'task/' + taskSlug : roadmap + '/' + stem
+
+// Observability stamp: mark the item in-progress the moment real work begins
+// (right after Stage 0 resolves metadata + models, before planning). This is
+// the only entry point that reaches dispatch-phase WITHOUT already having
+// stamped in-progress itself — interactive rdm-do, rdm-do --auto, and the
+// rdm-dispatch-phase skill all stamp before invoking the workflow; autopilot
+// calls this workflow directly and writes no status of its own. Best-effort:
+// wrapped in try/catch, and a non-ok ack only logs — it never gates the run,
+// never mutates plan/code-gate state, and never appears in the returned
+// OUTCOME. Guarded by `if (!planOnly)`, using the already-parsed
+// `dispatchArgs.planOnly` local: a --plan-only pass does no implementation, so
+// stamping in-progress would misreport it, and skipping (not reverting) avoids
+// clobbering a phase legitimately left in-progress by an earlier interrupted
+// run.
+if (!planOnly) {
+  try {
+    const target = isTask ? taskSlug : stem
+    const stampAck = await agent(buildStampInProgressPrompt(isTask, roadmapSlug, target), {
+      label: 'stamp:in-progress',
+      phase: 'Implement',
+      schema: STAMP_ACK_SCHEMA,
+      model: models.review_find,
+    })
+    if (!stampAck || stampAck.ok !== true) {
+      log('dispatch-phase: in-progress stamp did not confirm for ' + itemLabel + ' — continuing (observability only)')
+    }
+  } catch (e) {
+    log('dispatch-phase: in-progress stamp failed for ' + itemLabel + ' — continuing (observability only)')
+  }
+}
 
 // Stages A + B: author the plan from ONLY the phase body, review it via the
 // stamped shared pipeline, and revise it up to the plan-revise budget. The loop

@@ -39,13 +39,16 @@ where the loop, budgets, and stop conditions are real JS control flow calling th
 `dispatch-phase` workflow via `workflow()`. The two share this document's model;
 the workflow lane makes three mechanics explicit and worth calling out:
 
-- **It drives off *persisted* status.** `dispatch-phase` persists no status, and
-  `rdm next` returns only `not-started`/`in-progress` phases, so the workflow
-  writes status itself: `reviewed` → `rdm phase update --status reviewed`
-  (advance), rework-exhausted or `escalated` → `--status blocked --reason
-  "[code|plan] …"` (park). `rdm next` reading that status back is what steps the
-  loop forward and is the **normal-mode termination oracle** (it eventually
-  returns `nothing`). There is no in-memory `seen` Set in normal mode.
+- **It drives off *persisted* status.** `dispatch-phase` persists no *terminal*
+  phase status — it does stamp the phase (or task) `in-progress`, best-effort,
+  right after Stage 0 and before it starts working the item (a `--plan-only`
+  run skips that stamp, since it never implements) — and `rdm next` returns
+  only `not-started`/`in-progress` phases, so the workflow writes the terminal
+  status itself: `reviewed` → `rdm phase update --status reviewed` (advance),
+  rework-exhausted or `escalated` → `--status blocked --reason "[code|plan] …"`
+  (park). `rdm next` reading that status back is what steps the loop forward
+  and is the **normal-mode termination oracle** (it eventually returns
+  `nothing`). There is no in-memory `seen` Set in normal mode.
 - **`--plan-only` uses a re-return guard.** Because a plan-only dispatch never
   advances status, `rdm next` keeps returning the same phase; a `planOnlySeen`
   Set stops the run when a vetted phase comes back, rather than re-vetting it

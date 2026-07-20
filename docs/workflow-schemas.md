@@ -454,10 +454,13 @@ loop with state-backed fakes.
 
 ### The core fix: the loop advances off PERSISTED status
 
-`dispatch-phase` persists **no** phase status, and `rdm next` returns only
+`dispatch-phase` persists **no terminal** phase status — it does stamp the
+phase (or task) `in-progress` itself, best-effort, right after Stage 0 (metadata
++ model resolution) and before it starts working the item; a `--plan-only` run
+skips that stamp, since it never implements — and `rdm next` returns only
 `not-started`/`in-progress` phases (it skips `reviewed`/`blocked`/…). So the loop
-persists status **itself**, which is what makes `rdm next` step forward and
-eventually return `nothing`:
+persists the terminal status **itself**, which is what makes `rdm next` step
+forward and eventually return `nothing`:
 
 - a `reviewed` OUTCOME (normal mode) → `advance` dep runs
   `rdm phase update <stem> --status reviewed`;

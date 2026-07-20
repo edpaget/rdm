@@ -30,9 +30,13 @@
 #                 stamped review markers present; no import/require/nested
 #                 workflow() call; distinct planner/implementer/fetch agent labels;
 #                 the implementer prompt seeded from phase body + plan doc only,
-#                 never the plan-review findings; and the marker-scoped loop rules
+#                 never the plan-review findings; the marker-scoped loop rules
 #                 — no `while` in the driver region, `for` only from an exact
-#                 allowlist, "bounded" itself being proven semantically in 1c).
+#                 allowlist, "bounded" itself being proven semantically in 1c;
+#                 and AC-STAMP — the best-effort in-progress stamp fires right
+#                 after Stage 0 and before the plan gate, is guarded by
+#                 `if (!planOnly)`, and cannot early-return between its call
+#                 site and the plan gate).
 #   5. DOC AGREEMENT — docs/escalation-protocol.md § Budgets names all four
 #                 budgets with exactly the values the two libs declare.
 #
@@ -1220,6 +1224,84 @@ if assert_tier_scoping "$TMP/tier-task-mutant"; then
     fail "AC-TIER: detector missed a --tier smuggled into the task prompt"
 fi
 pass "AC-TIER: detector fires when --tier is added to the task prompt"
+
+# AC-STAMP: dispatch-phase stamps the phase/task in-progress, best-effort, right
+# after Stage 0 (metadata + model resolution) and before the plan gate.
+#
+#   (a) presence — the `stamp:in-progress` agent label and both the phase-mode
+#       (`rdm phase update`) and task-mode (`rdm task update`) status commands.
+#   (b) ordering — the call site sits textually AFTER Stage 0 resolves
+#       `reviewModels` (the last stage-0 local) and BEFORE the first
+#       `runPlanGate(` call (the plan gate).
+#   (c) guarded — an immediately-preceding `if (!planOnly) {` wraps the call, so
+#       a --plan-only pass (which does no implementation) never misreports the
+#       item as in-progress.
+#   (d) fails quietly — the text strictly between the stamp label and the next
+#       `runPlanGate(` call contains no `return itemOutcome`/`return {`, proving
+#       a failed stamp cannot short-circuit the dispatch.
+grep -q "label: 'stamp:in-progress'" "$WF" || fail "AC-STAMP: missing the stamp:in-progress agent label"
+grep -qF "rdm task update ' + target + ' --status in-progress" "$WF" ||
+    fail "AC-STAMP: missing the task-mode 'rdm task update ... --status in-progress' command"
+grep -qF "rdm phase update ' +" "$WF" || fail "AC-STAMP: missing the phase-mode 'rdm phase update' command"
+grep -qF -- '--status in-progress' "$WF" || fail "AC-STAMP: missing a '--status in-progress' status string"
+pass "AC-STAMP: stamp:in-progress label and both phase/task status commands are present"
+
+assert_stamp_ordering() {
+    s0=$(grep -n "const reviewModels = {" "$1" | head -1 | cut -d: -f1)
+    st=$(grep -n "label: 'stamp:in-progress'" "$1" | head -1 | cut -d: -f1)
+    pg=$(grep -n 'await runPlanGate(' "$1" | head -1 | cut -d: -f1)
+    [ -n "$s0" ] && [ -n "$st" ] && [ -n "$pg" ] || return 1
+    [ "$s0" -lt "$st" ] && [ "$st" -lt "$pg" ]
+}
+assert_stamp_ordering "$WF" ||
+    fail "AC-STAMP: the stamp call must sit after Stage 0's model resolution and before the first runPlanGate( call"
+pass "AC-STAMP: stamp call site sits after Stage 0 and before the plan gate"
+
+assert_stamp_guarded() {
+    awk '/if \(!planOnly\) \{/{p=1} p{print} p&&/^\}/{exit}' "$1" | grep -q "label: 'stamp:in-progress'"
+}
+assert_stamp_guarded "$WF" ||
+    fail "AC-STAMP: the stamp call must be wrapped in an immediately-preceding 'if (!planOnly) {' guard"
+pass "AC-STAMP: stamp call is guarded by 'if (!planOnly) {'"
+
+# Text strictly between the stamp label and the next runPlanGate( call must
+# contain no early-return — a stamp failure can only log, never short-circuit
+# the dispatch the way a genuine Stage-0 fetch failure legitimately does.
+assert_stamp_fails_quietly() {
+    awk '
+        index($0, "label: \x27stamp:in-progress\x27") { p = 1; next }
+        index($0, "await runPlanGate(") { exit }
+        p { print }
+    ' "$1" >"$TMP/stamp-to-gate"
+    [ -s "$TMP/stamp-to-gate" ] || return 1
+    ! grep -qE 'return itemOutcome|return \{' "$TMP/stamp-to-gate"
+}
+assert_stamp_fails_quietly "$WF" ||
+    fail "AC-STAMP: a stamp failure must not early-return between the stamp call and the plan gate"
+pass "AC-STAMP: no early-return between the stamp call and the plan gate — a failed stamp degrades quietly"
+
+# Self-tests: prove each detector is load-bearing.
+sed '/if (!planOnly) {/,/^}/d' "$WF" >"$TMP/stamp-mutant-guard"
+if assert_stamp_guarded "$TMP/stamp-mutant-guard"; then
+    fail "AC-STAMP: guard detector missed a removed 'if (!planOnly) {' wrapper"
+fi
+pass "AC-STAMP: guard detector fires when the planOnly wrapper is stripped"
+
+sed "s/rdm task update '/rdm task updateX '/" "$WF" >"$TMP/stamp-mutant-cmd"
+if grep -qF "rdm task update ' + target + ' --status in-progress" "$TMP/stamp-mutant-cmd"; then
+    fail "AC-STAMP: presence detector missed a mangled task-mode command string"
+fi
+pass "AC-STAMP: presence detector fires when the task-mode command string is mangled"
+
+cp "$WF" "$TMP/stamp-mutant-return.js"
+awk '
+    index($0, "label: \x27stamp:in-progress\x27") && !done { print; print "      return itemOutcome({ fetchError: true })"; done = 1; next }
+    { print }
+' "$WF" >"$TMP/stamp-mutant-return.js"
+if assert_stamp_fails_quietly "$TMP/stamp-mutant-return.js"; then
+    fail "AC-STAMP: fails-quietly detector missed a planted 'return itemOutcome' between the stamp and the plan gate"
+fi
+pass "AC-STAMP: fails-quietly detector fires on a planted early-return between the stamp and the plan gate"
 
 # AC-4 (driver-level reinforcement): the retry loops are BOUNDED. "Bounded" is a
 # dataflow property no grep can decide, so the check is split in two:
