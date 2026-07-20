@@ -201,7 +201,9 @@ reads the actual cited location and its surrounding context, and returns
 - **Dedup** findings pointing at the same location / same root cause (the
   fleet covers overlapping ground by design).
 - **Rank** survivors by severity, then confidence, then id.
-- Keep the AC table intact; surviving AC FAIL/PARTIAL items become findings.
+- There is no acceptance-criteria pass/fail table at plan stage — the quality
+  of the plan's own acceptance criteria is judged by the **coherence**
+  dimension and surfaces as an ordinary finding.
 
 ### Verdict — one outcome vocabulary: `reviewed` | `rework` | `escalated`
 
@@ -211,9 +213,8 @@ Determine the outcome in this strict order — the first matching rule wins:
    than a code change: the goal, approach, or scope is wrong, the work
    violates a stated architectural constraint, or the acceptance criteria
    themselves are missing, contradictory, or unimplementable as written.
-2. **rework** — else if any surviving finding is `blocking`, or the AC table
-   contains any FAIL or PARTIAL criterion. The defect is fixable in place; the
-   work goes back for another round.
+2. **rework** — else if any surviving finding is `blocking`. The defect is
+   fixable in place; the work goes back for another round.
 3. **reviewed** — else. Clean, or clean after small fixes. Surviving
    `concern` and `suggestion` findings are recorded and do **not** gate.
 

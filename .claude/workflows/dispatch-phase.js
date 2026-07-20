@@ -303,7 +303,10 @@ function findPrompt(mode, dim, context) {
 //| - **Dedup** findings pointing at the same location / same root cause (the
 //|   fleet covers overlapping ground by design).
 //| - **Rank** survivors by severity, then confidence, then id.
-//| - Keep the AC table intact; surviving AC FAIL/PARTIAL items become findings.
+//|code| - Keep the AC table intact; surviving AC FAIL/PARTIAL items become findings.
+//|plan| - There is no acceptance-criteria pass/fail table at plan stage — the quality
+//|plan|   of the plan's own acceptance criteria is judged by the **coherence**
+//|plan|   dimension and surfaces as an ordinary finding.
 function refutePrompt(mode, dim, finding, context) {
   const target = (context && context.target) || '(the target described in your working directory)';
   return [
@@ -326,9 +329,11 @@ function refutePrompt(mode, dim, finding, context) {
 //|    than a code change: the goal, approach, or scope is wrong, the work
 //|    violates a stated architectural constraint, or the acceptance criteria
 //|    themselves are missing, contradictory, or unimplementable as written.
-//| 2. **rework** — else if any surviving finding is `blocking`, or the AC table
-//|    contains any FAIL or PARTIAL criterion. The defect is fixable in place; the
-//|    work goes back for another round.
+//|code| 2. **rework** — else if any surviving finding is `blocking`, or the AC table
+//|code|    contains any FAIL or PARTIAL criterion. The defect is fixable in place; the
+//|code|    work goes back for another round.
+//|plan| 2. **rework** — else if any surviving finding is `blocking`. The defect is
+//|plan|    fixable in place; the work goes back for another round.
 //| 3. **reviewed** — else. Clean, or clean after small fixes. Surviving
 //|    `concern` and `suggestion` findings are recorded and do **not** gate.
 //|

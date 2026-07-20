@@ -291,7 +291,7 @@ grep -q 'gate each phase \*\*individually\*\*' "$TMP/plan-spec-cli" ||
 
 # Mode isolation, both directions. A code-only line left untagged would ship
 # into the plan skill (and vice versa); these greps are the detector.
-for bad in '\*\*ac\*\*' '\*\*changelog\*\*' '\*\*security\*\*' 'rdm hook done-line'; do
+for bad in '\*\*ac\*\*' '\*\*changelog\*\*' '\*\*security\*\*' 'rdm hook done-line' 'AC table' 'AC FAIL'; do
     if grep -nE "$bad" "$TMP/plan-spec-cli" >&2; then
         fail "code-only prose ($bad) leaked into the generated plan spec — tag it //|code|"
     fi
