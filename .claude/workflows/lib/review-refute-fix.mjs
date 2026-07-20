@@ -201,6 +201,14 @@ function buildReviewPipeline(mode, deps) {
 
   return async function runReview(context) {
     const ctx = context || {};
+    // Optional explicit models for the two review steps. Callers that have no
+    // tier context (the standalone review-refute-fix consumer) simply omit them
+    // and the agents inherit the session model exactly as before. Passing
+    // `model: undefined` is INERT — verified by the agent() model spike recorded
+    // in docs/workflow-schemas.md § "agent() options" — so always-assigning the
+    // key is safe and needs no conditional-assignment helper.
+    const findModel = ctx.findModel;
+    const verifyModel = ctx.verifyModel;
     // Stage 1: parallel dimension finders. Stage 2: a fresh refuter per finding.
     // pipeline() keeps each dimension's find→refute chain independent (no barrier).
     const perDimension = await _pipeline(
@@ -210,6 +218,20 @@ function buildReviewPipeline(mode, deps) {
           label: 'find:' + mode + ':' + dim.key,
           phase: 'Find',
           schema: FINDINGS_SCHEMA,
+          model: findModel,
+        }).then((found) => {
+          // An UNKNOWN model id makes agent() RESOLVE to null rather than throw
+          // (spike consequence 3). A resolved null would sail through stage 2 as
+          // `(null && …) || []` → [], i.e. a silently clean review. Convert it to
+          // a thrown stage here — the only thing the runtime's pipeline turns
+          // into a null element — so the all-null check below can actually fire.
+          if (findModel && (found === null || found === undefined)) {
+            throw new Error(
+              'review-refute-fix: finder for dimension "' + dim.key + '" returned null with model "' +
+                findModel + '" — an unknown/unavailable model id yields null instead of throwing'
+            );
+          }
+          return found;
         }),
       (found, dim) =>
         _parallel(
@@ -220,6 +242,7 @@ function buildReviewPipeline(mode, deps) {
               label: 'refute:' + mode + ':' + (f.id || dim.key + ':' + idx),
               phase: 'Refute',
               schema: VERDICT_SCHEMA,
+              model: verifyModel,
             })
               .then((verdict) => ({ finding: { ...f, concern: f.concern || dim.key }, verdict }))
               // A refuter CRASH is not proof of refutation. Keep the finding as
@@ -229,6 +252,18 @@ function buildReviewPipeline(mode, deps) {
           )
         )
     );
+
+    // Loud failure on a wholesale model misconfiguration. One dimension dropping
+    // to null is tolerated resilience (a single finder crashed); EVERY dimension
+    // dropping to null while an explicit model was in play means no review
+    // actually ran — e.g. an `[models]` binding this runtime does not know. That
+    // must not be reported as a clean review.
+    if (findModel && dims.length > 0 && perDimension.every((d) => d === null || d === undefined)) {
+      throw new Error(
+        'review-refute-fix: every ' + mode + ' dimension finder failed with model "' + findModel +
+          '" — refusing to report a clean review; check the [models] tier bindings'
+      );
+    }
 
     // Flatten per-dimension → per-finding. A finder whose whole dimension errored
     // is dropped to null by the runtime's pipeline (a thrown stage → null); those

@@ -500,6 +500,161 @@ if grep -q 'planFindings' "$TMP/impl-fn"; then
 fi
 pass "AC-2: implementer seeded from phase body + plan doc only, not the plan-review transcript"
 
+# AC-MODEL: every dispatch-path agent() call carries an explicit `model:`.
+#
+# The extractor deliberately skips COMMENT lines: `dispatch-phase.js` contains
+# prose mentioning `agent()` (e.g. the meta.phases note "no agent() call uses
+# it"), and a naive matcher would emit those as option blocks and fail on a
+# correct implementation. A whole-file `grep model:` is also NOT acceptable here
+# — it is satisfied by any unrelated occurrence and cannot tell a wired call from
+# an unwired one.
+#
+# WHITELIST: the Stage-0 bootstrap fetch (label fetch:phase-meta / fetch:task-meta)
+# is exempt by design — it is the call that PRODUCES the model map, so it cannot
+# know its own model before running.
+agent_option_blocks() {
+    awk '
+      # skip single-line comments so prose mentioning agent() never opens a block
+      /^[[:space:]]*\/\// { next }
+      # Track "saw agent(, still hunting for the opening {" ACROSS lines: a call
+      # whose options object opens on a later line must not be invisible to the
+      # sweep (a silently-skipped block is a false green, not a pass).
+      !inblk && index($0, "agent(") { pending = 1 }
+      pending && index($0, "{") { inblk = 1; pending = 0; buf = $0; next }
+      inblk { buf = buf "\n" $0 }
+      inblk && /^[[:space:]]*\}\)/ { print buf "\n---END---"; inblk = 0; buf = "" }
+    ' "$1"
+}
+
+# Independent count of real agent()/_agent() call sites, excluding comments.
+agent_call_count() {
+    grep -vE '^[[:space:]]*//' "$1" | grep -cE '(^|[^A-Za-z_])_?agent\('
+}
+
+agent_option_blocks "$WF" >"$TMP/agent-blocks"
+[ -s "$TMP/agent-blocks" ] || fail "AC-MODEL: could not extract any agent() option blocks"
+
+# Cross-check: every real call site must have produced a block. Without this, an
+# extractor that silently drops a block reports bad=0 and passes — the exact
+# "captures 7 of 8 and passes" false green.
+EXTRACTED=$(grep -c -- '---END---' "$TMP/agent-blocks")
+CALLSITES=$(agent_call_count "$WF")
+[ "$EXTRACTED" -eq "$CALLSITES" ] ||
+    fail "AC-MODEL: extracted $EXTRACTED option blocks but found $CALLSITES agent() call sites — the sweep is blind to at least one"
+pass "AC-MODEL: extracted one option block per agent() call site ($EXTRACTED)"
+
+# Every block must carry `model:` unless it is a whitelisted bootstrap fetch.
+assert_model_sweep() {
+    awk '
+      BEGIN { RS = "---END---"; bad = 0 }
+      /label:/ {
+        if ($0 ~ /label: .fetch:(phase|task)-meta./) next   # whitelisted bootstrap
+        if ($0 !~ /model:/) { bad++ }
+      }
+      END { exit (bad > 0) }
+    ' "$1"
+}
+assert_model_sweep "$TMP/agent-blocks" ||
+    fail "AC-MODEL: a non-bootstrap agent() call is missing an explicit model:"
+pass "AC-MODEL: every dispatch-path agent() call carries an explicit model: (bootstrap fetch whitelisted)"
+
+# Self-test: strip one model: key and prove the sweep fails.
+sed '/model: models\.plan,/d' "$TMP/agent-blocks" >"$TMP/agent-blocks-mutant"
+if assert_model_sweep "$TMP/agent-blocks-mutant"; then
+    fail "AC-MODEL: sweep missed a removed model: key"
+fi
+pass "AC-MODEL: sweep detector fires when a model: key is removed"
+
+# Self-test: the extractor must NOT emit the prose comment on line 28 as a block.
+if grep -q "no agent() call uses it" "$TMP/agent-blocks"; then
+    fail "AC-MODEL: extractor wrongly captured a prose comment mentioning agent()"
+fi
+pass "AC-MODEL: extractor skips prose comments mentioning agent()"
+
+# AC-NULLGUARD: the two DRIVER-level null guards exist and gate a real code path.
+#
+# These live in the un-exported top-level driver body (ambient agent/top-level
+# await), so no Node unit test can reach them — a static structural gate is the
+# only thing standing between them and silent deletion. They are the safety net
+# for spike consequence 3: agent() RESOLVES to null on an unknown model id, so
+# without them a misconfigured [models] binding yields a null plan / an
+# all-inherited-model dispatch with nothing objecting.
+assert_driver_null_guards() {
+    # (a) an incomplete resolved-model map must short-circuit to fetchError
+    grep -q 'if (unresolvedStep) {' "$1" || return 1
+    awk '/if \(unresolvedStep\) \{/{p=1} p{print} p&&/^\}/{exit}' "$1" |
+        grep -q 'fetchError: true' || return 1
+    # (b) a null plan agent result must short-circuit to fetchError
+    grep -q 'if (planDoc === null || planDoc === undefined) {' "$1" || return 1
+    awk '/if \(planDoc === null/{p=1} p{print} p&&/^\}/{exit}' "$1" |
+        grep -q 'fetchError: true' || return 1
+    return 0
+}
+assert_driver_null_guards "$WF" ||
+    fail "AC-NULLGUARD: the driver must guard an incomplete model map and a null plan agent result"
+pass "AC-NULLGUARD: driver guards both an unresolved model map and a null plan result"
+
+# Self-tests: removing either guard must fire the detector.
+sed '/if (unresolvedStep) {/,/^}/d' "$WF" >"$TMP/ng-mutant-a"
+if assert_driver_null_guards "$TMP/ng-mutant-a"; then
+    fail "AC-NULLGUARD: detector missed a removed unresolved-model guard"
+fi
+sed '/if (planDoc === null || planDoc === undefined) {/,/^}/d' "$WF" >"$TMP/ng-mutant-b"
+if assert_driver_null_guards "$TMP/ng-mutant-b"; then
+    fail "AC-NULLGUARD: detector missed a removed null-plan guard"
+fi
+pass "AC-NULLGUARD: detector fires when either driver guard is removed"
+
+# AC-TIER: the tier hint reaches plan/implement only. review-find/review-verify
+# must resolve with NO --tier: the caller hint has top precedence in core's
+# resolve_tier and ReviewVerify defaults to Large, so any hint can only DOWNGRADE
+# the verifier (measured: `resolve review-verify` -> opus, `--tier medium` -> sonnet).
+# Scope the check PER PROMPT FUNCTION. A whole-file grep cannot tell which prompt
+# a `--tier` belongs to, so `--tier` wrongly added to the TASK prompt would hide
+# behind the phase prompt's legitimate occurrences.
+extract_fn_body() {
+    awk -v fn="$2" 'index($0, "function " fn "(") { p = 1 } p { print } p && /^\}/ { exit }' "$1"
+}
+
+assert_tier_scoping() {
+    extract_fn_body "$1" buildFetchPrompt >"$TMP/fn-phase"
+    extract_fn_body "$1" buildTaskFetchPrompt >"$TMP/fn-task"
+    [ -s "$TMP/fn-phase" ] && [ -s "$TMP/fn-task" ] || return 1
+    # Phase prompt: --tier on plan/implement only.
+    grep -q 'model resolve plan --tier' "$TMP/fn-phase" || return 1
+    grep -q 'model resolve implement --tier' "$TMP/fn-phase" || return 1
+    grep -q 'review-find --tier' "$TMP/fn-phase" && return 1
+    grep -q 'review-verify --tier' "$TMP/fn-phase" && return 1
+    # Task prompt: a task carries no tier, so no resolver COMMAND may carry
+    # --tier. Match the command shape, not a bare '--tier' — both prompts contain
+    # the prose "with NO --tier argument", which a bare grep would false-positive.
+    grep -qE 'model resolve [a-z-]+ --tier' "$TMP/fn-task" && return 1
+    return 0
+}
+assert_tier_scoping "$WF" ||
+    fail "AC-TIER: --tier must appear only on plan/implement in the phase prompt, and nowhere in the task prompt"
+pass "AC-TIER: tier hint scoped per prompt (phase: plan/implement only; task: none)"
+
+sed 's|model resolve review-verify|model resolve review-verify --tier T|' "$WF" >"$TMP/tier-mutant"
+if assert_tier_scoping "$TMP/tier-mutant"; then
+    fail "AC-TIER: detector missed a --tier added to a review resolve"
+fi
+pass "AC-TIER: detector fires when --tier is added to a review resolve"
+
+# Self-test: a --tier smuggled into the TASK prompt must also fire. A whole-file
+# grep would miss this because the phase prompt legitimately contains the same
+# substrings.
+awk '
+  index($0, "function buildTaskFetchPrompt(") { p = 1 }
+  p && index($0, "model resolve plan") { sub(/model resolve plan/, "model resolve plan --tier medium") }
+  p && /^\}/ { p = 0 }
+  { print }
+' "$WF" >"$TMP/tier-task-mutant"
+if assert_tier_scoping "$TMP/tier-task-mutant"; then
+    fail "AC-TIER: detector missed a --tier smuggled into the task prompt"
+fi
+pass "AC-TIER: detector fires when --tier is added to the task prompt"
+
 # AC-4 (driver-level reinforcement): no unbounded loop construct wraps the
 # revise/rework agent() calls — they are single bounded if-guards, not loops.
 if grep -nE '(^|[^A-Za-z_])(for|while)[[:space:]]*\(' "$WF" >/dev/null 2>&1; then

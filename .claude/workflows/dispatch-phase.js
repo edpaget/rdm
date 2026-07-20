@@ -220,6 +220,14 @@ function buildReviewPipeline(mode, deps) {
 
   return async function runReview(context) {
     const ctx = context || {};
+    // Optional explicit models for the two review steps. Callers that have no
+    // tier context (the standalone review-refute-fix consumer) simply omit them
+    // and the agents inherit the session model exactly as before. Passing
+    // `model: undefined` is INERT — verified by the agent() model spike recorded
+    // in docs/workflow-schemas.md § "agent() options" — so always-assigning the
+    // key is safe and needs no conditional-assignment helper.
+    const findModel = ctx.findModel;
+    const verifyModel = ctx.verifyModel;
     // Stage 1: parallel dimension finders. Stage 2: a fresh refuter per finding.
     // pipeline() keeps each dimension's find→refute chain independent (no barrier).
     const perDimension = await _pipeline(
@@ -229,6 +237,20 @@ function buildReviewPipeline(mode, deps) {
           label: 'find:' + mode + ':' + dim.key,
           phase: 'Find',
           schema: FINDINGS_SCHEMA,
+          model: findModel,
+        }).then((found) => {
+          // An UNKNOWN model id makes agent() RESOLVE to null rather than throw
+          // (spike consequence 3). A resolved null would sail through stage 2 as
+          // `(null && …) || []` → [], i.e. a silently clean review. Convert it to
+          // a thrown stage here — the only thing the runtime's pipeline turns
+          // into a null element — so the all-null check below can actually fire.
+          if (findModel && (found === null || found === undefined)) {
+            throw new Error(
+              'review-refute-fix: finder for dimension "' + dim.key + '" returned null with model "' +
+                findModel + '" — an unknown/unavailable model id yields null instead of throwing'
+            );
+          }
+          return found;
         }),
       (found, dim) =>
         _parallel(
@@ -239,6 +261,7 @@ function buildReviewPipeline(mode, deps) {
               label: 'refute:' + mode + ':' + (f.id || dim.key + ':' + idx),
               phase: 'Refute',
               schema: VERDICT_SCHEMA,
+              model: verifyModel,
             })
               .then((verdict) => ({ finding: { ...f, concern: f.concern || dim.key }, verdict }))
               // A refuter CRASH is not proof of refutation. Keep the finding as
@@ -248,6 +271,18 @@ function buildReviewPipeline(mode, deps) {
           )
         )
     );
+
+    // Loud failure on a wholesale model misconfiguration. One dimension dropping
+    // to null is tolerated resilience (a single finder crashed); EVERY dimension
+    // dropping to null while an explicit model was in play means no review
+    // actually ran — e.g. an `[models]` binding this runtime does not know. That
+    // must not be reported as a clean review.
+    if (findModel && dims.length > 0 && perDimension.every((d) => d === null || d === undefined)) {
+      throw new Error(
+        'review-refute-fix: every ' + mode + ' dimension finder failed with model "' + findModel +
+          '" — refusing to report a clean review; check the [models] tier bindings'
+      );
+    }
 
     // Flatten per-dimension → per-finding. A finder whose whole dimension errored
     // is dropped to null by the runtime's pipeline (a thrown stage → null); those
@@ -412,13 +447,24 @@ function buildTaskOutcome(input) {
 const PHASE_META_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['roadmap', 'phase', 'stem', 'model', 'body'],
+  required: ['roadmap', 'phase', 'stem', 'model', 'body', 'models'],
   properties: {
     roadmap: { type: 'string' },
     phase: { type: 'string' },
     stem: { type: 'string' },
     model: { type: 'string' }, // the tier: small | medium | large
     body: { type: 'string' },
+    models: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['plan', 'implement', 'review_find', 'review_verify'],
+      properties: {
+        plan: { type: 'string' },
+        implement: { type: 'string' },
+        review_find: { type: 'string' },
+        review_verify: { type: 'string' },
+      },
+    },
   },
 }
 
@@ -427,10 +473,21 @@ const PHASE_META_SCHEMA = {
 const TASK_META_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['task', 'body'],
+  required: ['task', 'body', 'models'],
   properties: {
     task: { type: 'string' },
     body: { type: 'string' },
+    models: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['plan', 'implement', 'review_find', 'review_verify'],
+      properties: {
+        plan: { type: 'string' },
+        implement: { type: 'string' },
+        review_find: { type: 'string' },
+        review_verify: { type: 'string' },
+      },
+    },
   },
 }
 
@@ -485,6 +542,16 @@ function buildFetchPrompt(roadmap, phase) {
     'Return a PHASE_META object: roadmap (the roadmap slug), phase (the stem-or-number you were given),',
     'stem (the phase JSON `stem`), model (the phase JSON `model` tier: small|medium|large),',
     'and body (the phase JSON `body` verbatim). If the command fails or the body is empty, return an empty body.',
+    'Then resolve the models for this dispatch. Let T be the phase JSON `model` field.',
+    'If T is a non-empty string, run these two WITH the tier hint:',
+    '  ./target/debug/rdm model resolve plan --tier T',
+    '  ./target/debug/rdm model resolve implement --tier T',
+    'If T is empty or missing, run the same two with NO --tier argument.',
+    'ALWAYS run these two with NO --tier argument, whatever T is:',
+    '  ./target/debug/rdm model resolve review-find',
+    '  ./target/debug/rdm model resolve review-verify',
+    'Return the four resulting model ids verbatim in a `models` object with keys',
+    'plan, implement, review_find, review_verify. Do not invent ids; if a command fails, return an empty body.',
   ].join('\n')
 }
 
@@ -495,6 +562,14 @@ function buildTaskFetchPrompt(slug) {
     '  ./target/debug/rdm task show ' + slug + ' --project rdm --format json',
     'Return a TASK_META object: task (the slug you were given) and body (the task JSON `body` verbatim).',
     'If the command fails or the body is empty, return an empty body.',
+    'Then resolve the models for this dispatch. A task carries NO tier, so run all four',
+    'resolver commands with NO --tier argument:',
+    '  ./target/debug/rdm model resolve plan',
+    '  ./target/debug/rdm model resolve implement',
+    '  ./target/debug/rdm model resolve review-find',
+    '  ./target/debug/rdm model resolve review-verify',
+    'Return the four resulting model ids verbatim in a `models` object with keys',
+    'plan, implement, review_find, review_verify. Do not invent ids; if a command fails, return an empty body.',
   ].join('\n')
 }
 
@@ -646,6 +721,22 @@ const tier = isTask ? 'medium' : phaseMeta.model || 'medium'
 // Stage C works in the per-task worktree for tasks, the shared per-roadmap
 // worktree for phases.
 const worktreeRef = isTask ? 'task/' + taskSlug : roadmapSlug
+// Explicitly resolved models for this dispatch, from the single Stage-0 batch.
+// An incomplete map means the resolver did not run: fail loudly rather than
+// dispatching every agent on the inherited session model, which is the silent
+// no-op this whole change exists to remove.
+const models = phaseMeta.models || {}
+// Expressed with .filter() rather than a `for`/`while` on purpose: AC-4 forbids
+// any loop construct in this driver so the revise/rework stages stay provably
+// single bounded if-guards.
+const unresolvedStep = ['plan', 'implement', 'review_find', 'review_verify'].filter(
+  (k) => typeof models[k] !== 'string' || models[k] === ''
+)[0]
+if (unresolvedStep) {
+  log('dispatch-phase: unresolved model for step "' + unresolvedStep + '" on ' + itemLabelRaw)
+  return itemOutcome({ fetchError: true })
+}
+const reviewModels = { findModel: models.review_find, verifyModel: models.review_verify }
 // Resolved log label: phase mode logs the resolved `stem`, not the raw
 // stem-or-number the caller passed, matching the pre-dual-mode behaviour.
 const itemLabel = isTask ? 'task/' + taskSlug : roadmap + '/' + stem
@@ -655,11 +746,20 @@ let planDoc = await agent(buildPlanPrompt(phaseBody), {
   label: 'plan:author',
   phase: 'Plan',
   schema: PLAN_DOC_SCHEMA,
+  model: models.plan,
 })
+
+// agent() RESOLVES to null on an unknown/unavailable model id rather than
+// throwing (spike consequence 3), so a null plan must be caught explicitly or
+// the pipeline would review an empty plan and call it clean.
+if (planDoc === null || planDoc === undefined) {
+  log('dispatch-phase: plan agent returned null on ' + itemLabelRaw + ' (model: ' + models.plan + ')')
+  return itemOutcome({ fetchError: true })
+}
 
 // Stage B: plan-review via the stamped shared pipeline, called inline.
 const runPlanReview = buildReviewPipeline('plan')
-let planFindings = await runPlanReview({ target: renderPlanDoc(planDoc) })
+let planFindings = await runPlanReview({ target: renderPlanDoc(planDoc), ...reviewModels })
 
 // Bounded to ONE revise round: revise once, then re-review once.
 if (hasBlocking(planFindings, tier)) {
@@ -667,8 +767,9 @@ if (hasBlocking(planFindings, tier)) {
     label: 'plan:revise',
     phase: 'PlanReview',
     schema: PLAN_DOC_SCHEMA,
+    model: models.plan,
   })
-  planFindings = await runPlanReview({ target: renderPlanDoc(planDoc) })
+  planFindings = await runPlanReview({ target: renderPlanDoc(planDoc), ...reviewModels })
 }
 
 // Plan gate: never implement on a blocking plan.
@@ -693,6 +794,7 @@ if (planOnly) {
 // seeded with ONLY the phase body + approved plan doc — not the planner context.
 const approvedPlanText = renderPlanDoc(planDoc)
 await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText), {
+  model: models.implement,
   label: 'implement:worktree',
   phase: 'Implement',
 })
@@ -700,16 +802,17 @@ await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText), {
 // Stage D: code-review via the same stamped pipeline, called inline.
 const runCodeReview = buildReviewPipeline('code')
 const reviewTarget = isTask ? 'task/' + taskSlug : roadmapSlug + '/' + stem
-const codeFindings = await runCodeReview({ target: reviewTarget })
+const codeFindings = await runCodeReview({ target: reviewTarget, ...reviewModels })
 
 // Bounded to exactly ONE rework pass.
 let codeFindingsAfterRework = []
 if (hasBlocking(codeFindings, tier)) {
   await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, codeFindings), {
+    model: models.implement,
     label: 'implement:rework',
     phase: 'Implement',
   })
-  codeFindingsAfterRework = await runCodeReview({ target: reviewTarget })
+  codeFindingsAfterRework = await runCodeReview({ target: reviewTarget, ...reviewModels })
 }
 
 const outcome = itemOutcome({

@@ -338,6 +338,55 @@ assert.equal(JSON.stringify(poutA), JSON.stringify(poutB), 'plan review output i
 // Unknown mode is rejected, not silently empty.
 assert.throws(() => buildReviewPipeline('bogus', deps(spy)), /unknown review mode/, 'unknown mode throws');
 
+// ============================================================================
+// Model threading + the null-agent loud-failure guard.
+//
+// An unknown model id makes agent() RESOLVE to null (docs/workflow-schemas.md
+// § "agent() options spike"). Without a guard, a null finder is laundered into
+// [] by the refute stage's `(found && …) || []` and the review reports CLEAN.
+// ============================================================================
+function nullAgent() {
+  const calls = [];
+  return {
+    calls,
+    agent: async (prompt, opts) => {
+      calls.push({ label: (opts && opts.label) || '', model: opts && opts.model });
+      return null;
+    },
+  };
+}
+
+// (a) With an explicit findModel, an all-null finder sweep must REJECT, never
+//     resolve to a clean review.
+const nspy = nullAgent();
+await assert.rejects(
+  buildReviewPipeline('code', deps(nspy))({ ...CTX, findModel: 'bogus-model', verifyModel: 'bogus-model' }),
+  /every code dimension finder failed|returned null with model/,
+  'all-null finders with an explicit model must fail loudly, not report clean'
+);
+
+// (b) The models are actually threaded onto the agent() options.
+assert.ok(nspy.calls.length > 0, 'finders were dispatched');
+assert.ok(
+  nspy.calls.every((c) => c.model === 'bogus-model'),
+  'findModel is threaded onto every finder agent() call'
+);
+
+// (c) WITHOUT a model (the standalone consumer), today's behavior is preserved:
+//     null finders degrade to an empty review rather than throwing.
+const nspy2 = nullAgent();
+const degraded = await buildReviewPipeline('code', deps(nspy2))(CTX);
+assert.deepEqual(degraded, [], 'no-model callers keep the pre-existing lenient behavior');
+assert.ok(
+  nspy2.calls.every((c) => c.model === undefined),
+  'no model key is invented when the caller supplies none'
+);
+
+// (d) A genuinely clean review (findings: []) must NOT trip the guard.
+const cleanSpy = makeSpyAgent({}, {});
+const cleanOut = await buildReviewPipeline('code', deps(cleanSpy))({ ...CTX, findModel: 'haiku', verifyModel: 'opus' });
+assert.deepEqual(cleanOut, [], 'a real clean review still returns [] with models set');
+
 console.log('all review-refute-fix behavior assertions passed');
 NODE_TEST
 

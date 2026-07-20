@@ -60,6 +60,49 @@ disabled (`SetAllowCodeGenerationFromStrings(false)`). Any code sharing must
 therefore happen **before** the script reaches the runtime — there is no in-runtime
 hack.
 
+### agent() options spike (does `agent()` honor `model`?)
+
+`agent(prompt, opts)` accepts an **`opts.model`** key that selects a concrete model
+for that one subagent. This was settled empirically the same way the import
+question was — a 5-case spike workflow dispatched sequentially, reading the model
+each agent ACTUALLY ran on out of its transcript (`message.model`), rather than
+trusting that the option was merely accepted:
+
+| `model:` passed | Actually ran on | Conclusion |
+|---|---|---|
+| *(key omitted)* | `claude-opus-4-8` (session model) | inherits the session model |
+| `'haiku'` | `claude-haiku-4-5-20251001` | **honored** |
+| `'sonnet'` | `claude-sonnet-5` | **honored** |
+| `undefined` | `claude-opus-4-8` (session model) | **inert — identical to omitting the key** |
+| `'not-a-real-model-xyz'` | *(never ran)* | rejected: "There's an issue with the selected model" |
+
+Three consequences the dispatch path depends on:
+
+1. **`model:` is honored**, not merely accepted — the haiku/sonnet cases ran on
+   models different from the session's.
+2. **`model: undefined` is inert.** Always-assigning the key is safe; no
+   conditional-assignment helper is needed for callers that have no model to pass
+   (e.g. the standalone `review-refute-fix` consumer).
+3. **An unknown model id does NOT throw — `agent()` RESOLVES to `null`.** This is
+   the dangerous one: `[models]` tier bindings are user-configurable, so a binding
+   this runtime does not recognise would make every dispatched agent yield `null`
+   and the pipeline would proceed into a null plan / silently-clean review. Both
+   `dispatch-phase.js` (plan/implement) and `lib/review-refute-fix.mjs` (finders)
+   therefore guard explicitly against a `null` agent result whenever an explicit
+   model was supplied, and fail loudly instead. Note a `null` finder result would
+   otherwise be laundered into `[]` by the refute stage's `(found && …) || []`,
+   so the guard converts it to a thrown stage — the only thing `pipeline()` turns
+   into a `null` element.
+
+Tier→model resolution itself belongs to `rdm-core` (`rdm model resolve <step>
+[--tier <t>]`). The hint is forwarded **only** for `plan`/`implement`, and only
+when a tier is actually persisted: `resolve_tier` gives the caller hint top
+precedence, and `ReviewVerify.default_tier()` is `Large`, so passing a hint to
+`review-find`/`review-verify` can only ever *downgrade* the reviewer
+(`resolve review-verify` → opus, but `--tier medium` → sonnet). Review sizing is
+core's to own. `scripts/verify-workflow-dispatch.sh` gates both rules (AC-MODEL,
+AC-TIER) with planted-mutation self-tests.
+
 **Prior art.** This is a well-known sandbox posture, not a rough edge. Temporal's
 TypeScript SDK runs workflow code in a deterministic V8 isolate that throws the
 identical `Code generation from strings disallowed` error and blocks `eval` /
