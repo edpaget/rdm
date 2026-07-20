@@ -102,7 +102,7 @@ Under `--roadmap <slug>`, gate each phase **individually** — a phase whose own
 
 ## Review specification
 
-**Hand-authored sections:** Setup, Find, Consolidate, Categorize & act, and Gate above are hand-authored and permanent. They implement plan-review's domain-specific logic (argument parsing, verdict-determination, and tag-clearing gating) and will not be overwritten by generator updates. The generated marker block below will eventually contain plan-mode review dimensions (coherence, architectural-fit, unit-of-work), refutation logic, filtering, and verdict rules once Phase 1 work in `.claude/workflows/lib/review.mjs` and `scripts/gen-skill-review.sh` completes; currently, it contains code-mode content (ac, correctness, tests, architecture, api-docs, changelog, security dimensions and status-transition gate rules) because those prerequisites have not yet landed.
+**Hand-authored sections:** Setup, Find, Consolidate, Categorize & act, and Gate above are hand-authored and permanent. They implement plan-review's domain-specific logic (argument parsing, verdict-determination, and tag-clearing gating) and will not be overwritten by generator updates. The generated marker block below contains plan-mode review dimensions (coherence, architectural-fit, unit-of-work), refutation logic, filtering, and verdict rules rendered from the canonical review source in `.claude/workflows/lib/review.mjs` via `scripts/gen-skill-review.sh --mode plan`.
 
 **To regenerate this block:** Edit `.claude/workflows/lib/review.mjs` and run `scripts/gen-skill-review.sh --mode plan`, not this document. The single home of dimensions, severity scale, refute pass, verdict rules, and gate policy is the canonical review source.
 
