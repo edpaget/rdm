@@ -33,10 +33,15 @@
 #                 never the plan-review findings; the marker-scoped loop rules
 #                 — no `while` in the driver region, `for` only from an exact
 #                 allowlist, "bounded" itself being proven semantically in 1c;
-#                 and AC-STAMP — the best-effort in-progress stamp fires right
-#                 after Stage 0 and before the plan gate, is guarded by
-#                 `if (!planOnly)`, and cannot early-return between its call
-#                 site and the plan gate).
+#                 the code gate is the sole, signals-fed canonical review
+#                 construction site (AC-CANONICAL-REVIEW); the plan gate is
+#                 the sole canonical review construction site, bound as
+#                 runPlanGate's only `review:` callback, with its fail-open
+#                 no-signals comment intact and no `signals` threaded into it
+#                 (AC-CANONICAL-PLAN-REVIEW); and AC-STAMP — the best-effort
+#                 in-progress stamp fires right after Stage 0 and before the
+#                 plan gate, is guarded by `if (!planOnly)`, and cannot
+#                 early-return between its call site and the plan gate).
 #   5. DOC AGREEMENT — docs/escalation-protocol.md § Budgets names all four
 #                 budgets with exactly the values the two libs declare.
 #
@@ -1040,6 +1045,57 @@ printf '\nconst bad = runCodeReview({ signals: {} })\n' >>"$TMP/planted-emptysig
 grep -qF 'signals: {}' "$TMP/planted-emptysig.js" ||
     fail "AC-CANONICAL-REVIEW detector broken — a planted empty-signals call was not detected"
 pass "AC-CANONICAL-REVIEW: one canonical code pipeline, signals threaded from a real diff, fail-open omits signals; detectors fire on planted mutations"
+
+# AC-CANONICAL-PLAN-REVIEW: the plan gate uses the SAME canonical, generated
+# review pipeline as the code gate above — no hand-maintained plan-review
+# logic (unify-plan-review roadmap, phase 3). Four invariants:
+#   (a) exactly ONE plan-review construction site — `buildReviewPipeline('plan')`
+#       — so there is no second, independent plan-review prompt builder;
+#   (b) that binding (`runPlanReview`) is the SOLE `review:` callback passed
+#       into runPlanGate;
+#   (c) the plan gate's documented fail-open/no-signals contract — the
+#       "SIGNALS SITE (plan gate)" comment — is still present, so a future edit
+#       can't silently start threading signals/targetType into the plan gate in
+#       violation of the deferral the comment itself records; and
+#   (d) the plan-review call itself carries no `signals` key (inverse of the
+#       code gate's AC-CANONICAL-REVIEW check above — the plan gate must NOT be
+#       signals-fed).
+# Count BINDING sites (`… = buildReviewPipeline('plan')`), not prose mentions.
+PLAN_PIPELINES=$(grep -cE "= *buildReviewPipeline\('plan'\)" "$WF" | tr -d ' ')
+[ "$PLAN_PIPELINES" -eq 1 ] ||
+    fail "AC-CANONICAL-PLAN-REVIEW: expected exactly ONE buildReviewPipeline('plan') construction, found $PLAN_PIPELINES"
+grep -qF 'review: async (doc) => runPlanReview(' "$WF" ||
+    fail "AC-CANONICAL-PLAN-REVIEW: the plan gate's 'review:' dependency must call the canonical runPlanReview binding directly"
+grep -qF 'SIGNALS SITE (plan gate)' "$WF" ||
+    fail "AC-CANONICAL-PLAN-REVIEW: missing the plan gate's fail-open/no-signals contract comment"
+# Fail-open: unlike the code gate, the plan gate must never pass a 'signals'
+# key at all — deriveSignals-driven dimension selection is deferred to a later
+# roadmap phase per the comment above. Scan only the line(s) that actually
+# invoke runPlanReview(, not the whole file, so unrelated 'signals' mentions
+# elsewhere (e.g. the code gate's own signals wiring) don't false-positive.
+if grep -E 'runPlanReview\(' "$WF" | grep -q 'signals'; then
+    fail "AC-CANONICAL-PLAN-REVIEW: the plan gate must not pass 'signals' into runPlanReview — that threading is deferred (see the SIGNALS SITE comment)"
+fi
+# Planted-mutation self-tests: prove each detector actually fires.
+sed "s/= buildReviewPipeline('plan')/= buildReviewPipelineX('plan')/" "$WF" >"$TMP/planted-noplan.js"
+if [ "$(grep -cE "= *buildReviewPipeline\('plan'\)" "$TMP/planted-noplan.js" | tr -d ' ')" -ne 0 ]; then
+    fail "AC-CANONICAL-PLAN-REVIEW detector broken — renaming the plan pipeline binding was not detected"
+fi
+sed '/SIGNALS SITE (plan gate)/,/Do not add it here\./d' "$WF" >"$TMP/planted-nocomment.js"
+if grep -qF 'SIGNALS SITE (plan gate)' "$TMP/planted-nocomment.js"; then
+    fail "AC-CANONICAL-PLAN-REVIEW detector broken — stripping the fail-open comment was not detected"
+fi
+cp "$WF" "$TMP/planted-dupplan.js"
+printf "\nconst runPlanReview2 = buildReviewPipeline('plan')\n" >>"$TMP/planted-dupplan.js"
+if [ "$(grep -cE "= *buildReviewPipeline\('plan'\)" "$TMP/planted-dupplan.js" | tr -d ' ')" -eq 1 ]; then
+    fail "AC-CANONICAL-PLAN-REVIEW detector broken — a planted duplicate plan pipeline was not detected"
+fi
+cp "$WF" "$TMP/planted-plansig.js"
+printf "\nconst bad = runPlanReview({ target: 't', signals: {} })\n" >>"$TMP/planted-plansig.js"
+if ! grep -E 'runPlanReview\(' "$TMP/planted-plansig.js" | grep -q 'signals'; then
+    fail "AC-CANONICAL-PLAN-REVIEW detector broken — a planted signals-bearing runPlanReview call was not detected"
+fi
+pass "AC-CANONICAL-PLAN-REVIEW: one canonical plan pipeline, bound as runPlanGate's sole review callback, fail-open comment present and signals omitted; detectors fire on planted mutations"
 
 # Driver arg hardening: dispatch-phase is invoked DIRECTLY via the Workflow tool
 # (rdm-do --auto, hand-run single phases), so an LLM-authored stringified `args`
