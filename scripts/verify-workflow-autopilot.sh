@@ -9,16 +9,30 @@
 # batched summary and never touching `main`. Its pure control core lives once in
 # `.claude/workflows/lib/autopilot.mjs` and is copied BYTE-IDENTICAL into the
 # workflow script (the Workflow runtime cannot import a helper module — see
-# docs/workflow-schemas.md § "Import spike"). This harness gates four things:
+# docs/workflow-schemas.md § "Import spike"). The five MECHANICAL agents
+# (fetch-next, estimate-list, estimate-writeback, advance, park) run on a model
+# resolved ONCE per run via `rdm model resolve mechanical` (a deliberately
+# unsized bootstrap call, mirroring dispatch-phase's Stage-0 exemption); an
+# unresolvable mechanical model stops the run immediately with a distinct,
+# greppable stop reason rather than silently falling back to the session model.
+# The three state-writing mechanical agents (estimate-writeback, advance, park)
+# treat a null/empty ack as a FAILURE rather than silent success. This harness
+# gates all of that:
 #
 #   1. BEHAVIOR   — the pure helpers, driven in Node (zero LLM calls): arg
 #                   parsing, phase selection, outcome interpretation, tier
-#                   resolution, prompt contents, the batched summary, and
+#                   resolution, prompt contents (including
+#                   buildMechanicalModelPrompt), the batched summary, and
 #                   determinism.
 #   1b. DRIVEN LOOP — buildAutopilot fed state-backed fakes (a mutable status
 #                   Map): drive-to-reviewed, rework->park, escalated, budget
-#                   stops, the estimate pre-pass, --plan-only, and mid-tier
-#                   defaulting — asserting the loop advances off PERSISTED status.
+#                   stops, the estimate pre-pass, --plan-only, mid-tier
+#                   defaulting, mechanical-model threading into all five
+#                   mechanical deps (and NOT into the judgment estimator),
+#                   mechanical-model-unresolved fail-fast, advance-null treated
+#                   as failure (parked, absent from completed[]), and
+#                   park-null-on-every-attempt still summarizing — asserting the
+#                   loop advances off PERSISTED status.
 #   2. BLOCK DRIFT — the `autopilot-loop` region is byte-identical between the lib
 #                   source of truth and the stamped workflow script (with a
 #                   planted-mutation self-test proving the gate is not a no-op).
@@ -28,6 +42,12 @@
 #                   land/merge/main-mutation prompt string; no *_SCHEMA handed to
 #                   agent() uses a top-level type:'array' (Anthropic tools require
 #                   'object') with a planted-mutation self-test; meta.phases parity.
+#   3b. AC-MODEL   — every agent() call inside the five mechanical dep functions
+#                   (fetchNext, estimateList, estimateWriteback, advance, park)
+#                   carries an explicit `model:`; the resolveMechanicalModel
+#                   bootstrap call is whitelisted as exempt by design (it is the
+#                   call that PRODUCES the model id). A planted-mutation
+#                   self-test proves the sweep is not a no-op.
 #   4. MODULE PARSE — autopilot.js loads under module semantics (no SyntaxError),
 #                   with a planted duplicate-meta self-test.
 #   6. LAND-TIME TRAILER — hermetic, against the real binary: a trailer-less
@@ -146,6 +166,7 @@ const {
   interpretOutcome,
   stepBudgetExhausted,
   maxPhasesReached,
+  buildMechanicalModelPrompt,
   buildFetchNextPrompt,
   buildEstimateListPrompt,
   buildEstimatorPrompt,
@@ -313,6 +334,13 @@ assert.equal(maxPhasesReached(1, null), false, 'null max never trips');
 assert.equal(maxPhasesReached(1, 2), false, 'under max');
 assert.equal(maxPhasesReached(2, 2), true, 'at max');
 
+// --- buildMechanicalModelPrompt -----------------------------------------------
+const mechPrompt = buildMechanicalModelPrompt();
+assert.ok(
+  mechPrompt.includes('./target/debug/rdm model resolve mechanical'),
+  'buildMechanicalModelPrompt embeds the exact mechanical-resolve command'
+);
+
 // --- prompt contents ---------------------------------------------------------
 const adv = buildAdvancePrompt('phase-1-x', 'rm');
 for (const needle of ['phase update', '--status reviewed', 'phase-1-x', 'rm', '--no-edit', '--project rdm']) {
@@ -331,6 +359,7 @@ function hasForbidden(s) {
   return FORBIDDEN.some((f) => s.includes(f));
 }
 const allPrompts = [
+  buildMechanicalModelPrompt(),
   buildFetchNextPrompt('rm'),
   buildEstimateListPrompt('rm'),
   buildEstimatorPrompt('a phase body'),
@@ -390,7 +419,7 @@ import { pathToFileURL } from 'node:url';
 
 const libPath = process.argv[2];
 const m = await import(pathToFileURL(libPath).href);
-const { buildAutopilot, DEFAULT_MAX_REWORK } = m;
+const { buildAutopilot, DEFAULT_MAX_REWORK, DEFAULT_MAX_ADVANCE_ATTEMPTS, DEFAULT_MAX_PARK_ATTEMPTS } = m;
 
 const orderOf = (stem) => parseInt(String(stem).split('-')[1], 10);
 
@@ -404,6 +433,10 @@ function makeFakes(opts) {
   const models = o.models || {};
   const dispatchScript = o.dispatchScript || {};
   const dispatchIdx = new Map();
+  // The resolved mechanical model every pre-existing test needs so buildAutopilot
+  // doesn't immediately short-circuit on 'mechanical-model-unresolved'. Tests that
+  // want to exercise the unresolved path opt in via `{ mechanicalModel: '' }`.
+  const mechanicalModel = o.mechanicalModel !== undefined ? o.mechanicalModel : 'haiku';
 
   const callLog = [];
   const advanceCalls = [];
@@ -411,6 +444,10 @@ function makeFakes(opts) {
   const dispatchCalls = [];
   const parallelEstimateCalls = [];
   const writebackCalls = [];
+  // Per-call `model` arguments captured for each of the five mechanical dep
+  // calls, so a test can assert the resolved mechanical model actually reached
+  // every one of them (and reached NO OTHER call, e.g. parallelEstimate).
+  const modelCalls = { estimateList: [], estimateWriteback: [], fetchNext: [], advance: [], park: [] };
 
   function lowestActionable() {
     let best = null;
@@ -424,8 +461,10 @@ function makeFakes(opts) {
 
   const fakes = {
     log: (msg) => callLog.push('log:' + msg),
-    estimateList: async () => {
+    resolveMechanicalModel: async () => mechanicalModel,
+    estimateList: async (slug, model) => {
       callLog.push('estimateList');
+      modelCalls.estimateList.push(model);
       if (o.estimateList) return o.estimateList;
       // Default: fully estimated so the pre-pass is skipped.
       return o.phases.map((p) => ({ stem: p.stem, status: p.status, difficulty: 'moderate', model: 'medium' }));
@@ -435,12 +474,15 @@ function makeFakes(opts) {
       callLog.push('parallelEstimate');
       return o.estimates || [];
     },
-    estimateWriteback: async (stem, difficulty) => {
+    estimateWriteback: async (stem, difficulty, roadmap, model) => {
       writebackCalls.push({ stem, difficulty });
+      modelCalls.estimateWriteback.push(model);
       callLog.push('writeback:' + stem);
+      return { ok: true };
     },
-    fetchNext: async () => {
+    fetchNext: async (roadmap, model) => {
       callLog.push('fetchNext');
+      modelCalls.fetchNext.push(model);
       const stem = lowestActionable();
       if (!stem) return { result: 'nothing' };
       return { result: 'phase', stem, number: orderOf(stem), model: models[stem] };
@@ -454,20 +496,33 @@ function makeFakes(opts) {
       dispatchIdx.set(stem, i + 1);
       return { roadmap: slug, phase: stem, outcome, summary: 's', findings: [] };
     },
-    advance: async (stem) => {
+    advance: async (stem, roadmap, status, model) => {
       advanceCalls.push(stem);
+      modelCalls.advance.push(model);
       callLog.push('advance:' + stem);
-      statusMap.set(stem, 'reviewed');
+      statusMap.set(stem, status || 'reviewed');
       return { ok: true };
     },
-    park: async (stem, reason) => {
+    park: async (stem, reason, roadmap, model) => {
       parkCalls.push({ stem, reason });
+      modelCalls.park.push(model);
       callLog.push('park:' + stem);
       statusMap.set(stem, 'blocked');
       return { ok: true };
     },
   };
-  return { fakes, statusMap, callLog, advanceCalls, parkCalls, dispatchCalls, parallelEstimateCalls, writebackCalls };
+  return {
+    fakes,
+    statusMap,
+    callLog,
+    advanceCalls,
+    parkCalls,
+    dispatchCalls,
+    parallelEstimateCalls,
+    writebackCalls,
+    modelCalls,
+    mechanicalModel,
+  };
 }
 
 // === drive-to-reviewed: 3 phases all reviewed -> advance once each, in order,
@@ -675,6 +730,115 @@ function makeFakes(opts) {
   assert.equal(m.DEFAULT_GLOBAL_BUDGET, 50, 'the global step budget is unchanged');
 }
 
+// === AC2: the resolved mechanical model reaches ALL FIVE mechanical dep calls
+// (estimateList, estimateWriteback, fetchNext, advance, park) verbatim, and
+// parallelEstimate (the difficulty-rating JUDGMENT agent) receives NO mechanical
+// model argument at all. ========================================================
+{
+  const h = makeFakes({
+    mechanicalModel: 'haiku-test',
+    phases: [
+      { stem: 'phase-1-a', status: 'not-started' },
+      { stem: 'phase-2-b', status: 'not-started' },
+    ],
+    estimateList: [
+      { stem: 'phase-1-a', status: 'not-started' },
+      { stem: 'phase-2-b', status: 'not-started' },
+    ],
+    estimates: [
+      { stem: 'phase-1-a', difficulty: 'easy' },
+      { stem: 'phase-2-b', difficulty: 'moderate' },
+    ],
+    dispatchScript: { 'phase-2-b': ['escalated'] },
+  });
+  let parallelEstimateArgc = null;
+  const origParallelEstimate = h.fakes.parallelEstimate;
+  h.fakes.parallelEstimate = async function (...cargs) {
+    parallelEstimateArgc = cargs.length;
+    return origParallelEstimate(...cargs);
+  };
+  await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  for (const key of ['estimateList', 'estimateWriteback', 'fetchNext', 'advance', 'park']) {
+    assert.ok(h.modelCalls[key].length > 0, key + ' was called at least once');
+    assert.ok(
+      h.modelCalls[key].every((mv) => mv === 'haiku-test'),
+      key + ' received the resolved mechanical model on every call'
+    );
+  }
+  assert.equal(parallelEstimateArgc, 1, 'parallelEstimate (the judgment agent) receives NO mechanical-model argument');
+}
+
+// === AC1 / AC3: an unresolvable mechanical model stops the run BEFORE any
+// mechanical agent runs, with a distinct stop reason, and still returns the
+// always-on summary as a plain string rather than throwing. ====================
+{
+  const h = makeFakes({ mechanicalModel: '', phases: [{ stem: 'phase-1-a', status: 'not-started' }] });
+  const summary = await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  assert.equal(typeof summary, 'string', 'runAutopilot resolves to a string, never throws');
+  assert.ok(summary.length > 0, 'the summary is non-empty even on the earliest possible stop');
+  assert.ok(summary.includes('stop reason: mechanical-model-unresolved'), 'stop reason names the unresolved mechanical model');
+  assert.equal(h.callLog.filter((l) => l === 'estimateList').length, 0, 'zero estimateList calls logged');
+  assert.equal(h.callLog.filter((l) => l === 'fetchNext').length, 0, 'zero fetchNext calls logged');
+  assert.equal(h.dispatchCalls.length, 0, 'zero dispatch calls logged');
+}
+// Also whitespace-only, not just empty string (an agent() result can trim to
+// nothing without being the empty string itself).
+{
+  const h = makeFakes({ mechanicalModel: '   ', phases: [{ stem: 'phase-1-a', status: 'not-started' }] });
+  const summary = await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  assert.ok(summary.includes('stop reason: mechanical-model-unresolved'), 'whitespace-only mechanical model is treated as unresolved');
+}
+
+// === AC4a: advance returning null (the exact shape an unresolvable model id
+// produces) is treated as a FAILURE — retried up to DEFAULT_MAX_ADVANCE_ATTEMPTS,
+// then parked with a [code]-tagged reason, and the stem never lands in
+// completed[]. =================================================================
+{
+  const h = makeFakes({ phases: [{ stem: 'phase-1-a', status: 'not-started' }] });
+  h.fakes.advance = async (stem) => {
+    h.advanceCalls.push(stem);
+    return null;
+  };
+  const summary = await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  assert.equal(h.advanceCalls.length, DEFAULT_MAX_ADVANCE_ATTEMPTS, 'advance retried exactly DEFAULT_MAX_ADVANCE_ATTEMPTS times');
+  assert.equal(h.parkCalls.length, 1, 'phase parked exactly once after advance never confirms');
+  assert.ok(h.parkCalls[0].reason.startsWith('[code]'), 'advance-failure park reason tagged [code]');
+  assert.ok(
+    h.parkCalls[0].reason.includes('advance to reviewed failed repeatedly'),
+    'park reason names the advance failure'
+  );
+  assert.ok(!summary.includes('phases completed (1)'), 'the phase never lands in completed[]');
+  assert.ok(summary.includes('phases completed (0)'), 'nothing recorded as completed');
+}
+
+// === AC4b: park returning null on EVERY attempt still lets the run resolve to
+// a summary (never throws), still records the escalation, and logs the new
+// 'no confirmation' warning — an unconfirmed park write must never block the
+// final summary. ================================================================
+{
+  const h = makeFakes({
+    phases: [{ stem: 'phase-1-a', status: 'not-started' }],
+    dispatchScript: { 'phase-1-a': ['escalated'] },
+  });
+  h.fakes.park = async (stem, reason) => {
+    h.parkCalls.push({ stem, reason });
+    // The write itself may well have landed even though the agent could not
+    // CONFIRM it (a read-back parse failure, say) — model that realistically
+    // by still mutating status, so the loop advances past this phase after
+    // park's retry budget is spent, exactly as it would off a real plan repo.
+    h.statusMap.set(stem, 'blocked');
+    return null;
+  };
+  const summary = await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  assert.equal(typeof summary, 'string', 'runAutopilot still resolves to a summary string, never throws');
+  assert.equal(h.parkCalls.length, DEFAULT_MAX_PARK_ATTEMPTS, 'park retried exactly DEFAULT_MAX_PARK_ATTEMPTS times');
+  assert.ok(summary.includes('escalations awaiting review (1)'), 'the escalation is still recorded even though park never confirmed');
+  assert.ok(
+    h.callLog.some((l) => l.includes('no confirmation')),
+    'a captured log entry contains the new "no confirmation" warning text'
+  );
+}
+
 console.log('all autopilot driven-loop assertions passed');
 NODE_TEST
 
@@ -861,6 +1025,80 @@ if [ "$(declared_phases "$TMP/wf.phase.scratch")" = "$(emitted_phases "$TMP/wf.p
     fail "meta.phases consistency check did NOT catch a planted undeclared phase"
 fi
 pass "meta.phases consistency detector catches a planted undeclared phase"
+
+# --- 3b. AC-MODEL --------------------------------------------------------------
+say "3b. AC-MODEL: every agent() call in the five mechanical dep functions carries an explicit model: (bootstrap exempt)"
+
+# Scoped to ONLY the six named realDeps functions that matter here: the five
+# mechanical deps (fetchNext, estimateList, estimateWriteback, advance, park)
+# plus the resolveMechanicalModel bootstrap (needed so its whitelisted call is
+# visible to the extractor at all). This deliberately EXCLUDES parallelEstimate
+# (the difficulty-rating JUDGMENT agent, which legitimately carries no
+# `model:`) and dispatch (which calls workflow(), not agent()) — a whole-file
+# sweep would wrongly flag parallelEstimate's agent() call as a violation.
+extract_mechanical_dep_fns() {
+    awk '
+        /^  (resolveMechanicalModel|estimateList|estimateWriteback|fetchNext|advance|park): async function/ { collect = 1 }
+        collect { print }
+        collect && /^  \},$/ { collect = 0 }
+    ' "$1"
+}
+
+extract_mechanical_dep_fns "$WF" >"$TMP/mech-dep-fns"
+[ -s "$TMP/mech-dep-fns" ] || fail "AC-MODEL: could not extract any of the five mechanical dep functions from $WF"
+# Sanity: all six named functions must actually appear (a rename would silently
+# shrink this to nothing useful).
+for fn in resolveMechanicalModel estimateList estimateWriteback fetchNext advance park; do
+    grep -q "^  $fn: async function" "$TMP/mech-dep-fns" || fail "AC-MODEL: expected to find '$fn: async function' in the extracted region"
+done
+pass "AC-MODEL: extracted all six named functions (resolveMechanicalModel + the five mechanical deps)"
+
+# Same generic agent()-option-block extractor as verify-workflow-dispatch.sh,
+# applied to the scoped region above.
+mechanical_agent_option_blocks() {
+    awk '
+      /^[[:space:]]*\/\// { next }
+      !inblk && index($0, "agent(") { pending = 1 }
+      pending && index($0, "{") { inblk = 1; pending = 0; buf = $0; next }
+      inblk { buf = buf "\n" $0 }
+      inblk && /^[[:space:]]*\}\)/ { print buf "\n---END---"; inblk = 0; buf = "" }
+    ' "$1"
+}
+mechanical_agent_call_count() {
+    grep -vE '^[[:space:]]*//' "$1" | grep -cE '(^|[^A-Za-z_])_?agent\('
+}
+
+mechanical_agent_option_blocks "$TMP/mech-dep-fns" >"$TMP/mech-agent-blocks"
+[ -s "$TMP/mech-agent-blocks" ] || fail "AC-MODEL: could not extract any agent() option blocks from the mechanical dep functions"
+
+EXTRACTED_MECH=$(grep -c -- '---END---' "$TMP/mech-agent-blocks")
+CALLSITES_MECH=$(mechanical_agent_call_count "$TMP/mech-dep-fns")
+[ "$EXTRACTED_MECH" -eq "$CALLSITES_MECH" ] ||
+    fail "AC-MODEL: extracted $EXTRACTED_MECH option blocks but found $CALLSITES_MECH agent() call sites among the mechanical deps — the sweep is blind to at least one"
+pass "AC-MODEL: extracted one option block per agent() call site among the six mechanical/bootstrap functions ($EXTRACTED_MECH)"
+
+# Every block must carry `model:` unless it is the whitelisted bootstrap fetch
+# (label 'model:mechanical' — the call that PRODUCES the mechanical model id).
+assert_mechanical_model_sweep() {
+    awk '
+      BEGIN { RS = "---END---"; bad = 0 }
+      /label:/ {
+        if ($0 ~ /label: .model:mechanical./) next   # whitelisted bootstrap
+        if ($0 !~ /model:/) { bad++ }
+      }
+      END { exit (bad > 0) }
+    ' "$1"
+}
+assert_mechanical_model_sweep "$TMP/mech-agent-blocks" ||
+    fail "AC-MODEL: a non-bootstrap agent() call among the five mechanical deps is missing an explicit model:"
+pass "AC-MODEL: every mechanical dep's agent() call carries an explicit model: (resolveMechanicalModel bootstrap whitelisted)"
+
+# Self-test: strip one model: key and prove the sweep fails.
+sed '/model: model,/d' "$TMP/mech-agent-blocks" >"$TMP/mech-agent-blocks-mutant"
+if assert_mechanical_model_sweep "$TMP/mech-agent-blocks-mutant"; then
+    fail "AC-MODEL: sweep missed a removed model: key among the mechanical deps"
+fi
+pass "AC-MODEL: sweep detector fires when a model: key is removed from a mechanical dep"
 
 # --- 4. MODULE PARSE ---------------------------------------------------------
 say "4. Module parse: autopilot.js loads under module semantics (no SyntaxError)"

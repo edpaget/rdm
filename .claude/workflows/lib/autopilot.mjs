@@ -47,6 +47,12 @@ const DEFAULT_MAX_REWORK = 1;
 // cycle cannot livelock (the global step budget is the ultimate backstop).
 const DEFAULT_MAX_ADVANCE_ATTEMPTS = 2;
 
+// DEFAULT_MAX_PARK_ATTEMPTS — how many times a park write is retried before
+// giving up on confirmation. park is not itself a dispatch, so the global step
+// budget is not a backstop here — this cap is what keeps a persistently-null
+// park ack from hanging a single phase's dispatch loop.
+const DEFAULT_MAX_PARK_ATTEMPTS = 2;
+
 // parseAutopilotBudget(value, flag) — validate an optional per-run dispatch
 // budget override that is forwarded verbatim to dispatch-phase. `null` means
 // UNSET: the key is then omitted from the dispatch payload so dispatch-phase
@@ -228,6 +234,25 @@ function maxPhasesReached(dispatchCount, maxPhases) {
 
 // --- Prompt builders (pure strings; the real deps feed these to agents) -------
 
+// buildMechanicalModelPrompt() — a mechanical Bash agent that resolves the
+// mechanical dispatch step to a concrete model id, ONCE per run, before any
+// other mechanical agent fires. This is deliberately the one dep call in the
+// whole run left UNSIZED (mirrors dispatch-phase's Stage-0
+// fetch:phase-meta/fetch:task-meta exemption, recorded in
+// scripts/verify-workflow-dispatch.sh's AC-MODEL bootstrap whitelist): it is
+// the call that produces the model id every other mechanical agent runs on,
+// so it cannot know its own model before running. See
+// realDeps.resolveMechanicalModel for the corresponding NO-`model:`-key call.
+function buildMechanicalModelPrompt() {
+  return [
+    'You are a mechanical fetch agent. Do not plan or implement anything.',
+    'Run exactly this command in the repo root and read its printed output:',
+    '  ./target/debug/rdm model resolve mechanical',
+    'Return the printed model id verbatim as JSON { "model": "<id>" }.',
+    'If the command fails or prints nothing, return { "model": "" }.',
+  ].join('\n');
+}
+
 // buildFetchNextPrompt(slug) — a mechanical Bash agent that reads `rdm next`.
 function buildFetchNextPrompt(slug) {
   return [
@@ -269,13 +294,19 @@ function buildEstimatorPrompt(phaseBody) {
 
 // buildEstimateWritebackPrompt(stem, difficulty, slug) — persist a phase's
 // difficulty; the model tier derives automatically, so --model is never set.
+// Success is verified with a read-back rather than self-asserted from the
+// command's exit code alone: an unresolvable model id makes the whole agent
+// come back empty, not merely non-zero, so the caller needs proof the field
+// actually landed.
 function buildEstimateWritebackPrompt(stem, difficulty, slug) {
   return [
     'You are a mechanical write agent. Do not plan or implement anything.',
     'Persist the phase difficulty (the model tier derives automatically — do NOT',
     'pass --model). Run exactly this command in the repo root:',
     '  ./target/debug/rdm phase update ' + stem + ' --difficulty ' + difficulty + ' --no-edit --roadmap ' + slug + ' --project rdm',
-    'Report whether the command exited 0.',
+    'Then read back the phase to confirm the write landed:',
+    '  ./target/debug/rdm phase show ' + stem + ' --roadmap ' + slug + ' --project rdm --format json',
+    'Report ok: true ONLY if the read-back shows difficulty equal to "' + difficulty + '"; otherwise report ok: false.',
   ].join('\n');
 }
 
@@ -289,6 +320,9 @@ function buildEstimateWritebackPrompt(stem, difficulty, slug) {
 // Writing the land-time completion trailer is `rdm-land`'s job — it synthesizes
 // it from the OUTCOME identifiers via `rdm hook done-line` just before the
 // rebase, so no autopilot-produced branch ever needs a manual rebase to gain it.
+//
+// Success is verified with a read-back rather than self-asserted from the
+// command's exit code alone (see buildEstimateWritebackPrompt for why).
 function buildAdvancePrompt(stem, slug, status) {
   const advanceStatus = status || 'reviewed';
   return [
@@ -297,19 +331,25 @@ function buildAdvancePrompt(stem, slug, status) {
     'Run exactly this command in the repo root:',
     '  ./target/debug/rdm phase update ' + stem + ' --status ' + advanceStatus + ' --no-edit --roadmap ' + slug + ' --project rdm',
     'Persist status only — integrating the work is a separate, later step handled elsewhere.',
-    'Report whether the command exited 0.',
+    'Then read back the phase to confirm the write landed:',
+    '  ./target/debug/rdm phase show ' + stem + ' --roadmap ' + slug + ' --project rdm --format json',
+    'Report ok: true ONLY if the read-back shows status equal to "' + advanceStatus + '"; otherwise report ok: false.',
   ].join('\n');
 }
 
 // buildParkPrompt(stem, reason, slug) — park a phase as blocked with an
 // escalation reason, so `rdm next` steps past it and the reason is queued.
+// Success is verified with a read-back rather than self-asserted from the
+// command's exit code alone (see buildEstimateWritebackPrompt for why).
 function buildParkPrompt(stem, reason, slug) {
   return [
     'You are a mechanical status agent. Do not plan or implement anything.',
     'Park this phase as blocked so `rdm next` steps past it and the escalation is queued.',
     'Run exactly this command in the repo root:',
     '  ./target/debug/rdm phase update ' + stem + ' --status blocked --reason "' + reason + '" --no-edit --roadmap ' + slug + ' --project rdm',
-    'Report whether the command exited 0.',
+    'Then read back the phase to confirm the write landed:',
+    '  ./target/debug/rdm phase show ' + stem + ' --roadmap ' + slug + ' --project rdm --format json',
+    'Report ok: true ONLY if the read-back shows status equal to "blocked"; otherwise report ok: false.',
   ].join('\n');
 }
 
@@ -352,6 +392,35 @@ function buildSummary(state) {
 function buildAutopilot(deps) {
   const d = deps || {};
   const log = d.log || function () {};
+
+  // parkWithRetry(stem, reason, roadmap, model) — park a phase, retrying its
+  // write up to DEFAULT_MAX_PARK_ATTEMPTS times and requiring a CONFIRMED ack
+  // (ack.ok === true) rather than trusting a thrown/falsy result as success.
+  // park is not itself a dispatch, so it has no other backstop — a park that
+  // never confirms logs loudly, but the caller still records the escalation
+  // and moves on: an unconfirmed park write must never block the run from
+  // reaching its final summary.
+  async function parkWithRetry(stem, reason, roadmap, model) {
+    let parkOk = false;
+    for (let attempt = 0; attempt < DEFAULT_MAX_PARK_ATTEMPTS; attempt++) {
+      try {
+        const ack = await d.park(stem, reason, roadmap, model);
+        parkOk = !!ack && ack.ok === true;
+      } catch (e) {
+        parkOk = false;
+      }
+      if (parkOk) break;
+    }
+    if (!parkOk) {
+      log(
+        'autopilot: park write for ' +
+          stem +
+          ' returned no confirmation — the escalation is recorded in this summary but the plan-repo status may not reflect it'
+      );
+    }
+    return parkOk;
+  }
+
   return async function runAutopilot(config) {
     const cfg = config || {};
     const roadmap = cfg.roadmap;
@@ -367,11 +436,32 @@ function buildAutopilot(deps) {
     if (cfg.maxPlanRevise != null) budgets.maxPlanRevise = cfg.maxPlanRevise;
     if (cfg.maxCodeRework != null) budgets.maxCodeRework = cfg.maxCodeRework;
 
+    // Resolve the mechanical model ONCE, before anything else — including the
+    // estimate pre-pass. This dep call is deliberately left UNSIZED (mirrors
+    // dispatch-phase's Stage-0 fetch:phase-meta/fetch:task-meta exemption): it
+    // is the call that produces the model id every other mechanical agent runs
+    // on, so it cannot know its own model before running (see
+    // buildMechanicalModelPrompt / realDeps.resolveMechanicalModel). An
+    // empty/unresolvable result is NOT a silent fallback to the session model —
+    // it stops the run immediately and loudly, before any mechanical agent
+    // fires, but still returns the always-on batched summary rather than
+    // throwing.
+    const mechanicalModelRaw = await d.resolveMechanicalModel();
+    const mechanicalModel = typeof mechanicalModelRaw === 'string' ? mechanicalModelRaw.trim() : '';
+    if (!mechanicalModel) {
+      log(
+        'autopilot: mechanical model could not be resolved (rdm model resolve mechanical returned nothing) — stopping before any mechanical agent runs'
+      );
+      return buildSummary({ roadmap: roadmap, completed: [], escalations: [], stopReason: 'mechanical-model-unresolved' });
+    }
+
     // Estimate pre-pass — ONCE, before the drive loop. Rate every unestimated
     // phase in a single parallel fan-out, then persist each tier. A wholesale
     // failure or a single missing estimate is tolerated: the phase falls back to
-    // the mid tier at dispatch time.
-    const phaseList = await d.estimateList(roadmap);
+    // the mid tier at dispatch time. estimateList/estimateWriteback are
+    // mechanical (fetch/write only) and run on mechanicalModel; parallelEstimate
+    // is the difficulty-rating JUDGMENT agent and stays on its own resolved tier.
+    const phaseList = await d.estimateList(roadmap, mechanicalModel);
     const unestimated = selectUnestimated(phaseList);
     if (unestimated.length) {
       let ests = [];
@@ -385,7 +475,10 @@ function buildAutopilot(deps) {
       for (const est of rated) {
         if (!est || !est.stem || !est.difficulty) continue;
         try {
-          await d.estimateWriteback(est.stem, est.difficulty, roadmap);
+          const ack = await d.estimateWriteback(est.stem, est.difficulty, roadmap, mechanicalModel);
+          if (!ack || ack.ok !== true) {
+            log('autopilot: estimate writeback failed for ' + est.stem + ' — it falls back to mid tier');
+          }
         } catch (e) {
           log('autopilot: estimate writeback failed for ' + est.stem + ' — it falls back to mid tier');
         }
@@ -404,7 +497,7 @@ function buildAutopilot(deps) {
         stopReason = 'budget';
         break;
       }
-      const next = interpretNext(await d.fetchNext(roadmap));
+      const next = interpretNext(await d.fetchNext(roadmap, mechanicalModel));
       if (next.kind === 'stop') {
         stopReason = next.reason;
         break;
@@ -428,7 +521,7 @@ function buildAutopilot(deps) {
           outcome = await d.dispatch(roadmap, stem, planOnly, budgets);
         } catch (e) {
           const reason = buildParkReason('code', 'dispatch failed: ' + ((e && e.message) || 'error'));
-          await d.park(stem, reason, roadmap);
+          await parkWithRetry(stem, reason, roadmap, mechanicalModel);
           escalations.push({ stem: stem, reason: reason });
           break;
         }
@@ -440,8 +533,8 @@ function buildAutopilot(deps) {
           let advanceOk = false;
           for (let attempt = 0; attempt < DEFAULT_MAX_ADVANCE_ATTEMPTS; attempt++) {
             try {
-              const ack = await d.advance(stem, roadmap, decision.status);
-              advanceOk = !ack || ack.ok !== false;
+              const ack = await d.advance(stem, roadmap, decision.status, mechanicalModel);
+              advanceOk = !!ack && ack.ok === true;
             } catch (e) {
               advanceOk = false;
             }
@@ -454,7 +547,7 @@ function buildAutopilot(deps) {
             break;
           }
           const reason = buildParkReason('code', 'advance to reviewed failed repeatedly');
-          await d.park(stem, reason, roadmap);
+          await parkWithRetry(stem, reason, roadmap, mechanicalModel);
           escalations.push({ stem: stem, reason: reason });
           break;
         }
@@ -473,7 +566,7 @@ function buildAutopilot(deps) {
         }
 
         // decision.action === 'park'
-        await d.park(stem, decision.reason, roadmap);
+        await parkWithRetry(stem, decision.reason, roadmap, mechanicalModel);
         escalations.push({ stem: stem, reason: decision.reason });
         break;
       }
@@ -490,6 +583,7 @@ export {
   DEFAULT_GLOBAL_BUDGET,
   DEFAULT_MAX_REWORK,
   DEFAULT_MAX_ADVANCE_ATTEMPTS,
+  DEFAULT_MAX_PARK_ATTEMPTS,
   parseAutopilotBudget,
   parseAutopilotArgs,
   selectUnestimated,
@@ -501,6 +595,7 @@ export {
   advanceReason,
   stepBudgetExhausted,
   maxPhasesReached,
+  buildMechanicalModelPrompt,
   buildFetchNextPrompt,
   buildEstimateListPrompt,
   buildEstimatorPrompt,
