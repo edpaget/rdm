@@ -15,11 +15,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `needs-plan-review` tag-clearing gating). The Gate section is now more explicit
   about its fundamentally different role compared to code-review's status-transition
   gate: plan-review gates by clearing or leaving the `needs-plan-review` tag, never
-  writing rdm status or land-time completion directives. Full automation of plan
-  review dimensions (removal of hand-authored Consolidate and Find prose) is
-  deferred pending completion of Phase 1 work in `.claude/workflows/lib/review.mjs`
-  and `scripts/gen-skill-review.sh`. **No behavior change**; all verdict categories,
-  gating logic, and per-phase handling remain unchanged.
+  writing rdm status or land-time completion directives. The review dimensions and
+  verdict rules are no longer hand-authored here at all: they are generated into the
+  skill from the canonical review source (`.claude/workflows/lib/review.mjs`, via
+  `scripts/gen-skill-review.sh --mode plan`), so the skill and `rdm-review` now share
+  one specification. Setup, Find, Consolidate, Categorize & act, and Gate remain
+  hand-authored **by design** — they carry plan-review's domain-specific logic, not
+  review-spec content, and are not pending future automation. **No behavior change**;
+  all verdict categories, gating logic, and per-phase handling remain unchanged.
 
 ### Removed
 
