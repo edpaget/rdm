@@ -163,12 +163,6 @@ pub(crate) enum Command {
         /// Generate Claude Code skill files instead of an instruction file.
         #[arg(long)]
         skills: bool,
-        /// Also write the plan-review hook (claude and pi; composable with `--skills`).
-        /// Claude: a Stop hook script registered in `.claude/settings.json`. Pi: a
-        /// `.pi/extensions/rdm-plan-review.ts` extension (auto-discovered, fires on
-        /// `agent_end`). Reprompts while an item carries the `needs-plan-review` tag.
-        #[arg(long)]
-        hooks: bool,
         /// Generate MCP-oriented instructions (referencing MCP tool names instead of CLI commands).
         /// When combined with --out, also writes .mcp.json alongside.
         #[arg(long)]

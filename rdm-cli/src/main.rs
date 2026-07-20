@@ -156,7 +156,6 @@ fn run() -> Result<()> {
             out,
             principles_file,
             skills,
-            hooks,
             mcp,
             user,
         } => commands::agent_config::run(
@@ -166,7 +165,6 @@ fn run() -> Result<()> {
             out,
             principles_file,
             skills,
-            hooks,
             mcp,
             user,
         )?,

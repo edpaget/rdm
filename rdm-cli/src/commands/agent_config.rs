@@ -17,7 +17,6 @@ pub fn run(
     out: Option<PathBuf>,
     principles_file: Option<String>,
     skills: bool,
-    hooks: bool,
     mcp: bool,
     user: bool,
 ) -> Result<()> {
@@ -30,31 +29,10 @@ pub fn run(
         );
     }
 
-    // Validate --hooks up front, before any files are written, so an invalid
-    // combination never leaves a partially-written instruction/skills tree.
-    if hooks {
-        if platform != Platform::Claude && platform != Platform::Pi {
-            bail!(
-                "--hooks is only supported for the claude and pi platforms (claude \
-                 writes a Stop hook registered in .claude/settings.json; pi writes a \
-                 .pi/extensions/rdm-plan-review.ts extension)"
-            );
-        }
-        if out.is_none() && !user {
-            bail!("--hooks requires --out or --user to specify the output directory");
-        }
-    }
-
     if skills {
         write_skills(platform, project, principles_file, mcp, user, &out, root)?;
     } else {
         write_instruction(platform, project, principles_file, mcp, user, &out, root)?;
-    }
-
-    if hooks && platform == Platform::Claude {
-        write_claude_hook(platform, user, &out)?;
-    } else if hooks && platform == Platform::Pi {
-        write_pi_extension(platform, user, &out)?;
     }
 
     Ok(())
@@ -185,140 +163,6 @@ fn write_instruction(
         }
     } else {
         print!("{content}");
-    }
-    Ok(())
-}
-
-/// Writes the Claude Stop-hook scripts (executable) and merges the hook
-/// registration into `settings.json`.
-///
-/// Iterates over the plan-review hook ([`agent_config::generate_claude_plan_review_hook`]):
-/// its script is written and marked executable, then its Stop hook command is folded
-/// into the in-memory settings JSON via [`agent_config::merge_stop_hook_into_settings`].
-/// The settings file is read from disk only once (before the first merge) and written
-/// once at the end. The loop shape is kept even though there is currently only one hook
-/// set, so a future additional Claude Stop hook composes into the same `settings.json`
-/// non-destructively and idempotently without restructuring this function.
-///
-/// # Errors
-///
-/// Returns an error if the output directory cannot be resolved, a file
-/// write/permission change fails, or either settings merge fails.
-fn write_claude_hook(platform: Platform, user: bool, out: &Option<PathBuf>) -> Result<()> {
-    // Platform and --out/--user were validated up front. Resolve the
-    // `.claude/` directory that hosts the hook scripts and settings file.
-    // --user writes under ~/.claude (which user_level_dir already resolves
-    // to for claude); --out <dir> writes under <dir>/.claude so it lands
-    // alongside any skills written above.
-    let claude_dir: PathBuf = if user {
-        platform.user_level_dir().map_err(|e| anyhow!(e))?
-    } else {
-        let dir = out
-            .as_ref()
-            .ok_or_else(|| anyhow!("internal error: --out required when not --user"))?;
-        dir.join(".claude")
-    };
-
-    // Invariant: every hook set below must share the same
-    // `settings_relative_path` — the loop threads one in-memory merged
-    // settings string across all sets and writes a single settings file at
-    // the end. A future hook targeting a different settings file would need
-    // the merges grouped per path instead.
-    let hook_file_sets = [agent_config::generate_claude_plan_review_hook()];
-    debug_assert!(
-        hook_file_sets
-            .iter()
-            .all(|h| h.settings_relative_path == hook_file_sets[0].settings_relative_path),
-        "all Claude hook sets must merge into the same settings file"
-    );
-
-    let mut settings_path: Option<PathBuf> = None;
-    let mut merged: Option<String> = None;
-
-    for hook_files in &hook_file_sets {
-        // Write the hook script and mark it executable (unix only).
-        let script_path = claude_dir.join(hook_files.script_relative_path);
-        if let Some(parent) = script_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create directory {}", parent.display()))?;
-        }
-        std::fs::write(&script_path, hook_files.script_content)
-            .with_context(|| format!("failed to write {}", script_path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&script_path)
-                .with_context(|| format!("failed to stat {}", script_path.display()))?
-                .permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&script_path, perms).with_context(|| {
-                format!("failed to set permissions on {}", script_path.display())
-            })?;
-        }
-        println!("Wrote {}", script_path.display());
-
-        // Merge this hook's Stop registration into settings.json (non-destructive).
-        // Read the existing settings file from disk only on the first iteration;
-        // subsequent iterations thread the in-memory merged string through so both
-        // commands land in the same write.
-        let this_settings_path = claude_dir.join(hook_files.settings_relative_path);
-        let existing = match &merged {
-            Some(s) => Some(s.clone()),
-            None => match std::fs::read_to_string(&this_settings_path) {
-                Ok(s) => Some(s),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => {
-                    return Err(e).with_context(|| {
-                        format!("failed to read {}", this_settings_path.display())
-                    });
-                }
-            },
-        };
-        merged = Some(
-            agent_config::merge_stop_hook_into_settings(
-                existing.as_deref(),
-                hook_files.stop_hook_command,
-            )
-            .with_context(|| {
-                format!(
-                    "failed to merge Stop hook into {}",
-                    this_settings_path.display()
-                )
-            })?,
-        );
-        settings_path = Some(this_settings_path);
-    }
-
-    let settings_path = settings_path.expect("hook_file_sets is non-empty");
-    let merged = merged.expect("hook_file_sets is non-empty");
-    write_output(&settings_path, merged.as_bytes())
-}
-
-/// Writes the Pi `rdm-plan-review.ts` extension file.
-///
-/// # Errors
-///
-/// Returns an error if the output directory cannot be resolved or a file
-/// write fails.
-fn write_pi_extension(platform: Platform, user: bool, out: &Option<PathBuf>) -> Result<()> {
-    // Pi auto-discovers extensions from its `extensions/` directory, so there
-    // is no settings file to register and no executable bit to set — the files
-    // are TypeScript modules, not directly-executed scripts. --user writes
-    // under ~/.pi/agent; --out <dir> writes under <dir>/.pi alongside any
-    // skills written above.
-    let pi_base: PathBuf = if user {
-        platform.user_level_dir().map_err(|e| anyhow!(e))?
-    } else {
-        let dir = out
-            .as_ref()
-            .ok_or_else(|| anyhow!("internal error: --out required when not --user"))?;
-        dir.join(".pi")
-    };
-
-    let ext_file_sets = [agent_config::generate_pi_plan_review_extension()];
-    for ext_files in &ext_file_sets {
-        let ext_path = pi_base.join(ext_files.extension_relative_path);
-        write_output(&ext_path, ext_files.extension_content.as_bytes())?;
     }
     Ok(())
 }

@@ -47,5 +47,5 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
   `rdm search "" --tag <candidate> {proj_flag}` before inventing a new one.
 - If `plan_review` is enabled, every roadmap and phase created above already
   carries a `needs-plan-review` tag — leave it in place, don't strip it by
-  hand. It's cleared by the `rdm-plan-review` skill (run manually or via the
-  Stop hook/extension) once the plan passes review.
+  hand. It's cleared only by manually running the `rdm-plan-review` skill
+  once the plan passes review — there is no automated reprompt.

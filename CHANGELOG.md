@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Breaking:** the plan-review Stop hook (`rdm agent-config claude --hooks`'s
+  `.claude/hooks/rdm-plan-review-on-create.sh`) and its Pi `agent_end`
+  extension (`rdm agent-config pi --hooks`'s
+  `.pi/extensions/rdm-plan-review.ts`) are no longer generated, and the
+  `--hooks` flag itself is removed from `rdm agent-config claude`/`rdm
+  agent-config pi` entirely. It is superseded by plan review now running
+  in-flow on the ephemeral implementation-plan lane (`dispatch-phase`,
+  `rdm-do`'s `--implementation-plan` review). **That in-flow review is a
+  distinct mechanism from, and does not clear, the persisted
+  `needs-plan-review` tag** stamped onto roadmaps/phases/tasks by `roadmap
+  create` / `phase create` / `task create` when `plan_review` is enabled — it
+  reviews an ephemeral plan draft, not the persisted item. With the Stop hook
+  retired, clearing `needs-plan-review` on items created via `rdm-roadmap`,
+  ad hoc create commands, or `rdm-do` side-task filing has **no automated
+  reprompt left and is manual-only** until a filed follow-up task
+  (`wire-active-plan-review-tag-gate`) lands: run the `rdm-plan-review` skill
+  against the item (`--roadmap`/`--task`/`<roadmap> <phase>`), or
+  periodically sweep with `rdm search "" --tag needs-plan-review`. Projects
+  that installed the retired hook/extension via `--hooks` should remove
+  `.claude/hooks/rdm-plan-review-on-create.sh` and its `hooks.Stop` entry in
+  `.claude/settings.json` (or `.pi/extensions/rdm-plan-review.ts`) manually —
+  `agent-config` no longer manages them.
+
 ### Added
 
 - `rdm hook done-line` prints the land-time `Done:` commit trailer for a phase
