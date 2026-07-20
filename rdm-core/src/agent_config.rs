@@ -3501,6 +3501,71 @@ mod tests {
         }
     }
 
+    /// Every review skill variant carries the dimension/severity/verdict
+    /// *definitions* solely inside `scripts/gen-skill-review.sh`'s generated
+    /// `<!-- rdm:review-spec:begin -->` / `<!-- rdm:review-spec:end -->` span.
+    /// Definitional sentences drawn from the generated block must not also be
+    /// hand-duplicated in the surrounding Setup/Report/Act/Gate narrative —
+    /// that narrative may still *reference* a term (e.g. a `--status
+    /// reviewed` command literal, or "per the verdict below"), which is why
+    /// this checks full defining phrases rather than the bare dimension /
+    /// severity / verdict words, which legitimately recur outside the block.
+    #[test]
+    fn skill_review_spec_confined_to_generated_block() {
+        const BEGIN: &str = "<!-- rdm:review-spec:begin";
+        const END: &str = "<!-- rdm:review-spec:end -->";
+        // Full definitional phrases lifted verbatim from the generated block:
+        // the severity scale's three definitions, the dimensions intro, and
+        // the verdict decision rule. A bare word like "blocking" or
+        // "escalated" is *not* included here — those legitimately recur as
+        // command literals / status values in the Gate section outside the
+        // block.
+        const DEFINITIONAL_PHRASES: &[&str] = &[
+            // Severity scale definitions.
+            "the work must not advance as-is",
+            "recorded but non-gating",
+            "minor optional improvement",
+            // Dimensions intro (defines what "always-on"/"triggered" mean).
+            "Scale the fleet to what the change actually touches",
+            // Verdict decision rule.
+            "Determine the outcome in this strict order",
+            "needs a *human decision*",
+        ];
+
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+            let content = &skills[2].content;
+            let begin = content
+                .find(BEGIN)
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing begin marker"));
+            let end = content
+                .find(END)
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing end marker"));
+            assert!(
+                begin < end,
+                "mcp={mcp}: begin marker must precede end marker"
+            );
+
+            let before = &content[..begin];
+            let after = &content[end + END.len()..];
+
+            for phrase in DEFINITIONAL_PHRASES {
+                assert!(
+                    !before.contains(phrase),
+                    "mcp={mcp}: spec-definition phrase found before the generated block: {phrase:?}"
+                );
+                assert!(
+                    !after.contains(phrase),
+                    "mcp={mcp}: spec-definition phrase found after the generated block: {phrase:?}"
+                );
+            }
+        }
+    }
+
     // --- Claude auto-review Stop hook tests ---
 
     #[test]

@@ -69,6 +69,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reason prefix) rather than being downgraded to `in-progress` — tasks have
   supported `blocked` for some time, and the skill's claim to the contrary was
   stale. Phase behavior is unchanged.
+- The `rdm-review` skill's wording is trimmed: the review dimensions, severity
+  scale, and verdict rules now live *only* inside the generated "Review
+  specification" section (stamped by `scripts/gen-skill-review.sh` from the
+  same canonical source `rdm-dispatch-phase`/`rdm-autopilot` use). The
+  surrounding Setup/Report/Act/Gate steps no longer restate those definitions
+  — they reference the generated section by name instead. No behavior change;
+  this only removes duplicated prose that could drift out of sync with the
+  canonical definitions.
 - `rdm-land` no longer aborts when a reviewed branch is missing its `Done:`
   trailer. Autonomous runs deliberately never write one, so landing now
   synthesizes it via `rdm hook done-line` from the item's identifiers and amends
