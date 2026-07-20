@@ -78,6 +78,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The shipped `rdm-plan-review` skill now carries the same **generated review
+  specification** as `rdm-review`: the same severity scale, confidence floor,
+  finding format, and `reviewed` / `rework` / `escalated` outcome vocabulary,
+  replacing the old PASS / PASS WITH CONCERNS / REWORK verdicts. Its three plan
+  dimensions are unchanged (coherence and architectural fit always run;
+  unit-of-work runs only for a phase), and the `needs-plan-review` gate is
+  unchanged in effect — what used to PASS or PASS WITH CONCERNS now reports
+  `reviewed` and clears the tag, and what used to REWORK now reports `rework` or
+  `escalated` and leaves it. Per-phase gating under `--roadmap <slug>` and the
+  report-only `--implementation-plan` mode (no gate, no mutations) are preserved.
+- Plan review now includes a **refute pass**: every finding is graded by a fresh,
+  separate read-only agent before it is reported, and refuted or low-confidence
+  (<70) findings are dropped. This is deliberate parity with the code review, and
+  it means some weakly-evidenced findings that previously held the
+  `needs-plan-review` gate closed will no longer do so.
 - `rdm-do`'s finalize step now runs an automated code review in **both** modes.
   Previously, interactive `rdm-do` parked the item in `needs-review` for a
   separate review pass to pick up, and `rdm-do --auto --task` finalized with no

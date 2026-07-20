@@ -7,6 +7,17 @@
 # skill-renderable prose; this script strips the `//| ` prefix and stamps the
 # result between the markers
 #
+# Mode tags: a prose line may carry an optional per-line mode tag immediately
+# after the `//|` prefix.
+#
+#   //| ...      shared    — rendered in EVERY mode
+#   //|code| ... code-only — rendered by --mode code
+#   //|plan| ... plan-only — rendered by --mode plan
+#
+# The tag is recognized only as the literal `code|` or `plan|` immediately after
+# `//|`, so shared prose must never begin with that text. One region pair, one
+# emitter, two skills — there is no second generator.
+#
 #   <!-- rdm:review-spec:begin ... -->
 #   <!-- rdm:review-spec:end -->
 #
@@ -27,7 +38,8 @@
 #   plan           — consumers: skill-plan-review-{cli,mcp}.md
 #
 # `--check` is what scripts/verify-workflow-review.sh and CI use to prove no
-# template was hand-edited out of sync with the source of truth.
+# template was hand-edited out of sync with the source of truth. BOTH modes are
+# `--check`-gated there.
 
 set -eu
 
@@ -79,15 +91,22 @@ trap 'rm -f "$specfile"' EXIT INT HUP TERM
 # region, in that order. Marker lines are matched only after the "// >>> "
 # comment prefix, so an incidental in-region mention cannot truncate extraction.
 extract_region() {
-    awk -v b=">>> $1:begin" -v e=">>> $1:end" '
+    awk -v b=">>> $1:begin" -v e=">>> $1:end" -v mode="$MODE" '
         index($0, b) { inregion = 1; next }
         index($0, e) { inregion = 0 }
         inregion && /^[[:space:]]*\/\/\|/ {
             # Prose lines may be indented (they sit inside object literals).
-            # Strip the indent AND the "//| " prefix; anything further in is the
-            # markdown authors intentional indentation.
+            # Strip the indent AND the "//|" prefix; what remains may open with a
+            # mode tag ("code|" / "plan|"), otherwise the line is shared.
             line = $0
-            sub(/^[[:space:]]*\/\/\| ?/, "", line)
+            sub(/^[[:space:]]*\/\/\|/, "", line)
+            tag = ""
+            if (substr(line, 1, 5) == "code|") { tag = "code"; line = substr(line, 6) }
+            else if (substr(line, 1, 5) == "plan|") { tag = "plan"; line = substr(line, 6) }
+            if (tag != "" && tag != mode) next
+            # Drop the single separating space after the prefix/tag; anything
+            # further in is the markdown authors intentional indentation.
+            sub(/^ /, "", line)
             print line
         }
     ' "$SOURCE"

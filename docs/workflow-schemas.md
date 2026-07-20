@@ -319,14 +319,36 @@ is written only by non-stamped code: the interactive skill's gate step and
   literate comment lines `scripts/gen-skill-review.sh` renders into
   `rdm-core/src/templates/skill-review-{cli,mcp}.md` between
   `<!-- rdm:review-spec:begin/end -->` markers. It is mode-dispatched
-  (`--mode code|plan`) so the plan-review surface can collapse onto the same
-  source. The gate region sits outside the stamped block precisely because it is
-  the one place the completion-trailer literal may appear.
+  (`--mode code|plan`), and `--mode plan` renders the SAME regions into
+  `skill-plan-review-{cli,mcp}.md` — one source, one emitter, two skills. The
+  gate region sits outside the stamped block precisely because it is the one
+  place the completion-trailer literal may appear.
+
+Which mode a prose line belongs to is declared by an optional **per-line mode
+tag**, written immediately after the `//|` prefix: an untagged line is shared
+and renders in every mode, a `code|`-tagged line renders only under
+`--mode code`, and a `plan|`-tagged line only under `--mode plan`. The tag is
+recognized only as that literal text immediately after `//|`, so shared prose
+must never begin with it. There is no second region, no second generator, and no
+second consumer list — the tag is the whole mechanism. Mode-isolation greps in
+`scripts/verify-workflow-review.sh` (code dimension names and the trailer
+literal must be absent from the plan render; `needs-plan-review` and
+`unit-of-work` absent from the code render) are the detector for a mistagged
+line leaking across.
+
+The gate itself is likewise mode-dispatched data rather than a fork:
+`GATE_POLICY[mode][outcome]` yields `{ status, writesCompletion,
+clearsPlanReviewTag, reasonPrefix }`, and `STATUS_MAPPING` *is*
+`GATE_POLICY.code`, so `statusFor`/`writesCompletion` are unchanged for
+`dispatch-phase`/`autopilot`. The plan rows carry an explicit `status: null` — a
+plan review never persists an rdm status; it clears `needs-plan-review` on
+`reviewed` and leaves it on `rework`/`escalated`.
 
 Everything else inside the stamped block is **machinery** (JSON schemas,
 `survives`/`rankFindings`/`selectDimensions`/`deriveSignals`, the classifier and
-status mapping) and is never rendered into a skill. Both generators are
-`--check`-gated by `scripts/verify-workflow-review.sh`, which CI runs.
+the gate policy) and is never rendered into a skill. Both generators are
+`--check`-gated by `scripts/verify-workflow-review.sh` — the skill generator in
+BOTH modes — which CI runs.
 
 ## dispatch-phase contracts
 

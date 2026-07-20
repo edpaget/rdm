@@ -1533,11 +1533,14 @@ mod tests {
             mcp: false,
         });
         let content = &skills[9].content;
-        assert!(content.contains("Coherence"));
-        assert!(content.contains("Architectural"));
-        assert!(content.contains("Unit-of-work"));
-        // Unit-of-work reviewer is scoped to phases only.
-        assert!(content.contains("phases only"));
+        assert!(content.contains("**coherence** — *always.*"));
+        assert!(content.contains("**architectural-fit** — *always.*"));
+        // The unit-of-work dimension is triggered by the target type, not by
+        // diff shape: it runs only for a phase.
+        assert!(content.contains("**unit-of-work** — *trigger: the target is a phase.*"));
+        assert!(
+            content.contains("add `unit-of-work` only when the target type from step 1 is a phase")
+        );
     }
 
     #[test]
@@ -1548,10 +1551,12 @@ mod tests {
             mcp: true,
         });
         let content = &skills[9].content;
-        assert!(content.contains("Coherence"));
-        assert!(content.contains("Architectural"));
-        assert!(content.contains("Unit-of-work"));
-        assert!(content.contains("phases only"));
+        assert!(content.contains("**coherence** — *always.*"));
+        assert!(content.contains("**architectural-fit** — *always.*"));
+        assert!(content.contains("**unit-of-work** — *trigger: the target is a phase.*"));
+        assert!(
+            content.contains("add `unit-of-work` only when the target type from step 1 is a phase")
+        );
     }
 
     #[test]
@@ -1598,11 +1603,13 @@ mod tests {
             mcp: false,
         });
         let content = &skills[9].content;
-        assert!(content.contains("**PASS WITH CONCERNS**"));
-        assert!(content.contains("**REWORK**"));
-        // Distinctly-bounded PASS token (not merely a substring of PASS WITH CONCERNS).
-        assert!(content.contains("**PASS**"));
+        assert!(content.contains("**reviewed**"));
+        assert!(content.contains("**rework**"));
+        assert!(content.contains("**escalated**"));
         assert!(content.contains("the first matching rule wins"));
+        // The retired vocabulary survives only as the explicit mapping note.
+        assert!(!content.contains("**PASS WITH CONCERNS**"));
+        assert!(!content.contains("**REWORK**"));
     }
 
     #[test]
@@ -1613,10 +1620,12 @@ mod tests {
             mcp: true,
         });
         let content = &skills[9].content;
-        assert!(content.contains("**PASS WITH CONCERNS**"));
-        assert!(content.contains("**REWORK**"));
-        assert!(content.contains("**PASS**"));
+        assert!(content.contains("**reviewed**"));
+        assert!(content.contains("**rework**"));
+        assert!(content.contains("**escalated**"));
         assert!(content.contains("the first matching rule wins"));
+        assert!(!content.contains("**PASS WITH CONCERNS**"));
+        assert!(!content.contains("**REWORK**"));
     }
 
     #[test]
@@ -1745,7 +1754,11 @@ mod tests {
         assert!(content.contains("needs-plan-review"));
         assert!(content.contains("--format json"));
         assert!(content.contains("--tags"));
-        assert!(content.contains("PASS or PASS WITH CONCERNS"));
+        assert!(content.contains("On **reviewed**, read the target's current tags"));
+        assert!(content.contains("| **reviewed** | cleared | none |"));
+        assert!(
+            content.contains("rdm commit -m \"chore(plan): clear needs-plan-review on <target>\"")
+        );
     }
 
     #[test]
@@ -1757,7 +1770,8 @@ mod tests {
         });
         let content = &skills[9].content;
         assert!(content.contains("needs-plan-review"));
-        assert!(content.contains("PASS or PASS WITH CONCERNS"));
+        assert!(content.contains("On **reviewed**, read the target's current tags"));
+        assert!(content.contains("| **reviewed** | cleared | none |"));
     }
 
     #[test]
@@ -1786,8 +1800,11 @@ mod tests {
         let content = &skills[9].content;
         assert!(content.contains("--implementation-plan"));
         assert!(content.contains("no tag-gate step"));
-        assert!(content.contains("skip step 5 entirely for this mode"));
+        assert!(content.contains("skip the Gate step entirely for this mode"));
         assert!(content.contains("Skip this step entirely in `--implementation-plan` mode"));
+        // The carve-out also survives in the generated gate spec, so it cannot
+        // be lost on regeneration.
+        assert!(content.contains("**`--implementation-plan`** — **no gate at all.**"));
     }
 
     #[test]
@@ -1800,8 +1817,11 @@ mod tests {
         let content = &skills[9].content;
         assert!(content.contains("--implementation-plan"));
         assert!(content.contains("no tag-gate step"));
-        assert!(content.contains("skip step 5 entirely for this mode"));
+        assert!(content.contains("skip the Gate step entirely for this mode"));
         assert!(content.contains("Skip this step entirely in `--implementation-plan` mode"));
+        // The carve-out also survives in the generated gate spec, so it cannot
+        // be lost on regeneration.
+        assert!(content.contains("**`--implementation-plan`** — **no gate at all.**"));
     }
 
     #[test]
@@ -1812,9 +1832,12 @@ mod tests {
             mcp: false,
         });
         let content = &skills[9].content;
-        assert!(content.contains("the *act* half below is skipped entirely"));
-        assert!(content.contains("left to the caller (e.g. `rdm-do`'s own `--auto`-mode step)"));
-        assert!(content.contains("skips step 4's fix-application half the same way"));
+        assert!(content.contains("the *act* half is skipped entirely"));
+        assert!(content.contains("folding them back into the plan text is left to the caller"));
+        assert!(content.contains("skips the Act step's fix-application half the same way"));
+        assert!(content.contains(
+            "Skip this step's fix-application half entirely in `--implementation-plan` mode"
+        ));
     }
 
     #[test]
@@ -1825,9 +1848,12 @@ mod tests {
             mcp: true,
         });
         let content = &skills[9].content;
-        assert!(content.contains("the *act* half below is skipped entirely"));
-        assert!(content.contains("left to the caller (e.g. `rdm-do`'s own `--auto`-mode step)"));
-        assert!(content.contains("skips step 4's fix-application half the same way"));
+        assert!(content.contains("the *act* half is skipped entirely"));
+        assert!(content.contains("folding them back into the plan text is left to the caller"));
+        assert!(content.contains("skips the Act step's fix-application half the same way"));
+        assert!(content.contains(
+            "Skip this step's fix-application half entirely in `--implementation-plan` mode"
+        ));
     }
 
     #[test]
@@ -1838,8 +1864,10 @@ mod tests {
             mcp: false,
         });
         let content = &skills[9].content;
-        assert!(content
-            .contains("Skipped for `--task`, `--implementation-plan`, and for a standalone roadmap-body review"));
+        // The phases-only trigger and its skip list are rendered from the
+        // canonical source, so assert the (line-wrapped) rendered fragments.
+        assert!(content.contains("*trigger: the target is a phase.* Skipped for"));
+        assert!(content.contains("tasks, standalone roadmap bodies, and `--implementation-plan`"));
     }
 
     #[test]
@@ -1850,8 +1878,10 @@ mod tests {
             mcp: true,
         });
         let content = &skills[9].content;
-        assert!(content
-            .contains("Skipped for `--task`, `--implementation-plan`, and for a standalone roadmap-body review"));
+        // The phases-only trigger and its skip list are rendered from the
+        // canonical source, so assert the (line-wrapped) rendered fragments.
+        assert!(content.contains("*trigger: the target is a phase.* Skipped for"));
+        assert!(content.contains("tasks, standalone roadmap bodies, and `--implementation-plan`"));
     }
 
     #[test]
@@ -1863,8 +1893,11 @@ mod tests {
         });
         let content = &skills[9].content;
         assert!(content.contains(
-            "**REWORK**: do **not** call `update --tags`. `needs-plan-review` is left unchanged in place."
+            "On **rework** and **escalated**, do **not** call `update --tags`. `needs-plan-review` is left unchanged in place."
         ));
+        // Backed by the generated gate spec so it survives regeneration.
+        assert!(content.contains("| **rework** | left in place | none |"));
+        assert!(content.contains("| **escalated** | left in place | none |"));
     }
 
     #[test]
@@ -1876,8 +1909,10 @@ mod tests {
         });
         let content = &skills[9].content;
         assert!(content.contains(
-            "**REWORK**: do **not** call the update tool with `tags`. `needs-plan-review` is left unchanged in place."
+            "On **rework** and **escalated**, do **not** call the update tool with `tags`. `needs-plan-review` is left unchanged in place."
         ));
+        assert!(content.contains("| **rework** | left in place | none |"));
+        assert!(content.contains("| **escalated** | left in place | none |"));
     }
 
     #[test]
@@ -1889,6 +1924,79 @@ mod tests {
         });
         let content = &skills[9].content;
         assert!(content.contains("`--tags` replaces the whole list"));
+    }
+
+    #[test]
+    fn skill_plan_review_gates_each_phase_individually_under_roadmap() {
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+            let content = &skills[9].content;
+            assert!(
+                content.contains("Under `--roadmap <slug>`, gate each phase **individually**"),
+                "mcp={mcp}: per-phase roadmap gating missing from the hand-authored step"
+            );
+            // Backed by the generated gate spec so it survives regeneration.
+            assert!(
+                content.contains("gate each phase **individually**, and the roadmap"),
+                "mcp={mcp}: per-phase roadmap gating missing from the generated gate spec"
+            );
+        }
+    }
+
+    #[test]
+    fn skill_plan_review_spec_confined_to_generated_block() {
+        const BEGIN: &str = "<!-- rdm:review-spec:begin";
+        const END: &str = "<!-- rdm:review-spec:end -->";
+        // Definitional phrases lifted verbatim from the generated plan block.
+        // Bare words like "rework" recur legitimately in the hand-authored
+        // CLI/MCP mechanics, so only full definitions are listed.
+        const DEFINITIONAL_PHRASES: &[&str] = &[
+            "the work must not advance as-is",
+            "recorded but non-gating",
+            "minor optional improvement",
+            "Scale the fleet to what the change actually touches",
+            "Determine the outcome in this strict order",
+            "needs a *human decision*",
+            "**Plan-stage severity calibration.**",
+            "*trigger: the target is a phase.*",
+        ];
+
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+            let content = &skills[9].content;
+            let begin = content
+                .find(BEGIN)
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing begin marker"));
+            let end = content
+                .find(END)
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing end marker"));
+            assert!(
+                begin < end,
+                "mcp={mcp}: begin marker must precede end marker"
+            );
+
+            let before = &content[..begin];
+            let after = &content[end + END.len()..];
+
+            for phrase in DEFINITIONAL_PHRASES {
+                assert!(
+                    !before.contains(phrase),
+                    "mcp={mcp}: spec-definition phrase found before the generated block: {phrase:?}"
+                );
+                assert!(
+                    !after.contains(phrase),
+                    "mcp={mcp}: spec-definition phrase found after the generated block: {phrase:?}"
+                );
+            }
+        }
     }
 
     #[test]

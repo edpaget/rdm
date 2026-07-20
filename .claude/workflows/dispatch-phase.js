@@ -87,31 +87,31 @@ const SEVERITY_RANK = { blocking: 0, concern: 1, suggestion: 2 };
 // below — omitted signals mean "unknown", and run everything.
 const DIMENSIONS = {
   code: [
-    //|
-    //| **Code review dimensions:**
-    //|
-    //| - **ac** — *always.* For each acceptance criterion, rate PASS / FAIL /
-    //|   PARTIAL with evidence (file:line, test name). Flag any criterion that is
-    //|   unmet, ambiguous, or untestable. The per-criterion table is the contract
-    //|   and is reported intact.
+    //|code|
+    //|code| **Code review dimensions:**
+    //|code|
+    //|code| - **ac** — *always.* For each acceptance criterion, rate PASS / FAIL /
+    //|code|   PARTIAL with evidence (file:line, test name). Flag any criterion that is
+    //|code|   unmet, ambiguous, or untestable. The per-criterion table is the contract
+    //|code|   and is reported intact.
     {
       key: 'ac',
       title: 'AC compliance',
       focus:
         'For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable.',
     },
-    //| - **correctness** — *always.* Logic bugs, edge cases, race conditions, and
-    //|   error paths, judged against the project's error-handling conventions
-    //|   (CLAUDE.md / AGENTS.md). User-facing errors must be actionable.
+    //|code| - **correctness** — *always.* Logic bugs, edge cases, race conditions, and
+    //|code|   error paths, judged against the project's error-handling conventions
+    //|code|   (CLAUDE.md / AGENTS.md). User-facing errors must be actionable.
     {
       key: 'correctness',
       title: 'Correctness & error handling',
       focus:
         'Logic bugs, edge cases, race conditions, and error paths. In rdm-core, errors must be hand-written matchable enums (no anyhow / type erasure); in rdm-cli / rdm-server, anyhow with .context(). User-facing CLI errors must be actionable.',
     },
-    //| - **tests** — *trigger: the diff adds or changes non-trivial logic, or adds
-    //|   no test files.* Do tests exist and cover the key behaviors and edge
-    //|   cases? Was a test-first discipline followed? Are there untested branches?
+    //|code| - **tests** — *trigger: the diff adds or changes non-trivial logic, or adds
+    //|code|   no test files.* Do tests exist and cover the key behaviors and edge
+    //|code|   cases? Was a test-first discipline followed? Are there untested branches?
     {
       key: 'tests',
       title: 'Tests',
@@ -119,10 +119,10 @@ const DIMENSIONS = {
         'Do tests exist and cover the key behaviors and edge cases? Was TDD followed? Are there untested branches or newly added logic with no test?',
       when: (s) => !!(s.changesLogic || s.missingTests),
     },
-    //| - **architecture** — *trigger: the diff touches more than one module/layer,
-    //|   or moves logic between layers.* Does logic live where the project's
-    //|   architecture says it should, with thin layers on top? No duplicated logic
-    //|   across interfaces?
+    //|code| - **architecture** — *trigger: the diff touches more than one module/layer,
+    //|code|   or moves logic between layers.* Does logic live where the project's
+    //|code|   architecture says it should, with thin layers on top? No duplicated logic
+    //|code|   across interfaces?
     {
       key: 'architecture',
       title: 'Architecture',
@@ -130,10 +130,10 @@ const DIMENSIONS = {
         'Does logic live in rdm-core with cli/server as thin layers? No duplicated logic across interfaces? Correct core/cli/server separation and conventional-commit scope discipline.',
       when: (s) => !!s.multiModule,
     },
-    //| - **api-docs** — *trigger: the diff changes a public `rdm-core` item.* Are
-    //|   public items documented per the project's conventions
-    //|   (`#![warn(missing_docs)]`)? Are `# Errors`, `# Panics`, and `# Safety`
-    //|   sections present where the project requires them?
+    //|code| - **api-docs** — *trigger: the diff changes a public `rdm-core` item.* Are
+    //|code|   public items documented per the project's conventions
+    //|code|   (`#![warn(missing_docs)]`)? Are `# Errors`, `# Panics`, and `# Safety`
+    //|code|   sections present where the project requires them?
     {
       key: 'api-docs',
       title: 'Public API docs',
@@ -141,12 +141,12 @@ const DIMENSIONS = {
         'Public items in rdm-core must carry doc comments (#![warn(missing_docs)]). A function returning Result needs a `# Errors` section; one that can panic needs `# Panics`; an `unsafe fn` needs `# Safety`. Flag any public item added or changed by this diff that is missing a required section.',
       when: (s) => !!s.publicApiChanged,
     },
-    //| - **changelog** — *trigger: the diff makes a user-facing change (CLI
-    //|   commands, API endpoints, MCP tools, config options, observable
-    //|   behavior).* A user-facing change MUST carry a `CHANGELOG.md` entry in the
-    //|   same commit; a missing entry is **blocking**, per the project's
-    //|   conventions. The entry must read from a user's perspective, not describe
-    //|   internals.
+    //|code| - **changelog** — *trigger: the diff makes a user-facing change (CLI
+    //|code|   commands, API endpoints, MCP tools, config options, observable
+    //|code|   behavior).* A user-facing change MUST carry a `CHANGELOG.md` entry in the
+    //|code|   same commit; a missing entry is **blocking**, per the project's
+    //|code|   conventions. The entry must read from a user's perspective, not describe
+    //|code|   internals.
     {
       key: 'changelog',
       title: 'Changelog',
@@ -154,13 +154,13 @@ const DIMENSIONS = {
         "A user-facing change (CLI command, API endpoint, MCP tool, config option, or observable behavior) MUST carry a CHANGELOG.md entry under [Unreleased] in the SAME commit — a missing entry is a `blocking` finding per CLAUDE.md. The entry must describe the change from a user's perspective, not internal implementation details.",
       when: (s) => !!s.userFacing,
     },
-    //| - **security** — *trigger: the diff touches auth, input parsing or
-    //|   validation, path/file handling, subprocess or shell invocation, secrets
-    //|   and credentials, deserialization, network code, or `unsafe` blocks.*
-    //|   Injection, path traversal, secret leakage, missing authorization, and
-    //|   unsafe-invariant violations. Every `unsafe` block needs a `// SAFETY:`
-    //|   comment stating the invariant it upholds; an unjustified or risky
-    //|   construct is a finding.
+    //|code| - **security** — *trigger: the diff touches auth, input parsing or
+    //|code|   validation, path/file handling, subprocess or shell invocation, secrets
+    //|code|   and credentials, deserialization, network code, or `unsafe` blocks.*
+    //|code|   Injection, path traversal, secret leakage, missing authorization, and
+    //|code|   unsafe-invariant violations. Every `unsafe` block needs a `// SAFETY:`
+    //|code|   comment stating the invariant it upholds; an unjustified or risky
+    //|code|   construct is a finding.
     {
       key: 'security',
       title: 'Security',
@@ -170,18 +170,49 @@ const DIMENSIONS = {
     },
   ],
   plan: [
+    //|plan|
+    //|plan| **Plan review dimensions:**
+    //|plan|
+    //|plan| - **coherence** — *always.* Internal consistency and completeness: are
+    //|plan|   the steps and acceptance criteria concrete and actionable? An empty or
+    //|plan|   ambiguous plan is itself a `blocking` finding — never guess intent. A
+    //|plan|   plan step citing a file or behavior as existing, where it was actually
+    //|plan|   introduced by another in-flight (not-yet-landed) roadmap or task, is
+    //|plan|   only `blocking` when the target item does **not** carry the
+    //|plan|   `depends-unlanded` tag and does not state the dependency explicitly;
+    //|plan|   when already annotated, downgrade it to a `concern` (or omit it).
     {
       key: 'coherence',
       title: 'Coherence',
       focus:
         'Internal consistency and completeness: are the steps and acceptance criteria concrete and actionable? An empty or ambiguous plan is itself a blocking finding — never guess intent. A plan step citing a file or behavior as existing, where it was actually introduced by another in-flight (not-yet-landed) roadmap or task, is only blocking if the target item does NOT carry the `depends-unlanded` tag and does not state the dependency explicitly; when already annotated, downgrade to a concern (or omit) instead of blocking on it.',
     },
+    //|plan| - **architectural-fit** — *always.* Read the project's principles
+    //|plan|   (falling back to `CLAUDE.md` / `AGENTS.md` in the project root when no
+    //|plan|   principles note is configured — architectural fit must never go
+    //|plan|   silently unchecked). Flag any plan step that would violate a stated
+    //|plan|   convention or constraint: a violated constraint is what makes a finding
+    //|plan|   `blocking`; stylistic preferences alone are not.
     {
       key: 'architectural-fit',
       title: 'Architectural fit',
       focus:
         "Read the project's principles (CLAUDE.md / AGENTS.md if no principles note is configured). Flag any plan step that would violate a stated convention or constraint — a violated constraint is what makes a finding blocking; stylistic preferences alone are not.",
     },
+    //|plan| - **unit-of-work** — *trigger: the target is a phase.* Skipped for
+    //|plan|   tasks, standalone roadmap bodies, and `--implementation-plan`; run once
+    //|plan|   per phase under `--roadmap <slug>` (this can fan out to many parallel
+    //|plan|   agents on a large roadmap — no hard cap is required, but be mindful of
+    //|plan|   the cost). Is the phase independently deliverable and testable —
+    //|plan|   neither too large to land safely nor too trivial to warrant its own
+    //|plan|   phase?
+    //|plan|
+    //|plan| **Plan target types.** A plan review targets a `roadmap` (its own body,
+    //|plan| plus every phase gated individually), a `phase`, a `task`, or an
+    //|plan| `implementation-plan` — an `rdm-do` plan document handed over in context
+    //|plan| ahead of implementation. `implementation-plan` has **no persisted rdm
+    //|plan| item** behind it, so it is report-only: no body edit, no filed task, and
+    //|plan| no gate (see § Gate).
     {
       key: 'unit-of-work',
       title: 'Unit of work',
@@ -218,8 +249,10 @@ const PLAN_SEVERITY_CALIBRATION =
 //|
 //| ```
 //| - id: <short-slug>
-//|   concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
-//|   location: <path>:<line>
+//|code|   concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
+//|plan|   concern: <coherence|architectural-fit|unit-of-work>
+//|code|   location: <path>:<line>
+//|plan|   location: <section/heading or phase stem>
 //|   severity: blocking | concern | suggestion
 //|   confidence: 0-100
 //|   what-fails: <the specific problem>
@@ -301,6 +334,28 @@ function refutePrompt(mode, dim, finding, context) {
 //|
 //| Never downgrade a surviving `blocking` finding to "reviewed with concerns" —
 //| a blocker always yields `rework` or `escalated`.
+//|plan|
+//|plan| **Plan-stage reading of the three outcomes.**
+//|plan|
+//|plan| - `escalated` — the plan needs a **human product decision**: the goal,
+//|plan|   approach, or scope is wrong, or it violates a stated architectural
+//|plan|   constraint that cannot simply be rewritten in place.
+//|plan| - `rework` — the plan document itself needs a fixable rewrite (an ambiguous
+//|plan|   step, a missing prerequisite, an untestable acceptance criterion).
+//|plan| - `reviewed` — clean, or clean with recorded concerns/suggestions.
+//|plan|
+//|plan| `rework` and `escalated` both leave the gate **closed**, so this is exactly
+//|plan| the outcome the retired PASS / PASS WITH CONCERNS / REWORK vocabulary
+//|plan| produced: PASS and PASS WITH CONCERNS both collapse to `reviewed` (they
+//|plan| cleared the tag), and REWORK splits into `rework` and `escalated` (both
+//|plan| leave it).
+//|plan|
+//|plan| **Plan-stage severity calibration.** `blocking` means the goal, approach, or
+//|plan| scope is wrong, or the plan violates a stated architectural constraint. A
+//|plan| defect in a specific proposed line of code or shell (e.g. an off-by-one in
+//|plan| proposed pseudo-code) is a `concern` that rides along as an implementation
+//|plan| note for the implementing agent — not a gate. An empty or ambiguous plan is
+//|plan| still `blocking`.
 // The canonical outcome vocabulary. Every surface — the standalone review
 // workflow, dispatch-phase, autopilot, and the interactive rdm-review skill —
 // speaks exactly these three words. This retired the skill's older
@@ -310,8 +365,19 @@ function refutePrompt(mode, dim, finding, context) {
 const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 // >>> review-spec:end <<<
 
-// STATUS_MAPPING — outcome × item kind → the rdm status to persist, plus
-// whether the surface may write the land-time completion directive.
+// GATE_POLICY — the ONE mode-dispatched gate table: mode → outcome → policy row.
+// The two review surfaces share a gate SKELETON (decide an outcome, then act on
+// it) and differ only in the action, so the action is data here rather than a
+// forked code path.
+//
+//   code — the post-implementation gate: persist an rdm status on the item
+//          (per kind) and, on `reviewed` only, permit the land-time completion
+//          directive. `clearsPlanReviewTag` is always false — the code gate has
+//          nothing to do with the pre-implementation tag.
+//   plan — the pre-implementation gate: a plan review NEVER persists an rdm
+//          status (`status` is an explicit `null`, never `undefined`, so a
+//          caller cannot round-trip it into an empty status), and instead
+//          clears the reserved `needs-plan-review` tag on `reviewed` only.
 //
 // The completion policy is expressed ONLY as the boolean `writesCompletion`,
 // never as the literal trailer string: this block is stamped verbatim into
@@ -319,36 +385,73 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 // anywhere inside a stamped region. The literal lives in the skill-only
 // `review-gate-spec` region below the stamped block, and the format string
 // itself lives in rdm-core (surfaced as `rdm hook done-line`).
-const STATUS_MAPPING = {
-  reviewed: { phase: 'reviewed', task: 'reviewed', writesCompletion: true },
-  rework: { phase: 'in-progress', task: 'in-progress', writesCompletion: false },
-  escalated: { phase: 'blocked', task: 'blocked', writesCompletion: false, reasonPrefix: '[code]' },
+const GATE_POLICY = {
+  code: {
+    reviewed: { phase: 'reviewed', task: 'reviewed', status: 'reviewed', writesCompletion: true, clearsPlanReviewTag: false },
+    rework: {
+      phase: 'in-progress',
+      task: 'in-progress',
+      status: 'in-progress',
+      writesCompletion: false,
+      clearsPlanReviewTag: false,
+    },
+    escalated: {
+      phase: 'blocked',
+      task: 'blocked',
+      status: 'blocked',
+      writesCompletion: false,
+      clearsPlanReviewTag: false,
+      reasonPrefix: '[code]',
+    },
+  },
+  plan: {
+    reviewed: { status: null, writesCompletion: false, clearsPlanReviewTag: true },
+    rework: { status: null, writesCompletion: false, clearsPlanReviewTag: false },
+    escalated: { status: null, writesCompletion: false, clearsPlanReviewTag: false, reasonPrefix: '[plan]' },
+  },
 };
+
+// STATUS_MAPPING — the code gate's rows, kept as a named alias so the existing
+// consumers (dispatch-phase, autopilot) and their drift harnesses see exactly
+// the table they saw before. One table, not a fork.
+const STATUS_MAPPING = GATE_POLICY.code;
+
+// The item kinds a code-gate status may be looked up for.
+const ITEM_KINDS = ['phase', 'task'];
+
+// gateFor(mode, outcome) — the policy row for one mode/outcome pair. Throws an
+// actionable error on an unknown mode or outcome rather than returning
+// `undefined`, so a caller can never silently act on a partial row.
+function gateFor(mode, outcome) {
+  const table = GATE_POLICY[mode];
+  if (!table) {
+    throw new Error('review: unknown gate mode "' + mode + '" (expected one of ' + Object.keys(GATE_POLICY).join(', ') + ')');
+  }
+  const row = table[outcome];
+  if (!row) {
+    throw new Error(
+      'review: unknown outcome "' + outcome + '" for gate mode "' + mode + '" (expected one of ' + OUTCOMES.join(', ') + ')'
+    );
+  }
+  return row;
+}
 
 // statusFor(outcome, kind) — the rdm status an outcome maps to for a phase or a
 // task. Throws on an unknown outcome or kind rather than returning undefined: a
 // silent `undefined` would be persisted as an empty status by a caller that did
 // not check.
 function statusFor(outcome, kind) {
-  const row = STATUS_MAPPING[outcome];
-  if (!row) {
-    throw new Error('review: unknown outcome "' + outcome + '" (expected one of ' + OUTCOMES.join(', ') + ')');
-  }
-  const status = row[kind];
-  if (!status) {
+  const row = gateFor('code', outcome);
+  if (ITEM_KINDS.indexOf(kind) === -1) {
     throw new Error('review: unknown item kind "' + kind + '" (expected "phase" or "task")');
   }
-  return status;
+  return row[kind];
 }
 
 // writesCompletion(outcome) — may this outcome's surface write the land-time
 // completion directive? Only a clean review may.
 function writesCompletion(outcome) {
-  const row = STATUS_MAPPING[outcome];
-  if (!row) {
-    throw new Error('review: unknown outcome "' + outcome + '" (expected one of ' + OUTCOMES.join(', ') + ')');
-  }
-  return row.writesCompletion === true;
+  return gateFor('code', outcome).writesCompletion === true;
 }
 
 // JSON Schema a finder agent is forced to satisfy (see docs/workflow-schemas.md § FINDING).

@@ -187,19 +187,40 @@ sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode code >/dev/null 2>&1 
     fail "regeneration did not restore skill sync in the scratch tree"
 pass "skill drift detector fails on planted prose drift and heals on regenerate"
 
-# `--mode plan` must RESOLVE its declared consumers (the plan-review templates
-# already carry the markers) so unify-plan-review can turn it on without
-# touching the generator. Exercised on the scratch tree only — stamping the
-# code-mode spec into the plan templates is that phase's work, not this one's.
-sh "$SKSCRATCH/scripts/gen-skill-review.sh" --mode plan >/dev/null 2>&1 ||
-    fail "gen-skill-review.sh --mode plan did not resolve its declared consumers"
-for t in skill-plan-review-cli.md skill-plan-review-mcp.md; do
-    grep -q 'rdm:review-spec:begin' "$TEMPLATES/$t" ||
-        fail "$t is missing the rdm:review-spec markers --mode plan targets"
+# The SAME generator renders the plan-review skills from the SAME source, via
+# the per-line `//|plan|` mode tag. Gate it exactly like the code mode: --check
+# on the real tree, then a planted-drift/heal self-test on the scratch copy.
+if sh "$SKILL_GEN" --check --mode plan; then
+    pass "gen-skill-review.sh --check --mode plan clean"
+else
+    fail "a plan-review skill template drifted from $LIB — run scripts/gen-skill-review.sh --mode plan"
+fi
+
+# The scratch source was mutated above (code-mode prose), so restore it before
+# the plan self-test, then plant drift on a `//|plan|` line specifically.
+cp "$LIB" "$SKSCRATCH/.claude/workflows/lib/review.mjs"
+for t in skill-review-cli.md skill-review-mcp.md skill-plan-review-cli.md skill-plan-review-mcp.md; do
+    cp "$TEMPLATES/$t" "$SKSCRATCH/rdm-core/src/templates/$t"
 done
+sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode plan >/dev/null 2>&1 ||
+    fail "scratch plan --check should pass on a clean copy"
+sed 's/\*\*Plan review dimensions:\*\*/**Plan review DIMENSIONS(mutated):**/' \
+    "$SKSCRATCH/.claude/workflows/lib/review.mjs" >"$SKSCRATCH/pmut" &&
+    mv "$SKSCRATCH/pmut" "$SKSCRATCH/.claude/workflows/lib/review.mjs"
+grep -q 'Plan review DIMENSIONS(mutated)' "$SKSCRATCH/.claude/workflows/lib/review.mjs" ||
+    fail "plan-mode mutation setup did not actually mutate a //|plan| prose line"
+if sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode plan >/dev/null 2>&1; then
+    fail 'plan drift gate did NOT detect a planted //|plan| prose change'
+fi
+# A plan-only mutation must NOT perturb the code render — proof the tags isolate.
+sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode code >/dev/null 2>&1 ||
+    fail "a //|plan|-only mutation leaked into the code render — the mode tags do not isolate"
+sh "$SKSCRATCH/scripts/gen-skill-review.sh" --mode plan >/dev/null 2>&1
+sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode plan >/dev/null 2>&1 ||
+    fail "regeneration did not restore plan-skill sync in the scratch tree"
 sh "$SKSCRATCH/scripts/gen-skill-review.sh" --mode bogus >/dev/null 2>&1 &&
     fail "an unknown --mode must be rejected"
-pass "--mode plan resolves its declared consumers; an unknown mode is rejected"
+pass "plan drift detector fires on planted //|plan| drift, isolates from code, and heals"
 
 # The generated region is shared byte-for-byte between the cli and mcp
 # templates, so it must be identical in both and free of template placeholders.
@@ -238,6 +259,79 @@ for t in skill-review-cli.md skill-review-mcp.md; do
         fail "$t must source the completion trailer from 'rdm hook done-line'"
 done
 pass "shared spec region is byte-identical, placeholder-free, and documents all seven dimensions"
+
+# --- 1d. PLAN SPEC PROJECTION -------------------------------------------------
+# The plan render is produced by the same emitter from the same regions, so it
+# gets the same battery — plus mode-isolation greps in BOTH directions, which
+# are the detector for a mistagged (or untagged) prose line leaking across.
+say "1d. Plan spec region: rendered, isolated from the code render, and gate-preserving"
+extract_spec_region "$TEMPLATES/skill-plan-review-cli.md" >"$TMP/plan-spec-cli"
+extract_spec_region "$TEMPLATES/skill-plan-review-mcp.md" >"$TMP/plan-spec-mcp"
+[ -s "$TMP/plan-spec-cli" ] || fail "the generated spec region in skill-plan-review-cli.md is EMPTY"
+diff -u "$TMP/plan-spec-cli" "$TMP/plan-spec-mcp" >/dev/null 2>&1 ||
+    fail "the generated spec region differs between the cli and mcp plan-review templates"
+if grep -nE '\{proj_flag\}|\{proj_param\}|\{t_[a-z_]+\}|\{principles\}' "$TMP/plan-spec-cli" >&2; then
+    fail "a template placeholder leaked into the shared generated plan-review spec"
+fi
+for key in coherence architectural-fit unit-of-work; do
+    grep -q "\*\*$key\*\*" "$TMP/plan-spec-cli" ||
+        fail "the rendered plan spec does not document the '$key' dimension"
+done
+grep -q '\*trigger: the target is a phase\.\*' "$TMP/plan-spec-cli" ||
+    fail "the rendered plan spec must gate unit-of-work on the phase target type"
+for word in reviewed rework escalated; do
+    grep -q "$word" "$TMP/plan-spec-cli" || fail "the rendered plan spec is missing the '$word' outcome"
+done
+grep -q 'needs-plan-review' "$TMP/plan-spec-cli" ||
+    fail "the rendered plan spec must document the needs-plan-review gate"
+grep -q 'no gate at all' "$TMP/plan-spec-cli" ||
+    fail "the rendered plan spec must carry the --implementation-plan no-gate carve-out"
+grep -q 'gate each phase \*\*individually\*\*' "$TMP/plan-spec-cli" ||
+    fail "the rendered plan spec must carry per-phase --roadmap gating"
+
+# Mode isolation, both directions. A code-only line left untagged would ship
+# into the plan skill (and vice versa); these greps are the detector.
+for bad in '\*\*ac\*\*' '\*\*changelog\*\*' '\*\*security\*\*' 'rdm hook done-line'; do
+    if grep -nE "$bad" "$TMP/plan-spec-cli" >&2; then
+        fail "code-only prose ($bad) leaked into the generated plan spec — tag it //|code|"
+    fi
+done
+for bad in 'needs-plan-review' '\*\*unit-of-work\*\*'; do
+    if grep -nE "$bad" "$TMP/spec-cli" >&2; then
+        fail "plan-only prose ($bad) leaked into the generated code spec — tag it //|plan|"
+    fi
+done
+
+# The retired vocabulary may survive ONLY inside the generated block, and only
+# as the explicit "PASS/PWC collapse to reviewed" mapping note. The
+# hand-authored prose must speak the new vocabulary exclusively.
+for t in skill-plan-review-cli.md skill-plan-review-mcp.md; do
+    awk 'index($0, "<!-- rdm:review-spec:begin") { exit } { print }' "$TEMPLATES/$t" >"$TMP/plan-hand"
+    for retired in 'PASS WITH CONCERNS' 'REWORK'; do
+        if grep -n "$retired" "$TMP/plan-hand" >&2; then
+            fail "$t still uses the retired $retired verdict in its hand-authored prose"
+        fi
+    done
+    grep -q 'find → refute → filter → verdict → act → gate' "$TMP/plan-hand" ||
+        fail "$t must describe the canonical find → refute → filter → verdict → act → gate pipeline"
+done
+pass "plan spec region is byte-identical, placeholder-free, mode-isolated, and gate-preserving"
+
+# --- 1e. NO SECOND MECHANISM --------------------------------------------------
+# The plan surface must reuse the ONE generator and the ONE dimension table.
+say "1e. No second mechanism: one generator, exactly two dimension modes"
+for f in "$REPO_ROOT"/scripts/gen-plan-review*; do
+    [ -e "$f" ] || continue
+    fail "a second plan-review generator exists ($f) — --mode plan is the sole renderer"
+done
+MODE_KEYS=$(run_node -e '
+  import("file://" + process.argv[1]).then((m) => {
+    console.log(Object.keys(m.DIMENSIONS).join(","));
+  });
+' "$LIB")
+[ "$MODE_KEYS" = "code,plan" ] ||
+    fail "review.mjs must declare exactly the two DIMENSIONS modes code,plan (got: $MODE_KEYS)"
+pass "one generator, one dimension table with exactly the code and plan modes"
 
 # --- 2. HYGIENE --------------------------------------------------------------
 say "2. Hygiene: no forbidden nondeterministic global in workflow scripts"
@@ -802,6 +896,55 @@ assert.equal(writesCompletion('rework'), false);
 assert.equal(writesCompletion('escalated'), false);
 assert.throws(() => writesCompletion('BLOCKED'), /unknown outcome/);
 console.log('AC1/AC2: classifyOutcome truth table and the outcome->status mapping hold');
+
+// ============================================================================
+// The mode-dispatched gate policy. `code` must be the SAME table statusFor /
+// writesCompletion already read (re-expressed, not forked); `plan` must
+// reproduce today's PASS/PWC -> clear, REWORK -> leave outcome under the new
+// vocabulary, and must never persist an rdm status.
+// ============================================================================
+const { GATE_POLICY, gateFor } = mod;
+assert.deepEqual(Object.keys(GATE_POLICY), ['code', 'plan'], 'exactly two gate modes');
+assert.equal(GATE_POLICY.code, mod.STATUS_MAPPING, 'STATUS_MAPPING IS GATE_POLICY.code — one table, not a fork');
+
+// code rows: today's behaviour, plus an explicit "clears nothing" flag.
+assert.equal(gateFor('code', 'reviewed').status, 'reviewed');
+assert.equal(gateFor('code', 'reviewed').writesCompletion, true);
+assert.equal(gateFor('code', 'reviewed').clearsPlanReviewTag, false, 'the code gate never touches the plan-review tag');
+assert.equal(gateFor('code', 'rework').clearsPlanReviewTag, false);
+assert.equal(gateFor('code', 'escalated').clearsPlanReviewTag, false);
+assert.equal(gateFor('code', 'escalated').reasonPrefix, '[code]');
+
+// plan rows: reviewed clears the tag, rework/escalated leave it, status is a
+// literal null (never undefined — a caller must not persist an empty status).
+assert.equal(gateFor('plan', 'reviewed').clearsPlanReviewTag, true, 'plan reviewed clears needs-plan-review');
+assert.equal(gateFor('plan', 'rework').clearsPlanReviewTag, false, 'plan rework leaves needs-plan-review');
+assert.equal(gateFor('plan', 'escalated').clearsPlanReviewTag, false, 'plan escalated leaves needs-plan-review');
+assert.equal(gateFor('plan', 'escalated').reasonPrefix, '[plan]');
+for (const outcome of OUTCOMES) {
+  const row = gateFor('plan', outcome);
+  assert.ok('status' in row, 'plan row must declare status explicitly: ' + outcome);
+  assert.strictEqual(row.status, null, 'a plan review never persists an rdm status: ' + outcome);
+  assert.equal(row.writesCompletion, false, 'a plan review never writes the completion directive: ' + outcome);
+}
+
+// Unknown keys throw rather than returning a partial/undefined row.
+assert.throws(() => gateFor('bogus', 'reviewed'), /unknown gate mode/, 'an unknown gate mode throws');
+assert.throws(() => gateFor('plan', 'bogus'), /unknown outcome/, 'an unknown outcome throws');
+assert.throws(() => gateFor('code', 'PASS'), /unknown outcome/, 'a retired verdict word throws');
+
+// selectDimensions gates unit-of-work through the ONE target-type predicate.
+for (const t of ['roadmap', 'task', 'implementation-plan']) {
+  assert.ok(
+    !selectDimensions('plan', { targetType: t }).map((d) => d.key).includes('unit-of-work'),
+    'plan mode on a ' + t + ' target excludes unit-of-work'
+  );
+}
+assert.ok(
+  selectDimensions('plan', { targetType: 'phase' }).map((d) => d.key).includes('unit-of-work'),
+  'plan mode on a phase target includes unit-of-work'
+);
+console.log('gate policy: mode-dispatched, code re-expressed not forked, plan preserves the tag-gate outcome');
 
 console.log('all review-refute-fix behavior assertions passed');
 NODE_TEST
