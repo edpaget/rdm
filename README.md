@@ -90,29 +90,29 @@ rdm agent-config pi --skills --project fbm --out ~/Projects/fbm
 
 rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), reviewing a plan before implementation begins (`rdm-plan-review`), implementation and task work (`rdm-do`), review (`rdm-review`), acting on document reviews that request changes (`rdm-revise`) — which works a submitted review comment by comment, applying edits through rdm and landing each with `rdm commit`, recording per-comment commit provenance until the review is `addressed` — documentation generation (`rdm-document`), autonomous roadmap execution (`rdm-autopilot`) — which drives one roadmap to `reviewed` unattended (see [`docs/autonomous-loop.md`](docs/autonomous-loop.md)) — and landing (`rdm-land`), which integrates a reviewed item into `main` with linear history and then prunes its worktree (see [`docs/landing.md`](docs/landing.md)). There is also backlog grooming (`rdm-backlog`), a propose-only pass that reads `rdm backlog report` and emits a batched, human-reviewable plan of consolidate/merge/retire/archive actions — each paired with the exact `rdm` command that would carry it out — without mutating the plan repo. The same skill set is emitted for Pi under `.pi/skills/`.
 
-#### Auto-review Stop hook (Claude Code)
+#### Plan-review Stop hook (Claude Code)
 
-Add `--hooks` (claude only, composable with `--skills`) to also install a Claude Code [Stop hook](https://docs.claude.com/en/docs/claude-code/hooks) that reprompts the agent to run the `rdm-review` skill whenever an rdm item is left in `needs-review`:
+Add `--hooks` (claude only, composable with `--skills`) to also install a Claude Code [Stop hook](https://docs.claude.com/en/docs/claude-code/hooks) that reprompts the agent to run the `rdm-plan-review` skill while any roadmap, phase, or task carries the `needs-plan-review` sentinel tag — the tag `roadmap create` / `phase create` / `task create` stamp onto new items when the `plan_review` config key is enabled (`rdm config set plan_review true`):
 
 ```bash
 rdm agent-config claude --skills --hooks --out .
 ```
 
-This writes `.claude/hooks/rdm-review-on-finalize.sh` (executable) and registers it under `hooks.Stop` in `.claude/settings.json`, merging non-destructively into any existing settings (other keys are preserved; re-running is idempotent). The hook calls `rdm` on your `PATH` and relies on standard project resolution (`RDM_PROJECT` env var or `default_project` in `rdm.toml`). Use `--user` instead of `--out` to install into `~/.claude/`.
+This writes `.claude/hooks/rdm-plan-review-on-create.sh` (executable) and registers it under `hooks.Stop` in `.claude/settings.json`, merging non-destructively into any existing settings (other keys are preserved; re-running is idempotent). The hook calls `rdm` on your `PATH` and relies on standard project resolution (`RDM_PROJECT` env var or `default_project` in `rdm.toml`). Use `--user` instead of `--out` to install into `~/.claude/`.
 
-`--hooks` also writes a second Stop hook, `.claude/hooks/rdm-plan-review-on-create.sh`, which reprompts the agent to run the `rdm-plan-review` skill while any roadmap, phase, or task carries the `needs-plan-review` sentinel tag — the tag `roadmap create` / `phase create` / `task create` stamp onto new items when the `plan_review` config key is enabled (`rdm config set plan_review true`). Both hooks register their own `hooks.Stop` entry via the same non-destructive, idempotent merge, so they coexist in one `settings.json`.
-
-`--hooks` also works for Pi, which has no `settings.json` hooks — the equivalent is a pair of TypeScript extensions that subscribe to the `agent_end` lifecycle event:
+`--hooks` also works for Pi, which has no `settings.json` hooks — the equivalent is a TypeScript extension that subscribes to the `agent_end` lifecycle event:
 
 ```bash
 rdm agent-config pi --skills --hooks --out .
 ```
 
-This writes `.pi/extensions/rdm-review.ts` and `.pi/extensions/rdm-plan-review.ts`, which Pi auto-discovers from its extensions directory (no registration step). On every `agent_end`, `rdm-review.ts` calls `rdm` on your `PATH` (standard project resolution) and re-prompts the agent to run the `rdm-review` skill while any item is in `needs-review`; `rdm-plan-review.ts` does the same for the `rdm-plan-review` skill while any item carries the `needs-plan-review` tag. Use `--user` instead of `--out` to install into `~/.pi/agent/extensions/`.
+This writes `.pi/extensions/rdm-plan-review.ts`, which Pi auto-discovers from its extensions directory (no registration step). On every `agent_end`, it calls `rdm` on your `PATH` (standard project resolution) and re-prompts the agent to run the `rdm-plan-review` skill while any item carries the `needs-plan-review` tag. Use `--user` instead of `--out` to install into `~/.pi/agent/extensions/`.
+
+An earlier auto-review Stop hook / Pi extension pair, which reprompted whenever an item was left in `needs-review` after implementation, has been retired: the `rdm-do`, `dispatch-phase`, and `autopilot` finalize paths now actively run the canonical code review on every finalize, so nothing is left unreviewed for a passive net to catch. See [docs/autonomous-loop.md](docs/autonomous-loop.md).
 
 #### Headless / unattended runs
 
-To run the worktree + auto-review loop unattended, drive Pi in a non-interactive mode (`pi -p "<prompt>"`, or `--mode json` / `--mode rpc` for structured I/O) backed by a sandbox (OpenShell, Gondolin, or Docker) so the agent can create worktrees and apply changes without an interactive terminal.
+To run the worktree loop unattended, drive Pi in a non-interactive mode (`pi -p "<prompt>"`, or `--mode json` / `--mode rpc` for structured I/O) backed by a sandbox (OpenShell, Gondolin, or Docker) so the agent can create worktrees and apply changes without an interactive terminal.
 
 ### MCP Server
 

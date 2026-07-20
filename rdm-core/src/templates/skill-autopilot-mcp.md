@@ -99,6 +99,6 @@ At the end of **every** run — whatever stopped it — print a summary:
 - **Escalations awaiting the user**, each tagged `plan` vs `code`, with the parked reason. Point the user at the batch queue — the `rdm review blocked` command lists every parked escalation at once.
 - Whether landing ran (`--land`) or the reviewed work is left on the `roadmap/<slug>` branch for a human to land.
 
-## Relation to the needs-review Stop hook / Pi extension
+## Relation to review
 
-Autopilot is the **active driver**: it pushes a roadmap forward phase by phase. The needs-review Stop hook (Claude Code) and the Pi `agent_end` extension are the **passive safety net**: they only re-prompt when an item is *left* in `needs-review`, catching a finalize that wasn't reviewed. Both paths leave the `Done:` line to `rdm-review` — autopilot writes one only via the dispatched `rdm-review`, never by hand. The two are complementary: the driver does the work; the net catches anything dropped on the floor.
+Autopilot is the **active driver**: it pushes a roadmap forward phase by phase, and every dispatched phase actively runs review (via the dispatched `rdm-review`) before advancing — nothing is left parked in `needs-review` for a passive net to catch. Both paths leave the `Done:` line to `rdm-review` — autopilot writes one only via the dispatched `rdm-review`, never by hand.

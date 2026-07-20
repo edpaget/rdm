@@ -8,27 +8,35 @@
 # and vice-versa. Everything runs in temp dirs against target/debug/rdm; no
 # network, hermetic.
 #
-# Four regression cases, each its own OK/FAIL section:
-#   A. Claude Stop hook host path  — the real hook-review-on-finalize.sh template
-#      blocks from a roadmap worktree, scoped (via its data source) to that
-#      roadmap only.
-#   B. Pi agent_end host path      — replicates the extension's decision contract
+# Three regression cases, each its own OK/FAIL section:
+#   A. Pi agent_end host path      — replicates the extension's decision contract
 #      (run `rdm review pending --format json`, inject iff an item carries an
 #      `identifier`). We assert the contract in `sh` rather than booting Pi: a
 #      JS/Pi runtime is not available in a Rust CI job, exactly as the sibling
 #      web-loop harness asserts `rdm review pending` rather than Claude's runtime.
-#   C. Isolation assertion         — the consolidated guarantee: each roadmap
+#   B. Isolation assertion         — the consolidated guarantee: each roadmap
 #      worktree's `review pending` lists its own roadmap and not the other, with
 #      each item's stamped branch matching its roadmap.
-#   D. Trigger-from-main robustness — from the source repo's `main` checkout a
+#   C. Trigger-from-main robustness — from the source repo's `main` checkout a
 #      trigger never misfires for an in-flight roadmap review (branch-identity
 #      scopes the `roadmap/*` items out of `main`); the branch-gone variant
 #      proves the same query still exits cleanly after the worktree + branch are
 #      removed.
+#   D. Amend-after-finalize restamp — amending the implementation commit while
+#      an item is still needs-review orphans the stamped review_sha; `rdm review
+#      restamp` re-points the stamp at the new HEAD so the item stays in scope
+#      for `rdm review pending`.
+#
+# The needs-review Stop hook / Pi agent_end auto-review extension this harness
+# used to also drive (hook-review-on-finalize.sh / extension-review-on-finalize.ts)
+# was retired once phase 6 of the unify-code-review roadmap made review active on
+# every finalize path — see docs/autonomous-loop.md. This harness now covers only
+# the surviving `rdm review pending`/`restamp` scoping guarantees those hosts (and
+# any future host) depend on.
 #
 # Run after touching the worktree/review-trigger model (rdm worktree, the
-# branch-scoped `rdm review pending` filter, the needs-review stamping in
-# phase/task update, or the hook/extension templates).
+# branch-scoped `rdm review pending` filter, or the needs-review stamping in
+# phase/task update).
 #
 # Requires: cargo-built rdm at target/debug/rdm (from this repo).
 
@@ -37,15 +45,9 @@ set -eu
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 RDM_BIN="$REPO_ROOT/target/debug/rdm"
-HOOK_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/hook-review-on-finalize.sh"
 
 if [ ! -x "$RDM_BIN" ]; then
     echo "error: $RDM_BIN not found or not executable — run 'cargo build' first." >&2
-    exit 1
-fi
-
-if [ ! -f "$HOOK_TEMPLATE" ]; then
-    echo "error: hook template not found at $HOOK_TEMPLATE — did the path move?" >&2
     exit 1
 fi
 
@@ -80,12 +82,6 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
 PLAN="$TMP/plan"
 SRC="$TMP/src"
 
-# rdm on PATH for the hook template (it shells out to bare `rdm`, no --root, no jq).
-BIN="$TMP/bin"
-mkdir -p "$BIN"
-ln -s "$RDM_BIN" "$BIN/rdm"
-HOOK_PATH="$BIN:$PATH"
-
 # Convenience: `rdm review pending --format json` from a given cwd, plan/project
 # resolved via env exactly as the host triggers resolve them.
 pending_json() (
@@ -98,14 +94,6 @@ pending_json() (
 restamp_json() (
     cd "$1"
     RDM_ROOT="$PLAN" RDM_PROJECT="verify" "$RDM_BIN" review restamp --format json
-)
-
-# Convenience: the real Stop hook template from a given cwd, fed a fresh-stop
-# payload, with rdm on PATH and plan/project resolved via env.
-run_stop_hook() (
-    cd "$1"
-    printf '%s' '{"stop_hook_active": false}' |
-        RDM_ROOT="$PLAN" RDM_PROJECT="verify" PATH="$HOOK_PATH" sh "$HOOK_TEMPLATE"
 )
 
 # ----------------------------------------------------------------------------
@@ -171,154 +159,107 @@ say "Implementing in place and finalizing each phase to needs-review"
 ok "alpha finalized on roadmap/alpha; beta finalized on roadmap/beta"
 
 # ============================================================================
-# Case A: Claude Stop hook host path.
+# Case A: Pi agent_end host path.
 #
-# The real hook template emits {"decision":"block"} whenever `rdm review
-# pending` (its single source of truth) reports an in-scope item. The block
-# *reason* is an intentionally generic, static message — it names no roadmap —
-# so we assert the SCOPING via the hook's data source (the same `review pending`
-# the hook greps), and assert the hook's coarse block/allow signal directly.
+# The Pi extension's contract (extension-plan-review-on-create.ts's sibling, in
+# spirit, before the auto-review analog was retired): run `rdm review pending
+# --format json`, collect items carrying an `identifier`, and inject the review
+# prompt iff the collected list is non-empty. We replicate that exact decision
+# in `sh` — NO cwd move — rather than booting Pi, because no Pi/JS runtime is
+# available in a Rust CI job (mirroring how the sibling web-loop harness asserts
+# `rdm review pending` rather than Claude's runtime).
 # ============================================================================
-say "Case A: Claude Stop hook blocks from each roadmap worktree, scoped to that roadmap"
-
-HOOK_A=$(run_stop_hook "$WT_ALPHA")
-printf '%s' "$HOOK_A" | grep -q '"decision":"block"' ||
-    {
-        printf '%s\n' "$HOOK_A" >&2
-        fail "A: Stop hook should block from the alpha worktree"
-    }
-DATA_A=$(pending_json "$WT_ALPHA")
-printf '%s' "$DATA_A" | grep -q 'alpha/phase-1-work' ||
-    {
-        printf '%s\n' "$DATA_A" >&2
-        fail "A: alpha worktree's hook data must concern alpha"
-    }
-printf '%s' "$DATA_A" | grep -q 'beta/phase-1-work' &&
-    {
-        printf '%s\n' "$DATA_A" >&2
-        fail "A: alpha worktree's hook data must NOT mention beta"
-    }
-ok "A: alpha worktree → block, scoped to alpha (silent about beta)"
-
-HOOK_B=$(run_stop_hook "$WT_BETA")
-printf '%s' "$HOOK_B" | grep -q '"decision":"block"' ||
-    {
-        printf '%s\n' "$HOOK_B" >&2
-        fail "A: Stop hook should block from the beta worktree"
-    }
-DATA_B=$(pending_json "$WT_BETA")
-printf '%s' "$DATA_B" | grep -q 'beta/phase-1-work' ||
-    {
-        printf '%s\n' "$DATA_B" >&2
-        fail "A: beta worktree's hook data must concern beta"
-    }
-printf '%s' "$DATA_B" | grep -q 'alpha/phase-1-work' &&
-    {
-        printf '%s\n' "$DATA_B" >&2
-        fail "A: beta worktree's hook data must NOT mention alpha"
-    }
-ok "A: beta worktree → block, scoped to beta (silent about alpha)"
-
-# ============================================================================
-# Case B: Pi agent_end host path.
-#
-# The Pi extension's contract (extension-review-on-finalize.ts): run `rdm review
-# pending --format json`, collect items carrying an `identifier`, and inject the
-# review prompt iff the collected list is non-empty. We replicate that exact
-# decision in `sh` — NO cwd move — rather than booting Pi, because no Pi/JS
-# runtime is available in a Rust CI job (mirroring how the sibling web-loop
-# harness asserts `rdm review pending` rather than Claude's runtime).
-# ============================================================================
-say "Case B: Pi agent_end contract injects for the current roadmap only"
+say "Case A: Pi agent_end contract injects for the current roadmap only"
 
 PI_A=$(pending_json "$WT_ALPHA")
 printf '%s' "$PI_A" | grep -q '"identifier": "alpha/phase-1-work"' ||
     {
         printf '%s\n' "$PI_A" >&2
-        fail "B: alpha pending JSON must carry alpha's identifier"
+        fail "A: alpha pending JSON must carry alpha's identifier"
     }
 printf '%s' "$PI_A" | grep -q '"branch": "roadmap/alpha"' ||
     {
         printf '%s\n' "$PI_A" >&2
-        fail "B: alpha pending item must stamp branch roadmap/alpha"
+        fail "A: alpha pending item must stamp branch roadmap/alpha"
     }
 printf '%s' "$PI_A" | grep -q 'beta/phase-1-work' &&
     {
         printf '%s\n' "$PI_A" >&2
-        fail "B: alpha pending JSON must carry no beta identifier"
+        fail "A: alpha pending JSON must carry no beta identifier"
     }
 # Contract: a non-empty identifier list ⇒ the extension injects (for alpha only).
 printf '%s' "$PI_A" | grep -q '"identifier"' ||
     {
         printf '%s\n' "$PI_A" >&2
-        fail "B: extension would not inject — no identifier present"
+        fail "A: extension would not inject — no identifier present"
     }
-ok "B: alpha agent_end → inject for alpha only"
+ok "A: alpha agent_end → inject for alpha only"
 
 PI_B=$(pending_json "$WT_BETA")
 printf '%s' "$PI_B" | grep -q '"identifier": "beta/phase-1-work"' ||
     {
         printf '%s\n' "$PI_B" >&2
-        fail "B: beta pending JSON must carry beta's identifier"
+        fail "A: beta pending JSON must carry beta's identifier"
     }
 printf '%s' "$PI_B" | grep -q '"branch": "roadmap/beta"' ||
     {
         printf '%s\n' "$PI_B" >&2
-        fail "B: beta pending item must stamp branch roadmap/beta"
+        fail "A: beta pending item must stamp branch roadmap/beta"
     }
 printf '%s' "$PI_B" | grep -q 'alpha/phase-1-work' &&
     {
         printf '%s\n' "$PI_B" >&2
-        fail "B: beta pending JSON must carry no alpha identifier"
+        fail "A: beta pending JSON must carry no alpha identifier"
     }
-ok "B: beta agent_end → inject for beta only"
+ok "A: beta agent_end → inject for beta only"
 
 # ============================================================================
-# Case C: the isolation guarantee, stated explicitly.
+# Case B: the isolation guarantee, stated explicitly.
 #
-# A/B above already prove A-trigger⇒A-only and B-trigger⇒B-only; this is the
-# consolidated check: each roadmap worktree's `review pending` lists exactly its
-# own roadmap, with the listed item's stamped branch matching its roadmap.
+# Case A above already proves alpha-trigger⇒alpha-only and beta-trigger⇒beta-only;
+# this is the consolidated check: each roadmap worktree's `review pending` lists
+# exactly its own roadmap, with the listed item's stamped branch matching its
+# roadmap.
 # ============================================================================
-say "Case C: ISOLATION — each roadmap worktree sees only its own roadmap"
+say "Case B: ISOLATION — each roadmap worktree sees only its own roadmap"
 
 ISO_A=$(pending_json "$WT_ALPHA")
 printf '%s' "$ISO_A" | grep -q 'alpha/phase-1-work' ||
     {
         printf '%s\n' "$ISO_A" >&2
-        fail "C: alpha worktree must list alpha"
+        fail "B: alpha worktree must list alpha"
     }
 printf '%s' "$ISO_A" | grep -q '"branch": "roadmap/alpha"' ||
     {
         printf '%s\n' "$ISO_A" >&2
-        fail "C: alpha's item must carry branch roadmap/alpha"
+        fail "B: alpha's item must carry branch roadmap/alpha"
     }
 printf '%s' "$ISO_A" | grep -q 'beta/phase-1-work' &&
     {
         printf '%s\n' "$ISO_A" >&2
-        fail "C: alpha worktree must NOT list beta"
+        fail "B: alpha worktree must NOT list beta"
     }
 
 ISO_B=$(pending_json "$WT_BETA")
 printf '%s' "$ISO_B" | grep -q 'beta/phase-1-work' ||
     {
         printf '%s\n' "$ISO_B" >&2
-        fail "C: beta worktree must list beta"
+        fail "B: beta worktree must list beta"
     }
 printf '%s' "$ISO_B" | grep -q '"branch": "roadmap/beta"' ||
     {
         printf '%s\n' "$ISO_B" >&2
-        fail "C: beta's item must carry branch roadmap/beta"
+        fail "B: beta's item must carry branch roadmap/beta"
     }
 printf '%s' "$ISO_B" | grep -q 'alpha/phase-1-work' &&
     {
         printf '%s\n' "$ISO_B" >&2
-        fail "C: beta worktree must NOT list alpha"
+        fail "B: beta worktree must NOT list alpha"
     }
-ok "C: alpha⇒alpha-only and beta⇒beta-only, branches match"
+ok "B: alpha⇒alpha-only and beta⇒beta-only, branches match"
 
 # ============================================================================
-# Case D: trigger-from-main robustness.
+# Case C: trigger-from-main robustness.
 #
 # From the source repo's `main` checkout a trigger must never misfire for a
 # roadmap's in-flight review: branch-identity scopes the `roadmap/*`-stamped
@@ -326,25 +267,19 @@ ok "C: alpha⇒alpha-only and beta⇒beta-only, branches match"
 # and delete `roadmap/alpha`, and assert the same query from `main` still exits
 # cleanly (no crash, still silent) — it cleanly reports the branch is gone.
 # ============================================================================
-say "Case D: trigger from main never misfires; branch-gone stays clean"
+say "Case C: trigger from main never misfires; branch-gone stays clean"
 
-HOOK_MAIN=$(run_stop_hook "$SRC")
-[ -z "$HOOK_MAIN" ] ||
-    {
-        printf '%s\n' "$HOOK_MAIN" >&2
-        fail "D: Stop hook must NOT block from main"
-    }
 PENDING_MAIN=$(pending_json "$SRC")
 printf '%s' "$PENDING_MAIN" | grep -q '"identifier"' &&
     {
         printf '%s\n' "$PENDING_MAIN" >&2
-        fail "D: main checkout must see no pending items"
+        fail "C: main checkout must see no pending items"
     }
-ok "D: main checkout → no block, empty pending (roadmap items scoped out)"
+ok "C: main checkout → empty pending (roadmap items scoped out)"
 
 # Branch-gone: tear down the alpha worktree + delete its branch.
 (cd "$SRC" && git worktree remove "$WT_ALPHA" && git branch -D roadmap/alpha >/dev/null)
-[ ! -d "$WT_ALPHA" ] || fail "D: alpha worktree should be gone after removal"
+[ ! -d "$WT_ALPHA" ] || fail "C: alpha worktree should be gone after removal"
 
 set +e
 PENDING_GONE=$(pending_json "$SRC")
@@ -353,60 +288,60 @@ set -e
 [ "$rc" -eq 0 ] ||
     {
         printf '%s\n' "$PENDING_GONE" >&2
-        fail "D: review pending crashed after branch removal (rc=$rc)"
+        fail "C: review pending crashed after branch removal (rc=$rc)"
     }
 printf '%s' "$PENDING_GONE" | grep -q '"identifier"' &&
     {
         printf '%s\n' "$PENDING_GONE" >&2
-        fail "D: main must stay silent after branch removal"
+        fail "C: main must stay silent after branch removal"
     }
-ok "D: after worktree+branch removal, review pending from main exits cleanly and silent"
+ok "C: after worktree+branch removal, review pending from main exits cleanly and silent"
 
 # ============================================================================
-# Case E: amend-after-finalize restamp.
+# Case D: amend-after-finalize restamp.
 #
 # Amending (or rebasing) the implementation commit while an item is still
-# needs-review orphans the stamped review_sha. `rdm review restamp` — which the
-# Stop hook runs fail-open before every scope check — re-points the stamp at the
-# new HEAD so the item stays in scope. We use the still-live beta worktree.
+# needs-review orphans the stamped review_sha. `rdm review restamp` re-points
+# the stamp at the new HEAD so the item stays in scope for `rdm review pending`.
+# We use the still-live beta worktree.
 # ============================================================================
-say "Case E: amend after finalize → restamp refreshes the stamp, hook still blocks"
+say "Case D: amend after finalize → restamp refreshes the stamp, still in scope"
 
 SHA_BEFORE=$(cd "$WT_BETA" && git rev-parse HEAD)
 # Amend the implementation commit while beta/phase-1-work is still needs-review.
 (cd "$WT_BETA" && git commit --quiet --amend --allow-empty -m "feat: beta phase 1 work (amended)")
 SHA_AFTER=$(cd "$WT_BETA" && git rev-parse HEAD)
-[ "$SHA_BEFORE" != "$SHA_AFTER" ] || fail "E: amend must move HEAD"
+[ "$SHA_BEFORE" != "$SHA_AFTER" ] || fail "D: amend must move HEAD"
 
 # Explicit restamp refreshes beta's stamp to the new HEAD (JSON exposes "sha").
-RESTAMP_E=$(restamp_json "$WT_BETA")
-printf '%s' "$RESTAMP_E" | grep -q '"identifier": "beta/phase-1-work"' ||
+RESTAMP_D=$(restamp_json "$WT_BETA")
+printf '%s' "$RESTAMP_D" | grep -q '"identifier": "beta/phase-1-work"' ||
     {
-        printf '%s\n' "$RESTAMP_E" >&2
-        fail "E: restamp must report beta/phase-1-work as refreshed"
+        printf '%s\n' "$RESTAMP_D" >&2
+        fail "D: restamp must report beta/phase-1-work as refreshed"
     }
-printf '%s' "$RESTAMP_E" | grep -q "\"sha\": \"$SHA_AFTER\"" ||
+printf '%s' "$RESTAMP_D" | grep -q "\"sha\": \"$SHA_AFTER\"" ||
     {
-        printf '%s\n' "$RESTAMP_E" >&2
-        fail "E: restamp must re-point the stamp at the amended HEAD ($SHA_AFTER)"
+        printf '%s\n' "$RESTAMP_D" >&2
+        fail "D: restamp must re-point the stamp at the amended HEAD ($SHA_AFTER)"
     }
 
 # Idempotent: a second restamp with no intervening commit is a no-op.
-RESTAMP_E2=$(restamp_json "$WT_BETA")
-printf '%s' "$RESTAMP_E2" | grep -q '"identifier"' &&
+RESTAMP_D2=$(restamp_json "$WT_BETA")
+printf '%s' "$RESTAMP_D2" | grep -q '"identifier"' &&
     {
-        printf '%s\n' "$RESTAMP_E2" >&2
-        fail "E: second restamp must be a no-op (idempotent)"
+        printf '%s\n' "$RESTAMP_D2" >&2
+        fail "D: second restamp must be a no-op (idempotent)"
     }
 
-# End-to-end: the real Stop hook (restamp + pending) still blocks post-amend.
-HOOK_E=$(run_stop_hook "$WT_BETA")
-printf '%s' "$HOOK_E" | grep -q '"decision":"block"' ||
+# End-to-end: the item is still reported pending post-amend, in scope for beta.
+PENDING_D=$(pending_json "$WT_BETA")
+printf '%s' "$PENDING_D" | grep -q '"identifier": "beta/phase-1-work"' ||
     {
-        printf '%s\n' "$HOOK_E" >&2
-        fail "E: Stop hook must still block from beta worktree after amend"
+        printf '%s\n' "$PENDING_D" >&2
+        fail "D: beta/phase-1-work must still be pending from the beta worktree after amend"
     }
-ok "E: amend → restamp refreshes to new HEAD, idempotent, hook still blocks"
+ok "D: amend → restamp refreshes to new HEAD, idempotent, still pending in scope"
 
 # ----------------------------------------------------------------------------
 # Done.

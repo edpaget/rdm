@@ -88,7 +88,7 @@ For unattended Claude Code runs (where no human is present to approve permission
 
     **Single pass.** If the review returns `rework`, the item is left `in-progress` and you must surface that to the user with its findings — there is no automatic rework loop here. Re-run this skill to take another pass.
 
-    Because finalize now drives the item **out of** `needs-review` before the session stops, the needs-review Stop hook reaches its CLEARED path instead of firing.
+    Because finalize now drives the item **out of** `needs-review` before the session stops, nothing is ever left parked in `needs-review` — the once-passive needs-review Stop hook / Pi `agent_end` extension that used to catch a dropped finalize has been retired as redundant.
 
 ## Auto phase dispatch (--auto, phase flow only)
 

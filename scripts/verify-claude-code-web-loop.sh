@@ -205,15 +205,15 @@ say "Pushing plan repo update to origin bare"
 ok "plan repo update visible in $PLAN_ORIGIN"
 
 # ----------------------------------------------------------------------------
-# Step 8: two-worktree needs-review scoping. The auto-review Stop hook must only
-# reprompt for items finalized on the *current* branch — an item finalized in a
-# sibling worktree (a different branch) is out of scope and must not block.
+# Step 8: two-worktree needs-review scoping. `rdm review pending` must only
+# report items finalized on the *current* branch — an item finalized in a
+# sibling worktree (a different branch) is out of scope. (This used to also
+# drive the auto-review Stop hook template, retired once phase 6 of the
+# unify-code-review roadmap made review active on every finalize path; see
+# docs/autonomous-loop.md. The underlying `rdm review pending` scoping this
+# step asserts is still load-bearing for every host that queries it.)
 # ----------------------------------------------------------------------------
-say "Two-worktree needs-review scoping (rdm review pending + Stop hook)"
-
-# Faithful env: rdm on PATH, plan repo + project resolved via RDM_ROOT/RDM_PROJECT
-# exactly as the generalized end-user hook template expects (no --root, no jq).
-HOOK_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/hook-review-on-finalize.sh"
+say "Two-worktree needs-review scoping (rdm review pending)"
 
 # A source repo with branch-a as the main worktree and branch-b as a sibling
 # linked worktree, each with a divergent commit so neither tip reaches the other.
@@ -266,31 +266,6 @@ printf '%s' "$PENDING_B" | grep -q 'review-a' &&
         fail "branch-b must NOT see review-a (sibling branch)"
     }
 ok "branch-b review pending: review-b only"
-
-# The actual Stop hook template: blocks on branch-a (in-scope item present)...
-HOOK_OUT_A=$(cd "$SRC2" && printf '%s' '{"stop_hook_active": false}' |
-    RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" PATH="$SANDBOX_HOME/.local/bin:$PATH" \
-        sh "$HOOK_TEMPLATE")
-printf '%s' "$HOOK_OUT_A" | grep -q '"decision":"block"' ||
-    {
-        printf '%s\n' "$HOOK_OUT_A" >&2
-        fail "Stop hook should block on branch-a"
-    }
-ok "Stop hook blocks on branch-a"
-
-# ...and does NOT block from a clean sibling worktree (branch-c off main) where
-# neither needs-review item is reachable.
-SRC2_WT_C="$TMP/src2-wt-c"
-(cd "$SRC2" && git worktree add --quiet -b branch-c "$SRC2_WT_C" main)
-HOOK_OUT_C=$(cd "$SRC2_WT_C" && printf '%s' '{"stop_hook_active": false}' |
-    RDM_ROOT="$SANDBOX_PLAN" RDM_PROJECT="verify" PATH="$SANDBOX_HOME/.local/bin:$PATH" \
-        sh "$HOOK_TEMPLATE")
-[ -z "$HOOK_OUT_C" ] ||
-    {
-        printf '%s\n' "$HOOK_OUT_C" >&2
-        fail "Stop hook must NOT block on unrelated branch-c"
-    }
-ok "Stop hook allows on unrelated branch-c (no in-scope items)"
 
 # ----------------------------------------------------------------------------
 # Done.

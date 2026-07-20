@@ -184,14 +184,20 @@ rdm review blocked --project <proj>
 rdm review blocked --project <proj> --format json
 ```
 
-## Relation to the passive needs-review safety net
+## Relation to the retired needs-review safety net
 
 Autopilot is the **active driver** — it pushes a roadmap forward phase by phase.
-The needs-review **Stop hook** (Claude Code) and the Pi **`agent_end`
-extension** are the **passive safety net**: they only re-prompt when an item is
-*left* in `needs-review`, catching a finalize that was never reviewed. The two
-are complementary — the driver does the work, the net catches anything dropped
-on the floor. The workflow lane never emits a `Done:` line — `dispatch-phase`'s
+Every lane that can produce a `needs-review` item now actively runs the
+canonical review (`.claude/workflows/lib/review.mjs`) before that lane's
+finalize step returns: `dispatch-phase`'s code-review stage runs it inline and
+persists `reviewed`/`blocked` directly, autopilot's advance step relies on that
+same dispatch-phase pipeline, and interactive `rdm-do`'s finalize invokes
+`rdm-review` (the generated projection of the same canonical source) after the
+human confirm gate. With nothing left unreviewed, the once-passive needs-review
+Stop hook (Claude Code) and Pi `agent_end` extension — which only re-prompted
+when an item was *left* in `needs-review` — have been retired as redundant; see
+[`CLAUDE.md`](../CLAUDE.md)'s "Hook reconciliation" note for the harness
+evidence. The workflow lane never emits a `Done:` line — `dispatch-phase`'s
 review is an inline pipeline (not the `rdm-review` skill), and autopilot's
 advance step writes only `--status reviewed`. The `Done:` line is supplied later
 by `rdm-review` or at landing.

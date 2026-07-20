@@ -3,18 +3,19 @@
 # `needs-plan-review` sentinel tag.
 #
 # The `needs-plan-review` tag itself is the sentinel — there is no marker file and no
-# status transition involved (unlike the needs-review Stop hook, which watches a status
-# value). `rdm roadmap create` / `phase create` / `task create` stamp the tag onto new
-# items when the `plan_review` config flag is enabled (see `rdm-core::tags`). Once the
-# rdm-plan-review skill reviews the item and clears the tag (on PASS / PASS WITH
-# CONCERNS), the next stop finds nothing pending and is allowed. `stop_hook_active`
-# short-circuits the reprompt loop, exactly like the needs-review hook.
+# status transition involved (the now-retired needs-review Stop hook watched a status
+# value instead). `rdm roadmap create` / `phase create` / `task create` stamp the tag
+# onto new items when the `plan_review` config flag is enabled (see `rdm-core::tags`).
+# Once the rdm-plan-review skill reviews the item and clears the tag (on PASS / PASS
+# WITH CONCERNS), the next stop finds nothing pending and is allowed.
+# `stop_hook_active` short-circuits the reprompt loop the same way that retired hook did.
 #
-# Divergence from rdm-review-on-finalize.sh (deliberate): this hook does NOT call
-# `rdm review restamp`. Restamping exists to keep a branch/commit-scoped stamp
-# (review_sha/review_branch) from going stale across an amend or rebase. The
-# `needs-plan-review` tag carries no branch/commit scope at all — it is a plain tag on
-# the item — so there is nothing to go stale and nothing to restamp.
+# This hook does NOT call `rdm review restamp` (the needs-review lane's mechanism,
+# before it was retired in favor of active review on every finalize). Restamping exists
+# to keep a branch/commit-scoped stamp (review_sha/review_branch) from going stale
+# across an amend or rebase. The `needs-plan-review` tag carries no branch/commit scope
+# at all — it is a plain tag on the item — so there is nothing to go stale and nothing
+# to restamp.
 #
 # Dependencies: POSIX `sh`, `grep`, and the `rdm` binary on PATH only (no `jq`).
 #

@@ -37,7 +37,7 @@ pub fn run(
             bail!(
                 "--hooks is only supported for the claude and pi platforms (claude \
                  writes a Stop hook registered in .claude/settings.json; pi writes a \
-                 .pi/extensions/rdm-review.ts extension)"
+                 .pi/extensions/rdm-plan-review.ts extension)"
             );
         }
         if out.is_none() && !user {
@@ -189,16 +189,16 @@ fn write_instruction(
     Ok(())
 }
 
-/// Writes the Claude Stop-hook scripts (executable) and merges both hook
-/// registrations into `settings.json`.
+/// Writes the Claude Stop-hook scripts (executable) and merges the hook
+/// registration into `settings.json`.
 ///
-/// Iterates over the auto-review hook ([`agent_config::generate_claude_hook`]) and the
-/// plan-review hook ([`agent_config::generate_claude_plan_review_hook`]): each script is
-/// written and marked executable, then its Stop hook command is folded into the
-/// in-memory settings JSON via [`agent_config::merge_stop_hook_into_settings`]. The
-/// settings file is read from disk only once (before the first merge) and written once
-/// at the end, so both commands compose into the same `settings.json` non-destructively
-/// and idempotently.
+/// Iterates over the plan-review hook ([`agent_config::generate_claude_plan_review_hook`]):
+/// its script is written and marked executable, then its Stop hook command is folded
+/// into the in-memory settings JSON via [`agent_config::merge_stop_hook_into_settings`].
+/// The settings file is read from disk only once (before the first merge) and written
+/// once at the end. The loop shape is kept even though there is currently only one hook
+/// set, so a future additional Claude Stop hook composes into the same `settings.json`
+/// non-destructively and idempotently without restructuring this function.
 ///
 /// # Errors
 ///
@@ -224,10 +224,7 @@ fn write_claude_hook(platform: Platform, user: bool, out: &Option<PathBuf>) -> R
     // settings string across all sets and writes a single settings file at
     // the end. A future hook targeting a different settings file would need
     // the merges grouped per path instead.
-    let hook_file_sets = [
-        agent_config::generate_claude_hook(),
-        agent_config::generate_claude_plan_review_hook(),
-    ];
+    let hook_file_sets = [agent_config::generate_claude_plan_review_hook()];
     debug_assert!(
         hook_file_sets
             .iter()
@@ -297,7 +294,7 @@ fn write_claude_hook(platform: Platform, user: bool, out: &Option<PathBuf>) -> R
     write_output(&settings_path, merged.as_bytes())
 }
 
-/// Writes the Pi `rdm-review.ts` and `rdm-plan-review.ts` extension files.
+/// Writes the Pi `rdm-plan-review.ts` extension file.
 ///
 /// # Errors
 ///
@@ -318,10 +315,7 @@ fn write_pi_extension(platform: Platform, user: bool, out: &Option<PathBuf>) -> 
         dir.join(".pi")
     };
 
-    let ext_file_sets = [
-        agent_config::generate_pi_extension(),
-        agent_config::generate_pi_plan_review_extension(),
-    ];
+    let ext_file_sets = [agent_config::generate_pi_plan_review_extension()];
     for ext_files in &ext_file_sets {
         let ext_path = pi_base.join(ext_files.extension_relative_path);
         write_output(&ext_path, ext_files.extension_content.as_bytes())?;
