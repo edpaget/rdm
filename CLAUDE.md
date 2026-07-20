@@ -309,7 +309,7 @@ Always pass `--no-edit` to suppress the interactive editor.
 ./target/debug/rdm commit -m "chore(plan): create <slug> roadmap/phase/task"  # land the batch
 ```
 
-`--tags` is comma-separated. On `update`, `--tags` replaces the existing list; pass `--tags ""` to clear. Tagging convention: lowercase kebab-case (`bug`, `auth`, `tech-debt`); prefer existing tags — check with `./target/debug/rdm search "" --tag <candidate> --project rdm` before inventing a new one.
+`--tags` is comma-separated. On `update`, `--tags` replaces the existing list; pass `--tags ""` to clear. Tagging convention: lowercase kebab-case (`bug`, `auth`, `tech-debt`); prefer existing tags — check with `./target/debug/rdm search "" --tag <candidate> --project rdm` before inventing a new one. `depends-unlanded` is a reserved tag (like `needs-plan-review`) for a side-task filed from inside a worktree whose body cites a file or behavior that only exists on an unlanded branch — see "Discovering bugs or side-work" above.
 
 `--body` is **authoritative**: when you pass `--body`, rdm uses that value verbatim and ignores stdin. This includes backticks, em-dashes, curly quotes, and other Unicode/punctuation — none of it triggers stdin reads or hangs. To intentionally empty an existing body on `phase update`, `task update`, or `roadmap update`, pass `--clear-body` (mutually exclusive with `--body`); passing `--body ""` against a non-empty body is rejected with an actionable error to prevent silent clobber from a truncated heredoc or empty command substitution.
 
@@ -360,6 +360,14 @@ If you encounter a bug or unrelated improvement while working on a phase, do not
 ```bash
 ./target/debug/rdm task create <slug> --title "Description of the issue" --body "Details." --no-edit --project rdm
 ```
+
+**Worktree-vs-main hazard:** when you are working inside a roadmap's or task's shared worktree (not `main`), any file or symbol you cite in a new task's body may exist only on that unlanded branch. Describing it as "existing" without qualification is a false premise — a plan-review gate that checks the current `main` will correctly REWORK it. Before filing a side-task from a worktree, check whether the paths/behavior you're citing are on `main` (e.g. if you introduced or modified them in this same roadmap's or task's phases, they are not yet on `main`). If they aren't, tag the new task with the reserved tag `depends-unlanded` and phrase the body as "`<file/behavior>`, introduced by `<roadmap-or-task-worktree-ref>`, not yet on main":
+
+```bash
+./target/debug/rdm task create sweep-x --title "..." --body "rdm-core/src/ops/tag.rs, introduced by roadmap tagging-support, not yet on main. ..." --tags depends-unlanded --no-edit --project rdm
+```
+
+Remember `--tags` replaces the whole list on `update` — if you later update a `depends-unlanded` task, read-modify-write the tag list so you don't silently drop the annotation.
 
 #### When a task grows too complex
 

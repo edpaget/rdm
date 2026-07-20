@@ -82,7 +82,7 @@ const DIMENSIONS = {
       key: 'coherence',
       title: 'Coherence',
       focus:
-        'Internal consistency and completeness: are the steps and acceptance criteria concrete and actionable? An empty or ambiguous plan is itself a blocking finding — never guess intent.',
+        'Internal consistency and completeness: are the steps and acceptance criteria concrete and actionable? An empty or ambiguous plan is itself a blocking finding — never guess intent. A plan step citing a file or behavior as existing, where it was actually introduced by another in-flight (not-yet-landed) roadmap or task, is only blocking if the target item does NOT carry the `depends-unlanded` tag and does not state the dependency explicitly; when already annotated, downgrade to a concern (or omit) instead of blocking on it.',
     },
     {
       key: 'architectural-fit',
@@ -807,6 +807,13 @@ function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes) 
     '--- END APPROVED PLAN ---',
     'Implement the approved plan, run the project checks, then stage and commit with a conventional-commit message.',
     'Do NOT add any land-time completion directive to the commit message — landing happens later, not here.',
+    'If you discover side-work and file it as a task (per "Discovering bugs or side-work" in CLAUDE.md): you are working in the ' +
+      worktreeRef +
+      ' worktree, not main. If the side-task body cites a file or behavior introduced by this worktree\'s not-yet-landed work, tag it `depends-unlanded` and phrase the body as "<file/behavior>, introduced by ' +
+      worktreeRef +
+      ', not yet on main" — e.g. `./target/debug/rdm task create sweep-x --title "..." --body "rdm-core/src/ops/tag.rs, introduced by ' +
+      worktreeRef +
+      ', not yet on main. ..." --tags depends-unlanded --no-edit --project rdm`.',
   ]
   if (reworkNotes) {
     lines.push('Code-review found these ranked issues on the prior pass — fix every blocking one:')

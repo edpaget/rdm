@@ -66,6 +66,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   suggestions, not a closed set), and points at `rdm tag list` — instead of the
   previous `rdm search "" --tag <candidate>` — for discovering the tags a project
   already uses before inventing a new one.
+- The `rdm-plan-review` skill's Coherence reviewer (CLI and MCP variants) now
+  treats a cross-item dependency on unlanded work as non-blocking when the
+  target item is annotated: a plan step citing a file or behavior introduced by
+  another in-flight (not-yet-landed) roadmap or task is only `blocking` if the
+  item does not carry the new reserved `depends-unlanded` tag and does not
+  state the dependency explicitly. This closes a false-positive REWORK mode
+  where side-tasks filed from inside a roadmap's shared worktree described
+  branch-local files as if they already existed on `main`.
 
 ### Added
 
