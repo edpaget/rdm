@@ -163,25 +163,46 @@ function buildParkReason(stage, note) {
   return '[' + stage + '] ' + note;
 }
 
-// interpretOutcome(outcomeStr, ctx) — turn a dispatch OUTCOME string into the
-// loop's next action. reviewed -> advance (or noop-vetted under --plan-only);
-// rework -> retry until the per-phase budget is spent, then park [code];
-// escalated (or any unrecognized value) -> park. dispatch-phase's escalations
-// originate at the plan gate, so they are tagged [plan].
-function interpretOutcome(outcomeStr, ctx) {
+// interpretOutcome(outcome, ctx) — turn a dispatch OUTCOME into the loop's next
+// action. reviewed -> advance (or noop-vetted under --plan-only); rework ->
+// retry until this loop's per-phase budget is spent, then park; escalated (or
+// any unrecognized value) -> park.
+//
+// `outcome` is the whole OUTCOME OBJECT. The status and the gate-tagged reason
+// are read OFF it — dispatch-phase projects them from the canonical review
+// source (lib/review.mjs: statusFor / STATUS_MAPPING), so this loop no longer
+// restates that map. A bare outcome STRING is still accepted (older callers and
+// the pure-helper tests): it carries no policy, so the legacy literals below are
+// used as the fallback.
+//
+// The rework-budget park is this loop's OWN decision — dispatch-phase's rework
+// status (`in-progress`) describes a single dispatch, whereas a phase whose
+// roadmap-level retry budget is spent must land in the escalation queue as
+// `blocked`. That is why the park path uses buildParkReason, not outcome.status.
+function interpretOutcome(outcome, ctx) {
   const c = ctx || {};
   const planOnly = !!c.planOnly;
   const reworkCount = c.reworkCount || 0;
   const maxRework = c.maxRework != null ? c.maxRework : DEFAULT_MAX_REWORK;
+  const isString = typeof outcome === 'string';
+  const o = !isString && outcome ? outcome : {};
+  const outcomeStr = isString ? outcome : o.outcome || '';
+  // The OUTCOME-supplied reason already carries the canonical `[plan]`/`[code]`
+  // gate tag; fall back to this loop's own tagged literal when absent.
+  const suppliedReason = typeof o.reason === 'string' && o.reason !== '' ? o.reason : null;
   if (outcomeStr === 'reviewed') {
-    return planOnly ? { action: 'noop-vetted' } : { action: 'advance' };
+    // The status to persist comes from the OUTCOME, not from a literal here.
+    return planOnly ? { action: 'noop-vetted' } : { action: 'advance', status: o.status || 'reviewed' };
   }
   if (outcomeStr === 'rework') {
     if (reworkCount < maxRework) return { action: 'retry' };
     return { action: 'park', reason: buildParkReason('code', 'rework budget exhausted') };
   }
   if (outcomeStr === 'escalated') {
-    return { action: 'park', reason: buildParkReason('plan', 'dispatch escalated at the plan gate') };
+    return {
+      action: 'park',
+      reason: suppliedReason || buildParkReason('plan', 'dispatch escalated at the plan gate'),
+    };
   }
   return { action: 'park', reason: buildParkReason('code', 'unrecognized dispatch outcome: ' + String(outcomeStr)) };
 }
@@ -258,15 +279,23 @@ function buildEstimateWritebackPrompt(stem, difficulty, slug) {
   ].join('\n');
 }
 
-// buildAdvancePrompt(stem, slug) — persist a reviewed phase's status so
-// `rdm next` steps past it. Status write ONLY: it never lands, integrates, or
-// emits a completion directive — that is a separate, later step.
-function buildAdvancePrompt(stem, slug) {
+// buildAdvancePrompt(stem, slug, status) — persist an advanced phase's status so
+// `rdm next` steps past it. `status` is the OUTCOME-supplied status the canonical
+// review mapped this outcome to (see lib/review.mjs's STATUS_MAPPING); it is
+// interpolated rather than hardcoded so the map has exactly one home. Callers
+// that have no OUTCOME fall back to the reviewed status.
+//
+// Status write ONLY: it never lands, integrates, or emits a completion directive.
+// Writing the land-time completion trailer is `rdm-land`'s job — it synthesizes
+// it from the OUTCOME identifiers via `rdm hook done-line` just before the
+// rebase, so no autopilot-produced branch ever needs a manual rebase to gain it.
+function buildAdvancePrompt(stem, slug, status) {
+  const advanceStatus = status || 'reviewed';
   return [
     'You are a mechanical status agent. Do not plan or implement anything.',
     'The phase has been reviewed. Persist its status so `rdm next` steps past it.',
     'Run exactly this command in the repo root:',
-    '  ./target/debug/rdm phase update ' + stem + ' --status reviewed --no-edit --roadmap ' + slug + ' --project rdm',
+    '  ./target/debug/rdm phase update ' + stem + ' --status ' + advanceStatus + ' --no-edit --roadmap ' + slug + ' --project rdm',
     'Persist status only — integrating the work is a separate, later step handled elsewhere.',
     'Report whether the command exited 0.',
   ].join('\n');
@@ -403,14 +432,15 @@ function buildAutopilot(deps) {
           escalations.push({ stem: stem, reason: reason });
           break;
         }
-        const outcomeStr = (outcome && outcome.outcome) || '';
-        const decision = interpretOutcome(outcomeStr, { planOnly: planOnly, reworkCount: reworkCount, maxRework: maxRework });
+        // The WHOLE OUTCOME object is handed to interpretOutcome so it can read
+        // the canonical status/reason policy dispatch-phase projected onto it.
+        const decision = interpretOutcome(outcome, { planOnly: planOnly, reworkCount: reworkCount, maxRework: maxRework });
 
         if (decision.action === 'advance') {
           let advanceOk = false;
           for (let attempt = 0; attempt < DEFAULT_MAX_ADVANCE_ATTEMPTS; attempt++) {
             try {
-              const ack = await d.advance(stem, roadmap);
+              const ack = await d.advance(stem, roadmap, decision.status);
               advanceOk = !ack || ack.ok !== false;
             } catch (e) {
               advanceOk = false;

@@ -145,7 +145,7 @@ const { hasBlocking, summarizeFindings, classifyOutcome, buildOutcome } = mod;
 const B = (id) => ({ id, concern: 'x', severity: 'blocking', confidence: 90, what_fails: id });
 const C = (id) => ({ id, concern: 'x', severity: 'concern', confidence: 90, what_fails: id });
 
-const SHAPE = ['findings', 'outcome', 'phase', 'roadmap', 'summary'];
+const SHAPE = ['findings', 'outcome', 'phase', 'reason', 'roadmap', 'status', 'summary', 'writesCompletion'];
 
 // ============================================================================
 // Happy path FIRST — clean plan + clean code → reviewed, full OUTCOME shape.
@@ -163,7 +163,11 @@ assert.equal(rev.roadmap, 'rm', 'roadmap echoed into OUTCOME');
 assert.equal(rev.phase, 'phase-1-foo', 'phase echoed into OUTCOME');
 assert.ok(Array.isArray(rev.findings), 'findings is an array');
 assert.equal(typeof rev.summary, 'string', 'summary is a string');
-assert.deepEqual(Object.keys(rev).sort(), SHAPE, 'OUTCOME is exactly {roadmap,phase,outcome,summary,findings}');
+assert.deepEqual(
+  Object.keys(rev).sort(),
+  SHAPE,
+  'OUTCOME is exactly {roadmap,phase,outcome,status,writesCompletion,summary,reason,findings}'
+);
 
 // ============================================================================
 // Failure-branch fixtures.
@@ -279,7 +283,7 @@ assert.ok(summarizeFindings([B('bug')]).includes('blocking'), 'summary names the
 const { buildTaskOutcome } = mod;
 assert.equal(typeof buildTaskOutcome, 'function', 'buildTaskOutcome is exported from the lib');
 
-const TASK_SHAPE = ['findings', 'outcome', 'summary', 'task'];
+const TASK_SHAPE = ['findings', 'outcome', 'reason', 'status', 'summary', 'task', 'writesCompletion'];
 
 // reviewed — clean code review on the first pass.
 const tRev = buildTaskOutcome({
@@ -365,9 +369,54 @@ assert.equal(
 );
 
 // ============================================================================
-// No OUTCOME ever carries a land-time completion (`Done:`) directive.
+// AC-1 (positive half): the OUTCOME carries the canonical gate/completion policy.
+//
+// `status` must agree with the canonical statusFor(outcome, kind) and
+// `writesCompletion` with the canonical writesCompletion(outcome) — for all
+// three outcomes x both item kinds. This is what lets rdm-land know, without
+// restating any map, that a `reviewed` branch is owed its land-time trailer.
 // ============================================================================
-for (const o of [rev, revRework, rw, esc, fe, tRev, tRw, tEsc, tFe]) {
+const { statusFor, writesCompletion, outcomePolicy, OUTCOME_REASON_PREFIX } = mod;
+
+for (const [o, kind] of [
+  [rev, 'phase'], [revRework, 'phase'], [rw, 'phase'], [esc, 'phase'], [fe, 'phase'],
+  [tRev, 'task'], [tRw, 'task'], [tEsc, 'task'], [tFe, 'task'],
+]) {
+  assert.equal(o.status, statusFor(o.outcome, kind), o.outcome + '/' + kind + ' status matches statusFor');
+  assert.equal(o.writesCompletion, writesCompletion(o.outcome), o.outcome + ' writesCompletion matches the canonical policy');
+  assert.equal(typeof o.writesCompletion, 'boolean', 'writesCompletion is a boolean, never a trailer literal');
+}
+
+// The three outcomes, pinned explicitly (a policy flip must fail loudly).
+assert.equal(rev.status, 'reviewed', 'a clean review yields status reviewed');
+assert.equal(rev.writesCompletion, true, 'a clean review is owed the land-time completion trailer');
+assert.equal(rev.reason, '', 'a clean review carries no park reason');
+assert.equal(rw.status, 'in-progress', 'rework yields status in-progress');
+assert.equal(rw.writesCompletion, false, 'rework is NOT owed the completion trailer');
+assert.ok(rw.reason.startsWith('[code]'), 'a rework reason is tagged [code]');
+assert.equal(esc.status, 'blocked', 'escalated yields status blocked');
+assert.equal(esc.writesCompletion, false, 'escalated is NOT owed the completion trailer');
+assert.ok(esc.reason.startsWith('[plan]'), 'a dispatch escalation is tagged [plan] (it comes out of the plan gate)');
+// Task-mode escalated maps to the `blocked` TASK status — never downgraded.
+assert.equal(tEsc.status, 'blocked', 'an escalated TASK is blocked, not downgraded to in-progress');
+assert.equal(tRev.writesCompletion, true, 'a clean task review is owed the completion trailer');
+assert.equal(OUTCOME_REASON_PREFIX.escalated, '[plan]', 'dispatch tags escalations [plan]');
+assert.equal(OUTCOME_REASON_PREFIX.rework, '[code]', 'dispatch tags reworks [code]');
+assert.equal(outcomePolicy('reviewed', 'phase', 's').reason, '', 'outcomePolicy leaves a clean reason empty');
+
+// Budget-0 must not be recomputed from a findings array: derive from the
+// classifier. A blocking first pass with maxRework 0 is `rework`, never clean.
+const b0 = buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], codeFindings: [B('bug')], maxRework: 0, tier: 'medium' });
+assert.equal(b0.outcome, 'rework', 'budget-0 with a blocking first pass is rework');
+assert.equal(b0.status, 'in-progress', 'budget-0 rework status derives from the classifier');
+assert.equal(b0.writesCompletion, false, 'budget-0 rework is not owed the completion trailer');
+
+// ============================================================================
+// No OUTCOME ever carries a land-time completion (`Done:`) directive.
+// The completion POLICY is carried as the boolean above; the literal is written
+// only at land time by rdm-land, from `rdm hook done-line`.
+// ============================================================================
+for (const o of [rev, revRework, rw, esc, fe, tRev, tRw, tEsc, tFe, b0]) {
   assert.ok(!JSON.stringify(o).includes('Done:'), 'OUTCOME never contains a Done: directive');
 }
 
@@ -704,6 +753,77 @@ try {
   assert.equal(t.roadmap, '', 'task mode carries no roadmap');
 }
 
+// ============================================================================
+// AC-2 — the code gate's review is SIGNALS-FED and RE-DERIVES per rework round.
+//
+// The driver's `review` closure fetches a diff and threads
+// deriveSignals({targetType, changedFiles, diffText}) into the canonical
+// pipeline. Here that closure's contract is driven with a fake review dep and a
+// mutable diff, so the three load-bearing properties are pinned:
+//   1. a Rust-public-API + no-tests diff turns `api-docs` and `tests` ON;
+//   2. round 2 re-derives from the POST-rework tree (a fix that newly touches a
+//      public rdm-core item must turn `api-docs` on for round 2);
+//   3. an empty/failed diff omits the `signals` KEY ENTIRELY (fail-open), never
+//      passing `{}` — selectDimensions treats those two cases differently.
+// ============================================================================
+{
+  const { deriveSignals } = mod;
+
+  const RUST_PUBLIC = ['rdm-core/src/ops/task.rs'];
+  const s1 = deriveSignals({ targetType: 'phase', changedFiles: RUST_PUBLIC, diffText: '+pub fn foo() {}\n' });
+  assert.equal(s1.publicApiChanged, true, 'a new rdm-core pub item turns publicApiChanged on');
+  assert.equal(s1.missingTests, true, 'a code-only diff with no test file turns missingTests on');
+  assert.equal(s1.changesLogic, true, 'a .rs change turns changesLogic on');
+  assert.equal(s1.targetType, 'phase', 'the target type rides along for the plan-mode trigger');
+
+  // Round 1 touches no Rust; round 2's fix does. Re-derivation must notice.
+  const roundDiffs = [
+    { changedFiles: ['docs/workflow-schemas.md'], diffText: '+prose\n' },
+    { changedFiles: RUST_PUBLIC, diffText: '+pub fn bar() {}\n' },
+  ];
+  let roundIdx = 0;
+  const seen = [];
+  const codeDeps = {
+    implement: async () => {},
+    review: async () => {
+      // Mirrors the driver closure: fetch the diff INSIDE review, per round.
+      const d = roundDiffs[Math.min(roundIdx, roundDiffs.length - 1)];
+      roundIdx++;
+      const files = (d.changedFiles || []).filter(Boolean);
+      if (files.length === 0) {
+        seen.push({ hasSignalsKey: false });
+        return [B('still-broken')];
+      }
+      const signals = deriveSignals({ targetType: 'phase', changedFiles: files, diffText: d.diffText });
+      seen.push({ hasSignalsKey: true, signals });
+      return roundIdx >= 2 ? [] : [B('round-1-blocker')];
+    },
+  };
+  const gate = await runCodeGate({ maxRework: 1, tier: 'medium' }, codeDeps);
+  assert.equal(gate.reviewCount, 2, 'a blocking round 1 triggers a second, re-derived review');
+  assert.equal(seen[0].signals.publicApiChanged, false, 'round 1 (docs-only) leaves publicApiChanged off');
+  assert.equal(seen[1].signals.publicApiChanged, true, 'round 2 RE-DERIVES and turns publicApiChanged on');
+  assert.equal(gate.findings.length, 0, 'the rework cleared the gate');
+
+  // Fail-open: an empty diff must yield NO signals key at all.
+  let failOpenCall = null;
+  const failOpenDeps = {
+    implement: async () => {},
+    review: async () => {
+      const files = [];
+      const call = { target: 'rm/phase-1-x' };
+      if (files.length > 0) call.signals = deriveSignals({ targetType: 'phase', changedFiles: files });
+      failOpenCall = call;
+      return [];
+    },
+  };
+  await runCodeGate({ maxRework: 0, tier: 'medium' }, failOpenDeps);
+  assert.ok(
+    !Object.prototype.hasOwnProperty.call(failOpenCall, 'signals'),
+    'an empty diff omits the signals KEY entirely (fail-open) — never passes {}'
+  );
+}
+
 console.log('all dispatch-phase gate assertions passed');
 NODE_TEST
 
@@ -866,6 +986,56 @@ if grep -oE "label: '[^']+'" "$WF" | grep -q "label: 'plan:.*implement"; then
     fail "AC-2: planner and implementer must use separate labels"
 fi
 pass "AC-2: $NLABELS distinct agent labels; separate fetch/plan/implement calls"
+
+# AC-CANONICAL-REVIEW: the code-review stage IS the canonical review, fed by the
+# canonical `deriveSignals`. Two halves:
+#   (a) exactly ONE code-review construction site — `buildReviewPipeline('code')`
+#       — so there is no second, independent code-review prompt builder;
+#   (b) the driver actually THREADS diff signals into it, via a mechanical diff
+#       agent, so the canonical `when` triggers (tests/architecture/api-docs/
+#       changelog/security) and deriveSignals are live rather than dead code.
+# Count BINDING sites (`… = buildReviewPipeline('code')`), not prose mentions —
+# the driver comments name the constructor when explaining the wiring.
+CODE_PIPELINES=$(grep -cE "= *buildReviewPipeline\('code'\)" "$WF" | tr -d ' ')
+[ "$CODE_PIPELINES" -eq 1 ] ||
+    fail "AC-CANONICAL-REVIEW: expected exactly ONE buildReviewPipeline('code') construction, found $CODE_PIPELINES"
+# No second code-review prompt builder may exist alongside the canonical one:
+# `findPrompt`/`refutePrompt` are declared once each (inside the stamped block).
+for sym in 'function findPrompt(' 'function refutePrompt('; do
+    N=$(grep -cF "$sym" "$WF" | tr -d ' ')
+    [ "$N" -eq 1 ] ||
+        fail "AC-CANONICAL-REVIEW: '$sym' must be declared exactly once (found $N) — a second review prompt builder is an independent code-review path"
+done
+grep -qF 'deriveSignals(' "$WF" ||
+    fail "AC-CANONICAL-REVIEW: the driver must call deriveSignals( to select code-review dimensions from the real diff"
+grep -qF 'signals: signals' "$WF" ||
+    fail "AC-CANONICAL-REVIEW: the driver must pass 'signals:' into the code-review call"
+grep -qF "label: 'diff:signals'" "$WF" ||
+    fail "AC-CANONICAL-REVIEW: a mechanical 'diff:signals' agent must supply the diff (AC-MODEL covers its explicit model:)"
+grep -qF 'git diff --name-only main...HEAD' "$WF" ||
+    fail "AC-CANONICAL-REVIEW: the diff agent must use the three-dot branch diff (main...HEAD)"
+# Fail-open: the degraded path must call the review with NO signals key at all.
+# Passing `{}` would read every `when` predicate as falsy and silently drop
+# tests/api-docs/changelog/security coverage exactly when the driver knew least.
+if grep -qF 'signals: {}' "$WF"; then
+    fail "AC-CANONICAL-REVIEW: the fail-open path must OMIT signals entirely, never pass an empty {}"
+fi
+grep -qF 'fail-open' "$WF" ||
+    fail "AC-CANONICAL-REVIEW: the driver must document the signals fail-open contract"
+# Planted-string self-tests: prove each new detector actually fires.
+sed "s/= buildReviewPipeline('code')/= buildReviewPipelineX('code')/" "$WF" >"$TMP/planted-nocode.js"
+if [ "$(grep -cE "= *buildReviewPipeline\('code'\)" "$TMP/planted-nocode.js" | tr -d ' ')" -ne 0 ]; then
+    fail "AC-CANONICAL-REVIEW detector broken — removing the code pipeline was not detected"
+fi
+sed 's/deriveSignals(/deriveSignalsX(/g' "$WF" >"$TMP/planted-nosig.js"
+if grep -qF 'deriveSignals(' "$TMP/planted-nosig.js"; then
+    fail "AC-CANONICAL-REVIEW detector broken — a removed deriveSignals( call was not detected"
+fi
+cp "$WF" "$TMP/planted-emptysig.js"
+printf '\nconst bad = runCodeReview({ signals: {} })\n' >>"$TMP/planted-emptysig.js"
+grep -qF 'signals: {}' "$TMP/planted-emptysig.js" ||
+    fail "AC-CANONICAL-REVIEW detector broken — a planted empty-signals call was not detected"
+pass "AC-CANONICAL-REVIEW: one canonical code pipeline, signals threaded from a real diff, fail-open omits signals; detectors fire on planted mutations"
 
 # Driver arg hardening: dispatch-phase is invoked DIRECTLY via the Workflow tool
 # (rdm-do --auto, hand-run single phases), so an LLM-authored stringified `args`

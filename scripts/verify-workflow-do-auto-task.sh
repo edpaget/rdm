@@ -160,6 +160,30 @@ if grep -qF "'task/' + taskSlug" "$PLANTED"; then
 fi
 pass "worktree detector would fire on a planted per-roadmap worktree ref"
 
+# unify-code-review phase 6: the `--auto --task` section reads the OUTCOME's own
+# canonical status/completion policy, and leaves the trailer to rdm-land.
+awk '/^## Auto task dispatch/{p=1} p&&/^## /&&!/^## Auto task dispatch/{exit} p' "$SKILL" >"$TMP/task-section"
+[ -s "$TMP/task-section" ] || fail "could not extract the '## Auto task dispatch' section from SKILL.md"
+grep -qF 'outcome.status' "$TMP/task-section" ||
+    fail "the task section must persist the OUTCOME's own status field, not restate the mapping"
+grep -qF 'outcome.reason' "$TMP/task-section" ||
+    fail "the task section must use the OUTCOME's gate-tagged reason"
+grep -qF 'writesCompletion' "$TMP/task-section" ||
+    fail "the task section must name the OUTCOME's writesCompletion completion policy"
+grep -qF 'rdm-land' "$TMP/task-section" ||
+    fail "the task section must leave the reviewed lane's completion trailer to rdm-land"
+grep -qF 'hook done-line' "$TMP/task-section" ||
+    fail "the task section must point at 'rdm hook done-line' as the single home of the trailer format"
+grep -qi 'never downgraded to' "$TMP/task-section" ||
+    fail "the task section must state that an escalated TASK stays blocked (not downgraded to in-progress)"
+if grep -qF 'deferred two-stage' "$TMP/task-section"; then
+    fail "the task section still describes the deferred two-stage Done: protocol"
+fi
+# Self-test: prove the section extractor is not returning the whole file.
+grep -qF 'Auto phase dispatch' "$TMP/task-section" &&
+    fail "the task-section extractor leaked the phase section — its assertions would be false-green"
+pass "the --auto --task section reads outcome.status/reason/writesCompletion and defers the trailer to rdm-land"
+
 # --- 2. PURE OUTCOME SHAPE ----------------------------------------------------
 say "2. buildTaskOutcome emits the task-keyed OUTCOME contract"
 
@@ -171,7 +195,7 @@ const mod = await import(pathToFileURL(process.argv[2]).href);
 const { buildTaskOutcome } = mod;
 assert.equal(typeof buildTaskOutcome, 'function', 'buildTaskOutcome is exported');
 
-const SHAPE = ['findings', 'outcome', 'summary', 'task'];
+const SHAPE = ['findings', 'outcome', 'reason', 'status', 'summary', 'task', 'writesCompletion'];
 const B = (id) => ({ id, concern: 'x', severity: 'blocking', confidence: 90, what_fails: id });
 
 const clean = buildTaskOutcome({ task: 't', planFindings: [], codeFindings: [], tier: 'medium' });

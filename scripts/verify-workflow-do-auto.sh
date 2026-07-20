@@ -131,6 +131,40 @@ grep -qi 'dogfood' "$SKILL" || fail "SKILL.md must record the dogfood-only natur
 grep -q 'skill-do-cli.md' "$SKILL" || fail "SKILL.md must name the un-propagated distributed template skill-do-cli.md"
 pass "dogfood-only note present, naming the distributed template"
 
+# unify-code-review phase 6: the INTERACTIVE finalize step now actively runs the
+# canonical review instead of parking the item for a Stop hook, and the `--auto`
+# section reads the OUTCOME's own status/completion policy instead of restating it.
+grep -q 'rdm-review' "$SKILL" ||
+    fail "SKILL.md's finalize step must invoke the canonical 'rdm-review' skill"
+awk '/^11\. \*\*Finalize/{p=1} p&&/^## /{exit} p' "$SKILL" >"$TMP/finalize-section"
+[ -s "$TMP/finalize-section" ] || fail "could not extract the finalize step from SKILL.md"
+grep -q 'rdm-review' "$TMP/finalize-section" ||
+    fail "the finalize step itself (not just some other section) must invoke rdm-review"
+grep -q 'hook done-line' "$TMP/finalize-section" ||
+    fail "the finalize step must source the completion trailer from 'rdm hook done-line', never hand-type it"
+grep -qi 'both' "$TMP/finalize-section" ||
+    fail "the finalize step must state that the review runs in BOTH the interactive and --auto lanes"
+# The stale deferral framing ("rdm-review adds it later; needs-review is the
+# sentinel a review is pending") must be gone — review is now active, not parked.
+if grep -qF 'the sentinel that signals a review is pending' "$SKILL"; then
+    fail "SKILL.md still frames needs-review as a park-for-later sentinel — finalize now actively reviews"
+fi
+if grep -qF 'deferred two-stage' "$SKILL"; then
+    fail "SKILL.md still describes the deferred two-stage Done: protocol — the review/land writer owns the trailer now"
+fi
+grep -qF 'outcome.status' "$SKILL" ||
+    fail "the --auto sections must persist the OUTCOME's own status field"
+grep -qF 'outcome.writesCompletion' "$SKILL" ||
+    fail "the --auto sections must name the OUTCOME's writesCompletion completion policy"
+grep -qF 'rdm-land' "$SKILL" ||
+    fail "the --auto sections must name rdm-land as the land-time trailer writer"
+# Self-test: prove the stale-framing detector is not a no-op.
+cp "$SKILL" "$TMP/skill.scratch"
+printf '\nAn item sitting in needs-review is the sentinel that signals a review is pending.\n' >>"$TMP/skill.scratch"
+grep -qF 'the sentinel that signals a review is pending' "$TMP/skill.scratch" ||
+    fail "stale-framing detector broken — a planted deferral sentence was not found"
+pass "finalize invokes the canonical rdm-review in both lanes; --auto reads outcome.status/writesCompletion; stale deferral framing gone"
+
 # AC2 positive proof: distributed templates stay prose-only (no dispatch-phase).
 if grep -q 'dispatch-phase' "$TEMPLATE_CLI"; then
     fail "AC2: $TEMPLATE_CLI must stay prose-only — it must not mention dispatch-phase"

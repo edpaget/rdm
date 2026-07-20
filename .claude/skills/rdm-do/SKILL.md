@@ -1,6 +1,6 @@
 ---
 name: rdm-do
-description: Implement an rdm roadmap phase or work on an rdm task — plan, execute, then finalize into needs-review for rdm-review
+description: Implement an rdm roadmap phase or work on an rdm task — plan, execute, then finalize through the canonical code review
 allowed-tools:
   - Read
   - Bash
@@ -15,7 +15,7 @@ allowed-tools:
   - Workflow
 ---
 
-Implement a roadmap phase or work on a task. One shared flow: find the target → mark in-progress → plan → execute → review with the user → finalize into `needs-review`.
+Implement a roadmap phase or work on a task. One shared flow: find the target → mark in-progress → plan → execute → review with the user → finalize through the canonical code review.
 
 **IMPORTANT: This is the rdm source repo. Always run `cargo build` first, then use `./target/debug/rdm` — never bare `rdm`. If you modify any rdm source, `cargo build` again before running it.**
 
@@ -72,23 +72,32 @@ For unattended Claude Code runs (where no human is present to approve permission
 8. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
 9. **Execute the plan**: implement each step, following the plan and any acceptance criteria.
 10. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
-11. **Finalize:** on user acceptance, commit the implementation changes — a plain `git commit` of the code diff in the **source repo**, on the worktree's branch — then transition the item to `needs-review`:
-    - phase: `./target/debug/rdm phase update <phase> --status needs-review --no-edit --roadmap <slug> --project rdm`
-    - task: `./target/debug/rdm task update <slug> --status needs-review --no-edit --project rdm`
-    - land the plan-repo status change: `./target/debug/rdm commit -m "chore(plan): finalize <phase-or-task>"`
+11. **Finalize — commit, then actively run the canonical code review.** The human gate at step 10 decides **whether to finalize**, not **whether a review happens**: once accepted, this step *drives* the review rather than parking the item in `needs-review` for a Stop hook to pick up. Review is therefore active in **both** lanes — interactive here, and inside `dispatch-phase` under `--auto`.
 
-    This `rdm commit` is a **separate, plan-repo** git commit — distinct from the source-repo `git commit` of the implementation diff above. Do not conflate the two: one lands your code, the other lands the plan-repo status update.
+    1. **Commit the implementation diff** — a plain `git commit` of the code diff in the **source repo**, on the worktree's branch.
+    2. **Mark the item `needs-review`** as a transient marker so the review has a well-defined starting state, and land that plan-repo change:
+       - phase: `./target/debug/rdm phase update <phase> --status needs-review --no-edit --roadmap <slug> --project rdm`
+       - task: `./target/debug/rdm task update <slug> --status needs-review --no-edit --project rdm`
+       - land the plan-repo status change: `./target/debug/rdm commit -m "chore(plan): finalize <phase-or-task>"`
 
-    **Do NOT emit a `Done:` line in the commit message YET** — `rdm-review` adds it on a passing review as the final step. This is a deferred two-stage `Done:` protocol, not a contradiction: finalize defers the `Done:` line, review completes it. An item sitting in `needs-review` is the sentinel that signals a review is pending. Use the exact roadmap slug / phase stem / task slug from the rdm commands you ran earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch, which is left for merge to main (review takes it `needs-review` → `reviewed`, and the merge hook flips it to `done`).
+       This `rdm commit` is a **separate, plan-repo** git commit — distinct from the source-repo `git commit` of the implementation diff above. Do not conflate the two: one lands your code, the other lands the plan-repo status update.
+    3. **Immediately invoke the `rdm-review` skill** against the item. `rdm-review` is the generated projection of `.claude/workflows/lib/review.mjs` — the *same* canonical review the autonomous lane stamps into `dispatch-phase`. There is no second review implementation.
+    4. **The review owns the gate.** It persists the status the canonical mapping assigns — `reviewed`, `in-progress` (rework), or `blocked` with a `[code]`-prefixed reason (escalated) — and, on `reviewed` **only**, amends the land-time completion trailer onto the branch commit.
+
+    **Never hand-type the completion trailer.** Finalize does not write it at all: on this interactive path the review gate writes it; on the autonomous path `rdm-land` writes it at land time. Both source the exact line from `./target/debug/rdm hook done-line --roadmap <slug> --phase <stem>` (or `--task <slug>`), so the format string has exactly one home. Use the exact roadmap slug / phase stem / task slug from the rdm commands you ran earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch, which is left for merge to main (the merge hook flips `reviewed` → `done`).
+
+    **Single pass.** If the review returns `rework`, the item is left `in-progress` and you must surface that to the user with its findings — there is no automatic rework loop here. Re-run this skill to take another pass.
+
+    Because finalize now drives the item **out of** `needs-review` before the session stops, the needs-review Stop hook reaches its CLEARED path instead of firing.
 
 ## Auto phase dispatch (--auto, phase flow only)
 
 1. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`) via the `Workflow` tool with `{ roadmap: <slug>, phase: <stem> }`; block for its returned OUTCOME.
-2. Interpret the OUTCOME and persist status (mirrors autopilot's advance/park contract), then land it:
-   - `reviewed` → `./target/debug/rdm phase update <phase> --status reviewed --no-edit --roadmap <slug> --project rdm` then `./target/debug/rdm commit -m "chore(plan): finalize <phase>"`
-   - `rework` → `./target/debug/rdm phase update <phase> --status blocked --reason "[code] <outcome.summary>" --no-edit --roadmap <slug> --project rdm` then `./target/debug/rdm commit -m "chore(plan): park <phase>"`
-   - `escalated` → `./target/debug/rdm phase update <phase> --status blocked --reason "[plan] <outcome.summary>" --no-edit --roadmap <slug> --project rdm` then `./target/debug/rdm commit -m "chore(plan): park <phase>"`
-   - Do NOT add a `Done:` line here — same deferred two-stage protocol as the interactive path above.
+2. Interpret the OUTCOME and persist status. The OUTCOME now carries the canonical gate policy **as data** — `outcome.status` (the status the canonical review mapped this outcome to), `outcome.reason` (already carrying its `[code]`/`[plan]` gate tag), and `outcome.writesCompletion` — so read those fields rather than restating the map. dispatch-phase's code-review stage IS the canonical review, so the work is already reviewed by the time you see the OUTCOME.
+   - `reviewed` → persist `outcome.status`: `./target/debug/rdm phase update <phase> --status reviewed --no-edit --roadmap <slug> --project rdm` then `./target/debug/rdm commit -m "chore(plan): finalize <phase>"`
+   - `rework` → this lane is single-pass, so park it in the escalation queue with `outcome.reason` instead of leaving it merely in-progress: `./target/debug/rdm phase update <phase> --status blocked --reason "[code] <outcome.summary>" --no-edit --roadmap <slug> --project rdm` then `./target/debug/rdm commit -m "chore(plan): park <phase>"`
+   - `escalated` → same, with the plan-gate tag: `./target/debug/rdm phase update <phase> --status blocked --reason "[plan] <outcome.summary>" --no-edit --roadmap <slug> --project rdm` then `./target/debug/rdm commit -m "chore(plan): park <phase>"`
+   - Do NOT add a `Done:` line here. `outcome.writesCompletion` is `true` only on `reviewed`, and it is `rdm-land` that reads it and synthesizes the trailer via `rdm hook done-line` at land time — no manual rebase, and no pre-step before `rdm-land`.
 3. Return the OUTCOME JSON verbatim as the final message.
 
 This section applies only to `--auto` + the phase flow. Interactive `rdm-do` (either flow) is unaffected and keeps the steps above unchanged.
@@ -98,11 +107,11 @@ This section applies only to `--auto` + the phase flow. Interactive `rdm-do` (ei
 The task-flow twin of the phase dispatch above. A task belongs to no roadmap, carries no difficulty/model tier, and lives in its own `task/<slug>` worktree.
 
 1. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`) via the `Workflow` tool with `{ task: <slug> }`; block for its returned OUTCOME. The task-mode OUTCOME is keyed by `task` (the slug), not `roadmap`/`phase`.
-2. Interpret the OUTCOME and persist status (a true mirror of the phase park contract), then land it:
-   - `reviewed` -> `./target/debug/rdm task update <slug> --status reviewed --no-edit --project rdm` then `./target/debug/rdm commit -m "chore(plan): finalize <slug>"`
-   - `rework` -> `./target/debug/rdm task update <slug> --status blocked --reason "[code] <outcome.summary>" --no-edit --project rdm` then `./target/debug/rdm commit -m "chore(plan): park <slug>"`
+2. Interpret the OUTCOME and persist status (a true mirror of the phase contract). The task-mode OUTCOME carries the same canonical `outcome.status` / `outcome.reason` / `outcome.writesCompletion` fields — read them rather than restating the map. `escalated` maps to the `blocked` **task** status; it is never downgraded to `in-progress`.
+   - `reviewed` -> persist `outcome.status`: `./target/debug/rdm task update <slug> --status reviewed --no-edit --project rdm` then `./target/debug/rdm commit -m "chore(plan): finalize <slug>"`
+   - `rework` -> single-pass park with `outcome.reason`: `./target/debug/rdm task update <slug> --status blocked --reason "[code] <outcome.summary>" --no-edit --project rdm` then `./target/debug/rdm commit -m "chore(plan): park <slug>"`
    - `escalated` -> `./target/debug/rdm task update <slug> --status blocked --reason "[plan] <outcome.summary>" --no-edit --project rdm` then `./target/debug/rdm commit -m "chore(plan): park <slug>"`
-   - Do NOT add a `Done:` line here — same deferred two-stage protocol as the phase path.
+   - Do NOT add a `Done:` line here. On `reviewed` the OUTCOME's `writesCompletion` is `true` and `rdm-land` is the land-time writer — it synthesizes `Done: task/<slug>` via `rdm hook done-line` before the rebase.
 3. Return the OUTCOME JSON verbatim as the final message.
 
 Tasks always dispatch at the fixed `medium` tier (there is no task estimate), so the `large`-tier gate tightening never applies. Task bodies often carry no formal acceptance criteria; the plan/review gates tolerate their absence.

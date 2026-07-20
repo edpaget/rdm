@@ -30,6 +30,21 @@
 #                   'object') with a planted-mutation self-test; meta.phases parity.
 #   4. MODULE PARSE — autopilot.js loads under module semantics (no SyntaxError),
 #                   with a planted duplicate-meta self-test.
+#   6. LAND-TIME TRAILER — hermetic, against the real binary: a trailer-less
+#                   commit on a roadmap branch (exactly what an autopilot run
+#                   leaves) gains its completion trailer from `rdm hook done-line`
+#                   + `git commit --amend`, with NO rebase, and `rdm hook
+#                   post-commit` then flips the phase to done.
+#
+# *** INVARIANT INVERSION (unify-code-review phase 6) ***
+# This harness used to assert the land-time completion trailer was absent from
+# `autopilot.js` ANYWHERE — an absolute whole-file rule written when nothing wrote
+# the trailer at all. Phase 4 moved that write to LAND time (`rdm-land` synthesizes
+# it via `rdm hook done-line`), so the rule is now SCOPED — forbidden in every
+# built prompt and in autopilot's own code, allowed in explanatory comments that
+# name the land-time writer — and PAIRED with the positive Section 6 regression
+# proving the trailer really does arrive without a manual rebase. See the
+# annotated comment at the AC-6 block in Section 3.
 #
 # Node is used only as a host to unit-test the pure module and drive the loop with
 # fakes; it is stdlib-only (node:assert), with no package.json / node_modules /
@@ -219,10 +234,12 @@ assert.equal(buildParkReason('plan', 'why'), '[plan] why');
 assert.equal(buildParkReason('code', 'boom'), '[code] boom');
 
 // --- interpretOutcome truth table --------------------------------------------
+// The legacy bare-STRING form carries no policy, so `status` falls back to the
+// reviewed literal; the OUTCOME-OBJECT form below reads it off the OUTCOME.
 assert.deepEqual(
   interpretOutcome('reviewed', { planOnly: false, reworkCount: 0, maxRework: 1 }),
-  { action: 'advance' },
-  'reviewed + normal -> advance'
+  { action: 'advance', status: 'reviewed' },
+  'reviewed + normal -> advance (string form falls back to the reviewed status)'
 );
 assert.deepEqual(
   interpretOutcome('reviewed', { planOnly: true, reworkCount: 0, maxRework: 1 }),
@@ -243,6 +260,50 @@ assert.ok(parkEsc.reason.startsWith('[plan]'), 'escalated park is tagged [plan]'
 const parkUnknown = interpretOutcome('weird', { planOnly: false, reworkCount: 0, maxRework: 1 });
 assert.equal(parkUnknown.action, 'park', 'unknown outcome -> park');
 assert.ok(parkUnknown.reason.startsWith('[code]'), 'unknown-outcome park is tagged [code]');
+
+// --- interpretOutcome reads the OUTCOME's canonical policy -------------------
+// The whole OUTCOME OBJECT is accepted; the status and the gate-tagged reason
+// come OFF it (dispatch-phase projects them from lib/review.mjs's status
+// mapping) instead of being restated here. This is the duplicate being retired.
+const advFromOutcome = interpretOutcome(
+  { outcome: 'reviewed', status: 'reviewed', writesCompletion: true, reason: '' },
+  { planOnly: false, reworkCount: 0, maxRework: 1 }
+);
+assert.equal(advFromOutcome.action, 'advance', 'a reviewed OUTCOME object advances');
+assert.equal(advFromOutcome.status, 'reviewed', 'the advance status comes FROM the OUTCOME');
+const advCustom = interpretOutcome(
+  { outcome: 'reviewed', status: 'some-other-status' },
+  { planOnly: false, reworkCount: 0, maxRework: 1 }
+);
+assert.equal(
+  advCustom.status,
+  'some-other-status',
+  'the advance status is READ from the OUTCOME, not hardcoded (a changed mapping propagates)'
+);
+const escFromOutcome = interpretOutcome(
+  { outcome: 'escalated', status: 'blocked', writesCompletion: false, reason: '[plan] plan gate escalated: boom' },
+  { planOnly: false, reworkCount: 0, maxRework: 1 }
+);
+assert.equal(escFromOutcome.action, 'park', 'an escalated OUTCOME object parks');
+assert.equal(
+  escFromOutcome.reason,
+  '[plan] plan gate escalated: boom',
+  "the park reason is the OUTCOME's own gate-tagged reason"
+);
+// The rework-budget park stays THIS loop's decision: dispatch's `in-progress`
+// describes one dispatch, but a phase whose roadmap-level retry budget is spent
+// belongs in the blocked escalation queue.
+const reworkExhaustedObj = interpretOutcome(
+  { outcome: 'rework', status: 'in-progress', writesCompletion: false, reason: '[code] code rework unresolved: x' },
+  { planOnly: false, reworkCount: 1, maxRework: 1 }
+);
+assert.equal(reworkExhaustedObj.action, 'park', 'a rework OUTCOME at budget still parks');
+assert.ok(reworkExhaustedObj.reason.startsWith('[code]'), 'the budget park keeps its [code] tag');
+// buildAdvancePrompt interpolates the OUTCOME-supplied status, never a literal.
+assert.ok(
+  buildAdvancePrompt('phase-1-x', 'rm', 'some-other-status').includes('--status some-other-status'),
+  'buildAdvancePrompt interpolates the supplied status rather than a hardcoded reviewed'
+);
 
 // --- budget boundaries -------------------------------------------------------
 assert.equal(stepBudgetExhausted(2, 3), false, 'under global budget');
@@ -695,22 +756,60 @@ printf "import x from 'y'\n" >"$TMP/planted-import.js"
 grep -qE '(^|[^A-Za-z_])import[ (]' "$TMP/planted-import.js" || fail "import detector broken"
 pass "no import/require; both autopilot-loop markers present; detectors catch planted ones"
 
-# AC-6 / status persistence: an advance prompt writes --status reviewed and a park
-# prompt writes --status blocked (this is what drives the loop off PERSISTED
-# status); and NO source string lands, merges, or mutates main. (Prompt-scoped
-# forbiddens like --land / --commit are asserted over the built prompt strings in
-# Section 1's node sweep; here we forbid true main-mutation verbs anywhere in the
-# source, since autopilot NEVER touches main.)
-grep -q -- '--status reviewed' "$WF" || fail "expected a '--status reviewed' advance write in autopilot.js"
+# AC-6 / status persistence: the advance prompt interpolates the OUTCOME-supplied
+# status (the canonical review's status mapping now has exactly one home, in
+# lib/review.mjs — autopilot must NOT restate it as a literal) and a park prompt
+# writes --status blocked. This is what drives the loop off PERSISTED status.
+grep -qF -- "--status ' + advanceStatus" "$WF" ||
+    fail "expected the advance prompt to interpolate the OUTCOME-supplied status (--status ' + advanceStatus) in autopilot.js"
 grep -q -- '--status blocked' "$WF" || fail "expected a '--status blocked' park write in autopilot.js"
-for forbidden in 'git merge' 'git push' 'checkout main' 'Done:'; do
+# Self-test: a hardcoded advance status must break the detector.
+sed "s/--status ' + advanceStatus/--status reviewed'/" "$WF" >"$TMP/planted-hardcoded.js"
+if grep -qF -- "--status ' + advanceStatus" "$TMP/planted-hardcoded.js"; then
+    fail "advance-status detector broken — a planted hardcoded status was not detected"
+fi
+
+# NO source string lands, merges, or mutates main. (Prompt-scoped forbiddens like
+# --land / --commit are asserted over the built prompt strings in Section 1's node
+# sweep; here we forbid true main-mutation verbs anywhere in the source, since
+# autopilot NEVER touches main.)
+#
+# *** DELIBERATE INVARIANT INVERSION (unify-code-review phase 6) ***
+# The land-time completion trailer used to be forbidden ANYWHERE in this file — an
+# absolute whole-file rule. Phase 4 moved the write of that trailer to LAND time
+# (`rdm-land` synthesizes it from the OUTCOME identifiers via `rdm hook
+# done-line`), so the interesting invariant changed shape:
+#   * still absolutely forbidden in every BUILT PROMPT — autopilot must never ask
+#     an agent to write the trailer itself (Section 1's FORBIDDEN sweep, unchanged);
+#   * still forbidden in autopilot's own CODE — no literal may be constructed here;
+#   * now ALLOWED in explanatory COMMENTS, so this file may name the land-time
+#     writer and explain who owns the trailer.
+# The absence assertion is therefore SCOPED to non-comment lines, and it is paired
+# with the new positive land-time regression in Section 6 below, which proves a
+# trailer-less autopilot branch actually gains the trailer with no manual rebase.
+for forbidden in 'git merge' 'git push' 'checkout main'; do
     if grep -qF -- "$forbidden" "$WF"; then
         fail "AC-6: autopilot.js must not contain a main-mutation/land string: $forbidden"
     fi
 done
+noncomment_lines() { grep -vE '^[[:space:]]*(//|\*|/\*)' "$1"; }
+if noncomment_lines "$WF" | grep -qF -- 'Done:'; then
+    noncomment_lines "$WF" | grep -nF -- 'Done:' >&2 || true
+    fail "AC-6: autopilot.js CODE must not construct a land-time completion directive (comments may name it; rdm-land writes it)"
+fi
 printf 'git merge main\n' >"$TMP/planted-merge.js"
 grep -qF -- 'git merge' "$TMP/planted-merge.js" || fail "main-mutation detector broken — grep missed a planted 'git merge'"
-pass "AC-6: advance/park status writes present; no git-merge/push/checkout-main/Done string; detector catches a planted one"
+# Self-tests for the scoped trailer rule: it must FIRE on code and STAY SILENT on a comment.
+cp "$WF" "$TMP/planted-trailer-code.js"
+printf '\nconst bad = "Done: rm/phase-1-x"\n' >>"$TMP/planted-trailer-code.js"
+noncomment_lines "$TMP/planted-trailer-code.js" | grep -qF -- 'Done:' ||
+    fail "scoped trailer detector broken — a trailer planted in CODE was not detected"
+cp "$WF" "$TMP/planted-trailer-comment.js"
+printf '\n// rdm-land amends the Done: trailer at land time.\n' >>"$TMP/planted-trailer-comment.js"
+if noncomment_lines "$TMP/planted-trailer-comment.js" | grep -qF -- 'Done:'; then
+    fail "scoped trailer detector is over-broad — an explanatory COMMENT naming the trailer must not be flagged"
+fi
+pass "AC-6: advance interpolates the OUTCOME status; park writes blocked; no main-mutation string; trailer forbidden in code, allowed in prose; detectors fire correctly"
 
 # StructuredOutput schema shape: NO top-level *_SCHEMA handed to agent() may
 # declare `type: 'array'`. Anthropic custom tools require input_schema.type ===
@@ -793,5 +892,113 @@ else
     bash "$SCRIPT_DIR/verify-workflow-dispatch.sh" >&2 || true
     fail "verify-workflow-dispatch.sh regressed — the dispatch-phase planOnly edit broke a dispatch invariant"
 fi
+
+# --- 6. LAND-TIME COMPLETION TRAILER -----------------------------------------
+# The POSITIVE half of the inverted invariant above. Autopilot leaves a reviewed
+# phase's branch commit WITHOUT a completion trailer; `rdm-land` is the land-time
+# writer. This drives the exact documented rdm-land sequence against the REAL
+# binary in a hermetic temp plan + source repo, and asserts the trailer arrives
+# with NO rebase and no interactive step, and that the merge hook then completes
+# the item.
+say "6. Land-time completion trailer: a trailer-less autopilot branch gains it with no rebase"
+
+RDM_BIN="$REPO_ROOT/target/debug/rdm"
+[ -x "$RDM_BIN" ] || fail "$RDM_BIN not found or not executable — run 'cargo build' first."
+
+# Hermetic HOME + XDG + git identity so neither rdm nor git touches the real
+# developer/CI environment.
+export HOME="$TMP/home"
+export XDG_CONFIG_HOME="$TMP/xdg-config"
+export XDG_DATA_HOME="$TMP/xdg-data"
+export XDG_STATE_HOME="$TMP/xdg-state"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
+export GIT_AUTHOR_NAME="verify-bot"
+export GIT_AUTHOR_EMAIL="verify@example.invalid"
+export GIT_COMMITTER_NAME="verify-bot"
+export GIT_COMMITTER_EMAIL="verify@example.invalid"
+
+PLAN="$TMP/plan"
+SRC="$TMP/src"
+
+rdm_plan() (
+    RDM_ROOT="$PLAN" "$RDM_BIN" "$@"
+)
+
+rdm_plan init --default-project verify >/dev/null
+rdm_plan roadmap create rm --title "RM" --body "Land-time trailer regression roadmap." \
+    --no-edit --project verify >/dev/null
+rdm_plan phase create x --title "Phase X" --number 1 --body "Phase X." \
+    --no-edit --roadmap rm --project verify >/dev/null
+# Exactly the state autopilot leaves behind: the phase advanced to `reviewed`,
+# the work committed on the roadmap branch, nothing landed.
+rdm_plan phase update phase-1-x --status reviewed --no-edit --roadmap rm --project verify >/dev/null
+rdm_plan commit -m "chore(plan): seed rm/phase-1-x as reviewed" >/dev/null
+pass "seeded hermetic plan repo: rm/phase-1-x is reviewed"
+
+# Source repo: a roadmap branch whose tip is the un-pushed reviewed commit with a
+# message carrying NO trailer (exactly what a dispatch/autopilot implementer leaves).
+mkdir -p "$SRC"
+git -C "$SRC" init -q -b main
+printf 'seed\n' >"$SRC/README.md"
+git -C "$SRC" add README.md
+git -C "$SRC" commit -qm "chore: seed"
+git -C "$SRC" checkout -q -b roadmap/rm
+printf 'work\n' >"$SRC/feature.txt"
+git -C "$SRC" add feature.txt
+git -C "$SRC" commit -qm "feat: implement phase X"
+git -C "$SRC" log -1 --pretty=%B | grep -qF 'Done:' &&
+    fail "setup is wrong: the autopilot-shaped commit must start WITHOUT a completion trailer"
+pass "roadmap/rm tip is a reviewed, trailer-less, un-pushed commit"
+
+# The documented rdm-land precondition-2 synthesis: ask rdm for the trailer (the
+# format string has exactly one home) and amend it onto the branch tip. No
+# rebase, no interactive editor.
+DONE_LINE=$(rdm_plan hook done-line --roadmap rm --phase phase-1-x) ||
+    fail "rdm hook done-line failed — the land path must abort rather than amend an empty trailer"
+[ -n "$DONE_LINE" ] || fail "rdm hook done-line printed nothing"
+ORIG_MSG=$(git -C "$SRC" log -1 --pretty=%B)
+PRE_AMEND_BASE=$(git -C "$SRC" rev-parse HEAD~1)
+printf '%s\n\n%s\n' "$ORIG_MSG" "$DONE_LINE" >"$TMP/amend-msg"
+GIT_EDITOR=true git -C "$SRC" commit -q --amend -F "$TMP/amend-msg"
+
+git -C "$SRC" log -1 --pretty=%B | grep -qF 'Done: rm/phase-1-x' ||
+    fail "the amended commit must carry 'Done: rm/phase-1-x'; got: $(git -C "$SRC" log -1 --pretty=%B)"
+pass "the branch tip now carries the completion trailer, synthesized by rdm hook done-line"
+
+# No rebase was needed: the amend preserved the parent commit, and the branch
+# still has exactly the same two-commit shape.
+[ "$(git -C "$SRC" rev-parse HEAD~1)" = "$PRE_AMEND_BASE" ] ||
+    fail "the amend must not have rewritten history below the tip — no rebase is permitted"
+[ "$(git -C "$SRC" rev-list --count main..HEAD)" -eq 1 ] ||
+    fail "roadmap/rm must still be exactly one commit ahead of main (no rebase, no extra commits)"
+[ -z "$(git -C "$SRC" rev-parse -q --verify REBASE_HEAD 2>/dev/null || true)" ] ||
+    fail "a rebase was started — the land-time trailer must need none"
+[ ! -d "$SRC/.git/rebase-merge" ] && [ ! -d "$SRC/.git/rebase-apply" ] ||
+    fail "a rebase directory exists — the land-time trailer must need no rebase"
+pass "no rebase and no interactive step were required"
+
+# Land it: fast-forward main, then run the merge-to-main hook. The trailer the
+# lander synthesized is what flips the phase reviewed -> done.
+git -C "$SRC" checkout -q main
+git -C "$SRC" merge -q --ff-only roadmap/rm
+LANDED_SHA=$(git -C "$SRC" rev-parse HEAD)
+(cd "$SRC" && "$RDM_BIN" --root "$PLAN" hook post-commit) ||
+    fail "rdm hook post-commit failed on the landed commit"
+PHASE_JSON=$(rdm_plan phase show phase-1-x --roadmap rm --project verify --format json --no-body)
+printf '%s' "$PHASE_JSON" | grep -qF '"status": "done"' ||
+    fail "the landed trailer must flip rm/phase-1-x to done; got: $PHASE_JSON"
+printf '%s' "$PHASE_JSON" | grep -qF "$LANDED_SHA" ||
+    fail "the completed phase must record the landed commit SHA $LANDED_SHA; got: $PHASE_JSON"
+pass "rdm hook post-commit flipped rm/phase-1-x to done and recorded the landed SHA"
+
+# Negative: `rdm hook done-line` rejects a malformed request, so the land path
+# aborts instead of amending an empty trailer.
+if rdm_plan hook done-line --roadmap rm >/dev/null 2>&1; then
+    fail "rdm hook done-line must reject a request with neither --phase nor --task"
+fi
+if rdm_plan hook done-line --roadmap rm --phase phase-1-x --task t >/dev/null 2>&1; then
+    fail "rdm hook done-line must reject both --phase and --task together"
+fi
+pass "rdm hook done-line rejects malformed requests, so the lander aborts rather than amending an empty trailer"
 
 say "verify-workflow-autopilot.sh: ALL GREEN"

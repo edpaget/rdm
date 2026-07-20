@@ -249,7 +249,9 @@ load-bearing:
 - `signals == null` (omitted, or genuinely unknown) → return **ALL** dimensions
   for the mode, untouched. A caller that cannot compute a diff knows the least,
   so it must get the most coverage. The standalone `review-refute-fix.js`
-  consumer and dispatch-phase's inline gates take this path today.
+  consumer and dispatch-phase's **plan** gate take this path today;
+  dispatch-phase's **code** gate now computes real signals (see below) and only
+  falls back to this branch when the diff is unavailable.
 - an **explicit** signals object — even `{}` — → the always-on dimensions plus
   exactly those whose `when` fires. `{}` means "computed, nothing triggered".
 - an unknown `mode` → throw.
@@ -269,6 +271,19 @@ object — every boolean key in `SIGNAL_KEYS` (`changesLogic`, `missingTests`,
 is set explicitly. A partially-populated object would make a conditional
 dimension drop out on a *missing* key rather than a real negative, so callers
 that cannot compute a diff must pass **no** signals rather than a partial object.
+
+**Who feeds it.** `dispatch-phase`'s code gate runs a mechanical `diff:signals`
+agent inside the item's worktree (`git diff --name-only main...HEAD` plus a
+truncated `git diff main...HEAD`) and threads the result through `deriveSignals`
+into `buildReviewPipeline('code')` — recomputed on **every** rework round, so a
+round-2 fix that newly touches a public `rdm-core` item turns `api-docs` on for
+that round. The three-dot base scopes to the branch's own changes; for a phase in
+a shared per-roadmap worktree that is over-inclusive (earlier phases' files ride
+along) but never under-inclusive, which is the safe direction for a coverage
+gate. A very large diff is truncated in the prompt, which likewise only weakens
+trigger detection toward fail-open. **Signals-absent fail-open contract:** if the
+diff agent fails, returns null, or reports no changed files, the driver omits the
+`signals` key **entirely** — never `{}` — so every dimension runs.
 
 ### Verdict and status mapping
 
@@ -367,8 +382,29 @@ prose-only self-test of the distributed template).
 | `roadmap` | string                                    | echoed from the dispatch args                  |
 | `phase`   | string                                    | echoed from the dispatch args                  |
 | `outcome` | `reviewed` \| `rework` \| `escalated`     | the phase verdict (see the decision tree below)|
+| `status`  | string                                    | `statusFor(outcome, kind)` — the rdm status to persist |
+| `writesCompletion` | boolean                          | `writesCompletion(outcome)` — is this branch owed its land-time trailer? |
 | `summary` | string                                    | deterministic one-liner from outcome + top finding |
+| `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
+
+Task mode emits the same shape keyed by `task` instead of `roadmap`/`phase`.
+
+**`status` / `writesCompletion` carry the gate policy as data.** They are derived
+from the canonical `statusFor` / `writesCompletion` in `lib/review.mjs`, so
+consumers (autopilot's advance/park, `rdm-do --auto`, `rdm-land`) read the policy
+off the OUTCOME instead of restating the mapping. `writesCompletion` is a
+**boolean, never the trailer literal** — the stamped block may not contain that
+string (`verify-workflow-dispatch.sh` AC-1). `rdm-land` reads
+`writesCompletion: true` and synthesizes the real trailer at land time via
+`rdm hook done-line`, amending it **before** the rebase, so an autonomously
+produced branch never needs a manual rebase to gain it.
+
+**`reason` tags the gate, not the module.** dispatch's `escalated` is tagged
+`[plan]` because `classifyOutcome` only escalates from the plan gate, while
+`rework` is tagged `[code]`. This deliberately differs from
+`STATUS_MAPPING.reasonPrefix` (`[code]`), which describes the *interactive*
+review surface, where escalation comes out of the code gate.
 
 **Decision tree (`classifyOutcome`, total and deterministic).** Tier-scaled via
 `hasBlocking(findings, tier)`: only `blocking` counts as blocking, except at the
@@ -391,7 +427,17 @@ classify a code finding's *nature* (the `FINDING` schema carries severity but no
 fixable/decision flag), a code defect surviving the one rework resolves to
 `rework`, and genuine decisions surface earlier at the plan gate as `escalated`;
 that is why the code stage yields only `reviewed`/`rework`. `dispatch-phase` never
-emits a `Done:` line — landing is a separate, later step.
+emits a `Done:` line — it emits `writesCompletion` and landing is a separate,
+later step.
+
+**The code-review stage is the canonical review.** `dispatch-phase` builds it
+from the stamped `buildReviewPipeline('code')` — there is no independent
+code-review logic in the driver — and feeds it `deriveSignals` output from the
+real branch diff (see `deriveSignals(input)` above for the signals-absent
+fail-open contract). `verify-workflow-dispatch.sh` pins both halves: exactly one
+`buildReviewPipeline('code')` binding site and one declaration each of
+`findPrompt`/`refutePrompt`, plus the `deriveSignals(` / `signals:` /
+`diff:signals` wiring.
 
 ## autopilot contract
 
@@ -444,17 +490,20 @@ The block reaches the runtime only through these injected deps; the real ones
 | `estimateWriteback(stem, diff, slug)` | Bash agent: `rdm phase update <stem> --difficulty <diff>` (tier auto-derives)           |
 | `fetchNext(slug)`                     | Bash agent: `rdm next … --format json` → parsed JSON                                     |
 | `dispatch(slug, stem, planOnly)`      | `workflow('dispatch-phase', { roadmap, phase, planOnly })` → the dispatch-phase OUTCOME  |
-| `advance(stem, slug)`                 | Bash agent: `rdm phase update <stem> --status reviewed`                                  |
+| `advance(stem, slug, status)`         | Bash agent: `rdm phase update <stem> --status <status>` (status from the OUTCOME)        |
 | `park(stem, reason, slug)`            | Bash agent: `rdm phase update <stem> --status blocked --reason "<reason>"`               |
 | `log(msg)`                            | progress line                                                                            |
 
 ### OUTCOME-driven transitions (`interpretOutcome`)
 
-The `dispatch-phase` OUTCOME string drives the next loop action:
+The whole `dispatch-phase` OUTCOME **object** drives the next loop action.
+`interpretOutcome` reads `status` and `reason` off it rather than restating the
+mapping (a bare outcome string is still accepted, and falls back to the legacy
+literals):
 
 | OUTCOME      | mode        | action                                                          |
 | ------------ | ----------- | -------------------------------------------------------------- |
-| `reviewed`   | normal      | `advance` → `--status reviewed`; record completed              |
+| `reviewed`   | normal      | `advance` → `--status <outcome.status>`; record completed      |
 | `reviewed`   | `--plan-only` | `noop-vetted` → record vetted, do NOT advance                |
 | `rework`     | under budget| `retry` → re-dispatch the same phase                           |
 | `rework`     | budget spent| `park` → `--status blocked --reason "[code] …"`                |
@@ -463,7 +512,10 @@ The `dispatch-phase` OUTCOME string drives the next loop action:
 Retained loop state is bounded: the latest `fetchNext` result, the current
 OUTCOME, per-phase rework/advance counters, the running dispatch count, the
 ordered `completed[]` and `escalations[]` arrays, and (only under `--plan-only`) a
-`planOnlySeen` Set. A mid-tier default (`resolveTier(model || 'medium')`) covers
+`planOnlySeen` Set. The rework-budget park stays autopilot's **own** decision:
+dispatch's `rework` status (`in-progress`) describes a single dispatch, whereas a
+phase whose roadmap-level retry budget is spent belongs in the `blocked`
+escalation queue. A mid-tier default (`resolveTier(model || 'medium')`) covers
 any unset tier at dispatch. The run stops on `nothing` /
 `blocked-on-dependencies`, on the global step budget or `--max-phases`, or (under
 `--plan-only`) when a vetted phase is re-returned.
@@ -475,6 +527,29 @@ phases completed in order, the escalations each tagged `plan`/`code` with their
 reason and a pointer at `./target/debug/rdm review blocked --project rdm`, the
 stop reason, and a note that reviewed work is left on the `roadmap/<slug>` branch
 and `main` is **never** touched.
+
+### Harness invariant: the completion trailer (INVERTED)
+
+`scripts/verify-workflow-autopilot.sh` used to assert the land-time completion
+trailer was absent from `autopilot.js` **anywhere** — an absolute whole-file rule,
+written when nothing wrote the trailer at all. Now that the write happens at land
+time, the rule is deliberately **scoped**, and paired with a positive assertion:
+
+- still absolutely forbidden in every **built prompt** (the Node `FORBIDDEN`
+  sweep) — autopilot must never ask an agent to write the trailer itself;
+- still forbidden in autopilot's own **code** — the whole-file grep is now scoped
+  to non-comment lines;
+- now **allowed in explanatory comments**, so the file may name `rdm-land` as the
+  land-time writer;
+- **new positive regression** (`verify-workflow-autopilot.sh` § 6, hermetic,
+  against the real binary): a trailer-less commit on `roadmap/rm` — exactly the
+  state an autopilot run leaves — gains `Done: rm/phase-1-x` from
+  `rdm hook done-line` + `git commit --amend` with **no rebase**, and
+  `rdm hook post-commit` then flips the phase to `done` with the landed SHA.
+
+`verify-workflow-dispatch.sh` keeps the complementary absence assertion (AC-1:
+no trailer literal inside a stamped region; no OUTCOME JSON contains one) so both
+directions stay pinned.
 
 ### `dispatch-phase` `planOnly`
 

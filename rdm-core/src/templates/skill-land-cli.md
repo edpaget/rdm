@@ -30,14 +30,16 @@ Before touching `main`, confirm all of:
 1. **The item is `reviewed`.** Read it: `rdm phase show <phase> --roadmap <slug> {proj_flag}` (or `rdm task show <slug> {proj_flag}`). If it is not `reviewed` — e.g. still `needs-review`, `blocked`, or already `done` — stop: only reviewed work lands.
 2. **The branch carries the `Done:` line — synthesize it if it is missing.** The reviewed commit must include `Done: <roadmap>/<phase>` (or `Done: task/<slug>`); that line is what the post-commit hook reads. Inspect with `git log`.
 
-   The **autonomous** lane deliberately never writes the trailer: `rdm-dispatch-phase` / `rdm-autopilot` return a structured outcome carrying the item's identifiers, and the workflow scripts are forbidden from emitting the directive. So a missing trailer is **not** an abort condition when you know the identifiers — this skill is the land-time writer. Ask rdm for the exact line (never hand-type the format) and amend it on:
+   The **autonomous** lane deliberately never writes the trailer: `rdm-dispatch-phase` / `rdm-autopilot` return a structured outcome carrying the item's identifiers plus a `writesCompletion` flag, and the workflow scripts are forbidden from emitting the directive. So a missing trailer is **expected**, not an abort condition — this skill is the land-time writer. Ask rdm for the exact line (never hand-type the format) and amend it on:
    ```bash
    rdm hook done-line --roadmap <slug> --phase <stem>   # or: --task <slug>
    git commit --amend -m "$(git log -1 --pretty=%B)
 
    $(rdm hook done-line --roadmap <slug> --phase <stem>)"
    ```
-   Amend **only** when the branch tip is the un-landed reviewed commit — amending rewrites history, so if the tip is already pushed and shared, or is not the reviewed commit, abort and escalate instead. Abort as well when the item's identifiers are unknown, since a synthesized trailer would be a guess.
+   Amend **only** when the branch tip is the un-landed reviewed commit — amending rewrites history, so if the tip is already pushed and shared, or is not the reviewed commit, abort and escalate instead. Abort as well when the item's identifiers are unknown, or when `rdm hook done-line` exits non-zero, since a synthesized trailer would then be a guess — never amend an empty trailer.
+
+   **Read the policy off the outcome, do not infer it.** A dispatch/autopilot OUTCOME carries `writesCompletion: true` on `reviewed` (and `false` on `rework`/`escalated`) alongside its identifiers — that flag *is* the instruction that this branch is owed its trailer. Synthesize and amend it **before** the rebase and fast-forward below, so an autonomously produced branch never needs a manual rebase to gain the line.
 3. **The worktree is clean.** No uncommitted changes (`git status --porcelain` is empty).
 4. **The CI-equivalent checks pass on the rebased branch** — see step 4 below. This is checked *after* rebasing, not before.
 

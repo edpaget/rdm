@@ -31,6 +31,9 @@ import {
   codeReviewRounds,
   hasBlocking,
   summarizeFindings,
+  statusFor,
+  writesCompletion,
+  deriveSignals,
   DEFAULT_MAX_CODE_REWORK,
 } from './review.mjs';
 
@@ -43,10 +46,11 @@ import {
 // at run time). scripts/verify-workflow-dispatch.sh gates the two copies for
 // drift. No Date.now / Math.random — pure array/string ops only.
 //
-// `hasBlocking`, `summarizeFindings`, `codeReviewRounds`, `classifyOutcome`, and
-// `DEFAULT_MAX_CODE_REWORK` are NOT declared here: they belong to the canonical
-// review source (lib/review.mjs) and reach this block from the stamped review
-// block that precedes it in the workflow consumer.
+// `hasBlocking`, `summarizeFindings`, `codeReviewRounds`, `classifyOutcome`,
+// `statusFor`, `writesCompletion`, and `DEFAULT_MAX_CODE_REWORK` are NOT declared
+// here: they belong to the canonical review source (lib/review.mjs) and reach
+// this block from the stamped review block that precedes it in the workflow
+// consumer.
 
 // DEFAULT_MAX_PLAN_REVISE — the in-run plan-revision budget. It is counted
 // INDEPENDENTLY of the code-rework budget (DEFAULT_MAX_CODE_REWORK, which lives
@@ -196,16 +200,60 @@ async function runCodeGate(config, deps) {
   return { findings: findings, rounds: rounds, reworkCount: reworkCount, reviewCount: rounds.length };
 }
 
-// buildOutcome — the OUTCOME contract { roadmap, phase, outcome, summary,
-// findings }. fetchError short-circuits to escalated. Never emits a land-time
-// completion directive.
+// OUTCOME_REASON_PREFIX — which gate a non-clean outcome came out of.
+// dispatch-phase's escalations originate at the PLAN gate (classifyOutcome only
+// returns 'escalated' from a blocking plan finding, or from a fetch failure
+// before any code exists), so they are tagged `[plan]`; an unresolved code
+// rework is tagged `[code]`. This deliberately differs from the canonical
+// STATUS_MAPPING.reasonPrefix (`[code]`), which describes the INTERACTIVE review
+// surface, where an escalation comes out of the code gate. The tag names which
+// gate escalated, not which module produced the string.
+const OUTCOME_REASON_PREFIX = { escalated: '[plan]', rework: '[code]' };
+
+// outcomePolicy(outcome, kind, summary) — the gate/completion policy owned by the
+// canonical review source, projected onto the OUTCOME contract so no consumer
+// has to restate the map:
+//   status           — the rdm status this outcome maps to for `kind`
+//                      ('phase' | 'task'), straight from statusFor().
+//   writesCompletion — MAY this outcome's surface write the land-time completion
+//                      directive? Expressed ONLY as a boolean, never as the
+//                      directive literal: this block is stamped verbatim into
+//                      workflow scripts, and the dispatch harness forbids that
+//                      literal anywhere in a stamped region. The land-time writer
+//                      (`rdm-land`) turns this boolean plus the OUTCOME's
+//                      identifiers into the real trailer via `rdm hook done-line`.
+//   reason           — a gate-tagged park/escalation note; empty on a clean review.
+function outcomePolicy(outcome, kind, summary) {
+  const prefix = OUTCOME_REASON_PREFIX[outcome];
+  return {
+    status: statusFor(outcome, kind),
+    writesCompletion: writesCompletion(outcome),
+    reason: prefix ? prefix + ' ' + summary : '',
+  };
+}
+
+// buildOutcome — the OUTCOME contract { roadmap, phase, outcome, status,
+// writesCompletion, summary, reason, findings }. fetchError short-circuits to
+// escalated. Never emits a land-time completion directive — it emits the
+// `writesCompletion` boolean instead, and `rdm-land` writes the trailer.
 function buildOutcome(input) {
   const i = input || {};
   const roadmap = i.roadmap;
   const phase = i.phase;
   const tier = i.tier;
   if (i.fetchError === true) {
-    return { roadmap: roadmap, phase: phase, outcome: 'escalated', summary: 'phase fetch failed', findings: [] };
+    const failSummary = 'phase fetch failed';
+    const failPolicy = outcomePolicy('escalated', 'phase', failSummary);
+    return {
+      roadmap: roadmap,
+      phase: phase,
+      outcome: 'escalated',
+      status: failPolicy.status,
+      writesCompletion: failPolicy.writesCompletion,
+      summary: failSummary,
+      reason: failPolicy.reason,
+      findings: [],
+    };
   }
   const planFindings = i.planFindings || [];
   const classifierInput = {
@@ -233,22 +281,44 @@ function buildOutcome(input) {
     findings = lastRound;
     summary = 'phase reviewed clean: ' + summarizeFindings(lastRound);
   }
-  return { roadmap: roadmap, phase: phase, outcome: outcome, summary: summary, findings: findings };
+  const policy = outcomePolicy(outcome, 'phase', summary);
+  return {
+    roadmap: roadmap,
+    phase: phase,
+    outcome: outcome,
+    status: policy.status,
+    writesCompletion: policy.writesCompletion,
+    summary: summary,
+    reason: policy.reason,
+    findings: findings,
+  };
 }
 
-// buildTaskOutcome — the task-shaped OUTCOME contract { task, outcome, summary,
-// findings }. A task is keyed by slug and belongs to no roadmap, so it emits a
-// `task` identifier instead of `roadmap`/`phase`; the decision core
-// (classifyOutcome / hasBlocking / summarizeFindings) is shared UNCHANGED with
-// the phase path. Tasks always dispatch at the fixed `medium` tier, so the
-// `large` gate-tightening in hasBlocking never applies to them. fetchError
+// buildTaskOutcome — the task-shaped OUTCOME contract { task, outcome, status,
+// writesCompletion, summary, reason, findings }. A task is keyed by slug and
+// belongs to no roadmap, so it emits a `task` identifier instead of
+// `roadmap`/`phase`; the decision core (classifyOutcome / hasBlocking /
+// summarizeFindings / outcomePolicy) is shared UNCHANGED with the phase path.
+// Tasks always dispatch at the fixed `medium` tier, so the `large`
+// gate-tightening in hasBlocking never applies to them. `escalated` maps to the
+// `blocked` TASK status — never downgraded to `in-progress`. fetchError
 // short-circuits to escalated. Never emits a land-time completion directive.
 function buildTaskOutcome(input) {
   const i = input || {};
   const task = i.task;
   const tier = i.tier;
   if (i.fetchError === true) {
-    return { task: task, outcome: 'escalated', summary: 'task fetch failed', findings: [] };
+    const failSummary = 'task fetch failed';
+    const failPolicy = outcomePolicy('escalated', 'task', failSummary);
+    return {
+      task: task,
+      outcome: 'escalated',
+      status: failPolicy.status,
+      writesCompletion: failPolicy.writesCompletion,
+      summary: failSummary,
+      reason: failPolicy.reason,
+      findings: [],
+    };
   }
   const planFindings = i.planFindings || [];
   const classifierInput = {
@@ -274,7 +344,16 @@ function buildTaskOutcome(input) {
     findings = lastRound;
     summary = 'task reviewed clean: ' + summarizeFindings(lastRound);
   }
-  return { task: task, outcome: outcome, summary: summary, findings: findings };
+  const policy = outcomePolicy(outcome, 'task', summary);
+  return {
+    task: task,
+    outcome: outcome,
+    status: policy.status,
+    writesCompletion: policy.writesCompletion,
+    summary: summary,
+    reason: policy.reason,
+    findings: findings,
+  };
 }
 // >>> dispatch-outcome:end <<<
 
@@ -291,6 +370,11 @@ export {
   hasBlocking,
   summarizeFindings,
   classifyOutcome,
+  statusFor,
+  writesCompletion,
+  deriveSignals,
+  outcomePolicy,
+  OUTCOME_REASON_PREFIX,
   buildOutcome,
   buildTaskOutcome,
 };

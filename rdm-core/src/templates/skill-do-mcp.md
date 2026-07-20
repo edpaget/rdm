@@ -1,6 +1,6 @@
 ---
 name: rdm-do
-description: Implement an rdm roadmap phase or work on an rdm task — plan, execute, then finalize into needs-review for rdm-review
+description: Implement an rdm roadmap phase or work on an rdm task — plan, execute, then finalize through the canonical code review
 allowed-tools:
   - Read
   - Glob
@@ -22,7 +22,7 @@ allowed-tools:
   - {t_commit}
 ---
 
-Implement a roadmap phase or work on a task. One shared flow: find the target → mark in-progress → plan → execute → review with the user → finalize into `needs-review`.
+Implement a roadmap phase or work on a task. One shared flow: find the target → mark in-progress → plan → execute → review with the user → finalize through the canonical code review.
 {principles}
 ## Run modes
 
@@ -72,14 +72,21 @@ This skill does its work in an isolated git worktree — **one worktree per road
 7. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
 8. **Execute the plan**: implement each step inside the worktree, following the plan and any acceptance criteria.
 9. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
-10. **Finalize:** on user acceptance, commit the implementation changes — a plain `git commit` of the code diff in the **source repo**, on the worktree's branch — then transition the item to `needs-review`:
-    - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "needs-review"`
-    - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "needs-review"`
-    - land the plan-repo status change: call `{t_commit}` with `message: "chore(plan): finalize <phase-or-task>"`
+10. **Finalize — commit, then actively run the canonical code review.** Finalize never *parks* work for someone else to review later; it drives the review itself. This runs in **both** modes: interactively (after the step-9 confirmation) and under `--auto` (which skips only the human confirmation, never the review).
 
-    This `{t_commit}` call is a **separate, plan-repo** git commit — distinct from the source-repo `git commit` of the implementation diff above. Do not conflate the two: one lands your code, the other lands the plan-repo status update.
+    1. **Commit the implementation diff** — a plain `git commit` of the code diff in the **source repo**, on the worktree's branch. This is a source-repo git operation with no MCP equivalent; delegate it to a Bash-capable subagent.
+    2. **Mark the item `needs-review`** as a transient marker so the review has a well-defined starting state, and land that plan-repo change:
+       - phase: use `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "needs-review"`
+       - task: use `rdm_task_update` with `project: {proj_param}, task: "<slug>", status: "needs-review"`
+       - land the plan-repo status change: call `{t_commit}` with `message: "chore(plan): finalize <phase-or-task>"`
 
-    **Do NOT emit a `Done:` line in the commit message YET** — `rdm-review` adds it on a passing review as the final step. This is a deferred two-stage `Done:` protocol, not a contradiction: finalize defers the `Done:` line, review completes it. An item sitting in `needs-review` is the sentinel that signals a review is pending. Use the exact roadmap slug / phase stem / task slug from the rdm tools you used earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch and is left for merge to main (review takes it `needs-review` → `reviewed`, and the merge hook flips it to `done`).
+       This `{t_commit}` call is a **separate, plan-repo** git commit — distinct from the source-repo `git commit` of the implementation diff above. Do not conflate the two: one lands your code, the other lands the plan-repo status update.
+    3. **Immediately invoke the `rdm-review` skill** against the item. It is the canonical review — the same find → refute → filter → verdict → gate pipeline the autonomous lane runs — so every finalize is actively reviewed, in either mode.
+    4. **The review owns the gate.** It persists the status its outcome maps to — `reviewed`, `in-progress` (rework), or `blocked` with a `[code]`-prefixed reason (escalated) — and on `reviewed` **only**, it amends the land-time completion trailer onto the branch commit (again a source-repo `git commit --amend`, with no MCP equivalent).
+
+    **Never hand-type the completion trailer.** Finalize does not write it at all: on the interactive path the review gate writes it, and on the autonomous path `rdm-land` writes it at land time. Both source the exact line from `rdm hook done-line --roadmap <slug> --phase <stem>` (or `--task <slug>`), so the format string has exactly one home. Use the exact roadmap slug / phase stem / task slug from the rdm tools you used earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch and is left for merge to main (the merge hook flips `reviewed` → `done`).
+
+    **Single pass.** If the review returns `rework`, the item is left `in-progress` and you must surface that to the user with its findings — do not silently loop. Re-run this skill to take another pass.
 
 ## Side-work
 

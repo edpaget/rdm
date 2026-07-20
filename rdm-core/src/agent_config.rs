@@ -2029,6 +2029,51 @@ mod tests {
     }
 
     #[test]
+    fn skill_land_synthesizes_the_completion_trailer_before_the_rebase() {
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+            let content = &skills[7].content;
+            // Precondition 2 reads the completion policy off the autonomous
+            // OUTCOME rather than inferring it from a missing trailer...
+            assert!(
+                content.contains("`writesCompletion: true` on `reviewed`"),
+                "skill-land (mcp={mcp}) must state the OUTCOME carries writesCompletion on reviewed"
+            );
+            assert!(
+                content.contains("Read the policy off the outcome, do not infer it"),
+                "skill-land (mcp={mcp}) must instruct the lander to read the policy, not infer it"
+            );
+            // ...synthesizes the line from rdm (one home for the format)...
+            assert!(
+                content.contains("rdm hook done-line"),
+                "skill-land (mcp={mcp}) must source the trailer from rdm hook done-line"
+            );
+            assert!(
+                content.contains("git commit --amend"),
+                "skill-land (mcp={mcp}) must amend the synthesized trailer onto the branch tip"
+            );
+            // ...BEFORE the rebase/fast-forward, so landing needs no manual rebase.
+            assert!(
+                content.contains("**before** the rebase and fast-forward below"),
+                "skill-land (mcp={mcp}) must amend BEFORE the rebase so no manual rebase is ever needed"
+            );
+            assert!(
+                content.contains("never needs a manual rebase"),
+                "skill-land (mcp={mcp}) must state that an autonomous branch never needs a manual rebase"
+            );
+            // A failed done-line is an abort, not an empty amend.
+            assert!(
+                content.contains("never amend an empty trailer"),
+                "skill-land (mcp={mcp}) must abort rather than amend an empty trailer"
+            );
+        }
+    }
+
+    #[test]
     fn skill_autopilot_documents_loop_and_budgets() {
         let skills = generate_skills(&SkillOptions {
             project: None,
@@ -2805,18 +2850,34 @@ mod tests {
     }
 
     #[test]
-    fn skill_do_finalizes_into_needs_review() {
+    fn skill_do_finalize_runs_canonical_review() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
         let content = &skills[1].content;
-        // Finalize transitions the item to needs-review via the update command...
+        // Finalize still stamps the transient needs-review marker via the update
+        // command...
         assert!(content.contains("--status needs-review"));
-        // ...and defers the Done: line to the rdm-review skill on a passing review.
-        assert!(content.contains("rdm-review"));
+        // ...but it no longer PARKS there: it actively invokes the canonical
+        // review (the `rdm-review` skill, the projection of the one review
+        // source) as part of finalizing.
+        assert!(content.contains("Immediately invoke the `rdm-review` skill"));
+        // The review runs in BOTH lanes — interactive and --auto — not just one.
+        assert!(content.contains("This runs in **both** modes"));
+        assert!(
+            content
+                .contains("`--auto` (which skips only the human confirmation, never the review)")
+        );
+        // The completion trailer is sourced from rdm, never hand-typed...
+        assert!(content.contains("rdm hook done-line"));
+        assert!(content.contains("Never hand-type the completion trailer"));
+        // ...so the raw format string never appears in the shipped skill.
         assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
+        // The stale "park it and let a hook pick it up later" framing is gone.
+        assert!(!content.contains("deferred two-stage"));
+        assert!(!content.contains("the sentinel that signals a review is pending"));
     }
 
     #[test]
@@ -3362,18 +3423,33 @@ mod tests {
     }
 
     #[test]
-    fn mcp_skill_do_finalizes_into_needs_review() {
+    fn mcp_skill_do_finalize_runs_canonical_review() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: true,
         });
         let content = &skills[1].content;
-        // Finalize transitions the item to needs-review via the update tool...
+        // Finalize still stamps the transient needs-review marker via the update
+        // tool...
         assert!(content.contains("status: \"needs-review\""));
-        // ...and defers the Done: line to the rdm-review skill on a passing review.
-        assert!(content.contains("rdm-review"));
+        // ...but it no longer PARKS there: it actively invokes the canonical
+        // review as part of finalizing.
+        assert!(content.contains("Immediately invoke the `rdm-review` skill"));
+        // The review runs in BOTH lanes — interactive and --auto — not just one.
+        assert!(content.contains("This runs in **both** modes"));
+        assert!(
+            content
+                .contains("`--auto` (which skips only the human confirmation, never the review)")
+        );
+        // The completion trailer is sourced from rdm, never hand-typed...
+        assert!(content.contains("rdm hook done-line"));
+        assert!(content.contains("Never hand-type the completion trailer"));
+        // ...so the raw format string never appears in the shipped skill.
         assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
+        // The stale "park it and let a hook pick it up later" framing is gone.
+        assert!(!content.contains("deferred two-stage"));
+        assert!(!content.contains("the sentinel that signals a review is pending"));
     }
 
     #[test]

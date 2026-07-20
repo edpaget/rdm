@@ -5,9 +5,12 @@
 // It replaces rdm-dispatch-phase's prose orchestration with a mechanical driver.
 //
 // Invoke with args: { roadmap: '<roadmap-slug>', phase: '<stem-or-number>' }.
-// Returns the OUTCOME contract { roadmap, phase, outcome, summary, findings },
-// outcome ∈ { reviewed, rework, escalated }. It NEVER emits a land-time
-// completion directive — landing is a separate, later step. See
+// Returns the OUTCOME contract { roadmap, phase, outcome, status,
+// writesCompletion, summary, reason, findings }, outcome ∈ { reviewed, rework,
+// escalated }. `status` and `writesCompletion` carry the canonical review's
+// gate/completion policy so no consumer restates it. It NEVER emits a land-time
+// completion directive itself — `writesCompletion: true` tells `rdm-land` to
+// synthesize the trailer via `rdm hook done-line` at land time. See
 // docs/workflow-schemas.md.
 //
 // This script embeds TWO copied blocks, because the Workflow runtime cannot load
@@ -26,11 +29,14 @@ export const meta = {
   // review-refute-fix block actually emit. Both review gates run their finders
   // under 'Find' and refuters under 'Refute' (from the stamped block), so those
   // appear here; there is no 'CodeReview' phase because no agent() call uses it.
+  // 'Review' is the mechanical diff-signals agent that feeds the code gate's
+  // dimension selection.
   // verify-workflow-dispatch.sh asserts this list matches the emitted phases.
   phases: [
     { title: 'Plan' },
     { title: 'PlanReview' },
     { title: 'Implement' },
+    { title: 'Review' },
     { title: 'Find' },
     { title: 'Refute' },
   ],
@@ -724,10 +730,11 @@ function buildReviewPipeline(mode, deps) {
 // at run time). scripts/verify-workflow-dispatch.sh gates the two copies for
 // drift. No Date.now / Math.random — pure array/string ops only.
 //
-// `hasBlocking`, `summarizeFindings`, `codeReviewRounds`, `classifyOutcome`, and
-// `DEFAULT_MAX_CODE_REWORK` are NOT declared here: they belong to the canonical
-// review source (lib/review.mjs) and reach this block from the stamped review
-// block that precedes it in the workflow consumer.
+// `hasBlocking`, `summarizeFindings`, `codeReviewRounds`, `classifyOutcome`,
+// `statusFor`, `writesCompletion`, and `DEFAULT_MAX_CODE_REWORK` are NOT declared
+// here: they belong to the canonical review source (lib/review.mjs) and reach
+// this block from the stamped review block that precedes it in the workflow
+// consumer.
 
 // DEFAULT_MAX_PLAN_REVISE — the in-run plan-revision budget. It is counted
 // INDEPENDENTLY of the code-rework budget (DEFAULT_MAX_CODE_REWORK, which lives
@@ -877,16 +884,60 @@ async function runCodeGate(config, deps) {
   return { findings: findings, rounds: rounds, reworkCount: reworkCount, reviewCount: rounds.length };
 }
 
-// buildOutcome — the OUTCOME contract { roadmap, phase, outcome, summary,
-// findings }. fetchError short-circuits to escalated. Never emits a land-time
-// completion directive.
+// OUTCOME_REASON_PREFIX — which gate a non-clean outcome came out of.
+// dispatch-phase's escalations originate at the PLAN gate (classifyOutcome only
+// returns 'escalated' from a blocking plan finding, or from a fetch failure
+// before any code exists), so they are tagged `[plan]`; an unresolved code
+// rework is tagged `[code]`. This deliberately differs from the canonical
+// STATUS_MAPPING.reasonPrefix (`[code]`), which describes the INTERACTIVE review
+// surface, where an escalation comes out of the code gate. The tag names which
+// gate escalated, not which module produced the string.
+const OUTCOME_REASON_PREFIX = { escalated: '[plan]', rework: '[code]' };
+
+// outcomePolicy(outcome, kind, summary) — the gate/completion policy owned by the
+// canonical review source, projected onto the OUTCOME contract so no consumer
+// has to restate the map:
+//   status           — the rdm status this outcome maps to for `kind`
+//                      ('phase' | 'task'), straight from statusFor().
+//   writesCompletion — MAY this outcome's surface write the land-time completion
+//                      directive? Expressed ONLY as a boolean, never as the
+//                      directive literal: this block is stamped verbatim into
+//                      workflow scripts, and the dispatch harness forbids that
+//                      literal anywhere in a stamped region. The land-time writer
+//                      (`rdm-land`) turns this boolean plus the OUTCOME's
+//                      identifiers into the real trailer via `rdm hook done-line`.
+//   reason           — a gate-tagged park/escalation note; empty on a clean review.
+function outcomePolicy(outcome, kind, summary) {
+  const prefix = OUTCOME_REASON_PREFIX[outcome];
+  return {
+    status: statusFor(outcome, kind),
+    writesCompletion: writesCompletion(outcome),
+    reason: prefix ? prefix + ' ' + summary : '',
+  };
+}
+
+// buildOutcome — the OUTCOME contract { roadmap, phase, outcome, status,
+// writesCompletion, summary, reason, findings }. fetchError short-circuits to
+// escalated. Never emits a land-time completion directive — it emits the
+// `writesCompletion` boolean instead, and `rdm-land` writes the trailer.
 function buildOutcome(input) {
   const i = input || {};
   const roadmap = i.roadmap;
   const phase = i.phase;
   const tier = i.tier;
   if (i.fetchError === true) {
-    return { roadmap: roadmap, phase: phase, outcome: 'escalated', summary: 'phase fetch failed', findings: [] };
+    const failSummary = 'phase fetch failed';
+    const failPolicy = outcomePolicy('escalated', 'phase', failSummary);
+    return {
+      roadmap: roadmap,
+      phase: phase,
+      outcome: 'escalated',
+      status: failPolicy.status,
+      writesCompletion: failPolicy.writesCompletion,
+      summary: failSummary,
+      reason: failPolicy.reason,
+      findings: [],
+    };
   }
   const planFindings = i.planFindings || [];
   const classifierInput = {
@@ -914,22 +965,44 @@ function buildOutcome(input) {
     findings = lastRound;
     summary = 'phase reviewed clean: ' + summarizeFindings(lastRound);
   }
-  return { roadmap: roadmap, phase: phase, outcome: outcome, summary: summary, findings: findings };
+  const policy = outcomePolicy(outcome, 'phase', summary);
+  return {
+    roadmap: roadmap,
+    phase: phase,
+    outcome: outcome,
+    status: policy.status,
+    writesCompletion: policy.writesCompletion,
+    summary: summary,
+    reason: policy.reason,
+    findings: findings,
+  };
 }
 
-// buildTaskOutcome — the task-shaped OUTCOME contract { task, outcome, summary,
-// findings }. A task is keyed by slug and belongs to no roadmap, so it emits a
-// `task` identifier instead of `roadmap`/`phase`; the decision core
-// (classifyOutcome / hasBlocking / summarizeFindings) is shared UNCHANGED with
-// the phase path. Tasks always dispatch at the fixed `medium` tier, so the
-// `large` gate-tightening in hasBlocking never applies to them. fetchError
+// buildTaskOutcome — the task-shaped OUTCOME contract { task, outcome, status,
+// writesCompletion, summary, reason, findings }. A task is keyed by slug and
+// belongs to no roadmap, so it emits a `task` identifier instead of
+// `roadmap`/`phase`; the decision core (classifyOutcome / hasBlocking /
+// summarizeFindings / outcomePolicy) is shared UNCHANGED with the phase path.
+// Tasks always dispatch at the fixed `medium` tier, so the `large`
+// gate-tightening in hasBlocking never applies to them. `escalated` maps to the
+// `blocked` TASK status — never downgraded to `in-progress`. fetchError
 // short-circuits to escalated. Never emits a land-time completion directive.
 function buildTaskOutcome(input) {
   const i = input || {};
   const task = i.task;
   const tier = i.tier;
   if (i.fetchError === true) {
-    return { task: task, outcome: 'escalated', summary: 'task fetch failed', findings: [] };
+    const failSummary = 'task fetch failed';
+    const failPolicy = outcomePolicy('escalated', 'task', failSummary);
+    return {
+      task: task,
+      outcome: 'escalated',
+      status: failPolicy.status,
+      writesCompletion: failPolicy.writesCompletion,
+      summary: failSummary,
+      reason: failPolicy.reason,
+      findings: [],
+    };
   }
   const planFindings = i.planFindings || [];
   const classifierInput = {
@@ -955,11 +1028,36 @@ function buildTaskOutcome(input) {
     findings = lastRound;
     summary = 'task reviewed clean: ' + summarizeFindings(lastRound);
   }
-  return { task: task, outcome: outcome, summary: summary, findings: findings };
+  const policy = outcomePolicy(outcome, 'task', summary);
+  return {
+    task: task,
+    outcome: outcome,
+    status: policy.status,
+    writesCompletion: policy.writesCompletion,
+    summary: summary,
+    reason: policy.reason,
+    findings: findings,
+  };
 }
 // >>> dispatch-outcome:end <<<
 
 // --- Schemas (dispatch-specific; see docs/workflow-schemas.md) ----------------
+
+// DIFF_SIGNALS — what the mechanical diff agent returns from the item's worktree
+// so the code gate can select review dimensions from the REAL change shape via
+// the canonical `deriveSignals`. `diffText` is truncated by the agent; truncation
+// only weakens trigger detection toward FAIL-OPEN (a missed trigger costs a
+// dimension that would have run anyway when the file paths already imply it), and
+// an empty/failed result omits `signals` entirely so every dimension runs.
+const DIFF_SIGNALS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['changedFiles', 'diffText'],
+  properties: {
+    changedFiles: { type: 'array', items: { type: 'string' } },
+    diffText: { type: 'string' },
+  },
+}
 
 // PHASE_META — what the Stage-0 fetch agent returns from `rdm phase show`.
 const PHASE_META_SCHEMA = {
@@ -1155,6 +1253,32 @@ function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes) 
   return lines.join('\n')
 }
 
+// Review pre-step: a mechanical Bash agent reads the branch diff out of the
+// item's worktree. Its output feeds `deriveSignals` (from the stamped canonical
+// review block), which decides which review dimensions actually run.
+//
+// Diff base: THREE-DOT (`main...HEAD`) scopes to the branch's own changes rather
+// than to everything `main` gained meanwhile. For a phase implemented in the
+// SHARED per-roadmap worktree, earlier phases of the same roadmap are already on
+// the branch, so a later phase sees the whole branch diff. That is
+// over-inclusive (a trigger may fire for an earlier phase's files) but never
+// under-inclusive, which is the safe direction for a coverage gate.
+function buildDiffSignalsPrompt(worktreeRef) {
+  return [
+    'You are a mechanical diff agent. Do not review, plan, or implement anything, and edit no files.',
+    'Find the worktree for this item and work THERE:',
+    '  ./target/debug/rdm worktree add ' + worktreeRef + ' --project rdm',
+    '(it prints the existing path if the worktree already exists) then `cd` into that path.',
+    'Run exactly these two commands and read their output:',
+    '  git diff --name-only main...HEAD',
+    '  git diff main...HEAD',
+    'Return a DIFF_SIGNALS object: `changedFiles` — the repo-relative paths from the first command,',
+    'verbatim, one array element each; and `diffText` — the second command\'s output TRUNCATED to the',
+    'first 40000 characters (append nothing; just stop). If either command fails or the branch has no',
+    'commits of its own, return an empty `changedFiles` array and an empty `diffText`.',
+  ].join('\n')
+}
+
 // Render a PLAN_DOC object to deterministic text for review + implementer seeding.
 function renderPlanDoc(planDoc) {
   return JSON.stringify(planDoc, null, 2)
@@ -1268,6 +1392,13 @@ const itemLabel = isTask ? 'task/' + taskSlug : roadmap + '/' + stem
 // stamped shared pipeline, and revise it up to the plan-revise budget. The loop
 // itself lives in runPlanGate (copied block) so it is driveable from Node; this
 // driver only supplies the side effects.
+//
+// SIGNALS SITE (plan gate): this gate deliberately passes NO `signals`, so
+// selectDimensions fail-opens and every plan dimension runs — including
+// `unit-of-work`, whose `when` is a TARGET-TYPE trigger (phases only). Threading
+// `signals: { targetType: isTask ? 'task' : 'phase' }` here belongs to the
+// sibling `unify-plan-review` roadmap (phase 3, wire-plan-gates-and-hook), not
+// to this one. Do not add it here.
 const runPlanReview = buildReviewPipeline('plan')
 const planGate = await runPlanGate(
   { maxRevise: maxPlanRevise, tier: tier },
@@ -1343,7 +1474,40 @@ const codeGate = await runCodeGate(
             label: 'implement:rework',
             phase: 'Implement',
           }),
-    review: async () => runCodeReview({ target: reviewTarget, ...reviewModels }),
+    // The code gate IS the canonical review — `buildReviewPipeline('code')` from
+    // the stamped block, with NO independent code-review logic in this driver.
+    // The diff is fetched INSIDE this closure so every rework round re-derives
+    // its signals from the post-rework tree: a round-2 fix that newly touches an
+    // `rdm-core` public item must turn `api-docs` on for round 2.
+    review: async () => {
+      let diff = null
+      try {
+        diff = await agent(buildDiffSignalsPrompt(worktreeRef), {
+          label: 'diff:signals',
+          phase: 'Review',
+          schema: DIFF_SIGNALS_SCHEMA,
+          model: models.review_find,
+        })
+      } catch (e) {
+        diff = null
+      }
+      const changedFiles = diff && Array.isArray(diff.changedFiles) ? diff.changedFiles.filter(Boolean) : []
+      if (changedFiles.length === 0) {
+        // FAIL-OPEN: omit the `signals` key ENTIRELY — never pass `{}`.
+        // selectDimensions treats an omitted `signals` as "unknown → run every
+        // dimension", while `{}` means "computed, nothing triggered" and would
+        // silently drop tests / api-docs / changelog / security coverage exactly
+        // when the driver knew the least.
+        log('dispatch-phase: diff signals unavailable for ' + itemLabel + ' — running every code dimension (fail-open)')
+        return runCodeReview({ target: reviewTarget, ...reviewModels })
+      }
+      const signals = deriveSignals({
+        targetType: isTask ? 'task' : 'phase',
+        changedFiles: changedFiles,
+        diffText: typeof diff.diffText === 'string' ? diff.diffText : null,
+      })
+      return runCodeReview({ target: reviewTarget, signals: signals, ...reviewModels })
+    },
   }
 )
 

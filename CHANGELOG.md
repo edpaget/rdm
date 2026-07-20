@@ -51,6 +51,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- An autonomously produced branch now reaches `rdm-land` ready to land, with no
+  manual rebase. `rdm-dispatch-phase` / `rdm-autopilot` deliberately never write
+  the `Done:` commit trailer, and their outcome now says so explicitly — it
+  carries `writesCompletion: true` on a clean review — so `rdm-land` synthesizes
+  the trailer from `rdm hook done-line` and amends it onto the branch tip
+  *before* the rebase and fast-forward. Previously the missing trailer had to be
+  noticed and repaired by hand after the fact.
+
 - The workflow lane's dispatch outcome classifier no longer marks a phase
   `reviewed` on a failing code review when no rework round ran. It previously
   hard-coded a two-slot "first pass + exactly one rework" shape, so with a
@@ -60,6 +68,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `rdm-do`'s finalize step now runs an automated code review in **both** modes.
+  Previously, interactive `rdm-do` parked the item in `needs-review` for a
+  separate review pass to pick up, and `rdm-do --auto --task` finalized with no
+  automated review at all. Finalize now invokes the `rdm-review` skill directly
+  once the work is committed; the human confirmation gate still decides *whether
+  to finalize*, but a review always happens. The review owns the status gate
+  (`reviewed` / `in-progress` / `blocked`) and the completion trailer, so
+  `needs-review` is now only a transient marker rather than a parking state.
+- The autonomous lane's code review now scales to the change. It selects its
+  review dimensions from the real branch diff (`git diff main...HEAD`), so
+  `tests`, `architecture`, `api-docs`, `changelog`, and `security` run when the
+  change actually touches their surface — re-derived on every rework round, so a
+  fix that newly touches a public API is reviewed for public API docs. If the
+  diff cannot be read, every dimension runs, so coverage only ever fails open.
 - The `rdm-review` skill now reports a single outcome — **reviewed**, **rework**,
   or **escalated** — retiring the old PASS / PASS WITH CONCERNS / BLOCKED / FAIL
   quartet. PASS and PASS WITH CONCERNS collapse to `reviewed`, FAIL becomes
