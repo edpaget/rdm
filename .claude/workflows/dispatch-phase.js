@@ -88,7 +88,7 @@ const DIMENSIONS = {
       key: 'architectural-fit',
       title: 'Architectural fit',
       focus:
-        "Read the project's principles (CLAUDE.md / AGENTS.md if no principles note is configured). Flag any plan step that would violate a stated convention or constraint.",
+        "Read the project's principles (CLAUDE.md / AGENTS.md if no principles note is configured). Flag any plan step that would violate a stated convention or constraint — a violated constraint is what makes a finding blocking; stylistic preferences alone are not.",
     },
     {
       key: 'unit-of-work',
@@ -99,6 +99,16 @@ const DIMENSIONS = {
   ],
 };
 
+// Plan-stage severity contract: what makes a plan-stage finding `blocking`
+// versus a `concern` that rides along as an implementation note. Of the six
+// findings that drove an observed three-round plan-review escalation, five
+// were implementation-level defects in proposed pseudo-code/shell that should
+// have been notes under correct calibration, while the sixth was a genuine
+// architectural violation that must still block. This line is injected into
+// every plan-mode finder prompt only — code-mode prompts are unaffected.
+const PLAN_SEVERITY_CALIBRATION =
+  'Plan-stage severity contract: `blocking` means the goal, approach, or scope is wrong, or the plan violates a stated architectural constraint. A defect in a specific proposed line of code or shell (e.g. an off-by-one in proposed pseudo-code) is a `concern` that rides along as an implementation note for the implementing agent — not a gate. An empty or ambiguous plan is still `blocking` (see the coherence dimension).';
+
 // Prompt for a finder agent reviewing a single dimension of `mode`.
 function findPrompt(mode, dim, context) {
   const target = (context && context.target) || '(the target described in your working directory)';
@@ -106,15 +116,21 @@ function findPrompt(mode, dim, context) {
     mode === 'code'
       ? 'Inspect the implementation diff (use git log / git diff in the worktree).'
       : 'Inspect the plan document text.';
-  return [
+  const lines = [
     'You are a READ-ONLY reviewer. Do not edit any files.',
     'Review target: ' + target + '.',
     diffHint,
     'Your single dimension is ' + dim.title + ' (' + dim.key + '). ' + dim.focus,
+  ];
+  if (mode === 'plan') {
+    lines.push(PLAN_SEVERITY_CALIBRATION);
+  }
+  lines.push(
     'Report only findings you can back with concrete evidence. One strong finding beats five weak ones.',
     'Return JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.',
-    'Return an empty `findings` array if the dimension is clean.',
-  ].join('\n');
+    'Return an empty `findings` array if the dimension is clean.'
+  );
+  return lines.join('\n');
 }
 
 // Prompt for a refuter agent grading ONE finding. A fresh refuter per finding —

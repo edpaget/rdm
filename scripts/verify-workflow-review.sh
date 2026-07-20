@@ -132,7 +132,7 @@ import { pathToFileURL } from 'node:url';
 
 const libPath = process.argv[2];
 const mod = await import(pathToFileURL(libPath).href);
-const { buildReviewPipeline, DIMENSIONS, survives, rankFindings, CONFIDENCE_FLOOR } = mod;
+const { buildReviewPipeline, DIMENSIONS, findPrompt, survives, rankFindings, CONFIDENCE_FLOOR } = mod;
 
 // --- reference pipeline/parallel: faithful to the real Workflow runtime -------
 // Both are order-preserving (Promise.all). Their ERROR semantics mirror the
@@ -339,6 +339,118 @@ assert.equal(JSON.stringify(poutA), JSON.stringify(poutB), 'plan review output i
 assert.throws(() => buildReviewPipeline('bogus', deps(spy)), /unknown review mode/, 'unknown mode throws');
 
 // ============================================================================
+// AC2 — code-mode findPrompt output is byte-exact against a baseline captured
+// BEFORE the plan-severity-calibration change. Any difference (including a
+// single stray byte) means the calibration work leaked into code-mode prompts.
+// ============================================================================
+const CODE_PROMPT_BASELINE = {
+  ac: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is AC compliance (ac). For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
+  correctness: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Correctness & error handling (correctness). Logic bugs, edge cases, race conditions, and error paths. In rdm-core, errors must be hand-written matchable enums (no anyhow / type erasure); in rdm-cli / rdm-server, anyhow with .context(). User-facing CLI errors must be actionable.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
+  tests: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Tests (tests). Do tests exist and cover the key behaviors and edge cases? Was TDD followed? Are there untested branches or newly added logic with no test?\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
+  architecture: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Architecture (architecture). Does logic live in rdm-core with cli/server as thin layers? No duplicated logic across interfaces? Correct core/cli/server separation and conventional-commit scope discipline.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
+};
+for (const dim of DIMENSIONS.code) {
+  assert.equal(
+    findPrompt('code', dim, CTX),
+    CODE_PROMPT_BASELINE[dim.key],
+    'code-mode findPrompt("' + dim.key + '") must stay byte-identical to the pre-calibration baseline'
+  );
+}
+console.log('AC2: code-mode findPrompt output is byte-exact against the pre-calibration baseline');
+
+// ============================================================================
+// AC1 — every plan-mode findPrompt output carries the plan-stage severity
+// calibration contract (blocking = goal/approach/scope/architectural-constraint
+// violation; a proposed-code/shell defect is a concern, not a gate). Exported
+// as a function so the scratch mutation self-test (shell section 4) can run
+// the identical check against a mutated copy of the module.
+// ============================================================================
+const PLAN_CALIBRATION_KEYPHRASES = [
+  'blocking` means the goal, approach, or scope is wrong, or the plan violates a stated architectural constraint',
+  'concern` that rides along as an implementation note for the implementing agent',
+];
+
+function assertPlanCalibrationPresent(m) {
+  for (const dim of m.DIMENSIONS.plan) {
+    const prompt = m.findPrompt('plan', dim, CTX);
+    for (const phrase of PLAN_CALIBRATION_KEYPHRASES) {
+      assert.ok(
+        prompt.includes(phrase),
+        'plan-mode findPrompt("' + dim.key + '") is missing calibration keyphrase: ' + phrase
+      );
+    }
+  }
+}
+assertPlanCalibrationPresent(mod);
+console.log('AC1: every plan-mode findPrompt output carries the severity-calibration keyphrases');
+
+// The pre-existing "empty or ambiguous plan is itself blocking" coherence rule
+// must survive the calibration edit untouched — not deleted, not overwritten.
+assert.ok(
+  DIMENSIONS.plan
+    .find((d) => d.key === 'coherence')
+    .focus.includes('An empty or ambiguous plan is itself a blocking finding'),
+  "coherence's pre-existing empty/ambiguous-plan rule must still be present"
+);
+
+// ============================================================================
+// AC4 — an architectural-violation finding (the review-verify tier-downgrade
+// class) still comes back `blocking` on the first pass, ranked ahead of an
+// implementation-detail nit that must NOT be `blocking`. Proves the
+// calibration prompt text does not, and structurally cannot, cause the
+// pipeline itself to downgrade or drop a legitimate architectural blocker —
+// paired in one buildReviewPipeline('plan', ...) call per the plan.
+// ============================================================================
+const calibrationFindings = {
+  coherence: [],
+  'architectural-fit': [
+    {
+      id: 'tier-downgrade',
+      concern: 'architectural-fit',
+      severity: 'blocking',
+      confidence: 92,
+      what_fails: 'The plan silently downgrades the review tier on failure, violating the stated model-tier binding contract.',
+    },
+  ],
+  'unit-of-work': [
+    {
+      id: 'impl-nit',
+      concern: 'unit-of-work',
+      severity: 'concern',
+      confidence: 85,
+      what_fails: 'Off-by-one in the loop bound of the proposed pseudo-code snippet.',
+    },
+  ],
+};
+const calibrationVerdicts = {
+  'tier-downgrade': { refuted: false, confidence: 95 },
+  'impl-nit': { refuted: false, confidence: 88 },
+};
+const cspy = makeSpyAgent(calibrationFindings, calibrationVerdicts);
+const cout = await buildReviewPipeline('plan', deps(cspy))(CTX);
+assert.deepEqual(
+  cout.map((f) => f.id),
+  ['tier-downgrade', 'impl-nit'],
+  'both the architectural-violation finding and the implementation-detail nit survive refutation/floor'
+);
+assert.equal(
+  cout.find((f) => f.id === 'tier-downgrade').severity,
+  'blocking',
+  'the architectural-violation (tier-downgrade class) finding still yields blocking'
+);
+assert.notEqual(
+  cout.find((f) => f.id === 'impl-nit').severity,
+  'blocking',
+  'the implementation-detail nit is not blocking'
+);
+assert.equal(
+  cout[0].id,
+  'tier-downgrade',
+  'the blocking architectural finding ranks ahead of the concern-severity nit'
+);
+console.log('AC4: an architectural-violation finding still yields blocking, ranked ahead of an implementation nit');
+
+// ============================================================================
 // Model threading + the null-agent loud-failure guard.
 //
 // An unknown model id makes agent() RESOLVE to null (docs/workflow-schemas.md
@@ -394,6 +506,73 @@ if run_node "$TMP/test.mjs" "$LIB"; then
     pass "find -> refute -> filter behavior verified (code + plan, deterministic)"
 else
     fail "review-refute-fix behavior assertions failed"
+fi
+
+# --- 4. PLAN CALIBRATION MUTATION SELF-TEST -----------------------------------
+# Prove the AC1 presence check (embedded in section 3's test.mjs) is not
+# vacuous: on a hermetic scratch copy of the lib, strip the
+# PLAN_SEVERITY_CALIBRATION constant declaration and its single injection line
+# inside findPrompt, then re-run the identical presence assertion against the
+# mutated copy and require it to THROW. Mirrors 1b's SCRATCH-only isolation —
+# never touches $LIB. A failed/partial strip must still leave valid, importable
+# JS (whole-statement removals only), so a parse error can't be mistaken for a
+# passing self-test.
+say "4. Plan calibration mutation self-test (proves the AC1 check would catch a regression)"
+mkdir -p "$SCRATCH/.claude/workflows/lib"
+cp "$LIB" "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs"
+
+# Remove the `const PLAN_SEVERITY_CALIBRATION = ... ;` declaration (spans the
+# `const NAME =` line through the line ending in `;`) and the one line that
+# pushes it into the prompt. Both are whole-statement removals, so the mutated
+# file stays syntactically valid — leaves the block-comment prose above it in
+# place, which is harmless.
+awk '
+    /^const PLAN_SEVERITY_CALIBRATION =$/ { skip = 1 }
+    skip && /;$/ { skip = 0; next }
+    skip { next }
+    /lines\.push\(PLAN_SEVERITY_CALIBRATION\);/ { next }
+    { print }
+' "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs" >"$SCRATCH/mutated-lib.mjs"
+mv "$SCRATCH/mutated-lib.mjs" "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs"
+
+if grep -q 'PLAN_SEVERITY_CALIBRATION' "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs"; then
+    fail "mutation setup did not fully strip PLAN_SEVERITY_CALIBRATION from the scratch copy"
+fi
+
+cat >"$TMP/mutation-test.mjs" <<'NODE_MUTATION_TEST'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const mutatedLibPath = process.argv[2];
+const mod = await import(pathToFileURL(mutatedLibPath).href); // must still parse/import cleanly
+
+const CTX = { target: 'phase widget/phase-1-foo' };
+const PLAN_CALIBRATION_KEYPHRASES = [
+  'blocking` means the goal, approach, or scope is wrong, or the plan violates a stated architectural constraint',
+  'concern` that rides along as an implementation note for the implementing agent',
+];
+
+function assertPlanCalibrationPresent(m) {
+  for (const dim of m.DIMENSIONS.plan) {
+    const prompt = m.findPrompt('plan', dim, CTX);
+    for (const phrase of PLAN_CALIBRATION_KEYPHRASES) {
+      assert.ok(prompt.includes(phrase), 'missing calibration keyphrase in "' + dim.key + '": ' + phrase);
+    }
+  }
+}
+
+assert.throws(
+  () => assertPlanCalibrationPresent(mod),
+  'the presence check must FAIL against a mutated copy with the calibration text stripped — the check is vacuous otherwise'
+);
+
+console.log('mutation self-test passed: presence check correctly fails on stripped calibration text');
+NODE_MUTATION_TEST
+
+if run_node "$TMP/mutation-test.mjs" "$SCRATCH/.claude/workflows/lib/review-refute-fix.mjs"; then
+    pass "calibration presence check fires on planted removal (self-test proves it is not vacuous)"
+else
+    fail "mutation self-test did not behave as expected — either the mutated file failed to import, or the presence check did not fail on stripped calibration text"
 fi
 
 say "verify-workflow-review.sh: ALL GREEN"
