@@ -158,8 +158,6 @@ const {
   DEFAULT_GLOBAL_BUDGET,
   DEFAULT_MAX_REWORK,
   parseAutopilotArgs,
-  selectUnestimated,
-  difficultyToTier,
   resolveTier,
   interpretNext,
   buildParkReason,
@@ -168,13 +166,14 @@ const {
   maxPhasesReached,
   buildMechanicalModelPrompt,
   buildFetchNextPrompt,
-  buildEstimateListPrompt,
-  buildEstimatorPrompt,
-  buildEstimateWritebackPrompt,
   buildAdvancePrompt,
   buildParkPrompt,
   buildSummary,
 } = m;
+// NOTE: selectUnestimated / buildEstimateListPrompt / buildEstimatorPrompt /
+// buildEstimateWritebackPrompt moved to lib/estimate.mjs (estimate-core) and are
+// covered by scripts/verify-workflow-estimate.sh; the vestigial difficulty->tier
+// JS map was dropped (rdm-core owns that policy). None are imported here anymore.
 
 // --- parseAutopilotArgs ------------------------------------------------------
 assert.throws(() => parseAutopilotArgs({}), /roadmap slug is required/, 'roadmap slug is required');
@@ -207,26 +206,9 @@ assert.throws(() => parseAutopilotArgs('{}'), /roadmap slug is required/, 'strin
 assert.throws(() => parseAutopilotArgs('"rm"'), /roadmap slug is required/, 'JSON string primitive rejected, not dereferenced');
 assert.throws(() => parseAutopilotArgs('null'), /roadmap slug is required/, 'JSON null rejected without a TypeError');
 
-// --- selectUnestimated -------------------------------------------------------
-assert.deepEqual(
-  selectUnestimated([
-    { stem: 'a' },
-    { stem: 'b', difficulty: 'hard' },
-    { stem: 'c', model: 'small' },
-    { stem: 'd', difficulty: 'easy', model: 'small' },
-  ]),
-  ['a'],
-  'only phases with NO difficulty and NO model are unestimated'
-);
-assert.deepEqual(selectUnestimated([]), [], 'empty list');
-assert.deepEqual(selectUnestimated(null), [], 'non-array tolerated');
-
-// --- difficultyToTier --------------------------------------------------------
-assert.equal(difficultyToTier('trivial'), 'small');
-assert.equal(difficultyToTier('easy'), 'small');
-assert.equal(difficultyToTier('moderate'), 'medium');
-assert.equal(difficultyToTier('hard'), 'large');
-assert.equal(difficultyToTier('bogus'), 'medium', 'unknown difficulty defaults medium');
+// selectUnestimated moved to lib/estimate.mjs — its truth table is now asserted
+// in scripts/verify-workflow-estimate.sh. The difficulty->tier JS map was
+// dropped outright (rdm-core's Difficulty::model_tier is the sole home).
 
 // --- resolveTier -------------------------------------------------------------
 assert.equal(resolveTier('small'), 'small');
@@ -358,12 +340,11 @@ const FORBIDDEN = ['Done:', '--land', '--commit', 'git merge', 'git push', 'chec
 function hasForbidden(s) {
   return FORBIDDEN.some((f) => s.includes(f));
 }
+// The estimate prompt builders moved to lib/estimate.mjs; their forbidden-string
+// sweep lives in scripts/verify-workflow-estimate.sh now.
 const allPrompts = [
   buildMechanicalModelPrompt(),
   buildFetchNextPrompt('rm'),
-  buildEstimateListPrompt('rm'),
-  buildEstimatorPrompt('a phase body'),
-  buildEstimateWritebackPrompt('phase-1-x', 'hard', 'rm'),
   buildAdvancePrompt('phase-1-x', 'rm'),
   buildParkPrompt('phase-1-x', '[code] boom', 'rm'),
 ];
@@ -474,8 +455,8 @@ function makeFakes(opts) {
       callLog.push('parallelEstimate');
       return o.estimates || [];
     },
-    estimateWriteback: async (stem, difficulty, roadmap, model) => {
-      writebackCalls.push({ stem, difficulty });
+    estimateWriteback: async (stem, difficulty, justification, roadmap, model) => {
+      writebackCalls.push({ stem, difficulty, justification });
       modelCalls.estimateWriteback.push(model);
       callLog.push('writeback:' + stem);
       return { ok: true };
@@ -620,14 +601,20 @@ function makeFakes(opts) {
       { stem: 'phase-3-c', status: 'not-started', difficulty: 'hard', model: 'large' },
     ],
     estimates: [
-      { stem: 'phase-1-a', difficulty: 'easy' },
-      { stem: 'phase-2-b', difficulty: 'moderate' },
+      { stem: 'phase-1-a', difficulty: 'easy', justification: 'one-line change' },
+      { stem: 'phase-2-b', difficulty: 'moderate', justification: 'self-contained feature' },
     ],
   });
   await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
   assert.equal(h.parallelEstimateCalls.length, 1, 'parallelEstimate called exactly once');
   assert.deepEqual(h.parallelEstimateCalls[0].sort(), ['phase-1-a', 'phase-2-b'], 'rated exactly the 2 unestimated');
   assert.deepEqual(h.writebackCalls.map((w) => w.stem).sort(), ['phase-1-a', 'phase-2-b'], 'writeback per rated stem');
+  // The pre-pass now threads the rater's justification into the writeback (which
+  // appends the shared ## Estimate audit note) — the behavior change this phase
+  // brings to autopilot's pre-pass.
+  const wbByStem = Object.fromEntries(h.writebackCalls.map((w) => [w.stem, w]));
+  assert.equal(wbByStem['phase-1-a'].justification, 'one-line change', 'justification threaded into writeback for phase-1-a');
+  assert.equal(wbByStem['phase-2-b'].justification, 'self-contained feature', 'justification threaded into writeback for phase-2-b');
   const firstDispatch = h.callLog.indexOf('dispatch:phase-1-a');
   assert.ok(h.callLog.indexOf('writeback:phase-1-a') < firstDispatch, 'writeback 1 precedes first dispatch');
   assert.ok(h.callLog.indexOf('writeback:phase-2-b') < firstDispatch, 'writeback 2 precedes first dispatch');
@@ -746,8 +733,8 @@ function makeFakes(opts) {
       { stem: 'phase-2-b', status: 'not-started' },
     ],
     estimates: [
-      { stem: 'phase-1-a', difficulty: 'easy' },
-      { stem: 'phase-2-b', difficulty: 'moderate' },
+      { stem: 'phase-1-a', difficulty: 'easy', justification: 'one-line change' },
+      { stem: 'phase-2-b', difficulty: 'moderate', justification: 'self-contained feature' },
     ],
     dispatchScript: { 'phase-2-b': ['escalated'] },
   });

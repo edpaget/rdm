@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The dogfood `autopilot` Workflow's estimate pre-pass now records a
+  `## Estimate <difficulty> — <justification>` audit note on each phase it
+  rates (previously it persisted `--difficulty` only and dropped the rater's
+  justification). The behavior — and the underlying difficulty-writeback logic
+  — is now single-sourced with the new standalone `estimate` workflow via the
+  shared `estimate-core` block, so both surfaces write the note identically.
 - **Breaking:** the shipped `rdm-autopilot`, `rdm-dispatch-phase`, and the
   `--auto` branch of `rdm-do` skill templates (`rdm agent-config claude
   --skills`, both `cli` and `mcp` variants) are rewritten as thin shims that
@@ -77,6 +83,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New dogfood `estimate` Workflow (`.claude/workflows/estimate.js`): rating an
+  rdm roadmap's phase difficulties now runs headlessly. Given a roadmap slug
+  (optionally narrowed to a single phase number) it lists the phases, filters
+  to the ones whose difficulty is unset, rates each in a parallel fan-out, and
+  writes the rating back — persisting the difficulty AND appending a
+  `## Estimate <difficulty> — <justification>` audit note to the phase body —
+  then reads the model tier back from rdm-core for its summary. It never passes
+  `--model` and never reimplements the difficulty→tier mapping: rdm-core
+  (`Difficulty::model_tier`) stays the single home for that policy. Its pure
+  core lives once in `.claude/workflows/lib/estimate.mjs` (the `estimate-core`
+  marker region) and is stamped byte-identical into every consumer by the new
+  `scripts/gen-workflow-estimate.sh` (with a `--check` drift gate); the local
+  `rdm-estimate` skill is re-authored as a thin shim over this workflow. New
+  dogfood harness `scripts/verify-workflow-estimate.sh` gives hermetic
+  estimate-core DRIFT + BEHAVIOR coverage. The shipped `rdm-estimate` skill
+  template is unchanged; this workflow is dogfood-only for now.
 - New dogfood `backlog` Workflow (`.claude/workflows/backlog.js`): the
   read-only, propose-only `rdm-backlog` grooming pass now runs headlessly. It
   runs `rdm backlog report` once, fans one READ-ONLY analyzer agent out per
