@@ -197,6 +197,16 @@ struct SearchParams {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct BacklogReportParams {
+    /// The project name.
+    project: String,
+    /// Staleness threshold in days for `stale_tasks` (default 60).
+    older_than: Option<u32>,
+    /// Restrict every report section to items carrying this tag.
+    tag: Option<String>,
+}
+
 // ---------- Parameter structs (mutation) ----------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -891,6 +901,35 @@ impl RdmMcpServer {
                 results.truncate(limit);
                 ok_text(display::format_search_results(&results))
             }
+            Err(e) => core_err(e),
+        }
+    }
+
+    /// Read-only backlog grooming report: stale tasks, duplicate clusters,
+    /// tag clusters, and archivable roadmaps.
+    #[rmcp::tool(
+        description = "Print a read-only backlog grooming report: stale tasks, likely-duplicate task clusters, thematic tag clusters, and archivable roadmaps. Performs zero writes.",
+        annotations(read_only_hint = true)
+    )]
+    async fn rdm_backlog_report(
+        &self,
+        Parameters(params): Parameters<BacklogReportParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.maybe_auto_init();
+        let store = self.store.lock().unwrap();
+        let opts = rdm_core::ops::backlog::ReportOptions {
+            older_than_days: i64::from(
+                params
+                    .older_than
+                    .unwrap_or(rdm_core::ops::backlog::DEFAULT_STALE_THRESHOLD_DAYS as u32),
+            ),
+            tag: params.tag,
+        };
+        match rdm_core::ops::backlog::report(&*store, &params.project, &opts) {
+            Ok(report) => match serde_json::to_string_pretty(&report) {
+                Ok(json) => ok_text(json),
+                Err(e) => err_text(format!("failed to serialize backlog report: {e}")),
+            },
             Err(e) => core_err(e),
         }
     }

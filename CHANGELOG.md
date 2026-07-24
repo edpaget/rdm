@@ -127,6 +127,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   agent consumption. This answers "which tags exist?"; `rdm search "" --tag <name>`
   answers "what carries this tag?".
 
+- New read-only MCP tool `rdm_backlog_report`, a thin wrapper over the same
+  `rdm_core::ops::backlog::report` the CLI's `rdm backlog report` already
+  calls, returning the identical four-array JSON shape (`stale_tasks`,
+  `duplicate_clusters`, `tag_clusters`, `archivable_roadmaps`). This backs a
+  new `rdm-backlog` MCP skill (`rdm agent-config claude --mcp --skills`),
+  closing the last cli/mcp skill-set gap: both platforms now emit the same 11
+  skills, asserted by a new relative-path parity test
+  (`generate_skills_cli_mcp_name_parity`) so a future one-sided addition
+  fails CI instead of silently shipping asymmetric skill sets.
+
 ### Fixed
 
 - The workflow lane's `dispatch-phase` now stamps a phase (or task) `in-progress`
@@ -153,6 +163,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   code-rework budget of 0 the empty post-rework slot made a blocking first-pass
   review classify clean. The classifier now judges the last review round that
   actually ran, however many there were (including zero).
+
+- Removed dangling instructions from the shipped `rdm-review` / `rdm-plan-review`
+  skill templates (both `cli` and `mcp` variants) telling the reader to "edit
+  `.claude/workflows/lib/review.mjs` and run `scripts/gen-skill-review.sh`" to
+  regenerate the review specification section. Those paths are dogfood-only
+  tooling in rdm's own source repo and never ship to a consumer repo, so
+  following the instruction there was impossible. The generated region is now
+  described as fixed content, rendered from rdm's own canonical review source
+  at release time, with upstream changes arriving via the next
+  `rdm agent-config` regeneration rather than a local edit.
 
 ### Changed
 

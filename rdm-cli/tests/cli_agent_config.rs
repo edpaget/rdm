@@ -771,6 +771,43 @@ fn agent_config_mcp_skills_writes_skills_and_mcp_json() {
 }
 
 #[test]
+fn agent_config_mcp_skills_generates_eleven_files_including_backlog() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--mcp")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success()
+        // 11 skill files + 3 workflow files + .mcp.json (only written when
+        // --mcp) = 15. Was 10 + 3 + 1 = 14 before `rdm-backlog` gained an
+        // MCP twin — cli/mcp skill-set parity now includes it on both sides.
+        .stdout(predicate::str::contains("Wrote").count(15));
+
+    let skills_dir = dir.path().join(".claude/skills");
+    assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-do/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-review/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-document/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-estimate/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-dispatch-phase/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-autopilot/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-land/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
+    assert!(skills_dir.join("rdm-plan-review/SKILL.md").exists());
+
+    let backlog_path = skills_dir.join("rdm-backlog/SKILL.md");
+    assert!(backlog_path.exists());
+    let backlog_content = std::fs::read_to_string(&backlog_path).unwrap();
+    assert!(backlog_content.contains("mcp__rdm__rdm_backlog_report"));
+    assert!(!backlog_content.contains("  - Bash"));
+    assert!(!backlog_content.contains("{t_backlog_report}"));
+}
+
+#[test]
 fn agent_config_mcp_no_plan_repo_needed() {
     let dir = TempDir::new().unwrap();
     rdm()

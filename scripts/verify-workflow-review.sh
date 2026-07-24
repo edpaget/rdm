@@ -333,6 +333,24 @@ MODE_KEYS=$(run_node -e '
     fail "review.mjs must declare exactly the two DIMENSIONS modes code,plan (got: $MODE_KEYS)"
 pass "one generator, one dimension table with exactly the code and plan modes"
 
+# --- 1f. NO DANGLING GENERATOR REFERENCES IN SHIPPED TEMPLATES ----------------
+# `.claude/workflows/lib/review.mjs` and `scripts/gen-skill-review.sh` are
+# dogfood-only tooling (see the `distribute-workflow-lane` roadmap, Phase 1's
+# landed decision recorded in its commit message: "lib/*.mjs is deliberately
+# not shipped since no regeneration script travels downstream to consume
+# it") — a consumer repo never has them. No shipped skill template may
+# instruct the reader to edit or run either path.
+say "1f. No dangling generator references in shipped templates"
+if grep -lE 'scripts/gen-skill-review\.sh|\.claude/workflows/lib/review\.mjs' "$TEMPLATES"/*.md; then
+    fail "a shipped template references scripts/gen-skill-review.sh or .claude/workflows/lib/review.mjs — these do not exist in a consumer repo"
+fi
+# Self-test: the grep MUST catch a planted dangling reference.
+printf 'edit .claude/workflows/lib/review.mjs and run scripts/gen-skill-review.sh\n' >"$SCRATCH/planted-dangling.md"
+if ! grep -lE 'scripts/gen-skill-review\.sh|\.claude/workflows/lib/review\.mjs' "$SCRATCH/planted-dangling.md" >/dev/null 2>&1; then
+    fail "dangling-reference grep did NOT catch a planted reference — the detector is broken"
+fi
+pass "no shipped template references the dogfood-only generator or its source module"
+
 # --- 2. HYGIENE --------------------------------------------------------------
 say "2. Hygiene: no forbidden nondeterministic global in workflow scripts"
 if grep -nE 'Date\.now\(|Math\.random\(' "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null; then

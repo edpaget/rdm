@@ -260,6 +260,11 @@ pub struct SkillOptions {
 /// and content for a skill definition. Skills are reusable agent behaviors
 /// triggered by slash commands in Claude Code.
 ///
+/// Both the `mcp: false` (CLI) and `mcp: true` (MCP) branches return the
+/// same 11 skills, identified by `relative_path` — a cli/mcp skill-name
+/// parity test (`generate_skills_cli_mcp_name_parity`) asserts this holds so
+/// a future one-sided addition fails CI.
+///
 /// # Examples
 ///
 /// ```
@@ -272,11 +277,19 @@ pub struct SkillOptions {
 /// });
 /// assert_eq!(skills.len(), 11);
 /// assert!(skills[0].content.contains("--project myproj"));
+///
+/// let mcp_skills = generate_skills(&SkillOptions {
+///     project: Some("myproj".to_string()),
+///     principles_file: None,
+///     mcp: true,
+/// });
+/// assert_eq!(mcp_skills.len(), 11);
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
     let principles_note = opts.principles_file.as_deref().map(skill_principles_note);
     if opts.mcp {
         let proj = proj_param_str(opts.project.as_deref());
+        let proj_flag = proj_flag_str(opts.project.as_deref());
         vec![
             skill_roadmap_mcp(&proj, principles_note.as_deref()),
             skill_do_mcp(&proj, principles_note.as_deref()),
@@ -288,6 +301,7 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_land_mcp(&proj, principles_note.as_deref()),
             skill_revise_mcp(&proj, principles_note.as_deref()),
             skill_plan_review_mcp(&proj, principles_note.as_deref()),
+            skill_backlog_mcp(&proj, &proj_flag, principles_note.as_deref()),
         ]
     } else {
         let proj_flag = proj_flag_str(opts.project.as_deref());
@@ -746,6 +760,34 @@ fn skill_plan_review_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile
     }
 }
 
+/// Builds the `rdm-backlog` MCP skill.
+///
+/// Unlike every other `skill_*_mcp` generator, this template also embeds
+/// literal, never-executed `rdm` CLI command text in its "Grooming analysis"
+/// section (`rdm task update`, `rdm promote`, `rdm task merge`, `rdm roadmap
+/// archive`) — those commands are copy-paste output for a human to run
+/// later, not MCP tool calls this skill makes, since no MCP tool exists for
+/// merge/archive/promote. That literal CLI text still needs a concrete
+/// `--project` flag to be ready to paste, so this is the one MCP skill that
+/// also substitutes `{proj_flag}` (computed the same way the CLI skills
+/// compute it) alongside the usual `{proj_param}`/`{t_*}` substitutions.
+fn skill_backlog_mcp(proj: &str, proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
+    let rendered = render_mcp_skill(
+        include_str!("templates/skill-backlog-mcp.md"),
+        proj,
+        principles_note,
+        &[
+            ("t_backlog_report", "rdm_backlog_report"),
+            ("t_roadmap_list", "rdm_roadmap_list"),
+            ("t_search", "rdm_search"),
+        ],
+    );
+    SkillFile {
+        relative_path: "rdm-backlog/SKILL.md",
+        content: rendered.replace("{proj_flag}", proj_flag),
+    }
+}
+
 fn render_mcp_skill(
     template: &str,
     proj: &str,
@@ -1133,6 +1175,46 @@ mod tests {
     }
 
     #[test]
+    fn generate_skills_mcp_returns_eleven_files() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        // Was 10 (no `rdm-backlog` MCP twin) before `skill_backlog_mcp` was
+        // added — now matches the non-mcp branch's count.
+        assert_eq!(skills.len(), 11);
+    }
+
+    #[test]
+    fn generate_skills_cli_mcp_name_parity() {
+        // The same skill *names* (identified by relative_path) must be
+        // emitted on both platforms — a BTreeSet comparison so a future
+        // one-sided addition (a skill added to only one branch) fails even
+        // if both vecs coincidentally stay the same length or reorder.
+        let cli: std::collections::BTreeSet<&str> = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        })
+        .iter()
+        .map(|s| s.relative_path)
+        .collect();
+        let mcp: std::collections::BTreeSet<&str> = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        })
+        .iter()
+        .map(|s| s.relative_path)
+        .collect();
+        assert_eq!(
+            cli, mcp,
+            "cli and mcp must emit the same set of skill relative_paths"
+        );
+    }
+
+    #[test]
     fn generate_skills_correct_paths() {
         let skills = generate_skills(&SkillOptions {
             project: None,
@@ -1215,6 +1297,42 @@ mod tests {
         // Autopilot-ready framing: proposed phase bodies carry the standard headings.
         assert!(content.contains("## Context` / `## Steps` / `## Acceptance Criteria"));
         assert!(content.contains("rdm-autopilot"));
+    }
+
+    #[test]
+    fn skill_backlog_mcp_documents_the_grooming_plan() {
+        let skills = generate_skills(&SkillOptions {
+            project: Some("myproj".to_string()),
+            principles_file: None,
+            mcp: true,
+        });
+        let content = &skills[10].content;
+        assert!(content.contains("name: rdm-backlog"));
+        assert!(content.contains("$ARGUMENTS"));
+        // The one executed read call is the mcp tool, substituted.
+        assert!(content.contains("rdm_backlog_report"));
+        assert!(content.contains("rdm_roadmap_list"));
+        assert!(content.contains("rdm_search"));
+        // No leftover template placeholders.
+        assert!(!content.contains("{t_backlog_report}"));
+        assert!(!content.contains("{t_roadmap_list}"));
+        assert!(!content.contains("{t_search}"));
+        assert!(!content.contains("{proj_param}"));
+        assert!(!content.contains("{proj_flag}"));
+        // allowed-tools omits Bash — mcp skills never shell out.
+        assert!(!content.contains("- Bash"));
+        assert!(content.contains("Non-mutation guarantee"));
+        assert!(content.contains("never calls"));
+        // Proposed (never-executed) mutating commands stay literal CLI text,
+        // now with the concrete project substituted in.
+        assert!(content.contains("task update <slug> --status wont-fix"));
+        assert!(content.contains("task merge <survivor> --from"));
+        assert!(content.contains("promote <slug> --into <roadmap>"));
+        assert!(content.contains("roadmap archive <roadmap>"));
+        assert!(content.contains("--project myproj"));
+        assert!(content.contains("not MCP tool calls this skill makes"));
+        assert!(content.contains("## Open questions"));
+        assert!(content.contains("Nothing to groom"));
     }
 
     #[test]
@@ -2922,7 +3040,7 @@ mod tests {
     // --- MCP skill generation tests ---
 
     #[test]
-    fn mcp_skills_returns_ten_files() {
+    fn mcp_skills_returns_eleven_files() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
@@ -2930,7 +3048,10 @@ mod tests {
         });
         // Workflows are a separate emission surface (see `generate_workflows`)
         // and are not counted here, and are not MCP/CLI-flavored anyway.
-        assert_eq!(skills.len(), 10);
+        // Was 10 (no `rdm-backlog` MCP twin) before `skill_backlog_mcp` was
+        // added — now matches the cli branch's count (see
+        // `generate_skills_cli_mcp_name_parity`).
+        assert_eq!(skills.len(), 11);
     }
 
     #[test]
@@ -2950,6 +3071,7 @@ mod tests {
         assert_eq!(skills[7].relative_path, "rdm-land/SKILL.md");
         assert_eq!(skills[8].relative_path, "rdm-revise/SKILL.md");
         assert_eq!(skills[9].relative_path, "rdm-plan-review/SKILL.md");
+        assert_eq!(skills[10].relative_path, "rdm-backlog/SKILL.md");
     }
 
     #[test]

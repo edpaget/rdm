@@ -299,6 +299,7 @@ fn tools_list() {
         "rdm_task_list",
         "rdm_task_show",
         "rdm_search",
+        "rdm_backlog_report",
         // Mutation tools
         "rdm_project_create",
         "rdm_roadmap_create",
@@ -3077,5 +3078,225 @@ fn phase_list_filter_by_tag_excludes_untagged() {
     assert!(
         !text.contains("phase-1"),
         "untagged phases should be excluded: {text}"
+    );
+}
+
+/// Seed a stale task, a duplicate pair, a tag cluster, and a fully-terminal
+/// (archivable) roadmap into `test-proj`, mirroring
+/// `scripts/verify-backlog-groom-loop.sh`'s fixture.
+fn seed_backlog_fixtures(root: &std::path::Path) {
+    run_rdm_capture(
+        root,
+        &[
+            "task",
+            "create",
+            "dup-a",
+            "--title",
+            "Fix login bug on mobile",
+            "--tags",
+            "bug",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+    run_rdm_capture(
+        root,
+        &[
+            "task",
+            "create",
+            "dup-b",
+            "--title",
+            "Fix login bug on mobile devices",
+            "--tags",
+            "mobile",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+    run_rdm_capture(
+        root,
+        &[
+            "task",
+            "create",
+            "tag-a",
+            "--title",
+            "Refactor the settings loader",
+            "--tags",
+            "cluster-tag",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+    run_rdm_capture(
+        root,
+        &[
+            "task",
+            "create",
+            "tag-b",
+            "--title",
+            "Document the export pipeline",
+            "--tags",
+            "cluster-tag",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+    run_rdm_capture(
+        root,
+        &[
+            "roadmap",
+            "create",
+            "terminal-rm",
+            "--title",
+            "Terminal Roadmap",
+            "--body",
+            "A finished roadmap.",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+    run_rdm_capture(
+        root,
+        &[
+            "phase",
+            "create",
+            "only",
+            "--title",
+            "Only",
+            "--number",
+            "1",
+            "--body",
+            "the only phase",
+            "--no-edit",
+            "--roadmap",
+            "terminal-rm",
+            "--project",
+            "test-proj",
+        ],
+    );
+    run_rdm_capture(
+        root,
+        &[
+            "phase",
+            "update",
+            "phase-1-only",
+            "--status",
+            "done",
+            "--no-edit",
+            "--roadmap",
+            "terminal-rm",
+            "--project",
+            "test-proj",
+        ],
+    );
+    run_rdm_capture(root, &["commit", "-m", "seed: backlog fixtures"]);
+}
+
+#[test]
+fn rdm_backlog_report_returns_expected_shape() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    seed_backlog_fixtures(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    let response = h.call_tool(
+        "rdm_backlog_report",
+        serde_json::json!({"project": "test-proj", "older_than": 0}),
+    );
+    let report = result_json(&response);
+
+    // Same four-array shape as `rdm backlog report --format json`.
+    for key in [
+        "stale_tasks",
+        "duplicate_clusters",
+        "tag_clusters",
+        "archivable_roadmaps",
+    ] {
+        assert!(
+            report[key].is_array(),
+            "expected `{key}` to be an array in: {report}"
+        );
+    }
+
+    let stale_slugs: Vec<&str> = report["stale_tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["slug"].as_str().unwrap())
+        .collect();
+    assert!(
+        stale_slugs.contains(&"dup-a"),
+        "expected dup-a in stale_tasks: {report}"
+    );
+
+    let dup_slugs: Vec<&str> = report["duplicate_clusters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|c| c["members"].as_array().unwrap())
+        .map(|m| m["slug"].as_str().unwrap())
+        .collect();
+    assert!(
+        dup_slugs.contains(&"dup-a") && dup_slugs.contains(&"dup-b"),
+        "expected dup-a and dup-b in duplicate_clusters: {report}"
+    );
+
+    let tag_clusters = report["tag_clusters"].as_array().unwrap();
+    assert!(
+        tag_clusters
+            .iter()
+            .any(|c| c["tag"].as_str() == Some("cluster-tag")),
+        "expected a cluster-tag entry in tag_clusters: {report}"
+    );
+
+    let archivable: Vec<&str> = report["archivable_roadmaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["roadmap"].as_str().unwrap())
+        .collect();
+    assert!(
+        archivable.contains(&"terminal-rm"),
+        "expected terminal-rm in archivable_roadmaps: {report}"
+    );
+}
+
+#[test]
+fn rdm_backlog_report_defaults_match_cli() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    seed_backlog_fixtures(tmp.path());
+
+    let cli_json = run_rdm_capture(
+        tmp.path(),
+        &[
+            "backlog",
+            "report",
+            "--older-than",
+            "0",
+            "--format",
+            "json",
+            "--project",
+            "test-proj",
+        ],
+    );
+    let cli_report: serde_json::Value =
+        serde_json::from_str(&cli_json).expect("cli backlog report should be JSON");
+
+    let mut h = McpTestHarness::spawn(tmp.path());
+    let response = h.call_tool(
+        "rdm_backlog_report",
+        serde_json::json!({"project": "test-proj", "older_than": 0}),
+    );
+    let mcp_report = result_json(&response);
+
+    assert_eq!(
+        cli_report, mcp_report,
+        "MCP rdm_backlog_report must match `rdm backlog report --format json` byte-for-byte in shape"
     );
 }
