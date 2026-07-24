@@ -77,6 +77,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The standalone `review-refute-fix` Workflow tool now returns a full
+  `reviewed` / `rework` / `escalated` verdict — with the mapped rdm status,
+  `writesCompletion`, and a summary — instead of just a list of surviving
+  findings, when invoked as `{ mode: 'code', roadmap, phase }` or
+  `{ mode: 'code', task }`: it derives real diff signals from the item's
+  worktree (falling open to every review dimension when the diff is
+  unavailable, exactly like `dispatch-phase`'s code gate) and runs the same
+  canonical review pipeline. An optional `gate: true` persists the mapped
+  status via a mechanical `rdm phase update` / `rdm task update` call, for
+  headless or ad hoc callers — it never runs `rdm commit` and never writes the
+  land-time completion trailer. Existing ad hoc invocations (`mode: 'plan'`, or
+  `mode: 'code'` with no roadmap/phase or task) are unaffected and keep
+  returning the original `{ mode, survivors }` shape. The interactive
+  `rdm-review` skill now delegates its dimension-finding/refuting mechanics to
+  this same workflow (invoked with `gate: false`) instead of re-deriving them
+  by hand, while keeping its own human-in-the-loop report/act/gate steps
+  — including persisting status and amending the completion trailer — exactly
+  as before.
+- New dogfood harness `scripts/verify-workflow-review-outcome.sh` covers the
+  above: the full OUTCOME shape for a clean and a blocking seed, the
+  diff-signals fail-open contract, the mutual-exclusion guard on `task` vs
+  `roadmap`/`phase`, both legacy backward-compatible shapes, the optional
+  headless gate, and that the `rdm-review` skill shim still references the
+  workflow while retaining its interactive report/act/gate prose and the
+  completion-trailer mechanism.
 - New dogfood harness `scripts/verify-agent-config-distribution.sh` proves
   that `rdm agent-config claude --skills` (both the plain CLI and `--mcp`
   variants) emits a self-consistent, working autonomous lane into a

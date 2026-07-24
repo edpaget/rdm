@@ -196,9 +196,26 @@ finding — the finder never grades its own work.
 ### `OUTCOME` (review pipeline)
 
 The value `buildReviewPipeline(mode)(context)` resolves to: a **ranked** array of
-the surviving `FINDING`s (the standalone wrapper returns `{ mode, survivors }`).
-The dispatch-phase keystone (below) consumes this array at each of its two review
-gates and folds it into its own, differently-shaped `OUTCOME`.
+the surviving `FINDING`s. The dispatch-phase keystone (below) consumes this
+array at each of its two review gates and folds it into its own,
+differently-shaped `OUTCOME`.
+
+The standalone `review-refute-fix.js` consumer has three invocation shapes: (a)
+`mode: 'plan'`, and (b) `mode: 'code'` with no `roadmap`+`phase` or `task`
+identifier, both keep returning the legacy survivors-only `{ mode, survivors }`
+shape unchanged, for backward compatibility with ad hoc/document-less reviews;
+(c) `mode: 'code'` with `{ roadmap, phase }` or `{ task }` runs the SAME
+`buildReviewPipeline('code')` pass, then additionally derives real diff signals
+from the item's worktree (mirroring dispatch-phase's code gate — see below) and
+composes the survivors through `classifyOutcome` plus `statusFor` /
+`writesCompletion` / `summarizeFindings` / `gateFor` into the dispatch-shaped
+`OUTCOME` contract: `{ roadmap, phase, outcome, status, writesCompletion,
+summary, reason, findings }` (or the `{ task, ... }` shape). An optional
+`gate: true` persists the mapped rdm status via a mechanical Bash agent, for
+headless/ad hoc callers of the workflow only. The interactive `rdm-review`
+skill invokes shape (c) with `gate: false` and performs its own gate step
+(including the `Done:` completion trailer), so the two review surfaces never
+double-write rdm state.
 
 **Survival rule (`survives`).** A finding survives iff it was **not** refuted
 (`verdict.refuted !== true`) **and** its own `confidence >= CONFIDENCE_FLOOR`
@@ -260,10 +277,13 @@ load-bearing:
 
 - `signals == null` (omitted, or genuinely unknown) → return **ALL** dimensions
   for the mode, untouched. A caller that cannot compute a diff knows the least,
-  so it must get the most coverage. The standalone `review-refute-fix.js`
-  consumer and dispatch-phase's **plan** gate take this path today;
-  dispatch-phase's **code** gate now computes real signals (see below) and only
-  falls back to this branch when the diff is unavailable.
+  so it must get the most coverage. `review-refute-fix.js`'s legacy
+  survivors-only shapes ((a) `mode: 'plan'`, (b) `mode: 'code'` with no item
+  identifier) and dispatch-phase's **plan** gate take this path today;
+  dispatch-phase's **code** gate and `review-refute-fix.js`'s full
+  `{ roadmap, phase }` / `{ task }` code-review path both now compute real
+  signals (see below) and only fall back to this branch when the diff is
+  unavailable.
 - an **explicit** signals object — even `{}` — → the always-on dimensions plus
   exactly those whose `when` fires. `{}` means "computed, nothing triggered".
 - an unknown `mode` → throw.

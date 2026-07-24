@@ -17,7 +17,9 @@ Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<road
 
 The review runs as a pipeline: **find → refute → filter → verdict → act → gate**. Findings are never surfaced, fixed, or acted on until a *separate* agent has tried to refute them. The agent that finds an issue is never the agent that confirms it.
 
-The specification of that pipeline — which dimensions run, how findings are graded, and what each outcome means — is **generated from the canonical review source** and is identical across every rdm surface (the interactive skill, `rdm-dispatch-phase`, and `rdm-autopilot`). It appears under "Review specification" below. The steps here wire it to the CLI.
+The specification of that pipeline — which dimensions run, how findings are graded, and what each outcome means — is **generated from the canonical review source** and is identical across every rdm surface (the interactive skill, `rdm-dispatch-phase`, and `rdm-autopilot`). It appears under "Review specification" below.
+
+The dimension-finding and per-finding-refuting mechanics (step 2 below) are now performed deterministically by the `review-refute-fix` Workflow tool — this skill no longer re-derives them by hand. It stays interactive: this skill, not the workflow, presents the report to you for discussion, decides how to act on findings, and owns the gate (including the `Done:` trailer). The workflow is invoked with `gate: false` — it is a read-only find/verdict pass; this skill performs the actual status write and trailer amend itself, in step 5 (Gate).
 
 ## Steps
 
@@ -31,45 +33,36 @@ The specification of that pipeline — which dimensions run, how findings are gr
    - For a phase: `./target/debug/rdm phase show <phase-number> --roadmap <slug> --project rdm`
    - For a task: `./target/debug/rdm task show <slug> --project rdm`
    Extract the acceptance criteria, steps, and any other requirements from the body.
-3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task. Note the diff size, which modules it touches, and whether it changes public API, `unsafe` constructs, dependencies, or user-facing behavior — these are the **trigger signals** for the conditional dimensions in the Review specification.
+3. **Orient on the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed, so you can discuss the result with context. You do not need to derive trigger signals by hand — the `review-refute-fix` workflow invoked in step 2 derives them itself from the item's worktree diff (falling open to every dimension if the diff is unavailable).
 
-   From those same diff signals, derive a **tier hint** for step 2's fleet: `small` (localized, single module, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one module, a bugfix), or `large` (touches public API, `unsafe`, spans multiple modules/crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
+### 2. Review — invoke the canonical pipeline (find → refute → verdict)
 
-### 2. Find — dispatch the review fleet (parallel)
+Invoke the `review-refute-fix` Workflow tool to run the dimension-finding and per-finding-refuting mechanics — **Review specification § Dimensions / Find / Refute / Filter & consolidate / Verdict** below describe exactly what it does, so you can explain the result, but you no longer perform those steps by hand:
 
-Dispatch one **read-only** `Agent` per applicable dimension, per **Review specification § Dimensions** below. Run the always-on dimensions unconditionally; add each triggered dimension when its trigger fires against the diff from step 1. State which dimensions you launched, and why, in the report.
-
-**Model sizing.** Every dispatched agent in this step runs on an **explicitly resolved** model — never the inherited session model. For each finder agent, resolve:
-```bash
-model=$(./target/debug/rdm model resolve review-find --tier <hint>)
 ```
-using the tier hint derived in step 1, and pass `model` explicitly when dispatching that agent with the `Agent` tool. Purely mechanical checks (e.g. a scripted presence/lint check with no judgment involved) may instead resolve `./target/debug/rdm model resolve mechanical`, or run inline without a subagent at all. Resolution reads the `[models]` config table (tier→model-id bindings, review floor, and per-step overrides), falling back to built-in defaults (`small`→haiku, `medium`→sonnet, `large`→opus) when unset.
+Workflow: review-refute-fix
+args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false }
+# or, for a task:
+args: { mode: "code", task: "<slug>", gate: false }
+```
 
-### 3. Refute — per-finding refute pass (parallel)
+Always pass `gate: false` (or omit `gate`) — this skill owns the gate (step 5 below), never the workflow's own mechanical status-persist path, which is reserved for headless/ad hoc callers. The workflow returns the dispatch-shaped OUTCOME: `{ roadmap, phase, outcome, status, writesCompletion, summary, reason, findings }` (or `{ task, ... }`), with `outcome` ∈ `reviewed | rework | escalated` and `findings` already ranked survivors. Treat this as the one canonical review pass — do not additionally dispatch your own finder/refuter agents.
 
-Dispatch a **fresh** `Agent` per finding, per **Review specification § Refute**. Run these concurrently; the finder is never the refuter. Suggestions may skip refutation (low stakes) but are still subject to the confidence floor.
+### 3. Report
 
-The refute agent also runs on an explicitly resolved model, never the inherited session model: resolve `model=$(./target/debug/rdm model resolve review-verify)` once (its default tier is already floored to the top review tier, so no `--tier` hint is needed) and pass `model` when dispatching each refute agent.
+Present a single structured report from the workflow's result:
+- The AC table: each criterion with PASS / FAIL / PARTIAL and evidence, drawn from the `ac`-concern findings.
+- Surviving `findings` grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation.
+- The `outcome` (**reviewed**, **rework**, or **escalated**) and `summary`.
 
-### 4. Filter, consolidate & decide the outcome
-
-Apply **Review specification § Filter & consolidate**, then **§ Verdict** to reach exactly one outcome: `reviewed`, `rework`, or `escalated`.
-
-### 5. Report
-
-Present a single structured report:
-- The AC table: each criterion with PASS / FAIL / PARTIAL and evidence.
-- Surviving findings grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation.
-- The outcome: **reviewed**, **rework**, or **escalated**, and the one rule that decided it.
-
-### 6. Act
+### 4. Act
 
 Apply **Review specification § Act**. File large findings as tasks with:
 ```bash
 ./target/debug/rdm task create <slug> --title "Review finding: description" --body "Details." --tags <tag1>,<tag2> --no-edit --project rdm
 ```
 
-### 7. Gate — transition by outcome
+### 5. Gate — transition by outcome
 
 This skill owns the `needs-review` → `reviewed` gate. Persist the status from **Review specification § Gate**, then land the plan-repo change:
 
@@ -161,36 +154,20 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   comment stating the invariant it upholds; an unjustified or risky
   construct is a finding.
 
-### Find — one read-only agent per applicable dimension, in parallel
+### Find & Refute — performed by the `review-refute-fix` workflow
 
-Each finder agent is told: you are a READ-ONLY reviewer, do not edit any
-files; review exactly one dimension; report only findings you can back with
-concrete evidence — **one strong finding beats five weak ones**; return an
-empty finding list if the dimension is clean. Do not report pure
-style/formatting nitpicks unless they violate an explicit project rule.
-
-Each finding is reported as:
-
-```
-- id: <short-slug>
-  concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
-  location: <path>:<line>
-  severity: blocking | concern | suggestion
-  confidence: 0-100
-  what-fails: <the specific problem>
-  why: <root cause / which rule or AC it violates>
-  recommendation: <concrete fix>
-```
-
-### Refute — a FRESH agent per finding, in parallel
-
-For every finding, dispatch a **separate** read-only refuter. The agent that
-found an issue is never the agent that confirms it. The refuter starts from
-the stance *"this is NOT a real issue unless the code proves otherwise"*,
-reads the actual cited location and its surrounding context, and returns
-`refuted` (boolean), a corrected `confidence` (0-100), and a rationale.
+The mechanics that used to live here — one **read-only** finder agent per
+applicable dimension, then a **fresh** read-only refuter per finding (the
+finder is never the refuter; the refuter's stance is *"this is NOT a real
+issue unless the code proves otherwise"*) — are now performed deterministically
+by the `review-refute-fix` Workflow tool invoked in step 2 above. Each finding
+it returns carries `id`, `concern`, `location`, `severity`, `confidence`,
+`what_fails`, `why`, and `recommendation`.
 
 ### Filter & consolidate
+
+The workflow already applies this before returning; it is recapped here so you
+can explain a result:
 
 - **Drop** any finding a refuter refuted, and any whose post-refutation
   confidence is below the confidence floor (70).

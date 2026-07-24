@@ -1,22 +1,49 @@
 // review-refute-fix — standalone workflow for direct invocation.
 //
-// A thin wrapper around the shared review pipeline. dispatch-phase (a later
-// phase) embeds the SAME generated block in its plan-review and code-review
-// stages rather than calling this workflow via workflow() (which would exceed
-// the one-level nesting limit) — sharing happens by stamped copy, not by a
-// cross-workflow() call. See docs/workflow-schemas.md.
+// dispatch-phase embeds the SAME generated block in its plan-review and
+// code-review stages rather than calling this workflow via workflow() (which
+// would exceed the one-level nesting limit) — sharing happens by stamped
+// copy, not by a cross-workflow() call. See docs/workflow-schemas.md.
 //
-// Invoke with args: { mode: 'code' | 'plan', context?: { target?: string } }.
-//   mode=code — review an implementation diff
-//   mode=plan — review a plan document
+// Invoke in one of THREE shapes:
 //
-// This consumer supplies no `context.signals`, so it lands on selectDimensions'
-// fail-open path and runs EVERY dimension for the mode.
+//   1. { mode: 'plan', context?: { target?: string } }
+//      Legacy survivors-only path: returns { mode, survivors }. Unchanged.
+//
+//   2. { mode: 'code', context?: { target?: string } } — no `roadmap`+`phase`
+//      and no `task`. Legacy survivors-only path (an ad hoc/document-less
+//      review with no rdm item behind it): returns { mode, survivors }.
+//      Unchanged, for backward compatibility.
+//
+//   3. { mode: 'code', roadmap, phase } or { mode: 'code', task } — the full
+//      standalone code-review path. Derives real diff signals from the
+//      item's worktree (mirroring dispatch-phase's code gate, same fail-open
+//      contract), runs the ONE canonical `buildReviewPipeline('code')`, and
+//      composes the survivors through the ONE `classifyOutcome` call plus the
+//      existing `statusFor`/`writesCompletion`/`summarizeFindings`/`gateFor`
+//      helpers into the dispatch-shaped OUTCOME: { roadmap, phase, outcome,
+//      status, writesCompletion, summary, reason, findings } (or the
+//      `{ task, ... }` shape for a task). `outcome` ∈ { reviewed, rework,
+//      escalated } — `escalated` is structurally unreachable from this
+//      code-only path (there is no plan gate feeding it), same as
+//      dispatch-phase's own code gate.
+//
+//      Passing BOTH `task` and `roadmap`/`phase` is ambiguous and throws.
+//
+//      Optional `gate: true` persists the mapped rdm status via a mechanical
+//      Bash agent (`rdm phase update` / `rdm task update --status ...`,
+//      `--reason` on `escalated`) — for headless/ad hoc callers of this
+//      workflow ONLY. It is never wired into the interactive `rdm-review`
+//      skill, which performs its own gate (including the completion trailer).
+//      `gate` defaults to false/omitted: a bare review run never mutates rdm
+//      state. This workflow NEVER writes the land-time completion trailer
+//      itself, whatever `gate` is — that is a land-time concern owned by
+//      `rdm-land` / the interactive skill's own gate step.
 
 export const meta = {
   name: 'review-refute-fix',
   description: 'Parallel dimension finders → a fresh refuter per finding → drop refuted-or-low-confidence → ranked survivors',
-  phases: [{ title: 'Find' }, { title: 'Refute' }],
+  phases: [{ title: 'Review' }, { title: 'Find' }, { title: 'Refute' }, { title: 'Gate' }],
 }
 
 // The block below is GENERATED from .claude/workflows/lib/review.mjs by
@@ -804,9 +831,176 @@ function buildReviewPipeline(mode, deps) {
 // >>> review-refute-fix:end <<<
 
 // --- Driver -------------------------------------------------------------------
-const mode = (args && args.mode) || 'code'
-const context = (args && args.context) || {}
-const runReview = buildReviewPipeline(mode)
-const survivors = await runReview(context)
-log('review-refute-fix (' + mode + '): ' + survivors.length + ' surviving finding(s)')
-return { mode, survivors }
+const rawArgs = args || {}
+const mode = rawArgs.mode || 'code'
+const roadmap = rawArgs.roadmap || ''
+const phaseArg = rawArgs.phase || ''
+const taskSlug = rawArgs.task || ''
+const isTask = !!taskSlug
+const hasPhaseIdentifiers = !!(roadmap && phaseArg)
+
+// Ambiguous input: both a task and phase identifiers supplied. Only meaningful
+// in code mode — the plan-gate legacy path (rule (a) below) ignores
+// identifiers entirely, so it can never reach this guard.
+if (mode === 'code' && isTask && hasPhaseIdentifiers) {
+  throw new Error(
+    'review-refute-fix: pass either { task } or { roadmap, phase }, not both — ambiguous review target'
+  )
+}
+
+// Legacy survivors-only path: (a) mode === 'plan', or (b) mode === 'code' with
+// no item identifiers (an ad hoc/document-less review). Both return the
+// original { mode, survivors } shape, unchanged, for backward compatibility.
+if (mode === 'plan' || !(isTask || hasPhaseIdentifiers)) {
+  const context = rawArgs.context || {}
+  const runReview = buildReviewPipeline(mode)
+  const survivors = await runReview(context)
+  log('review-refute-fix (' + mode + '): ' + survivors.length + ' surviving finding(s)')
+  return { mode, survivors }
+}
+
+// --- Full standalone code-review path -------------------------------------
+// mode === 'code' with { roadmap, phase } or { task }: derive real diff
+// signals, run the canonical code-review pipeline, classify the dispatch-
+// shaped OUTCOME, and optionally gate.
+const kind = isTask ? 'task' : 'phase'
+const worktreeRef = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
+const reviewTarget = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
+const gate = !!rawArgs.gate
+const findModel = rawArgs.findModel
+const verifyModel = rawArgs.verifyModel
+
+// DIFF_SIGNALS_SCHEMA — duplicated plumbing (not review logic), matching
+// dispatch-phase.js's own local schema of the same shape.
+const DIFF_SIGNALS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['changedFiles', 'diffText'],
+  properties: {
+    changedFiles: { type: 'array', items: { type: 'string' } },
+    diffText: { type: 'string' },
+  },
+}
+
+// buildDiffSignalsPrompt(worktreeRef) — a mechanical Bash agent reads the
+// branch diff out of the item's worktree. Copied from dispatch-phase.js's
+// version of the same prompt (duplicated plumbing, not review logic). Its
+// output feeds `deriveSignals` (from the stamped canonical review block
+// above), which decides which review dimensions actually run.
+//
+// Diff base: THREE-DOT (`main...HEAD`) scopes to the branch's own changes.
+function buildDiffSignalsPrompt(ref) {
+  return [
+    'You are a mechanical diff agent. Do not review, plan, or implement anything, and edit no files.',
+    'Find the worktree for this item and work THERE:',
+    '  ./target/debug/rdm worktree add ' + ref + ' --project rdm',
+    '(it prints the existing path if the worktree already exists) then `cd` into that path.',
+    'Run exactly these two commands and read their output:',
+    '  git diff --name-only main...HEAD',
+    '  git diff main...HEAD',
+    'Return a DIFF_SIGNALS object: `changedFiles` — the repo-relative paths from the first command,',
+    'verbatim, one array element each; and `diffText` — the second command\'s output TRUNCATED to the',
+    'first 40000 characters (append nothing; just stop). If either command fails or the branch has no',
+    'commits of its own, return an empty `changedFiles` array and an empty `diffText`.',
+  ].join('\n')
+}
+
+// The code gate IS the canonical review — `buildReviewPipeline('code')` from
+// the stamped block, with NO independent code-review logic in this driver.
+const runReview = buildReviewPipeline('code')
+
+let diff = null
+try {
+  diff = await agent(buildDiffSignalsPrompt(worktreeRef), {
+    label: 'diff:signals',
+    phase: 'Review',
+    schema: DIFF_SIGNALS_SCHEMA,
+    model: findModel,
+  })
+} catch (e) {
+  diff = null
+}
+const changedFiles = diff && Array.isArray(diff.changedFiles) ? diff.changedFiles.filter(Boolean) : []
+
+let survivors
+if (changedFiles.length === 0) {
+  // FAIL-OPEN: omit the `signals` key ENTIRELY — never pass `{}`. See
+  // selectDimensions' three-way contract above.
+  log('review-refute-fix: diff signals unavailable for ' + reviewTarget + ' — running every code dimension (fail-open)')
+  survivors = await runReview({ target: reviewTarget, findModel: findModel, verifyModel: verifyModel })
+} else {
+  const signals = deriveSignals({
+    targetType: kind,
+    changedFiles: changedFiles,
+    diffText: typeof diff.diffText === 'string' ? diff.diffText : null,
+  })
+  survivors = await runReview({ target: reviewTarget, signals: signals, findModel: findModel, verifyModel: verifyModel })
+}
+
+// One classifyOutcome call composes the survivors (a single review pass, no
+// rework loop — this workflow reviews an already-implemented item, it does
+// not implement/rework). `planFindings` is always [], so `escalated` is
+// structurally unreachable here — same as dispatch-phase's own code gate.
+const classifierInput = { planFindings: [], codeReviews: [survivors], tier: rawArgs.tier }
+const outcome = classifyOutcome(classifierInput)
+const status = statusFor(outcome, kind)
+const wc = writesCompletion(outcome)
+let summary
+if (outcome === 'escalated') {
+  summary = 'code review escalated: ' + summarizeFindings(survivors)
+} else if (outcome === 'rework') {
+  summary = 'code rework unresolved: ' + summarizeFindings(survivors)
+} else {
+  summary = 'review clean: ' + summarizeFindings(survivors)
+}
+// Reuse the existing `[code]` prefix already on GATE_POLICY.code.escalated —
+// no new reason-prefix table.
+const reason = outcome === 'escalated' ? gateFor('code', 'escalated').reasonPrefix + ' ' + summary : ''
+
+// Optional mechanical gate: persist the mapped rdm status for ALL THREE
+// outcomes. Headless/ad hoc callers ONLY — `args.gate` defaults to
+// false/omitted, so a bare review run never mutates rdm state. Never runs
+// `rdm commit` (mutations are left staged, matching every other workflow
+// driver) and never writes the completion trailer.
+if (gate) {
+  const reasonFlag = outcome === 'escalated' ? ' --reason "' + reason + '"' : ''
+  const statusCmd = isTask
+    ? './target/debug/rdm task update ' + taskSlug + ' --status ' + status + reasonFlag + ' --no-edit --project rdm'
+    : './target/debug/rdm phase update ' +
+      phaseArg +
+      ' --status ' +
+      status +
+      reasonFlag +
+      ' --no-edit --roadmap ' +
+      roadmap +
+      ' --project rdm'
+  await agent(
+    [
+      'You are a mechanical status agent. Do not plan, implement, or review anything.',
+      'Run exactly this command in the repo root:',
+      '  ' + statusCmd,
+      'Do not run `rdm commit` — leave the change staged only.',
+      'Return a STAMP_ACK object: { ok: true } if the command exited 0, otherwise { ok: false }.',
+    ].join('\n'),
+    {
+      label: 'gate:persist',
+      phase: 'Gate',
+      schema: { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' } } },
+    }
+  )
+}
+
+const result = isTask
+  ? { task: taskSlug, outcome: outcome, status: status, writesCompletion: wc, summary: summary, reason: reason, findings: survivors }
+  : {
+      roadmap: roadmap,
+      phase: phaseArg,
+      outcome: outcome,
+      status: status,
+      writesCompletion: wc,
+      summary: summary,
+      reason: reason,
+      findings: survivors,
+    }
+log('review-refute-fix (' + reviewTarget + '): ' + outcome + ' — ' + summary)
+return result
