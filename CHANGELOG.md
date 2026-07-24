@@ -77,6 +77,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New dogfood harness `scripts/verify-agent-config-distribution.sh` proves
+  that `rdm agent-config claude --skills` (both the plain CLI and `--mcp`
+  variants) emits a self-consistent, working autonomous lane into a
+  downstream repo: the 3 workflow scripts land byte-identical to their
+  `.claude/workflows/*.js` sources, all 11 skills land with valid
+  frontmatter, and every literal `.claude/workflows/<name>.js` reference
+  inside an emitted skill resolves to a real file in the same emitted tree —
+  with planted-corruption self-tests proving neither gate is vacuous.
 - `rdm agent-config claude --skills --out <dir>` now also emits the
   autonomous-lane Workflow-tool scripts (`autopilot.js`, `dispatch-phase.js`,
   `review-refute-fix.js`) under `<dir>/.claude/workflows/`, byte-identical to
