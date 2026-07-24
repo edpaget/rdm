@@ -11,6 +11,7 @@ allowed-tools:
   - EnterPlanMode
   - ExitPlanMode
   - Agent
+  - Workflow
 ---
 
 Implement a roadmap phase or work on a task. One shared flow: find the target → mark in-progress → plan → execute → review with the user → finalize through the canonical code review.
@@ -20,7 +21,9 @@ Implement a roadmap phase or work on a task. One shared flow: find the target �
 `$ARGUMENTS` may include `--auto` to select the run mode:
 
 - **interactive** (default): plan → wait for approval → implement → review with the user → finalize. The approval and review gates pause for human input.
-- **`--auto`** (non-interactive): skip the approval and review gates and proceed autonomously — build the plan, implement it, and finalize without waiting for a human.
+- **`--auto`** (non-interactive): skip the approval and review gates and proceed autonomously. This splits by flow:
+  - **phase flow** (`--auto <roadmap-slug> [phase-number]`): after marking the phase in-progress and entering its worktree (steps 1-5 below, unchanged), route straight into the `dispatch-phase` Workflow instead of re-running the prose plan/implement/review steps — see `## Auto phase dispatch` below.
+  - **task flow** (`--auto --task <slug>`): after marking the task in-progress and entering its per-task worktree (steps 1-5 below, unchanged), route straight into the `dispatch-phase` Workflow with `{ task: <slug> }` instead of re-running the prose plan/implement/review steps — see `## Auto task dispatch` below.
 
 For unattended Claude Code runs (where no human is present to approve permission prompts), launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so worktree edits and bash commands don't block on prompts.
 
@@ -54,7 +57,7 @@ For unattended Claude Code runs (where no human is present to approve permission
    **Tasks keep their own per-task worktree.** For the task flow, run `rdm worktree add task/<slug> {proj_flag}` and enter the printed `path` the same way (one-time `EnterWorktree` convenience, or `cd`/launch).
 
    Do the rest of the work in that worktree, so your changes are isolated from the live checkout.
-5. **Enter plan mode** with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
+5. **For `--auto` (either flow), skip steps 5-10 below and jump straight to `## Auto phase dispatch` / `## Auto task dispatch` — steps 5-10 are the interactive prose path only.** Enter plan mode with the `EnterPlanMode` tool, then **create an implementation plan** _(interactive only; `--auto` skips the approval gate and proceeds to implement)_. The plan should:
    - Break the phase/task into concrete implementation steps based on its description and acceptance criteria.
    - Include a final step: "Review changes with user and finalize".
 6. **Review the implementation plan** _(both modes)_: run the `rdm-plan-review` skill with `--implementation-plan` against the plan drafted in the previous step, covering coherence and architectural fit.
@@ -78,6 +81,34 @@ For unattended Claude Code runs (where no human is present to approve permission
     **Never hand-type the completion trailer.** Finalize does not write it at all: on the interactive path the review gate writes it, and on the autonomous path `rdm-land` writes it at land time. Both source the exact line from `rdm hook done-line --roadmap <slug> --phase <stem>` (or `--task <slug>`), so the format string has exactly one home. Use the exact roadmap slug / phase stem / task slug from the rdm commands you ran earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch, which is left for merge to main (the merge hook flips `reviewed` → `done`).
 
     **Single pass.** If the review returns `rework`, the item is left `in-progress` and you must surface that to the user with its findings — do not silently loop. Re-run this skill to take another pass.
+
+## Auto phase dispatch (--auto, phase flow only)
+
+1. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`, provisioned automatically by `rdm agent-config claude --skills`) via the `Workflow` tool with `{ roadmap: <slug>, phase: <stem> }`; block for its returned OUTCOME.
+2. Interpret the OUTCOME and persist status. The OUTCOME carries the canonical gate policy **as data** — `outcome.status` (the status the canonical review mapped this outcome to), `outcome.reason` (already carrying its `[code]`/`[plan]` gate tag), and `outcome.writesCompletion` — so read those fields rather than restating the map. dispatch-phase's code-review stage IS the canonical review, so the work is already reviewed by the time you see the OUTCOME.
+   - `reviewed` → persist `outcome.status`: `rdm phase update <phase> --status reviewed --no-edit --roadmap <slug> {proj_flag}` then `rdm commit -m "chore(plan): finalize <phase>"`
+   - `rework` → this lane is single-pass, so park it in the escalation queue with `outcome.reason` instead of leaving it merely in-progress: `rdm phase update <phase> --status blocked --reason "[code] <outcome.summary>" --no-edit --roadmap <slug> {proj_flag}` then `rdm commit -m "chore(plan): park <phase>"`
+   - `escalated` → same, with the plan-gate tag: `rdm phase update <phase> --status blocked --reason "[plan] <outcome.summary>" --no-edit --roadmap <slug> {proj_flag}` then `rdm commit -m "chore(plan): park <phase>"`
+   - Do NOT add a `Done:` line here. `outcome.writesCompletion` is `true` only on `reviewed`, and it is `rdm-land` that reads it and synthesizes the trailer via `rdm hook done-line` at land time — no manual rebase, and no pre-step before `rdm-land`.
+3. Return the OUTCOME JSON verbatim as the final message.
+
+This section applies only to `--auto` + the phase flow. Interactive `rdm-do` (either flow) is unaffected and keeps the steps above unchanged.
+
+## Auto task dispatch (--auto, task flow only)
+
+The task-flow twin of the phase dispatch above. A task belongs to no roadmap, carries no difficulty/model tier, and lives in its own `task/<slug>` worktree.
+
+1. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`) via the `Workflow` tool with `{ task: <slug> }`; block for its returned OUTCOME. The task-mode OUTCOME is keyed by `task` (the slug), not `roadmap`/`phase`.
+2. Interpret the OUTCOME and persist status (a true mirror of the phase contract). The task-mode OUTCOME carries the same canonical `outcome.status` / `outcome.reason` / `outcome.writesCompletion` fields — read them rather than restating the map. `escalated` maps to the `blocked` **task** status; it is never downgraded to `in-progress`.
+   - `reviewed` -> persist `outcome.status`: `rdm task update <slug> --status reviewed --no-edit {proj_flag}` then `rdm commit -m "chore(plan): finalize <slug>"`
+   - `rework` -> single-pass park with `outcome.reason`: `rdm task update <slug> --status blocked --reason "[code] <outcome.summary>" --no-edit {proj_flag}` then `rdm commit -m "chore(plan): park <slug>"`
+   - `escalated` -> `rdm task update <slug> --status blocked --reason "[plan] <outcome.summary>" --no-edit {proj_flag}` then `rdm commit -m "chore(plan): park <slug>"`
+   - Do NOT add a `Done:` line here. On `reviewed` the OUTCOME's `writesCompletion` is `true` and `rdm-land` is the land-time writer — it synthesizes `Done: task/<slug>` via `rdm hook done-line` before the rebase.
+3. Return the OUTCOME JSON verbatim as the final message.
+
+Tasks always dispatch at the fixed `medium` tier (there is no task estimate), so the `large`-tier gate tightening never applies. Task bodies often carry no formal acceptance criteria; the plan/review gates tolerate their absence.
+
+**Single-item scope:** unlike the `autopilot` workflow's advance/park loop, this single-item entry point parks on the first `rework`/`escalated` OUTCOME rather than re-dispatching against a rework budget — re-run `rdm-do --auto <roadmap> <phase>` (or `--auto --task <slug>`) by hand to retry. Skipping the outer rework-retry here is intentional, not an oversight.
 
 ## Side-work
 

@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** the shipped `rdm-autopilot`, `rdm-dispatch-phase`, and the
+  `--auto` branch of `rdm-do` skill templates (`rdm agent-config claude
+  --skills`, both `cli` and `mcp` variants) are rewritten as thin shims that
+  invoke the autonomous-lane Workflow scripts (`.claude/workflows/autopilot.js`
+  / `dispatch-phase.js`, now emitted alongside the skills — see the prior
+  `[Added]` entry) via the `Workflow` tool, instead of re-narrating an 8-step
+  plan/plan-review/implement/code-review loop in prose with no runnable
+  backing. Every real behavioral guardrail carries forward unchanged: the
+  `--permission-mode auto` safety rules (`Edit`-not-`Write`; never `git stash
+  -u`/`reset --hard`/`clean -fdx`) now live in the shipped
+  `skill-dispatch-phase-{cli,mcp}.md` templates, not just the local dogfood
+  copy; `rdm-autopilot`'s four run-mode flags (`--max-phases`, `--plan-only`,
+  `--max-plan-revise`, `--max-code-rework`) are documented; `rdm-do`'s new
+  `## Auto phase dispatch` / `## Auto task dispatch` sections route `--auto`
+  runs into `dispatch-phase`, reading `outcome.status` / `outcome.reason` /
+  `outcome.writesCompletion` as data instead of restating the gate policy.
+  Existing consumers of the old prose templates should regenerate
+  (`rdm agent-config claude --skills --out <dir>`) rather than hand-patch.
 - The `rdm-plan-review` skill's documentation has been reorganized and clarified.
   The review pipeline steps (Setup → Find → Consolidate → Categorize & act → Gate)
   now have clear, permanent hand-authored sections that document plan-review's
@@ -26,6 +44,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- The now-superseded "Mandatory dispatch — no inline work" / inline-collapse
+  self-check checklists are gone from the shipped `rdm-autopilot` and
+  `rdm-dispatch-phase` templates (both `cli` and `mcp` variants) — they existed
+  only to stop an LLM from narrating orchestration it should have dispatched to
+  a subagent, and a thin shim that hands off to the `Workflow` tool cannot
+  inline-collapse that way. No template documents a `--land` flag on
+  `rdm-autopilot` any longer (it never had one); landing to `main` stays
+  `rdm-land`'s exclusive, explicit-invocation job.
 - **Breaking:** the plan-review Stop hook (`rdm agent-config claude --hooks`'s
   `.claude/hooks/rdm-plan-review-on-create.sh`) and its Pi `agent_end`
   extension (`rdm agent-config pi --hooks`'s

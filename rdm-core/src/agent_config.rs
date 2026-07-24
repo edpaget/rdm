@@ -665,13 +665,7 @@ fn skill_dispatch_phase_mcp(proj: &str, principles_note: Option<&str>) -> SkillF
             include_str!("templates/skill-dispatch-phase-mcp.md"),
             proj,
             principles_note,
-            &[
-                ("t_phase_list", "rdm_phase_list"),
-                ("t_phase_show", "rdm_phase_show"),
-                ("t_phase_update", "rdm_phase_update"),
-                ("t_worktree_add", "rdm_worktree_add"),
-                ("t_task_create", "rdm_task_create"),
-            ],
+            &[("t_phase_show", "rdm_phase_show")],
         ),
     }
 }
@@ -685,8 +679,6 @@ fn skill_autopilot_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
             principles_note,
             &[
                 ("t_next", "rdm_next"),
-                ("t_phase_list", "rdm_phase_list"),
-                ("t_phase_show", "rdm_phase_show"),
                 ("t_phase_update", "rdm_phase_update"),
             ],
         ),
@@ -1936,50 +1928,38 @@ mod tests {
         // Drives one named roadmap; the slug is required and the loop never roams.
         assert!(content.contains("required roadmap slug"));
         assert!(content.contains("never roams to another roadmap"));
-        // The loop driver / termination oracle is `rdm next`.
+        // It is a thin shim invoking the Workflow tool, not a prose loop.
+        assert!(content.contains("thin shim"));
+        assert!(content.contains("Workflow"));
+        assert!(content.contains(".claude/workflows/autopilot.js"));
         assert!(content.contains("rdm next --roadmap <slug> --format json"));
-        assert!(content.contains("blocked-on-dependencies"));
-        // Composes the per-phase skills rather than re-implementing them.
-        assert!(content.contains("rdm-dispatch-phase"));
-        assert!(content.contains("rdm-estimate"));
-        // Interprets the three dispatch outcomes.
-        assert!(content.contains("reviewed | rework | escalated"));
-        assert!(content.contains("**reviewed**"));
-        assert!(content.contains("**rework**"));
-        assert!(content.contains("**escalated**"));
-        // Rework budget exhaustion parks the phase as a `code`-stage escalation.
-        assert!(content.contains("--status blocked"));
-        assert!(content.contains("[code]"));
-        // Bounded run: global step budget + stop conditions + always-on summary.
-        assert!(content.contains("Global step budget"));
-        assert!(content.contains("Stop the loop"));
-        assert!(content.contains("Summary"));
+        // Composes the per-phase dispatch workflow rather than re-implementing it.
+        assert!(content.contains("dispatch-phase"));
+        // Bounded run: global step budget + budgets section + always-on summary.
+        assert!(content.contains("global step budget"));
+        assert!(content.contains("Run modes"));
         // Escalation rule is owned by the shared protocol, not redefined here;
         // the batch queue is surfaced via `rdm review blocked`.
         assert!(content.contains("docs/escalation-protocol.md"));
         assert!(content.contains("rdm review blocked"));
-        // Opt-in landing leaves `main` untouched by default.
-        assert!(content.contains("--land"));
-        assert!(content.contains("Default OFF"));
+        // No --land flag on autopilot; landing stays rdm-land's exclusive job.
+        assert!(!content.contains("- `--land`"));
+        assert!(content.contains("There is no `--land` flag here"));
         assert!(content.contains("never touched"));
-        // Dry-run / bounded modes.
+        // Dry-run / bounded modes, including the two dispatch-phase budget overrides.
         assert!(content.contains("--plan-only"));
         assert!(content.contains("--max-phases"));
+        assert!(content.contains("--max-plan-revise"));
+        assert!(content.contains("--max-code-rework"));
         // Active driver: every dispatched phase actively runs review.
         assert!(content.contains("active driver"));
         // Never writes a Done: line by hand.
         assert!(!content.contains("Done: <roadmap-slug>/<phase-stem>"));
         // Unattended-permission guidance.
         assert!(content.contains("--permission-mode auto"));
-        // Mandatory dispatch enforcement: non-skippable MUST, inline-collapse
-        // negative example, self-check gate, and consistency with phase 1's
-        // synchronous-dispatch contract.
-        assert!(content.contains("Mandatory dispatch"));
-        assert!(content.contains("inline-collapse"));
-        assert!(content.contains("MUST NOT"));
-        assert!(content.contains("Self-check before proceeding"));
-        assert!(content.contains("dispatched synchronously"));
-        assert!(content.contains("SendMessage"));
+        // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
+        assert!(!content.contains("Mandatory dispatch"));
+        assert!(!content.contains("inline-collapse"));
     }
 
     #[test]
@@ -1991,63 +1971,41 @@ mod tests {
         });
         let content = &skills[5].content;
         assert!(content.contains("name: rdm-dispatch-phase"));
-        // One worktree per roadmap, reused across phases — created with the bare
-        // roadmap ref, not a per-phase `<slug>/<phase-stem>` worktree.
-        assert!(content.contains("rdm worktree add <slug>"));
-        assert!(content.contains("roadmap worktree"));
-        assert!(!content.contains("worktree add <slug>/<phase-stem>"));
+        // It is a thin shim invoking the Workflow tool, not a prose 8-step loop.
+        assert!(content.contains("thin shim"));
+        assert!(content.contains("Workflow"));
+        assert!(content.contains(".claude/workflows/dispatch-phase.js"));
+        // Task mode alongside phase mode.
+        assert!(content.contains("--task"));
         assert!(content.contains("model tier"));
-        // Structured outcome with the three documented values.
+        // Structured OUTCOME with the three documented values plus the
+        // status/writesCompletion/reason fields the canonical review stamps.
         assert!(content.contains("reviewed | rework | escalated"));
-        // A *separate* plan reviewer gates the plan before code is written,
-        // returning approve / revise / escalate, and the gate is bounded.
-        assert!(content.contains("Plan gate"));
-        assert!(content.contains("separate"));
-        assert!(content.contains("approve"));
-        assert!(content.contains("revise"));
-        assert!(content.contains("escalate"));
+        assert!(content.contains("\"status\""));
+        assert!(content.contains("\"writesCompletion\""));
+        assert!(content.contains("\"reason\""));
+        // A *separate*, independent plan-review stage gates the plan before
+        // code is written, bounded to at most one revise round.
+        assert!(content.contains("separate, independent plan-review"));
         assert!(content.contains("at most one revise round"));
-        // Plan gate rigor scales with the phase's difficulty tier.
-        assert!(content.contains("Scale the reviewer's rigor to the phase's difficulty tier"));
-        assert!(content.contains("Trivial/easy"));
-        assert!(content.contains("Moderate"));
-        assert!(content.contains("per-finding evidence"));
-        assert!(content.contains("refute pass"));
-        // Sharpened checklist: AC->step, AC->test, edge cases, and declared
-        // cross-phase/cross-crate dependencies, in addition to scope/architecture.
-        assert!(content.contains("Acceptance criteria → steps"));
-        assert!(content.contains("Acceptance criteria → tests"));
-        assert!(content.contains("test-per-AC"));
-        assert!(content.contains("Edge cases / error paths"));
-        assert!(content.contains("Cross-phase / cross-crate dependencies"));
-        // Revise round re-checks the revised plan; an unconverged revise escalates
-        // rather than silently proceeding with a deficient plan.
-        assert!(content.contains("re-checks the revised plan against the same checklist"));
-        assert!(content.contains("exhausted plan-revise budget"));
-        assert!(!content.contains("a single time, then proceeds"));
-        // Delegates code review to rdm-review (which owns the Done: line).
+        // Delegates code review to the canonical review pipeline (rdm-review's
+        // source), which owns the Done: line via writesCompletion.
         assert!(content.contains("rdm-review"));
+        assert!(content.contains("rdm-land"));
         // Escalation parks the phase as blocked; it never writes a Done: line.
-        assert!(content.contains("--status blocked"));
         assert!(!content.contains("Done: <roadmap-slug>/<phase-stem>"));
-        // Escalation follows the shared protocol: it references the protocol
-        // doc and records a stage-tagged reason via --reason when parking.
+        // Escalation follows the shared protocol and records a stage-tagged reason.
         assert!(content.contains("docs/escalation-protocol.md"));
-        assert!(content.contains("--reason"));
         assert!(content.contains("[plan]"));
         assert!(content.contains("[code]"));
-        // Dispatches subagents and isolates their context.
-        assert!(content.contains("Agent"));
-        assert!(content.contains("Context isolation"));
-        // Mandatory dispatch enforcement: non-skippable MUST, inline-collapse
-        // negative example, self-check gate, and consistency with phase 1's
-        // synchronous-dispatch contract.
-        assert!(content.contains("Mandatory dispatch"));
-        assert!(content.contains("inline-collapse"));
-        assert!(content.contains("MUST NOT"));
-        assert!(content.contains("Self-check before proceeding"));
-        assert!(content.contains("dispatched synchronously"));
-        assert!(content.contains("SendMessage"));
+        // The --permission-mode auto safety guardrail survives the rewrite.
+        assert!(content.contains("--permission-mode auto"));
+        assert!(content.contains("git stash -u"));
+        assert!(content.contains("git reset --hard"));
+        assert!(content.contains("git clean -fdx"));
+        // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
+        assert!(!content.contains("Mandatory dispatch"));
+        assert!(!content.contains("inline-collapse"));
     }
 
     #[test]
@@ -3041,45 +2999,33 @@ mod tests {
         // Drives one named roadmap; the slug is required and the loop never roams.
         assert!(content.contains("required roadmap slug"));
         assert!(content.contains("never roams to another roadmap"));
-        // The loop driver is the MCP `rdm_next` tool, named in body and frontmatter.
+        // Thin shim invoking the Workflow tool; the MCP `rdm_next` tool is
+        // named in the body wherever the loop driver is described.
+        assert!(content.contains("thin shim"));
+        assert!(content.contains(".claude/workflows/autopilot.js"));
         assert!(content.contains("rdm_next"));
-        assert!(content.contains("blocked-on-dependencies"));
-        // Composes the per-phase skills.
-        assert!(content.contains("rdm-dispatch-phase"));
-        assert!(content.contains("rdm-estimate"));
-        // Interprets the three dispatch outcomes.
-        assert!(content.contains("reviewed | rework | escalated"));
-        assert!(content.contains("**reviewed**"));
-        assert!(content.contains("**rework**"));
-        assert!(content.contains("**escalated**"));
-        // Rework exhaustion parks the phase blocked via the MCP update tool.
-        assert!(content.contains("rdm_phase_update"));
-        assert!(content.contains("status: \"blocked\""));
-        assert!(content.contains("[code]"));
-        // Bounded run + summary + shared escalation protocol + batch queue.
-        assert!(content.contains("Global step budget"));
-        assert!(content.contains("Summary"));
+        // Composes the per-phase dispatch workflow.
+        assert!(content.contains("dispatch-phase"));
+        // Bounded run + run-modes section + shared escalation protocol + batch queue.
+        assert!(content.contains("global step budget"));
         assert!(content.contains("docs/escalation-protocol.md"));
         assert!(content.contains("rdm review blocked"));
-        // Opt-in landing, dry-run / bounded modes.
-        assert!(content.contains("--land"));
-        assert!(content.contains("Default OFF"));
+        // No --land flag; dry-run / bounded modes including the two
+        // dispatch-phase budget overrides.
+        assert!(!content.contains("- `--land`"));
+        assert!(content.contains("There is no `--land` flag here"));
         assert!(content.contains("--plan-only"));
         assert!(content.contains("--max-phases"));
-        // MCP variant: Bash-free frontmatter, mcp__rdm__ tools resolved.
+        assert!(content.contains("--max-plan-revise"));
+        assert!(content.contains("--max-code-rework"));
+        // MCP variant: Workflow-only frontmatter, mcp__rdm__ tools resolved.
         let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
         assert!(!frontmatter.contains("  - Bash"));
         assert!(frontmatter.contains("mcp__rdm__rdm_next"));
         assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
-        // Mandatory dispatch enforcement: non-skippable MUST, inline-collapse
-        // negative example, self-check gate, and consistency with phase 1's
-        // synchronous-dispatch contract.
-        assert!(content.contains("Mandatory dispatch"));
-        assert!(content.contains("inline-collapse"));
-        assert!(content.contains("MUST NOT"));
-        assert!(content.contains("Self-check before proceeding"));
-        assert!(content.contains("dispatched synchronously"));
-        assert!(content.contains("SendMessage"));
+        // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
+        assert!(!content.contains("Mandatory dispatch"));
+        assert!(!content.contains("inline-collapse"));
     }
 
     #[test]
@@ -3091,58 +3037,34 @@ mod tests {
         });
         let content = &skills[5].content;
         assert!(content.contains("name: rdm-dispatch-phase"));
-        // The MCP variant drives the worktree and phase status via MCP tools,
-        // not Bash — body references them and frontmatter lists the resolved names.
-        assert!(content.contains("rdm_worktree_add"));
-        assert!(content.contains("rdm_phase_show"));
-        assert!(content.contains("rdm_phase_update"));
-        // One worktree per roadmap: the worktree-add tool gets the bare roadmap ref,
-        // not a per-phase `<slug>/<phase-stem>` item.
-        assert!(content.contains("item: \"<slug>\""));
-        assert!(!content.contains("item: \"<slug>/<phase-stem>\""));
+        // Thin shim invoking the Workflow tool, not per-tool MCP wiring — the
+        // workflow itself performs the worktree/status operations internally.
+        assert!(content.contains("thin shim"));
+        assert!(content.contains(".claude/workflows/dispatch-phase.js"));
+        assert!(content.contains("--task"));
         let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
-        assert!(frontmatter.contains("mcp__rdm__rdm_worktree_add"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
+        assert!(frontmatter.contains("Workflow"));
         assert!(!frontmatter.contains("  - Bash"));
+        assert!(!frontmatter.contains("  - Edit"));
+        assert!(!frontmatter.contains("  - Write"));
         // Same bounded, independent plan gate and structured outcome as the CLI variant.
-        assert!(content.contains("Plan gate"));
+        assert!(content.contains("separate, independent plan-review"));
         assert!(content.contains("at most one revise round"));
         assert!(content.contains("reviewed | rework | escalated"));
-        assert!(content.contains("\"blocked\""));
+        assert!(content.contains("\"status\""));
+        assert!(content.contains("\"writesCompletion\""));
         assert!(content.contains("rdm-review"));
-        // Plan gate rigor scales with the phase's difficulty tier.
-        assert!(content.contains("Scale the reviewer's rigor to the phase's difficulty tier"));
-        assert!(content.contains("Trivial/easy"));
-        assert!(content.contains("Moderate"));
-        assert!(content.contains("per-finding evidence"));
-        assert!(content.contains("refute pass"));
-        // Sharpened checklist: AC->step, AC->test, edge cases, and declared
-        // cross-phase/cross-crate dependencies, in addition to scope/architecture.
-        assert!(content.contains("Acceptance criteria → steps"));
-        assert!(content.contains("Acceptance criteria → tests"));
-        assert!(content.contains("test-per-AC"));
-        assert!(content.contains("Edge cases / error paths"));
-        assert!(content.contains("Cross-phase / cross-crate dependencies"));
-        // Revise round re-checks the revised plan; an unconverged revise escalates
-        // rather than silently proceeding with a deficient plan.
-        assert!(content.contains("re-checks the revised plan against the same checklist"));
-        assert!(content.contains("exhausted plan-revise budget"));
-        assert!(!content.contains("a single time, then proceeds"));
-        // Escalation follows the shared protocol: references the protocol doc
-        // and records a stage-tagged reason via the MCP tool's `reason` param.
+        assert!(content.contains("rdm-land"));
+        // Escalation follows the shared protocol and records a stage-tagged reason.
         assert!(content.contains("docs/escalation-protocol.md"));
-        assert!(content.contains("reason:"));
         assert!(content.contains("[plan]"));
         assert!(content.contains("[code]"));
-        // Mandatory dispatch enforcement: non-skippable MUST, inline-collapse
-        // negative example, self-check gate, and consistency with phase 1's
-        // synchronous-dispatch contract.
-        assert!(content.contains("Mandatory dispatch"));
-        assert!(content.contains("inline-collapse"));
-        assert!(content.contains("MUST NOT"));
-        assert!(content.contains("Self-check before proceeding"));
-        assert!(content.contains("dispatched synchronously"));
-        assert!(content.contains("SendMessage"));
+        // The --permission-mode auto safety guardrail survives the rewrite.
+        assert!(content.contains("--permission-mode auto"));
+        assert!(content.contains("git stash -u"));
+        // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
+        assert!(!content.contains("Mandatory dispatch"));
+        assert!(!content.contains("inline-collapse"));
     }
 
     #[test]

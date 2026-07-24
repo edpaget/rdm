@@ -6,11 +6,9 @@ allowed-tools:
   - Workflow
 ---
 
-Drive **one** rdm roadmap from `not-started` to `reviewed` with no per-phase human approval, by invoking the **`autopilot` Workflow** (`.claude/workflows/autopilot.js`). This skill is a **thin shim**: it parses the invocation, hands off to the workflow, and prints the batched summary the workflow returns. All the loop logic — the estimate pre-pass, the `rdm next` drive loop, per-phase dispatch via the `dispatch-phase` workflow, outcome interpretation, status persistence, budgets, and the summary — lives in the workflow, not in this prose.
+Drive **one** rdm roadmap from `not-started` to `reviewed` with no per-phase human approval, by invoking the **`autopilot` Workflow** (`.claude/workflows/autopilot.js`, provisioned automatically by `rdm agent-config claude --skills`). This skill is a **thin shim**: it parses the invocation, hands off to the workflow, and prints the batched summary the workflow returns. All the loop logic — the estimate pre-pass, the `rdm next` drive loop, per-phase dispatch via the `dispatch-phase` workflow, outcome interpretation, status persistence, budgets, and the summary — lives in the workflow, not in this prose.
 
 Decisions and blockers are **batched, not raised mid-run**: a phase that cannot be advanced is parked `blocked` and the run keeps making progress on the rest, so the user answers the whole queue at once at the end rather than being interrupted per phase.
-
-**IMPORTANT: This is the rdm source repo. Always run `cargo build` first so the workflow's `./target/debug/rdm` calls reflect your working changes — never bare `rdm`. If you modify any rdm source, `cargo build` again before invoking the workflow.**
 
 ## Contract
 
@@ -22,29 +20,28 @@ This skill is **non-interactive**. Launch unattended runs with `--permission-mod
 
 ## What to do
 
-1. **Build:** run `cargo build` so the workflow's `./target/debug/rdm` invocations are current.
-2. **Parse `$ARGUMENTS`** into a config object:
+1. **Parse `$ARGUMENTS`** into a config object:
    - `roadmap` — the required slug (the first positional argument).
    - `maxPhases` — the positive integer following `--max-phases`, when present (omit otherwise).
    - `planOnly` — `true` when `--plan-only` is present (omit otherwise).
    - `maxPlanRevise` — the non-negative integer following `--max-plan-revise`, when present (omit otherwise).
    - `maxCodeRework` — the non-negative integer following `--max-code-rework`, when present (omit otherwise).
-3. **Invoke the `autopilot` workflow** via the Workflow tool with `{ roadmap, maxPhases, planOnly, maxPlanRevise, maxCodeRework }` (omit any of `maxPhases`/`planOnly`/`maxPlanRevise`/`maxCodeRework` when not supplied). Pass `args` as a JSON object, never a stringified value. The workflow:
+2. **Invoke the `autopilot` workflow** via the Workflow tool with `{ roadmap, maxPhases, planOnly, maxPlanRevise, maxCodeRework }` (omit any of `maxPhases`/`planOnly`/`maxPlanRevise`/`maxCodeRework` when not supplied). Pass `args` as a JSON object, never a stringified value. The workflow:
    - runs the **estimate pre-pass** over the roadmap's unestimated phases in one parallel fan-out, persisting each difficulty (the model tier derives automatically);
-   - loops `./target/debug/rdm next` → the `dispatch-phase` workflow (via the one allowed level of `workflow()` nesting) → interpret the OUTCOME;
+   - loops `rdm next --roadmap <slug> --format json --project rdm` → the `dispatch-phase` workflow (via the one allowed level of `workflow()` nesting) → interpret the OUTCOME;
    - **advances** a `reviewed` phase (`rdm phase update --status reviewed`, so `rdm next` steps past it), **re-dispatches** a `rework` phase against a per-phase budget and **parks** it `blocked [code]` when the budget is spent, and **parks** an `escalated` phase `blocked [plan]`;
    - bounds the run with a **global step budget** and **`--max-phases`**, and under **`--plan-only`** stops each dispatch after its plan gate (no implementation), guarding against re-vetting the same phase.
-4. **Print the returned summary verbatim.** It lists the phases completed this run (in order), the escalations awaiting review (each tagged `plan` vs `code`) pointing at `./target/debug/rdm review blocked --project rdm`, the stop reason, and the note that reviewed work is left on the `roadmap/<slug>` branch with `main` untouched.
+3. **Print the returned summary verbatim.** It lists the phases completed this run (in order), the escalations awaiting review (each tagged `plan` vs `code`) pointing at `rdm review blocked --project rdm`, the stop reason, and the note that reviewed work is left on the `roadmap/<slug>` branch with `main` untouched.
 
 ## Run modes
 
 - `--max-phases N` — bounded run: dispatch at most `N` phases this pass, then stop and summarize. Use it to take a roadmap a few phases at a time.
 - `--plan-only` — dry-run the planning half: each dispatch stops after its plan gate, so you get cheap plan vetting without writing any code.
-- `--max-plan-revise N` / `--max-code-rework N` — override `dispatch-phase`'s two **in-run** retry budgets, which are counted **independently** of each other and default to **2** each (budget N = N reworks after the original attempt, i.e. N + 1 attempts). `0` is legal and means "terminate on the first blocking review" — no revise/rework agent runs at all. These are distinct from autopilot's own roadmap-level rework re-dispatch budget and its global step budget; see [`docs/escalation-protocol.md`](../../../docs/escalation-protocol.md) § Budgets for all four.
+- `--max-plan-revise N` / `--max-code-rework N` — override `dispatch-phase`'s two **in-run** retry budgets, which are counted **independently** of each other and default to **2** each (budget N = N reworks after the original attempt, i.e. N + 1 attempts). `0` is legal and means "terminate on the first blocking review" — no revise/rework agent runs at all. These are distinct from autopilot's own roadmap-level rework re-dispatch budget and its global step budget; see [`docs/escalation-protocol.md`](docs/escalation-protocol.md) § Budgets for all four.
 
 ## Relation to the other lanes
 
 - **`rdm-land`** owns landing reviewed work to `main` (rebase + `merge --ff-only`); autopilot never does. Run it after a run reaches `reviewed` if you want the work on `main`.
 - Autopilot is the **active driver**: every dispatched phase actively runs review (`dispatch-phase`'s code review is the canonical review pipeline stamped from `.claude/workflows/lib/review.mjs`) before advancing, so nothing is left parked in `needs-review`. The once-passive needs-review Stop hook (Claude Code) / Pi `agent_end` extension that used to catch a dropped finalize has been retired as redundant. The workflow lane never emits a `Done:` line: autopilot's advance step only persists the status the OUTCOME carries. **`rdm-land` is the land-time writer** — it reads the OUTCOME's `writesCompletion: true` and synthesizes the trailer from the item's identifiers via `rdm hook done-line`, amending it onto the branch tip before the rebase. No pre-step is required: run `rdm-land` directly, and it never needs a manual rebase to add the line.
 
-See [`docs/autonomous-loop.md`](../../../docs/autonomous-loop.md) and [`docs/workflow-schemas.md`](../../../docs/workflow-schemas.md) for the full workflow contract.
+See [`docs/autonomous-loop.md`](docs/autonomous-loop.md) and [`docs/workflow-schemas.md`](docs/workflow-schemas.md) for the full workflow contract.

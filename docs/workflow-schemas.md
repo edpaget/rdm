@@ -15,9 +15,12 @@ the canonical schema contracts they exchange.
 > and friends), and the hardcoded `./target/debug/rdm` / `--project rdm`
 > invocations baked into the shipped scripts (not yet parameterized for an
 > arbitrary target repo). rdm's shipped autonomous skills
-> (`rdm-core/src/templates/skill-*.md`) remain the user-facing autonomous lane and
-> are untouched. Distributing the still-unshipped pieces (parameterization,
-> `lib/`, a downstream regeneration story) is a follow-up roadmap.
+> (`rdm-core/src/templates/skill-{autopilot,dispatch-phase}-{cli,mcp}.md`, and the
+> `--auto` section of `skill-do-{cli,mcp}.md`) are the user-facing autonomous
+> lane and are now thin shims that invoke the three workflow scripts above via
+> the `Workflow` tool, instead of re-narrating the orchestration in prose.
+> Distributing the still-unshipped pieces (parameterization, `lib/`, a
+> downstream regeneration story) remains a follow-up roadmap.
 
 ## The `.claude/workflows/` convention
 

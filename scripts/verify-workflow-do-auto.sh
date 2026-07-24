@@ -1,13 +1,17 @@
 #!/bin/sh
 # Hermetic regression for the rdm-do `--auto` phase-flow -> dispatch-phase wiring.
 #
-# workflow-orchestration phase 4 wires the phase-flow branch of `--auto` in
-# `.claude/skills/rdm-do/SKILL.md` into the `dispatch-phase` Workflow instead of
-# re-implementing plan -> plan-review -> implement -> code-review in prose
-# (interactive `rdm-do` is untouched; `--auto --task` routes in the same way). This is a
-# dogfood-only, local edit to the skill file — it is NOT propagated to the
-# distributed `rdm-core/src/templates/skill-do-cli.md` / `skill-do-mcp.md`
-# templates, which stay prose-only. This harness gates three things:
+# The phase-flow branch of `--auto` in `.claude/skills/rdm-do/SKILL.md` routes
+# into the `dispatch-phase` Workflow instead of re-implementing
+# plan -> plan-review -> implement -> code-review in prose (interactive
+# `rdm-do` is untouched; `--auto --task` routes in the same way). As of the
+# `distribute-workflow-lane` roadmap's phase 2, this wiring is no longer a
+# dogfood-only, local edit: the distributed
+# `rdm-core/src/templates/skill-do-cli.md` / `skill-do-mcp.md` templates carry
+# the identical `--auto` -> dispatch-phase wiring, and the local SKILL.md is a
+# byte-for-byte regeneration of the CLI template (`rdm agent-config claude
+# --skills --project rdm --out .`) — there is no more hand-authored divergence
+# to record. This harness gates three things:
 #
 #   1. STATIC INVARIANTS — SKILL.md's frontmatter lists the `Workflow` tool; the
 #      `## Auto phase dispatch` section references `dispatch-phase`; the
@@ -16,9 +20,11 @@
 #      `[code]`, `[plan]`) is present; the interactive plan-mode path
 #      (`EnterPlanMode`/`ExitPlanMode`) is preserved; the `--auto --task`
 #      flow is wired into the Workflow (`{ task: <slug> }` + its OUTCOME ->
-#      status map) with no stale prose-path claims; the dogfood note is present; and the
-#      distributed templates stay prose-only (do NOT mention `dispatch-phase`),
-#      with a planted-mutation self-test proving that last detector fires.
+#      status map) with no stale prose-path claims; the stale "dogfood-only,
+#      not propagated" note is gone; and the distributed templates DO
+#      reference `dispatch-phase` and the `Workflow` tool (the divergence the
+#      old dogfood note recorded is resolved), with a planted-absence
+#      self-test proving that detector isn't a tautological no-op.
 #   2. DYNAMIC OUTCOME CONTRACT — against the real binary in a hermetic temp
 #      plan+source repo: the exact `phase update` command shapes SKILL.md
 #      documents for each OUTCOME (`reviewed` / `rework` / `escalated`) land the
@@ -126,17 +132,19 @@ if grep -qF 'interactive/task-flow prose path' "$SKILL"; then
 fi
 pass "no stale '--auto --task is prose' assertions remain"
 
-# Dogfood note present.
-grep -qi 'dogfood' "$SKILL" || fail "SKILL.md must record the dogfood-only nature of this edit"
-grep -q 'skill-do-cli.md' "$SKILL" || fail "SKILL.md must name the un-propagated distributed template skill-do-cli.md"
-pass "dogfood-only note present, naming the distributed template"
+# The stale "dogfood-only, not propagated to the distributed templates" note
+# must be gone: the templates now carry the identical wiring (checked below).
+if grep -qi 'dogfood' "$SKILL"; then
+    fail "SKILL.md still carries a dogfood-only note — the --auto wiring is now in the distributed templates too"
+fi
+pass "no stale dogfood-only note remains"
 
 # unify-code-review phase 6: the INTERACTIVE finalize step now actively runs the
 # canonical review instead of parking the item for a Stop hook, and the `--auto`
 # section reads the OUTCOME's own status/completion policy instead of restating it.
 grep -q 'rdm-review' "$SKILL" ||
     fail "SKILL.md's finalize step must invoke the canonical 'rdm-review' skill"
-awk '/^11\. \*\*Finalize/{p=1} p&&/^## /{exit} p' "$SKILL" >"$TMP/finalize-section"
+awk '/^10\. \*\*Finalize/{p=1} p&&/^## /{exit} p' "$SKILL" >"$TMP/finalize-section"
 [ -s "$TMP/finalize-section" ] || fail "could not extract the finalize step from SKILL.md"
 grep -q 'rdm-review' "$TMP/finalize-section" ||
     fail "the finalize step itself (not just some other section) must invoke rdm-review"
@@ -165,23 +173,29 @@ grep -qF 'the sentinel that signals a review is pending' "$TMP/skill.scratch" ||
     fail "stale-framing detector broken — a planted deferral sentence was not found"
 pass "finalize invokes the canonical rdm-review in both lanes; --auto reads outcome.status/writesCompletion; stale deferral framing gone"
 
-# AC2 positive proof: distributed templates stay prose-only (no dispatch-phase).
-if grep -q 'dispatch-phase' "$TEMPLATE_CLI"; then
-    fail "AC2: $TEMPLATE_CLI must stay prose-only — it must not mention dispatch-phase"
-fi
-if grep -q 'dispatch-phase' "$TEMPLATE_MCP"; then
-    fail "AC2: $TEMPLATE_MCP must stay prose-only — it must not mention dispatch-phase"
-fi
-pass "distributed templates (skill-do-cli.md, skill-do-mcp.md) stay prose-only"
+# AC2 positive proof: the distributed templates now carry the SAME --auto ->
+# dispatch-phase wiring as the local dogfood SKILL.md — the divergence the old
+# "dogfood-only" note recorded is resolved, not merely deferred.
+for TEMPLATE in "$TEMPLATE_CLI" "$TEMPLATE_MCP"; do
+    grep -q 'dispatch-phase' "$TEMPLATE" ||
+        fail "AC2: $TEMPLATE must reference dispatch-phase — the --auto wiring is no longer dogfood-only"
+    grep -qF -- '- Workflow' "$TEMPLATE" ||
+        fail "AC2: $TEMPLATE frontmatter must list the Workflow tool"
+    grep -q '## Auto phase dispatch' "$TEMPLATE" ||
+        fail "AC2: $TEMPLATE must carry a '## Auto phase dispatch' section"
+    grep -q '## Auto task dispatch' "$TEMPLATE" ||
+        fail "AC2: $TEMPLATE must carry a '## Auto task dispatch' section"
+done
+pass "distributed templates (skill-do-cli.md, skill-do-mcp.md) reference dispatch-phase and the Workflow tool"
 
-# Self-test: prove the prose-only detector is not a no-op — inject dispatch-phase
-# into a scratch copy of the template and assert the detector fires there.
-cp "$TEMPLATE_CLI" "$TMP/template-cli.scratch"
-printf '\nSee dispatch-phase for details.\n' >>"$TMP/template-cli.scratch"
-if ! grep -q 'dispatch-phase' "$TMP/template-cli.scratch"; then
-    fail "prose-only detector broken — planted 'dispatch-phase' mention was not found on the scratch copy"
+# Self-test: prove the positive detector is not a tautological no-op — strip
+# every dispatch-phase mention from a scratch copy and assert the detector
+# fails to find it there.
+sed '/dispatch-phase/d' "$TEMPLATE_CLI" >"$TMP/template-cli.scratch"
+if grep -q 'dispatch-phase' "$TMP/template-cli.scratch"; then
+    fail "dispatch-phase detector broken — planted removal did not strip every mention from the scratch copy"
 fi
-pass "prose-only detector fires on a planted 'dispatch-phase' mention (self-test)"
+pass "dispatch-phase detector fails on a scratch copy with every mention stripped (self-test)"
 
 # --- 2. DYNAMIC OUTCOME CONTRACT ----------------------------------------------
 say "2. Dynamic OUTCOME -> status contract against the real binary"
