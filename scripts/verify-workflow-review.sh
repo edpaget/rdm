@@ -141,6 +141,7 @@ cp "$WF_DIR/review-refute-fix.js" "$SCRATCH/.claude/workflows/review-refute-fix.
 # gen-workflow-review.sh lists every consumer; the scratch tree must carry them
 # all or the scratch --check fails on a missing consumer rather than on drift.
 cp "$WF_DIR/dispatch-phase.js" "$SCRATCH/.claude/workflows/dispatch-phase.js"
+cp "$WF_DIR/plan-review.js" "$SCRATCH/.claude/workflows/plan-review.js"
 sh "$SCRATCH/scripts/gen-workflow-review.sh" --check >/dev/null 2>&1 ||
     fail "scratch --check should pass on a clean copy"
 # Mutate a line INSIDE the generated block, portably (no in-place sed).
@@ -1039,5 +1040,246 @@ if run_node "$TMP/mutation-test.mjs" "$SCRATCH/.claude/workflows/lib/review.mjs"
 else
     fail "mutation self-test did not behave as expected — either the mutated file failed to import, or the presence check did not fail on stripped calibration text"
 fi
+
+# --- 5. PLAN-STANDALONE PATH -------------------------------------------------
+# The plan-review.js standalone workflow reuses buildReviewPipeline('plan') and
+# GATE_POLICY.plan with NO new review logic, and adds three pure consolidation
+# helpers to the stamped block: stripNonPhaseUnitOfWork (phase-only unit-of-work
+# scoping), filterPlanReviewTag (sibling-preserving tag read-filter-write), and
+# classifyPlanOutcome (reviewed|rework|escalated). Drive them in Node, then grep
+# plan-review.js for the structural invariants (four target types, parallel()
+# fan-out, pipeline/gate reuse, per-unit strip, implementation-plan carve-outs).
+say "5. Plan-standalone path: consolidation helpers + plan-review.js structure"
+
+PLAN_REVIEW="$WF_DIR/plan-review.js"
+[ -f "$PLAN_REVIEW" ] || fail "plan-review.js not found: $PLAN_REVIEW"
+
+cat >"$TMP/plan-test.mjs" <<'NODE_PLAN_TEST'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const libPath = process.argv[2];
+const mod = await import(pathToFileURL(libPath).href);
+const { stripNonPhaseUnitOfWork, filterPlanReviewTag, classifyPlanOutcome, gateFor, hasBlocking } = mod;
+
+// Export presence — the harness (and plan-review.js's stamped copy) needs all three.
+for (const name of ['stripNonPhaseUnitOfWork', 'filterPlanReviewTag', 'classifyPlanOutcome']) {
+  assert.equal(typeof mod[name], 'function', name + ' must be exported from review.mjs');
+}
+
+const uow = { id: 'u', concern: 'unit-of-work', severity: 'blocking', confidence: 90, what_fails: 'phase too big' };
+const coh = { id: 'c', concern: 'coherence', severity: 'blocking', confidence: 90, what_fails: 'ambiguous step' };
+const arch = { id: 'a', concern: 'architectural-fit', severity: 'blocking', confidence: 92, what_fails: 'violates constraint' };
+const nit = { id: 'n', concern: 'coherence', severity: 'concern', confidence: 80, what_fails: 'minor' };
+
+// --- stripNonPhaseUnitOfWork: phase keeps unit-of-work; every other unit drops it.
+assert.deepEqual(stripNonPhaseUnitOfWork([uow, coh], 'phase').map((f) => f.id), ['u', 'c'], 'phase keeps unit-of-work');
+for (const t of ['task', 'roadmap', 'implementation-plan']) {
+  assert.deepEqual(
+    stripNonPhaseUnitOfWork([uow, coh], t).map((f) => f.id),
+    ['c'],
+    'a ' + t + ' unit drops unit-of-work survivors'
+  );
+}
+// Order-preserving: a non-uow finding before AND after a uow one keeps its order.
+assert.deepEqual(
+  stripNonPhaseUnitOfWork([coh, uow, nit], 'task').map((f) => f.id),
+  ['c', 'n'],
+  'strip is order-preserving'
+);
+// Idempotent.
+const once = stripNonPhaseUnitOfWork([coh, uow], 'roadmap');
+assert.deepEqual(stripNonPhaseUnitOfWork(once, 'roadmap'), once, 'strip is idempotent');
+assert.deepEqual(stripNonPhaseUnitOfWork([], 'phase'), [], 'strip on empty is empty');
+
+// --- filterPlanReviewTag: sibling preserved, only-tag -> empty, idempotent no-op.
+assert.deepEqual(filterPlanReviewTag(['needs-plan-review', 'depends-unlanded']), ['depends-unlanded'], 'sibling preserved');
+assert.deepEqual(filterPlanReviewTag(['depends-unlanded', 'needs-plan-review']), ['depends-unlanded'], 'order preserved on filter');
+assert.deepEqual(filterPlanReviewTag(['needs-plan-review']), [], 'only tag -> empty list');
+assert.deepEqual(filterPlanReviewTag(['a', 'b']), ['a', 'b'], 'idempotent no-op when tag absent');
+assert.deepEqual(filterPlanReviewTag(filterPlanReviewTag(['needs-plan-review', 'x'])), ['x'], 'idempotent under re-application');
+assert.deepEqual(filterPlanReviewTag([]), [], 'empty tag list stays empty');
+
+// --- classifyPlanOutcome: reviewed | rework | escalated.
+assert.equal(classifyPlanOutcome([]), 'reviewed', 'no findings -> reviewed');
+assert.equal(classifyPlanOutcome([nit]), 'reviewed', 'concern-only -> reviewed');
+assert.equal(classifyPlanOutcome([coh]), 'rework', 'a blocking coherence finding -> rework (fixable rewrite)');
+assert.equal(classifyPlanOutcome([arch]), 'escalated', 'a blocking architectural-fit finding -> escalated (human decision)');
+// An empty/ambiguous plan surfaces as a blocking coherence survivor -> rework, not escalated.
+assert.equal(
+  classifyPlanOutcome([{ id: 'empty', concern: 'coherence', severity: 'blocking', confidence: 95, what_fails: 'plan is empty' }]),
+  'rework',
+  'an empty/ambiguous plan (blocking coherence) is rework'
+);
+
+// --- Per-unit INDEPENDENT gate planning (AC-1): a seeded roadmap where one phase
+//     reworks and the rest pass. The tag is cleared on every reviewed unit
+//     (phase-B, phase-C, and the roadmap body) and LEFT on the reworked phase-A.
+const seededUnits = [
+  { id: 'roadmap-body', targetType: 'roadmap', tags: ['needs-plan-review'], survivors: [] },
+  { id: 'phase-A', targetType: 'phase', tags: ['needs-plan-review', 'depends-unlanded'], survivors: [coh] },
+  { id: 'phase-B', targetType: 'phase', tags: ['needs-plan-review'], survivors: [] },
+  { id: 'phase-C', targetType: 'phase', tags: ['needs-plan-review'], survivors: [nit] },
+];
+const gatePlan = seededUnits.map((u) => {
+  const stripped = stripNonPhaseUnitOfWork(u.survivors, u.targetType);
+  const outcome = classifyPlanOutcome(stripped);
+  const gate = gateFor('plan', outcome);
+  // The gate NEVER persists an rdm status, whatever the outcome.
+  assert.strictEqual(gate.status, null, 'plan gate persists no rdm status for ' + u.id);
+  const remaining = gate.clearsPlanReviewTag ? filterPlanReviewTag(u.tags) : u.tags;
+  return { id: u.id, outcome, cleared: gate.clearsPlanReviewTag, remaining };
+});
+const byId = Object.fromEntries(gatePlan.map((g) => [g.id, g]));
+assert.equal(byId['phase-A'].outcome, 'rework', 'phase-A reworks');
+assert.equal(byId['phase-A'].cleared, false, 'phase-A keeps needs-plan-review');
+assert.deepEqual(byId['phase-A'].remaining, ['needs-plan-review', 'depends-unlanded'], 'phase-A tags untouched');
+for (const id of ['roadmap-body', 'phase-B', 'phase-C']) {
+  assert.equal(byId[id].outcome, 'reviewed', id + ' is reviewed');
+  assert.equal(byId[id].cleared, true, id + ' clears needs-plan-review');
+  assert.deepEqual(byId[id].remaining, [], id + ' tag list is emptied (needs-plan-review was the only tag)');
+}
+
+// --- --implementation-plan is a NO-GATE, no-status path. Even a blocking finding
+//     yields an outcome + findings only; the gate row persists no status and the
+//     unit drops unit-of-work like every non-phase unit.
+{
+  const stripped = stripNonPhaseUnitOfWork([uow, coh], 'implementation-plan');
+  assert.deepEqual(stripped.map((f) => f.id), ['c'], 'implementation-plan drops unit-of-work');
+  const gate = gateFor('plan', classifyPlanOutcome(stripped));
+  assert.strictEqual(gate.status, null, 'implementation-plan gate persists no status');
+  assert.equal(gate.writesCompletion, false, 'implementation-plan never writes a completion directive');
+}
+
+console.log('plan-standalone helper + gate-planning assertions passed');
+NODE_PLAN_TEST
+
+if run_node "$TMP/plan-test.mjs" "$LIB"; then
+    pass "stripNonPhaseUnitOfWork / filterPlanReviewTag / classifyPlanOutcome + per-unit gate planning verified"
+else
+    fail "plan-standalone helper assertions failed"
+fi
+
+# --- 5b. plan-review.js STRUCTURE (static greps) -----------------------------
+say "5b. plan-review.js parses four target types, fans out, and reuses the core"
+grep -q "buildReviewPipeline('plan')" "$PLAN_REVIEW" ||
+    fail "plan-review.js must call buildReviewPipeline('plan')"
+grep -qE "gateFor\('plan'|GATE_POLICY\.plan" "$PLAN_REVIEW" ||
+    fail "plan-review.js must gate through gateFor('plan', …) / GATE_POLICY.plan"
+grep -q 'stripNonPhaseUnitOfWork' "$PLAN_REVIEW" ||
+    fail "plan-review.js must apply stripNonPhaseUnitOfWork per unit"
+grep -q 'filterPlanReviewTag' "$PLAN_REVIEW" ||
+    fail "plan-review.js must clear the tag via filterPlanReviewTag"
+grep -q 'classifyPlanOutcome' "$PLAN_REVIEW" ||
+    fail "plan-review.js must classify each outcome via classifyPlanOutcome"
+grep -qE '\bparallel\(' "$PLAN_REVIEW" ||
+    fail "plan-review.js must fan out per-phase via parallel()"
+# The three flag target forms are all parsed...
+for form in '--task' '--roadmap' '--implementation-plan'; do
+    grep -q -- "$form" "$PLAN_REVIEW" ||
+        fail "plan-review.js does not parse the '$form' target form"
+done
+# ...and the fourth (positional `<slug> [phase]`) resolves to the phase/roadmap kinds.
+grep -q "kind = 'phase'" "$PLAN_REVIEW" ||
+    fail "plan-review.js must resolve a positional <slug> phase target"
+grep -q "kind = 'roadmap'" "$PLAN_REVIEW" ||
+    fail "plan-review.js must resolve the roadmap target"
+
+# The act half AND the gate are carved out for --implementation-plan behind an
+# explicit `if (kind !== 'implementation-plan')` guard, so a static reader (and
+# this grep) can confirm no rdm update/create/commit is reachable in that branch.
+IMPL_GUARDS=$(grep -c "kind !== 'implementation-plan'" "$PLAN_REVIEW")
+[ "$IMPL_GUARDS" -ge 2 ] ||
+    fail "plan-review.js must guard BOTH act and gate with 'if (kind !== \"implementation-plan\")' (found $IMPL_GUARDS)"
+
+# The driver must not RE-DECLARE the pipeline internals (it consumes the stamped
+# block), and must not thread a signals object into the pipeline (the deferral).
+DRIVER=$(awk '/>>> review-refute-fix:end/{p=1;next} p' "$PLAN_REVIEW")
+if printf '%s\n' "$DRIVER" | grep -nE 'function findPrompt|function refutePrompt|const DIMENSIONS ='; then
+    fail "plan-review.js driver re-declares pipeline internals — it must consume the stamped block"
+fi
+if printf '%s\n' "$DRIVER" | grep -nE 'signals:'; then
+    fail "plan-review.js must NOT thread a signals object into the pipeline (unit-of-work scoping is consumer-side)"
+fi
+# The hygiene grep (section 2) already covers plan-review.js via workflows/*.js;
+# re-assert here that it carries no forbidden nondeterministic global.
+if grep -nE 'Date\.now\(|Math\.random\(' "$PLAN_REVIEW" >&2; then
+    fail "plan-review.js contains a forbidden nondeterministic global"
+fi
+pass "plan-review.js parses four targets, fans out, reuses the core, and carves out implementation-plan"
+
+# --- 5c. SKILL SHIM (AC-5) ---------------------------------------------------
+# The local dogfood SKILL.md is a thin shim over plan-review.js. Its hand-authored
+# prose (above the generated review-spec marker) must reference the workflow, keep
+# the canonical pipeline phrase, and speak only the new outcome vocabulary — the
+# retired PASS WITH CONCERNS / REWORK words survive ONLY inside the generated
+# region (as the collapse-mapping note), never in the hand-authored prose.
+say "5c. rdm-plan-review SKILL.md is a thin shim over plan-review.js"
+SKILL_MD="$REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
+[ -f "$SKILL_MD" ] || fail "SKILL.md not found: $SKILL_MD"
+grep -q 'plan-review.js' "$SKILL_MD" || fail "SKILL.md must reference the plan-review.js Workflow"
+grep -q '<!-- rdm:review-spec:begin' "$SKILL_MD" || fail "SKILL.md must keep the generated review-spec begin marker"
+grep -q '<!-- rdm:review-spec:end' "$SKILL_MD" || fail "SKILL.md must keep the generated review-spec end marker"
+# Hand-authored prose = everything BEFORE the generated region begins.
+awk 'index($0, "<!-- rdm:review-spec:begin") { exit } { print }' "$SKILL_MD" >"$TMP/skill-hand"
+grep -q 'find → refute → filter → verdict → act → gate' "$TMP/skill-hand" ||
+    fail "SKILL.md hand-authored prose must keep the canonical pipeline phrase"
+for retired in 'PASS WITH CONCERNS' 'REWORK'; do
+    if grep -n "$retired" "$TMP/skill-hand" >&2; then
+        fail "SKILL.md hand-authored prose still uses the retired '$retired' vocabulary"
+    fi
+done
+pass "SKILL.md is a thin shim: references the workflow, keeps the pipeline phrase and markers, drops retired vocab"
+
+# --- 6. PLAN HELPER MUTATION SELF-TESTS (non-vacuity) ------------------------
+# Prove the AC-1 phase-scoping and AC-2 tag-filter checks are not vacuous: on a
+# scratch copy of the lib, break each helper to a pass-through and require the
+# corresponding assertion to THROW; then heal by restoring. Mirrors section 4's
+# SCRATCH-only isolation — never touches $LIB.
+say "6. Plan helper mutation self-tests (prove the AC-1/AC-2 checks would catch a regression)"
+PLANMUT="$TMP/plan-mut"
+mkdir -p "$PLANMUT/.claude/workflows/lib"
+
+# (a) stripNonPhaseUnitOfWork -> pass-through: the phase-scoping assertion must fail.
+sed 's/^function stripNonPhaseUnitOfWork(survivors, targetType) {/function stripNonPhaseUnitOfWork(survivors, targetType) { return Array.isArray(survivors) ? survivors.slice() : []; \/\/ MUTANT/' \
+    "$LIB" >"$PLANMUT/.claude/workflows/lib/review.mjs"
+grep -q 'MUTANT' "$PLANMUT/.claude/workflows/lib/review.mjs" ||
+    fail "strip mutation setup did not inject the pass-through"
+
+cat >"$TMP/plan-strip-mut-test.mjs" <<'NODE_STRIP_MUT'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const mod = await import(pathToFileURL(process.argv[2]).href); // must still import
+const uow = { id: 'u', concern: 'unit-of-work', severity: 'blocking', confidence: 90 };
+const coh = { id: 'c', concern: 'coherence', severity: 'blocking', confidence: 90 };
+assert.throws(
+  () => assert.deepEqual(mod.stripNonPhaseUnitOfWork([uow, coh], 'task').map((f) => f.id), ['c']),
+  'a pass-through stripNonPhaseUnitOfWork must FAIL the phase-scoping check — else it is vacuous'
+);
+console.log('strip mutation self-test passed');
+NODE_STRIP_MUT
+run_node "$TMP/plan-strip-mut-test.mjs" "$PLANMUT/.claude/workflows/lib/review.mjs" ||
+    fail "strip mutation self-test did not behave as expected"
+
+# (b) filterPlanReviewTag -> pass-through: the tag-filter assertion must fail.
+sed 's/^function filterPlanReviewTag(tags) {/function filterPlanReviewTag(tags) { return Array.isArray(tags) ? tags.slice() : []; \/\/ MUTANT/' \
+    "$LIB" >"$PLANMUT/.claude/workflows/lib/review.mjs"
+grep -q 'MUTANT' "$PLANMUT/.claude/workflows/lib/review.mjs" ||
+    fail "filterPlanReviewTag mutation setup did not inject the pass-through"
+
+cat >"$TMP/plan-tag-mut-test.mjs" <<'NODE_TAG_MUT'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const mod = await import(pathToFileURL(process.argv[2]).href); // must still import
+assert.throws(
+  () => assert.deepEqual(mod.filterPlanReviewTag(['needs-plan-review', 'depends-unlanded']), ['depends-unlanded']),
+  'a pass-through filterPlanReviewTag must FAIL the sibling-preservation check — else it is vacuous'
+);
+console.log('tag-filter mutation self-test passed');
+NODE_TAG_MUT
+run_node "$TMP/plan-tag-mut-test.mjs" "$PLANMUT/.claude/workflows/lib/review.mjs" ||
+    fail "tag-filter mutation self-test did not behave as expected"
+
+pass "plan helper checks fire on planted pass-through mutations (proven non-vacuous)"
 
 say "verify-workflow-review.sh: ALL GREEN"

@@ -666,6 +666,60 @@ function summarizeFindings(findings) {
   return list.length + ' finding(s); top: [' + sev + '] ' + what;
 }
 
+// --- Plan-standalone consolidation helpers -----------------------------------
+// Three pure, post-pipeline consolidation/gate helpers the standalone
+// plan-review workflow (.claude/workflows/plan-review.js) consumes. They are
+// CONSOLIDATION, not find/refute logic — they operate on the ranked survivors a
+// `buildReviewPipeline('plan')` run already produced, and add no new review
+// dimension, finder, or refuter. They live inside the stamped block so the
+// workflow consumer picks them up verbatim (the runtime cannot import), and are
+// exported for the Node verify harness.
+
+// stripNonPhaseUnitOfWork(survivors, targetType) — drop any survivor whose
+// `concern` is 'unit-of-work' UNLESS the review unit is a phase. Order-preserving
+// and idempotent.
+//
+// This is the CONSUMER-SIDE phase-scoping that selectDimensions' omitted-signals
+// path cannot do. plan-review.js deliberately runs `buildReviewPipeline('plan')`
+// with NO signals (honoring the dispatch-phase deferral of signal-threading to
+// the sibling unify-plan-review roadmap), so selectDimensions fail-opens and the
+// unit-of-work finder runs on EVERY unit — task, roadmap body, and
+// implementation-plan included. This post-hoc filter makes "unit-of-work only on
+// phase units" actually true without threading a signals object.
+function stripNonPhaseUnitOfWork(survivors, targetType) {
+  const list = Array.isArray(survivors) ? survivors : [];
+  if (targetType === 'phase') return list.slice();
+  return list.filter((f) => !(f && f.concern === 'unit-of-work'));
+}
+
+// filterPlanReviewTag(tags) — the read-filter-write half of the plan gate: return
+// the tag list with the reserved `needs-plan-review` removed by EXACT string
+// match, order and every sibling tag (e.g. `depends-unlanded`) preserved.
+// Idempotent (a list already lacking it is a safe no-op) and returns [] when
+// `needs-plan-review` was the only tag. `--tags` replaces the whole list, so a
+// caller must always write back this COMPLETE remaining list, never a blind
+// single-tag removal.
+function filterPlanReviewTag(tags) {
+  const list = Array.isArray(tags) ? tags : [];
+  return list.filter((t) => t !== 'needs-plan-review');
+}
+
+// classifyPlanOutcome(survivors) — map post-strip plan survivors onto the
+// canonical outcome vocabulary, reusing `hasBlocking` (no new severity logic):
+//   * no blocking survivor            → 'reviewed'
+//   * a blocking `architectural-fit`  → 'escalated' (a stated-constraint
+//     survivor                          violation needs a human decision, per the
+//                                       plan-stage reading)
+//   * any other blocking survivor     → 'rework' (a fixable rewrite — e.g. an
+//                                       empty/ambiguous plan surfaces as a
+//                                       blocking `coherence` finding)
+function classifyPlanOutcome(survivors) {
+  const list = Array.isArray(survivors) ? survivors : [];
+  if (!hasBlocking(list)) return 'reviewed';
+  const blockingArchFit = list.some((f) => f && f.severity === 'blocking' && f.concern === 'architectural-fit');
+  return blockingArchFit ? 'escalated' : 'rework';
+}
+
 // DEFAULT_MAX_CODE_REWORK — the in-run code-rework budget. A budget of N means N
 // reworks AFTER the original attempt, i.e. N + 1 attempts. 0 is legal and
 // MEANINGFUL (no reworks at all — terminate on the first blocking review) and

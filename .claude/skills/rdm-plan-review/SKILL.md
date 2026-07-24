@@ -9,108 +9,41 @@ allowed-tools:
   - Agent
 ---
 
-Review the *plan* of an rdm roadmap, phase, or task — not its implementation. `$ARGUMENTS` should be `<roadmap-slug> [phase-number]` for a phase, `--task <slug>` for a task, `--roadmap <slug>` for a whole roadmap, or `--implementation-plan` for reviewing an in-progress `rdm-do` implementation plan directly.
+Review the *plan* of an rdm roadmap, phase, or task — not its implementation. This skill is a thin shim over the **`plan-review` Workflow** (`.claude/workflows/plan-review.js`), which runs the whole pipeline end to end. Invoke that workflow and report its result; the domain notes below exist so a human reader understands what it does and can drive it interactively when the workflow is unavailable.
 
-The review runs as a pipeline: **find → refute → filter → verdict → act → gate**. Findings are never surfaced, fixed, or acted on until a *separate* agent has tried to refute them. The agent that finds an issue is never the agent that confirms it.
+## Invoke the workflow
 
-The specification of that pipeline — which dimensions run, how findings are graded, and what each outcome means — is **generated from the canonical review source** and is shared with `rdm-review`, which reviews the diff after implementation instead of the plan before it. It appears under "Review specification" below. The steps here wire it to the CLI.
+Pass `$ARGUMENTS` straight through to the `plan-review` Workflow. It accepts the same four target forms:
 
-## Steps
+- `--task <slug>` — review a task's plan.
+- `--roadmap <slug>` — review the whole roadmap: its own body plus **every phase, gated independently**.
+- `<roadmap-slug> [phase-number]` — a single phase when the phase arg is present; with no phase arg it behaves exactly like `--roadmap <slug>`.
+- `--implementation-plan` — review an `rdm-do` plan document handed over in context, ahead of implementation. There is **no persisted rdm item** behind this mode, so it is report-only (see the carve-out below).
 
-### 1. Setup
+The workflow reads the target artifact(s) via mechanical Bash agents, runs the shared `find → refute → filter → verdict → act → gate` pipeline (`buildReviewPipeline('plan')`), and returns a per-unit outcome (`reviewed` | `rework` | `escalated`) with its findings.
 
-1. **Parse `$ARGUMENTS`**:
-   - `--task <slug>` — review a task's plan.
-   - `--roadmap <slug>` — review the whole roadmap: its own body plus every phase, gated individually.
-   - `<roadmap-slug> [phase-number]` — review a single phase. If `phase-number` is omitted, review the roadmap the same as `--roadmap <slug>`.
-   - `--implementation-plan` — review an `rdm-do` plan document handed to you directly in context, ahead of implementation. There is no persisted rdm item backing this mode, so it produces an outcome and findings report only — **no tag-gate step** (skip the Gate step entirely for this mode), and it skips the Act step's fix-application half the same way (see the carve-out there).
-2. **Read the target artifact** — this also establishes the **target type**, which is the trigger signal for the `unit-of-work` dimension in the Review specification:
-   - Phase (target type `phase`): `rdm phase show <phase-number> --roadmap <slug> --project rdm` for the body, and `rdm phase show <phase-number> --roadmap <slug> --format json --project rdm` for its `tags`.
-   - Task (target type `task`): `rdm task show <slug> --project rdm` for the body, and `rdm task show <slug> --format json --project rdm` for its `tags`.
-   - Roadmap (target type `roadmap`): `rdm roadmap show <slug> --format json --project rdm` returns the roadmap body plus every phase's summary (body, tags) in one call; also fetch each phase's full body with `rdm phase show <n> --roadmap <slug> --project rdm`, since each phase is reviewed as a `phase` target in its own right.
-   - `--implementation-plan` (target type `implementation-plan`): read the plan text already provided in context; no `rdm` command is needed.
+## What the workflow does (domain intent)
 
-### 2. Find — dispatch the review fleet (parallel)
+The pipeline runs `find → refute → filter → verdict → act → gate`; no finding is surfaced, fixed, or acted on until a *separate* refuter agent has failed to refute it. Its full specification — which dimensions run, how findings are graded, what each outcome means — is **generated from the canonical review source** (shared with `rdm-review`, which reviews the diff after implementation) and appears under "Review specification" below.
 
-Dispatch one **read-only** `Agent` per applicable dimension, per **Review specification § Dimensions** below. Run the always-on dimensions unconditionally; add `unit-of-work` only when the target type from step 1 is a phase — including once per phase when reviewing `--roadmap <slug>`. State which dimensions you launched, and why, in the report.
+Key domain behaviors the workflow implements, worth knowing when reading its output:
 
-### 3. Consolidate — refute findings, filter, and reach a verdict
-
-Dispatch a **fresh** `Agent` per finding, per **Review specification § Refute**. Run these concurrently; the finder is never the refuter. Suggestions may skip refutation (low stakes) but are still subject to the confidence floor.
-
-Then apply **Review specification § Filter & consolidate**, then **§ Verdict** to reach exactly one outcome: `reviewed`, `rework`, or `escalated`.
-
-For a `--roadmap <slug>` review, consolidate **per phase** as well as for the roadmap body as a whole — one phase's `rework` does not decide the outcome of a phase that came back clean (see the Gate step's per-phase handling).
-
-Present a single structured report:
-- Surviving findings grouped by severity (blocking → concern → suggestion), each with a location, confidence, and recommendation.
-- The outcome: **reviewed**, **rework**, or **escalated**, and the one rule that decided it.
-
-### 4. Categorize & act — only the orchestrator edits, never a sub-agent
-
-Apply **Review specification § Act**. The dispatched reviewers never apply fixes; only the orchestrator (this skill) does, and only after refutation.
-
-Skip this step's fix-application half entirely in `--implementation-plan` mode — there is no persisted rdm item to write to or file against.
-
-Small fixes are written back as a whole body (`--body` is whole-document-authoritative — there is no patch/diff mechanism):
-```bash
-rdm phase update <phase-number> --roadmap <slug> --body "<full updated body>" --no-edit --project rdm
-# or: rdm task update <slug> --body "<full updated body>" --no-edit --project rdm
-# or: rdm roadmap update <slug> --body "<full updated body>" --no-edit --project rdm
-rdm commit -m "chore(plan): address plan review finding on <target>"
-```
-
-Large findings are filed as tasks instead:
-```bash
-rdm task create <slug> --title "Plan review finding: description" --body "Details." --tags plan-review --no-edit --project rdm
-rdm commit -m "chore(plan): file plan review finding as task"
-```
-
-### 5. Gate — clear or leave `needs-plan-review`
-
-**Overview:** This step gates based on the plan review's verdict. It is fundamentally different from code-review's status-transition gate (which manages `needs-review` status and completion trailers) — plan-review's gate manages the reserved `needs-plan-review` tag. It never writes an rdm status and never writes a land-time completion directive.
-
-Skip this step entirely in `--implementation-plan` mode — there is no persisted rdm item to gate; report the outcome and findings only.
-
-On **reviewed** — when the plan is clean or only has concerns/suggestions:
-
-1. Read the target's current tags:
-```bash
-rdm phase show <phase-number> --roadmap <slug> --format json --project rdm   # read `tags`
-# or: rdm task show <slug> --format json --project rdm
-# or: rdm roadmap show <slug> --format json --project rdm
-```
-
-2. Filter `needs-plan-review` out by exact string match and write the complete remaining list back — **`--tags` replaces the whole list**, so always read-then-filter-then-set:
-```bash
-rdm phase update <phase-number> --roadmap <slug> --tags <comma-joined-remaining-tags> --no-edit --project rdm
-# or, when needs-plan-review was the only tag present:
-rdm phase update <phase-number> --roadmap <slug> --tags "" --no-edit --project rdm
-rdm commit -m "chore(plan): clear needs-plan-review on <target>"
-```
-
-On **rework** or **escalated** — when changes are needed:
-
-Do **not** call `update --tags`. The `needs-plan-review` tag is left unchanged in place. State explicitly in the report that the tag was left, and enumerate exactly what must change before the next review pass. On `escalated`, describe what human decision or architectural constraint resolution is required.
-
-**Per-phase gating** (`--roadmap <slug>` reviews):
-
-Under `--roadmap <slug>`, gate each phase **individually** — a phase whose own outcome is `rework` or `escalated` keeps its `needs-plan-review` tag even when every other phase in the roadmap reaches `reviewed`. The roadmap body itself is gated separately.
+- **Target type drives `unit-of-work`.** The `unit-of-work` dimension is scoped to **phase** units only — it is dropped from task, roadmap-body, and `--implementation-plan` units (the workflow strips it post-pipeline via `stripNonPhaseUnitOfWork`).
+- **Per-phase independent gating.** Under `--roadmap <slug>` the roadmap body and every phase are reviewed and gated **individually**: one phase's `rework` never holds the tag on a sibling that reached `reviewed`.
+- **The gate manages a tag, not a status.** Plan review owns the reserved `needs-plan-review` tag. On `reviewed` it clears the tag by **read-filter-write** (`filterPlanReviewTag` preserves siblings like `depends-unlanded`, since `--tags` replaces the whole list); on `rework`/`escalated` it leaves the tag in place. It **never** writes an rdm status and never writes a land-time completion directive.
+- **`--implementation-plan` is report-only.** No persisted item, so the workflow skips both the act half and the gate entirely — it reports the outcome and findings only.
+- **Fail-closed.** An unread/empty plan is never silently marked reviewed; the workflow leaves the tag in place and reports the fetch failure.
 
 ## Guidelines
 
-- Be objective, and cite evidence (a location and a quote or paraphrase) for every finding.
-- The dispatched sub-agents only review and report — they never edit. The orchestrator (this skill) applies small fixes and files large ones, and only after refutation.
+- Be objective, and cite evidence for every finding.
+- The dispatched sub-agents only review and report — they never edit. Only the orchestrator applies small fixes (whole-`--body` writes) and files large findings as tasks, and only after refutation.
 - Never guess intent when the target document is ambiguous or missing — report it as a finding instead.
-- `--body` is whole-document-authoritative: always read-modify-write the entire body, never assume a patch/diff mechanism exists.
-- `--tags` replaces the whole list: always read the current tags, filter out `needs-plan-review`, and set the complete remaining list (or `--tags ""` when it was the only tag).
 - A surviving `blocking` finding yields `rework` or `escalated`; concerns and suggestions alone never hold the gate closed.
 
 ## Review specification
 
-**Hand-authored sections:** Setup, Find, Consolidate, Categorize & act, and Gate above are hand-authored and permanent. They implement plan-review's domain-specific logic (argument parsing, verdict-determination, and tag-clearing gating) and will not be overwritten by generator updates. The generated marker block below contains plan-mode review dimensions (coherence, architectural-fit, unit-of-work), refutation logic, filtering, and verdict rules rendered from the canonical review source in `.claude/workflows/lib/review.mjs` via `scripts/gen-skill-review.sh --mode plan`.
-
-**To regenerate this block:** Edit `.claude/workflows/lib/review.mjs` and run `scripts/gen-skill-review.sh --mode plan`, not this document. The single home of dimensions, severity scale, refute pass, verdict rules, and gate policy is the canonical review source.
+The generated marker block below contains the plan-mode review dimensions (coherence, architectural-fit, unit-of-work), refutation logic, filtering, verdict rules, and gate policy, rendered from the canonical review source via `scripts/gen-skill-review.sh --mode plan`. It documents exactly the pipeline `plan-review.js` runs. Do not hand-edit it.
 
 <!-- rdm:review-spec:begin (generated by scripts/gen-skill-review.sh --mode plan — edit .claude/workflows/lib/review.mjs, not this region) -->
 

@@ -77,6 +77,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New dogfood `plan-review` Workflow (`.claude/workflows/plan-review.js`): a
+  standalone plan-mode review over all four target types — `--task <slug>`,
+  `--roadmap <slug>`, a positional `<slug> [phase]`, and
+  `--implementation-plan`. It reuses the one canonical review core
+  (`buildReviewPipeline('plan')` and `GATE_POLICY.plan`) with no new review
+  logic. For `--roadmap` it reviews the roadmap body plus every phase and gates
+  each **independently** (a `parallel()` per-phase fan-out): a phase that
+  reworks keeps its `needs-plan-review` tag while sibling phases that reach
+  `reviewed` have theirs cleared. Clearing is a sibling-preserving
+  read-filter-write (a reserved tag like `depends-unlanded` survives), the gate
+  never persists an rdm status, and `--implementation-plan` — which has no
+  persisted rdm item — is report-only (no body edit, no filed task, no gate).
+  An unread or empty plan fails closed (the tag is left in place). The local
+  `rdm-plan-review` skill is re-authored as a thin shim over this workflow. The
+  shipped `rdm-plan-review` skill templates are unchanged.
 - The standalone `review-refute-fix` Workflow tool now returns a full
   `reviewed` / `rework` / `escalated` verdict — with the mapped rdm status,
   `writesCompletion`, and a summary — instead of just a list of surviving
