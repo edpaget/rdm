@@ -77,6 +77,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New dogfood `backlog` Workflow (`.claude/workflows/backlog.js`): the
+  read-only, propose-only `rdm-backlog` grooming pass now runs headlessly. It
+  runs `rdm backlog report` once, fans one READ-ONLY analyzer agent out per
+  populated signal category (`stale_tasks`, `duplicate_clusters`,
+  `tag_clusters`, `archivable_roadmaps`) in parallel, and consolidates the
+  results into one ordered, reviewable batch of `{command, rationale}`
+  proposals grouped by category plus a merged `## Open questions` section —
+  or short-circuits to "Nothing to groom" when the report carries no signals.
+  The non-mutation guarantee is structural: the only Bash-executing agent in
+  the whole run is the read-only report fetch, and every analyzer is
+  explicitly told to propose text only, never to execute a mutating command
+  — mirroring `review-refute-fix`'s "READ-ONLY reviewer" framing. The local
+  `rdm-backlog` skill is re-authored as a thin shim over this workflow. New
+  dogfood harness `scripts/verify-workflow-backlog.sh` asserts the batch
+  shape over a seeded report, the empty-report short-circuit, and — against a
+  real seeded plan repo — that a run leaves the plan repo's git state
+  byte-identical before and after. The shipped `rdm-backlog` skill templates
+  are unchanged; this workflow is dogfood-only for now.
 - New dogfood `plan-review` Workflow (`.claude/workflows/plan-review.js`): a
   standalone plan-mode review over all four target types — `--task <slug>`,
   `--roadmap <slug>`, a positional `<slug> [phase]`, and
