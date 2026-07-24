@@ -710,6 +710,14 @@ function buildEstimateTierPrompt(stem, slug) {
 // rated or written (which is what makes a re-run idempotent). A rater result
 // that is null or omits stem/difficulty is skipped with a log line rather than
 // dereferenced.
+//
+// The summary distinguishes TWO non-rated populations, because conflating them
+// misreports state after a `--phase`-narrowed run:
+//   * `skipped`  — phases that ALREADY carry a difficulty/model (genuinely
+//                  already estimated; correctly left untouched forever).
+//   * `deferred` — phases still unestimated but excluded from THIS run only by
+//                  the `phase` narrow (they still need rating on a later pass).
+// On an un-narrowed run `deferred` is always empty.
 function buildEstimatePipeline(deps) {
   const d = deps || {};
   const log = d.log || function () {};
@@ -722,7 +730,11 @@ function buildEstimatePipeline(deps) {
     const listed = await d.list(roadmap);
     const phaseList = Array.isArray(listed) ? listed : [];
 
-    let targetStems = selectUnestimated(phaseList);
+    // Every phase that still needs rating, BEFORE the optional phase narrow.
+    const unestimatedStems = selectUnestimated(phaseList);
+    const unestimatedSet = new Set(unestimatedStems);
+
+    let targetStems = unestimatedStems.slice();
     // Narrow to a single phase NUMBER when requested. An already-estimated
     // target is already absent from targetStems, so this degenerates to a no-op.
     if (onlyNumber != null) {
@@ -736,10 +748,14 @@ function buildEstimatePipeline(deps) {
     }
     // Deterministic order for both the fan-out and the summary.
     targetStems = targetStems.slice().sort();
+    const targetSet = new Set(targetStems);
 
     const allStems = phaseList.map((p) => p && p.stem).filter(Boolean);
-    const ratedSet = new Set(targetStems);
-    const skipped = allStems.filter((s) => !ratedSet.has(s)).slice().sort();
+    // `skipped` is ONLY the genuinely-already-estimated phases (difficulty/model
+    // set). Phases still unestimated but excluded by the phase narrow go into
+    // `deferred`, so a narrowed run never mislabels them as already estimated.
+    const skipped = allStems.filter((s) => !unestimatedSet.has(s)).slice().sort();
+    const deferred = unestimatedStems.filter((s) => !targetSet.has(s)).slice().sort();
 
     const estimated = [];
     if (targetStems.length) {
@@ -781,7 +797,7 @@ function buildEstimatePipeline(deps) {
       }
     }
 
-    return { roadmap: roadmap, estimated: estimated, skipped: skipped };
+    return { roadmap: roadmap, estimated: estimated, skipped: skipped, deferred: deferred };
   };
 }
 
@@ -793,6 +809,7 @@ function buildEstimateSummaryText(summary) {
   const roadmap = s.roadmap || '';
   const estimated = Array.isArray(s.estimated) ? s.estimated : [];
   const skipped = Array.isArray(s.skipped) ? s.skipped : [];
+  const deferred = Array.isArray(s.deferred) ? s.deferred : [];
   const lines = [];
   lines.push('estimate summary for roadmap/' + roadmap);
   lines.push('estimated (' + estimated.length + '):');
@@ -804,6 +821,11 @@ function buildEstimateSummaryText(summary) {
     lines.push('  none');
   }
   lines.push('skipped, already estimated (' + skipped.length + '): ' + (skipped.length ? skipped.join(', ') : 'none'));
+  // Only surfaced after a `--phase`-narrowed run leaves other unestimated
+  // phases untouched; empty (and omitted) on a full run.
+  if (deferred.length) {
+    lines.push('deferred, still unestimated — not targeted this run (' + deferred.length + '): ' + deferred.join(', '));
+  }
   return lines.join('\n');
 }
 // >>> estimate-core:end <<<

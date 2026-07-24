@@ -89,7 +89,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to the ones whose difficulty is unset, rates each in a parallel fan-out, and
   writes the rating back — persisting the difficulty AND appending a
   `## Estimate <difficulty> — <justification>` audit note to the phase body —
-  then reads the model tier back from rdm-core for its summary. It never passes
+  then reads the model tier back from rdm-core for its summary. When narrowed to
+  a single phase, the summary reports the other still-unestimated phases as
+  `deferred` (not targeted this run) rather than mislabeling them as already
+  estimated; only phases that genuinely carry a difficulty are reported as
+  skipped. It never passes
   `--model` and never reimplements the difficulty→tier mapping: rdm-core
   (`Difficulty::model_tier`) stays the single home for that policy. Its pure
   core lives once in `.claude/workflows/lib/estimate.mjs` (the `estimate-core`

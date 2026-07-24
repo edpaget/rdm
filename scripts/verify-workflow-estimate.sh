@@ -260,7 +260,7 @@ import { pathToFileURL } from 'node:url';
 
 const libPath = process.argv[2];
 const m = await import(pathToFileURL(libPath).href);
-const { buildEstimatePipeline } = m;
+const { buildEstimatePipeline, buildEstimateSummaryText } = m;
 
 // The fake rdm-core: writeback sets BOTH difficulty and a derived model (that is
 // what real rdm-core does — Difficulty::model_tier), so a re-list shows the phase
@@ -351,6 +351,10 @@ function makeFakes(phases) {
 }
 
 // === narrow to a single phase number ========================================
+// The two un-targeted phases are STILL UNESTIMATED here — they must be reported
+// as `deferred` (not targeted this run), NOT mislabeled `skipped, already
+// estimated`. This is the exact regression that a summary-membership-only
+// assertion missed, so assert the rendered summary text's truthfulness too.
 {
   const h = makeFakes([
     { number: 1, stem: 'phase-1-a' },
@@ -360,7 +364,21 @@ function makeFakes(phases) {
   const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm', phase: 2 });
   assert.deepEqual(h.rateCalls, [['phase-2-b']], 'narrowed run rates ONLY the named phase number');
   assert.deepEqual(summary.estimated.map((e) => e.stem), ['phase-2-b'], 'only the narrowed phase is estimated');
-  assert.ok(summary.skipped.includes('phase-1-a') && summary.skipped.includes('phase-3-c'), 'the others are skipped');
+  assert.deepEqual(summary.skipped, [], 'NO phase is already estimated, so nothing is reported as skipped');
+  assert.deepEqual(
+    summary.deferred,
+    ['phase-1-a', 'phase-3-c'],
+    'the other still-unestimated phases are DEFERRED (not targeted this run), not mislabeled skipped'
+  );
+  const text = buildEstimateSummaryText(summary);
+  assert.ok(
+    !/phase-1-a|phase-3-c/.test(text.split('\n').find((l) => l.startsWith('skipped, already estimated')) || ''),
+    'the summary text never calls a still-unestimated deferred phase "already estimated"'
+  );
+  assert.ok(
+    /deferred, still unestimated[^\n]*phase-1-a, phase-3-c/.test(text),
+    'the summary text reports the deferred phases under an accurate "still unestimated" heading'
+  );
 }
 
 // === narrowing to an already-estimated phase is a no-op =====================
@@ -376,7 +394,7 @@ function makeFakes(phases) {
   const h = makeFakes([]);
   const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
   assert.deepEqual(h.rateCalls, [], 'no rater fans out for an empty roadmap');
-  assert.deepEqual(summary, { roadmap: 'rm', estimated: [], skipped: [] }, 'empty roadmap yields a deterministic zero summary');
+  assert.deepEqual(summary, { roadmap: 'rm', estimated: [], skipped: [], deferred: [] }, 'empty roadmap yields a deterministic zero summary');
 }
 
 // === deterministic: two identical runs against fresh fakes are byte-equal ====
