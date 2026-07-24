@@ -35,6 +35,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
 LIB="$REPO_ROOT/.claude/workflows/lib/review.mjs"
+PLAN_LIB="$REPO_ROOT/.claude/workflows/lib/plan-review.mjs"
 GEN="$REPO_ROOT/scripts/gen-workflow-review.sh"
 SKILL_GEN="$REPO_ROOT/scripts/gen-skill-review.sh"
 TEMPLATES="$REPO_ROOT/rdm-core/src/templates"
@@ -1208,6 +1209,236 @@ if grep -nE 'Date\.now\(|Math\.random\(' "$PLAN_REVIEW" >&2; then
 fi
 pass "plan-review.js parses four targets, fans out, reuses the core, and carves out implementation-plan"
 
+# --- 5b-drift. PLAN-REVIEW DRIVER BLOCK: byte-identical (lib vs workflow) ------
+# The plan-review DRIVER (parsePlanArgs + the fetch/act/gate orchestration in
+# runPlanReviewDriver) is the single source of truth in lib/plan-review.mjs and
+# is copied BYTE-IDENTICAL into plan-review.js's `plan-review-driver` block. Like
+# dispatch-phase's dispatch-outcome block, this copy is NOT stamped by the
+# generator — gate it for byte-equality here so a drifted copy cannot ship.
+say "5b-drift. plan-review-driver block is byte-identical between the lib and the workflow"
+[ -f "$PLAN_LIB" ] || fail "lib/plan-review.mjs not found: $PLAN_LIB"
+extract_driver_block() {
+    awk '
+        index($0, ">>> plan-review-driver:begin") { infence = 1; next }
+        index($0, ">>> plan-review-driver:end")   { infence = 0 }
+        infence { print }
+    ' "$1"
+}
+extract_driver_block "$PLAN_LIB" >"$TMP/plan-driver-lib"
+extract_driver_block "$PLAN_REVIEW" >"$TMP/plan-driver-wf"
+[ -s "$TMP/plan-driver-lib" ] || fail "no plan-review-driver block found between markers in $PLAN_LIB"
+[ -s "$TMP/plan-driver-wf" ] || fail "no plan-review-driver block found between markers in $PLAN_REVIEW"
+if diff -u "$TMP/plan-driver-lib" "$TMP/plan-driver-wf" >"$TMP/plan-driver-diff" 2>&1; then
+    pass "plan-review-driver block matches byte-for-byte between lib and workflow"
+else
+    cat "$TMP/plan-driver-diff" >&2
+    fail "plan-review-driver block DRIFTED — copy the lib block verbatim into $PLAN_REVIEW"
+fi
+# The driver's load-bearing symbols must be present in BOTH copies (guards against
+# a partial mirror the byte-diff above would also catch, but names the gap).
+for sym in 'function parsePlanArgs' 'function buildReviewUnits' 'async function runPlanReviewDriver' \
+    "buildReviewPipeline('plan')" 'stripNonPhaseUnitOfWork' 'filterPlanReviewTag' 'classifyPlanOutcome'; do
+    grep -q "$sym" "$TMP/plan-driver-lib" || fail "plan-review-driver block in the LIB is missing $sym"
+    grep -q "$sym" "$TMP/plan-driver-wf" || fail "plan-review-driver block in the WORKFLOW is missing $sym (partial mirror?)"
+done
+# The runtime entry that calls runPlanReviewDriver lives OUTSIDE the copied block
+# (it uses top-level `return` / ambient globals, illegal in a Node module), so it
+# must NOT appear in the lib copy.
+grep -q 'return await runPlanReviewDriver' "$PLAN_REVIEW" ||
+    fail "plan-review.js must invoke the driver via a thin runtime entry (return await runPlanReviewDriver(...))"
+if grep -q 'return await runPlanReviewDriver' "$PLAN_LIB"; then
+    fail "the top-level runtime entry leaked into the lib copy — it must stay OUTSIDE the block"
+fi
+pass "plan-review-driver block is byte-in-sync and the runtime entry is workflow-only"
+
+# --- 5b-exec. PLAN-REVIEW DRIVER: executed against a fake agent/parallel -------
+# The blocking gap the prior pass shipped: parsePlanArgs and the fetch/act/gate
+# orchestration were only STATIC-grepped, never executed. Import the canonical
+# lib and DRIVE it with a recording fake agent + a reference parallel, asserting
+# the real control flow: four-target precedence across three arg SHAPES, the
+# malformed-JSON fallback, the no-target throw, fail-closed on an unread plan, the
+# per-unit independent act+gate, the single-target flattening, and the
+# implementation-plan no-act/no-gate carve-out. Zero LLM calls.
+say "5b-exec. plan-review driver executes: arg parsing + fetch/act/gate orchestration"
+cat >"$TMP/plan-driver-test.mjs" <<'NODE_DRIVER_TEST'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const mod = await import(pathToFileURL(process.argv[2]).href);
+const { parsePlanArgs, buildReviewUnits, runPlanReviewDriver } = mod;
+for (const name of ['parsePlanArgs', 'buildReviewUnits', 'runPlanReviewDriver']) {
+  assert.equal(typeof mod[name], 'function', name + ' must be exported from lib/plan-review.mjs');
+}
+
+// ---- parsePlanArgs: four target kinds across three arg SHAPES ----------------
+// (a) flag STRING form.
+assert.equal(parsePlanArgs('--task fix-bug').kind, 'task', 'flag string --task');
+assert.equal(parsePlanArgs('--task fix-bug').task, 'fix-bug', 'flag string --task slug');
+assert.equal(parsePlanArgs('--roadmap big-thing').kind, 'roadmap', 'flag string --roadmap (no phase)');
+assert.equal(parsePlanArgs('big-thing phase-2-foo').kind, 'phase', 'positional <slug> <phase> => phase');
+assert.equal(parsePlanArgs('big-thing phase-2-foo').phase, 'phase-2-foo', 'positional phase captured');
+// Positional <slug> with NO phase behaves exactly like --roadmap <slug>.
+assert.equal(parsePlanArgs('big-thing').kind, 'roadmap', 'bare positional <slug> => roadmap');
+assert.equal(parsePlanArgs('big-thing').roadmap, 'big-thing', 'bare positional roadmap captured');
+assert.equal(parsePlanArgs('--implementation-plan').kind, 'implementation-plan', 'flag string --implementation-plan');
+// (b) JSON payload form.
+assert.equal(parsePlanArgs('{"task":"j-task"}').kind, 'task', 'JSON payload task');
+assert.equal(parsePlanArgs('{"roadmap":"r","phase":"phase-1-x"}').kind, 'phase', 'JSON payload roadmap+phase');
+assert.equal(parsePlanArgs('{"roadmap":"r"}').kind, 'roadmap', 'JSON payload roadmap-only');
+assert.equal(parsePlanArgs('{"implementationPlan":true,"planText":"P"}').kind, 'implementation-plan', 'JSON payload impl-plan');
+assert.equal(parsePlanArgs('{"implementationPlan":true,"planText":"P"}').planText, 'P', 'planText captured from JSON');
+// (c) structured OBJECT form.
+assert.equal(parsePlanArgs({ task: 'o-task' }).kind, 'task', 'object task');
+assert.equal(parsePlanArgs({ roadmap: 'r', phase: 'phase-3-y' }).kind, 'phase', 'object roadmap+phase');
+assert.equal(parsePlanArgs({ roadmap: 'r' }).kind, 'roadmap', 'object roadmap-only');
+assert.equal(parsePlanArgs({ implementationPlan: true }).kind, 'implementation-plan', 'object impl-plan');
+
+// ---- Precedence is fixed and total when several targets co-occur -------------
+// implementation-plan wins over everything; then task; then roadmap+phase; then roadmap.
+assert.equal(parsePlanArgs({ implementationPlan: true, task: 't', roadmap: 'r', phase: 'p' }).kind, 'implementation-plan',
+  'impl-plan outranks task/roadmap/phase');
+assert.equal(parsePlanArgs({ task: 't', roadmap: 'r', phase: 'p' }).kind, 'task', 'task outranks roadmap+phase');
+assert.equal(parsePlanArgs({ roadmap: 'r', phase: 'p' }).kind, 'phase', 'roadmap+phase => phase (outranks bare roadmap)');
+
+// ---- Malformed-JSON fallback: a `{`-leading string that does NOT parse -------
+// degrades to a positional target, NOT a throw, NOT a silent empty object.
+// A single-token `{`-leading string that does not parse falls back to a bare
+// positional target => roadmap (raw string preserved as the token).
+assert.equal(parsePlanArgs('{bad').kind, 'roadmap', 'malformed JSON falls back to a positional target');
+assert.equal(parsePlanArgs('{bad').roadmap, '{bad', 'malformed JSON fallback tokenizes the raw string');
+// A multi-token malformed string tokenizes as `<slug> [phase]` (fallback, not a throw).
+assert.equal(parsePlanArgs('{not json').kind, 'phase', 'malformed multi-token JSON => positional slug+phase');
+
+// ---- No-target throw ---------------------------------------------------------
+assert.throws(() => parsePlanArgs(''), /no target/, 'empty args throws an actionable no-target error');
+assert.throws(() => parsePlanArgs({}), /no target/, 'empty object throws an actionable no-target error');
+
+// ---- buildReviewUnits: fail-closed on an empty/unread body -------------------
+assert.equal(buildReviewUnits({ kind: 'task', task: 't' }, null).fetchFailed, true, 'null fetch => fetchFailed');
+assert.equal(buildReviewUnits({ kind: 'task', task: 't' }, { body: '', tags: [] }).fetchFailed, true, 'empty body => fetchFailed');
+assert.equal(buildReviewUnits({ kind: 'phase', roadmap: 'r', phase: 'p' }, { body: '   ', tags: [] }).fetchFailed, true,
+  'whitespace-only body => fetchFailed');
+{
+  const b = buildReviewUnits({ kind: 'roadmap', roadmap: 'r' },
+    { body: 'RB', tags: ['needs-plan-review'], phases: [{ stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] }] });
+  assert.equal(b.fetchFailed, false, 'roadmap with body does not fail');
+  assert.equal(b.units.length, 2, 'roadmap => body unit + one unit per phase');
+  assert.equal(b.units[0].targetType, 'roadmap', 'first unit is the roadmap body');
+  assert.equal(b.units[1].targetType, 'phase', 'second unit is a phase');
+  assert.equal(b.units[1].ident, 'phase-1-a', 'phase unit ident is the stem');
+}
+
+// ---- runPlanReviewDriver: a recording fake agent + a reference parallel ------
+// findingsByTarget maps a review-unit target substring to the survivors the fake
+// pipeline returns for it, so we can seed a rework on ONE phase and reviewed on
+// the rest and prove independent gating end-to-end through the real driver.
+function makeHarness(findingsByTarget, fetchResults) {
+  const calls = [];
+  const agent = async (prompt, opts) => {
+    calls.push({ label: opts && opts.label, phase: opts && opts.phase, prompt });
+    const label = (opts && opts.label) || '';
+    if (label.indexOf('fetch:') === 0) return fetchResults[label] !== undefined ? fetchResults[label] : null;
+    // act / gate:clear-tag agents just acknowledge.
+    return { ok: true };
+  };
+  const parallel = (thunks) => Promise.all(thunks.map((t) => t()));
+  const runPlanReview = async (ctx) => {
+    const target = (ctx && ctx.target) || '';
+    for (const key of Object.keys(findingsByTarget)) {
+      if (target.indexOf(key) !== -1) return findingsByTarget[key];
+    }
+    return [];
+  };
+  const log = () => {};
+  return { deps: { agent, parallel, runPlanReview, log }, calls };
+}
+const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking', confidence: 90, what_fails: 'ambiguous' }];
+
+// (1) --roadmap: one phase reworks, the roadmap body + the other phases pass.
+//     Independent gating: the reworked phase gets NO gate:clear-tag agent call;
+//     each reviewed unit gets exactly one.
+{
+  const { deps, calls } = makeHarness(
+    { 'phase-1-a': blockingCoherence }, // only phase-1-a has a blocking finding
+    {
+      'fetch:roadmap': {
+        body: 'RB', tags: ['needs-plan-review'],
+        phases: [
+          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] },
+          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review'] },
+        ],
+      },
+    }
+  );
+  const res = await runPlanReviewDriver({ roadmap: 'big-thing' }, deps);
+  assert.equal(res.kind, 'roadmap', 'roadmap result kind');
+  const byIdent = Object.fromEntries(res.units.map((u) => [u.ident, u]));
+  assert.equal(byIdent['big-thing'].outcome, 'reviewed', 'roadmap body reviewed');
+  assert.equal(byIdent['big-thing'].tagCleared, true, 'roadmap body tag cleared');
+  assert.equal(byIdent['phase-1-a'].outcome, 'rework', 'phase-1-a reworks');
+  assert.equal(byIdent['phase-1-a'].clearsPlanReviewTag, false, 'reworked phase keeps its tag');
+  assert.equal(byIdent['phase-1-a'].tagCleared, false, 'reworked phase tag NOT cleared');
+  assert.equal(byIdent['phase-2-b'].outcome, 'reviewed', 'phase-2-b reviewed');
+  assert.equal(byIdent['phase-2-b'].tagCleared, true, 'phase-2-b tag cleared');
+  assert.strictEqual(byIdent['phase-1-a'].status, null, 'plan gate never persists a status');
+  // Exactly TWO gate:clear-tag calls (the two reviewed units), none for the reworked phase.
+  const clearCalls = calls.filter((c) => (c.label || '').indexOf('gate:clear-tag:') === 0);
+  assert.equal(clearCalls.length, 2, 'only the two reviewed units get a tag-clear agent call');
+  assert.ok(!clearCalls.some((c) => c.label.indexOf('phase-1-a') !== -1), 'reworked phase gets NO tag-clear call');
+  // The reworked phase DID get an act call (it has survivors); reviewed-clean units did not.
+  const actCalls = calls.filter((c) => (c.label || '').indexOf('act:') === 0);
+  assert.equal(actCalls.length, 1, 'only the unit with survivors gets an act call');
+  assert.ok(actCalls[0].label.indexOf('phase-1-a') !== -1, 'the act call targets the reworked phase');
+}
+
+// (2) single --task target: flattened onto the top-level result; reviewed clears tag.
+{
+  const { deps, calls } = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review', 'depends-unlanded'] } });
+  const res = await runPlanReviewDriver({ task: 'fix-bug' }, deps);
+  assert.equal(res.kind, 'task', 'task result kind');
+  assert.equal(res.outcome, 'reviewed', 'single target flattens outcome onto the top level');
+  assert.ok(Array.isArray(res.findings), 'single target flattens findings onto the top level');
+  assert.equal(res.units.length, 1, 'one unit for a task target');
+  // The tag write preserves the sibling: filterPlanReviewTag(['needs-plan-review','depends-unlanded']) => ['depends-unlanded'].
+  const tagCall = calls.find((c) => (c.label || '').indexOf('gate:clear-tag:') === 0);
+  assert.ok(tagCall, 'a reviewed task triggers a tag-clear agent call');
+  assert.ok(tagCall.prompt.indexOf('--tags "depends-unlanded"') !== -1, 'the sibling tag is preserved in the write-back');
+  assert.ok(tagCall.prompt.indexOf('needs-plan-review') === -1 || tagCall.prompt.indexOf('clear needs-plan-review') !== -1,
+    'needs-plan-review is not written back into the tag list');
+}
+
+// (3) fail-closed: an unread task body escalates and mutates NOTHING.
+{
+  const { deps, calls } = makeHarness({}, { 'fetch:task': { body: '', tags: ['needs-plan-review'] } });
+  const res = await runPlanReviewDriver({ task: 'ghost' }, deps);
+  assert.equal(res.fetchError, true, 'unread plan reports a fetch error');
+  assert.equal(res.outcome, 'escalated', 'unread plan is fail-closed to escalated');
+  assert.equal(calls.filter((c) => (c.label || '').indexOf('gate:clear-tag:') === 0).length, 0,
+    'fail-closed: NO tag-clear agent call on an unread plan');
+  assert.equal(calls.filter((c) => (c.label || '').indexOf('act:') === 0).length, 0,
+    'fail-closed: NO act agent call on an unread plan');
+}
+
+// (4) --implementation-plan: report-only. No fetch, no act, no gate — the driver
+//     must never call the agent for anything but... nothing. runPlanReview is the
+//     only async touched.
+{
+  const { deps, calls } = makeHarness({ 'PLAN TEXT': blockingCoherence }, {});
+  const res = await runPlanReviewDriver({ implementationPlan: true, planText: 'PLAN TEXT here' }, deps);
+  assert.equal(res.kind, 'implementation-plan', 'impl-plan result kind');
+  assert.equal(res.outcome, 'rework', 'impl-plan still classifies the outcome');
+  assert.ok(!('units' in res), 'impl-plan is report-only (no gated units)');
+  assert.equal(calls.length, 0, 'impl-plan makes NO agent calls (no fetch, no act, no gate)');
+}
+
+console.log('plan-review driver execution assertions passed');
+NODE_DRIVER_TEST
+if run_node "$TMP/plan-driver-test.mjs" "$PLAN_LIB"; then
+    pass "plan-review driver executes correctly: arg precedence, fail-closed, per-unit gate, flatten, impl-plan carve-out"
+else
+    fail "plan-review driver execution assertions failed"
+fi
+
 # --- 5c. SKILL SHIM (AC-5) ---------------------------------------------------
 # The local dogfood SKILL.md is a thin shim over plan-review.js. Its hand-authored
 # prose (above the generated review-spec marker) must reference the workflow, keep
@@ -1236,7 +1467,7 @@ pass "SKILL.md is a thin shim: references the workflow, keeps the pipeline phras
 # scratch copy of the lib, break each helper to a pass-through and require the
 # corresponding assertion to THROW; then heal by restoring. Mirrors section 4's
 # SCRATCH-only isolation — never touches $LIB.
-say "6. Plan helper mutation self-tests (prove the AC-1/AC-2 checks would catch a regression)"
+say "6. Plan helper + driver mutation self-tests (prove the AC-1/AC-2 + driver-exec checks catch a regression)"
 PLANMUT="$TMP/plan-mut"
 mkdir -p "$PLANMUT/.claude/workflows/lib"
 
@@ -1280,6 +1511,33 @@ NODE_TAG_MUT
 run_node "$TMP/plan-tag-mut-test.mjs" "$PLANMUT/.claude/workflows/lib/review.mjs" ||
     fail "tag-filter mutation self-test did not behave as expected"
 
-pass "plan helper checks fire on planted pass-through mutations (proven non-vacuous)"
+# (c) parsePlanArgs precedence -> corrupted: swapping the task/roadmap+phase
+#     precedence order must make the 5b-exec precedence assertion FAIL — proving
+#     the driver-execution harness is non-vacuous. lib/plan-review.mjs imports
+#     ./review.mjs, so the scratch tree carries a pristine review.mjs beside the
+#     mutated driver.
+cp "$LIB" "$PLANMUT/.claude/workflows/lib/review.mjs"
+# Move the `else if (roadmap && phase)` branch ABOVE the `else if (task)` branch by
+# corrupting the task guard to never fire, so `{task,roadmap,phase}` resolves to
+# 'phase' instead of 'task'.
+sed 's/  else if (task) kind = .task./  else if (task \&\& false) kind = '"'"'task'"'"' \/\/ MUTANT/' \
+    "$PLAN_LIB" >"$PLANMUT/.claude/workflows/lib/plan-review.mjs"
+grep -q 'MUTANT' "$PLANMUT/.claude/workflows/lib/plan-review.mjs" ||
+    fail "parsePlanArgs precedence mutation setup did not inject the corruption"
+
+cat >"$TMP/plan-args-mut-test.mjs" <<'NODE_ARGS_MUT'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const mod = await import(pathToFileURL(process.argv[2]).href); // must still import
+assert.throws(
+  () => assert.equal(mod.parsePlanArgs({ task: 't', roadmap: 'r', phase: 'p' }).kind, 'task'),
+  'a corrupted task-precedence must FAIL the "task outranks roadmap+phase" check — else it is vacuous'
+);
+console.log('parsePlanArgs precedence mutation self-test passed');
+NODE_ARGS_MUT
+run_node "$TMP/plan-args-mut-test.mjs" "$PLANMUT/.claude/workflows/lib/plan-review.mjs" ||
+    fail "parsePlanArgs precedence mutation self-test did not behave as expected"
+
+pass "plan helper + driver checks fire on planted mutations (proven non-vacuous)"
 
 say "verify-workflow-review.sh: ALL GREEN"

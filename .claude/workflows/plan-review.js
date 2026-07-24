@@ -33,6 +33,13 @@
 // sibling unify-plan-review roadmap), so selectDimensions fail-opens and the
 // unit-of-work finder runs on every unit. Phase-only scoping is instead applied
 // in the CONSUMER via stripNonPhaseUnitOfWork(survivors, targetType).
+//
+// The DRIVER below (parsePlanArgs + the fetch/act/gate orchestration in
+// runPlanReviewDriver) is the single source of truth in
+// .claude/workflows/lib/plan-review.mjs and is copied BYTE-IDENTICAL into the
+// plan-review-driver block here — the runtime cannot import a module. The verify
+// harness imports that lib and executes the driver against a fake agent/parallel;
+// scripts/verify-workflow-review.sh gates the two copies for byte-drift.
 
 export const meta = {
   name: 'plan-review',
@@ -880,11 +887,37 @@ function buildReviewPipeline(mode, deps) {
 // >>> review-refute-fix:end <<<
 
 // --- Driver -------------------------------------------------------------------
+//
+// The plan-review DRIVER (argument parsing, the mechanical fetch/act/gate prompt
+// builders, and the dependency-injected orchestration) is the single source of
+// truth in .claude/workflows/lib/plan-review.mjs and is copied BYTE-IDENTICAL
+// into the block below. The Workflow runtime cannot import a module at run time
+// (docs/workflow-schemas.md § "Import spike"), so — exactly like dispatch-phase's
+// dispatch-outcome block — the logic lives in a Node-importable lib the verify
+// harness drives with a fake agent/parallel, while this consumer carries a
+// verbatim copy. scripts/verify-workflow-review.sh gates the two for byte-drift.
+// Edit the lib, then re-copy; do NOT edit the block here.
+// >>> plan-review-driver:begin <<<
+// Pure + dependency-injected driver logic for the standalone plan-review
+// workflow.
+//
+// This block is the single source of truth in
+// .claude/workflows/lib/plan-review.mjs and is copied BYTE-IDENTICAL into
+// .claude/workflows/plan-review.js (the Workflow runtime cannot load modules at
+// run time). scripts/verify-workflow-review.sh gates the two copies for drift.
+// No Date.now / Math.random — pure array/string ops plus injected async deps.
+//
+// `buildReviewPipeline`, `stripNonPhaseUnitOfWork`, `filterPlanReviewTag`,
+// `classifyPlanOutcome`, `gateFor`, and `summarizeFindings` are NOT declared
+// here: they belong to the canonical review source (lib/review.mjs) and reach
+// this block from the stamped review block that precedes it in the workflow
+// consumer (and from the import above in Node).
 
 // parsePlanArgs(rawArgs) — resolve the four target types from a raw $ARGUMENTS
 // flag string, a JSON payload, or a structured object. Returns
 // { kind, roadmap, phase, task, planText } where kind is one of
-// 'task' | 'phase' | 'roadmap' | 'implementation-plan'.
+// 'task' | 'phase' | 'roadmap' | 'implementation-plan'. Throws an actionable
+// error when no target can be resolved.
 function parsePlanArgs(rawArgs) {
   let a = rawArgs || {}
   if (typeof a === 'string') {
@@ -941,6 +974,11 @@ function parsePlanArgs(rawArgs) {
 
   const planText = typeof a.planText === 'string' ? a.planText : typeof a.plan === 'string' ? a.plan : ''
 
+  // Precedence is fixed and total: implementation-plan wins over everything
+  // (it is report-only and has no persisted item), then an explicit task, then
+  // a roadmap+phase pair (a single phase), then a bare roadmap (the whole
+  // roadmap). A positional `<slug>` with no phase therefore behaves exactly
+  // like `--roadmap <slug>`.
   let kind
   if (implementationPlan) kind = 'implementation-plan'
   else if (task) kind = 'task'
@@ -1084,63 +1122,17 @@ function buildActPrompt(kind, roadmap, ident, survivors) {
   ].join('\n')
 }
 
-const parsed = parsePlanArgs(args)
-const kind = parsed.kind
-
-// The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
-// the stamped block, with NO independent review logic in this driver. Passing NO
-// signals is deliberate (see the header note); phase-only unit-of-work scoping is
-// applied per unit via stripNonPhaseUnitOfWork below.
-const runPlanReview = buildReviewPipeline('plan')
-
-// reviewUnit — run find → refute → filter for ONE review unit, then strip
-// non-phase unit-of-work survivors and classify. Returns a per-unit result the
-// act + gate steps consume independently.
-async function reviewUnit(unit) {
-  const rawSurvivors = await runPlanReview({ target: unit.target })
-  const survivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
-  const outcome = classifyPlanOutcome(survivors)
-  return { unit: unit, survivors: survivors, outcome: outcome, summary: summarizeFindings(survivors) }
-}
-
-// ------------------------------------------------------------------ implementation-plan
-// Report-only: no persisted rdm item, so no act and no gate. stripNonPhaseUnitOfWork
-// drops unit-of-work here too (targetType 'implementation-plan' !== 'phase').
-if (kind === 'implementation-plan') {
-  const planText = parsed.planText || '(the implementation plan provided in context)'
-  const rawSurvivors = await runPlanReview({ target: planText })
-  const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
-  const outcome = classifyPlanOutcome(survivors)
-  log('plan-review (implementation-plan): ' + outcome + ' — ' + summarizeFindings(survivors))
-  return {
-    kind: 'implementation-plan',
-    outcome: outcome,
-    summary: summarizeFindings(survivors),
-    findings: survivors,
-  }
-}
-
-// ------------------------------------------------------------------ persisted targets
-// Fetch the artifact(s) and build the review unit list. A `phase`/`task` target
-// is a single unit; a `roadmap` target is the roadmap body plus one unit per
-// phase, each gated independently.
-let units = []
-let fetchFailed = false
-
-if (kind === 'roadmap') {
-  let rm = null
-  try {
-    rm = await agent(buildRoadmapFetchPrompt(parsed.roadmap), {
-      label: 'fetch:roadmap',
-      phase: 'Read',
-      schema: ROADMAP_TARGET_SCHEMA,
-    })
-  } catch (e) {
-    rm = null
-  }
-  if (!rm || !rm.body || String(rm.body).trim() === '') {
-    fetchFailed = true
-  } else {
+// buildReviewUnits(parsed, fetched) — pure: turn a parsed target plus the fetched
+// artifact JSON into the list of independent review units. A `phase`/`task`
+// target is a single unit; a `roadmap` target is the roadmap body plus one unit
+// per phase, each gated independently. Returns { units, fetchFailed }. FAIL-CLOSED
+// on an empty/unread body: an unread plan must NEVER be silently marked reviewed.
+function buildReviewUnits(parsed, fetched) {
+  const kind = parsed.kind
+  if (kind === 'roadmap') {
+    const rm = fetched
+    if (!rm || !rm.body || String(rm.body).trim() === '') return { units: [], fetchFailed: true }
+    const units = []
     units.push({
       kind: 'roadmap',
       targetType: 'roadmap',
@@ -1161,112 +1153,205 @@ if (kind === 'roadmap') {
         target: 'phase ' + parsed.roadmap + '/' + p.stem + '\n\n' + String(p.body || ''),
       })
     }
+    return { units: units, fetchFailed: false }
   }
-} else {
   // phase or task — a single unit.
-  const fetchPrompt =
-    kind === 'task' ? buildTaskFetchPrompt(parsed.task) : buildPhaseFetchPrompt(parsed.roadmap, parsed.phase)
-  const fetchSchema = PLAN_TARGET_SCHEMA
-  let meta = null
-  try {
-    meta = await agent(fetchPrompt, { label: 'fetch:' + kind, phase: 'Read', schema: fetchSchema })
-  } catch (e) {
-    meta = null
-  }
-  if (!meta || !meta.body || String(meta.body).trim() === '') {
-    fetchFailed = true
-  } else {
-    const ident = kind === 'task' ? parsed.task : parsed.phase
-    const label = kind === 'task' ? 'task/' + parsed.task : parsed.roadmap + '/' + parsed.phase
-    units.push({
-      kind: kind,
-      targetType: kind,
-      ident: ident,
-      roadmap: parsed.roadmap,
-      tags: Array.isArray(meta.tags) ? meta.tags : [],
-      target: kind + ' ' + label + '\n\n' + String(meta.body),
-    })
+  const meta = fetched
+  if (!meta || !meta.body || String(meta.body).trim() === '') return { units: [], fetchFailed: true }
+  const ident = kind === 'task' ? parsed.task : parsed.phase
+  const label = kind === 'task' ? 'task/' + parsed.task : parsed.roadmap + '/' + parsed.phase
+  return {
+    units: [
+      {
+        kind: kind,
+        targetType: kind,
+        ident: ident,
+        roadmap: parsed.roadmap,
+        tags: Array.isArray(meta.tags) ? meta.tags : [],
+        target: kind + ' ' + label + '\n\n' + String(meta.body),
+      },
+    ],
+    fetchFailed: false,
   }
 }
 
-// FAIL-CLOSED: an unread plan must NOT be silently marked reviewed / have its
-// tag cleared. Report the failure and mutate nothing.
-if (fetchFailed) {
-  log('plan-review: artifact fetch failed for ' + kind + ' — leaving needs-plan-review in place (fail-closed)')
-  return { kind: kind, outcome: 'escalated', fetchError: true, summary: 'plan-review: artifact fetch failed', units: [] }
-}
+// runPlanReviewDriver(args, deps) — the full plan-review orchestration. Every
+// side effect is reached through the injected `deps`:
+//   deps.agent          — the mechanical fetch / act / tag-write agent runner.
+//   deps.parallel       — the per-unit fan-out primitive.
+//   deps.log            — the log sink (optional; defaults to a no-op).
+//   deps.runPlanReview  — an async runReview(context) from buildReviewPipeline
+//                         ('plan'); optional — built from the review core when
+//                         omitted (the Workflow runtime path, where the ambient
+//                         agent/pipeline/parallel globals are probed by
+//                         buildReviewPipeline itself).
+//
+// Returns the structured result the caller reports:
+//   - implementation-plan: { kind, outcome, summary, findings } (report-only).
+//   - fetch failure:       { kind, outcome:'escalated', fetchError:true, ... }.
+//   - persisted targets:   { kind, units:[…] } with a single phase/task target
+//                          also flattened onto { outcome, summary, findings }.
+async function runPlanReviewDriver(args, deps) {
+  const d = deps || {}
+  const _agent = d.agent
+  const _parallel = d.parallel
+  const _log = d.log || function () {}
+  // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
+  // the review core, with NO independent review logic in this driver. Passing NO
+  // signals is deliberate (see the header note); phase-only unit-of-work scoping
+  // is applied per unit via stripNonPhaseUnitOfWork below.
+  const runPlanReview = d.runPlanReview || buildReviewPipeline('plan')
 
-// Review each unit independently (parallel per-unit fan-out — a phase's outcome
-// never changes a sibling's). A single phase/task target is a one-element list.
-const results = await parallel(units.map((u) => () => reviewUnit(u)))
+  const parsed = parsePlanArgs(args)
+  const kind = parsed.kind
 
-// Act + gate each unit independently. Both halves are skipped in
-// --implementation-plan mode (handled by the early return above); the explicit
-// `if (kind !== 'implementation-plan')` guards make that carve-out grep-visible
-// and keep the code robust if the flow is ever restructured.
-const reported = []
-for (let i = 0; i < results.length; i++) {
-  const r = results[i]
-  if (!r) continue
-  const u = r.unit
-  const gate = gateFor('plan', r.outcome)
+  // reviewUnit — run find → refute → filter for ONE review unit, then strip
+  // non-phase unit-of-work survivors and classify. Returns a per-unit result the
+  // act + gate steps consume independently.
+  async function reviewUnit(unit) {
+    const rawSurvivors = await runPlanReview({ target: unit.target })
+    const survivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
+    const outcome = classifyPlanOutcome(survivors)
+    return { unit: unit, survivors: survivors, outcome: outcome, summary: summarizeFindings(survivors) }
+  }
 
-  // --- Act (orchestrator-only; skipped for implementation-plan) ---
-  if (kind !== 'implementation-plan' && r.survivors.length > 0) {
+  // ------------------------------------------------------------------ implementation-plan
+  // Report-only: no persisted rdm item, so no act and no gate.
+  // stripNonPhaseUnitOfWork drops unit-of-work here too (targetType
+  // 'implementation-plan' !== 'phase').
+  if (kind === 'implementation-plan') {
+    const planText = parsed.planText || '(the implementation plan provided in context)'
+    const rawSurvivors = await runPlanReview({ target: planText })
+    const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
+    const outcome = classifyPlanOutcome(survivors)
+    _log('plan-review (implementation-plan): ' + outcome + ' — ' + summarizeFindings(survivors))
+    return {
+      kind: 'implementation-plan',
+      outcome: outcome,
+      summary: summarizeFindings(survivors),
+      findings: survivors,
+    }
+  }
+
+  // ------------------------------------------------------------------ persisted targets
+  // Fetch the artifact(s), then build the independent review unit list.
+  let fetched = null
+  if (kind === 'roadmap') {
     try {
-      await agent(buildActPrompt(u.kind, u.roadmap, u.ident, r.survivors), {
-        label: 'act:' + u.kind + ':' + u.ident,
-        phase: 'Act',
-        schema: STAMP_ACK_SCHEMA,
+      fetched = await _agent(buildRoadmapFetchPrompt(parsed.roadmap), {
+        label: 'fetch:roadmap',
+        phase: 'Read',
+        schema: ROADMAP_TARGET_SCHEMA,
       })
     } catch (e) {
-      log('plan-review: act step failed for ' + u.kind + '/' + u.ident + ' — continuing to gate')
+      fetched = null
+    }
+  } else {
+    const fetchPrompt =
+      kind === 'task' ? buildTaskFetchPrompt(parsed.task) : buildPhaseFetchPrompt(parsed.roadmap, parsed.phase)
+    try {
+      fetched = await _agent(fetchPrompt, { label: 'fetch:' + kind, phase: 'Read', schema: PLAN_TARGET_SCHEMA })
+    } catch (e) {
+      fetched = null
     }
   }
 
-  // --- Gate (skipped for implementation-plan) ---
-  // On reviewed: read-filter-write the tags to drop needs-plan-review, preserving
-  // siblings. On rework/escalated: leave the tag; GATE_POLICY.plan never persists
-  // an rdm status (gate.status is a literal null).
-  let tagCleared = false
-  if (kind !== 'implementation-plan') {
-    if (gate.clearsPlanReviewTag) {
-      const remaining = filterPlanReviewTag(u.tags)
+  const built = buildReviewUnits(parsed, fetched)
+  const units = built.units
+
+  // FAIL-CLOSED: an unread plan must NOT be silently marked reviewed / have its
+  // tag cleared. Report the failure and mutate nothing.
+  if (built.fetchFailed) {
+    _log('plan-review: artifact fetch failed for ' + kind + ' — leaving needs-plan-review in place (fail-closed)')
+    return { kind: kind, outcome: 'escalated', fetchError: true, summary: 'plan-review: artifact fetch failed', units: [] }
+  }
+
+  // Review each unit independently (parallel per-unit fan-out — a phase's outcome
+  // never changes a sibling's). A single phase/task target is a one-element list.
+  const results = await _parallel(units.map((u) => () => reviewUnit(u)))
+
+  // Act + gate each unit independently. Both halves are skipped in
+  // --implementation-plan mode (handled by the early return above); the explicit
+  // `if (kind !== 'implementation-plan')` guards make that carve-out grep-visible
+  // and keep the code robust if the flow is ever restructured.
+  const reported = []
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i]
+    if (!r) continue
+    const u = r.unit
+    const gate = gateFor('plan', r.outcome)
+
+    // --- Act (orchestrator-only; skipped for implementation-plan) ---
+    if (kind !== 'implementation-plan' && r.survivors.length > 0) {
       try {
-        const ack = await agent(buildTagWritePrompt(u.kind, u.roadmap, u.ident, remaining), {
-          label: 'gate:clear-tag:' + u.kind + ':' + u.ident,
-          phase: 'Gate',
+        await _agent(buildActPrompt(u.kind, u.roadmap, u.ident, r.survivors), {
+          label: 'act:' + u.kind + ':' + u.ident,
+          phase: 'Act',
           schema: STAMP_ACK_SCHEMA,
         })
-        tagCleared = !!(ack && ack.ok === true)
       } catch (e) {
-        log('plan-review: tag-clear failed for ' + u.kind + '/' + u.ident)
+        _log('plan-review: act step failed for ' + u.kind + '/' + u.ident + ' — continuing to gate')
       }
     }
+
+    // --- Gate (skipped for implementation-plan) ---
+    // On reviewed: read-filter-write the tags to drop needs-plan-review,
+    // preserving siblings. On rework/escalated: leave the tag; GATE_POLICY.plan
+    // never persists an rdm status (gate.status is a literal null).
+    let tagCleared = false
+    if (kind !== 'implementation-plan') {
+      if (gate.clearsPlanReviewTag) {
+        const remaining = filterPlanReviewTag(u.tags)
+        try {
+          const ack = await _agent(buildTagWritePrompt(u.kind, u.roadmap, u.ident, remaining), {
+            label: 'gate:clear-tag:' + u.kind + ':' + u.ident,
+            phase: 'Gate',
+            schema: STAMP_ACK_SCHEMA,
+          })
+          tagCleared = !!(ack && ack.ok === true)
+        } catch (e) {
+          _log('plan-review: tag-clear failed for ' + u.kind + '/' + u.ident)
+        }
+      }
+    }
+
+    const reason = gate.reasonPrefix ? gate.reasonPrefix + ' ' + r.summary : ''
+    reported.push({
+      kind: u.kind,
+      ident: u.ident,
+      roadmap: u.roadmap,
+      outcome: r.outcome,
+      status: gate.status,
+      clearsPlanReviewTag: gate.clearsPlanReviewTag,
+      tagCleared: tagCleared,
+      reason: reason,
+      summary: r.summary,
+      findings: r.survivors,
+    })
+    _log('plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + r.summary)
   }
 
-  const reason = gate.reasonPrefix ? gate.reasonPrefix + ' ' + r.summary : ''
-  reported.push({
-    kind: u.kind,
-    ident: u.ident,
-    roadmap: u.roadmap,
-    outcome: r.outcome,
-    status: gate.status,
-    clearsPlanReviewTag: gate.clearsPlanReviewTag,
-    tagCleared: tagCleared,
-    reason: reason,
-    summary: r.summary,
-    findings: r.survivors,
-  })
-  log('plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + r.summary)
+  const result = { kind: kind, units: reported }
+  if (kind !== 'roadmap' && reported.length === 1) {
+    // Flatten a single phase/task target onto the top-level result for convenience.
+    result.outcome = reported[0].outcome
+    result.summary = reported[0].summary
+    result.findings = reported[0].findings
+  }
+  _log('plan-review (' + kind + '): ' + reported.length + ' unit(s) gated')
+  return result
 }
+// >>> plan-review-driver:end <<<
 
-const result = { kind: kind, units: reported }
-if (kind !== 'roadmap' && reported.length === 1) {
-  // Flatten a single phase/task target onto the top-level result for convenience.
-  result.outcome = reported[0].outcome
-  result.summary = reported[0].summary
-  result.findings = reported[0].findings
-}
-log('plan-review (' + kind + '): ' + reported.length + ' unit(s) gated')
-return result
+// --- Runtime entry ------------------------------------------------------------
+// Thin, NOT part of the copied block: wire the ambient Workflow globals into the
+// injectable driver and return its structured result. `typeof x !== 'undefined'`
+// is a ReferenceError-safe global probe; runPlanReview is built from the stamped
+// review core here so buildReviewPipeline probes the same ambient agent/pipeline/
+// parallel it always has.
+return await runPlanReviewDriver(args, {
+  agent: typeof agent !== 'undefined' ? agent : undefined,
+  parallel: typeof parallel !== 'undefined' ? parallel : undefined,
+  log: typeof log !== 'undefined' ? log : function () {},
+  runPlanReview: buildReviewPipeline('plan'),
+})
