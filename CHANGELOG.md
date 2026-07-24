@@ -202,6 +202,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   skills, asserted by a new relative-path parity test
   (`generate_skills_cli_mcp_name_parity`) so a future one-sided addition
   fails CI instead of silently shipping asymmetric skill sets.
+- New dogfood `document` Workflow (`.claude/workflows/document.js`): the
+  `rdm-document` doc-generation pass now runs headlessly. It validates every
+  phase of a roadmap is `done` (aborting with the incomplete-phase list
+  otherwise), fans a per-phase git-gather step out in `parallel()` (`git log`
+  / `git diff --stat` over each phase's recorded commit SHA, falling back to
+  phase-body-only when a phase has no SHA), runs one synthesis agent to draft
+  the doc, and a mechanical Bash agent to write it to `--out` (default
+  `docs/<slug>.md` — the runtime has no filesystem of its own), returning
+  `{ roadmap, aborted, incompletePhases, path, draft }`. It performs no
+  status mutation and no approval step of its own: the workflow produces an
+  artifact, not a completion signal, and the terminal human review is the
+  local `rdm-document` skill's job alone. That skill is re-authored as a thin
+  shim over this workflow. New dogfood harness
+  `scripts/verify-workflow-document.sh` asserts the draft is produced at the
+  expected default/`--out` path, the all-done validation aborts on an
+  incomplete roadmap, and a phase with no recorded commit falls back to
+  body-only — including against a real seeded plan repo and source repo, not
+  just fabricated inputs. The shipped `rdm-document` skill templates are
+  unchanged; this workflow is dogfood-only for now.
 
 ### Fixed
 
