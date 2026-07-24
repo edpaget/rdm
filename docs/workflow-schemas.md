@@ -5,10 +5,19 @@ scripts** under `.claude/workflows/`, a sibling of `.claude/skills/` and
 `.claude/hooks/`. This document defines the conventions those scripts follow and
 the canonical schema contracts they exchange.
 
-> **Scope:** dogfood-only. These scripts live in this repo's `.claude/workflows/`
-> and are **not** emitted by `agent-config`. rdm's shipped autonomous skills
+> **Scope:** mostly dogfood-only, with one emitted exception. The three workflow
+> scripts — `autopilot.js`, `dispatch-phase.js`, `review-refute-fix.js` — ARE now
+> emitted by `rdm agent-config claude --skills --out <dir>`, byte-identical to
+> this repo's own `.claude/workflows/` copies, under `<dir>/.claude/workflows/`
+> (Claude-only, `--out`-only — see `CHANGELOG.md`). Everything else stays
+> dogfood-only and unshipped: `lib/*.mjs` (no regeneration script travels
+> downstream to consume it), the generator scripts (`scripts/gen-workflow-review.sh`
+> and friends), and the hardcoded `./target/debug/rdm` / `--project rdm`
+> invocations baked into the shipped scripts (not yet parameterized for an
+> arbitrary target repo). rdm's shipped autonomous skills
 > (`rdm-core/src/templates/skill-*.md`) remain the user-facing autonomous lane and
-> are untouched. Distributing the workflow lane downstream is a follow-up roadmap.
+> are untouched. Distributing the still-unshipped pieces (parameterization,
+> `lib/`, a downstream regeneration story) is a follow-up roadmap.
 
 ## The `.claude/workflows/` convention
 

@@ -51,6 +51,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `rdm agent-config claude --skills --out <dir>` now also emits the
+  autonomous-lane Workflow-tool scripts (`autopilot.js`, `dispatch-phase.js`,
+  `review-refute-fix.js`) under `<dir>/.claude/workflows/`, byte-identical to
+  this repo's own dogfood copies in `.claude/workflows/`. Emission is
+  Claude-only (Pi has no Workflow-tool runtime) and `--out`-only, not
+  `--user` — the scripts still hardcode this repo's own
+  `./target/debug/rdm` binary path and `--project rdm` invocation and are
+  not yet parameterized for a downstream target repo (tracked as a
+  follow-up).
 - `rdm hook done-line` prints the land-time `Done:` commit trailer for a phase
   (`--roadmap <slug> --phase <stem>`) or a task (`--task <slug>`). It is now the
   single home of that format string, so the review gate and `rdm-land` amend its

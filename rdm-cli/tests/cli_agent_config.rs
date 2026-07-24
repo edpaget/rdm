@@ -412,7 +412,12 @@ fn agent_config_skills_generates_ten_files() {
         .arg(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(11));
+        // 11 skill files + 3 workflow files ("autopilot.js",
+        // "dispatch-phase.js", "review-refute-fix.js") emitted for Claude
+        // + --out. This is a deliberate, accounted-for change from the
+        // prior 11 (skills only) — see agent_config_workflows_written_under_out
+        // and agent_config_workflows_are_byte_identical_to_source below.
+        .stdout(predicate::str::contains("Wrote").count(14));
 
     let skills_dir = dir.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -426,6 +431,87 @@ fn agent_config_skills_generates_ten_files() {
     assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
     assert!(skills_dir.join("rdm-plan-review/SKILL.md").exists());
     assert!(skills_dir.join("rdm-backlog/SKILL.md").exists());
+}
+
+#[test]
+fn agent_config_workflows_written_under_out() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    let workflows_dir = dir.path().join(".claude/workflows");
+    assert!(workflows_dir.join("autopilot.js").exists());
+    assert!(workflows_dir.join("dispatch-phase.js").exists());
+    assert!(workflows_dir.join("review-refute-fix.js").exists());
+}
+
+#[test]
+fn agent_config_workflows_are_byte_identical_to_source() {
+    // Intentionally a live comparison against the checked-in
+    // `.claude/workflows/*.js` files (not a hardcoded fixture), so a future
+    // hand-edit to either side that isn't mirrored to the other fails CI
+    // immediately.
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    // rdm-cli's manifest dir's parent is the repo root.
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    for name in &["autopilot.js", "dispatch-phase.js", "review-refute-fix.js"] {
+        let emitted = std::fs::read(dir.path().join(".claude/workflows").join(name)).unwrap();
+        let source = std::fs::read(repo_root.join(".claude/workflows").join(name)).unwrap();
+        assert_eq!(emitted, source, "{name} drifted from the emitted template");
+    }
+}
+
+#[test]
+fn agent_config_pi_skills_does_not_write_workflows() {
+    // Pi has no Workflow-tool runtime, so --skills against Pi must not emit
+    // a workflows directory at all.
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    assert!(!dir.path().join(".claude/workflows").exists());
+    assert!(!dir.path().join(".pi/workflows").exists());
+}
+
+#[test]
+fn agent_config_user_skills_does_not_write_workflows() {
+    // Workflows are project/repo-scoped (they hardcode a target repo's own
+    // ./target/debug/rdm and --project rdm), so --user must not emit them
+    // to a user-global location even for Claude.
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--user")
+        .assert()
+        .success();
+
+    assert!(!home.path().join(".claude/workflows").exists());
 }
 
 #[test]

@@ -72,6 +72,20 @@ fn write_mcp_json(base_dir: &Path, root: &Path) -> Result<()> {
 
 /// Writes the Claude Code / Pi skill files (and `.mcp.json` when `--mcp`).
 ///
+/// When the target is `Platform::Claude` and the output is a project
+/// directory (`--out`, not `--user`), this also emits the autonomous-lane
+/// Workflow-tool scripts under `<base_dir>/.claude/workflows/`. This is
+/// intentionally narrower than the skills surface:
+///
+/// - **Claude-only**: Pi has no Workflow-tool runtime, so `--skills` against
+///   `Platform::Pi` writes only `.pi/skills`, never a workflows directory.
+/// - **`--out`-only, not `--user`**: the shipped scripts hardcode this
+///   repo's own `./target/debug/rdm` binary path and `--project rdm`
+///   invocation (they are not yet parameterized for a downstream target
+///   repo). Those values only make sense relative to a specific checked-out
+///   project, so they are never written to a user-global location like
+///   `~/.claude/workflows`.
+///
 /// # Errors
 ///
 /// Returns an error if neither `--out` nor `--user` resolves an output
@@ -110,6 +124,16 @@ fn write_skills(
     for skill in &skill_files {
         let path = skills_root.join(skill.relative_path);
         write_output(&path, skill.content.as_bytes())?;
+    }
+    // Workflow-tool scripts are Claude-only (Pi has no Workflow-tool runtime)
+    // and --out-only (not --user; see the doc comment above for why).
+    if platform == Platform::Claude && !user {
+        for workflow in agent_config::generate_workflows() {
+            let path = base_dir
+                .join(".claude/workflows")
+                .join(workflow.relative_path);
+            write_output(&path, workflow.content.as_bytes())?;
+        }
     }
     // When --mcp, also write .mcp.json at the project (or user-level) root.
     if mcp {

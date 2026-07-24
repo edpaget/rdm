@@ -231,6 +231,19 @@ pub struct SkillFile {
     pub content: String,
 }
 
+/// A generated Workflow-tool script with its relative path and content.
+///
+/// Unlike [`SkillFile`], workflow content is emitted verbatim: there is no
+/// project/principles substitution pass, since the Workflow runtime cannot
+/// `import`/`require` and the scripts are the already-stamped output of
+/// `scripts/gen-workflow-review.sh` (see `docs/workflow-schemas.md`).
+pub struct WorkflowFile {
+    /// Relative path within `.claude/workflows/` (e.g., "autopilot.js").
+    pub relative_path: &'static str,
+    /// The full, unmodified content of the workflow script.
+    pub content: &'static str,
+}
+
 /// Options for generating skill definition files.
 pub struct SkillOptions {
     /// Project name to embed in skill CLI invocations.
@@ -292,6 +305,50 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
             skill_backlog(&proj_flag, principles_note.as_deref()),
         ]
     }
+}
+
+/// Returns the autonomous-lane Workflow-tool scripts that ship alongside the
+/// Claude Code skills.
+///
+/// These are the already-stamped `.claude/workflows/*.js` consumers from this
+/// repo's own dogfood setup (`autopilot.js`, `dispatch-phase.js`,
+/// `review-refute-fix.js`), embedded verbatim via `include_str!` and returned
+/// unmodified — there is no project/principles substitution, unlike
+/// [`generate_skills`]'s `render_skill` pass. This is a separate emission
+/// surface from `generate_skills`/`SkillFile`, not folded into it: the two
+/// counts (skills vs. workflows) are independent and should not be summed
+/// when asserting either one.
+///
+/// The scripts hardcode this repo's own `./target/debug/rdm` binary path and
+/// `--project rdm` invocation — they are not yet parameterized for an
+/// arbitrary downstream target repo. `lib/*.mjs` (the canonical source
+/// modules the scripts are stamped from) is deliberately not shipped here:
+/// there is no regeneration script that travels downstream to consume it.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_workflows;
+///
+/// let workflows = generate_workflows();
+/// assert_eq!(workflows.len(), 3);
+/// assert_eq!(workflows[0].relative_path, "autopilot.js");
+/// ```
+pub fn generate_workflows() -> Vec<WorkflowFile> {
+    vec![
+        WorkflowFile {
+            relative_path: "autopilot.js",
+            content: include_str!("templates/workflows/autopilot.js"),
+        },
+        WorkflowFile {
+            relative_path: "dispatch-phase.js",
+            content: include_str!("templates/workflows/dispatch-phase.js"),
+        },
+        WorkflowFile {
+            relative_path: "review-refute-fix.js",
+            content: include_str!("templates/workflows/review-refute-fix.js"),
+        },
+    ]
 }
 
 fn skill_principles_note(path: &str) -> String {
@@ -1077,6 +1134,9 @@ mod tests {
             principles_file: None,
             mcp: false,
         });
+        // Workflows are a separate emission surface (see `generate_workflows`)
+        // and are not counted here — this assertion should not grow when the
+        // workflow lane gains or loses files.
         assert_eq!(skills.len(), 11);
     }
 
@@ -1098,6 +1158,40 @@ mod tests {
         assert_eq!(skills[8].relative_path, "rdm-revise/SKILL.md");
         assert_eq!(skills[9].relative_path, "rdm-plan-review/SKILL.md");
         assert_eq!(skills[10].relative_path, "rdm-backlog/SKILL.md");
+    }
+
+    // --- Workflow generation tests ---
+
+    #[test]
+    fn generate_workflows_returns_three_files() {
+        let workflows = generate_workflows();
+        assert_eq!(workflows.len(), 3);
+        assert_eq!(workflows[0].relative_path, "autopilot.js");
+        assert_eq!(workflows[1].relative_path, "dispatch-phase.js");
+        assert_eq!(workflows[2].relative_path, "review-refute-fix.js");
+    }
+
+    #[test]
+    fn generate_workflows_are_byte_identical_to_source() {
+        // Intentionally a live comparison against the checked-in
+        // `.claude/workflows/*.js` files (not a hardcoded fixture), so a
+        // future hand-edit to either the templates or the dogfood copies
+        // that isn't mirrored to the other fails CI immediately.
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("rdm-core manifest dir has a parent");
+        for workflow in generate_workflows() {
+            let source_path = repo_root
+                .join(".claude/workflows")
+                .join(workflow.relative_path);
+            let source = std::fs::read_to_string(&source_path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", source_path.display()));
+            assert_eq!(
+                workflow.content, source,
+                "{} drifted from the embedded template",
+                workflow.relative_path
+            );
+        }
     }
 
     #[test]
@@ -2876,6 +2970,8 @@ mod tests {
             principles_file: None,
             mcp: true,
         });
+        // Workflows are a separate emission surface (see `generate_workflows`)
+        // and are not counted here, and are not MCP/CLI-flavored anyway.
         assert_eq!(skills.len(), 10);
     }
 

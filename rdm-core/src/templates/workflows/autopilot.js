@@ -1,0 +1,790 @@
+// autopilot — the roadmap-driving loop over dispatch-phase.
+//
+// The active driver of rdm's autonomous lane: given ONE roadmap slug, it loops
+// over `rdm next`, dispatches each actionable phase by calling the Phase 2
+// dispatch-phase workflow via `workflow()` (the one allowed level of nesting),
+// interprets the returned OUTCOME, and PERSISTS the resulting status so the
+// selector steps forward:
+//   reviewed -> advance (rdm phase update --status reviewed)
+//   rework   -> re-dispatch against a per-phase budget, then park blocked [code]
+//   escalated-> park blocked [plan]
+// It bounds itself with a global step budget and `--max-phases`, supports
+// `--plan-only` (dispatch stops after its plan gate), always emits a batched
+// summary, and NEVER touches `main` — landing is a separate skill (`rdm-land`).
+//
+// Invoke with args: { roadmap: '<slug>', maxPhases?: <n>, planOnly?: <bool> }.
+//
+// Its pure control core lives once in `.claude/workflows/lib/autopilot.mjs` and is
+// copied BYTE-IDENTICAL into the marked block below (the Workflow runtime cannot
+// load helper modules at run time — see docs/workflow-schemas.md § "Import
+// spike"); `scripts/verify-workflow-autopilot.sh` gates the two copies for drift.
+
+export const meta = {
+  name: 'autopilot',
+  description:
+    'Drive one rdm roadmap to reviewed: estimate pre-pass, then loop rdm next -> dispatch-phase -> interpret outcome -> advance/park, bounded by a step budget and --max-phases, always summarizing and never touching main',
+  // Must list exactly the distinct `phase:` values the real deps' agent() calls
+  // emit — verify-workflow-autopilot.sh asserts declared == emitted.
+  phases: [
+    { title: 'Estimate' },
+    { title: 'Fetch' },
+    { title: 'Advance' },
+    { title: 'Park' },
+  ],
+}
+
+// The block below is copied BYTE-IDENTICAL from
+// .claude/workflows/lib/autopilot.mjs — do NOT edit it here. Edit the lib and
+// scripts/verify-workflow-autopilot.sh fails the build on drift.
+// >>> autopilot-loop:begin <<<
+// Pure, deterministic control logic for the autopilot roadmap-driving loop.
+//
+// This block is the single source of truth in
+// .claude/workflows/lib/autopilot.mjs and is copied BYTE-IDENTICAL into
+// .claude/workflows/autopilot.js (the Workflow runtime cannot load modules at run
+// time). scripts/verify-workflow-autopilot.sh gates the two copies for drift. No
+// Date.now / Math.random — pure array/string ops only. The block names NO ambient
+// runtime global (agent/parallel/workflow/log): every side effect is reached
+// through the injected `deps` object, so the module imports cleanly in Node.
+
+// DEFAULT_GLOBAL_BUDGET — the maximum total phase dispatches per run, so a
+// pathological roadmap can never loop forever even if every phase keeps
+// reworking.
+const DEFAULT_GLOBAL_BUDGET = 50;
+
+// DEFAULT_MAX_REWORK — the per-phase rework-retry budget: how many times a
+// `rework` outcome is re-dispatched before the phase is parked `blocked` with a
+// [code] reason.
+const DEFAULT_MAX_REWORK = 1;
+
+// DEFAULT_MAX_ADVANCE_ATTEMPTS — how many times a reviewed phase's status
+// write-back is retried before the phase is parked, so a reviewed<->advance-fail
+// cycle cannot livelock (the global step budget is the ultimate backstop).
+const DEFAULT_MAX_ADVANCE_ATTEMPTS = 2;
+
+// DEFAULT_MAX_PARK_ATTEMPTS — how many times a park write is retried before
+// giving up on confirmation. park is not itself a dispatch, so the global step
+// budget is not a backstop here — this cap is what keeps a persistently-null
+// park ack from hanging a single phase's dispatch loop.
+const DEFAULT_MAX_PARK_ATTEMPTS = 2;
+
+// parseAutopilotBudget(value, flag) — validate an optional per-run dispatch
+// budget override that is forwarded verbatim to dispatch-phase. `null` means
+// UNSET: the key is then omitted from the dispatch payload so dispatch-phase
+// applies its own default. 0 is meaningful (no reworks — terminate on the first
+// blocking review), so it must never be conflated with unset by a falsy check.
+// A non-integer string is rejected rather than silently coerced.
+function parseAutopilotBudget(value, flag) {
+  if (value === null || value === undefined || value === '') return null;
+  let n = NaN;
+  if (typeof value === 'number') {
+    n = value;
+  } else if (typeof value === 'string' && /^[+-]?[0-9]+$/.test(value.trim())) {
+    n = parseInt(value.trim(), 10);
+  }
+  if (!Number.isInteger(n) || n < 0 || Object.is(n, -0)) {
+    throw new Error('autopilot: ' + flag + ' must be a non-negative integer (got "' + String(value) + '")');
+  }
+  return n;
+}
+
+// parseAutopilotArgs(args) — validate and normalize the run config. A roadmap
+// slug is REQUIRED (the loop never roams to another roadmap). maxPhases is a
+// positive integer or null (unbounded by phase count). planOnly is a boolean.
+// globalBudget defaults to DEFAULT_GLOBAL_BUDGET. It NEVER yields a --land flag —
+// landing is a separate skill, out of autopilot's scope.
+// Defensive: a caller may stringify the Workflow tool payload, so a JSON-string
+// `args` is parsed back into an object. A non-JSON or non-object value falls back
+// to {} so the actionable required-slug error surfaces rather than an opaque
+// SyntaxError or a TypeError on a primitive.
+function parseAutopilotArgs(args) {
+  let a = args || {};
+  if (typeof a === 'string') {
+    try {
+      a = JSON.parse(a) || {};
+    } catch (e) {
+      a = {};
+    }
+  }
+  if (!a || typeof a !== 'object') a = {};
+  const roadmap = a.roadmap || '';
+  if (!roadmap) {
+    throw new Error('autopilot: a roadmap slug is required (pass { roadmap: "<slug>" }) — the loop never roams');
+  }
+  let maxPhases = null;
+  if (a.maxPhases != null && a.maxPhases !== '') {
+    const n = parseInt(a.maxPhases, 10);
+    if (!(n > 0)) throw new Error('autopilot: --max-phases must be a positive integer');
+    maxPhases = n;
+  }
+  const planOnly = !!a.planOnly;
+  let globalBudget = DEFAULT_GLOBAL_BUDGET;
+  if (a.globalBudget != null && a.globalBudget !== '') {
+    const g = parseInt(a.globalBudget, 10);
+    if (g > 0) globalBudget = g;
+  }
+  // dispatch-phase's two in-run retry budgets, forwarded per run. Unset (null)
+  // means "let dispatch-phase apply its own default".
+  const maxPlanRevise = parseAutopilotBudget(a.maxPlanRevise, '--max-plan-revise');
+  const maxCodeRework = parseAutopilotBudget(a.maxCodeRework, '--max-code-rework');
+  return {
+    roadmap: roadmap,
+    maxPhases: maxPhases,
+    planOnly: planOnly,
+    globalBudget: globalBudget,
+    maxPlanRevise: maxPlanRevise,
+    maxCodeRework: maxCodeRework,
+  };
+}
+
+// selectUnestimated(phaseList) — the stems of phases with NO difficulty and NO
+// model tier yet, i.e. the ones the estimate pre-pass must rate.
+function selectUnestimated(phaseList) {
+  const list = Array.isArray(phaseList) ? phaseList : [];
+  return list
+    .filter((p) => p && !p.difficulty && !p.model)
+    .map((p) => p.stem)
+    .filter(Boolean);
+}
+
+// difficultyToTier(difficulty) — map an rdm difficulty onto a model tier.
+// trivial/easy -> small, moderate -> medium, hard -> large; anything else ->
+// medium.
+function difficultyToTier(difficulty) {
+  if (difficulty === 'trivial' || difficulty === 'easy') return 'small';
+  if (difficulty === 'moderate') return 'medium';
+  if (difficulty === 'hard') return 'large';
+  return 'medium';
+}
+
+// resolveTier(model) — a valid tier or the mid-tier default. Call as
+// resolveTier(model || 'medium') so an unset tier lands on medium.
+function resolveTier(model) {
+  if (model === 'small' || model === 'medium' || model === 'large') return model;
+  return 'medium';
+}
+
+// interpretNext(nextResult) — classify the parsed `rdm next` JSON into a loop
+// decision: a `phase` to work, or a `stop` with its reason.
+function interpretNext(nextResult) {
+  const r = nextResult || {};
+  if (r.result === 'phase') {
+    return { kind: 'phase', stem: r.stem, number: r.number, model: r.model };
+  }
+  if (r.result === 'blocked-on-dependencies') {
+    return { kind: 'stop', reason: 'blocked-on-dependencies', unmet: r.unmet || [] };
+  }
+  return { kind: 'stop', reason: 'nothing' };
+}
+
+// buildParkReason(stage, note) — a tagged escalation reason string. `stage` is
+// 'plan' or 'code'; the tag lets the summary and `rdm review blocked` group
+// escalations by which gate produced them.
+function buildParkReason(stage, note) {
+  return '[' + stage + '] ' + note;
+}
+
+// interpretOutcome(outcome, ctx) — turn a dispatch OUTCOME into the loop's next
+// action. reviewed -> advance (or noop-vetted under --plan-only); rework ->
+// retry until this loop's per-phase budget is spent, then park; escalated (or
+// any unrecognized value) -> park.
+//
+// `outcome` is the whole OUTCOME OBJECT. The status and the gate-tagged reason
+// are read OFF it — dispatch-phase projects them from the canonical review
+// source (lib/review.mjs: statusFor / STATUS_MAPPING), so this loop no longer
+// restates that map. A bare outcome STRING is still accepted (older callers and
+// the pure-helper tests): it carries no policy, so the legacy literals below are
+// used as the fallback.
+//
+// The rework-budget park is this loop's OWN decision — dispatch-phase's rework
+// status (`in-progress`) describes a single dispatch, whereas a phase whose
+// roadmap-level retry budget is spent must land in the escalation queue as
+// `blocked`. That is why the park path uses buildParkReason, not outcome.status.
+function interpretOutcome(outcome, ctx) {
+  const c = ctx || {};
+  const planOnly = !!c.planOnly;
+  const reworkCount = c.reworkCount || 0;
+  const maxRework = c.maxRework != null ? c.maxRework : DEFAULT_MAX_REWORK;
+  const isString = typeof outcome === 'string';
+  const o = !isString && outcome ? outcome : {};
+  const outcomeStr = isString ? outcome : o.outcome || '';
+  // The OUTCOME-supplied reason already carries the canonical `[plan]`/`[code]`
+  // gate tag; fall back to this loop's own tagged literal when absent.
+  const suppliedReason = typeof o.reason === 'string' && o.reason !== '' ? o.reason : null;
+  if (outcomeStr === 'reviewed') {
+    // The status to persist comes from the OUTCOME, not from a literal here.
+    return planOnly ? { action: 'noop-vetted' } : { action: 'advance', status: o.status || 'reviewed' };
+  }
+  if (outcomeStr === 'rework') {
+    if (reworkCount < maxRework) return { action: 'retry' };
+    return { action: 'park', reason: buildParkReason('code', 'rework budget exhausted') };
+  }
+  if (outcomeStr === 'escalated') {
+    return {
+      action: 'park',
+      reason: suppliedReason || buildParkReason('plan', 'dispatch escalated at the plan gate'),
+    };
+  }
+  return { action: 'park', reason: buildParkReason('code', 'unrecognized dispatch outcome: ' + String(outcomeStr)) };
+}
+
+// advanceReason(stem) — a short deterministic note for the log/summary when a
+// phase advances to reviewed.
+function advanceReason(stem) {
+  return 'phase ' + stem + ' reviewed — advancing';
+}
+
+// stepBudgetExhausted(dispatchCount, globalBudget) — has the run hit its global
+// dispatch cap?
+function stepBudgetExhausted(dispatchCount, globalBudget) {
+  return dispatchCount >= globalBudget;
+}
+
+// maxPhasesReached(dispatchCount, maxPhases) — has the run hit its --max-phases
+// bound? A null bound never trips.
+function maxPhasesReached(dispatchCount, maxPhases) {
+  if (maxPhases == null) return false;
+  return dispatchCount >= maxPhases;
+}
+
+// --- Prompt builders (pure strings; the real deps feed these to agents) -------
+
+// buildMechanicalModelPrompt() — a mechanical Bash agent that resolves the
+// mechanical dispatch step to a concrete model id, ONCE per run, before any
+// other mechanical agent fires. This is deliberately the one dep call in the
+// whole run left UNSIZED (mirrors dispatch-phase's Stage-0
+// fetch:phase-meta/fetch:task-meta exemption, recorded in
+// scripts/verify-workflow-dispatch.sh's AC-MODEL bootstrap whitelist): it is
+// the call that produces the model id every other mechanical agent runs on,
+// so it cannot know its own model before running. See
+// realDeps.resolveMechanicalModel for the corresponding NO-`model:`-key call.
+function buildMechanicalModelPrompt() {
+  return [
+    'You are a mechanical fetch agent. Do not plan or implement anything.',
+    'Run exactly this command in the repo root and read its printed output:',
+    '  ./target/debug/rdm model resolve mechanical',
+    'Return the printed model id verbatim as JSON { "model": "<id>" }.',
+    'If the command fails or prints nothing, return { "model": "" }.',
+  ].join('\n');
+}
+
+// buildFetchNextPrompt(slug) — a mechanical Bash agent that reads `rdm next`.
+function buildFetchNextPrompt(slug) {
+  return [
+    'You are a mechanical fetch agent. Do not plan or implement anything.',
+    'Run exactly this command in the repo root and read its JSON output:',
+    '  ./target/debug/rdm next --roadmap ' + slug + ' --project rdm --format json',
+    "Return the parsed JSON as an object: it has a `result` field (one of 'phase' |",
+    "'nothing' | 'blocked-on-dependencies') plus, when result is 'phase', the",
+    '`stem`, `number`, `status`, `difficulty`, and `model` fields.',
+  ].join('\n');
+}
+
+// buildEstimateListPrompt(slug) — a mechanical Bash agent that lists the phases.
+function buildEstimateListPrompt(slug) {
+  return [
+    'You are a mechanical fetch agent. Do not plan or implement anything.',
+    'Run exactly this command in the repo root and read its JSON output:',
+    '  ./target/debug/rdm phase list --roadmap ' + slug + ' --project rdm --format json',
+    'Return the parsed JSON array verbatim: each element has `number`, `stem`,',
+    '`title`, `status`, and — when the phase has been estimated — `difficulty` and',
+    '`model`.',
+  ].join('\n');
+}
+
+// buildEstimatorPrompt(phaseBody) — rate ONE phase's difficulty. The argument is
+// the phase body (or, for a Bash-capable estimator, a directive naming the
+// command that yields it). Pure: it only embeds the argument into the prompt.
+function buildEstimatorPrompt(phaseBody) {
+  return [
+    'You are a difficulty-estimation agent for a single rdm phase.',
+    'The phase body (or how to obtain it) is below.',
+    '--- PHASE BODY ---',
+    phaseBody,
+    '--- END PHASE BODY ---',
+    'Rate the implementation difficulty as exactly one of: trivial, easy, moderate, hard.',
+    'Return JSON { "stem": "<the phase stem>", "difficulty": "<trivial|easy|moderate|hard>" }.',
+  ].join('\n');
+}
+
+// buildEstimateWritebackPrompt(stem, difficulty, slug) — persist a phase's
+// difficulty; the model tier derives automatically, so --model is never set.
+// Success is verified with a read-back rather than self-asserted from the
+// command's exit code alone: an unresolvable model id makes the whole agent
+// come back empty, not merely non-zero, so the caller needs proof the field
+// actually landed.
+function buildEstimateWritebackPrompt(stem, difficulty, slug) {
+  return [
+    'You are a mechanical write agent. Do not plan or implement anything.',
+    'Persist the phase difficulty (the model tier derives automatically — do NOT',
+    'pass --model). Run exactly this command in the repo root:',
+    '  ./target/debug/rdm phase update ' + stem + ' --difficulty ' + difficulty + ' --no-edit --roadmap ' + slug + ' --project rdm',
+    'Then read back the phase to confirm the write landed:',
+    '  ./target/debug/rdm phase show ' + stem + ' --roadmap ' + slug + ' --project rdm --format json',
+    'Report ok: true ONLY if the read-back shows difficulty equal to "' + difficulty + '"; otherwise report ok: false.',
+  ].join('\n');
+}
+
+// buildAdvancePrompt(stem, slug, status) — persist an advanced phase's status so
+// `rdm next` steps past it. `status` is the OUTCOME-supplied status the canonical
+// review mapped this outcome to (see lib/review.mjs's STATUS_MAPPING); it is
+// interpolated rather than hardcoded so the map has exactly one home. Callers
+// that have no OUTCOME fall back to the reviewed status.
+//
+// Status write ONLY: it never lands, integrates, or emits a completion directive.
+// Writing the land-time completion trailer is `rdm-land`'s job — it synthesizes
+// it from the OUTCOME identifiers via `rdm hook done-line` just before the
+// rebase, so no autopilot-produced branch ever needs a manual rebase to gain it.
+//
+// Success is verified with a read-back rather than self-asserted from the
+// command's exit code alone (see buildEstimateWritebackPrompt for why).
+function buildAdvancePrompt(stem, slug, status) {
+  const advanceStatus = status || 'reviewed';
+  return [
+    'You are a mechanical status agent. Do not plan or implement anything.',
+    'The phase has been reviewed. Persist its status so `rdm next` steps past it.',
+    'Run exactly this command in the repo root:',
+    '  ./target/debug/rdm phase update ' + stem + ' --status ' + advanceStatus + ' --no-edit --roadmap ' + slug + ' --project rdm',
+    'Persist status only — integrating the work is a separate, later step handled elsewhere.',
+    'Then read back the phase to confirm the write landed:',
+    '  ./target/debug/rdm phase show ' + stem + ' --roadmap ' + slug + ' --project rdm --format json',
+    'Report ok: true ONLY if the read-back shows status equal to "' + advanceStatus + '"; otherwise report ok: false.',
+  ].join('\n');
+}
+
+// buildParkPrompt(stem, reason, slug) — park a phase as blocked with an
+// escalation reason, so `rdm next` steps past it and the reason is queued.
+// Success is verified with a read-back rather than self-asserted from the
+// command's exit code alone (see buildEstimateWritebackPrompt for why).
+function buildParkPrompt(stem, reason, slug) {
+  return [
+    'You are a mechanical status agent. Do not plan or implement anything.',
+    'Park this phase as blocked so `rdm next` steps past it and the escalation is queued.',
+    'Run exactly this command in the repo root:',
+    '  ./target/debug/rdm phase update ' + stem + ' --status blocked --reason "' + reason + '" --no-edit --roadmap ' + slug + ' --project rdm',
+    'Then read back the phase to confirm the write landed:',
+    '  ./target/debug/rdm phase show ' + stem + ' --roadmap ' + slug + ' --project rdm --format json',
+    'Report ok: true ONLY if the read-back shows status equal to "blocked"; otherwise report ok: false.',
+  ].join('\n');
+}
+
+// buildSummary(state) — the always-on batched run summary. Lists the phases
+// completed in order, the escalations tagged plan/code with their reasons and a
+// pointer at the `rdm review blocked` queue, the stop reason, and a note that
+// reviewed work is left on the roadmap branch and main is never touched.
+function buildSummary(state) {
+  const s = state || {};
+  const roadmap = s.roadmap || '';
+  const completed = Array.isArray(s.completed) ? s.completed : [];
+  const escalations = Array.isArray(s.escalations) ? s.escalations : [];
+  const stopReason = s.stopReason || 'unknown';
+  const lines = [];
+  lines.push('autopilot summary for roadmap/' + roadmap);
+  lines.push('stop reason: ' + stopReason);
+  lines.push('phases completed (' + completed.length + '): ' + (completed.length ? completed.join(', ') : 'none'));
+  if (escalations.length) {
+    lines.push('escalations awaiting review (' + escalations.length + '):');
+    for (const e of escalations) {
+      const stage = String((e && e.reason) || '').indexOf('[plan]') === 0 ? 'plan' : 'code';
+      lines.push('  - ' + (e && e.stem) + ' [' + stage + ']: ' + ((e && e.reason) || ''));
+    }
+    lines.push('review the queue: ./target/debug/rdm review blocked --project rdm');
+  } else {
+    lines.push('escalations awaiting review (0): none');
+  }
+  lines.push('reviewed work is left on the roadmap/' + roadmap + ' branch; main is never touched.');
+  return lines.join('\n');
+}
+
+// buildAutopilot(deps) — returns the async runAutopilot(config) driver. Every
+// runtime side effect is reached through `deps`, so the block stays pure and the
+// module imports cleanly in Node. Retained loop state is bounded: the latest
+// fetchNext result, the current outcome, per-phase rework/advance counters, the
+// running dispatch count, the ordered completed[] and escalations[] arrays, and
+// (only under --plan-only) a planOnlySeen Set. There is NO normal-mode "seen"
+// Set — normal-mode progress is driven by the persisted phase status that
+// advance/park write, which `rdm next` reads to step forward.
+function buildAutopilot(deps) {
+  const d = deps || {};
+  const log = d.log || function () {};
+
+  // parkWithRetry(stem, reason, roadmap, model) — park a phase, retrying its
+  // write up to DEFAULT_MAX_PARK_ATTEMPTS times and requiring a CONFIRMED ack
+  // (ack.ok === true) rather than trusting a thrown/falsy result as success.
+  // park is not itself a dispatch, so it has no other backstop — a park that
+  // never confirms logs loudly, but the caller still records the escalation
+  // and moves on: an unconfirmed park write must never block the run from
+  // reaching its final summary.
+  async function parkWithRetry(stem, reason, roadmap, model) {
+    let parkOk = false;
+    for (let attempt = 0; attempt < DEFAULT_MAX_PARK_ATTEMPTS; attempt++) {
+      try {
+        const ack = await d.park(stem, reason, roadmap, model);
+        parkOk = !!ack && ack.ok === true;
+      } catch (e) {
+        parkOk = false;
+      }
+      if (parkOk) break;
+    }
+    if (!parkOk) {
+      log(
+        'autopilot: park write for ' +
+          stem +
+          ' returned no confirmation — the escalation is recorded in this summary but the plan-repo status may not reflect it'
+      );
+    }
+    return parkOk;
+  }
+
+  return async function runAutopilot(config) {
+    const cfg = config || {};
+    const roadmap = cfg.roadmap;
+    const maxPhases = cfg.maxPhases != null ? cfg.maxPhases : null;
+    const planOnly = !!cfg.planOnly;
+    const globalBudget = cfg.globalBudget != null ? cfg.globalBudget : DEFAULT_GLOBAL_BUDGET;
+    const maxRework = cfg.maxRework != null ? cfg.maxRework : DEFAULT_MAX_REWORK;
+    // dispatch-phase's OWN in-run budgets — distinct from maxRework (this loop's
+    // roadmap-level re-dispatch budget) and from globalBudget. Only the keys the
+    // caller actually set are forwarded, so an unset budget lets dispatch-phase
+    // apply its own default rather than receiving an explicit null.
+    const budgets = {};
+    if (cfg.maxPlanRevise != null) budgets.maxPlanRevise = cfg.maxPlanRevise;
+    if (cfg.maxCodeRework != null) budgets.maxCodeRework = cfg.maxCodeRework;
+
+    // Resolve the mechanical model ONCE, before anything else — including the
+    // estimate pre-pass. This dep call is deliberately left UNSIZED (mirrors
+    // dispatch-phase's Stage-0 fetch:phase-meta/fetch:task-meta exemption): it
+    // is the call that produces the model id every other mechanical agent runs
+    // on, so it cannot know its own model before running (see
+    // buildMechanicalModelPrompt / realDeps.resolveMechanicalModel). An
+    // empty/unresolvable result is NOT a silent fallback to the session model —
+    // it stops the run immediately and loudly, before any mechanical agent
+    // fires, but still returns the always-on batched summary rather than
+    // throwing.
+    const mechanicalModelRaw = await d.resolveMechanicalModel();
+    const mechanicalModel = typeof mechanicalModelRaw === 'string' ? mechanicalModelRaw.trim() : '';
+    if (!mechanicalModel) {
+      log(
+        'autopilot: mechanical model could not be resolved (rdm model resolve mechanical returned nothing) — stopping before any mechanical agent runs'
+      );
+      return buildSummary({ roadmap: roadmap, completed: [], escalations: [], stopReason: 'mechanical-model-unresolved' });
+    }
+
+    // Estimate pre-pass — ONCE, before the drive loop. Rate every unestimated
+    // phase in a single parallel fan-out, then persist each tier. A wholesale
+    // failure or a single missing estimate is tolerated: the phase falls back to
+    // the mid tier at dispatch time. estimateList/estimateWriteback are
+    // mechanical (fetch/write only) and run on mechanicalModel; parallelEstimate
+    // is the difficulty-rating JUDGMENT agent and stays on its own resolved tier.
+    const phaseList = await d.estimateList(roadmap, mechanicalModel);
+    const unestimated = selectUnestimated(phaseList);
+    if (unestimated.length) {
+      let ests = [];
+      try {
+        ests = await d.parallelEstimate(unestimated);
+      } catch (e) {
+        ests = [];
+        log('autopilot: estimate pre-pass failed wholesale — unrated phases fall back to mid tier');
+      }
+      const rated = Array.isArray(ests) ? ests : [];
+      for (const est of rated) {
+        if (!est || !est.stem || !est.difficulty) continue;
+        try {
+          const ack = await d.estimateWriteback(est.stem, est.difficulty, roadmap, mechanicalModel);
+          if (!ack || ack.ok !== true) {
+            log('autopilot: estimate writeback failed for ' + est.stem + ' — it falls back to mid tier');
+          }
+        } catch (e) {
+          log('autopilot: estimate writeback failed for ' + est.stem + ' — it falls back to mid tier');
+        }
+      }
+    }
+
+    // Bounded drive-loop state.
+    const completed = [];
+    const escalations = [];
+    const planOnlySeen = new Set();
+    let dispatchCount = 0;
+    let stopReason = 'nothing';
+
+    while (true) {
+      if (maxPhasesReached(dispatchCount, maxPhases) || stepBudgetExhausted(dispatchCount, globalBudget)) {
+        stopReason = 'budget';
+        break;
+      }
+      const next = interpretNext(await d.fetchNext(roadmap, mechanicalModel));
+      if (next.kind === 'stop') {
+        stopReason = next.reason;
+        break;
+      }
+      const stem = next.stem;
+      if (planOnly && planOnlySeen.has(stem)) {
+        stopReason = 'plan-only-exhausted';
+        break;
+      }
+      // resolveTier(next.model || 'medium') — a mid-tier default covers an unset
+      // tier so every dispatch runs on a concrete tier.
+      const tier = resolveTier(next.model || 'medium');
+      log('autopilot: dispatching ' + stem + ' (tier ' + tier + ', plan-only=' + planOnly + ')');
+      let reworkCount = 0;
+
+      // Inner per-phase dispatch loop, bounded by the rework budget.
+      while (true) {
+        dispatchCount++;
+        let outcome;
+        try {
+          outcome = await d.dispatch(roadmap, stem, planOnly, budgets);
+        } catch (e) {
+          const reason = buildParkReason('code', 'dispatch failed: ' + ((e && e.message) || 'error'));
+          await parkWithRetry(stem, reason, roadmap, mechanicalModel);
+          escalations.push({ stem: stem, reason: reason });
+          break;
+        }
+        // The WHOLE OUTCOME object is handed to interpretOutcome so it can read
+        // the canonical status/reason policy dispatch-phase projected onto it.
+        const decision = interpretOutcome(outcome, { planOnly: planOnly, reworkCount: reworkCount, maxRework: maxRework });
+
+        if (decision.action === 'advance') {
+          let advanceOk = false;
+          for (let attempt = 0; attempt < DEFAULT_MAX_ADVANCE_ATTEMPTS; attempt++) {
+            try {
+              const ack = await d.advance(stem, roadmap, decision.status, mechanicalModel);
+              advanceOk = !!ack && ack.ok === true;
+            } catch (e) {
+              advanceOk = false;
+            }
+            if (advanceOk) break;
+            log('autopilot: advance failed for ' + stem + ' (attempt ' + (attempt + 1) + ')');
+          }
+          if (advanceOk) {
+            completed.push(stem);
+            log('autopilot: ' + advanceReason(stem));
+            break;
+          }
+          const reason = buildParkReason('code', 'advance to reviewed failed repeatedly');
+          await parkWithRetry(stem, reason, roadmap, mechanicalModel);
+          escalations.push({ stem: stem, reason: reason });
+          break;
+        }
+
+        if (decision.action === 'noop-vetted') {
+          planOnlySeen.add(stem);
+          completed.push(stem);
+          log('autopilot: plan-only vetted ' + stem);
+          break;
+        }
+
+        if (decision.action === 'retry') {
+          reworkCount++;
+          log('autopilot: rework ' + stem + ' (retry ' + reworkCount + ')');
+          continue;
+        }
+
+        // decision.action === 'park'
+        await parkWithRetry(stem, decision.reason, roadmap, mechanicalModel);
+        escalations.push({ stem: stem, reason: decision.reason });
+        break;
+      }
+    }
+
+    return buildSummary({ completed: completed, escalations: escalations, roadmap: roadmap, stopReason: stopReason });
+  };
+}
+// >>> autopilot-loop:end <<<
+
+// --- Schemas (autopilot-specific; see docs/workflow-schemas.md) --------------
+
+// NEXT — the parsed `rdm next` JSON a mechanical Bash agent returns.
+const NEXT_SCHEMA = {
+  type: 'object',
+  required: ['result'],
+  additionalProperties: false,
+  properties: {
+    result: { type: 'string' },
+    roadmap: { type: 'string' },
+    number: { type: 'integer' },
+    stem: { type: 'string' },
+    status: { type: 'string' },
+    difficulty: { type: 'string' },
+    model: { type: 'string' },
+    unmet: { type: 'array', items: { type: 'string' } },
+  },
+}
+
+// PHASE_LIST — the parsed `rdm phase list` JSON for the estimate pre-pass,
+// wrapped under a `phases` key. Anthropic custom tools require
+// input_schema.type === 'object'; a top-level `type: 'array'` 400s, so the
+// array is nested under `phases` and unwrapped in the estimateList realDep.
+const PHASE_LIST_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['phases'],
+  properties: {
+    phases: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['stem', 'status'],
+        properties: {
+          number: { type: 'integer' },
+          stem: { type: 'string' },
+          title: { type: 'string' },
+          status: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          difficulty: { type: 'string' },
+          model: { type: 'string' },
+        },
+      },
+    },
+  },
+}
+
+// ESTIMATE — one estimator agent's difficulty rating for a single phase.
+const ESTIMATE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['stem', 'difficulty'],
+  properties: {
+    stem: { type: 'string' },
+    difficulty: { type: 'string', enum: ['trivial', 'easy', 'moderate', 'hard'] },
+  },
+}
+
+// ACK — a mechanical write agent's report of whether its command exited 0.
+const ACK_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['ok'],
+  properties: {
+    ok: { type: 'boolean' },
+    detail: { type: 'string' },
+  },
+}
+
+// MECHANICAL_MODEL — the resolved `rdm model resolve mechanical` id, from the
+// one bootstrap call realDeps.resolveMechanicalModel makes before any other
+// mechanical agent runs.
+const MECHANICAL_MODEL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['model'],
+  properties: {
+    model: { type: 'string' },
+  },
+}
+
+// --- Driver ------------------------------------------------------------------
+const cfg = parseAutopilotArgs(args)
+const roadmapSlug = cfg.roadmap
+
+// Real deps close over the ambient Workflow globals (agent/parallel/log and the
+// one nested workflow() call). These live OUTSIDE the copied block; the block
+// itself names no ambient global.
+const realDeps = {
+  log: function (msg) {
+    log(msg)
+  },
+  // resolveMechanicalModel — the one bootstrap call in the whole run left
+  // deliberately UNSIZED (no `model:` key), mirroring dispatch-phase's Stage-0
+  // fetch:phase-meta/fetch:task-meta exemption: this IS the call that produces
+  // the model id every other mechanical agent below runs on, so it cannot know
+  // its own model before running. scripts/verify-workflow-autopilot.sh's
+  // AC-MODEL-style sweep whitelists this label by name for exactly that reason
+  // — do not add a `model:` key here.
+  resolveMechanicalModel: async function () {
+    const r = await agent(buildMechanicalModelPrompt(), {
+      label: 'model:mechanical',
+      phase: 'Fetch',
+      schema: MECHANICAL_MODEL_SCHEMA,
+    })
+    return r && typeof r.model === 'string' ? r.model.trim() : ''
+  },
+  estimateList: async function (slug, model) {
+    // The in-block prompt builder buildEstimateListPrompt ("Return the parsed
+    // JSON array verbatim") is deliberately left unchanged: the StructuredOutput
+    // tool schema — not the prompt text — governs the agent's output shape, and
+    // editing that prompt would land inside the byte-copied autopilot-loop block
+    // and force a matching lib/autopilot.mjs edit + re-stamp (out of scope here).
+    // We wrap the array under `phases` in PHASE_LIST_SCHEMA and unwrap it here so
+    // the in-block selectUnestimated still receives a plain array.
+    const r = await agent(buildEstimateListPrompt(slug), {
+      label: 'estimate:list',
+      phase: 'Fetch',
+      schema: PHASE_LIST_SCHEMA,
+      model: model,
+    })
+    return (r && r.phases) || []
+  },
+  // parallelEstimate is the difficulty-rating JUDGMENT agent — it stays on the
+  // tier resolved for it elsewhere and deliberately receives NO mechanical
+  // model argument.
+  parallelEstimate: async function (unestimated) {
+    return parallel(
+      unestimated.map(function (stem) {
+        return function () {
+          return agent(
+            buildEstimatorPrompt(
+              'Run `./target/debug/rdm phase show ' +
+                stem +
+                ' --roadmap ' +
+                roadmapSlug +
+                ' --project rdm --format json` and use the returned `body` field as the phase body.'
+            ),
+            { label: 'estimate:' + stem, phase: 'Estimate', schema: ESTIMATE_SCHEMA }
+          ).then(function (r) {
+            return { stem: (r && r.stem) || stem, difficulty: r && r.difficulty }
+          })
+        }
+      })
+    )
+  },
+  estimateWriteback: async function (stem, difficulty, slug, model) {
+    return agent(buildEstimateWritebackPrompt(stem, difficulty, slug), {
+      label: 'estimate:write:' + stem,
+      phase: 'Estimate',
+      schema: ACK_SCHEMA,
+      model: model,
+    })
+  },
+  fetchNext: async function (slug, model) {
+    return agent(buildFetchNextPrompt(slug), {
+      label: 'fetch:next',
+      phase: 'Fetch',
+      schema: NEXT_SCHEMA,
+      model: model,
+    })
+  },
+  dispatch: async function (slug, stem, planOnly, budgets) {
+    // Forward dispatch-phase's two in-run retry budgets ONLY when this run set
+    // them, so an unset budget lets dispatch-phase apply its own default rather
+    // than receiving an explicit null.
+    const b = budgets || {}
+    const payload = { roadmap: slug, phase: stem, planOnly: planOnly }
+    if (b.maxPlanRevise != null) payload.maxPlanRevise = b.maxPlanRevise
+    if (b.maxCodeRework != null) payload.maxCodeRework = b.maxCodeRework
+    return workflow('dispatch-phase', payload)
+  },
+  // `status` comes from the dispatch OUTCOME (the canonical review's status
+  // mapping), not from a literal in this file.
+  advance: async function (stem, slug, status, model) {
+    return agent(buildAdvancePrompt(stem, slug, status), {
+      label: 'advance:' + stem,
+      phase: 'Advance',
+      schema: ACK_SCHEMA,
+      model: model,
+    })
+  },
+  park: async function (stem, reason, slug, model) {
+    return agent(buildParkPrompt(stem, reason, slug), {
+      label: 'park:' + stem,
+      phase: 'Park',
+      schema: ACK_SCHEMA,
+      model: model,
+    })
+  },
+}
+
+const summary = await buildAutopilot(realDeps)(cfg)
+log(summary)
+return summary
