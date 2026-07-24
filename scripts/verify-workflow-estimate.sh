@@ -27,6 +27,10 @@
 #                   reports the tier read back from showTier (never a JS map),
 #                   narrows to a single phase number, is idempotent on re-run
 #                   (a re-listed estimated phase is skipped), and is deterministic.
+#                   Also drives the failure branches: a writeback reporting
+#                   ok:false, and a parallelRate/writeback/showTier that THROWS,
+#                   proving the pipeline degrades (logs + skips/continues) instead
+#                   of misreporting a failed stem as estimated or aborting the run.
 #   2. DRIFT      — scripts/gen-workflow-estimate.sh --check passes on the tree,
 #                   with a planted-mutation self-test proving the gate is not a
 #                   no-op and heals on restore.
@@ -37,6 +41,15 @@
 #                   (Anthropic tools require 'object'); meta.phases parity; and
 #                   the rewritten rdm-estimate SKILL.md is a thin shim referencing
 #                   estimate.js with no retired rating-loop prose.
+#   5. HERMETIC   — a temp git-backed plan repo seeded via the REAL target/debug/rdm
+#      SEED         binary (mixed estimated/unestimated phases), whose actual
+#                   `rdm phase list --format json` output is fed through
+#                   selectUnestimated and buildEstimatePipeline with real-binary
+#                   deps (real list / phase update --difficulty --body / phase show).
+#                   This backs AC1 against the CLI's real JSON shape, so any drift
+#                   between the field names the pure JS assumes (stem/difficulty/
+#                   model) and what rdm-core emits is caught — not just the
+#                   hand-fabricated fakes of sections 1/1b.
 #
 # Node is used only as a host to unit-test the pure module and drive the pipeline
 # with fakes; it is stdlib-only (node:assert), with no package.json /
@@ -54,6 +67,7 @@ LIB="$WF_DIR/lib/estimate.mjs"
 WF="$WF_DIR/estimate.js"
 SKILL="$REPO_ROOT/.claude/skills/rdm-estimate/SKILL.md"
 GEN="$SCRIPT_DIR/gen-workflow-estimate.sh"
+RDM_BIN="$REPO_ROOT/target/debug/rdm"
 
 # Clear rdm-related env vars inherited from the caller's shell for hermeticity.
 unset RDM_ROOT RDM_PROJECT RDM_STAGE RDM_FORMAT RDM_PLAN_REPO RDM_PLAN_REPO_TOKEN RDM_PLAN_REPO_PATH 2>/dev/null || true
@@ -69,6 +83,7 @@ pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 [ -f "$WF" ] || fail "workflow script not found: $WF"
 [ -f "$SKILL" ] || fail "rdm-estimate skill not found: $SKILL"
 [ -x "$GEN" ] || fail "generator not found or not executable: $GEN"
+[ -x "$RDM_BIN" ] || fail "$RDM_BIN not found or not executable — run 'cargo build' first."
 
 # Resolve a node command: prefer PATH, fall back to the mise-pinned toolchain.
 NODE_VIA_MISE=0
@@ -392,6 +407,76 @@ function makeFakes(phases) {
   assert.equal(summary.estimated[0].justification, '', 'a missing justification defaults to an empty string, never undefined');
 }
 
+// === a writeback reporting { ok: false } is skipped, never misreported ======
+// rdm-core can legitimately report failure (an unresolvable difficulty, a stale
+// stem, a transient CLI error). Such a stem must NOT land in `estimated`, must
+// not have its tier read back, and must not abort the run.
+{
+  const h = makeFakes([
+    { number: 1, stem: 'phase-1-a' },
+    { number: 2, stem: 'phase-2-b' },
+  ]);
+  h.fakes.writeback = async (stem, difficulty, justification, roadmap) => {
+    h.writebackCalls.push({ stem, difficulty, justification, roadmap });
+    if (stem === 'phase-1-a') return { ok: false }; // core reports the write failed
+    const cur = h.map.get(stem) || {};
+    h.map.set(stem, { number: cur.number, difficulty, model: TIER[difficulty] || 'medium' });
+    return { ok: true };
+  };
+  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
+  assert.deepEqual(h.writebackCalls.map((w) => w.stem), ['phase-1-a', 'phase-2-b'], 'both stems are attempted');
+  assert.deepEqual(summary.estimated.map((e) => e.stem), ['phase-2-b'], 'an ok:false writeback is NOT reported as estimated');
+  assert.deepEqual(h.showTierCalls.map((s) => s.stem), ['phase-2-b'], 'the tier is read back only for the successfully-written stem');
+  assert.ok(h.logs.some((l) => l.includes('phase-1-a')), 'the failed writeback is logged');
+}
+
+// === a wholesale parallelRate() throw degrades to a no-op, never propagates ==
+{
+  const h = makeFakes([
+    { number: 1, stem: 'phase-1-a' },
+    { number: 2, stem: 'phase-2-b' },
+  ]);
+  h.fakes.parallelRate = async () => {
+    throw new Error('rater fan-out crashed');
+  };
+  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
+  assert.deepEqual(summary.estimated, [], 'a rater throw yields nothing estimated (the exception is caught)');
+  assert.deepEqual(h.writebackCalls, [], 'nothing is written back when the rater throws wholesale');
+  // Both were SELECTED for rating, so neither is "skipped" (skipped = the
+  // already-estimated phases only) — they just silently drop, logged.
+  assert.deepEqual(summary.skipped, [], 'targeted-but-failed stems are not misreported as already-estimated');
+  assert.ok(h.logs.some((l) => /rating pass failed/i.test(l)), 'the wholesale rater failure is logged');
+}
+
+// === a per-stem writeback() throw is caught; the run continues ==============
+{
+  const h = makeFakes([
+    { number: 1, stem: 'phase-1-a' },
+    { number: 2, stem: 'phase-2-b' },
+  ]);
+  h.fakes.writeback = async (stem, difficulty, justification, roadmap) => {
+    h.writebackCalls.push({ stem, difficulty, justification, roadmap });
+    if (stem === 'phase-1-a') throw new Error('transient CLI error');
+    const cur = h.map.get(stem) || {};
+    h.map.set(stem, { number: cur.number, difficulty, model: TIER[difficulty] || 'medium' });
+    return { ok: true };
+  };
+  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
+  assert.deepEqual(summary.estimated.map((e) => e.stem), ['phase-2-b'], 'a thrown writeback is caught and its stem skipped; the other still lands');
+  assert.ok(h.logs.some((l) => l.includes('phase-1-a')), 'the thrown writeback is logged');
+}
+
+// === a showTier() throw leaves the stem estimated with an empty tier ========
+{
+  const h = makeFakes([{ number: 1, stem: 'phase-1-a' }]);
+  h.fakes.showTier = async () => {
+    throw new Error('read-back failed');
+  };
+  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
+  assert.deepEqual(summary.estimated.map((e) => e.stem), ['phase-1-a'], 'the writeback succeeded, so the stem is still estimated');
+  assert.equal(summary.estimated[0].tier, '', 'a thrown tier read-back degrades to an empty tier, not an aborted run');
+}
+
 console.log('all estimate pipeline assertions passed');
 NODE_TEST
 
@@ -520,5 +605,145 @@ if grep -qF -- '--difficulty <difficulty> --body' "$SKILL"; then
     fail "SKILL.md still re-narrates the writeback heredoc command — it should defer to the workflow"
 fi
 pass "SKILL.md is a thin shim: references estimate.js, no retired rating-loop prose"
+
+# --- 5. HERMETIC SEED (real target/debug/rdm) --------------------------------
+say "5. Hermetic seed: real rdm JSON drives selectUnestimated / buildEstimatePipeline against a temp plan repo"
+
+PLAN="$TMP/plan"
+PROJ="est-verify"
+ROADMAP="rm-est"
+rdmbin() { "$RDM_BIN" --root "$PLAN" "$@"; }
+
+mkdir -p "$PLAN"
+rdmbin init --default-project "$PROJ" >/dev/null
+rdmbin roadmap create "$ROADMAP" --title "Estimate RM" --body "seed" \
+    --no-edit --project "$PROJ" >/dev/null
+rdmbin phase create a --title "A" --number 1 --body "phase a body" \
+    --no-edit --roadmap "$ROADMAP" --project "$PROJ" >/dev/null
+rdmbin phase create b --title "B" --number 2 --body "phase b body" \
+    --no-edit --roadmap "$ROADMAP" --project "$PROJ" >/dev/null
+rdmbin phase create c --title "C" --number 3 --body "phase c body" \
+    --no-edit --roadmap "$ROADMAP" --project "$PROJ" >/dev/null
+# Pre-estimate phase 2 so it must be SKIPPED (real rdm derives model=large from
+# difficulty=hard — no --model passed).
+rdmbin phase update phase-2-b --difficulty hard \
+    --no-edit --roadmap "$ROADMAP" --project "$PROJ" >/dev/null
+rdmbin commit -m "seed: estimate harness fixtures" >/dev/null
+pass "seeded a real roadmap: phase-1-a / phase-3-c unestimated, phase-2-b pre-estimated (hard)"
+
+cat >"$TMP/real.mjs" <<'NODE_TEST'
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+
+const [libPath, RDM, PLAN, PROJ, ROADMAP] = process.argv.slice(2);
+const m = await import(pathToFileURL(libPath).href);
+const { selectUnestimated, buildEstimatePipeline } = m;
+
+// rdm prints clean JSON on stdout (informational notices go to stderr); still
+// parse only the leading JSON value defensively (handles a mixed array/object
+// with a trailing notice).
+function rdm(args) {
+  // Capture stdout; silence rdm's informational stderr notices (staged/uncommitted).
+  return execFileSync(RDM, ['--root', PLAN, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+}
+function parseLeadingJson(text) {
+  const s = text.replace(/^\s+/, '');
+  let depth = 0;
+  let started = false;
+  let end = -1;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '{' || c === '[') {
+      depth++;
+      started = true;
+    } else if (c === '}' || c === ']') {
+      depth--;
+      if (started && depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  return JSON.parse(end === -1 ? s : s.slice(0, end));
+}
+function rdmJson(args) {
+  return parseLeadingJson(rdm(args));
+}
+
+// --- Field-shape fidelity: REAL phase list feeds selectUnestimated -----------
+// The real CLI OMITS difficulty/model on an unestimated phase (skip_serializing_if
+// none). If selectUnestimated read the wrong field names, this would mis-select.
+const listed = rdmJson(['phase', 'list', '--roadmap', ROADMAP, '--project', PROJ, '--format', 'json']);
+assert.ok(Array.isArray(listed) && listed.length === 3, 'real phase list returns the three seeded phases');
+assert.deepEqual(
+  selectUnestimated(listed).slice().sort(),
+  ['phase-1-a', 'phase-3-c'],
+  'real phase list: only the two truly-unestimated phases select (phase-2-b has difficulty+model set)'
+);
+
+// --- Drive buildEstimatePipeline with REAL-binary deps -----------------------
+// Only the LLM rating is faked (deterministic 'moderate'); list / writeback /
+// showTier all hit the real rdm binary, so the derived tier and the ## Estimate
+// note are exercised against rdm-core's actual behavior.
+const rateCalls = [];
+const deps = {
+  log: () => {},
+  list: async (roadmap) => rdmJson(['phase', 'list', '--roadmap', roadmap, '--project', PROJ, '--format', 'json']),
+  parallelRate: async (stems) => {
+    rateCalls.push(stems.slice());
+    return stems.map((stem) => ({ stem, difficulty: 'moderate', justification: 'seeded justification for ' + stem }));
+  },
+  writeback: async (stem, difficulty, justification, roadmap) => {
+    const cur = rdmJson(['phase', 'show', stem, '--roadmap', roadmap, '--project', PROJ, '--format', 'json']);
+    const body = (cur.body || '') + '\n\n## Estimate\n\n' + difficulty + ' — ' + justification + '\n';
+    // Never --model: rdm-core derives the tier from --difficulty.
+    rdm(['phase', 'update', stem, '--difficulty', difficulty, '--body', body, '--no-edit', '--roadmap', roadmap, '--project', PROJ]);
+    const after = rdmJson(['phase', 'show', stem, '--roadmap', roadmap, '--project', PROJ, '--format', 'json']);
+    return { ok: after.difficulty === difficulty && (after.body || '').includes('## Estimate') };
+  },
+  showTier: async (stem, roadmap) => {
+    const j = rdmJson(['phase', 'show', stem, '--roadmap', roadmap, '--project', PROJ, '--format', 'json']);
+    return j.model || '';
+  },
+};
+
+const summary = await buildEstimatePipeline(deps)({ roadmap: ROADMAP });
+assert.deepEqual(rateCalls, [['phase-1-a', 'phase-3-c']], 'the pipeline rated exactly the two real-unestimated stems');
+assert.deepEqual(
+  summary.estimated.map((e) => e.stem).slice().sort(),
+  ['phase-1-a', 'phase-3-c'],
+  'exactly the two unestimated phases were estimated end-to-end against the real binary'
+);
+assert.deepEqual(summary.skipped, ['phase-2-b'], 'the pre-estimated phase-2-b is skipped, never rated');
+
+for (const e of summary.estimated) {
+  // The reported tier is read back from rdm-core (moderate -> medium), not a JS map.
+  assert.equal(e.tier, 'medium', 'the tier is read back from rdm-core (moderate derives medium)');
+  const shown = rdmJson(['phase', 'show', e.stem, '--roadmap', ROADMAP, '--project', PROJ, '--format', 'json']);
+  assert.equal(shown.difficulty, 'moderate', 'the real phase now carries difficulty=moderate');
+  assert.equal(shown.model, 'medium', 'rdm-core derived model=medium onto the real phase (no --model passed)');
+  assert.ok((shown.body || '').includes('## Estimate'), 'the ## Estimate audit note landed in the real phase body');
+  assert.ok((shown.body || '').includes('moderate — seeded justification for ' + e.stem), 'the note carries "<difficulty> — <justification>"');
+}
+
+// The pre-estimated phase is untouched: still hard/large, no note appended.
+const b = rdmJson(['phase', 'show', 'phase-2-b', '--roadmap', ROADMAP, '--project', PROJ, '--format', 'json']);
+assert.equal(b.difficulty, 'hard', 'the skipped phase keeps its original difficulty');
+assert.ok(!(b.body || '').includes('## Estimate'), 'the skipped phase never gets a ## Estimate note');
+
+// --- Idempotent re-run against the now-mutated real repo ---------------------
+const summary2 = await buildEstimatePipeline(deps)({ roadmap: ROADMAP });
+assert.deepEqual(summary2.estimated, [], 're-run against the real repo rates nothing — every phase is now estimated');
+assert.deepEqual(summary2.skipped.slice().sort(), ['phase-1-a', 'phase-2-b', 'phase-3-c'], 're-run reports all three as skipped');
+
+console.log('ALL HERMETIC-SEED ASSERTIONS PASSED');
+NODE_TEST
+
+if run_node "$TMP/real.mjs" "$LIB" "$RDM_BIN" "$PLAN" "$PROJ" "$ROADMAP"; then
+    pass "real rdm JSON round-trips through selectUnestimated / buildEstimatePipeline; tier derives in core; note lands"
+else
+    fail "hermetic real-binary estimate assertions failed"
+fi
 
 say "verify-workflow-estimate.sh: ALL GREEN"
