@@ -586,8 +586,12 @@ if (!mechanicalModel) {
   log(
     'backlog: mechanical model could not be resolved (rdm model resolve mechanical returned nothing) — stopping before any mechanical agent runs'
   )
-} else {
-  const result = await buildBacklogPipeline(realDeps)(args)
-  log(result.summary)
+  return {
+    groomed: false,
+    summary: 'backlog: mechanical model could not be resolved — stopping before any mechanical agent runs',
+    fetchError: true,
+  }
 }
+const result = await buildBacklogPipeline(realDeps)(args)
+log(result.summary)
 return result

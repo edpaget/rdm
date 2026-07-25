@@ -410,6 +410,96 @@ else
 fi
 
 # =============================================================================
+say "1c. Driver: whole-file execution of backlog.js's mechanical-model bootstrap gate"
+# =============================================================================
+# Section 1/1b only drive buildBacklogPipeline from lib/backlog.mjs — they
+# never execute backlog.js's own driver tail (the model:mechanical bootstrap
+# + if/else gate around the pipeline call). That tail is hand-authored,
+# top-level code in the workflow script itself, so it needs its own
+# Node-executed test: wrap the real file body in an async function taking
+# (agent, parallel, log, args) as closures, run it with fakes, and assert on
+# the ACTUAL RETURN VALUE — this is what would have caught the
+# `ReferenceError: result is not defined` regression that a static grep for
+# `model: mechanicalModel` near fetch:report could never see.
+
+cat >"$TMP/driver.mjs" <<'NODE_TEST'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+const wfPath = process.argv[2];
+const src = fs.readFileSync(wfPath, 'utf8').replace(/^export const meta/m, 'const meta');
+const wrapped = '(async function (agent, parallel, log, args) {\n' + src + '\n})';
+const fn = vm.runInNewContext(wrapped, {});
+
+const populatedReport = {
+  stale_tasks: [],
+  duplicate_clusters: [{ members: [{ slug: 'b', title: 'B' }] }],
+  tag_clusters: [],
+  archivable_roadmaps: [],
+};
+
+// --- Scenario A: model:mechanical resolves to an empty string ----------------
+// No fetch:report or analyze:* agent call may ever fire, and the driver must
+// return a defined, structured result instead of throwing.
+{
+  const seenLabels = [];
+  const fakeAgent = async (prompt, opts) => {
+    seenLabels.push(opts.label);
+    if (opts.label === 'model:mechanical') return { model: '' };
+    throw new Error('unexpected agent call with label ' + opts.label + ' after an unresolved mechanical model');
+  };
+  const fakeParallel = async (fns) => Promise.all(fns.map((f) => f()));
+  const logs = [];
+  const fakeLog = (m) => logs.push(m);
+
+  const result = await fn(fakeAgent, fakeParallel, fakeLog, {});
+
+  assert.ok(result !== undefined, 'an unresolved mechanical model must not leave the driver returning undefined');
+  assert.equal(result.groomed, false, 'an unresolved mechanical model never reports groomed: true');
+  assert.equal(result.fetchError, true, 'an unresolved mechanical model is surfaced as a fetchError');
+  assert.deepEqual(seenLabels, ['model:mechanical'], 'no fetch:report or analyze:* agent ever fires once the model is unresolved');
+  assert.ok(
+    logs.some((m) => /mechanical model could not be resolved/.test(m)),
+    'the unresolved-model path logs an explanatory message'
+  );
+}
+
+// --- Scenario B: model:mechanical resolves normally, report is populated -----
+// fetch:report must be pinned to the resolved model, and the driver returns
+// the pipeline's real groomed result.
+{
+  const seenLabels = [];
+  const seenModels = {};
+  const fakeAgent = async (prompt, opts) => {
+    seenLabels.push(opts.label);
+    seenModels[opts.label] = opts.model;
+    if (opts.label === 'model:mechanical') return { model: 'claude-haiku-mechanical' };
+    if (opts.label === 'fetch:report') return populatedReport;
+    if (opts.label.indexOf('analyze:') === 0) return { proposals: [{ command: 'rdm ' + opts.label, rationale: 'r' }], openQuestions: [] };
+    throw new Error('unexpected label ' + opts.label);
+  };
+  const fakeParallel = async (fns) => Promise.all(fns.map((f) => f()));
+  const logs = [];
+  const fakeLog = (m) => logs.push(m);
+
+  const result = await fn(fakeAgent, fakeParallel, fakeLog, {});
+
+  assert.equal(result.groomed, true, 'a populated report with a resolved mechanical model grooms normally');
+  assert.equal(seenModels['fetch:report'], 'claude-haiku-mechanical', 'fetch:report is pinned to the resolved mechanical model');
+  assert.ok(seenLabels.includes('analyze:duplicate_clusters'), 'the populated category is analyzed');
+}
+
+console.log('all backlog driver-tail assertions passed');
+NODE_TEST
+
+if run_node "$TMP/driver.mjs" "$WF"; then
+    pass "backlog.js driver tail: unresolved-model gate returns cleanly, resolved-model path pins fetch:report"
+else
+    fail "backlog.js driver-tail execution assertions failed (the mechanical-model bootstrap gate is broken)"
+fi
+
+# =============================================================================
 say "2. Zero-mutation: a real seeded plan repo is byte-identical before and after a run"
 # =============================================================================
 
