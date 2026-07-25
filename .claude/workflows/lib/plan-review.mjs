@@ -581,7 +581,11 @@ async function runPlanReviewDriver(args, deps) {
   // independently. `wontFixedTexts` is the SAME list for every unit in a run
   // (one search covers the whole run, not one per unit).
   async function reviewUnit(unit, wontFixedTexts) {
-    const rawSurvivors = await runPlanReview({ target: unit.target })
+    // runPlanReview is a `runReview` from the canonical review source and
+    // resolves `{ survivors, acTable }`; `acTable` is always `null` in plan
+    // mode (the `ac` dimension does not exist there) and is intentionally
+    // discarded here.
+    const { survivors: rawSurvivors } = await runPlanReview({ target: unit.target })
     const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
     const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
     const prior = parseRoundNotes(unit.body)
@@ -605,7 +609,8 @@ async function runPlanReviewDriver(args, deps) {
   // 'implementation-plan' !== 'phase').
   if (kind === 'implementation-plan') {
     const planText = parsed.planText || '(the implementation plan provided in context)'
-    const rawSurvivors = await runPlanReview({ target: planText })
+    // See reviewUnit's identical note: acTable is always null in plan mode.
+    const { survivors: rawSurvivors } = await runPlanReview({ target: planText })
     const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
     const outcome = classifyPlanOutcome(survivors)
     _log('plan-review (implementation-plan): ' + outcome + ' — ' + summarizeFindings(survivors))

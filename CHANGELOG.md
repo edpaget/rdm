@@ -37,6 +37,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   escalated. A finding already resolved `wont-fix` on a prior pass is dropped
   from both the report and the outcome, and is never re-raised.
 
+### Fixed
+
+- The autonomous code review (`rdm-dispatch-phase`, `rdm-autopilot`, the
+  standalone `review-refute-fix` workflow) now mechanically forces `rework`
+  whenever the acceptance-criteria table it reports carries a FAIL or PARTIAL
+  criterion, regardless of finding severity or refutation — previously this
+  guarantee held only to the extent the `ac` dimension happened to emit its
+  gaps as `blocking` findings that survived refutation and the confidence
+  floor. It also now incorporates any surviving non-blocking (concern or
+  suggestion) finding on an otherwise-clean review by size instead of
+  silently dropping it: small fixes are applied inline before landing, and
+  large ones are filed as a follow-up task tagged `code-review`.
+
 ## [0.18.0] - 2026-07-25
 ### Fixed
 

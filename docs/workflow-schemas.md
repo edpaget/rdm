@@ -182,6 +182,32 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `why`           | string                                   | root cause / which rule, AC, or principle         |
 | `recommendation`| string                                   | concrete fix                                      |
 
+### `AC_ENTRY` / `AC_REVIEW_SCHEMA`
+
+The `ac` dimension in `code` mode is the **one** dimension that does not return
+the bare `FINDINGS_SCHEMA` shape. Its finder is forced to satisfy
+`AC_REVIEW_SCHEMA` instead: a required per-criterion `ac` table (`AC_ENTRY`
+rows) plus an OPTIONAL `findings` array (same shape as `FINDINGS_SCHEMA`'s) for
+narrative notes that don't reduce to a single criterion's status.
+
+`AC_ENTRY`:
+
+| field       | type                              | notes                                   |
+| ----------- | --------------------------------- | ---------------------------------------- |
+| `criterion` | string (required)                 | the acceptance criterion being rated     |
+| `status`    | `PASS` \| `FAIL` \| `PARTIAL` (required) | the finder's rating for this criterion |
+| `evidence`  | string (required)                 | file:line, test name, or other citation  |
+
+This table is a **structured side-channel**, not a finding: `classifyOutcome`
+(see below) checks it directly, independent of finding severity and
+refutation — a hallucinated `AC_ENTRY.status: 'FAIL'` therefore bypasses
+refutation entirely and can force a spurious `rework` with no counter-check,
+which is the deliberate trade-off for a guarantee that can no longer be
+silently defeated by a refuter or the confidence floor. The AC table and any
+`ac`-dimension `findings` entry about the same criterion are two independent
+channels, never deduplicated against each other. `plan` mode has no `ac`
+dimension, so it never populates this table.
+
 ### `VERDICT`
 
 A refuter agent's grade of a single `FINDING`. A **fresh** refuter grades each
@@ -195,10 +221,17 @@ finding — the finder never grades its own work.
 
 ### `OUTCOME` (review pipeline)
 
-The value `buildReviewPipeline(mode)(context)` resolves to: a **ranked** array of
-the surviving `FINDING`s. The dispatch-phase keystone (below) consumes this
-array at each of its two review gates and folds it into its own,
-differently-shaped `OUTCOME`.
+The value `buildReviewPipeline(mode)(context)` resolves to
+`{ survivors, acTable }`: `survivors` is a **ranked** array of the surviving
+`FINDING`s, and `acTable` is the captured `AC_ENTRY[]` from the `ac`
+dimension's finder in `code` mode (`null` in `plan` mode, and `null` whenever
+the `ac` dimension didn't run or its finder failed to resolve a table — see
+`AC_ENTRY` / `AC_REVIEW_SCHEMA` above). The dispatch-phase keystone (below)
+consumes both fields at each of its two review gates and folds them into its
+own, differently-shaped `OUTCOME`; `classifyOutcome` (see "Verdict and status
+mapping" below) checks `acTable` directly via `acTableHasGap`, independent of
+`survivors`' severity/refutation, and can only ever push the outcome to
+`rework` — never `escalated`.
 
 The standalone `review-refute-fix.js` consumer has three invocation shapes: (a)
 `mode: 'plan'`, and (b) `mode: 'code'` with no `roadmap`+`phase` or `task`
@@ -246,15 +279,27 @@ Returns an async `runReview(context)` that composes
 0. **Select** — the deterministic pre-step `selectDimensions(mode, signals)`
    decides which dimensions actually run (see below).
 1. **Find** — one finder `agent()` per selected dimension, in parallel
-   (`pipeline` stage 1).
+   (`pipeline` stage 1). In `code` mode, the `ac` dimension's finder is forced
+   to satisfy `AC_REVIEW_SCHEMA` instead of `FINDINGS_SCHEMA`, and the first
+   `ac` array it resolves is captured into the run's `acTable`.
 2. **Refute** — a **fresh** refuter `agent()` per finding, in parallel (stage 2).
 3. **Filter** — drop findings that were refuted or fell below `CONFIDENCE_FLOOR`.
-4. **Rank** — return the survivors via `rankFindings`.
+4. **Rank** — resolve `{ survivors: rankFindings(survivors), acTable }`.
 
 `context.target` (and any other fields) is threaded into every finder and refuter
 prompt, so the review material reaches the agents. `deps` (`{ agent, pipeline,
 parallel, log }`) is omitted in the Workflow runtime (the ambient globals are
 used) and injected by the verify harness to drive the pipeline with fakes.
+
+**Every consumer of `runReview`/`d.review(...)` must destructure
+`{ survivors, acTable }`** rather than treat the resolved value as a bare
+array. In `lib/dispatch-phase.mjs` this means **both** `runCodeGate` (which
+tracks a per-round `acRounds` array alongside `rounds` and checks
+`acTableHasGap` in its rework-loop continuation) and `runPlanGate` (which
+discards `acTable` — always `null` in `plan` mode — and uses `survivors` as
+its `findings`) needed updating; `lib/plan-review.mjs`'s `reviewUnit` and its
+`--implementation-plan` branch, and `review-refute-fix.js`'s legacy and
+standalone driver paths, do the same.
 
 ### Dimensions and `when` triggers
 
@@ -329,6 +374,14 @@ classifier. It returns exactly one of the canonical `OUTCOMES`:
 | `reviewed` | clean, or clean after small fixes | `reviewed` | `reviewed` | yes |
 | `rework` | a fixable defect or an unmet AC | `in-progress` | `in-progress` | no |
 | `escalated` | a blocker needing a human decision | `blocked` | `blocked` | no |
+
+`classifyOutcome` also accepts `input.acTable` — the `AC_ENTRY[]` belonging to
+the LAST completed code round (see `AC_ENTRY` / `AC_REVIEW_SCHEMA` above). A
+surviving `FAIL`/`PARTIAL` criterion (`acTableHasGap(acTable)`) mechanically
+forces `rework`, checked as its own step BEFORE the code-findings check and
+AFTER the plan-gate check — so it can only ever yield `rework`, never
+`escalated`, and it is independent of finding severity or refutation
+entirely: an AC-table `FAIL` forces `rework` even when zero findings survived.
 
 `statusFor(outcome, kind)` and `writesCompletion(outcome)` expose that table and
 throw on an unknown outcome or item kind rather than returning `undefined`. The
@@ -507,6 +560,38 @@ fixable/decision flag), a code defect surviving the one rework resolves to
 that is why the code stage yields only `reviewed`/`rework`. `dispatch-phase` never
 emits a `Done:` line — it emits `writesCompletion` and landing is a separate,
 later step.
+
+### `CODE_ACT_SCHEMA` and the code-lane Act step
+
+Once `runCodeGate`'s rework loop settles on a **clean** final round (no
+blocking finding, no AC-table gap) with **non-empty** surviving findings, the
+gate invokes the optional `d.act(findings)` dep exactly once — mirroring the
+plan-review skill's small/large Act split (`buildActPrompt`), but for code: a
+finding is fixed inline in the worktree (small) or filed as a task via
+`rdm task create --tags code-review` (large), never both, and never a
+separate landing commit for a small fix (it folds into the eventual land-time
+commit). `dispatch-phase.js` wires this dep to an `agent()` call using
+`buildCodeActPrompt` and `CODE_ACT_SCHEMA`:
+
+| field                | type                                       | notes                                    |
+| -------------------- | ------------------------------------------ | ------------------------------------------ |
+| `handled`            | array of `{ id, action, taskSlug? }` (required) | one entry per finding the Act step was asked to incorporate |
+| `handled[].id`       | string (required)                         | matches the `FINDING.id` it disposed of  |
+| `handled[].action`   | `fixed-inline` \| `filed-as-task` (required) | how the finding was incorporated       |
+| `handled[].taskSlug` | string                                     | present when `action` is `filed-as-task` |
+
+The Act step is a no-op when `d.act` is omitted, and its result (or a thrown
+call) never affects the outcome — concern/suggestion findings are non-gating
+by the module's own severity contract, so a failed fix-attempt must never
+downgrade a `reviewed` outcome. `runCodeGate` reports the raw agent result as
+`actResult`; `buildOutcome`/`buildTaskOutcome` thread it through
+`annotateHandled`, which stamps each REPORTED finding (only on a `reviewed`
+outcome) with a `handled` field from the matching `actResult.handled` entry —
+defaulting to `'unhandled'` when a specific finding wasn't addressed, and
+leaving findings unannotated (no `handled` key) when `actResult` itself is
+absent (Act was never invoked, or it threw). This never runs when the loop
+exited still-blocking or AC-table-gapped — large/unresolved defects stay
+owned by the rework/status machinery, per "never fix large changes inline".
 
 **The code-review stage is the canonical review.** `dispatch-phase` builds it
 from the stamped `buildReviewPipeline('code')` — there is no independent

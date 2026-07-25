@@ -389,6 +389,9 @@ const {
   survives,
   rankFindings,
   CONFIDENCE_FLOOR,
+  acTableHasGap,
+  AC_ENTRY_SCHEMA,
+  AC_REVIEW_SCHEMA,
 } = mod;
 
 // --- reference pipeline/parallel: faithful to the real Workflow runtime -------
@@ -483,9 +486,13 @@ const codeVerdicts = {
 };
 
 const spy = makeSpyAgent(codeFindings, codeVerdicts);
-const out = await buildReviewPipeline('code', deps(spy))(CTX);
+const { survivors: out, acTable: outAcTable } = await buildReviewPipeline('code', deps(spy))(CTX);
 
 assert.deepEqual(out.map((f) => f.id), ['real-bug'], 'code: only the real, un-refuted, high-confidence finding survives');
+// The `ac` dimension in this fixture returns the bare FINDINGS shape (no `ac`
+// array), matching the pre-AC-table-channel fixtures elsewhere in this file —
+// so acTable stays null (no structured table was resolved).
+assert.equal(outAcTable, null, 'no ac table resolved when the ac finder returns no `ac` array');
 
 const findCalls = spy.calls.filter((c) => c.label.startsWith('find:'));
 const refuteCalls = spy.calls.filter((c) => c.label.startsWith('refute:'));
@@ -531,7 +538,7 @@ assert.equal(JSON.stringify(outA), JSON.stringify(outB), 'code review output is 
     if (opts && opts.label === 'find:code:correctness') throw new Error('boom finder');
     return base(prompt, opts);
   };
-  const rOut = await buildReviewPipeline('code', deps(spyF))(CTX);
+  const { survivors: rOut } = await buildReviewPipeline('code', deps(spyF))(CTX);
   assert.deepEqual(rOut, [], 'a thrown finder drops its dimension; others survive; no crash');
 }
 
@@ -548,7 +555,7 @@ assert.equal(JSON.stringify(outA), JSON.stringify(outB), 'code review output is 
     if (opts && opts.label.startsWith('refute:')) throw new Error('boom refuter');
     return base(prompt, opts);
   };
-  const rOut = await buildReviewPipeline('code', deps(spyR))(CTX);
+  const { survivors: rOut } = await buildReviewPipeline('code', deps(spyR))(CTX);
   assert.deepEqual(rOut.map((f) => f.id), ['infra'], 'a refuter crash keeps the finding un-refuted, not silently dropped');
 }
 
@@ -578,10 +585,12 @@ const planVerdicts = {
 };
 
 const pspy = makeSpyAgent(planFindings, planVerdicts);
-const pout = await buildReviewPipeline('plan', deps(pspy))(CTX);
+const { survivors: pout, acTable: poutAcTable } = await buildReviewPipeline('plan', deps(pspy))(CTX);
 
 // refutable dropped, below-floor dropped, real survives — full parity with code mode.
 assert.deepEqual(pout.map((f) => f.id), ['vague-step'], 'plan: refutable dropped, below-floor dropped, real survives');
+// Plan mode never sets an AC table — the `ac` dimension does not exist there.
+assert.equal(poutAcTable, null, 'plan mode always resolves acTable to null');
 const pFind = pspy.calls.filter((c) => c.label.startsWith('find:'));
 const pRefute = pspy.calls.filter((c) => c.label.startsWith('refute:'));
 assert.equal(pFind.length, 4, 'one finder per plan dimension');
@@ -603,7 +612,11 @@ assert.throws(() => buildReviewPipeline('bogus', deps(spy)), /unknown review mod
 // single stray byte) means the calibration work leaked into code-mode prompts.
 // ============================================================================
 const CODE_PROMPT_BASELINE = {
-  ac: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is AC compliance (ac). For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
+  // `ac` intentionally diverges from the FINDINGS-schema baseline shape below —
+  // it is the ONE dimension that returns the structured AC_REVIEW_SCHEMA (see
+  // the AC-table-channel change) — so its baseline is the AC_REVIEW prompt, not
+  // the shared FINDINGS-schema wording every other dimension shares.
+  ac: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is AC compliance (ac). For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the AC_REVIEW schema: an `ac` array with ONE entry per acceptance criterion — criterion, status (PASS|FAIL|PARTIAL), and evidence (file:line, test name) — plus an OPTIONAL `findings` array (same shape as the FINDINGS schema) for narrative notes that do not reduce to a single criterion\'s status.\nOnly leave `ac` empty if the target states no acceptance criteria at all — report that itself as a `findings` entry.',
   correctness: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Correctness & error handling (correctness). Logic bugs, edge cases, race conditions, and error paths. In rdm-core, errors must be hand-written matchable enums (no anyhow / type erasure); in rdm-cli / rdm-server, anyhow with .context(). User-facing CLI errors must be actionable.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
   tests: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Tests (tests). Do tests exist and cover the key behaviors and edge cases? Was TDD followed? Are there untested branches or newly added logic with no test?\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
   architecture: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Architecture (architecture). Does logic live in rdm-core with cli/server as thin layers? No duplicated logic across interfaces? Correct core/cli/server separation and conventional-commit scope discipline.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
@@ -710,7 +723,7 @@ assert.ok(
   };
   const overSpecVerdicts = { 'over-specified': { refuted: false, confidence: 92 } };
   const rspy = makeSpyAgent(overSpecFindings, overSpecVerdicts);
-  const rOut = await buildReviewPipeline('plan', deps(rspy))(CTX);
+  const { survivors: rOut } = await buildReviewPipeline('plan', deps(rspy))(CTX);
   assert.ok(
     rOut.some((f) => f.id === 'over-specified'),
     'a seeded blocking restraint finding survives buildReviewPipeline(plan) filtering'
@@ -773,7 +786,7 @@ const calibrationVerdicts = {
   'impl-nit': { refuted: false, confidence: 88 },
 };
 const cspy = makeSpyAgent(calibrationFindings, calibrationVerdicts);
-const cout = await buildReviewPipeline('plan', deps(cspy))(CTX);
+const { survivors: cout } = await buildReviewPipeline('plan', deps(cspy))(CTX);
 assert.deepEqual(
   cout.map((f) => f.id),
   ['tier-downgrade', 'impl-nit'],
@@ -833,7 +846,7 @@ assert.ok(
 // (c) WITHOUT a model (the standalone consumer), today's behavior is preserved:
 //     null finders degrade to an empty review rather than throwing.
 const nspy2 = nullAgent();
-const degraded = await buildReviewPipeline('code', deps(nspy2))(CTX);
+const { survivors: degraded } = await buildReviewPipeline('code', deps(nspy2))(CTX);
 assert.deepEqual(degraded, [], 'no-model callers keep the pre-existing lenient behavior');
 assert.ok(
   nspy2.calls.every((c) => c.model === undefined),
@@ -842,7 +855,7 @@ assert.ok(
 
 // (d) A genuinely clean review (findings: []) must NOT trip the guard.
 const cleanSpy = makeSpyAgent({}, {});
-const cleanOut = await buildReviewPipeline('code', deps(cleanSpy))({ ...CTX, findModel: 'haiku', verifyModel: 'opus' });
+const { survivors: cleanOut } = await buildReviewPipeline('code', deps(cleanSpy))({ ...CTX, findModel: 'haiku', verifyModel: 'opus' });
 assert.deepEqual(cleanOut, [], 'a real clean review still returns [] with models set');
 
 // ============================================================================
@@ -1001,6 +1014,89 @@ assert.equal(writesCompletion('rework'), false);
 assert.equal(writesCompletion('escalated'), false);
 assert.throws(() => writesCompletion('BLOCKED'), /unknown outcome/);
 console.log('AC1/AC2: classifyOutcome truth table and the outcome->status mapping hold');
+
+// ============================================================================
+// AC-TABLE CHANNEL (classify-outcome-ac-table-channel) — a surviving FAIL/
+// PARTIAL AC-table criterion mechanically forces `rework`, independent of
+// finding severity and refutation.
+// ============================================================================
+assert.equal(acTableHasGap(null), false, 'a null AC table is not a gap');
+assert.equal(acTableHasGap(undefined), false, 'an undefined AC table is not a gap');
+assert.equal(acTableHasGap([]), false, 'an empty AC table is not a gap');
+assert.equal(acTableHasGap([{ criterion: 'x', status: 'PASS', evidence: 'y' }]), false, 'an all-PASS table is not a gap');
+assert.equal(acTableHasGap([{ criterion: 'x', status: 'FAIL', evidence: 'y' }]), true, 'a FAIL entry is a gap');
+assert.equal(acTableHasGap([{ criterion: 'x', status: 'PARTIAL', evidence: 'y' }]), true, 'a PARTIAL entry is a gap');
+
+// (a) zero findings, a FAIL acTable — classifyOutcome still returns 'rework'.
+// Proves the guarantee no longer depends on finding severity/refutation at all.
+assert.equal(
+  classifyOutcome({ tier: 'medium', codeReviews: [[]], acTable: [{ criterion: 'x', status: 'FAIL', evidence: 'none' }] }),
+  'rework',
+  'a FAIL AC-table entry forces rework even with zero surviving findings'
+);
+assert.equal(
+  classifyOutcome({ tier: 'medium', codeReviews: [[]], acTable: [{ criterion: 'x', status: 'PARTIAL', evidence: 'partial' }] }),
+  'rework',
+  'a PARTIAL AC-table entry forces rework even with zero surviving findings'
+);
+assert.equal(
+  classifyOutcome({ tier: 'medium', codeReviews: [[]], acTable: [{ criterion: 'x', status: 'PASS', evidence: 'ok' }] }),
+  'reviewed',
+  'an all-PASS AC table does not force rework'
+);
+assert.equal(
+  classifyOutcome({ tier: 'medium', codeReviews: [[]], acTable: null }),
+  'reviewed',
+  'a null AC table (e.g. plan mode, or ac dimension did not run) does not force rework'
+);
+// The AC-table gate can only ever yield rework, never escalated — a blocking
+// plan finding still wins (rule 1 fires first).
+assert.equal(
+  classifyOutcome({ tier: 'medium', planFindings: BLOCKER, acTable: [{ criterion: 'x', status: 'FAIL', evidence: 'y' }] }),
+  'escalated',
+  'a blocking plan finding still escalates ahead of the AC-table gate'
+);
+
+// (b) Driven-pipeline: a fake `ac` finder returns the AC_REVIEW_SCHEMA shape
+// (an `ac` array with a FAIL entry, no findings), and the harness asserts
+// runReview resolves { survivors: [], acTable: [FAIL entry] } — the FAIL entry
+// intact, not folded into (or lost as) a finding.
+{
+  const acSpy = { agent: null, calls: [] };
+  acSpy.agent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    acSpy.calls.push({ label, prompt });
+    if (label === 'find:code:ac') {
+      return { ac: [{ criterion: 'the CLI must reject empty input', status: 'FAIL', evidence: 'no such check exists' }] };
+    }
+    if (label.startsWith('find:')) return { findings: [] };
+    throw new Error('unexpected agent label: ' + label);
+  };
+  const acResult = await buildReviewPipeline('code', deps(acSpy))(CTX);
+  assert.deepEqual(acResult.survivors, [], 'no findings survive when only the ac dimension reports (via the ac table)');
+  assert.deepEqual(
+    acResult.acTable,
+    [{ criterion: 'the CLI must reject empty input', status: 'FAIL', evidence: 'no such check exists' }],
+    'runReview resolves the ac table intact, with the FAIL entry preserved'
+  );
+  const acFindCall = acSpy.calls.find((c) => c.label === 'find:code:ac');
+  assert.ok(acFindCall, 'the ac dimension finder was actually invoked');
+  assert.ok(acFindCall.prompt.includes('AC_REVIEW'), 'the ac dimension is prompted for the AC_REVIEW schema shape');
+}
+
+// (c) Plan-mode regression: runReview('plan', ...) still resolves acTable:
+// null and unchanged bare-survivors-consuming behavior — the ac dimension does
+// not exist in plan mode, so nothing can ever populate it.
+{
+  const planAcResult = await buildReviewPipeline('plan', deps(makeSpyAgent(planFindings, planVerdicts)))(CTX);
+  assert.equal(planAcResult.acTable, null, 'plan mode never populates an ac table');
+  assert.deepEqual(
+    planAcResult.survivors.map((f) => f.id),
+    ['vague-step'],
+    'plan mode survivors are unchanged by the ac-table-channel addition'
+  );
+}
+console.log('AC-TABLE-CHANNEL: a surviving FAIL/PARTIAL AC-table criterion mechanically forces rework');
 
 // ============================================================================
 // The mode-dispatched gate policy. `code` must be the SAME table statusFor /
@@ -1462,12 +1558,14 @@ function makeHarness(findingsByTarget, fetchResults) {
     return { ok: true };
   };
   const parallel = (thunks) => Promise.all(thunks.map((t) => t()));
+  // runPlanReview is a `runReview` from the canonical review source and
+  // resolves { survivors, acTable } — acTable is always null in plan mode.
   const runPlanReview = async (ctx) => {
     const target = (ctx && ctx.target) || '';
     for (const key of Object.keys(findingsByTarget)) {
-      if (target.indexOf(key) !== -1) return findingsByTarget[key];
+      if (target.indexOf(key) !== -1) return { survivors: findingsByTarget[key], acTable: null };
     }
-    return [];
+    return { survivors: [], acTable: null };
   };
   const log = () => {};
   return { deps: { agent, parallel, runPlanReview, log }, calls };
@@ -1660,7 +1758,9 @@ function makeStatefulHarness(initialBody, tags, findings, wontfixTexts) {
     return { ok: true };
   };
   const parallel = (thunks) => Promise.all(thunks.map((t) => t()));
-  const runPlanReview = async () => findings;
+  // runPlanReview resolves { survivors, acTable } — acTable is always null in
+  // plan mode.
+  const runPlanReview = async () => ({ survivors: findings, acTable: null });
   const log = () => {};
   return { deps: { agent, parallel, runPlanReview, log }, calls, getBody: () => body };
 }

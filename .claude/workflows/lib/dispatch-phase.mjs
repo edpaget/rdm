@@ -30,6 +30,7 @@ import {
   classifyOutcome,
   codeReviewRounds,
   hasBlocking,
+  acTableHasGap,
   summarizeFindings,
   statusFor,
   writesCompletion,
@@ -128,6 +129,14 @@ function parseDispatchArgs(args) {
 // imports cleanly in Node — the lib/autopilot.mjs precedent, which is what makes
 // the budget loop testable at all.
 //
+// `d.review(planDoc)` is a `runReview` from the canonical review source and
+// therefore resolves `{ survivors, acTable }`, not a bare array — both call
+// sites below destructure it. `acTable` is discarded: plan mode never sets it
+// (the `ac` dimension does not exist there), and `hasBlocking`'s
+// `Array.isArray(findings)` guard would otherwise silently see a non-array and
+// report no blocking findings at all, permanently defeating the plan gate's
+// escalation path.
+//
 // agent() RESOLVES to null on an unknown/unavailable model id rather than
 // throwing (spike consequence 3), so BOTH the initial plan and EVERY revise
 // result are null-guarded. The revise guard runs before the reassignment and
@@ -142,7 +151,8 @@ async function runPlanGate(config, deps) {
   if (planDoc === null || planDoc === undefined) {
     return { fetchError: true, stage: 'plan', planDoc: null, findings: [], reviewCount: 0, reviseCount: 0 };
   }
-  let findings = await d.review(planDoc);
+  let reviewResult = (await d.review(planDoc)) || {};
+  let findings = reviewResult.survivors || [];
   let reviewCount = 1;
   let reviseCount = 0;
   for (let i = 0; i < maxRevise; i++) {
@@ -160,7 +170,8 @@ async function runPlanGate(config, deps) {
       };
     }
     planDoc = revised;
-    findings = await d.review(planDoc);
+    reviewResult = (await d.review(planDoc)) || {};
+    findings = reviewResult.survivors || [];
     reviewCount++;
   }
   return {
@@ -175,29 +186,116 @@ async function runPlanGate(config, deps) {
 
 // runCodeGate(config, deps) — the bounded code stage. Implement, review, and
 // rework up to `config.maxRework` times, breaking early on a clean review.
-// Returns { findings, rounds, reworkCount, reviewCount } where `rounds` is the
-// per-round review findings in order (always at least one entry).
+// Returns { findings, rounds, acRounds, reworkCount, reviewCount, actResult }
+// where `rounds`/`acRounds` are the per-round review findings / AC tables in
+// order (always at least one entry each).
+//
+// `d.review()` is a `runReview` from the canonical review source and therefore
+// resolves `{ survivors, acTable }`, not a bare array — every round destructures
+// it. The rework-loop continuation checks BOTH `hasBlocking` and
+// `acTableHasGap`: an AC-only gap (no blocking finding at all) must still
+// consume the rework budget instead of exiting after round 1 and reporting
+// `rework` without ever attempting a fix.
 //
 // No null guard is needed here: `implement` returns no document the pipeline
 // consumes, and the review pipeline already converts an all-null finder sweep
 // into a blocking finding.
+//
+// Act step: once the loop settles on a CLEAN final round (no blocking finding,
+// no AC-table gap) with non-empty survivors, the optional `d.act` dep is
+// invoked exactly once to incorporate them by size (small → fixed inline,
+// large → filed as a task — see buildCodeActPrompt). This never runs on a
+// still-blocking/AC-gapped round, whatever caused it (still-blocking findings
+// and unresolved AC gaps are handled by the rework/status machinery, not this
+// step — "never fix large changes inline" stays intact). A missing `act` dep or
+// a thrown Act call is swallowed: concern/suggestion findings are non-gating by
+// the module's own severity contract, so a failed fix-attempt must never
+// change the outcome.
 async function runCodeGate(config, deps) {
   const c = config || {};
   const d = deps || {};
   const maxRework = c.maxRework != null ? c.maxRework : DEFAULT_MAX_CODE_REWORK;
   const tier = c.tier;
   await d.implement(null);
-  let findings = await d.review();
+  let reviewResult = (await d.review()) || {};
+  let findings = reviewResult.survivors || [];
+  let acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
   const rounds = [findings];
+  const acRounds = [acTable];
   let reworkCount = 0;
   for (let i = 0; i < maxRework; i++) {
-    if (!hasBlocking(findings, tier)) break;
+    if (!hasBlocking(findings, tier) && !acTableHasGap(acTable)) break;
     await d.implement(findings);
     reworkCount++;
-    findings = await d.review();
+    reviewResult = (await d.review()) || {};
+    findings = reviewResult.survivors || [];
+    acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
     rounds.push(findings);
+    acRounds.push(acTable);
   }
-  return { findings: findings, rounds: rounds, reworkCount: reworkCount, reviewCount: rounds.length };
+  let actResult = null;
+  const isClean = !hasBlocking(findings, tier) && !acTableHasGap(acTable);
+  if (isClean && findings.length > 0) {
+    actResult = d.act ? await d.act(findings).catch(() => null) : null;
+  }
+  return {
+    findings: findings,
+    rounds: rounds,
+    acRounds: acRounds,
+    reworkCount: reworkCount,
+    reviewCount: rounds.length,
+    actResult: actResult,
+  };
+}
+
+// JSON Schema the code-lane Act step is forced to satisfy: one disposition per
+// surviving finding it was asked to incorporate. Mirrors the STAMP_ACK_SCHEMA
+// pattern (a small, verifiable acknowledgement) rather than free text.
+const CODE_ACT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['handled'],
+  properties: {
+    handled: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'action'],
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          action: { type: 'string', enum: ['fixed-inline', 'filed-as-task'] },
+          taskSlug: { type: 'string' },
+        },
+      },
+    },
+  },
+};
+
+// buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) — the
+// code-lane Act step: an already-verified surviving finding is incorporated by
+// SIZE, not severity (severity already decided the outcome — this decides
+// whether/how the finding is acted on). Modeled directly on
+// lib/plan-review.mjs's buildActPrompt, but code-review findings are fixed
+// inline in the worktree (no whole-document authoritative-body rewrite) and
+// large ones are filed with `rdm task create`, not a plan-doc note.
+function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) {
+  const target = kind === 'task' ? 'task/' + ident : roadmapOrTask + '/' + ident;
+  return [
+    'You are acting on ALREADY-VERIFIED code-review findings for ' + target + ' (worktree: ' + worktreeRef + ').',
+    'These findings survived refutation and are non-gating (the reviewed outcome is already decided).',
+    JSON.stringify(survivors, null, 2),
+    'For EACH finding, decide SMALL vs LARGE:',
+    '- SMALL — localized, low-risk, no new acceptance criterion (a typo, a missing doc comment, a tightened ' +
+      'error message, an extra test). Fix it directly in the worktree at ' + worktreeRef +
+      ' and re-run the relevant tests. Do not create a separate landing commit — the fix folds into the ' +
+      'eventual land-time commit.',
+    '- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance ' +
+      'criterion. Do NOT edit code for these: file it with `./target/debug/rdm task create <slug> --title ' +
+      '"Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.',
+    'Return JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — ' +
+      'id, action (fixed-inline|filed-as-task), and taskSlug when you filed a task.',
+  ].join('\n');
 }
 
 // OUTCOME_REASON_PREFIX — which gate a non-clean outcome came out of.
@@ -232,6 +330,22 @@ function outcomePolicy(outcome, kind, summary) {
   };
 }
 
+// annotateHandled(findings, actResult) — realize the guideline "for each
+// finding, state how it was handled (fixed-inline / filed-as-task)" for the
+// mechanical code lane: stamp a `handled` field onto each finding from the
+// matching `actResult.handled` entry (by `id`), defaulting to `'unhandled'`
+// when the Act step wasn't run, failed, or didn't report that specific
+// finding. Pure and order-preserving; a no-op (returns `findings` unchanged)
+// when `actResult` carries no usable `handled` array.
+function annotateHandled(findings, actResult) {
+  if (!actResult || !Array.isArray(actResult.handled)) return findings;
+  const actionById = {};
+  actResult.handled.forEach((h) => {
+    if (h && h.id) actionById[h.id] = h.action;
+  });
+  return findings.map((f) => ({ ...f, handled: (f && f.id && actionById[f.id]) || 'unhandled' }));
+}
+
 // buildOutcome — the OUTCOME contract { roadmap, phase, outcome, status,
 // writesCompletion, summary, reason, findings }. fetchError short-circuits to
 // escalated. Never emits a land-time completion directive — it emits the
@@ -256,6 +370,8 @@ function buildOutcome(input) {
     };
   }
   const planFindings = i.planFindings || [];
+  const acRounds = i.acRounds || [];
+  const lastAcTable = acRounds.length ? acRounds[acRounds.length - 1] : null;
   const classifierInput = {
     planFindings: planFindings,
     codeFindings: i.codeFindings,
@@ -263,6 +379,7 @@ function buildOutcome(input) {
     codeReviews: i.codeReviews,
     maxRework: i.maxRework,
     tier: tier,
+    acTable: lastAcTable,
   };
   const outcome = classifyOutcome(classifierInput);
   // The LAST code-review round is what both the rework and reviewed payloads
@@ -276,9 +393,15 @@ function buildOutcome(input) {
     summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
   } else if (outcome === 'rework') {
     findings = lastRound;
-    summary = 'code rework unresolved: ' + summarizeFindings(lastRound);
+    // An AC-only gap can force `rework` with an EMPTY lastRound findings
+    // array (no blocking finding at all) — summarizeFindings([]) would then
+    // misleadingly read "no surviving findings". Name the real cause instead.
+    summary =
+      lastRound.length === 0 && acTableHasGap(lastAcTable)
+        ? 'code rework unresolved: unmet acceptance criteria in AC table'
+        : 'code rework unresolved: ' + summarizeFindings(lastRound);
   } else {
-    findings = lastRound;
+    findings = annotateHandled(lastRound, i.actResult);
     summary = 'phase reviewed clean: ' + summarizeFindings(lastRound);
   }
   const policy = outcomePolicy(outcome, 'phase', summary);
@@ -321,6 +444,8 @@ function buildTaskOutcome(input) {
     };
   }
   const planFindings = i.planFindings || [];
+  const acRounds = i.acRounds || [];
+  const lastAcTable = acRounds.length ? acRounds[acRounds.length - 1] : null;
   const classifierInput = {
     planFindings: planFindings,
     codeFindings: i.codeFindings,
@@ -328,6 +453,7 @@ function buildTaskOutcome(input) {
     codeReviews: i.codeReviews,
     maxRework: i.maxRework,
     tier: tier,
+    acTable: lastAcTable,
   };
   const outcome = classifyOutcome(classifierInput);
   const rounds = codeReviewRounds(classifierInput);
@@ -339,9 +465,14 @@ function buildTaskOutcome(input) {
     summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
   } else if (outcome === 'rework') {
     findings = lastRound;
-    summary = 'code rework unresolved: ' + summarizeFindings(lastRound);
+    // See buildOutcome's identical AC-only-gap note: an empty lastRound with a
+    // gapped AC table must not read as "no surviving findings".
+    summary =
+      lastRound.length === 0 && acTableHasGap(lastAcTable)
+        ? 'code rework unresolved: unmet acceptance criteria in AC table'
+        : 'code rework unresolved: ' + summarizeFindings(lastRound);
   } else {
-    findings = lastRound;
+    findings = annotateHandled(lastRound, i.actResult);
     summary = 'task reviewed clean: ' + summarizeFindings(lastRound);
   }
   const policy = outcomePolicy(outcome, 'task', summary);
@@ -368,6 +499,7 @@ export {
   runCodeGate,
   codeReviewRounds,
   hasBlocking,
+  acTableHasGap,
   summarizeFindings,
   classifyOutcome,
   statusFor,
@@ -375,6 +507,9 @@ export {
   deriveSignals,
   outcomePolicy,
   OUTCOME_REASON_PREFIX,
+  CODE_ACT_SCHEMA,
+  buildCodeActPrompt,
+  annotateHandled,
   buildOutcome,
   buildTaskOutcome,
 };

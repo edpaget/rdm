@@ -487,36 +487,50 @@ function makePlanFakes(o) {
         if (opts.reviseNull) return null;
         return { doc: (doc.doc || 0) + 1 };
       },
+      // runPlanReview (a `runReview` from the canonical review source) resolves
+      // { survivors, acTable }; plan mode always sets acTable to null.
       review: async (doc) => {
         assert.ok(doc !== null && doc !== undefined, 'a null plan doc must NEVER reach the reviewer');
         callLog.push('review');
         const r = script[Math.min(reviewIdx, script.length - 1)];
         reviewIdx++;
-        return r;
+        return { survivors: r, acTable: null };
       },
     },
   };
 }
 
+// acScript (optional) is a PARALLEL per-round array of AC tables (or null),
+// consumed alongside `reviewScript`'s per-round findings — mirrors runReview's
+// { survivors, acTable } shape for the code-mode gate.
 function makeCodeFakes(o) {
   const opts = o || {};
   const callLog = [];
   let reviewIdx = 0;
   const script = opts.reviewScript || [[B('never-clean')]];
-  return {
-    callLog,
-    deps: {
-      implement: async (notes) => {
-        callLog.push(notes == null ? 'implement' : 'rework');
-      },
-      review: async () => {
-        callLog.push('review');
-        const r = script[Math.min(reviewIdx, script.length - 1)];
-        reviewIdx++;
-        return r;
-      },
+  const acScript = opts.acScript || null;
+  const deps = {
+    implement: async (notes) => {
+      callLog.push(notes == null ? 'implement' : 'rework');
+    },
+    review: async () => {
+      callLog.push('review');
+      const idx = Math.min(reviewIdx, script.length - 1);
+      const r = script[idx];
+      const acTable = acScript ? acScript[Math.min(reviewIdx, acScript.length - 1)] : null;
+      reviewIdx++;
+      return { survivors: r, acTable: acTable };
     },
   };
+  // `act` is OPTIONAL on the real deps contract — only wire it in when the
+  // caller supplied one, so the "no act dep" no-op path stays exercised too.
+  if (opts.act) {
+    deps.act = async (findings) => {
+      callLog.push('act');
+      return opts.act(findings);
+    };
+  }
+  return { callLog, deps };
 }
 
 const count = (log, kind) => log.filter((c) => c === kind).length;
@@ -802,11 +816,11 @@ try {
       const files = (d.changedFiles || []).filter(Boolean);
       if (files.length === 0) {
         seen.push({ hasSignalsKey: false });
-        return [B('still-broken')];
+        return { survivors: [B('still-broken')], acTable: null };
       }
       const signals = deriveSignals({ targetType: 'phase', changedFiles: files, diffText: d.diffText });
       seen.push({ hasSignalsKey: true, signals });
-      return roundIdx >= 2 ? [] : [B('round-1-blocker')];
+      return { survivors: roundIdx >= 2 ? [] : [B('round-1-blocker')], acTable: null };
     },
   };
   const gate = await runCodeGate({ maxRework: 1, tier: 'medium' }, codeDeps);
@@ -824,7 +838,7 @@ try {
       const call = { target: 'rm/phase-1-x' };
       if (files.length > 0) call.signals = deriveSignals({ targetType: 'phase', changedFiles: files });
       failOpenCall = call;
-      return [];
+      return { survivors: [], acTable: null };
     },
   };
   await runCodeGate({ maxRework: 0, tier: 'medium' }, failOpenDeps);
@@ -832,6 +846,125 @@ try {
     !Object.prototype.hasOwnProperty.call(failOpenCall, 'signals'),
     'an empty diff omits the signals KEY entirely (fail-open) — never passes {}'
   );
+}
+
+// ============================================================================
+// AC-TABLE CHANNEL + ACT STEP (classify-outcome-ac-table-channel)
+// ============================================================================
+
+// (a) An AC-only gap (no blocking finding at all) must still consume the
+// rework budget — the loop-continuation fix. Round 1: zero findings but a FAIL
+// acTable; round 2: clean on both axes.
+{
+  const c = makeCodeFakes({ reviewScript: [[], []], acScript: [[{ criterion: 'x', status: 'FAIL', evidence: 'y' }], null] });
+  const cres = await runCodeGate({ maxRework: 2, tier: 'medium' }, c.deps);
+  assert.equal(count(c.callLog, 'rework'), 1, 'an AC-only gap on round 1 consumes a rework attempt');
+  assert.equal(cres.reworkCount, 1, 'reworkCount reflects the AC-only-gap rework');
+  assert.equal(cres.acRounds.length, 2, 'acRounds records one entry per round');
+  assert.deepEqual(cres.acRounds[0], [{ criterion: 'x', status: 'FAIL', evidence: 'y' }], 'round 1 AC table is recorded');
+  assert.equal(cres.acRounds[1], null, 'round 2 AC table (clean) is recorded as null');
+  const o = buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], codeReviews: cres.rounds, acRounds: cres.acRounds, maxRework: 2, tier: 'medium' });
+  assert.equal(o.outcome, 'reviewed', 'a round-2 clean AC table (and no findings) yields reviewed');
+}
+
+// (a2) An AC-only gap that NEVER resolves still reports `rework` once the
+// rework budget is exhausted — cap-exhaustion surfaces correctly even though
+// codeReviewRounds' findings-only view sees an empty last round.
+{
+  const c = makeCodeFakes({ reviewScript: [[], [], []], acScript: [[{ criterion: 'x', status: 'FAIL', evidence: 'y' }]] });
+  const cres = await runCodeGate({ maxRework: 2, tier: 'medium' }, c.deps);
+  assert.equal(cres.reworkCount, 2, 'the AC-only gap exhausts the full rework budget');
+  assert.equal(cres.rounds.length, 3, 'three rounds ran (original + 2 reworks)');
+  const o = buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], codeReviews: cres.rounds, acRounds: cres.acRounds, maxRework: 2, tier: 'medium' });
+  assert.equal(o.outcome, 'rework', 'cap-exhaustion on an AC-only gap still reports rework, never reviewed');
+  assert.equal(o.summary, 'code rework unresolved: unmet acceptance criteria in AC table', 'the summary names the real cause instead of "no surviving findings"');
+  // maxRework: 0 is legal and meaningful — a round-1 AC gap must still classify
+  // rework even though runCodeGate never attempts a second round.
+  const c0 = makeCodeFakes({ reviewScript: [[]], acScript: [[{ criterion: 'x', status: 'FAIL', evidence: 'y' }]] });
+  const cres0 = await runCodeGate({ maxRework: 0, tier: 'medium' }, c0.deps);
+  assert.equal(cres0.reworkCount, 0, 'budget 0: zero rework attempts');
+  const o0 = buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], codeReviews: cres0.rounds, acRounds: cres0.acRounds, maxRework: 0, tier: 'medium' });
+  assert.equal(o0.outcome, 'rework', 'budget-0 AC-only gap still classifies rework, never a laundered reviewed');
+}
+
+// (b) Act is invoked EXACTLY once on a clean final round with a surviving
+// (non-blocking) finding, and the OUTCOME is `reviewed` with the finding
+// annotated by the Act step's disposition.
+{
+  const concernFinding = { id: 'nit', concern: 'style', severity: 'concern', confidence: 80, what_fails: 'a nit' };
+  const suggestionFinding = { id: 'unaddressed', concern: 'style', severity: 'suggestion', confidence: 75, what_fails: 'a nit too' };
+  let actArg = null;
+  const c = makeCodeFakes({
+    reviewScript: [[concernFinding, suggestionFinding]],
+    act: (findings) => {
+      actArg = findings;
+      // Only reports a disposition for one of the two findings it was given —
+      // the other must default to 'unhandled', not be silently dropped.
+      return { handled: [{ id: 'nit', action: 'fixed-inline' }] };
+    },
+  });
+  const cres = await runCodeGate({ maxRework: 2, tier: 'medium' }, c.deps);
+  assert.equal(count(c.callLog, 'act'), 1, 'act is invoked exactly once on a clean round with surviving findings');
+  assert.deepEqual(actArg.map((f) => f.id), ['nit', 'unaddressed'], 'act receives every surviving finding from the clean round');
+  assert.deepEqual(
+    cres.actResult,
+    { handled: [{ id: 'nit', action: 'fixed-inline' }] },
+    'runCodeGate reports the act result'
+  );
+  const o = buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], codeReviews: cres.rounds, acRounds: cres.acRounds, maxRework: 2, tier: 'medium', actResult: cres.actResult });
+  assert.equal(o.outcome, 'reviewed', 'surviving concern/suggestion findings alone (medium tier) still yield reviewed');
+  assert.equal(o.findings.find((f) => f.id === 'nit').handled, 'fixed-inline', 'the finding is annotated with the act disposition');
+  assert.equal(
+    o.findings.find((f) => f.id === 'unaddressed').handled,
+    'unhandled',
+    'a finding the act step did not report on defaults to unhandled, not silently dropped'
+  );
+}
+
+// (c) Act is NEVER invoked on a still-blocking round (budget exhausted, still
+// non-clean).
+{
+  let actCalled = false;
+  const c = makeCodeFakes({ reviewScript: [[B('still-broken')]], act: () => { actCalled = true; return { handled: [] }; } });
+  const cres = await runCodeGate({ maxRework: 0, tier: 'medium' }, c.deps);
+  assert.equal(count(c.callLog, 'act'), 0, 'act is never invoked on a still-blocking round');
+  assert.equal(actCalled, false, 'the act callback itself never ran');
+  assert.equal(cres.actResult, null, 'actResult stays null when act never ran');
+  const o = buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], codeReviews: cres.rounds, acRounds: cres.acRounds, maxRework: 0, tier: 'medium', actResult: cres.actResult });
+  assert.equal(o.outcome, 'rework', 'a still-blocking round yields rework, never invoking act');
+}
+
+// (d) An act dep that THROWS never affects the outcome — reviewed stays
+// reviewed, and runCodeGate does not itself throw.
+{
+  const concernFinding = { id: 'nit2', concern: 'style', severity: 'concern', confidence: 80, what_fails: 'a nit' };
+  const c = makeCodeFakes({
+    reviewScript: [[concernFinding]],
+    act: () => {
+      throw new Error('boom act');
+    },
+  });
+  const cres = await runCodeGate({ maxRework: 2, tier: 'medium' }, c.deps);
+  assert.equal(cres.actResult, null, 'a thrown act call resolves to a null actResult, not a rejection');
+  const o = buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], codeReviews: cres.rounds, acRounds: cres.acRounds, maxRework: 2, tier: 'medium', actResult: cres.actResult });
+  assert.equal(o.outcome, 'reviewed', 'a thrown act call never downgrades a clean outcome');
+  assert.equal(
+    o.findings.find((f) => f.id === 'nit2').handled,
+    undefined,
+    'a null actResult (act threw) leaves the finding unannotated — there is no disposition to report, so nothing is guessed'
+  );
+}
+
+// (e) runPlanGate regression: the plan gate must correctly unwrap the
+// { survivors, acTable } shape rather than misreading it as a non-array — a
+// blocking plan finding must still trigger the revise loop / escalation.
+{
+  const blockingPlan = [B('plan-defect')];
+  const h = makePlanFakes({ reviewScript: [blockingPlan, blockingPlan, blockingPlan] });
+  const res = await runPlanGate({ maxRevise: 2, tier: 'medium' }, h.deps);
+  assert.equal(count(h.callLog, 'revise'), 2, 'a blocking plan finding still drives the full revise loop');
+  assert.ok(mod.hasBlocking(res.findings, 'medium'), 'hasBlocking still detects the unwrapped survivors, not a wrapper object');
+  assert.equal(classifyOutcome({ planFindings: res.findings, tier: 'medium' }), 'escalated', 'the plan gate still escalates after the {survivors,acTable} shape change');
 }
 
 console.log('all dispatch-phase gate assertions passed');

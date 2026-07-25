@@ -173,7 +173,16 @@ reads the actual cited location and its surrounding context, and returns
 - **Dedup** findings pointing at the same location / same root cause (the
   fleet covers overlapping ground by design).
 - **Rank** survivors by severity, then confidence, then id.
-- Keep the AC table intact; surviving AC FAIL/PARTIAL items become findings.
+- The AC table is returned as **structured data**, separate from the
+  findings list — never folded into a finding. A surviving FAIL/PARTIAL
+  criterion is checked directly against that table, never through finding
+  severity or the refute/confidence-floor path, so the guarantee cannot be
+  silently defeated by a refuter or the 70-point floor. Trade-off: this also
+  means an AC-table FAIL bypasses refutation entirely — a hallucinated FAIL
+  from the single `ac` finder can force a spurious rework with no
+  counter-check. The AC table and any `ac`-dimension `findings` entry about
+  the same criterion are two independent channels, not deduplicated against
+  each other.
 
 ### Verdict — one outcome vocabulary: `reviewed` | `rework` | `escalated`
 
@@ -183,9 +192,13 @@ Determine the outcome in this strict order — the first matching rule wins:
    than a code change: the goal, approach, or scope is wrong, the work
    violates a stated architectural constraint, or the acceptance criteria
    themselves are missing, contradictory, or unimplementable as written.
-2. **rework** — else if any surviving finding is `blocking`, or the AC table
-   contains any FAIL or PARTIAL criterion. The defect is fixable in place; the
-   work goes back for another round.
+2. **rework** — else if any surviving finding is `blocking`, or the structured
+   AC table (returned by the `ac` dimension alongside its findings — see
+   § Refute above) contains any FAIL or PARTIAL criterion. The AC-table check
+   is direct and mechanical: it never routes through finding severity or
+   refutation, so it cannot be silently defeated by a refuter or the
+   confidence floor. The defect is fixable in place; the work goes back for
+   another round.
 3. **reviewed** — else. Clean, or clean after small fixes. Surviving
    `concern` and `suggestion` findings are recorded and do **not** gate.
 

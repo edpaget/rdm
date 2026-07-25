@@ -31,7 +31,8 @@ export const meta = {
   // under 'Find' and refuters under 'Refute' (from the stamped block), so those
   // appear here; there is no 'CodeReview' phase because no agent() call uses it.
   // 'Review' is the mechanical diff-signals agent that feeds the code gate's
-  // dimension selection.
+  // dimension selection. 'Act' is the optional code-lane Act step that
+  // incorporates surviving non-blocking findings on a clean final round.
   // verify-workflow-dispatch.sh asserts this list matches the emitted phases.
   phases: [
     { title: 'Plan' },
@@ -40,6 +41,7 @@ export const meta = {
     { title: 'Review' },
     { title: 'Find' },
     { title: 'Refute' },
+    { title: 'Act' },
   ],
 }
 
@@ -286,6 +288,25 @@ function findPrompt(mode, dim, context) {
     mode === 'code'
       ? 'Inspect the implementation diff (use git log / git diff in the worktree).'
       : 'Inspect the plan document text.';
+  // The `ac` dimension in `code` mode is the ONE dimension that returns
+  // structured data (the AC_REVIEW_SCHEMA shape) instead of a bare findings
+  // array — classifyOutcome consumes its `ac` table directly, never through a
+  // finding. Every other dimension (including `ac` in `plan` mode, which does
+  // not exist) is unaffected.
+  if (mode === 'code' && dim.key === 'ac') {
+    return [
+      'You are a READ-ONLY reviewer. Do not edit any files.',
+      'Review target: ' + target + '.',
+      diffHint,
+      'Your single dimension is ' + dim.title + ' (' + dim.key + '). ' + dim.focus,
+      'Report only findings you can back with concrete evidence. One strong finding beats five weak ones.',
+      'Return JSON matching the AC_REVIEW schema: an `ac` array with ONE entry per acceptance criterion — ' +
+        'criterion, status (PASS|FAIL|PARTIAL), and evidence (file:line, test name) — plus an OPTIONAL ' +
+        '`findings` array (same shape as the FINDINGS schema) for narrative notes that do not reduce to a ' +
+        "single criterion's status.",
+      'Only leave `ac` empty if the target states no acceptance criteria at all — report that itself as a `findings` entry.',
+    ].join('\n');
+  }
   const lines = [
     'You are a READ-ONLY reviewer. Do not edit any files.',
     'Review target: ' + target + '.',
@@ -324,7 +345,16 @@ function findPrompt(mode, dim, context) {
 //| - **Dedup** findings pointing at the same location / same root cause (the
 //|   fleet covers overlapping ground by design).
 //| - **Rank** survivors by severity, then confidence, then id.
-//|code| - Keep the AC table intact; surviving AC FAIL/PARTIAL items become findings.
+//|code| - The AC table is returned as **structured data**, separate from the
+//|code|   findings list — never folded into a finding. A surviving FAIL/PARTIAL
+//|code|   criterion is checked directly against that table, never through finding
+//|code|   severity or the refute/confidence-floor path, so the guarantee cannot be
+//|code|   silently defeated by a refuter or the 70-point floor. Trade-off: this also
+//|code|   means an AC-table FAIL bypasses refutation entirely — a hallucinated FAIL
+//|code|   from the single `ac` finder can force a spurious rework with no
+//|code|   counter-check. The AC table and any `ac`-dimension `findings` entry about
+//|code|   the same criterion are two independent channels, not deduplicated against
+//|code|   each other.
 //|plan| - There is no acceptance-criteria pass/fail table at plan stage — the quality
 //|plan|   of the plan's own acceptance criteria is judged by the **coherence**
 //|plan|   dimension and surfaces as an ordinary finding.
@@ -350,9 +380,13 @@ function refutePrompt(mode, dim, finding, context) {
 //|    than a code change: the goal, approach, or scope is wrong, the work
 //|    violates a stated architectural constraint, or the acceptance criteria
 //|    themselves are missing, contradictory, or unimplementable as written.
-//|code| 2. **rework** — else if any surviving finding is `blocking`, or the AC table
-//|code|    contains any FAIL or PARTIAL criterion. The defect is fixable in place; the
-//|code|    work goes back for another round.
+//|code| 2. **rework** — else if any surviving finding is `blocking`, or the structured
+//|code|    AC table (returned by the `ac` dimension alongside its findings — see
+//|code|    § Refute above) contains any FAIL or PARTIAL criterion. The AC-table check
+//|code|    is direct and mechanical: it never routes through finding severity or
+//|code|    refutation, so it cannot be silently defeated by a refuter or the
+//|code|    confidence floor. The defect is fixable in place; the work goes back for
+//|code|    another round.
 //|plan| 2. **rework** — else if any surviving finding is `blocking`. The defect is
 //|plan|    fixable in place; the work goes back for another round.
 //| 3. **reviewed** — else. Clean, or clean after small fixes. Surviving
@@ -504,6 +538,34 @@ const FINDINGS_SCHEMA = {
         },
       },
     },
+  },
+};
+
+// JSON Schema a single AC-table row must satisfy — one entry per acceptance
+// criterion (see docs/workflow-schemas.md § AC_ENTRY).
+const AC_ENTRY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['criterion', 'status', 'evidence'],
+  properties: {
+    criterion: { type: 'string', minLength: 1 },
+    status: { type: 'string', enum: ['PASS', 'FAIL', 'PARTIAL'] },
+    evidence: { type: 'string' },
+  },
+};
+
+// JSON Schema the `ac` dimension's finder is forced to satisfy in `code` mode
+// ONLY (see docs/workflow-schemas.md § AC_REVIEW_SCHEMA): the structured
+// per-criterion table (`ac`, required) plus an OPTIONAL `findings` array (same
+// shape as FINDINGS_SCHEMA's) for narrative notes that don't reduce to a
+// single criterion's status. Every other dimension keeps using FINDINGS_SCHEMA.
+const AC_REVIEW_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['ac'],
+  properties: {
+    ac: { type: 'array', items: AC_ENTRY_SCHEMA },
+    findings: FINDINGS_SCHEMA.properties.findings,
   },
 };
 
@@ -672,6 +734,16 @@ function hasBlocking(findings, tier) {
   return list.some((f) => f && blockers.indexOf(f.severity) !== -1);
 }
 
+// acTableHasGap(acTable) — does a structured AC table (the `ac` dimension's
+// code-mode output, see AC_REVIEW_SCHEMA) contain any FAIL or PARTIAL
+// criterion? An empty or absent table is NOT a gap — plan mode never sets one,
+// and a code review whose `ac` dimension didn't run or whose finder failed to
+// resolve a table must not be treated as if it found a defect.
+function acTableHasGap(acTable) {
+  const list = Array.isArray(acTable) ? acTable : [];
+  return list.some((entry) => entry && (entry.status === 'FAIL' || entry.status === 'PARTIAL'));
+}
+
 // summarizeFindings(findings) — a deterministic one-line label. The array is
 // assumed already ranked (most-severe first), so the top finding is list[0].
 function summarizeFindings(findings) {
@@ -771,6 +843,13 @@ function codeReviewRounds(input) {
 // code stage yields only reviewed|rework and escalated originates at the plan
 // gate. An LLM-driven surface (the interactive skill) CAN judge nature, and so
 // applies rule 1 of the verdict spec above directly.
+//
+// `input.acTable` is the structured AC table belonging to the LAST completed
+// code round (see AC_REVIEW_SCHEMA / acTableHasGap). It is checked directly,
+// independent of finding severity and refutation — this can only ever yield
+// 'rework', never 'escalated': a code-stage defect's nature still can't be
+// classified deterministically (see above), so an AC-table gap stays in the
+// same reviewed|rework lane as every other surviving code finding.
 function classifyOutcome(input) {
   const i = input || {};
   const tier = i.tier;
@@ -779,7 +858,10 @@ function classifyOutcome(input) {
   //    An empty/ambiguous plan is surfaced as a blocking coherence finding by
   //    the plan-review stage, so that case lands here too.
   if (hasBlocking(planFindings, tier)) return 'escalated';
-  // 2. Plan approved → implement ran → code-review ran (once per round). The
+  // 2. AC-table gate: a surviving FAIL/PARTIAL criterion mechanically forces
+  //    rework, independent of finding severity and refutation.
+  if (acTableHasGap(i.acTable)) return 'rework';
+  // 3. Plan approved → implement ran → code-review ran (once per round). The
   //    LAST review's findings decide, for any number of rework rounds including
   //    zero: still blocking → rework, otherwise reviewed.
   const rounds = codeReviewRounds(i);
@@ -792,10 +874,14 @@ function classifyOutcome(input) {
 // Returns an async `runReview(context)` that:
 //   1. selects the applicable dimensions from `context.signals` (see
 //      selectDimensions' three-way fail-open contract),
-//   2. runs one finder agent per selected dimension IN PARALLEL (stage 1),
+//   2. runs one finder agent per selected dimension IN PARALLEL (stage 1) — in
+//      `code` mode the `ac` dimension's finder returns the AC_REVIEW_SCHEMA
+//      shape instead of a bare findings array, and its `ac` table is captured,
 //   3. runs a FRESH refuter agent per finding, in parallel (stage 2),
 //   4. drops any finding that was refuted or scored below CONFIDENCE_FLOOR,
-//   5. returns the survivors ranked most-severe-first.
+//   5. returns `{ survivors, acTable }` — survivors ranked most-severe-first,
+//      and the captured AC table (`null` in `plan` mode, or if the `ac`
+//      dimension didn't run or its finder failed to resolve a table).
 //
 // `deps` lets the verify harness inject fakes; in the Workflow runtime it is
 // omitted and the ambient `agent` / `pipeline` / `parallel` / `log` globals are
@@ -824,15 +910,23 @@ function buildReviewPipeline(mode, deps) {
     // key is safe and needs no conditional-assignment helper.
     const findModel = ctx.findModel;
     const verifyModel = ctx.verifyModel;
+    // Captured the first (only) time the `ac` dimension's finder resolves a
+    // table in `code` mode. Stays `null` in `plan` mode (the `ac` dimension
+    // does not exist there) and when the `ac` dimension didn't run or its
+    // finder failed to resolve a table. This is the STRUCTURED side-channel
+    // classifyOutcome consumes directly — never through finding severity or
+    // refutation.
+    let acTable = null;
     // Stage 1: parallel dimension finders. Stage 2: a fresh refuter per finding.
     // pipeline() keeps each dimension's find→refute chain independent (no barrier).
     const perDimension = await _pipeline(
       dims,
-      (dim) =>
-        _agent(findPrompt(mode, dim, ctx), {
+      (dim) => {
+        const isAcDimension = mode === 'code' && dim.key === 'ac';
+        return _agent(findPrompt(mode, dim, ctx), {
           label: 'find:' + mode + ':' + dim.key,
           phase: 'Find',
-          schema: FINDINGS_SCHEMA,
+          schema: isAcDimension ? AC_REVIEW_SCHEMA : FINDINGS_SCHEMA,
           model: findModel,
         }).then((found) => {
           // An UNKNOWN model id makes agent() RESOLVE to null rather than throw
@@ -846,8 +940,12 @@ function buildReviewPipeline(mode, deps) {
                 findModel + '" — an unknown/unavailable model id yields null instead of throwing'
             );
           }
+          if (isAcDimension && found && Array.isArray(found.ac)) {
+            acTable = found.ac;
+          }
           return found;
-        }),
+        });
+      },
       (found, dim) =>
         _parallel(
           ((found && found.findings) || []).map((f, idx) => () =>
@@ -896,7 +994,7 @@ function buildReviewPipeline(mode, deps) {
         ' finding(s) survived refutation' +
         (refuterErrors ? ' (' + refuterErrors + ' kept un-refuted after a refuter error)' : '')
     );
-    return rankFindings(survivors);
+    return { survivors: rankFindings(survivors), acTable: acTable };
   };
 }
 // >>> review-refute-fix:end <<<
@@ -995,6 +1093,14 @@ function parseDispatchArgs(args) {
 // imports cleanly in Node — the lib/autopilot.mjs precedent, which is what makes
 // the budget loop testable at all.
 //
+// `d.review(planDoc)` is a `runReview` from the canonical review source and
+// therefore resolves `{ survivors, acTable }`, not a bare array — both call
+// sites below destructure it. `acTable` is discarded: plan mode never sets it
+// (the `ac` dimension does not exist there), and `hasBlocking`'s
+// `Array.isArray(findings)` guard would otherwise silently see a non-array and
+// report no blocking findings at all, permanently defeating the plan gate's
+// escalation path.
+//
 // agent() RESOLVES to null on an unknown/unavailable model id rather than
 // throwing (spike consequence 3), so BOTH the initial plan and EVERY revise
 // result are null-guarded. The revise guard runs before the reassignment and
@@ -1009,7 +1115,8 @@ async function runPlanGate(config, deps) {
   if (planDoc === null || planDoc === undefined) {
     return { fetchError: true, stage: 'plan', planDoc: null, findings: [], reviewCount: 0, reviseCount: 0 };
   }
-  let findings = await d.review(planDoc);
+  let reviewResult = (await d.review(planDoc)) || {};
+  let findings = reviewResult.survivors || [];
   let reviewCount = 1;
   let reviseCount = 0;
   for (let i = 0; i < maxRevise; i++) {
@@ -1027,7 +1134,8 @@ async function runPlanGate(config, deps) {
       };
     }
     planDoc = revised;
-    findings = await d.review(planDoc);
+    reviewResult = (await d.review(planDoc)) || {};
+    findings = reviewResult.survivors || [];
     reviewCount++;
   }
   return {
@@ -1042,29 +1150,116 @@ async function runPlanGate(config, deps) {
 
 // runCodeGate(config, deps) — the bounded code stage. Implement, review, and
 // rework up to `config.maxRework` times, breaking early on a clean review.
-// Returns { findings, rounds, reworkCount, reviewCount } where `rounds` is the
-// per-round review findings in order (always at least one entry).
+// Returns { findings, rounds, acRounds, reworkCount, reviewCount, actResult }
+// where `rounds`/`acRounds` are the per-round review findings / AC tables in
+// order (always at least one entry each).
+//
+// `d.review()` is a `runReview` from the canonical review source and therefore
+// resolves `{ survivors, acTable }`, not a bare array — every round destructures
+// it. The rework-loop continuation checks BOTH `hasBlocking` and
+// `acTableHasGap`: an AC-only gap (no blocking finding at all) must still
+// consume the rework budget instead of exiting after round 1 and reporting
+// `rework` without ever attempting a fix.
 //
 // No null guard is needed here: `implement` returns no document the pipeline
 // consumes, and the review pipeline already converts an all-null finder sweep
 // into a blocking finding.
+//
+// Act step: once the loop settles on a CLEAN final round (no blocking finding,
+// no AC-table gap) with non-empty survivors, the optional `d.act` dep is
+// invoked exactly once to incorporate them by size (small → fixed inline,
+// large → filed as a task — see buildCodeActPrompt). This never runs on a
+// still-blocking/AC-gapped round, whatever caused it (still-blocking findings
+// and unresolved AC gaps are handled by the rework/status machinery, not this
+// step — "never fix large changes inline" stays intact). A missing `act` dep or
+// a thrown Act call is swallowed: concern/suggestion findings are non-gating by
+// the module's own severity contract, so a failed fix-attempt must never
+// change the outcome.
 async function runCodeGate(config, deps) {
   const c = config || {};
   const d = deps || {};
   const maxRework = c.maxRework != null ? c.maxRework : DEFAULT_MAX_CODE_REWORK;
   const tier = c.tier;
   await d.implement(null);
-  let findings = await d.review();
+  let reviewResult = (await d.review()) || {};
+  let findings = reviewResult.survivors || [];
+  let acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
   const rounds = [findings];
+  const acRounds = [acTable];
   let reworkCount = 0;
   for (let i = 0; i < maxRework; i++) {
-    if (!hasBlocking(findings, tier)) break;
+    if (!hasBlocking(findings, tier) && !acTableHasGap(acTable)) break;
     await d.implement(findings);
     reworkCount++;
-    findings = await d.review();
+    reviewResult = (await d.review()) || {};
+    findings = reviewResult.survivors || [];
+    acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
     rounds.push(findings);
+    acRounds.push(acTable);
   }
-  return { findings: findings, rounds: rounds, reworkCount: reworkCount, reviewCount: rounds.length };
+  let actResult = null;
+  const isClean = !hasBlocking(findings, tier) && !acTableHasGap(acTable);
+  if (isClean && findings.length > 0) {
+    actResult = d.act ? await d.act(findings).catch(() => null) : null;
+  }
+  return {
+    findings: findings,
+    rounds: rounds,
+    acRounds: acRounds,
+    reworkCount: reworkCount,
+    reviewCount: rounds.length,
+    actResult: actResult,
+  };
+}
+
+// JSON Schema the code-lane Act step is forced to satisfy: one disposition per
+// surviving finding it was asked to incorporate. Mirrors the STAMP_ACK_SCHEMA
+// pattern (a small, verifiable acknowledgement) rather than free text.
+const CODE_ACT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['handled'],
+  properties: {
+    handled: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'action'],
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          action: { type: 'string', enum: ['fixed-inline', 'filed-as-task'] },
+          taskSlug: { type: 'string' },
+        },
+      },
+    },
+  },
+};
+
+// buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) — the
+// code-lane Act step: an already-verified surviving finding is incorporated by
+// SIZE, not severity (severity already decided the outcome — this decides
+// whether/how the finding is acted on). Modeled directly on
+// lib/plan-review.mjs's buildActPrompt, but code-review findings are fixed
+// inline in the worktree (no whole-document authoritative-body rewrite) and
+// large ones are filed with `rdm task create`, not a plan-doc note.
+function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) {
+  const target = kind === 'task' ? 'task/' + ident : roadmapOrTask + '/' + ident;
+  return [
+    'You are acting on ALREADY-VERIFIED code-review findings for ' + target + ' (worktree: ' + worktreeRef + ').',
+    'These findings survived refutation and are non-gating (the reviewed outcome is already decided).',
+    JSON.stringify(survivors, null, 2),
+    'For EACH finding, decide SMALL vs LARGE:',
+    '- SMALL — localized, low-risk, no new acceptance criterion (a typo, a missing doc comment, a tightened ' +
+      'error message, an extra test). Fix it directly in the worktree at ' + worktreeRef +
+      ' and re-run the relevant tests. Do not create a separate landing commit — the fix folds into the ' +
+      'eventual land-time commit.',
+    '- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance ' +
+      'criterion. Do NOT edit code for these: file it with `./target/debug/rdm task create <slug> --title ' +
+      '"Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.',
+    'Return JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — ' +
+      'id, action (fixed-inline|filed-as-task), and taskSlug when you filed a task.',
+  ].join('\n');
 }
 
 // OUTCOME_REASON_PREFIX — which gate a non-clean outcome came out of.
@@ -1099,6 +1294,22 @@ function outcomePolicy(outcome, kind, summary) {
   };
 }
 
+// annotateHandled(findings, actResult) — realize the guideline "for each
+// finding, state how it was handled (fixed-inline / filed-as-task)" for the
+// mechanical code lane: stamp a `handled` field onto each finding from the
+// matching `actResult.handled` entry (by `id`), defaulting to `'unhandled'`
+// when the Act step wasn't run, failed, or didn't report that specific
+// finding. Pure and order-preserving; a no-op (returns `findings` unchanged)
+// when `actResult` carries no usable `handled` array.
+function annotateHandled(findings, actResult) {
+  if (!actResult || !Array.isArray(actResult.handled)) return findings;
+  const actionById = {};
+  actResult.handled.forEach((h) => {
+    if (h && h.id) actionById[h.id] = h.action;
+  });
+  return findings.map((f) => ({ ...f, handled: (f && f.id && actionById[f.id]) || 'unhandled' }));
+}
+
 // buildOutcome — the OUTCOME contract { roadmap, phase, outcome, status,
 // writesCompletion, summary, reason, findings }. fetchError short-circuits to
 // escalated. Never emits a land-time completion directive — it emits the
@@ -1123,6 +1334,8 @@ function buildOutcome(input) {
     };
   }
   const planFindings = i.planFindings || [];
+  const acRounds = i.acRounds || [];
+  const lastAcTable = acRounds.length ? acRounds[acRounds.length - 1] : null;
   const classifierInput = {
     planFindings: planFindings,
     codeFindings: i.codeFindings,
@@ -1130,6 +1343,7 @@ function buildOutcome(input) {
     codeReviews: i.codeReviews,
     maxRework: i.maxRework,
     tier: tier,
+    acTable: lastAcTable,
   };
   const outcome = classifyOutcome(classifierInput);
   // The LAST code-review round is what both the rework and reviewed payloads
@@ -1143,9 +1357,15 @@ function buildOutcome(input) {
     summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
   } else if (outcome === 'rework') {
     findings = lastRound;
-    summary = 'code rework unresolved: ' + summarizeFindings(lastRound);
+    // An AC-only gap can force `rework` with an EMPTY lastRound findings
+    // array (no blocking finding at all) — summarizeFindings([]) would then
+    // misleadingly read "no surviving findings". Name the real cause instead.
+    summary =
+      lastRound.length === 0 && acTableHasGap(lastAcTable)
+        ? 'code rework unresolved: unmet acceptance criteria in AC table'
+        : 'code rework unresolved: ' + summarizeFindings(lastRound);
   } else {
-    findings = lastRound;
+    findings = annotateHandled(lastRound, i.actResult);
     summary = 'phase reviewed clean: ' + summarizeFindings(lastRound);
   }
   const policy = outcomePolicy(outcome, 'phase', summary);
@@ -1188,6 +1408,8 @@ function buildTaskOutcome(input) {
     };
   }
   const planFindings = i.planFindings || [];
+  const acRounds = i.acRounds || [];
+  const lastAcTable = acRounds.length ? acRounds[acRounds.length - 1] : null;
   const classifierInput = {
     planFindings: planFindings,
     codeFindings: i.codeFindings,
@@ -1195,6 +1417,7 @@ function buildTaskOutcome(input) {
     codeReviews: i.codeReviews,
     maxRework: i.maxRework,
     tier: tier,
+    acTable: lastAcTable,
   };
   const outcome = classifyOutcome(classifierInput);
   const rounds = codeReviewRounds(classifierInput);
@@ -1206,9 +1429,14 @@ function buildTaskOutcome(input) {
     summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
   } else if (outcome === 'rework') {
     findings = lastRound;
-    summary = 'code rework unresolved: ' + summarizeFindings(lastRound);
+    // See buildOutcome's identical AC-only-gap note: an empty lastRound with a
+    // gapped AC table must not read as "no surviving findings".
+    summary =
+      lastRound.length === 0 && acTableHasGap(lastAcTable)
+        ? 'code rework unresolved: unmet acceptance criteria in AC table'
+        : 'code rework unresolved: ' + summarizeFindings(lastRound);
   } else {
-    findings = lastRound;
+    findings = annotateHandled(lastRound, i.actResult);
     summary = 'task reviewed clean: ' + summarizeFindings(lastRound);
   }
   const policy = outcomePolicy(outcome, 'task', summary);
@@ -1531,8 +1759,10 @@ function itemOutcome(fields) {
       fetchError: f.fetchError,
       planFindings: f.planFindings,
       codeReviews: f.codeReviews,
+      acRounds: f.acRounds,
       maxRework: f.maxRework,
       tier: f.tier,
+      actResult: f.actResult,
     })
   }
   return buildOutcome({
@@ -1541,8 +1771,10 @@ function itemOutcome(fields) {
     fetchError: f.fetchError,
     planFindings: f.planFindings,
     codeReviews: f.codeReviews,
+    acRounds: f.acRounds,
     maxRework: f.maxRework,
     tier: f.tier,
+    actResult: f.actResult,
   })
 }
 
@@ -1756,14 +1988,28 @@ const codeGate = await runCodeGate(
       })
       return runCodeReview({ target: reviewTarget, signals: signals, ...reviewModels })
     },
+    // Act: only invoked by runCodeGate when the FINAL round is clean with
+    // non-empty surviving (non-gating) findings. Incorporates each finding by
+    // size — small fixed inline in the worktree, large filed as a task — per
+    // buildCodeActPrompt. A missing/failing agent call never affects the
+    // outcome (runCodeGate already swallows a throw from this dep).
+    act: async (findings) =>
+      agent(buildCodeActPrompt(isTask ? 'task' : 'phase', roadmap, isTask ? taskSlug : stem, worktreeRef, findings), {
+        model: models.implement,
+        label: 'act:code',
+        phase: 'Act',
+        schema: CODE_ACT_SCHEMA,
+      }),
   }
 )
 
 const outcome = itemOutcome({
   planFindings: planFindings,
   codeReviews: codeGate.rounds,
+  acRounds: codeGate.acRounds,
   maxRework: maxCodeRework,
   tier: tier,
+  actResult: codeGate.actResult,
 })
 log('dispatch-phase (' + itemLabel + '): ' + outcome.outcome + ' — ' + outcome.summary)
 return outcome
