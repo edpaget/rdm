@@ -407,6 +407,17 @@ out itself — a Bash-capable agent does).
 | `body`   | string (required) | the full phase markdown; empty ⇒ fetch failure    |
 | `models` | object (required) | resolved model ids: `plan`, `implement`, `review_find`, `review_verify`, `mechanical` — an incomplete map short-circuits to `fetchError: true` before any other agent runs |
 
+### `TASK_META`
+
+What the Stage-0 mechanical fetch agent returns from `rdm task show … --format
+json` in task mode. A task does not have a containing roadmap or phase number.
+
+| field    | type              | notes                                             |
+| -------- | ----------------- | ------------------------------------------------- |
+| `task`   | string (required) | task slug                                         |
+| `body`   | string (required) | the full task markdown; empty ⇒ fetch failure     |
+| `models` | object (required) | resolved model ids: `plan`, `implement`, `review_find`, `review_verify`, `mechanical` — an incomplete map short-circuits to `fetchError: true` before any other agent runs |
+
 ### `PLAN_DOC`
 
 The plan document the planner agent produces from **only** the phase body (no
@@ -443,7 +454,19 @@ prose-only self-test of the distributed template).
 | `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
 
-Task mode emits the same shape keyed by `task` instead of `roadmap`/`phase`.
+**Task mode** emits this structure keyed by `task` instead of `roadmap`/`phase`:
+
+| field     | type                                      | notes                                          |
+| --------- | ----------------------------------------- | ---------------------------------------------- |
+| `task`    | string                                    | echoed from the dispatch args                  |
+| `outcome` | `reviewed` \| `rework` \| `escalated`     | the task verdict (same decision tree)          |
+| `status`  | string                                    | `statusFor(outcome, kind)` — the rdm status to persist |
+| `writesCompletion` | boolean                          | `writesCompletion(outcome)` — is this branch owed its land-time trailer? |
+| `summary` | string                                    | deterministic one-liner from outcome + top finding |
+| `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
+| `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
+
+The `rdm-do --auto --task` wiring into this task-mode contract is regression-tested by `scripts/verify-workflow-do-auto-task.sh` (SKILL.md static invariants, the OUTCOME→status contract against the real binary, and a prose-only self-test of the distributed template).
 
 **`status` / `writesCompletion` carry the gate policy as data.** They are derived
 from the canonical `statusFor` / `writesCompletion` in `lib/review.mjs`, so

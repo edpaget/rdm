@@ -1,12 +1,13 @@
 #!/bin/sh
 # Hermetic regression for the dispatch-phase keystone workflow.
 #
-# dispatch-phase (`.claude/workflows/dispatch-phase.js`) is the per-phase unit of
-# autonomous execution: a deterministic 4-stage pipeline
+# dispatch-phase (`.claude/workflows/dispatch-phase.js`) is the unit of
+# autonomous execution for phases and tasks: a deterministic 4-stage pipeline
 #   Plan → PlanReview → Implement → CodeReview → OUTCOME
-# that returns { roadmap, phase, outcome, summary, findings } with
-# outcome ∈ { reviewed, rework, escalated } and NEVER emits a land-time
-# completion directive. Its pure decision core lives once in
+# that returns (phase mode) { roadmap, phase, outcome, status, writesCompletion,
+# summary, reason, findings } or (task mode) { task, outcome, status,
+# writesCompletion, summary, reason, findings } with outcome ∈ { reviewed, rework,
+# escalated } and NEVER emits a land-time completion directive. Its pure decision core lives once in
 # `.claude/workflows/lib/dispatch-phase.mjs` and is copied BYTE-IDENTICAL into the
 # workflow script (the Workflow runtime cannot import a helper module — see
 # docs/workflow-schemas.md § "Import spike"). This harness gates three things:

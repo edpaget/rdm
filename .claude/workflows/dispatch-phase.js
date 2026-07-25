@@ -1,12 +1,13 @@
-// dispatch-phase — the keystone per-phase unit of autonomous execution.
+// dispatch-phase — the keystone unit of autonomous execution for phases and tasks.
 //
-// A deterministic 4-stage pipeline for a single roadmap phase:
+// A deterministic 4-stage pipeline for a roadmap phase or standalone task:
 //   Plan → PlanReview → Implement → CodeReview → OUTCOME.
 // It replaces rdm-dispatch-phase's prose orchestration with a mechanical driver.
 //
-// Invoke with args: { roadmap: '<roadmap-slug>', phase: '<stem-or-number>' }.
-// Returns the OUTCOME contract { roadmap, phase, outcome, status,
-// writesCompletion, summary, reason, findings }, outcome ∈ { reviewed, rework,
+// Invoke with args: { roadmap: '<roadmap-slug>', phase: '<stem-or-number>' } (phase mode) or { task: '<slug>' } (task mode).
+// Returns the OUTCOME contract: phase mode { roadmap, phase, outcome, status,
+// writesCompletion, summary, reason, findings }; task mode { task, outcome,
+// status, writesCompletion, summary, reason, findings }, outcome ∈ { reviewed, rework,
 // escalated }. `status` and `writesCompletion` carry the canonical review's
 // gate/completion policy so no consumer restates it. It NEVER emits a land-time
 // completion directive itself — `writesCompletion: true` tells `rdm-land` to
@@ -24,7 +25,7 @@
 export const meta = {
   name: 'dispatch-phase',
   description:
-    'Deterministic 4-stage per-phase pipeline: plan → plan-review → implement → code-review → OUTCOME (reviewed|rework|escalated)',
+    'Deterministic 4-stage pipeline for phases and tasks: plan → plan-review → implement → code-review → OUTCOME (reviewed|rework|escalated)',
   // Must list exactly the distinct `phase:` values the driver + the inlined
   // review-refute-fix block actually emit. Both review gates run their finders
   // under 'Find' and refuters under 'Refute' (from the stamped block), so those
