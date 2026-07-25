@@ -1604,7 +1604,38 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
 const mod = await import(pathToFileURL(process.argv[2]).href);
-const { runPlanReviewDriver } = mod;
+const { runPlanReviewDriver, classifyRoundOutcome } = mod;
+
+// ---- the cap is an anti-loop valve, not a penalty for needing three rounds ----
+// Round 3+ escalates only when findings are STILL unresolved. A plan actually
+// fixed on the third pass must pass, or the cap would hand a human a plan with
+// nothing left to decide. Asserted directly on the capper so the rule is pinned
+// independently of the driver's state threading.
+{
+  const blocking = [{ id: 'b1', severity: 'blocking', confidence: 90 }];
+  assert.equal(classifyRoundOutcome(1, []), 'reviewed', 'round 1, no findings: reviewed');
+  assert.equal(classifyRoundOutcome(2, []), 'reviewed', 'round 2, no findings: reviewed');
+  assert.equal(
+    classifyRoundOutcome(3, []),
+    'reviewed',
+    'round 3 with an EMPTY survivor list must pass — the cap must not escalate a plan that was actually fixed'
+  );
+  assert.equal(
+    classifyRoundOutcome(4, []),
+    'reviewed',
+    'the same holds past the cap: a clean survivor list is clean on any round'
+  );
+  assert.equal(
+    classifyRoundOutcome(3, blocking),
+    'escalated',
+    'round 3 with an unresolved blocking finding still escalates — the anti-loop valve is intact'
+  );
+  assert.notEqual(
+    classifyRoundOutcome(2, blocking),
+    'escalated',
+    'the escalation is the cap firing, not the finding alone'
+  );
+}
 
 // makeStatefulHarness — a fake agent that actually threads body state across
 // calls: fetch:<kind> returns the current stored body; act:round-note:* mutates
@@ -1672,10 +1703,10 @@ const persistent = {
   assert.equal(r2.units[0].repeats.length, 1, 'round 2: the repeat is recorded as a repeat');
   assert.ok(h.getBody().indexOf('## Plan Review Round 2 — rework') !== -1, 'round 2: a second audit note is appended');
 
-  // Round 3: forced escalation regardless of findings content, still lists the
-  // still-open finding (deduped, not dropped).
+  // Round 3: the cap fires because the finding is STILL unresolved, and the
+  // still-open finding remains listed (deduped, not dropped).
   const r3 = await runPlanReviewDriver({ task: 'flaky-thing' }, h.deps);
-  assert.equal(r3.outcome, 'escalated', 'round 3: forced escalation regardless of findings content');
+  assert.equal(r3.outcome, 'escalated', 'round 3: an unresolved finding escalates once the cap is reached');
   assert.equal(r3.units[0].round, 3, 'round 3: round number advances to 3');
   assert.ok(r3.findings.some((f) => f.id === 'f1'), 'round 3: the still-open finding is still listed, not silently dropped');
   assert.equal(r3.findings.length, 1, 'round 3: findings are deduped, not accumulated across rounds');

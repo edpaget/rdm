@@ -412,14 +412,18 @@ function suppressWontFixed(survivors, wontFixedTexts) {
   return list.filter((f) => !wontFixOverlapMatches(f, wontFixedTexts))
 }
 
-// classifyRoundOutcome(round, survivors) — the round-outcome capper. Rounds 1
-// and 2 classify from the FULL (wont-fix-suppressed but repeat-unfiltered)
-// survivor set via classifyPlanOutcome, exactly as an uncapped run would;
-// round 3+ returns 'escalated' UNCONDITIONALLY, regardless of findings
-// content, so an item can never loop forever on the same unresolved finding.
+// classifyRoundOutcome(round, survivors) — the round-outcome capper. EVERY
+// round classifies from the FULL (wont-fix-suppressed but repeat-unfiltered)
+// survivor set via classifyPlanOutcome, exactly as an uncapped run would.
+// Round 3+ then escalates only when that base outcome is still non-`reviewed`,
+// so an item can never loop forever on an unresolved finding — while a plan
+// that was genuinely fixed on the third pass still passes. The cap is an
+// anti-loop valve, not a penalty for having needed three rounds: escalating a
+// clean survivor list would send a human a plan with nothing left to decide.
 function classifyRoundOutcome(round, survivors) {
-  if (round >= 3) return 'escalated'
-  return classifyPlanOutcome(survivors)
+  const base = classifyPlanOutcome(survivors)
+  if (round >= 3 && base !== 'reviewed') return 'escalated'
+  return base
 }
 
 // buildWontFixFetchPrompt — mechanical fetch agent: list every task already

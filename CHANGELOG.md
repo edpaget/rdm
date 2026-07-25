@@ -32,8 +32,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unresolved keeps the item in `rework`/`escalated` on round 2 exactly as on
   round 1 — repeats are only de-duplicated in the human-facing note, never in
   the pass/fail decision — and a third round escalates to a human instead of
-  looping further. A finding already resolved `wont-fix` on a prior pass is
-  dropped from both the report and the outcome, and is never re-raised.
+  looping further. The cap only fires on findings that are still unresolved: a
+  plan that is genuinely clean by the third pass is reported `reviewed`, not
+  escalated. A finding already resolved `wont-fix` on a prior pass is dropped
+  from both the report and the outcome, and is never re-raised.
 
 ## [0.18.0] - 2026-07-25
 ### Fixed
