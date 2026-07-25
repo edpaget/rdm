@@ -203,12 +203,18 @@ const DIMENSIONS = {
     //|plan|   introduced by another in-flight (not-yet-landed) roadmap or task, is
     //|plan|   only `blocking` when the target item does **not** carry the
     //|plan|   `depends-unlanded` tag and does not state the dependency explicitly;
-    //|plan|   when already annotated, downgrade it to a `concern` (or omit it).
+    //|plan|   when already annotated, downgrade it to a `concern` (or omit it). A
+    //|plan|   plan may delegate implementation decisions to whoever carries it out —
+    //|plan|   an undecided point is a `concern`, not `blocking`, unless the undecided
+    //|plan|   branches would lead to different goals or outcomes. Coherence is
+    //|plan|   `blocking` only when an implementer following the plan as written would
+    //|plan|   build the wrong thing, never merely because they would have to make a
+    //|plan|   decision themselves.
     {
       key: 'coherence',
       title: 'Coherence',
       focus:
-        'Internal consistency and completeness: are the steps and acceptance criteria concrete and actionable? An empty or ambiguous plan is itself a blocking finding — never guess intent. A plan step citing a file or behavior as existing, where it was actually introduced by another in-flight (not-yet-landed) roadmap or task, is only blocking if the target item does NOT carry the `depends-unlanded` tag and does not state the dependency explicitly; when already annotated, downgrade to a concern (or omit) instead of blocking on it.',
+        'Internal consistency and completeness: are the steps and acceptance criteria concrete and actionable? An empty or ambiguous plan is itself a blocking finding — never guess intent. A plan step citing a file or behavior as existing, where it was actually introduced by another in-flight (not-yet-landed) roadmap or task, is only blocking if the target item does NOT carry the `depends-unlanded` tag and does not state the dependency explicitly; when already annotated, downgrade to a concern (or omit) instead of blocking on it. A plan may delegate implementation decisions to whoever carries it out — an undecided point is a concern, not blocking, unless the undecided branches would lead to different goals or outcomes. Coherence is blocking only when an implementer following the plan as written would build the wrong thing, never merely because they would have to make a decision themselves.',
     },
     //|plan| - **architectural-fit** — *always.* Read the project's principles
     //|plan|   (falling back to `CLAUDE.md` / `AGENTS.md` in the project root when no
@@ -244,6 +250,20 @@ const DIMENSIONS = {
       // Target-type trigger (not diff shape): only a PHASE has a unit-of-work
       // contract to judge. Tasks, roadmaps, and bare implementation plans skip it.
       when: (s) => s.targetType === 'phase',
+    },
+    //|plan| - **restraint** — *always.* The counterweight to unit-of-work: flags a
+    //|plan|   plan that has over-specified rather than under-specified. Two shapes
+    //|plan|   are both findings — (1) the plan spells out a decision that could
+    //|plan|   safely be left to whoever carries it out, and (2) the level of detail
+    //|plan|   has grown past the point where adding more of it reduces risk rather
+    //|plan|   than adding new surface for its own review. Symmetric with
+    //|plan|   unit-of-work's two-sided framing: neither too little specification nor
+    //|plan|   too much is the goal.
+    {
+      key: 'restraint',
+      title: 'Restraint',
+      focus:
+        'The counterweight to unit-of-work: flags a plan that has over-specified rather than under-specified. Two shapes are both findings — (1) the plan spells out an implementation decision that could safely be left to whoever carries it out, and (2) the level of detail has grown past the point where adding more of it reduces risk rather than adding new surface for its own review. Symmetric with unit-of-work: neither too little specification nor too much is the goal.',
     },
   ],
 };

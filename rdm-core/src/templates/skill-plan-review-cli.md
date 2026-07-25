@@ -60,9 +60,9 @@ rdm phase update <phase-number> --roadmap <slug> --body "<full updated body>" --
 rdm commit -m "chore(plan): address plan review finding on <target>"
 ```
 
-Large findings are filed as tasks instead:
+Large findings are filed as tasks instead. Always add `--no-plan-review`: a task filed *from* a plan-review finding must not itself be stamped `needs-plan-review`, or the gate's own output becomes new input to the gate.
 ```bash
-rdm task create <slug> --title "Plan review finding: description" --body "Details." --tags plan-review --no-edit {proj_flag}
+rdm task create <slug> --title "Plan review finding: description" --body "Details." --tags plan-review --no-plan-review --no-edit {proj_flag}
 rdm commit -m "chore(plan): file plan review finding as task"
 ```
 
@@ -108,7 +108,7 @@ Under `--roadmap <slug>`, gate each phase **individually** — a phase whose own
 
 ## Review specification
 
-**Hand-authored sections:** Setup, Find, Consolidate, Categorize & act, and Gate above are hand-authored and permanent. They implement plan-review's domain-specific logic (argument parsing, verdict-determination, and tag-clearing gating) and will not be overwritten by generator updates. The generated marker block below contains plan-mode review dimensions (coherence, architectural-fit, unit-of-work), refutation logic, filtering, and verdict rules — fixed content rendered from rdm's own canonical review source at release time.
+**Hand-authored sections:** Setup, Find, Consolidate, Categorize & act, and Gate above are hand-authored and permanent. They implement plan-review's domain-specific logic (argument parsing, verdict-determination, and tag-clearing gating) and will not be overwritten by generator updates. The generated marker block below contains plan-mode review dimensions (coherence, architectural-fit, unit-of-work, restraint), refutation logic, filtering, and verdict rules — fixed content rendered from rdm's own canonical review source at release time.
 
 **This block is fixed content, not a local edit target:** there is no regeneration step in this repo — the single home of dimensions, severity scale, refute pass, verdict rules, and gate policy is rdm's own canonical review source, and changes there reach you the next time you regenerate your skills with `rdm agent-config`.
 
@@ -146,7 +146,13 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   introduced by another in-flight (not-yet-landed) roadmap or task, is
   only `blocking` when the target item does **not** carry the
   `depends-unlanded` tag and does not state the dependency explicitly;
-  when already annotated, downgrade it to a `concern` (or omit it).
+  when already annotated, downgrade it to a `concern` (or omit it). A
+  plan may delegate implementation decisions to whoever carries it out —
+  an undecided point is a `concern`, not `blocking`, unless the undecided
+  branches would lead to different goals or outcomes. Coherence is
+  `blocking` only when an implementer following the plan as written would
+  build the wrong thing, never merely because they would have to make a
+  decision themselves.
 - **architectural-fit** — *always.* Read the project's principles
   (falling back to `CLAUDE.md` / `AGENTS.md` in the project root when no
   principles note is configured — architectural fit must never go
@@ -167,6 +173,14 @@ plus every phase gated individually), a `phase`, a `task`, or an
 ahead of implementation. `implementation-plan` has **no persisted rdm
 item** behind it, so it is report-only: no body edit, no filed task, and
 no gate (see § Gate).
+- **restraint** — *always.* The counterweight to unit-of-work: flags a
+  plan that has over-specified rather than under-specified. Two shapes
+  are both findings — (1) the plan spells out a decision that could
+  safely be left to whoever carries it out, and (2) the level of detail
+  has grown past the point where adding more of it reduces risk rather
+  than adding new surface for its own review. Symmetric with
+  unit-of-work's two-sided framing: neither too little specification nor
+  too much is the goal.
 
 ### Find — one read-only agent per applicable dimension, in parallel
 

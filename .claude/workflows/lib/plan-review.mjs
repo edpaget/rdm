@@ -233,7 +233,9 @@ function buildTagWritePrompt(kind, roadmap, ident, remainingTags) {
 
 // buildActPrompt — orchestrator-only act step: apply small plan-body fixes by
 // writing the WHOLE --body, and file large findings as tasks. Never runs in
-// --implementation-plan mode (guarded at the call site).
+// --implementation-plan mode (guarded at the call site). Large findings are
+// filed with `--no-plan-review` so the gate's own output is never re-stamped
+// `needs-plan-review` and fed back into itself as new input.
 function buildActPrompt(kind, roadmap, ident, survivors) {
   return [
     'You are the plan-review orchestrator applying already-verified findings. The findings below already',
@@ -250,14 +252,230 @@ function buildActPrompt(kind, roadmap, ident, survivors) {
       ? '    ./target/debug/rdm phase update ' + ident + ' --roadmap ' + roadmap + ' --body "<full updated body>" --no-edit --project rdm'
       : '    ./target/debug/rdm roadmap update ' + ident + ' --body "<full updated body>" --no-edit --project rdm',
     '- LARGE (a structural concern: a missing prerequisite, scope too big for one phase, a conflicting design',
-    '  decision): do NOT edit the plan document — file it as a task:',
-    '    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-edit --project rdm',
+    '  decision): do NOT edit the plan document — file it as a task, with `--no-plan-review` so this finding',
+    '  does not itself get re-stamped `needs-plan-review`:',
+    '    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-plan-review --no-edit --project rdm',
     'After applying any changes, run: ./target/debug/rdm commit -m "chore(plan): address plan review findings on ' +
       (kind === 'phase' ? roadmap + '/' + ident : ident) +
       '"',
     'If there is nothing small to fix and nothing large to file, make no changes.',
     'Return a STAMP_ACK object: { ok: true } if you completed without error (including the no-op case), else { ok: false }.',
   ].join('\n')
+}
+
+// --- Round-capping helpers (bounds repeated plan-review passes on one item) --
+// A ROUND AUDIT NOTE is appended to a non-`reviewed` unit's body after each
+// pass, following the shipped `## Estimate <difficulty> — <justification>`
+// body-note convention: a `## Plan Review Round <N> — <outcome>` header
+// followed by one bullet per surviving finding. Reading it back on the next
+// pass tells the driver which round it is on and what was already reported,
+// with no external state.
+//
+// IMPORTANT: repeat-filtering below is REPORTING-ONLY. It thins what gets
+// written to the audit note / shown to a human so an unresolved complaint
+// is not re-litigated verbatim every round — it must NEVER be used to decide
+// the round's outcome. Rounds 1 and 2 both classify from the FULL (wont-fix-
+// suppressed, repeat-UNfiltered) survivor set, so a finding that is still
+// genuinely present and blocking keeps the plan in rework/escalated on round
+// 2 exactly as it would on round 1 — it cannot silently "age out" into a pass
+// purely by being repeated. Only an actual fix (the finder stops reporting
+// it) or an explicit human `wont-fix` removes a finding from the outcome.
+
+const ROUND_HEADER_RE = /^## Plan Review Round (\d+) — (\S+)\s*$/
+
+// parseRoundNotes(body) — read every well-formed `## Plan Review Round N —
+// outcome` block already present in a fetched body and return the LAST
+// (highest-numbered) one as { round, outcome, findings }, where findings is
+// the parsed bullet list of { severity, concern, what_fails } for that round.
+// Returns { round: 0, outcome: null, findings: [] } when no well-formed
+// header is found — this fails TOWARD round 1 (the cap engages later, not
+// never), never toward silently skipping the cap on a body that happens to
+// contain unrelated text resembling the header.
+function parseRoundNotes(body) {
+  const text = typeof body === 'string' ? body : ''
+  const lines = text.split('\n')
+  let best = { round: 0, outcome: null, findings: [] }
+  let current = null
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const m = ROUND_HEADER_RE.exec(line)
+    if (m) {
+      const round = parseInt(m[1], 10)
+      if (Number.isFinite(round) && round > 0 && round > best.round) {
+        current = { round: round, outcome: m[2], findings: [] }
+        best = current
+      } else {
+        current = null // malformed, duplicate, or lower-numbered — ignore its body
+      }
+      continue
+    }
+    if (!current) continue
+    const bm = /^- \[(blocking|concern)\] ([^:]+): (.*)$/.exec(line)
+    if (bm) {
+      current.findings.push({ severity: bm[1], concern: bm[2], what_fails: bm[3] })
+    } else if (line.trim() !== '' && line.slice(0, 3) !== '## ') {
+      // Any other non-bullet, non-blank, non-heading content ends this round's
+      // bullet capture (conservative: do not keep scanning past unrelated prose).
+      current = null
+    }
+  }
+  return best
+}
+
+// formatRoundNote(round, outcome, findings) — pure: render the audit-note
+// block text (no surrounding blank lines — the caller joins with '\n\n').
+function formatRoundNote(round, outcome, findings) {
+  const list = Array.isArray(findings) ? findings : []
+  const lines = ['## Plan Review Round ' + round + ' — ' + outcome]
+  if (list.length === 0) {
+    lines.push('- (no surviving findings)')
+  } else {
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i] || {}
+      lines.push('- [' + (f.severity || 'concern') + '] ' + (f.concern || 'general') + ': ' + (f.what_fails || f.id || ''))
+    }
+  }
+  return lines.join('\n')
+}
+
+// normalizeWords(text) — lowercase, strip punctuation, split into significant
+// (length > 3) words. A deterministic string op, not a real fuzzy-matching
+// library — used only by the two heuristics below.
+function normalizeWords(text) {
+  const s = String(text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+  return s.split(/\s+/).filter((w) => w.length > 3)
+}
+
+// findingSignature(finding) — the deterministic text used for repeat
+// detection: concern plus normalized what_fails words.
+function findingSignature(finding) {
+  const concern = (finding && finding.concern) || ''
+  const what = (finding && (finding.what_fails || finding.id)) || ''
+  return concern + '::' + normalizeWords(what).join(' ')
+}
+
+// partitionRepeats(survivors, priorFindings) — REPORTING-ONLY split into
+// { repeats, fresh } by exact signature match against the prior round's
+// recorded findings. Never used to decide the outcome (see header note): a
+// false negative here (a repeat wrongly treated as fresh) only re-lists
+// something in the note, it never changes pass/fail.
+function partitionRepeats(survivors, priorFindings) {
+  const list = Array.isArray(survivors) ? survivors : []
+  const prior = Array.isArray(priorFindings) ? priorFindings : []
+  const priorSigs = prior.map(findingSignature)
+  const repeats = []
+  const fresh = []
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i]
+    const isRepeat = priorSigs.indexOf(findingSignature(f)) !== -1
+    ;(isRepeat ? repeats : fresh).push(f)
+  }
+  return { repeats: repeats, fresh: fresh }
+}
+
+// wontFixOverlapMatches(finding, wontFixedTexts) — a deterministic, pure,
+// conservative token-overlap heuristic. `rdm search` already did the real
+// typo-tolerant fuzzy matching on the fetch side to produce the wont-fixed
+// candidate list; this is a SECOND, stricter gate applied client-side. A
+// finding is only suppressed when a large majority of its significant words
+// appear in a candidate wont-fixed task's text AND at least
+// WONTFIX_MIN_OVERLAP_WORDS of them do — biased toward under-suppressing,
+// since a false suppress removes a live finding from BOTH the report and the
+// outcome, while a false miss only re-reports something already dismissed.
+const WONTFIX_OVERLAP_RATIO = 0.7
+const WONTFIX_MIN_OVERLAP_WORDS = 3
+function wontFixOverlapMatches(finding, wontFixedTexts) {
+  const findingWords = normalizeWords((finding && (finding.what_fails || finding.id)) || '')
+  if (findingWords.length < WONTFIX_MIN_OVERLAP_WORDS) return false
+  const findingSet = new Set(findingWords)
+  const list = Array.isArray(wontFixedTexts) ? wontFixedTexts : []
+  for (let i = 0; i < list.length; i++) {
+    const textWords = new Set(normalizeWords(list[i]))
+    let overlap = 0
+    findingSet.forEach((w) => {
+      if (textWords.has(w)) overlap++
+    })
+    if (overlap >= WONTFIX_MIN_OVERLAP_WORDS && overlap / findingSet.size >= WONTFIX_OVERLAP_RATIO) return true
+  }
+  return false
+}
+
+// suppressWontFixed(survivors, wontFixedTexts) — drop any survivor matching an
+// already-wont-fixed task. Removes it from consideration ENTIRELY: both the
+// report and the outcome (a human already explicitly overruled it) — unlike
+// repeat-filtering above, which is reporting-only.
+function suppressWontFixed(survivors, wontFixedTexts) {
+  const list = Array.isArray(survivors) ? survivors : []
+  if (!Array.isArray(wontFixedTexts) || wontFixedTexts.length === 0) return list.slice()
+  return list.filter((f) => !wontFixOverlapMatches(f, wontFixedTexts))
+}
+
+// classifyRoundOutcome(round, survivors) — the round-outcome capper. Rounds 1
+// and 2 classify from the FULL (wont-fix-suppressed but repeat-unfiltered)
+// survivor set via classifyPlanOutcome, exactly as an uncapped run would;
+// round 3+ returns 'escalated' UNCONDITIONALLY, regardless of findings
+// content, so an item can never loop forever on the same unresolved finding.
+function classifyRoundOutcome(round, survivors) {
+  if (round >= 3) return 'escalated'
+  return classifyPlanOutcome(survivors)
+}
+
+// buildWontFixFetchPrompt — mechanical fetch agent: list every task already
+// resolved `wont-fix` that came out of a plan-review finding, as raw
+// title+body text for the client-side overlap heuristic above to match
+// against. One search covers every unit in this run.
+function buildWontFixFetchPrompt() {
+  return [
+    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
+    'Run exactly this command in the repo root and read its JSON output:',
+    '  ./target/debug/rdm search "" --tag plan-review --status wont-fix --type task --project rdm --format json',
+    'Return a WONTFIX_LIST object: `texts` — one string per result, each the concatenation of that result\'s',
+    'title and body separated by a newline.',
+    'If the command fails or there are no results, return an empty `texts` array.',
+  ].join('\n')
+}
+
+// buildRoundNoteWritePrompt — mechanical body-audit-note agent: append the
+// round note to the END of the target's current body and commit. Runs on
+// every non-`reviewed` outcome (persisted targets only — implementation-plan
+// has no item to write to and is never routed here) so the body reflects the
+// round before the next invocation reads it.
+function buildRoundNoteWritePrompt(kind, roadmap, ident, round, outcome, findings) {
+  const label = kind === 'phase' ? roadmap + '/' + ident : ident
+  const showCmd =
+    kind === 'task'
+      ? './target/debug/rdm task show ' + ident + ' --project rdm --format json'
+      : kind === 'phase'
+      ? './target/debug/rdm phase show ' + ident + ' --roadmap ' + roadmap + ' --project rdm --format json'
+      : './target/debug/rdm roadmap show ' + ident + ' --project rdm --format json'
+  const updateCmd =
+    kind === 'task'
+      ? './target/debug/rdm task update ' + ident + ' --no-edit --project rdm'
+      : kind === 'phase'
+      ? './target/debug/rdm phase update ' + ident + ' --roadmap ' + roadmap + ' --no-edit --project rdm'
+      : './target/debug/rdm roadmap update ' + ident + ' --no-edit --project rdm'
+  return [
+    'You are a mechanical body-audit-note agent. Do not plan, implement, or review anything.',
+    '1. Read the current body: ' + showCmd + ' (the `body` field).',
+    '2. Append exactly this block to the END of that body, separated from the existing content by a blank line:',
+    '',
+    formatRoundNote(round, outcome, findings),
+    '',
+    '3. Write the complete new body back verbatim (the current body, a blank line, then the block above) — `--body`',
+    '   is whole-document-authoritative, there is no patch mechanism:',
+    '   ' + updateCmd + ' --body "<current body>\\n\\n<block above>"',
+    '4. Run: ./target/debug/rdm commit -m "chore(plan): record plan review round ' + round + ' on ' + label + '"',
+    'Return a STAMP_ACK object: { ok: true } if all commands exited 0, else { ok: false }.',
+  ].join('\n')
+}
+
+const WONTFIX_LIST_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['texts'],
+  properties: { texts: { type: 'array', items: { type: 'string' } } },
 }
 
 // buildReviewUnits(parsed, fetched) — pure: turn a parsed target plus the fetched
@@ -277,6 +495,7 @@ function buildReviewUnits(parsed, fetched) {
       ident: parsed.roadmap,
       roadmap: parsed.roadmap,
       tags: Array.isArray(rm.tags) ? rm.tags : [],
+      body: String(rm.body),
       target: 'roadmap ' + parsed.roadmap + ' (body)\n\n' + String(rm.body),
     })
     const phases = Array.isArray(rm.phases) ? rm.phases : []
@@ -288,6 +507,7 @@ function buildReviewUnits(parsed, fetched) {
         ident: p.stem,
         roadmap: parsed.roadmap,
         tags: Array.isArray(p.tags) ? p.tags : [],
+        body: String(p.body || ''),
         target: 'phase ' + parsed.roadmap + '/' + p.stem + '\n\n' + String(p.body || ''),
       })
     }
@@ -306,6 +526,7 @@ function buildReviewUnits(parsed, fetched) {
         ident: ident,
         roadmap: parsed.roadmap,
         tags: Array.isArray(meta.tags) ? meta.tags : [],
+        body: String(meta.body),
         target: kind + ' ' + label + '\n\n' + String(meta.body),
       },
     ],
@@ -350,13 +571,28 @@ async function runPlanReviewDriver(args, deps) {
   const kind = parsed.kind
 
   // reviewUnit — run find → refute → filter for ONE review unit, then strip
-  // non-phase unit-of-work survivors and classify. Returns a per-unit result the
-  // act + gate steps consume independently.
-  async function reviewUnit(unit) {
+  // non-phase unit-of-work survivors, drop anything already resolved
+  // wont-fix, read the unit's prior round off its own body, and classify with
+  // the round cap. Returns a per-unit result the act + gate steps consume
+  // independently. `wontFixedTexts` is the SAME list for every unit in a run
+  // (one search covers the whole run, not one per unit).
+  async function reviewUnit(unit, wontFixedTexts) {
     const rawSurvivors = await runPlanReview({ target: unit.target })
-    const survivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
-    const outcome = classifyPlanOutcome(survivors)
-    return { unit: unit, survivors: survivors, outcome: outcome, summary: summarizeFindings(survivors) }
+    const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
+    const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
+    const prior = parseRoundNotes(unit.body)
+    const round = prior.round + 1
+    const outcome = classifyRoundOutcome(round, survivors)
+    const partition = partitionRepeats(survivors, prior.findings)
+    return {
+      unit: unit,
+      survivors: survivors,
+      outcome: outcome,
+      round: round,
+      newlyReported: partition.fresh,
+      repeats: partition.repeats,
+      summary: summarizeFindings(survivors),
+    }
   }
 
   // ------------------------------------------------------------------ implementation-plan
@@ -416,9 +652,24 @@ async function runPlanReviewDriver(args, deps) {
     return { kind: kind, outcome: 'escalated', fetchError: true, summary: 'plan-review: artifact fetch failed', units: [] }
   }
 
+  // One wont-fix search covers every unit in this run — a human's explicit
+  // override on one finding must never be looked up per unit.
+  let wontFixedTexts = []
+  try {
+    const wf = await _agent(buildWontFixFetchPrompt(), {
+      label: 'fetch:wontfix',
+      phase: 'Read',
+      schema: WONTFIX_LIST_SCHEMA,
+      model: _mechanicalModel,
+    })
+    wontFixedTexts = wf && Array.isArray(wf.texts) ? wf.texts : []
+  } catch (e) {
+    wontFixedTexts = []
+  }
+
   // Review each unit independently (parallel per-unit fan-out — a phase's outcome
   // never changes a sibling's). A single phase/task target is a one-element list.
-  const results = await _parallel(units.map((u) => () => reviewUnit(u)))
+  const results = await _parallel(units.map((u) => () => reviewUnit(u, wontFixedTexts)))
 
   // Act + gate each unit independently. Both halves are skipped in
   // --implementation-plan mode (handled by the early return above); the explicit
@@ -441,6 +692,23 @@ async function runPlanReviewDriver(args, deps) {
         })
       } catch (e) {
         _log('plan-review: act step failed for ' + u.kind + '/' + u.ident + ' — continuing to gate')
+      }
+    }
+
+    // --- Round audit note (orchestrator-only; skipped for implementation-plan) ---
+    // On any non-`reviewed` outcome, record the round: the FULL deduped
+    // remaining findings (not just the newly-reported subset), so nothing open
+    // is hidden from a future reader — this runs even when survivors is empty
+    // (a round-3+ escalation can have zero findings and still must be capped).
+    if (kind !== 'implementation-plan' && r.outcome !== 'reviewed') {
+      try {
+        await _agent(buildRoundNoteWritePrompt(u.kind, u.roadmap, u.ident, r.round, r.outcome, r.survivors), {
+          label: 'act:round-note:' + u.kind + ':' + u.ident,
+          phase: 'Act',
+          schema: STAMP_ACK_SCHEMA,
+        })
+      } catch (e) {
+        _log('plan-review: round-note write failed for ' + u.kind + '/' + u.ident)
       }
     }
 
@@ -472,6 +740,9 @@ async function runPlanReviewDriver(args, deps) {
       ident: u.ident,
       roadmap: u.roadmap,
       outcome: r.outcome,
+      round: r.round,
+      newlyReported: r.newlyReported,
+      repeats: r.repeats,
       status: gate.status,
       clearsPlanReviewTag: gate.clearsPlanReviewTag,
       tagCleared: tagCleared,
@@ -508,4 +779,14 @@ export {
   PLAN_TARGET_SCHEMA,
   ROADMAP_TARGET_SCHEMA,
   STAMP_ACK_SCHEMA,
+  parseRoundNotes,
+  formatRoundNote,
+  findingSignature,
+  partitionRepeats,
+  suppressWontFixed,
+  wontFixOverlapMatches,
+  classifyRoundOutcome,
+  buildWontFixFetchPrompt,
+  buildRoundNoteWritePrompt,
+  WONTFIX_LIST_SCHEMA,
 };

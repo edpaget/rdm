@@ -190,6 +190,64 @@ fn create_does_not_stamp_tag_when_plan_review_disabled() {
 }
 
 #[test]
+fn task_create_no_plan_review_skips_stamp_even_when_config_enabled() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    enable_plan_review(&dir);
+
+    // With the flag: no stamp, even though plan_review is on.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "finding-followup",
+            "--title",
+            "Finding follow-up",
+            "--project",
+            "acme",
+            "--no-edit",
+            "--no-plan-review",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "finding-followup", "--project", "acme"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("needs-plan-review").not());
+
+    // Without the flag, an otherwise-identical create still stamps it.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "regular-task",
+            "--title",
+            "Regular task",
+            "--project",
+            "acme",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "regular-task", "--project", "acme"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("needs-plan-review"));
+}
+
+#[test]
 fn create_with_plan_review_enabled_preserves_user_supplied_tags() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);

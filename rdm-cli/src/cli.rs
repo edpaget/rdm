@@ -717,6 +717,12 @@ pub(crate) enum TaskCommand {
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,
+        /// Skip the automatic `needs-plan-review` stamp even when the
+        /// `plan_review` config flag is enabled. Intended for tasks filed
+        /// from a plan-review finding itself, so the gate's own output does
+        /// not become new input to the gate.
+        #[arg(long)]
+        no_plan_review: bool,
     },
     /// Show a task.
     Show {

@@ -62,7 +62,7 @@ For unattended Claude Code runs (where no human is present to approve permission
    - Include a final step: "Review changes with user and finalize".
 6. **Review the implementation plan** _(both modes)_: run the `rdm-plan-review` skill with `--implementation-plan` against the plan drafted in the previous step, covering coherence and architectural fit.
    - **interactive**: surface the verdict and findings alongside the plan, before the approval gate.
-   - **`--auto`**: never wait on the verdict — fold every surviving **blocking** finding back into the plan text before continuing to the execute step. If a blocking finding can't be resolved by editing the plan (genuine ambiguity or an architectural decision), don't drop it silently: file it via the Side-work convention (`rdm task create ... --tags plan-review`).
+   - **`--auto`**: never wait on the verdict — fold every surviving **blocking** finding back into the plan text before continuing to the execute step. If a blocking finding can't be resolved by editing the plan (genuine ambiguity or an architectural decision), don't drop it silently: file it via the Side-work convention (`rdm task create ... --tags plan-review --no-plan-review`) — `--no-plan-review` keeps the filed finding from being stamped `needs-plan-review` itself.
 7. **Wait for user approval** _(interactive only)_: do not proceed until the plan is accepted. Then use `ExitPlanMode` to switch back to execution mode.
 8. **Execute the plan**: implement each step, following the plan and any acceptance criteria.
 9. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.

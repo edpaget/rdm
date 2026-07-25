@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+
+- `rdm task create` gained a `--no-plan-review` flag: it skips the automatic
+  `needs-plan-review` stamp even when the `plan_review` config flag is
+  enabled. Intended for tasks filed from a plan-review finding itself, so the
+  gate's own output is never fed back into itself as new input to review. The
+  standalone plan-review workflow and `rdm-do --auto`'s side-work task filing
+  both now pass it automatically.
+- The plan-review gate gained a new always-on dimension, **restraint** — the
+  counterweight to `unit-of-work`: it flags a plan that specifies an
+  implementation decision better left to whoever carries it out, or whose
+  level of detail has grown past the point where more of it reduces risk.
+
+### Changed
+
+- The plan-review gate's `coherence` dimension no longer blocks a plan merely
+  because it leaves an implementation decision undecided. A plan may delegate
+  decisions to whoever carries it out; an undecided point is now a `concern`
+  unless the undecided branches would lead to different goals or outcomes.
+  Coherence is `blocking` only when an implementer following the plan as
+  written would build the wrong thing.
+- The standalone plan-review workflow now caps repeated review rounds on the
+  same item: each non-`reviewed` pass records a `## Plan Review Round <N> —
+  <outcome>` audit note on the item's body. A finding that is still genuinely
+  unresolved keeps the item in `rework`/`escalated` on round 2 exactly as on
+  round 1 — repeats are only de-duplicated in the human-facing note, never in
+  the pass/fail decision — and a third round escalates to a human instead of
+  looping further. A finding already resolved `wont-fix` on a prior pass is
+  dropped from both the report and the outcome, and is never re-raised.
+
+### Fixed
+
+- The 25 tasks previously filed from plan-review findings that were carrying
+  a stray `needs-plan-review` tag (feeding the gate's own output back into
+  itself) have been swept clean; going forward, tasks filed this way never
+  pick up the tag in the first place.
 
 ## [0.18.0] - 2026-07-25
 ### Fixed

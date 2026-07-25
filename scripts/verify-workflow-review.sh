@@ -275,7 +275,7 @@ diff -u "$TMP/plan-spec-cli" "$TMP/plan-spec-mcp" >/dev/null 2>&1 ||
 if grep -nE '\{proj_flag\}|\{proj_param\}|\{t_[a-z_]+\}|\{principles\}' "$TMP/plan-spec-cli" >&2; then
     fail "a template placeholder leaked into the shared generated plan-review spec"
 fi
-for key in coherence architectural-fit unit-of-work; do
+for key in coherence architectural-fit unit-of-work restraint; do
     grep -q "\*\*$key\*\*" "$TMP/plan-spec-cli" ||
         fail "the rendered plan spec does not document the '$key' dimension"
 done
@@ -298,7 +298,7 @@ for bad in '\*\*ac\*\*' '\*\*changelog\*\*' '\*\*security\*\*' 'rdm hook done-li
         fail "code-only prose ($bad) leaked into the generated plan spec — tag it //|code|"
     fi
 done
-for bad in 'needs-plan-review' '\*\*unit-of-work\*\*'; do
+for bad in 'needs-plan-review' '\*\*unit-of-work\*\*' '\*\*restraint\*\*'; do
     if grep -nE "$bad" "$TMP/spec-cli" >&2; then
         fail "plan-only prose ($bad) leaked into the generated code spec — tag it //|plan|"
     fi
@@ -557,7 +557,7 @@ assert.equal(JSON.stringify(outA), JSON.stringify(outB), 'code review output is 
 // ============================================================================
 assert.deepEqual(
   DIMENSIONS.plan.map((d) => d.key),
-  ['coherence', 'architectural-fit', 'unit-of-work'],
+  ['coherence', 'architectural-fit', 'unit-of-work', 'restraint'],
   'plan dimension set'
 );
 
@@ -569,6 +569,7 @@ const planFindings = {
   ],
   'architectural-fit': [],
   'unit-of-work': [],
+  restraint: [],
 };
 const planVerdicts = {
   'vague-step': { refuted: false, confidence: 90 },
@@ -583,7 +584,7 @@ const pout = await buildReviewPipeline('plan', deps(pspy))(CTX);
 assert.deepEqual(pout.map((f) => f.id), ['vague-step'], 'plan: refutable dropped, below-floor dropped, real survives');
 const pFind = pspy.calls.filter((c) => c.label.startsWith('find:'));
 const pRefute = pspy.calls.filter((c) => c.label.startsWith('refute:'));
-assert.equal(pFind.length, 3, 'one finder per plan dimension');
+assert.equal(pFind.length, 4, 'one finder per plan dimension');
 assert.equal(pRefute.length, 3, 'a fresh refuter per plan finding');
 assert.ok(pFind.every((c) => c.label.startsWith('find:plan:')), 'plan finders labelled by dimension');
 assert.ok(pFind.every((c) => c.prompt.includes(CTX.target)), 'context.target threaded into plan finder prompts');
@@ -653,6 +654,90 @@ assert.ok(
     .focus.includes('An empty or ambiguous plan is itself a blocking finding'),
   "coherence's pre-existing empty/ambiguous-plan rule must still be present"
 );
+
+// ============================================================================
+// review-gate-intent phase 6, AC2 — coherence's finder prompt must carry both
+// the wrong-thing blocking bar and the delegation rule as distinct literal
+// substrings, so the test cannot pass on only one of the two being added.
+// ============================================================================
+const COHERENCE_STOPPING_RULE_KEYPHRASES = [
+  'A plan may delegate implementation decisions to whoever carries it out',
+  'blocking only when an implementer following the plan as written would build the wrong thing',
+];
+{
+  const coherenceDim = DIMENSIONS.plan.find((d) => d.key === 'coherence');
+  const coherencePrompt = findPrompt('plan', coherenceDim, CTX);
+  for (const phrase of COHERENCE_STOPPING_RULE_KEYPHRASES) {
+    assert.ok(
+      coherencePrompt.includes(phrase),
+      'coherence findPrompt is missing the stopping-rule keyphrase: ' + phrase
+    );
+  }
+}
+console.log('AC2: coherence findPrompt carries both the wrong-thing bar and the delegation rule');
+
+// ============================================================================
+// review-gate-intent phase 6, AC3 — the counterweight `restraint` dimension:
+// always-on in plan mode (both the explicit-signals and fail-open paths), and
+// a seeded over-specification finding survives the pipeline.
+// ============================================================================
+assert.ok(
+  DIMENSIONS.plan.map((d) => d.key).includes('restraint'),
+  'restraint must be a plan-mode dimension'
+);
+assert.ok(
+  selectDimensions('plan', {}).map((d) => d.key).includes('restraint'),
+  'restraint is always-on: explicit empty signals still include it'
+);
+assert.ok(
+  selectDimensions('plan', null).map((d) => d.key).includes('restraint'),
+  'restraint is always-on: fail-open (null signals) still include it'
+);
+{
+  const overSpecFindings = {
+    coherence: [],
+    'architectural-fit': [],
+    'unit-of-work': [],
+    restraint: [
+      {
+        id: 'over-specified',
+        concern: 'restraint',
+        severity: 'blocking',
+        confidence: 90,
+        what_fails: 'the plan prescribes an exact match threshold the implementer should be left to choose',
+      },
+    ],
+  };
+  const overSpecVerdicts = { 'over-specified': { refuted: false, confidence: 92 } };
+  const rspy = makeSpyAgent(overSpecFindings, overSpecVerdicts);
+  const rOut = await buildReviewPipeline('plan', deps(rspy))(CTX);
+  assert.ok(
+    rOut.some((f) => f.id === 'over-specified'),
+    'a seeded blocking restraint finding survives buildReviewPipeline(plan) filtering'
+  );
+}
+console.log('AC3: restraint is always-on in plan mode and a seeded over-specification finding survives the pipeline');
+
+// ============================================================================
+// review-gate-intent phase 6, AC5 — the coherence dimension's additions and the
+// new restraint dimension's title/focus must name no repo path or crate: a
+// static grep over exactly the new/changed text, scoped tightly so it can't
+// pass by accident on unrelated content elsewhere in the module.
+// ============================================================================
+{
+  const forbiddenTokens = ['rdm-core', 'rdm-cli', 'rdm-server', 'rdm-mcp', '.claude/', 'scripts/'];
+  const coherenceDim = DIMENSIONS.plan.find((d) => d.key === 'coherence');
+  const restraintDim = DIMENSIONS.plan.find((d) => d.key === 'restraint');
+  assert.ok(restraintDim, 'the restraint dimension must exist in DIMENSIONS.plan');
+  const scopedText = [coherenceDim.focus, restraintDim.title, restraintDim.focus].join('\n');
+  for (const tok of forbiddenTokens) {
+    assert.ok(
+      scopedText.indexOf(tok) === -1,
+      'coherence/restraint dimension prose must be repo-agnostic — found forbidden token: ' + tok
+    );
+  }
+}
+console.log('AC5: coherence and restraint dimension prose is repo-agnostic (no crate names or paths)');
 
 // ============================================================================
 // AC4 — an architectural-violation finding (the review-verify tier-downgrade
@@ -829,8 +914,8 @@ assert.ok(
 );
 assert.deepEqual(
   selectDimensions('plan', { targetType: 'task' }).map((d) => d.key),
-  ['coherence', 'architectural-fit'],
-  'coherence and architectural-fit stay always-on in plan mode'
+  ['coherence', 'architectural-fit', 'restraint'],
+  'coherence, architectural-fit, and restraint stay always-on in plan mode'
 );
 
 // (f) deriveSignals is deterministic and FULLY populated (never a partial object).
@@ -1420,10 +1505,16 @@ const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking'
   const clearCalls = calls.filter((c) => (c.label || '').indexOf('gate:clear-tag:') === 0);
   assert.equal(clearCalls.length, 2, 'only the two reviewed units get a tag-clear agent call');
   assert.ok(!clearCalls.some((c) => c.label.indexOf('phase-1-a') !== -1), 'reworked phase gets NO tag-clear call');
-  // The reworked phase DID get an act call (it has survivors); reviewed-clean units did not.
-  const actCalls = calls.filter((c) => (c.label || '').indexOf('act:') === 0);
-  assert.equal(actCalls.length, 1, 'only the unit with survivors gets an act call');
+  // The reworked phase DID get a fix-application act call (it has survivors);
+  // reviewed-clean units did not. `act:round-note:*` is a separate step (the
+  // round-capping audit note) and is asserted on its own below.
+  const actCalls = calls.filter((c) => (c.label || '').indexOf('act:') === 0 && (c.label || '').indexOf('act:round-note:') !== 0);
+  assert.equal(actCalls.length, 1, 'only the unit with survivors gets a fix-application act call');
   assert.ok(actCalls[0].label.indexOf('phase-1-a') !== -1, 'the act call targets the reworked phase');
+  // Round-note write: only the non-reviewed unit (phase-1-a) gets one.
+  const roundNoteCalls = calls.filter((c) => (c.label || '').indexOf('act:round-note:') === 0);
+  assert.equal(roundNoteCalls.length, 1, 'only the non-reviewed unit gets a round-note write call');
+  assert.ok(roundNoteCalls[0].label.indexOf('phase-1-a') !== -1, 'the round-note call targets the reworked phase');
 }
 
 // (2) single --task target: flattened onto the top-level result; reviewed clears tag.
@@ -1496,6 +1587,131 @@ for retired in 'PASS WITH CONCERNS' 'REWORK'; do
     fi
 done
 pass "SKILL.md is a thin shim: references the workflow, keeps the pipeline phrase and markers, drops retired vocab"
+
+# --- 5d. ROUND-CAPPING (review-gate-intent phase 6, AC4) ---------------------
+# Drive runPlanReviewDriver three times against a STATEFUL fake agent whose
+# fetch:<kind> call returns the SAME plan body plus whatever round-audit-note
+# the previous invocation's round-note write appended — simulating the body a
+# real plan repo would hand back across three separate driver invocations —
+# with a finder that keeps re-reporting the identical blocking finding every
+# round. Pins down the coherence-1 fix: round 2's OUTCOME must still be
+# non-`reviewed` (not silently pass) even though the finding is a repeat in the
+# note. A separate case proves a wont-fixed finding is dropped from BOTH the
+# report and the outcome on round 1.
+say "5d. round-capping: persistent finding stays non-reviewed through round 2, escalates on round 3, wont-fix suppresses"
+cat >"$TMP/plan-round-cap-test.mjs" <<'NODE_ROUND_CAP_TEST'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const mod = await import(pathToFileURL(process.argv[2]).href);
+const { runPlanReviewDriver } = mod;
+
+// makeStatefulHarness — a fake agent that actually threads body state across
+// calls: fetch:<kind> returns the current stored body; act:round-note:* mutates
+// it by appending the round-note block the prompt asked it to write (extracted
+// from the prompt text itself, mirroring what a real agent would do with the
+// same instructions).
+function makeStatefulHarness(initialBody, tags, findings, wontfixTexts) {
+  let body = initialBody;
+  const calls = [];
+  const agent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    calls.push({ label, prompt });
+    if (label.indexOf('fetch:wontfix') === 0) return { texts: wontfixTexts || [] };
+    if (label.indexOf('fetch:') === 0) return { body, tags };
+    if (label.indexOf('act:round-note:') === 0) {
+      const m = /2\. Append exactly this block[^\n]*\n\n([\s\S]*?)\n\n3\. Write/.exec(prompt);
+      assert.ok(m, 'round-note prompt must contain the appendable block between markers');
+      body = body + '\n\n' + m[1];
+      return { ok: true };
+    }
+    // act:<kind>:<ident> (small-fix / large-finding step) and gate:clear-tag:*.
+    return { ok: true };
+  };
+  const parallel = (thunks) => Promise.all(thunks.map((t) => t()));
+  const runPlanReview = async () => findings;
+  const log = () => {};
+  return { deps: { agent, parallel, runPlanReview, log }, calls, getBody: () => body };
+}
+
+const persistent = {
+  id: 'f1',
+  concern: 'coherence',
+  severity: 'blocking',
+  confidence: 90,
+  what_fails: 'the retry backoff strategy is unspecified and would change behavior significantly',
+};
+
+// ---- Rounds 1-3 on an unchanged item with a persistently-reported finding ---
+{
+  const h = makeStatefulHarness('ORIGINAL BODY', ['needs-plan-review'], [persistent], []);
+
+  // Round 1: no prior round note in the body -> round 1 -> classifyPlanOutcome
+  // over the full survivor set -> 'rework' (a non-architectural blocking finding).
+  const r1 = await runPlanReviewDriver({ task: 'flaky-thing' }, h.deps);
+  assert.equal(r1.outcome, 'rework', 'round 1: outcome reflects the unresolved blocking finding');
+  assert.ok(r1.findings.some((f) => f.id === 'f1'), 'round 1: the finding is present in the report');
+  assert.equal(r1.units[0].round, 1, 'round 1: round number is 1');
+  assert.ok(h.getBody().indexOf('## Plan Review Round 1 — rework') !== -1, 'round 1: audit note appended to the body');
+  assert.equal(
+    h.calls.filter((c) => c.label.indexOf('gate:clear-tag:') === 0).length,
+    0,
+    'round 1: non-reviewed outcome must not clear the tag'
+  );
+
+  // Round 2: the SAME finding is reported again against the body now carrying
+  // round 1's note. This is the coherence-1 regression pin: the outcome must
+  // STILL be non-reviewed (matching round 1), even though the finding is a
+  // REPEAT and therefore excluded from the round's newly-reported subset.
+  const r2 = await runPlanReviewDriver({ task: 'flaky-thing' }, h.deps);
+  assert.notEqual(r2.outcome, 'reviewed', 'round 2: an unresolved repeat must NOT silently pass');
+  assert.equal(r2.outcome, 'rework', 'round 2: outcome matches round 1 exactly (still classified from the full set)');
+  assert.equal(r2.units[0].round, 2, 'round 2: round number advances to 2');
+  assert.ok(r2.findings.some((f) => f.id === 'f1'), 'round 2: the finding is STILL present in the full report (not dropped)');
+  assert.equal(r2.units[0].newlyReported.length, 0, 'round 2: the repeat is excluded from newly-reported (reporting-only)');
+  assert.equal(r2.units[0].repeats.length, 1, 'round 2: the repeat is recorded as a repeat');
+  assert.ok(h.getBody().indexOf('## Plan Review Round 2 — rework') !== -1, 'round 2: a second audit note is appended');
+
+  // Round 3: forced escalation regardless of findings content, still lists the
+  // still-open finding (deduped, not dropped).
+  const r3 = await runPlanReviewDriver({ task: 'flaky-thing' }, h.deps);
+  assert.equal(r3.outcome, 'escalated', 'round 3: forced escalation regardless of findings content');
+  assert.equal(r3.units[0].round, 3, 'round 3: round number advances to 3');
+  assert.ok(r3.findings.some((f) => f.id === 'f1'), 'round 3: the still-open finding is still listed, not silently dropped');
+  assert.equal(r3.findings.length, 1, 'round 3: findings are deduped, not accumulated across rounds');
+  assert.ok(h.getBody().indexOf('## Plan Review Round 3 — escalated') !== -1, 'round 3: a third audit note is appended');
+}
+
+// ---- wont-fix suppression: dropped from BOTH the report and the outcome ----
+{
+  const wontfixed = {
+    id: 'wf1',
+    concern: 'coherence',
+    severity: 'blocking',
+    confidence: 88,
+    what_fails: 'the retry backoff timing is unspecified',
+  };
+  const h = makeStatefulHarness('TB', ['needs-plan-review'], [wontfixed], [
+    'Task closed wont-fix: retry backoff timing already covered elsewhere',
+  ]);
+  const res = await runPlanReviewDriver({ task: 'wf-target' }, h.deps);
+  assert.equal(res.outcome, 'reviewed', 'a wont-fixed finding must not hold the outcome open');
+  assert.equal(res.findings.length, 0, 'a wont-fixed finding must be dropped from the report');
+  assert.equal(res.units[0].tagCleared, true, 'reviewed (post-suppression) clears the needs-plan-review tag');
+  assert.equal(
+    h.calls.filter((c) => c.label.indexOf('act:round-note:') === 0).length,
+    0,
+    'a reviewed outcome (post-suppression) never writes a round note'
+  );
+}
+
+console.log('round-capping assertions passed');
+NODE_ROUND_CAP_TEST
+if run_node "$TMP/plan-round-cap-test.mjs" "$PLAN_LIB"; then
+    pass "round-capping: persistent finding stays non-reviewed through round 2, escalates on round 3, wont-fix suppresses"
+else
+    fail "round-capping assertions failed"
+fi
 
 # --- 6. PLAN HELPER MUTATION SELF-TESTS (non-vacuity) ------------------------
 # Prove the AC-1 phase-scoping and AC-2 tag-filter checks are not vacuous: on a
