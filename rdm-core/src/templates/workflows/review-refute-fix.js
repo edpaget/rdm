@@ -1130,7 +1130,14 @@ let summary
 if (outcome === 'escalated') {
   summary = 'code review escalated: ' + summarizeFindings(survivors)
 } else if (outcome === 'rework') {
-  summary = 'code rework unresolved: ' + summarizeFindings(survivors)
+  // An AC-only gap can force `rework` with an EMPTY survivors array (no
+  // blocking finding at all) — summarizeFindings([]) would then misleadingly
+  // read "no surviving findings". Name the real cause instead, mirroring
+  // dispatch-phase's buildOutcome/buildTaskOutcome identical note.
+  summary =
+    survivors.length === 0 && acTableHasGap(acTable)
+      ? 'code rework unresolved: unmet acceptance criteria in AC table'
+      : 'code rework unresolved: ' + summarizeFindings(survivors)
 } else {
   summary = 'review clean: ' + summarizeFindings(survivors)
 }

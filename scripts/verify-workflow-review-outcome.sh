@@ -271,7 +271,13 @@ function makeAgent(opts) {
       return o.gateAck || { ok: true };
     }
     const parts = label.split(':');
-    if (parts[0] === 'find') return { findings: (o.findings || {})[parts[2]] || [] };
+    if (parts[0] === 'find') {
+      const dim = parts[2];
+      // The `ac` dimension in code mode returns the AC_REVIEW_SCHEMA shape
+      // ({ ac, findings }), not a bare findings array — o.acTable seeds it.
+      if (dim === 'ac' && o.acTable) return { ac: o.acTable, findings: (o.findings || {})[dim] || [] };
+      return { findings: (o.findings || {})[dim] || [] };
+    }
     if (parts[0] === 'refute') {
       const id = parts.slice(2).join(':');
       return (o.verdicts || {})[id] || { refuted: false, confidence: 90 };
@@ -409,6 +415,29 @@ console.log('3d OK: both legacy shapes unaffected, no diff agent called on the l
   assert.ok(!gateCalls[0].prompt.includes('--reason'), 'rework gate carries no --reason (reason is empty for rework)');
 }
 console.log('3e OK: gate defaults off, gate:true persists mapped status without rdm commit or Done:');
+
+// ============================================================================
+// 3f. AC-only-gap summary: a FAIL AC-table entry with an otherwise-clean
+// findings sweep forces `rework` with a summary naming the real cause, not
+// the misleading "no surviving findings" (mirrors the identical fix in
+// dispatch-phase.mjs's buildOutcome/buildTaskOutcome).
+// ============================================================================
+{
+  const a = makeAgent({
+    diffResult: { changedFiles: ['rdm-core/src/foo.rs'], diffText: '+pub fn foo() {}' },
+    findings: CLEAN,
+    acTable: [{ criterion: 'x', status: 'FAIL', evidence: 'y' }],
+    verdicts: {},
+  });
+  const out = await run({ mode: 'code', roadmap: 'rm', phase: '1', gate: false }, a.agent, refPipeline, refParallel, () => {});
+  assert.equal(out.outcome, 'rework', 'an AC-FAIL alone (no blocking findings) forces rework');
+  assert.equal(
+    out.summary,
+    'code rework unresolved: unmet acceptance criteria in AC table',
+    'summary names the real cause, not "no surviving findings"'
+  );
+}
+console.log('3f OK: AC-only-gap summary names the real cause');
 
 console.log('ALL BEHAVIOR CHECKS PASSED');
 NODE_TEST

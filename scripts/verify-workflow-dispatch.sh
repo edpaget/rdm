@@ -955,6 +955,58 @@ try {
   );
 }
 
+// (f) buildTaskOutcome mirrors of (a)/(a2)/(b): the AC-table-gate and
+// Act-annotation logic is duplicated (not shared) between buildOutcome and
+// buildTaskOutcome, so the task-shaped path needs its OWN direct coverage —
+// a divergence here (typo, inverted condition, dropped annotateHandled call)
+// would otherwise go undetected.
+{
+  // (f-a) An AC-only gap forces a task to `rework` even with zero findings.
+  const c = makeCodeFakes({ reviewScript: [[], []], acScript: [[{ criterion: 'x', status: 'FAIL', evidence: 'y' }], null] });
+  const cres = await runCodeGate({ maxRework: 2, tier: 'medium' }, c.deps);
+  assert.equal(cres.reworkCount, 1, 'task: an AC-only gap on round 1 consumes a rework attempt');
+  const tClean = buildTaskOutcome({ task: 'my-task', planFindings: [], codeReviews: cres.rounds, acRounds: cres.acRounds, maxRework: 2, tier: 'medium' });
+  assert.equal(tClean.outcome, 'reviewed', 'task: a round-2 clean AC table (and no findings) yields reviewed');
+
+  // (f-a2) A never-resolved AC-only gap still reports `rework` for a task once
+  // the budget is exhausted, with the AC-aware summary (not "no surviving
+  // findings").
+  const c2 = makeCodeFakes({ reviewScript: [[], [], []], acScript: [[{ criterion: 'x', status: 'FAIL', evidence: 'y' }]] });
+  const cres2 = await runCodeGate({ maxRework: 2, tier: 'medium' }, c2.deps);
+  const tRw = buildTaskOutcome({ task: 'my-task', planFindings: [], codeReviews: cres2.rounds, acRounds: cres2.acRounds, maxRework: 2, tier: 'medium' });
+  assert.equal(tRw.outcome, 'rework', 'task: cap-exhaustion on an AC-only gap still reports rework, never reviewed');
+  assert.equal(
+    tRw.summary,
+    'code rework unresolved: unmet acceptance criteria in AC table',
+    'task: the summary names the real cause instead of "no surviving findings"'
+  );
+
+  // (f-b) Act is invoked once on a clean round with a surviving finding, and
+  // the task OUTCOME carries the handled annotation.
+  const concernFinding = { id: 'tnit', concern: 'style', severity: 'concern', confidence: 80, what_fails: 'a nit' };
+  const c3 = makeCodeFakes({
+    reviewScript: [[concernFinding]],
+    act: () => ({ handled: [{ id: 'tnit', action: 'filed-as-task', taskSlug: 'follow-up' }] }),
+  });
+  const cres3 = await runCodeGate({ maxRework: 2, tier: 'medium' }, c3.deps);
+  assert.equal(count(c3.callLog, 'act'), 1, 'task: act is invoked exactly once on a clean round with surviving findings');
+  const tAct = buildTaskOutcome({
+    task: 'my-task',
+    planFindings: [],
+    codeReviews: cres3.rounds,
+    acRounds: cres3.acRounds,
+    maxRework: 2,
+    tier: 'medium',
+    actResult: cres3.actResult,
+  });
+  assert.equal(tAct.outcome, 'reviewed', 'task: surviving concern alone (medium tier) still yields reviewed');
+  assert.equal(
+    tAct.findings.find((f) => f.id === 'tnit').handled,
+    'filed-as-task',
+    'task: the finding is annotated with the act disposition'
+  );
+}
+
 // (e) runPlanGate regression: the plan gate must correctly unwrap the
 // { survivors, acTable } shape rather than misreading it as a non-array — a
 // blocking plan finding must still trigger the revise loop / escalation.

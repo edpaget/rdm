@@ -48,7 +48,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   floor. It also now incorporates any surviving non-blocking (concern or
   suggestion) finding on an otherwise-clean review by size instead of
   silently dropping it: small fixes are applied inline before landing, and
-  large ones are filed as a follow-up task tagged `code-review`.
+  large ones are filed as a follow-up task tagged `code-review`. When an
+  AC-only gap (no blocking finding) triggers a rework pass, the implementer is
+  now actually told which acceptance criteria failed and why — previously the
+  rework prompt carried only the (empty) findings array, so the retry had no
+  signal to act on and would very likely reproduce the same gap. The rework
+  summary in every surface that can classify an AC-only-gap rework
+  (`dispatch-phase`'s phase and task outcomes, and `review-refute-fix`'s own
+  standalone summary) now names the real cause ("unmet acceptance criteria in
+  AC table") instead of the misleading "no surviving findings".
 
 ## [0.18.0] - 2026-07-25
 ### Fixed

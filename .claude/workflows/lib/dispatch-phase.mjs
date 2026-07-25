@@ -211,6 +211,13 @@ async function runPlanGate(config, deps) {
 // a thrown Act call is swallowed: concern/suggestion findings are non-gating by
 // the module's own severity contract, so a failed fix-attempt must never
 // change the outcome.
+//
+// Rework notes: `d.implement` is called with `null` for the first pass and
+// `{ findings, acTable }` on every rework pass — NEVER a bare findings array.
+// The AC table is a structured side-channel decoupled from `findings` (a FAIL
+// criterion need not also appear as a finding), so without also passing
+// `acTable` an AC-only-gap rework (empty `findings`) would hand the
+// implementer zero information about what to fix.
 async function runCodeGate(config, deps) {
   const c = config || {};
   const d = deps || {};
@@ -225,7 +232,7 @@ async function runCodeGate(config, deps) {
   let reworkCount = 0;
   for (let i = 0; i < maxRework; i++) {
     if (!hasBlocking(findings, tier) && !acTableHasGap(acTable)) break;
-    await d.implement(findings);
+    await d.implement({ findings: findings, acTable: acTable });
     reworkCount++;
     reviewResult = (await d.review()) || {};
     findings = reviewResult.survivors || [];

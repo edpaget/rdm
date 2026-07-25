@@ -561,6 +561,27 @@ that is why the code stage yields only `reviewed`/`rework`. `dispatch-phase` nev
 emits a `Done:` line — it emits `writesCompletion` and landing is a separate,
 later step.
 
+**Rework notes carry the AC table too.** `runCodeGate`'s rework call is
+`d.implement({ findings, acTable })` — never a bare findings array. Because
+the AC table is a structured side-channel decoupled from `findings` (a
+`FAIL`/`PARTIAL` criterion need not also appear as a finding), an AC-only-gap
+rework round has an *empty* `findings` array; without also passing `acTable`
+the implementer would receive no signal at all about what to fix and the
+rework budget would very likely burn out reproducing the same gap.
+`dispatch-phase.js`'s `buildImplementPrompt` renders the two channels
+separately — "ranked issues" from `findings` and "UNMET criteria" from the
+`FAIL`/`PARTIAL` entries of `acTable` — and explicitly notes they are not a
+duplicate report of the same thing.
+
+**The AC-only-gap summary fix applies everywhere `acTable` feeds
+`classifyOutcome`.** `buildOutcome`/`buildTaskOutcome` name the real cause
+(`'code rework unresolved: unmet acceptance criteria in AC table'`) instead of
+the misleading `summarizeFindings([])` → `'no surviving findings'` when an
+AC-only gap forces `rework` with an empty findings array; `review-refute-fix.js`'s
+standalone `{ roadmap, phase }`/`{ task }` code-review path applies the
+identical branch to its own `rework` summary, since it independently threads
+`acTable` into its own `classifyOutcome` call.
+
 ### `CODE_ACT_SCHEMA` and the code-lane Act step
 
 Once `runCodeGate`'s rework loop settles on a **clean** final round (no

@@ -1175,6 +1175,13 @@ async function runPlanGate(config, deps) {
 // a thrown Act call is swallowed: concern/suggestion findings are non-gating by
 // the module's own severity contract, so a failed fix-attempt must never
 // change the outcome.
+//
+// Rework notes: `d.implement` is called with `null` for the first pass and
+// `{ findings, acTable }` on every rework pass — NEVER a bare findings array.
+// The AC table is a structured side-channel decoupled from `findings` (a FAIL
+// criterion need not also appear as a finding), so without also passing
+// `acTable` an AC-only-gap rework (empty `findings`) would hand the
+// implementer zero information about what to fix.
 async function runCodeGate(config, deps) {
   const c = config || {};
   const d = deps || {};
@@ -1189,7 +1196,7 @@ async function runCodeGate(config, deps) {
   let reworkCount = 0;
   for (let i = 0; i < maxRework; i++) {
     if (!hasBlocking(findings, tier) && !acTableHasGap(acTable)) break;
-    await d.implement(findings);
+    await d.implement({ findings: findings, acTable: acTable });
     reworkCount++;
     reviewResult = (await d.review()) || {};
     findings = reviewResult.survivors || [];
@@ -1667,9 +1674,15 @@ function buildPlanRevisePrompt(phaseBody, planDocText, rankedPlanFindings) {
 }
 
 // Stage C / D-rework: a FRESH implementer seeded ONLY with the phase body + the
-// approved plan doc (+ optional code-review findings on the rework pass). It is
-// NEVER given the planner's or plan-reviewer's context/transcript. `reworkNotes`
-// carries CODE-review findings only — never plan-review findings.
+// approved plan doc (+ optional code-review findings / AC-table gaps on the
+// rework pass). It is NEVER given the planner's or plan-reviewer's
+// context/transcript. `reworkNotes`, when present, is `{ findings, acTable }`
+// from runCodeGate's rework call (`d.implement({ findings, acTable })`) —
+// NEVER plan-review findings, and never a bare findings array: the AC table is
+// a structured side-channel decoupled from `findings` (a FAIL/PARTIAL
+// criterion need not also appear as a finding), so an AC-only-gap rework round
+// (empty `findings`) still needs `acTable` rendered or the implementer gets no
+// signal about what to fix at all.
 function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes) {
   const lines = [
     'You are an implementation agent. You are seeded with ONLY the item body and the approved plan below.',
@@ -1693,8 +1706,19 @@ function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes) 
       ', not yet on main. ..." --tags depends-unlanded --no-edit --project rdm`.',
   ]
   if (reworkNotes) {
-    lines.push('Code-review found these ranked issues on the prior pass — fix every blocking one:')
-    lines.push(JSON.stringify(reworkNotes, null, 2))
+    const notesFindings = Array.isArray(reworkNotes.findings) ? reworkNotes.findings : []
+    const notesAcTable = Array.isArray(reworkNotes.acTable) ? reworkNotes.acTable : []
+    const acGaps = notesAcTable.filter((e) => e && (e.status === 'FAIL' || e.status === 'PARTIAL'))
+    if (notesFindings.length > 0) {
+      lines.push('Code-review found these ranked issues on the prior pass — fix every blocking one:')
+      lines.push(JSON.stringify(notesFindings, null, 2))
+    }
+    if (acGaps.length > 0) {
+      lines.push(
+        'The acceptance-criteria table found these UNMET criteria on the prior pass — fix every one (this is a separate channel from the findings above, not a duplicate):'
+      )
+      lines.push(JSON.stringify(acGaps, null, 2))
+    }
   }
   return lines.join('\n')
 }
