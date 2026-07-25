@@ -35,13 +35,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   looping further. A finding already resolved `wont-fix` on a prior pass is
   dropped from both the report and the outcome, and is never re-raised.
 
-### Fixed
-
-- The 25 tasks previously filed from plan-review findings that were carrying
-  a stray `needs-plan-review` tag (feeding the gate's own output back into
-  itself) have been swept clean; going forward, tasks filed this way never
-  pick up the tag in the first place.
-
 ## [0.18.0] - 2026-07-25
 ### Fixed
 
