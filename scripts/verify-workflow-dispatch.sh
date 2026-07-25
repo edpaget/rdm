@@ -1330,6 +1330,38 @@ grep -qF "rdm phase update ' +" "$WF" || fail "AC-STAMP: missing the phase-mode 
 grep -qF -- '--status in-progress' "$WF" || fail "AC-STAMP: missing a '--status in-progress' status string"
 pass "AC-STAMP: stamp:in-progress label and both phase/task status commands are present"
 
+# AC-STAMP Phase-mode scoped assertion: extract and normalize the buildStampInProgressPrompt
+# function body to verify the phase-mode branch carries all required tokens:
+# --status in-progress --no-edit --roadmap, roadmapSlugArg, and --project rdm.
+# The phase-mode command is multi-line, so grep on a single normalized line.
+assert_stamp_phase_mode() {
+    extract_fn_body "$1" buildStampInProgressPrompt >"$TMP/stamp-fn"
+    [ -s "$TMP/stamp-fn" ] || return 1
+    # Normalize: collapse newlines and multiple spaces into single spaces
+    cat "$TMP/stamp-fn" | tr -d '\n' | tr -s ' ' >"$TMP/stamp-normalized"
+    [ -s "$TMP/stamp-normalized" ] || return 1
+    # Check phase-mode tokens in the normalized body. The phase-mode branch
+    # must contain: --status in-progress --no-edit --roadmap, roadmapSlugArg, --project rdm
+    grep -qF -- '--status in-progress --no-edit --roadmap' "$TMP/stamp-normalized" || return 1
+    grep -qF 'roadmapSlugArg' "$TMP/stamp-normalized" || return 1
+    grep -qF -- '--project rdm' "$TMP/stamp-normalized" || return 1
+    return 0
+}
+
+assert_stamp_phase_mode "$WF" ||
+    fail "AC-STAMP: phase-mode buildStampInProgressPrompt must contain --status in-progress --no-edit --roadmap, roadmapSlugArg, and --project rdm"
+pass "AC-STAMP: phase-mode command includes required --roadmap argument and all tokens"
+
+# Self-test: prove the phase-mode assertion fires on a --roadmap deletion.
+# Create a scratch copy and remove the roadmapSlugArg variable entirely from the
+# multi-line concatenation by deleting its line.
+cp "$WF" "$TMP/stamp-mutant-phase-roadmap.js"
+sed '/function buildStampInProgressPrompt/,/^}/{ /roadmapSlugArg/d; }' "$WF" >"$TMP/stamp-mutant-phase-roadmap.js"
+if assert_stamp_phase_mode "$TMP/stamp-mutant-phase-roadmap.js"; then
+    fail "AC-STAMP: phase-mode detector missed a deleted --roadmap argument"
+fi
+pass "AC-STAMP: phase-mode detector fires when --roadmap is removed from the phase-mode command"
+
 assert_stamp_ordering() {
     s0=$(grep -n "const reviewModels = {" "$1" | head -1 | cut -d: -f1)
     st=$(grep -n "label: 'stamp:in-progress'" "$1" | head -1 | cut -d: -f1)
