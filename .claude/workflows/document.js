@@ -175,6 +175,36 @@ const WRITE_ACK_SCHEMA = {
 
 // --- Prompt builders ----------------------------------------------------------
 
+// buildMechanicalModelPrompt() — a mechanical Bash agent that resolves the
+// mechanical dispatch step to a concrete model id, ONCE per run, before any
+// other mechanical agent fires. This is deliberately the one call in the whole
+// run left UNSIZED (mirrors dispatch-phase's Stage-0 fetch:phase-meta/
+// fetch:task-meta exemption and autopilot's own model:mechanical bootstrap,
+// both recorded in their respective verify-workflow-*.sh AC-MODEL bootstrap
+// whitelists): it is the call that produces the model id every other
+// mechanical agent below runs on, so it cannot know its own model before
+// running.
+function buildMechanicalModelPrompt() {
+  return [
+    'You are a mechanical fetch agent. Do not plan or implement anything.',
+    'Run exactly this command in the repo root and read its printed output:',
+    '  ./target/debug/rdm model resolve mechanical',
+    'Return the printed model id verbatim as JSON { "model": "<id>" }.',
+    'If the command fails or prints nothing, return { "model": "" }.',
+  ].join('\n')
+}
+
+// MECHANICAL_MODEL — the resolved `rdm model resolve mechanical` id, from the
+// one bootstrap call made before Stage 0.
+const MECHANICAL_MODEL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['model'],
+  properties: {
+    model: { type: 'string' },
+  },
+}
+
 // Stage 0: a mechanical Bash agent reads the roadmap's phase list (the runtime
 // cannot shell out itself).
 function buildRoadmapFetchPrompt(slug) {
@@ -299,6 +329,26 @@ if (!roadmapSlug) {
   return { roadmap: roadmapSlug, aborted: true, incompletePhases: [], path: null, draft: null, fetchError: true }
 }
 
+// Resolve the mechanical model ONCE, before any other mechanical agent runs
+// (including Stage 0's roadmap fetch). An unresolved result stops the run
+// before any mechanical agent fires, rather than silently falling through to
+// an unpinned Stage 0/1/3 agent.
+let mechanicalModel = ''
+try {
+  const mechanicalModelResult = await agent(buildMechanicalModelPrompt(), {
+    label: 'model:mechanical',
+    phase: 'Fetch',
+    schema: MECHANICAL_MODEL_SCHEMA,
+  })
+  mechanicalModel = mechanicalModelResult && typeof mechanicalModelResult.model === 'string' ? mechanicalModelResult.model.trim() : ''
+} catch (e) {
+  mechanicalModel = ''
+}
+if (!mechanicalModel) {
+  log('document: mechanical model could not be resolved (rdm model resolve mechanical returned nothing) — stopping before any mechanical agent runs')
+  return { roadmap: roadmapSlug, aborted: true, incompletePhases: [], path: null, draft: null, fetchError: true }
+}
+
 // Stage 0: fetch the roadmap's phase list via a mechanical Bash agent.
 let roadmapMeta = null
 try {
@@ -306,6 +356,7 @@ try {
     label: 'fetch:roadmap-meta',
     phase: 'Fetch',
     schema: ROADMAP_META_SCHEMA,
+    model: mechanicalModel,
   })
 } catch (e) {
   roadmapMeta = null
@@ -342,6 +393,7 @@ async function gatherPhase(p) {
       label: 'gather:' + p.stem,
       phase: 'Gather',
       schema: PHASE_RECORD_SCHEMA,
+      model: mechanicalModel,
     })
     if (record) return record
   } catch (e) {
@@ -379,6 +431,7 @@ try {
     label: 'write:draft',
     phase: 'Write',
     schema: WRITE_ACK_SCHEMA,
+    model: mechanicalModel,
   })
 } catch (e) {
   writeAck = null

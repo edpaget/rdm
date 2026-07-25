@@ -607,6 +607,37 @@ else
     fail "meta.phases drift: declared phases != emitted phase: literals"
 fi
 
+# 3g. AC-MECHANICAL-TIER: the mechanical fetch/write/tier-read agents resolve
+# to the mechanical model; the judgment rater does not.
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
+
+agent_option_blocks "$WF" >"$TMP/mech-blocks"
+[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from estimate.js"
+
+assert_label_model "$TMP/mech-blocks" 'estimate:list' 'mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: estimate:list must resolve to model: mechanicalModel"
+assert_label_model "$TMP/mech-blocks" 'estimate:write:' 'mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: every estimate:write:<stem> call must resolve to model: mechanicalModel"
+assert_label_model "$TMP/mech-blocks" 'estimate:tier:' 'mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: every estimate:tier:<stem> call must resolve to model: mechanicalModel"
+pass "AC-MECHANICAL-TIER: estimate:list, estimate:write:<stem>, and estimate:tier:<stem> resolve to model: mechanicalModel"
+
+# Negative: estimate:rate:<stem> is the judgment rater and must NOT be pinned
+# to the mechanical tier.
+assert_label_not_model "$TMP/mech-blocks" 'estimate:rate:' 'mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: estimate:rate:<stem> must NOT be pinned to model: mechanicalModel (judgment stage)"
+pass "AC-MECHANICAL-TIER: estimate:rate:<stem> is left unpinned (judgment stage)"
+
+# Self-test: plant a repoint away from mechanicalModel on estimate:list and
+# prove the check now fails; restore and prove it passes again.
+sed "/label: 'estimate:list'/,/^    })/ s/model: mechanicalModel,/model: 'claude-opus-4-8',/" "$WF" >"$TMP/wf.mech-mutant"
+agent_option_blocks "$TMP/wf.mech-mutant" >"$TMP/mech-blocks-mutant"
+if assert_label_model "$TMP/mech-blocks-mutant" 'estimate:list' 'mechanicalModel'; then
+    fail "AC-MECHANICAL-TIER: detector missed an estimate:list repoint away from mechanicalModel"
+fi
+pass "AC-MECHANICAL-TIER: detector fires when estimate:list is repointed away from mechanicalModel"
+
 # --- 4. SKILL SHIM -----------------------------------------------------------
 say "4. rdm-estimate SKILL.md is a thin shim referencing estimate.js with no retired rating-loop prose"
 

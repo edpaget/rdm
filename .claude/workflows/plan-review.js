@@ -1196,6 +1196,12 @@ async function runPlanReviewDriver(args, deps) {
   const _agent = d.agent
   const _parallel = d.parallel
   const _log = d.log || function () {}
+  // Optional: the resolved `rdm model resolve mechanical` id, threaded into
+  // every mechanical fetch/gate call below (fetch:roadmap, fetch:<kind>,
+  // gate:clear-tag:*). Left unset (undefined) is inert — see agent()'s
+  // documented `model: undefined` behavior — so a caller that does not supply
+  // it degrades to the pre-existing unpinned behavior rather than breaking.
+  const _mechanicalModel = d.mechanicalModel
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
   // the review core, with NO independent review logic in this driver. Passing NO
   // signals is deliberate (see the header note); phase-only unit-of-work scoping
@@ -1242,6 +1248,7 @@ async function runPlanReviewDriver(args, deps) {
         label: 'fetch:roadmap',
         phase: 'Read',
         schema: ROADMAP_TARGET_SCHEMA,
+        model: _mechanicalModel,
       })
     } catch (e) {
       fetched = null
@@ -1250,7 +1257,12 @@ async function runPlanReviewDriver(args, deps) {
     const fetchPrompt =
       kind === 'task' ? buildTaskFetchPrompt(parsed.task) : buildPhaseFetchPrompt(parsed.roadmap, parsed.phase)
     try {
-      fetched = await _agent(fetchPrompt, { label: 'fetch:' + kind, phase: 'Read', schema: PLAN_TARGET_SCHEMA })
+      fetched = await _agent(fetchPrompt, {
+        label: 'fetch:' + kind,
+        phase: 'Read',
+        schema: PLAN_TARGET_SCHEMA,
+        model: _mechanicalModel,
+      })
     } catch (e) {
       fetched = null
     }
@@ -1307,6 +1319,7 @@ async function runPlanReviewDriver(args, deps) {
             label: 'gate:clear-tag:' + u.kind + ':' + u.ident,
             phase: 'Gate',
             schema: STAMP_ACK_SCHEMA,
+            model: _mechanicalModel,
           })
           tagCleared = !!(ack && ack.ok === true)
         } catch (e) {
@@ -1349,9 +1362,75 @@ async function runPlanReviewDriver(args, deps) {
 // is a ReferenceError-safe global probe; runPlanReview is built from the stamped
 // review core here so buildReviewPipeline probes the same ambient agent/pipeline/
 // parallel it always has.
+
+// buildMechanicalModelPrompt() — a mechanical Bash agent that resolves the
+// mechanical dispatch step to a concrete model id, ONCE per run, before any
+// other mechanical agent fires (fetch:roadmap, fetch:<kind>,
+// gate:clear-tag:*). This is deliberately the one call in the whole run left
+// UNSIZED (mirrors dispatch-phase's Stage-0 fetch:phase-meta/fetch:task-meta
+// exemption and autopilot's own model:mechanical bootstrap, both recorded in
+// their respective verify-workflow-*.sh AC-MODEL bootstrap whitelists): it is
+// the call that produces the model id every other mechanical agent below runs
+// on, so it cannot know its own model before running.
+function buildMechanicalModelPrompt() {
+  return [
+    'You are a mechanical fetch agent. Do not plan or implement anything.',
+    'Run exactly this command in the repo root and read its printed output:',
+    '  ./target/debug/rdm model resolve mechanical',
+    'Return the printed model id verbatim as JSON { "model": "<id>" }.',
+    'If the command fails or prints nothing, return { "model": "" }.',
+  ].join('\n')
+}
+
+// MECHANICAL_MODEL — the resolved `rdm model resolve mechanical` id, from the
+// one bootstrap call made before the driver runs.
+const MECHANICAL_MODEL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['model'],
+  properties: {
+    model: { type: 'string' },
+  },
+}
+
+let mechanicalModel = ''
+if (typeof agent !== 'undefined') {
+  try {
+    const mechanicalModelResult = await agent(buildMechanicalModelPrompt(), {
+      label: 'model:mechanical',
+      phase: 'Read',
+      schema: MECHANICAL_MODEL_SCHEMA,
+    })
+    mechanicalModel = mechanicalModelResult && typeof mechanicalModelResult.model === 'string' ? mechanicalModelResult.model.trim() : ''
+  } catch (e) {
+    mechanicalModel = ''
+  }
+}
+
+// An unresolved mechanical model stops the run before any mechanical agent
+// fires (fetch:roadmap, fetch:<kind>, gate:clear-tag:*), rather than silently
+// falling through to an unpinned call — mirrors autopilot's/backlog's/
+// estimate's/document's own model:mechanical empty-string guard. Fail-closed:
+// no tag is cleared, no status is persisted.
+if (!mechanicalModel) {
+  const safeLog = typeof log !== 'undefined' ? log : function () {}
+  safeLog(
+    'plan-review: mechanical model could not be resolved (rdm model resolve mechanical returned nothing) — stopping before any mechanical agent runs'
+  )
+  const parsedForAbort = parsePlanArgs(args)
+  return {
+    kind: parsedForAbort.kind,
+    outcome: 'escalated',
+    fetchError: true,
+    summary: 'plan-review: mechanical model unresolved',
+    units: [],
+  }
+}
+
 return await runPlanReviewDriver(args, {
   agent: typeof agent !== 'undefined' ? agent : undefined,
   parallel: typeof parallel !== 'undefined' ? parallel : undefined,
   log: typeof log !== 'undefined' ? log : function () {},
   runPlanReview: buildReviewPipeline('plan'),
+  mechanicalModel: mechanicalModel,
 })

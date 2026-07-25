@@ -1194,6 +1194,33 @@ if grep -q "no agent() call uses it" "$TMP/agent-blocks"; then
 fi
 pass "AC-MODEL: extractor skips prose comments mentioning agent()"
 
+# AC-MECHANICAL-TIER: the two mechanical Bash agents dispatch-phase runs after
+# Stage 0 (stamp:in-progress, diff:signals) must resolve to `models.mechanical`
+# — the small/mechanical tier Stage 0 resolves via `rdm model resolve
+# mechanical` — rather than borrowing `models.review_find` (the reviewer
+# tier). Reuses the already-extracted "$TMP/agent-blocks" from AC-MODEL above
+# rather than re-extracting.
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
+
+assert_label_model "$TMP/agent-blocks" 'stamp:in-progress' 'models.mechanical' ||
+    fail "AC-MECHANICAL-TIER: stamp:in-progress must resolve to models.mechanical"
+assert_label_model "$TMP/agent-blocks" 'diff:signals' 'models.mechanical' ||
+    fail "AC-MECHANICAL-TIER: diff:signals must resolve to models.mechanical"
+pass "AC-MECHANICAL-TIER: stamp:in-progress and diff:signals resolve to models.mechanical"
+
+# Self-test: plant a repoint from models.mechanical back to models.review_find
+# on both labels and prove the check now fails; the unmodified extraction
+# above already proved it passes.
+sed 's/model: models\.mechanical,/model: models.review_find,/' "$TMP/agent-blocks" >"$TMP/mech-mutant"
+if assert_label_model "$TMP/mech-mutant" 'stamp:in-progress' 'models.mechanical'; then
+    fail "AC-MECHANICAL-TIER: detector missed a stamp:in-progress repoint to models.review_find"
+fi
+if assert_label_model "$TMP/mech-mutant" 'diff:signals' 'models.mechanical'; then
+    fail "AC-MECHANICAL-TIER: detector missed a diff:signals repoint to models.review_find"
+fi
+pass "AC-MECHANICAL-TIER: detector fires when either label is repointed to models.review_find"
+
 # AC-NULLGUARD: both null guards exist and gate a real code path.
 #
 # The unresolved-model guard lives in the un-exported top-level driver body

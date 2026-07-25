@@ -405,6 +405,7 @@ out itself — a Bash-capable agent does).
 | `stem`   | string (required) | the phase's canonical stem                        |
 | `model`  | string (required) | the tier (`small` \| `medium` \| `large`)         |
 | `body`   | string (required) | the full phase markdown; empty ⇒ fetch failure    |
+| `models` | object (required) | resolved model ids: `plan`, `implement`, `review_find`, `review_verify`, `mechanical` — an incomplete map short-circuits to `fetchError: true` before any other agent runs |
 
 ### `PLAN_DOC`
 

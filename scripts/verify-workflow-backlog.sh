@@ -548,14 +548,15 @@ pass "drift detector fails on a planted mutation and heals on restore"
 say "4. Static invariants on the workflow source"
 # =============================================================================
 
-# Exactly ONE Bash-executing agent directive in the whole file — the Stage-0
-# report fetch. No analyzer prompt may say "Run exactly this command".
+# Exactly TWO Bash-executing agent directives in the whole file — the Stage-0
+# report fetch and the mechanical-model bootstrap resolve. No analyzer prompt
+# may say "Run exactly this command".
 DIRECTIVES=$(grep -c "Run exactly this command" "$WF" || true)
-[ "$DIRECTIVES" -eq 1 ] || fail "expected exactly one 'Run exactly this command' directive in backlog.js, found $DIRECTIVES"
-printf 'Run exactly this command\nRun exactly this command\n' >"$TMP/planted-two-directives.js"
-[ "$(grep -c "Run exactly this command" "$TMP/planted-two-directives.js")" -eq 2 ] ||
-    fail "directive-count detector broken — missed a planted second occurrence"
-pass "exactly one Bash-executing agent directive in backlog.js"
+[ "$DIRECTIVES" -eq 2 ] || fail "expected exactly two 'Run exactly this command' directives in backlog.js, found $DIRECTIVES"
+printf 'Run exactly this command\nRun exactly this command\nRun exactly this command\n' >"$TMP/planted-three-directives.js"
+[ "$(grep -c "Run exactly this command" "$TMP/planted-three-directives.js")" -eq 3 ] ||
+    fail "directive-count detector broken — missed a planted third occurrence"
+pass "exactly two Bash-executing agent directives in backlog.js (report fetch + mechanical-model resolve)"
 
 # That one directive's command template (buildFetchReportPrompt's body) must
 # never contain a mutating verb — extracted from `function buildFetchReportPrompt`
@@ -575,9 +576,28 @@ grep -q "Run exactly this command" "$TMP/fetch-report-fn" ||
 FORBIDDEN_VERBS="rdm task create|rdm task update|rdm task merge|rdm roadmap archive|rdm promote|rdm commit|rdm discard"
 if grep -qE "$FORBIDDEN_VERBS" "$TMP/fetch-report-fn"; then
     grep -nE "$FORBIDDEN_VERBS" "$TMP/fetch-report-fn" >&2 || true
-    fail "the ONE executable command template must never contain a mutating verb"
+    fail "the report-fetch executable command template must never contain a mutating verb"
 fi
-pass "the executable command template contains no mutating verb"
+pass "the report-fetch executable command template contains no mutating verb"
+
+# The mechanical-model bootstrap's command template (buildMechanicalModelPrompt's
+# body) must also never contain a mutating verb — same extraction pattern.
+extract_mechanical_model_fn() {
+    awk '
+        /^function buildMechanicalModelPrompt/ { collect = 1 }
+        collect { print }
+        collect && /^}$/ { exit }
+    ' "$1"
+}
+extract_mechanical_model_fn "$WF" >"$TMP/mechanical-model-fn"
+[ -s "$TMP/mechanical-model-fn" ] || fail "could not extract buildMechanicalModelPrompt from $WF"
+grep -q "Run exactly this command" "$TMP/mechanical-model-fn" ||
+    fail "buildMechanicalModelPrompt must be the function containing the mechanical-model directive"
+if grep -qE "$FORBIDDEN_VERBS" "$TMP/mechanical-model-fn"; then
+    grep -nE "$FORBIDDEN_VERBS" "$TMP/mechanical-model-fn" >&2 || true
+    fail "the mechanical-model executable command template must never contain a mutating verb"
+fi
+pass "the mechanical-model executable command template contains no mutating verb"
 
 say "4b. Planted-mutation self-test on the executable command template"
 cp "$WF" "$TMP/wf.mutverb.scratch"
@@ -631,6 +651,29 @@ if [ "$(declared_phases "$TMP/wf.phase.scratch")" = "$(emitted_phases "$TMP/wf.p
     fail "meta.phases consistency check did NOT catch a planted undeclared phase"
 fi
 pass "meta.phases consistency detector catches a planted undeclared phase"
+
+# =============================================================================
+say "4c. Mechanical-tier pin: fetch:report resolves to the mechanical model"
+# =============================================================================
+
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
+
+agent_option_blocks "$WF" >"$TMP/mech-blocks"
+[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from backlog.js"
+
+assert_label_model "$TMP/mech-blocks" 'fetch:report' 'mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: fetch:report must resolve to model: mechanicalModel"
+pass "AC-MECHANICAL-TIER: fetch:report resolves to model: mechanicalModel"
+
+# Self-test: plant a repoint from mechanicalModel to a hardcoded wrong model
+# and prove the check now fails; restore and prove it passes again.
+sed "s/model: mechanicalModel,/model: 'claude-opus-4-8',/" "$WF" >"$TMP/wf.mech-mutant"
+agent_option_blocks "$TMP/wf.mech-mutant" >"$TMP/mech-blocks-mutant"
+if assert_label_model "$TMP/mech-blocks-mutant" 'fetch:report' 'mechanicalModel'; then
+    fail "AC-MECHANICAL-TIER: detector missed a fetch:report repoint away from mechanicalModel"
+fi
+pass "AC-MECHANICAL-TIER: detector fires when fetch:report is repointed away from mechanicalModel"
 
 # =============================================================================
 say "5. Module parse: backlog.js loads under module semantics (no SyntaxError)"

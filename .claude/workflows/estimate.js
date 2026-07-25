@@ -385,6 +385,36 @@ const TIER_SCHEMA = {
   },
 }
 
+// buildMechanicalModelPrompt() — a mechanical Bash agent that resolves the
+// mechanical dispatch step to a concrete model id, ONCE per run, before any
+// other mechanical agent fires. This is deliberately the one dep call in the
+// whole run left UNSIZED (mirrors dispatch-phase's Stage-0 fetch:phase-meta/
+// fetch:task-meta exemption and autopilot's own model:mechanical bootstrap,
+// both recorded in their respective verify-workflow-*.sh AC-MODEL bootstrap
+// whitelists): it is the call that produces the model id every other
+// mechanical agent below runs on, so it cannot know its own model before
+// running.
+function buildMechanicalModelPrompt() {
+  return [
+    'You are a mechanical fetch agent. Do not plan or implement anything.',
+    'Run exactly this command in the repo root and read its printed output:',
+    '  ./target/debug/rdm model resolve mechanical',
+    'Return the printed model id verbatim as JSON { "model": "<id>" }.',
+    'If the command fails or prints nothing, return { "model": "" }.',
+  ].join('\n')
+}
+
+// MECHANICAL_MODEL — the resolved `rdm model resolve mechanical` id, from the
+// one bootstrap call made before the pipeline runs.
+const MECHANICAL_MODEL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['model'],
+  properties: {
+    model: { type: 'string' },
+  },
+}
+
 // --- Driver ------------------------------------------------------------------
 
 const estimateArgs = parseEstimateArgs(args)
@@ -394,9 +424,26 @@ const roadmapSlug = estimateArgs.roadmap
 // live OUTSIDE the copied block; the block itself names no ambient global. Every
 // agent() result is guarded against null (an unresolvable model resolves agent()
 // to null rather than throwing) before it is dereferenced.
+let mechanicalModel = ''
 const realDeps = {
   log: function (msg) {
     log(msg)
+  },
+  // resolveMechanicalModel — the one bootstrap call in the whole run left
+  // deliberately UNSIZED (no `model:` key), mirroring dispatch-phase's Stage-0
+  // exemption and autopilot's model:mechanical precedent: this IS the call
+  // that produces the model id estimate:list/estimate:write/estimate:tier
+  // below run on, so it cannot know its own model before running.
+  // scripts/verify-workflow-estimate.sh's mechanical-tier sweep whitelists
+  // this label by name for exactly that reason — do not add a `model:` key
+  // here.
+  resolveMechanicalModel: async function () {
+    const r = await agent(buildMechanicalModelPrompt(), {
+      label: 'model:mechanical',
+      phase: 'List',
+      schema: MECHANICAL_MODEL_SCHEMA,
+    })
+    return r && typeof r.model === 'string' ? r.model.trim() : ''
   },
   list: async function (slug) {
     // The StructuredOutput tool schema — not the prompt text — governs the
@@ -407,6 +454,7 @@ const realDeps = {
       label: 'estimate:list',
       phase: 'List',
       schema: PHASE_LIST_SCHEMA,
+      model: mechanicalModel,
     })
     return (r && r.phases) || []
   },
@@ -438,6 +486,7 @@ const realDeps = {
       label: 'estimate:write:' + stem,
       phase: 'Writeback',
       schema: ACK_SCHEMA,
+      model: mechanicalModel,
     })
   },
   // showTier reads the core-derived tier back — the tier is whatever rdm-core
@@ -447,9 +496,23 @@ const realDeps = {
       label: 'estimate:tier:' + stem,
       phase: 'Writeback',
       schema: TIER_SCHEMA,
+      model: mechanicalModel,
     })
     return r && typeof r.model === 'string' ? r.model : ''
   },
+}
+
+// Resolve the mechanical model ONCE, before the pipeline runs — including
+// before estimate:list, the pipeline's first mechanical call. An unresolved
+// result stops the run before any mechanical agent fires, rather than
+// silently falling through to an unpinned list/writeback/tier-read call.
+const mechanicalModelRaw = await realDeps.resolveMechanicalModel()
+mechanicalModel = typeof mechanicalModelRaw === 'string' ? mechanicalModelRaw.trim() : ''
+if (!mechanicalModel) {
+  log(
+    'estimate: mechanical model could not be resolved (rdm model resolve mechanical returned nothing) — stopping before any mechanical agent runs'
+  )
+  return { roadmap: roadmapSlug, estimated: [], skipped: [], deferred: [], fetchError: true }
 }
 
 // parseEstimateArgs already enforced a non-empty roadmap slug (it throws

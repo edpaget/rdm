@@ -1235,12 +1235,13 @@ const PHASE_META_SCHEMA = {
     models: {
       type: 'object',
       additionalProperties: false,
-      required: ['plan', 'implement', 'review_find', 'review_verify'],
+      required: ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'],
       properties: {
         plan: { type: 'string' },
         implement: { type: 'string' },
         review_find: { type: 'string' },
         review_verify: { type: 'string' },
+        mechanical: { type: 'string' },
       },
     },
   },
@@ -1258,12 +1259,13 @@ const TASK_META_SCHEMA = {
     models: {
       type: 'object',
       additionalProperties: false,
-      required: ['plan', 'implement', 'review_find', 'review_verify'],
+      required: ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'],
       properties: {
         plan: { type: 'string' },
         implement: { type: 'string' },
         review_find: { type: 'string' },
         review_verify: { type: 'string' },
+        mechanical: { type: 'string' },
       },
     },
   },
@@ -1335,11 +1337,12 @@ function buildFetchPrompt(roadmap, phase) {
     '  ./target/debug/rdm model resolve plan --tier T',
     '  ./target/debug/rdm model resolve implement --tier T',
     'If T is empty or missing, run the same two with NO --tier argument.',
-    'ALWAYS run these two with NO --tier argument, whatever T is:',
+    'ALWAYS run these three with NO --tier argument, whatever T is:',
     '  ./target/debug/rdm model resolve review-find',
     '  ./target/debug/rdm model resolve review-verify',
-    'Return the four resulting model ids verbatim in a `models` object with keys',
-    'plan, implement, review_find, review_verify. Do not invent ids; if a command fails, return an empty body.',
+    '  ./target/debug/rdm model resolve mechanical',
+    'Return the five resulting model ids verbatim in a `models` object with keys',
+    'plan, implement, review_find, review_verify, mechanical. Do not invent ids; if a command fails, return an empty body.',
   ].join('\n')
 }
 
@@ -1350,14 +1353,15 @@ function buildTaskFetchPrompt(slug) {
     '  ./target/debug/rdm task show ' + slug + ' --project rdm --format json',
     'Return a TASK_META object: task (the slug you were given) and body (the task JSON `body` verbatim).',
     'If the command fails or the body is empty, return an empty body.',
-    'Then resolve the models for this dispatch. A task carries NO tier, so run all four',
+    'Then resolve the models for this dispatch. A task carries NO tier, so run all five',
     'resolver commands with NO --tier argument:',
     '  ./target/debug/rdm model resolve plan',
     '  ./target/debug/rdm model resolve implement',
     '  ./target/debug/rdm model resolve review-find',
     '  ./target/debug/rdm model resolve review-verify',
-    'Return the four resulting model ids verbatim in a `models` object with keys',
-    'plan, implement, review_find, review_verify. Do not invent ids; if a command fails, return an empty body.',
+    '  ./target/debug/rdm model resolve mechanical',
+    'Return the five resulting model ids verbatim in a `models` object with keys',
+    'plan, implement, review_find, review_verify, mechanical. Do not invent ids; if a command fails, return an empty body.',
   ].join('\n')
 }
 
@@ -1569,7 +1573,7 @@ const models = phaseMeta.models || {}
 // region carries NO `while` at all and only allowlisted `for` headers (gated by
 // verify-workflow-dispatch.sh). The two budget-bounded retry loops live in the
 // copied dispatch-outcome block, where the Node harness can drive them.
-const unresolvedStep = ['plan', 'implement', 'review_find', 'review_verify'].filter(
+const unresolvedStep = ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'].filter(
   (k) => typeof models[k] !== 'string' || models[k] === ''
 )[0]
 if (unresolvedStep) {
@@ -1601,7 +1605,7 @@ if (!planOnly) {
       label: 'stamp:in-progress',
       phase: 'Implement',
       schema: STAMP_ACK_SCHEMA,
-      model: models.review_find,
+      model: models.mechanical,
     })
     if (!stampAck || stampAck.ok !== true) {
       log('dispatch-phase: in-progress stamp did not confirm for ' + itemLabel + ' — continuing (observability only)')
@@ -1709,7 +1713,7 @@ const codeGate = await runCodeGate(
           label: 'diff:signals',
           phase: 'Review',
           schema: DIFF_SIGNALS_SCHEMA,
-          model: models.review_find,
+          model: models.mechanical,
         })
       } catch (e) {
         diff = null

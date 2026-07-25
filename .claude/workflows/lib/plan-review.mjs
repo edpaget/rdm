@@ -334,6 +334,12 @@ async function runPlanReviewDriver(args, deps) {
   const _agent = d.agent
   const _parallel = d.parallel
   const _log = d.log || function () {}
+  // Optional: the resolved `rdm model resolve mechanical` id, threaded into
+  // every mechanical fetch/gate call below (fetch:roadmap, fetch:<kind>,
+  // gate:clear-tag:*). Left unset (undefined) is inert — see agent()'s
+  // documented `model: undefined` behavior — so a caller that does not supply
+  // it degrades to the pre-existing unpinned behavior rather than breaking.
+  const _mechanicalModel = d.mechanicalModel
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
   // the review core, with NO independent review logic in this driver. Passing NO
   // signals is deliberate (see the header note); phase-only unit-of-work scoping
@@ -380,6 +386,7 @@ async function runPlanReviewDriver(args, deps) {
         label: 'fetch:roadmap',
         phase: 'Read',
         schema: ROADMAP_TARGET_SCHEMA,
+        model: _mechanicalModel,
       })
     } catch (e) {
       fetched = null
@@ -388,7 +395,12 @@ async function runPlanReviewDriver(args, deps) {
     const fetchPrompt =
       kind === 'task' ? buildTaskFetchPrompt(parsed.task) : buildPhaseFetchPrompt(parsed.roadmap, parsed.phase)
     try {
-      fetched = await _agent(fetchPrompt, { label: 'fetch:' + kind, phase: 'Read', schema: PLAN_TARGET_SCHEMA })
+      fetched = await _agent(fetchPrompt, {
+        label: 'fetch:' + kind,
+        phase: 'Read',
+        schema: PLAN_TARGET_SCHEMA,
+        model: _mechanicalModel,
+      })
     } catch (e) {
       fetched = null
     }
@@ -445,6 +457,7 @@ async function runPlanReviewDriver(args, deps) {
             label: 'gate:clear-tag:' + u.kind + ':' + u.ident,
             phase: 'Gate',
             schema: STAMP_ACK_SCHEMA,
+            model: _mechanicalModel,
           })
           tagCleared = !!(ack && ack.ok === true)
         } catch (e) {

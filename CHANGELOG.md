@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ## [0.18.0] - 2026-07-25
+### Fixed
+
+- The dogfood autonomous-lane workflows' mechanical (fetch/exec) agents now
+  resolve and pin to the small/mechanical tier instead of inheriting the
+  reviewer or session model. `dispatch-phase`'s `stamp:in-progress` and
+  `diff:signals` steps now resolve `models.mechanical` (added to Stage-0's
+  batch model resolution, alongside plan/implement/review-find/review-verify)
+  instead of borrowing `models.review_find`. The four headless workflows
+  (`estimate`, `plan-review`, `backlog`, `document`) each gained a small
+  `rdm model resolve mechanical` bootstrap step whose resolved id is threaded
+  into every mechanical Bash agent in that file (list/writeback/tier-read;
+  fetch/gate-tag-clear; report fetch; roadmap/phase fetch and per-phase
+  gather/write) — closing the gap the earlier autopilot-only mechanical-tier
+  fix left open (e.g. a live `backlog` run's `fetch:report` agent previously
+  ran on `claude-opus-4-8`). Judgment agents (plan/implement/review, the
+  estimate rater, the plan-review orchestrator's `act` step, backlog's
+  analyzers, document's synthesis step) are unaffected.
 
 ### Changed
 

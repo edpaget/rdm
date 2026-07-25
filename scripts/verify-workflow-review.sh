@@ -1209,6 +1209,41 @@ if grep -nE 'Date\.now\(|Math\.random\(' "$PLAN_REVIEW" >&2; then
 fi
 pass "plan-review.js parses four targets, fans out, reuses the core, and carves out implementation-plan"
 
+# --- 5b-mechanical. Mechanical-tier pin: fetch/gate agents pinned, act:* is not.
+say "5b-mechanical. Mechanical-tier pin: fetch:roadmap, fetch:<kind>, gate:clear-tag:* resolve to the mechanical model"
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
+
+agent_option_blocks "$PLAN_REVIEW" >"$TMP/mech-blocks"
+[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from plan-review.js"
+
+# label_re 'fetch:' deliberately matches BOTH the literal 'fetch:roadmap'
+# label and the dynamic 'fetch:' + kind label (task/phase) — the label regex
+# is an unanchored substring match, and neither label's own literal text
+# contains a regex metacharacter, so a broad prefix safely covers both
+# fetch:roadmap and fetch:<kind> in one assertion (avoids embedding the `+`
+# concatenation operator from the dynamic label's source text into a regex).
+assert_label_model "$TMP/mech-blocks" 'fetch:' '_mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: fetch:roadmap and fetch:<kind> (task/phase) must resolve to model: _mechanicalModel"
+assert_label_model "$TMP/mech-blocks" 'gate:clear-tag:' '_mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: every gate:clear-tag:* call must resolve to model: _mechanicalModel"
+pass "AC-MECHANICAL-TIER: fetch:roadmap, fetch:<kind>, and gate:clear-tag:* resolve to model: _mechanicalModel"
+
+# Negative: act:* is the orchestrator/judgment step and must NOT be pinned to
+# the mechanical tier.
+assert_label_not_model "$TMP/mech-blocks" 'act:' '_mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: act:* must NOT be pinned to model: _mechanicalModel (judgment stage)"
+pass "AC-MECHANICAL-TIER: act:* is left unpinned (judgment stage)"
+
+# Self-test: plant a repoint away from _mechanicalModel on fetch:roadmap and
+# prove the check now fails; restore and prove it passes again.
+sed "/label: 'fetch:roadmap'/,/^      })/ s/model: _mechanicalModel,/model: 'claude-opus-4-8',/" "$PLAN_REVIEW" >"$TMP/pr.mech-mutant"
+agent_option_blocks "$TMP/pr.mech-mutant" >"$TMP/mech-blocks-mutant"
+if assert_label_model "$TMP/mech-blocks-mutant" 'fetch:roadmap' '_mechanicalModel'; then
+    fail "AC-MECHANICAL-TIER: detector missed a fetch:roadmap repoint away from _mechanicalModel"
+fi
+pass "AC-MECHANICAL-TIER: detector fires when fetch:roadmap is repointed away from _mechanicalModel"
+
 # --- 5b-drift. PLAN-REVIEW DRIVER BLOCK: byte-identical (lib vs workflow) ------
 # The plan-review DRIVER (parsePlanArgs + the fetch/act/gate orchestration in
 # runPlanReviewDriver) is the single source of truth in lib/plan-review.mjs and

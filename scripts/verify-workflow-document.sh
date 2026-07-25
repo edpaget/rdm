@@ -160,6 +160,39 @@ grep -q 'Workflow' "$SKILL" || fail "SKILL.md must invoke the document Workflow"
 pass "SKILL.md is a thin Workflow-invoking shim"
 
 # ==============================================================================
+say "1b. Mechanical-tier pin: mechanical fetch/gather/write agents pinned"
+# ==============================================================================
+
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
+
+agent_option_blocks "$WF" >"$TMP/mech-blocks"
+[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from document.js"
+
+assert_label_model "$TMP/mech-blocks" 'fetch:roadmap-meta' 'mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: fetch:roadmap-meta must resolve to model: mechanicalModel"
+assert_label_model "$TMP/mech-blocks" 'gather:' 'mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: every gather:<stem> call must resolve to model: mechanicalModel"
+assert_label_model "$TMP/mech-blocks" 'write:draft' 'mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: write:draft must resolve to model: mechanicalModel"
+pass "AC-MECHANICAL-TIER: fetch:roadmap-meta, gather:<stem>, and write:draft resolve to model: mechanicalModel"
+
+# Negative: synthesize:draft is the judgment/authoring stage and must NOT be
+# pinned to the mechanical tier.
+assert_label_not_model "$TMP/mech-blocks" 'synthesize:draft' 'mechanicalModel' ||
+    fail "AC-MECHANICAL-TIER: synthesize:draft must NOT be pinned to model: mechanicalModel (judgment stage)"
+pass "AC-MECHANICAL-TIER: synthesize:draft is left unpinned (judgment stage)"
+
+# Self-test: plant a repoint away from mechanicalModel on write:draft and
+# prove the check now fails; restore and prove it passes again.
+sed "/label: 'write:draft'/,/^  })/ s/model: mechanicalModel,/model: 'claude-opus-4-8',/" "$WF" >"$TMP/wf.mech-mutant"
+agent_option_blocks "$TMP/wf.mech-mutant" >"$TMP/mech-blocks-mutant"
+if assert_label_model "$TMP/mech-blocks-mutant" 'write:draft' 'mechanicalModel'; then
+    fail "AC-MECHANICAL-TIER: detector missed a write:draft repoint away from mechanicalModel"
+fi
+pass "AC-MECHANICAL-TIER: detector fires when write:draft is repointed away from mechanicalModel"
+
+# ==============================================================================
 say "2. Block drift: the document-core region is byte-identical (lib vs workflow)"
 # ==============================================================================
 
