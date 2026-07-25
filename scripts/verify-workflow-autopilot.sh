@@ -630,6 +630,87 @@ function makeFakes(opts) {
   assert.deepEqual(h.parallelEstimateCalls, [], 'no estimation when every phase is estimated');
 }
 
+// === estimate-writeback ack check: writeback failure -> falls back to mid tier ===
+// AC1: Seed two phases with initial large-tier models; mock estimateWriteback to
+// fail for phase-1-a and succeed for phase-2-b; track failures in a closure variable.
+// AC2: Verify the log message 'estimate writeback failed for phase-1-a — it falls back to mid tier' appears.
+// AC3: Override fetchNext to dynamically clear model when writeback fails (so
+// resolveTier defaults to 'medium'); verify phase-1-a dispatches at mid tier
+// (causally driven by writeback failure) while phase-2-b dispatches at large tier.
+// AC4: Gutting the ack-check branch (lines 425-427 of lib/autopilot.mjs) causes
+// this test to fail on both AC2 (log missing) and AC3 (tier assertion fails).
+{
+  const writebackFailures = new Set();
+  const h = makeFakes({
+    phases: [
+      { stem: 'phase-1-a', status: 'not-started' },
+      { stem: 'phase-2-b', status: 'not-started' },
+    ],
+    models: { 'phase-1-a': 'large', 'phase-2-b': 'large' },
+    estimateList: [
+      { stem: 'phase-1-a', status: 'not-started' },
+      { stem: 'phase-2-b', status: 'not-started' },
+    ],
+    estimates: [
+      { stem: 'phase-1-a', difficulty: 'easy', justification: 'quick writeback test' },
+      { stem: 'phase-2-b', difficulty: 'moderate', justification: 'moderate work' },
+    ],
+  });
+
+  // AC1: Mock estimateWriteback to return { ok: false } for phase-1-a, { ok: true } for phase-2-b.
+  h.fakes.estimateWriteback = async (stem, difficulty, justification, roadmap, model) => {
+    h.writebackCalls.push({ stem, difficulty, justification });
+    h.modelCalls.estimateWriteback.push(model);
+    h.callLog.push('writeback:' + stem);
+    if (stem === 'phase-1-a') {
+      writebackFailures.add(stem);
+      return { ok: false };
+    } else {
+      return { ok: true };
+    }
+  };
+
+  // AC3: Override fetchNext to dynamically clear model for failed phases.
+  // If writeback failed for a phase (in writebackFailures set), don't include a model
+  // so resolveTier will default to 'medium'. If writeback succeeded, preserve the
+  // pre-seeded large-tier model.
+  const originalFetchNext = h.fakes.fetchNext;
+  const initialModels = { 'phase-1-a': 'large', 'phase-2-b': 'large' };
+  h.fakes.fetchNext = async (roadmap, model) => {
+    // Call original to get the stem
+    const origResult = await originalFetchNext(roadmap, model);
+    if (origResult.result === 'nothing') return origResult;
+    const stem = origResult.stem;
+    // Determine the model: if writeback failed for this stem, use undefined
+    // (so resolveTier defaults to 'medium'). Otherwise, use the pre-seeded model.
+    const phaseModel = writebackFailures.has(stem) ? undefined : initialModels[stem];
+    return { ...origResult, model: phaseModel };
+  };
+
+  await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
+
+  // AC2: Assert the log message appears.
+  assert.ok(
+    h.callLog.some((l) => l.includes('estimate writeback failed for phase-1-a — it falls back to mid tier')),
+    'writeback failure logged with exact phase stem and fallback message'
+  );
+
+  // AC3: Assert phase-1-a dispatches at mid tier (driven by writeback failure)
+  // and phase-2-b dispatches at large tier (successful writeback preserves model).
+  assert.ok(
+    h.callLog.some((l) => l.includes('dispatching phase-1-a (tier medium')),
+    'failed-writeback phase-1-a resolves to mid tier due to cleared model'
+  );
+  assert.ok(
+    h.callLog.some((l) => l.includes('dispatching phase-2-b (tier large')),
+    'successful-writeback phase-2-b resolves to large (non-medium) tier due to preserved model'
+  );
+
+  // Document in a test comment that phase-1-a's fallback to medium is distinct
+  // from the existing line-646 'unset model' case because here the model field is
+  // explicitly cleared as a result of writeback failure, not simply never set.
+}
+
 // === plan-only: reviewed but NOT advanced; planOnlySeen guard terminates. =====
 {
   const h = makeFakes({
@@ -830,7 +911,7 @@ console.log('all autopilot driven-loop assertions passed');
 NODE_TEST
 
 if run_node "$TMP/driven.mjs" "$LIB" "$DISPATCH_LIB"; then
-    pass "loop drives to reviewed / parks / budgets / pre-pass / plan-only / mid-tier / budget passthrough"
+    pass "loop drives to reviewed / parks / budgets / pre-pass / plan-only / mid-tier / writeback-ack-failure / budget passthrough"
 else
     fail "autopilot driven-loop assertions failed"
 fi
