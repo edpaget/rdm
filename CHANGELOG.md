@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 
+- A new dev tool, `scripts/measure-lane-tokens.mjs` (over `scripts/lib/token-report.mjs`), measures token usage across Claude Code Workflow lane runs. It locates every `wf_*.json` session sidecar under a `--root` (default `~/.claude/projects`, searching every project-slug directory including `--worktrees-`-named ones), joins each run's agents with their `agent-*.jsonl` transcripts (deduping usage by `requestId`), and reports totals broken out by token class (output / uncached input / cache write / cache read) grouped by agent class, full label, model, and workflow — plus an explicit, never-reconciled discrepancy line between the sidecar's own `totalTokens` and the deduped sum. Invoke it with `--since <iso-date>`, `--workflow <name>` (repeatable, OR'd), and `--format text|json`. It is the measurement tool later phases of the `workflow-token-reduction` roadmap use to substantiate their token-saving claims. Stdlib-only Node, no packages; hermetic regression in `scripts/verify-token-report.sh`.
 - `rdm task create` gained a `--no-plan-review` flag: it skips the automatic
   `needs-plan-review` stamp even when the `plan_review` config flag is
   enabled. Intended for tasks filed from a plan-review finding itself, so the

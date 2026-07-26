@@ -1,0 +1,42 @@
+{
+  "_comment": "Hand-computed ground truth for the trimmed fixture tree in this directory. Grouping sections are keyed objects (not arrays) so the verify harness can look up a bucket by name without depending on aggregate()'s sort order. Computed by hand from wf_run001.json / wf_run002.json and their agent-*.jsonl transcripts: run001's agent1 plants a duplicate requestId (req-A, output 10 then 50 -> last-write-wins keeps 50) to exercise dedupe; agent-fc/agent-ra1/agent-rc1 (run001) and agent4 (run002) have no transcript file and fall back to sidecar-only tokens; agent-impl/agent5 are cached:true and are zero-cost; agent2 and agent3 are clean single-request transcripts.",
+  "runsConsidered": 2,
+  "recordCount": 9,
+  "byAgentClass": {
+    "fetch": { "agentCount": 1, "dedupedRequestCount": 2, "output": 170, "uncachedInput": 180, "cacheWrite": 500, "cacheRead": 500 },
+    "find": { "agentCount": 2, "dedupedRequestCount": 1, "output": 1500, "uncachedInput": 40, "cacheWrite": 1000, "cacheRead": 2000 },
+    "gate": { "agentCount": 1, "dedupedRequestCount": 0, "output": 400, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 },
+    "implement": { "agentCount": 1, "dedupedRequestCount": 0, "output": 0, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 },
+    "plan": { "agentCount": 1, "dedupedRequestCount": 1, "output": 80, "uncachedInput": 60, "cacheWrite": 200, "cacheRead": 100 },
+    "refute": { "agentCount": 2, "dedupedRequestCount": 0, "output": 1450, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 },
+    "stamp": { "agentCount": 1, "dedupedRequestCount": 0, "output": 0, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 }
+  },
+  "byLabel": {
+    "fetch:task-meta": { "agentCount": 1, "dedupedRequestCount": 2, "output": 170, "uncachedInput": 180, "cacheWrite": 500, "cacheRead": 500 },
+    "find:code:ac": { "agentCount": 1, "dedupedRequestCount": 1, "output": 300, "uncachedInput": 40, "cacheWrite": 1000, "cacheRead": 2000 },
+    "find:code:correctness": { "agentCount": 1, "dedupedRequestCount": 0, "output": 1200, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 },
+    "gate:mechanical": { "agentCount": 1, "dedupedRequestCount": 0, "output": 400, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 },
+    "implement:worktree": { "agentCount": 1, "dedupedRequestCount": 0, "output": 0, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 },
+    "plan:author": { "agentCount": 1, "dedupedRequestCount": 1, "output": 80, "uncachedInput": 60, "cacheWrite": 200, "cacheRead": 100 },
+    "refute:code:ac-1": { "agentCount": 1, "dedupedRequestCount": 0, "output": 800, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 },
+    "refute:code:correctness-1": { "agentCount": 1, "dedupedRequestCount": 0, "output": 650, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 },
+    "stamp:in-progress": { "agentCount": 1, "dedupedRequestCount": 0, "output": 0, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 }
+  },
+  "byModel": {
+    "claude-opus-5[1m]": { "agentCount": 3, "dedupedRequestCount": 2, "output": 1620, "uncachedInput": 180, "cacheWrite": 500, "cacheRead": 500 },
+    "claude-sonnet-5": { "agentCount": 4, "dedupedRequestCount": 2, "output": 1580, "uncachedInput": 100, "cacheWrite": 1200, "cacheRead": 2100 },
+    "haiku": { "agentCount": 2, "dedupedRequestCount": 0, "output": 400, "uncachedInput": 0, "cacheWrite": 0, "cacheRead": 0 }
+  },
+  "byWorkflow": {
+    "dispatch-phase": { "agentCount": 6, "dedupedRequestCount": 3, "output": 3120, "uncachedInput": 220, "cacheWrite": 1500, "cacheRead": 2500 },
+    "autopilot": { "agentCount": 3, "dedupedRequestCount": 1, "output": 480, "uncachedInput": 60, "cacheWrite": 200, "cacheRead": 100 }
+  },
+  "totalsDiscrepancy": {
+    "sidecarTotalTokens": 9200,
+    "dedupedTotalTokens": 8180,
+    "delta": 1020
+  },
+  "agent1DedupedRequestCount": 2,
+  "agent1Output": 170,
+  "worktreeWorkflowName": "autopilot"
+}

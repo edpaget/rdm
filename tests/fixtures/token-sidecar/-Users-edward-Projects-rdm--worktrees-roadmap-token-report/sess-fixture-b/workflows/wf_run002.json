@@ -1,0 +1,64 @@
+{
+  "runId": "wf_run002",
+  "timestamp": "2026-07-25T09:00:00.000Z",
+  "taskId": "task-fixture-b",
+  "script": "autopilot",
+  "scriptPath": ".claude/workflows/autopilot.js",
+  "args": { "roadmap": "token-report" },
+  "result": "ok",
+  "agentCount": 3,
+  "logs": [],
+  "durationMs": 30000,
+  "summary": "fixture run for scripts/verify-token-report.sh (worktree project-slug directory)",
+  "workflowName": "autopilot",
+  "status": "completed",
+  "startTime": 1785100000000,
+  "phases": [
+    { "index": 1, "title": "Drive" }
+  ],
+  "defaultModel": "claude-sonnet-5",
+  "totalTokens": 1200,
+  "totalToolCalls": 10,
+  "workflowProgress": [
+    { "type": "workflow_phase", "index": 1, "title": "Drive" },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "plan:author",
+      "phaseIndex": 1,
+      "phaseTitle": "Drive",
+      "agentId": "agent3",
+      "model": "claude-sonnet-5",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 2,
+      "durationMs": 4000,
+      "tokens": 600
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "gate:mechanical",
+      "phaseIndex": 1,
+      "phaseTitle": "Drive",
+      "agentId": "agent4",
+      "model": "haiku",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 1,
+      "durationMs": 1000,
+      "tokens": 400
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "stamp:in-progress",
+      "phaseIndex": 1,
+      "phaseTitle": "Drive",
+      "agentId": "agent5",
+      "model": "haiku",
+      "state": "done",
+      "cached": true
+    }
+  ]
+}
