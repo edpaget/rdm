@@ -548,6 +548,34 @@
       }
     ]
   },
+  "mechanicalContextTrim": {
+    "description": "Comparison point for the mechanical-agent context trim (agentType / effort). This key exists to PIN the pre-change side of the comparison so a later run cannot silently re-baseline it; it records no post-change measurement because none was taken.",
+    "status": "not-measured",
+    "statusReason": "The phase is feasibility-gated on a spike (.claude/workflows/spike-agent-type.js) that requires the Workflow tool. The implementing environment had no Workflow tool, and the nested `claude -p` fallback is refused by the auto-mode permission classifier. No agent() call site was edited, so there is no post-change corpus to measure and no delta to report. See docs/workflow-schemas.md § 'agentType / effort options spike' for the full evidence tables and the disposition.",
+    "preChangeBasis": "floorByAgentClass.byClass above, verbatim -- the per-class medianTokens recorded by the add-per-agent-class-floor phase over the 44-run / 2110-record on-disk corpus. These are the ONLY figures the eventual before/after claim may use.",
+    "preChangeMedianTokens": {
+      "fetch": { "medianTokens": 30098, "n": 112 },
+      "stamp": { "medianTokens": 30687, "n": 24 },
+      "gate": { "medianTokens": 29901, "n": 9 },
+      "advance": { "medianTokens": 29826, "n": 27 },
+      "park": { "medianTokens": 29817.5, "n": 8 },
+      "model": { "medianTokens": 36877, "n": 16 },
+      "diff": { "medianTokens": 35298, "n": 40 }
+    },
+    "excludedFromAnyMechanicalClaim": {
+      "act": "mixed bucket -- see floorByAgentClass.mixedBucketCaveat.act; contains judgment sub-labels (act:code, act:<kind>) alongside the mechanical act:round-note:*",
+      "estimate": "mixed bucket -- see floorByAgentClass.mixedBucketCaveat.estimate; contains the judgment estimate:rate:* alongside estimate:list/write:*/tier:*",
+      "gather": "no pre-change row -- the corpus contains zero standalone document-workflow runs, so this class cannot demonstrate a delta",
+      "write": "no pre-change row -- same reason as gather"
+    },
+    "mustNotCompareAgainst": "agentContextFloor.measuredFloor.reportedFloorTokens (38837.5) and agentContextFloor.legacyRegression.interceptTokens (37552) -- both are WHOLE-CORPUS figures, not per-class ones; comparing a mechanical-class median against either measures corpus composition, not the change.",
+    "measurementProtocolForTheFollowUp": "Scope the fresh run with --since <ISO date of the first post-change run> so the pre-change corpus is not averaged in: `node scripts/measure-lane-tokens.mjs --format json --since <date> --workflow autopilot --workflow dispatch-phase --workflow plan-review --workflow backlog --workflow estimate --workflow document`, then read report.floorByAgentClass. A single fresh dispatch yields single-digit n per class, so the resulting delta is DIRECTIONAL, not a re-baseline -- record n per class alongside it and do not overwrite the figures above.",
+    "effortDecision": "NOT applied at any call site. The verification channel was identified and its control fixed (every `assistant` transcript record carries a top-level `effort` field; across 6290 transcripts / 156384 assistant records it holds only \"high\" (55945) or is absent (100439), and never \"low\"), but no observation of effort:'low' taking effect exists. scripts/verify-workflow-review.sh §2b now fails if any workflow script passes effort:.",
+    "followUpTasks": [
+      "finish-agent-type-effort-spike-and-thread-mechanical-sites",
+      "emit-agent-definitions-from-agent-config"
+    ]
+  },
   "confounds": [
     "roadmap size - a roadmap with more phases dispatches more dispatch-phase/plan-review/estimate agent invocations inside a single autopilot run; larger roadmap does not imply a more expensive phase",
     "phase difficulty / model tier - rdm-estimate assigns each phase a difficulty and model tier; a high-tier phase's agents run on a more expensive model and do not necessarily use fewer tokens for it",

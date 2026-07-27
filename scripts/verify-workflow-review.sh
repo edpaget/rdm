@@ -366,6 +366,51 @@ if ! grep -nE 'Date\.now\(|Math\.random\(' "$SCRATCH/planted.js" >/dev/null 2>&1
 fi
 pass "no forbidden globals present; detector catches a planted one"
 
+# --- 2b. AGENT-CONTEXT-TRIM GUARDS -------------------------------------------
+# Two guards recording decisions from the agentType/effort options spike
+# (docs/workflow-schemas.md § "agentType / effort options spike"). Both exist
+# because that spike is LANDED BUT UNRUN — the questions it gates are answered
+# only at the runtime-mechanism level, not against this repo.
+say "2b. Agent-context-trim guards (agentType / effort options spike)"
+
+# (i) No call site may pass `effort:`. The spike established the verification
+#     channel (each `assistant` transcript record carries a top-level `effort`
+#     field) but produced no observation of `effort: "low"` actually taking
+#     effect. Per the phase rule, an option a harness can only prove is spelled
+#     correctly does not ship. `spike-agent-type.js` is the one file allowed to
+#     contain it — probing the option is its entire purpose.
+if grep -nE '(^|[^A-Za-z-])effort:' "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null |
+    grep -v '/spike-agent-type\.js:'; then
+    fail "a workflow script passes effort: — the spike never observed effort:'low' being honored, so it must not ship (see docs/workflow-schemas.md § agentType / effort options spike)"
+fi
+printf 'await agent(P, { label: "x", effort: %s })\n' "'low'" >"$SCRATCH/planted-effort.js"
+if ! grep -nE '(^|[^A-Za-z-])effort:' "$SCRATCH/planted-effort.js" >/dev/null 2>&1; then
+    fail "effort guard did NOT catch a planted effort: key — the detector is broken"
+fi
+pass "no workflow call site passes effort:; detector catches a planted one"
+
+# (ii) No DISTRIBUTED workflow copy may reference an agentType. `agent_config.rs`
+#      emits skills and workflows only — there is no `.claude/agents/` emission
+#      surface — and an unresolvable agentType is a RAISED error in the runtime
+#      (`agent({agentType}): agent type '...' not found`), not the silent null
+#      an unknown `model` id produces. Threading one into a shipped template
+#      would hard-fail every downstream lane on first dispatch. Lift this guard
+#      only together with `emit-agent-definitions-from-agent-config`.
+if grep -nE 'agentType' "$TEMPLATES"/workflows/*.js 2>/dev/null; then
+    fail "a distributed workflow template references agentType, but rdm agent-config emits no .claude/agents/ definitions — an unresolvable agentType RAISES in the runtime and would break every downstream lane"
+fi
+mkdir -p "$SCRATCH/planted-tpl"
+printf 'await agent(P, { label: "x", agentType: %s })\n' "'rdm-mechanical'" >"$SCRATCH/planted-tpl/x.js"
+if ! grep -nE 'agentType' "$SCRATCH/planted-tpl"/*.js >/dev/null 2>&1; then
+    fail "distributed-agentType guard did NOT catch a planted agentType — the detector is broken"
+fi
+# Anti-vacuity: the real glob must match at least one file, or the guard above
+# passes for the wrong reason.
+TPL_WF_COUNT=$(find "$TEMPLATES/workflows" -name '*.js' | wc -l | tr -d ' ')
+[ "$TPL_WF_COUNT" -ge 1 ] ||
+    fail "no distributed workflow templates matched — the agentType guard would pass vacuously"
+pass "no distributed workflow template references agentType ($TPL_WF_COUNT scanned); detector catches a planted one"
+
 # --- 3. BEHAVIOR -------------------------------------------------------------
 say "3. Behavior: find -> refute -> filter, both modes, deterministic"
 

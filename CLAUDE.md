@@ -190,6 +190,29 @@ The autonomous do/autopilot lane has migrated from prose-orchestrated skills to 
 - Backlog-workflow harness: `bash scripts/verify-workflow-backlog.sh` — hermetic regression for the headless `backlog` Workflow (the propose-only grooming pass over `rdm backlog report`'s four signal arrays): pure-helper and driven-pipeline behavior fed fakes (empty-report short-circuit with zero analyzer calls, a fully-populated report producing all four batch subsections, a fetch error propagating rather than being laundered into "Nothing to groom", a single analyzer crash degrading gracefully), a ZERO-MUTATION section against a real seeded plan repo (git HEAD/status/file-checksum identity before and after a run), the byte-identical-copy drift gate against `lib/backlog.mjs` (with a planted-mutation self-test), and static invariants (exactly one Bash-executing agent directive whose command template is provably read-only, no `Date.now(`/`Math.random(`, `meta.phases` parity). Run it after touching `.claude/workflows/lib/backlog.mjs`, `backlog.js`, or the `rdm-backlog` skill shim.
 - Document-workflow harness: `bash scripts/verify-workflow-document.sh` — hermetic regression for the headless `document` Workflow (the all-done validation, per-phase `parallel()` git-gather with has-SHA/body-only fallback, synthesis, and disk-write pipeline behind `rdm-document`): static invariants (the `parallel()` fan-out, `rdm roadmap show`/`rdm phase show --format json` wiring, the abort-on-incomplete and has-SHA/body-only branches, no `--status` mutation or plan-mode call, no `Date.now(`/`Math.random(`, and that the skill shim retains its terminal "not done until reviewed and approved" human-approval language while dropping the old step-by-step git-gather prose), the byte-identical-copy drift gate against `lib/document.mjs` (with a planted-mutation self-test), Node-driven pure-logic behavior tests (`parseDocumentArgs`, `defaultOutPath`/`resolveOutPath`, `computeIncompletePhases`, `buildGitRangeCommands`), and a hermetic seed against a real temp plan repo plus a real temp source repo (a fully-done roadmap with real commit SHAs, a roadmap with an incomplete phase, and a done phase with no recorded commit) feeding real `rdm roadmap show`/`phase show --format json` output through the same pure functions. Run it after touching `.claude/workflows/lib/document.mjs`, `document.js`, or the `rdm-document` skill shim.
 
+#### `.claude/agents/` — a new LOCAL-ONLY surface (not distributed)
+
+`.claude/agents/` is the custom-agent registry the Workflow runtime resolves `agent()`'s
+`opts.agentType` against, and it now holds one definition: `rdm-mechanical.md`, a trimmed
+transcribe-one-command agent intended for the irreducible mechanical `agent()` call sites named
+in `docs/mechanical-agent-inventory.md` § Irreducible. **Nothing references it yet.** It is the
+apparatus half of a feasibility spike (`.claude/workflows/spike-agent-type.js`) that is landed
+but unrun — the full evidence tables and the disposition are in `docs/workflow-schemas.md`
+§ "agentType / effort options spike".
+
+Two rules follow from it, both gated by `scripts/verify-workflow-review.sh` §2b with
+planted-mutation self-tests:
+
+- **No workflow script may pass `effort:`.** The spike identified the verification channel
+  (every `assistant` transcript record carries a top-level `effort` field) but produced no
+  observation of `effort: 'low'` actually taking effect, so the key does not ship.
+- **No *distributed* workflow template (`rdm-core/src/templates/workflows/*.js`) may reference
+  `agentType`.** `rdm agent-config` emits skills and workflows only — there is no
+  `.claude/agents/` emission surface — and an unresolvable `agentType` *raises* in the runtime
+  rather than degrading silently the way an unknown `model` id does, so a reference in a shipped
+  template would hard-break every downstream lane on first dispatch. Lift this only together
+  with the follow-up task `emit-agent-definitions-from-agent-config`.
+
 #### Two surfaces: workflow vs skill
 
 Decision rule for which surface to reach for:
