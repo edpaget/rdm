@@ -1106,12 +1106,24 @@ function parseDispatchArgs(args) {
 // body is a non-empty string AND all five model ids are non-empty strings —
 // otherwise reject and let the original agent run untouched.
 //
-// `isTask` is accepted for symmetry with the two schemas (TASK_META carries no
-// roadmap/stem/model tier) but imposes no extra requirement: body + models are
-// the only fields the driver cannot derive on its own.
+// `isTask` selects between the two schemas' requirements. A TASK_META payload
+// carries no roadmap/stem/model tier and the driver hard-codes a task's tier to
+// `medium`, so body + models are all it needs. A PHASE_META payload is
+// different: `meta.model` is the phase's DIFFICULTY TIER, and it is the driver's
+// SOLE source for it — unlike `stem`/`roadmap`, which fall back to values the
+// top-level args already carry, an absent tier falls back to a hard-coded
+// 'medium'. That default is not neutral: `hasBlocking` scales with the tier, and
+// a `large` phase silently downgraded to `medium` stops treating a surviving
+// `concern` finding as blocking — loosening the gate, the opposite direction
+// from the one-directional tightening this gate exists to uphold. So the phase
+// case ALSO requires a non-empty string `model`, mirroring PHASE_META_SCHEMA's
+// own `required` list; anything short of that falls back to the fetch agent,
+// which always supplies it.
 function hoistedMetaComplete(meta, isTask) {
   if (!meta || typeof meta !== 'object') return false;
   if (typeof meta.body !== 'string' || String(meta.body).trim() === '') return false;
+  // Phase mode only: the difficulty tier has no recoverable fallback.
+  if (!isTask && (typeof meta.model !== 'string' || meta.model.trim() === '')) return false;
   const m = meta.models;
   if (!m || typeof m !== 'object') return false;
   const keys = ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'];
@@ -1888,13 +1900,15 @@ const itemLabelRaw = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
 // NOTE: this local is `phaseMeta`, NOT `meta` — the top-level `export const meta`
 // (the workflow contract) already owns that identifier in this module scope.
 //
-// HOIST: when the caller supplied a COMPLETE meta payload (non-empty body plus
-// all five resolved model ids — hoistedMetaComplete, from the copied block), use
-// it and skip the agent entirely. The guard is all-or-nothing on purpose: a
-// partial payload would still need a model-resolving agent (saving nothing) and
-// would trip the `unresolvedStep` check below, short-circuiting the dispatch as
-// a fetchError. Anything the guard rejects falls through to the agent path,
-// which is left BYTE-UNCHANGED.
+// HOIST: when the caller supplied a COMPLETE meta payload (non-empty body, all
+// five resolved model ids, and — in phase mode — a non-empty `model` difficulty
+// tier; hoistedMetaComplete, from the copied block), use it and skip the agent
+// entirely. The guard is all-or-nothing on purpose: a partial payload would
+// still need a model-resolving agent (saving nothing) and would trip the
+// `unresolvedStep` check below, short-circuiting the dispatch as a fetchError —
+// and a tier-less phase payload would silently take `tier` to its 'medium'
+// default, LOOSENING the code gate on a `large` phase. Anything the guard
+// rejects falls through to the agent path, which is left BYTE-UNCHANGED.
 let phaseMeta = null
 if (hoistedMetaComplete(hoistedMeta, isTask)) {
   phaseMeta = hoistedMeta

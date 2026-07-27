@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - A new dev tool, `scripts/measure-lane-tokens.mjs` (over `scripts/lib/token-report.mjs`), measures token usage across Claude Code Workflow lane runs. It locates every `wf_*.json` session sidecar under a `--root` (default `~/.claude/projects`, searching every project-slug directory including `--worktrees-`-named ones), joins each run's agents with their `agent-*.jsonl` transcripts (deduping usage by `requestId`), and reports totals broken out by token class (output / uncached input / cache write / cache read) grouped by agent class, full label, model, and workflow — plus an explicit, never-reconciled discrepancy line between the sidecar's own `totalTokens` and the deduped sum. Invoke it with `--since <iso-date>`, `--workflow <name>` (repeatable, OR'd), and `--format text|json`. It is the measurement tool later phases of the `workflow-token-reduction` roadmap use to substantiate their token-saving claims. Stdlib-only Node, no packages; hermetic regression in `scripts/verify-token-report.sh`.
 - `docs/token-baseline.md` and its machine-readable twin `docs/token-baseline.json` commit a measured "before" snapshot of the six autonomous lanes' (autopilot, dispatch-phase, plan-review, backlog, estimate, document) real token spend, broken down per agent class and per model with cache reads included. It reconciles the corrected per-class figures against the roadmap body's original sidecar-`tokens`-field survey (the review-vs-implementation ratio narrows from ~11:1 to ~1.67:1 once cache reads are counted), reports a directly-measured ~38.8k-token per-agent context floor attributed between `CLAUDE.md` and tool schemas/system prompt, and documents the confounds (roadmap size, phase difficulty, rework rounds) that make raw per-run totals non-comparable across lane runs. Later phases of the `workflow-token-reduction` roadmap diff their savings claims against this baseline.
+- A companion dev tool, `scripts/measure-hoist-delta.mjs`, measures the
+  mechanical-subagent reduction directly rather than by applying an elimination
+  rule on paper: it executes the real, post-change `dispatch-phase` driver under
+  a recording fake `agent` — once with a pre-change caller's arguments and once
+  with the arguments the post-change skill shim passes — and counts the
+  subagents each run actually spawns, then prices them using
+  `docs/token-baseline.json`'s own measured per-class figures. It reports both a
+  raw and a fresh (ex-cache-read) token column, since cache reads dominate the
+  raw totals and are the cheapest token there is. Stdlib-only Node, no packages.
 - `rdm task create` gained a `--no-plan-review` flag: it skips the automatic
   `needs-plan-review` stamp even when the `plan_review` config flag is
   enabled. Intended for tasks filed from a plan-review finding itself, so the

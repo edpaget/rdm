@@ -1966,12 +1966,42 @@ for (const [name, bad] of [
   ['no models', { ...PHASE_META, models: undefined }],
   ['missing one model id', { ...PHASE_META, models: { ...MODELS, mechanical: '' } }],
   ['four of five model ids', { ...PHASE_META, models: { plan: 'a', implement: 'b', review_find: 'c', review_verify: 'd' } }],
+  // The difficulty TIER is part of the completeness set in phase mode. It has no
+  // recoverable fallback other than a hard-coded 'medium', and that default
+  // LOOSENS the code gate on a `large` phase (hasBlocking stops treating a
+  // surviving `concern` as blocking) — so a tier-less payload must be rejected,
+  // not silently downgraded.
+  ['missing model tier', (() => { const m = { ...PHASE_META }; delete m.model; return m; })()],
+  ['empty model tier', { ...PHASE_META, model: '' }],
+  ['blank model tier', { ...PHASE_META, model: '   ' }],
+  ['non-string model tier', { ...PHASE_META, model: 3 }],
 ]) {
   const a = makeAgent({});
   await run({ roadmap: 'rm', phase: '1', phaseMeta: bad }, a.agent, refPipeline, refParallel, nolog);
   assert.equal(count(a, 'fetch:phase-meta'), 1, '(c) incomplete phaseMeta (' + name + ') is REJECTED -> the fetch agent runs');
 }
-console.log('6a OK: phaseMeta hoist / fallback / all-or-nothing rejection');
+// Positive counterpart, and the reason the tier is in the completeness set at
+// all: a hoisted `large` tier must reach the gate AS `large`, not be flattened
+// to the 'medium' default. hasBlocking() treats a surviving concern-severity
+// finding as blocking at `large` and NOT at `medium`, so with one identical
+// concern seed the two tiers must produce DIFFERENT outcomes. If the tier were
+// silently lost, both runs would land on the medium (looser) branch — which is
+// exactly the silent gate-weakening this guard exists to prevent.
+{
+  // Seeded on EVERY round so a rework round cannot launder the finding away —
+  // the tier, not the rework budget, has to be what separates the two runs.
+  const concern = { correctness: [{ id: 'k1', concern: 'correctness', severity: 'concern', confidence: 95, what_fails: 'x' }] };
+  const concernSeed = [concern, concern, concern, concern];
+  const big = makeAgent({ codeFindingsByRound: concernSeed });
+  const outBig = await run({ roadmap: 'rm', phase: '1', phaseMeta: { ...PHASE_META, model: 'large' } }, big.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(big, 'fetch:phase-meta'), 0, '(c+) a complete large-tier phaseMeta is accepted');
+  assert.notEqual(outBig.outcome, 'reviewed', '(c+) at large tier a surviving concern finding is blocking');
+  const mid = makeAgent({ codeFindingsByRound: concernSeed });
+  const outMid = await run({ roadmap: 'rm', phase: '1', phaseMeta: { ...PHASE_META, model: 'medium' } }, mid.agent, refPipeline, refParallel, nolog);
+  assert.equal(outMid.outcome, 'reviewed', '(c+) at medium tier the same concern finding is NOT blocking');
+  assert.notEqual(outBig.outcome, outMid.outcome, '(c+) the hoisted tier demonstrably changes gate strictness, so losing it is not cosmetic');
+}
+console.log('6a OK: phaseMeta hoist / fallback / all-or-nothing rejection (incl. difficulty tier)');
 
 // ============================================================================
 // (d) the same trio for taskMeta / fetch:task-meta.
@@ -2157,6 +2187,18 @@ assert_mutant_fails "$TMP/mutant-no-meta-fallback.js" "drops the fetch:phase-met
 # (2) Weaken the all-or-nothing guard to "any object".
 sed 's/^if (hoistedMetaComplete(hoistedMeta, isTask)) {$/if (hoistedMeta \&\& typeof hoistedMeta === "object") {/' "$WF" >"$TMP/mutant-weak-guard.js"
 assert_mutant_fails "$TMP/mutant-weak-guard.js" "accepts an incomplete hoisted meta (guard weakened to any object)"
+
+# (2b) Drop the difficulty-tier requirement from the phase-mode guard, so a
+#      tier-less payload is accepted and silently flattened to 'medium'. This is
+#      the one weakening the shape-only guard would not have caught: the payload
+#      is still schema-valid and still carries every model id.
+awk 'index($0, "// Phase mode only: the difficulty tier has no recoverable fallback.") { skip = 1; print; next }
+     skip { skip = 0; next }
+     { print }' "$WF" >"$TMP/mutant-no-tier-guard.js"
+if cmp -s "$WF" "$TMP/mutant-no-tier-guard.js"; then
+    fail "6f: planted mutation was a no-op — drops the phase-mode difficulty-tier requirement"
+fi
+assert_mutant_fails "$TMP/mutant-no-tier-guard.js" "drops the phase-mode difficulty-tier requirement (a tier-less hoist silently loosens the code gate)"
 
 # (3) Break the one-shot property, so round 2 inherits round 1's diff.
 #     `pendingDiff` is cleared at TWO sites by design (defence in depth): the

@@ -804,13 +804,32 @@ is observable in the run transcript.
 ### `phaseMeta` / `taskMeta` are all-or-nothing
 
 `hoistedMetaComplete(meta, isTask)` (in `.claude/workflows/lib/dispatch-phase.mjs`)
-accepts a payload only when the `body` is a non-empty string **and** all five model
+accepts a payload only when the `body` is a non-empty string, all five model
 ids (`plan`, `implement`, `review_find`, `review_verify`, `mechanical`) are
-non-empty strings. A partial payload is rejected outright, because the fetch agent
+non-empty strings, and — in **phase** mode — the `model` difficulty tier is a
+non-empty string. A partial payload is rejected outright, because the fetch agent
 it replaces did *two* things — read the body **and** resolve the five per-step model
 ids — so a partial hoist would still need a model-resolving agent (saving nothing)
 while tripping the driver's `unresolvedStep` check and short-circuiting the whole
 dispatch as a `fetchError`.
+
+The `model` tier is in that set for a sharper reason than cost. It is the driver's
+**sole** source for the phase's difficulty: unlike `stem` and `roadmap`, which fall
+back to values the top-level args already carry, an absent `model` falls back to a
+hard-coded `'medium'` (`const tier = isTask ? 'medium' : phaseMeta.model || 'medium'`).
+That default is not neutral — `hasBlocking(findings, tier)` treats a surviving
+`concern`-severity finding as blocking at `large` and not at `medium`, so a `large`
+phase whose hoisted payload silently lost its tier would pass straight to `reviewed`
+on a finding that should have forced a rework round. Accepting it would loosen the
+gate with no error, warning, or log, which is the opposite direction from the
+one-directional tightening the gate exists to uphold. `PHASE_META_SCHEMA` lists
+`model` in its own `required` array, so the fallback agent path always supplies it;
+the hoist path is simply held to the same bar. `TASK_META` carries no tier at all
+and the driver hard-codes a task to `medium`, so task mode imposes no such
+requirement. `scripts/verify-workflow-dispatch.sh` §6a covers both directions: four
+negative cases (absent / empty / blank / non-string tier) fall back to the agent,
+and a positive pair proves a hoisted `large` and a hoisted `medium` produce
+*different* outcomes from one identical concern seed.
 
 ### `autopilot`'s `next` is one-shot
 

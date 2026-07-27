@@ -122,8 +122,8 @@ can supply the hoist today.
 
 | label | file | route | dist copy | caller | class | reasoning | phase 4? |
 |---|---|---|---|---|---|---|---|
-| `fetch:phase-meta` | `dispatch-phase.js` | unprojected driver | yes | distributed shim (`rdm-dispatch-phase`, `rdm-do --auto`) — CLI only | **hoistable** | Read-only Stage-0 read, fires before any judgment agent, and the caller already ran `rdm phase show`. Accepted only when the payload carries a non-empty body **and** all five resolved model ids (`hoistedMetaComplete`). | no (direct/shim path) |
-| `fetch:task-meta` | `dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI only | **hoistable** | Task-mode twin of the above, same guard. | no (direct/shim path) |
+| `fetch:phase-meta` | `dispatch-phase.js` | unprojected driver | yes | distributed shim (`rdm-dispatch-phase`, `rdm-do --auto`) — CLI only | **hoistable** | Read-only Stage-0 read, fires before any judgment agent, and the caller already ran `rdm phase show`. Accepted only when the payload carries a non-empty body, all five resolved model ids, **and** the `model` difficulty tier (`hoistedMetaComplete`) — the tier is the driver's sole source for gate strictness and its `'medium'` default would silently loosen a `large` phase's gate. | no (direct/shim path) |
+| `fetch:task-meta` | `dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI only | **hoistable** | Task-mode twin of the above, same body+models guard. No tier requirement: `TASK_META` carries none and the driver hard-codes a task to `medium`, so there is nothing to lose. | no (direct/shim path) |
 | `stamp:in-progress` | `dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI **and** MCP | **redundant** | Interactive `rdm-do`, `rdm-do --auto` and the `rdm-dispatch-phase` shim all write `--status in-progress` before invoking the workflow. Suppressed by an explicit `alreadyInProgress` flag set **only** when that write exited 0, and **never** for a `--plan-only` run. | **yes** (autopilot-nested + direct-`Workflow` paths) |
 | `diff:signals` | `dispatch-phase.js` | unprojected driver | yes | n/a — absorbed, no caller needed | **absorbable** | `runCodeGate` calls `d.implement(...)` immediately before every `d.review()` with nothing in between, so the implementer — already in the worktree it just wrote to — reports the same two `git diff` commands. One-shot handoff (`pendingDiff` read-and-cleared) preserves per-round freshness. Works on **every** path, including autopilot-nested. | no |
 | `diff:signals` | `review-refute-fix.js` | unprojected driver | yes | local shim only (`rdm-review`) | **hoistable** | No adjacent implementer in this workflow (it reviews an already-implemented item), but `worktreeRef` is fully determined by `args`, so the caller can run the diff itself. | partly (distributed-caller path) |
@@ -321,6 +321,31 @@ live across the same corpus.
 
 The `model` and `diff` classes go to **zero on the shim-driven paths**. `diff` goes to zero
 everywhere for dispatch-phase, because absorption needs no caller.
+
+### Direct measurement of the shipped code
+
+The replay delta above applies this phase's elimination rules to observed counts *by hand*,
+which makes it only as trustworthy as the rules. `scripts/measure-hoist-delta.mjs` closes that
+gap by **executing the real, post-change driver** under a recording fake `agent` — twice per
+mode, once with the args a pre-change caller passed and once with the args the post-change shim
+passes — and counting the mechanical subagents each run actually spawns. Agent counts are
+therefore observed from the shipped code rather than asserted, and are then priced using
+`docs/token-baseline.json`'s own measured per-class figures.
+
+```
+node scripts/measure-hoist-delta.mjs
+```
+
+Over one dispatch pair it reports **6 of 6 mechanical subagents (100%) no longer spawned** —
+`fetch:phase-meta`/`fetch:task-meta`, `stamp:in-progress` and `diff:signals` in both phase and
+task mode. Priced against the baseline that is ~1.54M tokens, or **~298k on the fresh
+(ex-cache-read) column**, which is the decision-relevant one: cache reads dominate the raw
+totals and are the cheapest token there is, so the script reports both and neither alone.
+
+Its limits are stated in the script's own header and are worth repeating: a fake agent returns
+canned values instantly, so this measures **agent count exactly** and token cost only as
+(measured post-change counts) × (measured pre-change per-agent cost). It is not a substitute
+for a fresh post-change lane run, which remains the natural confirmation.
 
 ### Not measured here
 
