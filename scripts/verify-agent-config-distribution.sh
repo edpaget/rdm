@@ -121,6 +121,25 @@ check_shim_refs_resolve() {
     [ "$SHIM_REF_UNRESOLVED" -eq 0 ]
 }
 
+# Scans every emitted SKILL.md under <skills_dir> for an unsubstituted `{t_*}`
+# MCP-tool placeholder. `render_mcp_skill` substitutes only the placeholders
+# named in that skill's tuple list, so a dropped tuple silently ships the
+# literal `{t_phase_list}` text — including inside `allowed-tools` frontmatter,
+# where it names no real tool. Prints a diagnostic per offender and returns
+# nonzero if any survive.
+check_no_unsubstituted_placeholders() {
+    skills_dir=$1
+    leaked=0
+    for md in "$skills_dir"/*/SKILL.md; do
+        [ -f "$md" ] || continue
+        if grep -n '{t_' "$md" >&2; then
+            echo "  unsubstituted: $md ships a literal {t_*} tool placeholder (see line above)" >&2
+            leaked=1
+        fi
+    done
+    [ "$leaked" -eq 0 ]
+}
+
 # Minimal frontmatter validity: starts with a `---` fence, has a closing
 # `---` fence, and declares a `name:` field.
 assert_valid_frontmatter() {
@@ -155,6 +174,16 @@ for variant in cli mcp; do
         [ -f "$TMP/$variant/.claude/workflows/$wf" ] || fail "$variant: missing .claude/workflows/$wf"
     done
     pass "$variant: 11 skills (valid frontmatter) + 3 workflow scripts present"
+done
+
+# --- 2b. every {t_*} tool placeholder is substituted in the emitted skills --
+say "2b. Substitution: no emitted skill ships a literal {t_*} tool placeholder"
+for variant in cli mcp; do
+    if check_no_unsubstituted_placeholders "$TMP/$variant/.claude/skills"; then
+        pass "$variant: every {t_*} placeholder substituted to a real mcp__rdm__ tool"
+    else
+        fail "$variant: an emitted skill ships an unsubstituted {t_*} placeholder (see lines above) — a tuple is missing from its render_mcp_skill tools list"
+    fi
 done
 
 # --- 3. byte-identity: emitted workflows match this repo's own copies -------
@@ -212,6 +241,22 @@ if check_shim_refs_resolve "$SCRATCH_SHIM/.claude/skills" "$SCRATCH_SHIM/.claude
     fail "self-test B: planted reference typo was NOT detected — shim-reference gate is vacuous"
 fi
 pass "self-test B: planted reference typo correctly turned the shim-reference gate red"
+
+say "5c. Self-test: planted unsubstituted {t_*} placeholder in an emitted skill"
+SCRATCH_PH="$TMP/scratch-unsubstituted-placeholder"
+rm -rf "$SCRATCH_PH"
+cp -R "$TMP/mcp" "$SCRATCH_PH"
+# Mimic exactly what a dropped ("t_phase_list", "rdm_phase_list") tuple in
+# skill_autopilot_mcp produces: the literal placeholder survives rendering.
+sed 's/mcp__rdm__rdm_phase_list/{t_phase_list}/g' \
+    "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md" >"$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md.new"
+mv "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md.new" "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md"
+grep -q '{t_phase_list}' "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md" ||
+    fail "self-test C: could not plant the placeholder — rdm-autopilot no longer resolves {t_phase_list}, so this self-test is vacuous"
+if check_no_unsubstituted_placeholders "$SCRATCH_PH/.claude/skills" >/dev/null 2>&1; then
+    fail "self-test C: planted {t_phase_list} placeholder was NOT detected — the substitution gate is vacuous"
+fi
+pass "self-test C: planted {t_phase_list} placeholder correctly turned the substitution gate red"
 
 # --- 6. negative checks: platform/scope boundaries + plan-repo independence -
 say "6a. Negative: Pi emission never writes .claude/workflows"

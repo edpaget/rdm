@@ -3155,6 +3155,12 @@ mod tests {
         assert!(!frontmatter.contains("  - Bash"));
         assert!(frontmatter.contains("mcp__rdm__rdm_next"));
         assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
+        // The phase-list hoist: the shim gathers the phase list itself and
+        // passes it as `phaseList`, so the workflow skips its estimate:list
+        // subagent. Its tool must be both allowed and resolved.
+        assert!(frontmatter.contains("mcp__rdm__rdm_phase_list"));
+        assert!(content.contains("mcp__rdm__rdm_phase_list"));
+        assert!(content.contains("phaseList"));
         // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
         assert!(!content.contains("Mandatory dispatch"));
         assert!(!content.contains("inline-collapse"));
@@ -3179,6 +3185,14 @@ mod tests {
         assert!(!frontmatter.contains("  - Bash"));
         assert!(!frontmatter.contains("  - Edit"));
         assert!(!frontmatter.contains("  - Write"));
+        // The in-progress stamp hoist: the shim stamps the item itself and
+        // passes `alreadyInProgress: true`, so the workflow skips its own
+        // stamp subagent. Both update tools must be allowed and resolved.
+        assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_task_update"));
+        assert!(content.contains("mcp__rdm__rdm_phase_update"));
+        assert!(content.contains("mcp__rdm__rdm_task_update"));
+        assert!(content.contains("alreadyInProgress"));
         // Same bounded, independent plan gate and structured outcome as the CLI variant.
         assert!(content.contains("separate, independent plan-review"));
         assert!(content.contains("at most one revise round"));
@@ -3246,6 +3260,33 @@ mod tests {
                 skill.content.contains("mcp__rdm__"),
                 "MCP skill {} should list mcp__rdm__ tools in allowed-tools",
                 skill.relative_path
+            );
+        }
+    }
+
+    /// Every `{t_*}` tool placeholder in an MCP skill template must have a
+    /// matching entry in that skill's substitution list. A dropped tuple leaves
+    /// the literal placeholder text in the shipped skill — including in its
+    /// `allowed-tools` frontmatter — which no content-presence assertion
+    /// catches, because unrelated placeholders still substitute fine.
+    #[test]
+    fn mcp_skills_substitute_every_tool_placeholder() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: true,
+        });
+        for skill in &skills {
+            assert!(
+                !skill.content.contains("{t_"),
+                "MCP skill {} ships an unsubstituted tool placeholder: {}",
+                skill.relative_path,
+                skill
+                    .content
+                    .lines()
+                    .find(|line| line.contains("{t_"))
+                    .unwrap_or_default()
+                    .trim()
             );
         }
     }
