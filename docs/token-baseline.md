@@ -102,9 +102,16 @@ was interrupted before advancing further — so those agents are legitimate
 per-agent-class data points. The 4 `failed` runs contributed 0 agents and are
 harmless to include.
 
-Full run IDs, timestamps, statuses, and file paths for all 40 included runs
-and all 14 excluded runs are recorded in `docs/token-baseline.json` under
-`runSet`.
+`docs/token-baseline.json`'s `runSet` key records this same breakdown in
+machine-readable form: `runSet.included.byLane` (per-lane run counts and a
+`byStatus` breakdown, matching the table above) and `runSet.excluded.byWorkflowName`
+(per-workflow-name counts, matching the table below), plus the two totals
+(40 included, 14 excluded). **It does not carry per-run provenance** — no
+`runId`, `timestamp`/`startTime`, or `filePath` for any individual run, only
+these lane/status/workflow-name aggregates. Individual-run enumeration is
+one of the two figures this document's CLI instrument cannot regenerate on
+its own (see [Known limitations](#known-limitations-and-follow-ups) and
+follow-up task `measure-lane-tokens-regenerability-gap`).
 
 ### Excluded (non-lane workflow names)
 
@@ -301,7 +308,7 @@ revised** by this phase, even though the *method* used to derive it
 | component | tokens | basis |
 | --- | ---: | --- |
 | Measured floor (median, first request only) | 38,838 | **measured** — real per-agent transcript data |
-| Project `CLAUDE.md` (this roadmap's worktree copy, 173 lines ahead of `main`'s 47,015-char copy — see [Confounds](#confounds)) | 48,207 chars → ≈ 12,052 tokens | **estimated** — chars ÷ 4 (see below) |
+| Project `CLAUDE.md` (this roadmap's worktree copy, 1 line ahead of `main`'s 47,015-char copy — a single bullet inserted at line 173 — see [Confounds](#confounds)) | 48,207 chars → ≈ 12,052 tokens | **estimated** — chars ÷ 4 (see below) |
 | User-global `CLAUDE.md` (`~/.claude/CLAUDE.md`) | 13,040 chars → ≈ 3,260 tokens | **estimated** — chars ÷ 4 |
 | `CLAUDE.md` subtotal (project + user-global) | 61,247 chars → ≈ 15,312 tokens | **estimated** |
 | Remainder: tool schemas + system prompt + skill/agent-config overhead | ≈ 38,838 − 15,312 = **23,526** | **estimated** (derived: measured floor minus the estimated `CLAUDE.md` figure) |
@@ -364,9 +371,10 @@ reasons:
   replaying this baseline on a different machine.
 - **Project `CLAUDE.md` drifts between `main` and a roadmap's worktree** — the
   project `CLAUDE.md` measured above is this roadmap's shared worktree copy
-  (48,207 chars), which is already ahead of `main`'s copy (47,015 chars) by
-  the phase-1 instrument's own `CLAUDE.md` entry. Every in-flight roadmap
-  worktree carries its own small `CLAUDE.md` delta from `main`, so the
+  (48,207 chars, 429 lines), which is already ahead of `main`'s copy
+  (47,015 chars, 428 lines — a single bullet inserted at line 173 documenting
+  the phase-1 instrument's own harness) by 1,192 characters. Every in-flight
+  roadmap worktree carries its own small `CLAUDE.md` delta from `main`, so the
   project-`CLAUDE.md` component of the floor will shift slightly depending on
   which worktree (or `main`) an agent runs in.
 - **Model-identity drift** — as noted above, some agent records carry a
