@@ -1,0 +1,443 @@
+{
+  "schemaVersion": 1,
+  "methodology": {
+    "measurementDate": "2026-07-26",
+    "instrument": "scripts/measure-lane-tokens.mjs (over scripts/lib/token-report.mjs)",
+    "instrumentGitSha": "9ec1d881142cf95e4ff370c153940a2c3182f724",
+    "instrumentGitShaNote": "commit that landed the phase-1 instrument on the workflow-token-reduction roadmap's shared worktree branch; not yet on main",
+    "regenerateCommand": "node scripts/measure-lane-tokens.mjs --format json --workflow autopilot --workflow dispatch-phase --workflow plan-review --workflow backlog --workflow estimate --workflow document",
+    "regenerateCommandScope": "reproduces byAgentClass/byLabel/byModel/byWorkflow/totalsDiscrepancy/warnings exactly; does NOT reproduce runSet enumeration or agentContextFloor (see known-limitations) \u2014 filed as task measure-lane-tokens-regenerability-gap",
+    "projectsRoot": "/Users/edward/.claude/projects",
+    "runDefinition": "one wf_*.json session-sidecar file, i.e. one Workflow tool invocation",
+    "agentDefinition": "one workflow_agent entry inside a run's workflowProgress[]",
+    "knownLimits": [
+      "totalTokens / workflowProgress[].tokens (the sidecar 'tokens' field) is not a cost basis - see reconciliation.reviewVsImplement",
+      "a cached:true agent is genuinely zero-cost and correctly contributes 0 to every class",
+      "an agent with no agentId, no transcript file, or an empty transcript falls back to the sidecar-only tokens scalar attributed entirely to output (lossy fallback, 10 agents in this run set - see warnings)",
+      "the CLI's --format json does not expose per-run enumeration or the first-request/regression floor analysis; both were derived by importing scripts/lib/token-report.mjs's exported functions directly and cross-checked against the CLI's own aggregate output"
+    ]
+  },
+  "runSet": {
+    "included": {
+      "totalRuns": 40,
+      "totalAgentRecords": 1943,
+      "exclusionRule": "a run's workflowName field must exact-match one of the six lane names: autopilot, dispatch-phase, plan-review, backlog, estimate, document",
+      "byLane": {
+        "autopilot": {
+          "runs": 19,
+          "byStatus": {
+            "killed": 3,
+            "completed": 12,
+            "failed": 4
+          }
+        },
+        "dispatch-phase": {
+          "runs": 10,
+          "byStatus": {
+            "completed": 10
+          }
+        },
+        "plan-review": {
+          "runs": 10,
+          "byStatus": {
+            "completed": 10
+          }
+        },
+        "backlog": {
+          "runs": 1,
+          "byStatus": {
+            "completed": 1
+          }
+        },
+        "estimate": {
+          "runs": 0,
+          "byStatus": {}
+        },
+        "document": {
+          "runs": 0,
+          "byStatus": {}
+        }
+      },
+      "notes": {
+        "estimate": "no standalone Workflow runs on disk as of this measurement; an estimate:* agent class does appear, nested inside autopilot's estimate pre-pass",
+        "document": "no standalone Workflow runs on disk as of this measurement",
+        "autopilotKilledFailed": "3 killed (partial agent sets) and 4 failed (0 agents) autopilot runs are included, matching the instrument's default no-status-filter behavior and the phase's instruction to measure every run on disk; each agent inside a killed run still completed its own turn and is a legitimate data point"
+      }
+    },
+    "excluded": {
+      "totalRuns": 14,
+      "byWorkflowName": {
+        "adversarial-sync-tdd-review": 1,
+        "adversarial-sync-tdd-review-v2": 1,
+        "roadmap-review-refute": 1,
+        "tdd-review-refute": 1,
+        "plan-review-sync-roadmaps": 1,
+        "review-refute-fix": 1,
+        "deep-research": 5,
+        "spike-agent-model": 1,
+        "import-spike": 1,
+        "import-hack-spike": 1
+      },
+      "reasons": {
+        "deep-research": "not part of the six-lane autonomous set",
+        "adversarial-sync-tdd-review": "earlier/experimental review architecture, predates the six-lane set",
+        "adversarial-sync-tdd-review-v2": "earlier/experimental review architecture, predates the six-lane set",
+        "roadmap-review-refute": "earlier/experimental review architecture, predates the six-lane set",
+        "tdd-review-refute": "earlier/experimental review architecture, predates the six-lane set",
+        "plan-review-sync-roadmaps": "earlier/experimental review architecture, predates the six-lane set",
+        "review-refute-fix": "invoked standalone outside dispatch-phase/plan-review; not itself one of the six named lanes",
+        "spike-agent-model": "spike run",
+        "import-spike": "spike run",
+        "import-hack-spike": "spike run"
+      }
+    },
+    "totalRunsFoundOnDisk": 54
+  },
+  "byAgentClass": [
+    {
+      "key": "act",
+      "agentCount": 51,
+      "dedupedRequestCount": 506,
+      "output": 388464,
+      "uncachedInput": 1012,
+      "cacheWrite": 2441044,
+      "cacheRead": 24141501
+    },
+    {
+      "key": "advance",
+      "agentCount": 28,
+      "dedupedRequestCount": 75,
+      "output": 13079,
+      "uncachedInput": 442,
+      "cacheWrite": 783241,
+      "cacheRead": 1399130
+    },
+    {
+      "key": "analyze",
+      "agentCount": 3,
+      "dedupedRequestCount": 14,
+      "output": 23324,
+      "uncachedInput": 28,
+      "cacheWrite": 141811,
+      "cacheRead": 443345
+    },
+    {
+      "key": "diff",
+      "agentCount": 33,
+      "dedupedRequestCount": 365,
+      "output": 401324,
+      "uncachedInput": 1084,
+      "cacheWrite": 2202050,
+      "cacheRead": 16722669
+    },
+    {
+      "key": "estimate",
+      "agentCount": 95,
+      "dedupedRequestCount": 259,
+      "output": 88870,
+      "uncachedInput": 1374,
+      "cacheWrite": 2619891,
+      "cacheRead": 5257652
+    },
+    {
+      "key": "fetch",
+      "agentCount": 105,
+      "dedupedRequestCount": 331,
+      "output": 281778,
+      "uncachedInput": 1578,
+      "cacheWrite": 3645545,
+      "cacheRead": 8496678
+    },
+    {
+      "key": "find",
+      "agentCount": 568,
+      "dedupedRequestCount": 7544,
+      "output": 4633806,
+      "uncachedInput": 63388,
+      "cacheWrite": 34256476,
+      "cacheRead": 398176594
+    },
+    {
+      "key": "gate",
+      "agentCount": 17,
+      "dedupedRequestCount": 40,
+      "output": 7808,
+      "uncachedInput": 278,
+      "cacheWrite": 262891,
+      "cacheRead": 1038374
+    },
+    {
+      "key": "implement",
+      "agentCount": 48,
+      "dedupedRequestCount": 3216,
+      "output": 1553266,
+      "uncachedInput": 12613,
+      "cacheWrite": 7102147,
+      "cacheRead": 394293558
+    },
+    {
+      "key": "model",
+      "agentCount": 14,
+      "dedupedRequestCount": 30,
+      "output": 2952,
+      "uncachedInput": 60,
+      "cacheWrite": 417104,
+      "cacheRead": 565878
+    },
+    {
+      "key": "park",
+      "agentCount": 6,
+      "dedupedRequestCount": 18,
+      "output": 3700,
+      "uncachedInput": 128,
+      "cacheWrite": 188835,
+      "cacheRead": 348505
+    },
+    {
+      "key": "plan",
+      "agentCount": 69,
+      "dedupedRequestCount": 785,
+      "output": 1156882,
+      "uncachedInput": 29682,
+      "cacheWrite": 4957839,
+      "cacheRead": 49731584
+    },
+    {
+      "key": "refute",
+      "agentCount": 886,
+      "dedupedRequestCount": 5065,
+      "output": 4222775,
+      "uncachedInput": 17113,
+      "cacheWrite": 37097110,
+      "cacheRead": 194651548
+    },
+    {
+      "key": "stamp",
+      "agentCount": 20,
+      "dedupedRequestCount": 38,
+      "output": 4616,
+      "uncachedInput": 174,
+      "cacheWrite": 647214,
+      "cacheRead": 637115
+    }
+  ],
+  "byModel": [
+    {
+      "key": "claude-haiku-4-5-20251001",
+      "agentCount": 119,
+      "dedupedRequestCount": 752,
+      "output": 445605,
+      "uncachedInput": 6244,
+      "cacheWrite": 4301086,
+      "cacheRead": 29447850
+    },
+    {
+      "key": "claude-opus-4-8[1m]",
+      "agentCount": 610,
+      "dedupedRequestCount": 3768,
+      "output": 2792506,
+      "uncachedInput": 22417,
+      "cacheWrite": 25385521,
+      "cacheRead": 214031939
+    },
+    {
+      "key": "claude-opus-5[1m]",
+      "agentCount": 767,
+      "dedupedRequestCount": 5320,
+      "output": 4893548,
+      "uncachedInput": 21675,
+      "cacheWrite": 35624009,
+      "cacheRead": 229334821
+    },
+    {
+      "key": "claude-sonnet-5",
+      "agentCount": 436,
+      "dedupedRequestCount": 8446,
+      "output": 4650985,
+      "uncachedInput": 78618,
+      "cacheWrite": 31452582,
+      "cacheRead": 623089521
+    },
+    {
+      "key": "haiku",
+      "agentCount": 6,
+      "dedupedRequestCount": 0,
+      "output": 0,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "sonnet",
+      "agentCount": 5,
+      "dedupedRequestCount": 0,
+      "output": 0,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    }
+  ],
+  "byWorkflow": [
+    {
+      "key": "autopilot",
+      "agentCount": 952,
+      "dedupedRequestCount": 9640,
+      "output": 5866103,
+      "uncachedInput": 79839,
+      "cacheWrite": 47447332,
+      "cacheRead": 620918125
+    },
+    {
+      "key": "backlog",
+      "agentCount": 4,
+      "dedupedRequestCount": 16,
+      "output": 30797,
+      "uncachedInput": 32,
+      "cacheWrite": 183968,
+      "cacheRead": 476456
+    },
+    {
+      "key": "dispatch-phase",
+      "agentCount": 308,
+      "dedupedRequestCount": 3770,
+      "output": 2252300,
+      "uncachedInput": 32869,
+      "cacheWrite": 17343010,
+      "cacheRead": 263575055
+    },
+    {
+      "key": "plan-review",
+      "agentCount": 679,
+      "dedupedRequestCount": 4860,
+      "output": 4633444,
+      "uncachedInput": 16214,
+      "cacheWrite": 31788888,
+      "cacheRead": 210934495
+    }
+  ],
+  "totalsDiscrepancy": {
+    "sidecarTotalTokens": 110812684,
+    "dedupedTotalTokens": 1205578927,
+    "delta": -1094766243
+  },
+  "warnings": [
+    "agent at label \"gate:clear-tag:phase:phase-6-downstream-execution-harness\" in run wf_386da595-633 has no agentId; cannot locate a transcript",
+    "agent at label \"gate:clear-tag:roadmap:review-gate-intent\" in run wf_1ee517c8-ec2 has no agentId; cannot locate a transcript",
+    "agent at label \"gate:clear-tag:phase:phase-3-generic-diff-signals\" in run wf_7e7d554d-452 has no agentId; cannot locate a transcript",
+    "agent at label \"gate:clear-tag:phase:phase-5-operator-intent-gate\" in run wf_7e7d554d-452 has no agentId; cannot locate a transcript",
+    "agent at label \"gate:clear-tag:phase:phase-3-autopilot-estimate-writeback-ack-test\" in run wf_d7998251-248 has no agentId; cannot locate a transcript",
+    "agent at label \"gate:clear-tag:phase:phase-4-ac-stamp-phase-mode-weak-coverage\" in run wf_d7998251-248 has no agentId; cannot locate a transcript",
+    "agent at label \"gate:clear-tag:task:fix-plan-review-gate-tag-clobber\" in run wf_f4be8027-dbb has no agentId; cannot locate a transcript",
+    "agent at label \"advance:phase-1-extract-estimate-workflow\" in run wf_465113f2-51a has no agentId; cannot locate a transcript",
+    "agent at label \"advance:phase-1-extract-estimate-workflow\" in run wf_465113f2-51a has no agentId; cannot locate a transcript",
+    "agent at label \"gate:clear-tag:roadmap:project-agnostic-lane\" in run wf_55af7324-87c has no agentId; cannot locate a transcript"
+  ],
+  "reconciliation": {
+    "surveyClaim": {
+      "reviewShare": 0.73,
+      "implementShare": 0.08,
+      "floorTokens": 36800,
+      "cheapestObservedTokens": 27000,
+      "source": "roadmap body 'Why' section, original scratchpad survey of 20 runs, non-cost-basis tokens field"
+    },
+    "reviewVsImplement": {
+      "old": {
+        "methodology": "sidecar tokens field, this phase's 40-run set",
+        "reviewTokens": 82981340,
+        "implementTokens": 7476962,
+        "totalTokens": 110812684,
+        "reviewShare": 0.7488,
+        "implementShare": 0.0675,
+        "ratio": 11.098
+      },
+      "new": {
+        "methodology": "deduped, cache-read-inclusive, this phase's 40-run set",
+        "reviewTokens": 673118810,
+        "implementTokens": 402961584,
+        "totalTokens": 1205578927,
+        "reviewShare": 0.5583,
+        "implementShare": 0.3342,
+        "ratio": 1.67
+      },
+      "movesMaterially": true,
+      "roadmapBodyUpdated": true
+    }
+  },
+  "agentContextFloor": {
+    "legacyRegression": {
+      "description": "sidecar tokens field vs toolCalls, reproducing the original survey's method",
+      "interceptTokens": 37552,
+      "slopeTokensPerToolCall": 1725,
+      "r2": 0.6934,
+      "n": 1920,
+      "basis": "measured"
+    },
+    "correctedRegression": {
+      "description": "deduped cache-read-inclusive total vs toolCalls, same method applied to corrected totals",
+      "interceptTokens": -718826,
+      "slopeTokensPerToolCall": 115218,
+      "r2": 0.7778,
+      "n": 1920,
+      "basis": "measured",
+      "note": "intercept is negative and not usable as a floor - relationship is super-linear once cache reads are counted, so a linear regression forced through the curvature breaks"
+    },
+    "measuredFloor": {
+      "description": "median of each agent's first transcript request only (uncachedInput + cacheWrite + cacheRead, before any tool use)",
+      "n": 1920,
+      "minTokens": 21371,
+      "p10Tokens": 30224,
+      "medianTokens": 38837.5,
+      "meanTokens": 38452.31,
+      "basis": "measured",
+      "reportedFloorTokens": 38837.5
+    },
+    "attribution": {
+      "claudeMdProject": {
+        "path": "CLAUDE.md (project, this worktree's copy)",
+        "chars": 48207,
+        "estimatedTokens": 12052,
+        "basis": "estimated (chars / 4)",
+        "charsBasis": "measured (wc -c)"
+      },
+      "claudeMdUserGlobal": {
+        "path": "~/.claude/CLAUDE.md",
+        "chars": 13040,
+        "estimatedTokens": 3260,
+        "basis": "estimated (chars / 4)",
+        "charsBasis": "measured (wc -c)"
+      },
+      "claudeMdSubtotal": {
+        "chars": 61247,
+        "estimatedTokens": 15312,
+        "basis": "estimated"
+      },
+      "remainderToolSchemasSystemPrompt": {
+        "estimatedTokens": 23526,
+        "basis": "estimated (derived: measured floor minus estimated CLAUDE.md subtotal)",
+        "formula": "measuredFloor.reportedFloorTokens - attribution.claudeMdSubtotal.estimatedTokens"
+      },
+      "tokenizerNote": "no local Anthropic tokenizer was available; CLAUDE.md token figures use the ~4-chars-per-token English-prose approximation applied to a directly measured character count"
+    }
+  },
+  "confounds": [
+    "roadmap size - a roadmap with more phases dispatches more dispatch-phase/plan-review/estimate agent invocations inside a single autopilot run; larger roadmap does not imply a more expensive phase",
+    "phase difficulty / model tier - rdm-estimate assigns each phase a difficulty and model tier; a high-tier phase's agents run on a more expensive model and do not necessarily use fewer tokens for it",
+    "rework rounds - a phase that bounces through plan-review or code-review rework re-runs find/refute/plan/implement agents multiple times; its total is not comparable to a phase that passed on the first pass",
+    "user-specific CLAUDE.md - the user-global CLAUDE.md measured for the context floor is this operator's own machine; a different operator's global instructions file will shift the floor by a different amount",
+    "model-identity drift - some agent records carry a generic alias (haiku, sonnet) rather than a resolved snapshot ID and contribute zero measurable usage; per-model comparisons must key on the exact snapshot ID",
+    "run completeness - 3 of 19 autopilot runs in scope are killed and 4 are failed (0 agents)"
+  ],
+  "comparableUnit": "per-agent-class figures and per-phase-dispatch figures; raw per-run totals are not a valid comparison unit for later phases' before/after claims",
+  "noBehaviorChange": {
+    "statement": "measurement and documentation only; no file under .claude/workflows/, .claude/workflows/lib/, .claude/skills/, scripts/measure-lane-tokens.mjs, or scripts/lib/token-report.mjs was modified by this phase's commit",
+    "filesTouchedByThisPhase": [
+      "docs/token-baseline.md",
+      "docs/token-baseline.json"
+    ],
+    "plusPlanRepoRoadmapBodyUpdate": true
+  },
+  "followUpTasks": [
+    "measure-lane-tokens-regenerability-gap",
+    "measure-lane-tokens-missing-runid-crash"
+  ]
+}
