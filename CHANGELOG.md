@@ -43,7 +43,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   parsed JSON verbatim, instead of asking a subagent to transcribe it. That
   transcription step had twice written junk over a target's real tag list, and
   schema validation could not catch it because both bad returns were
-  schema-valid.
+  schema-valid. A caller-supplied payload must carry the target's `tags` array
+  (and, for a roadmap, each phase's `stem`/`body`/`tags`) or it is rejected and
+  the in-workflow fetch runs instead — the gate replaces an item's whole tag
+  list with `--tags`, so an incomplete payload would silently clear it.
 - The distributed `rdm-plan-review`, `rdm-backlog`, `rdm-document`, `rdm-review`
   and `rdm-estimate` skills are **not** yet Workflow shims, so they continue to
   use each workflow's own in-workflow fetch — correct, just not yet cheaper.

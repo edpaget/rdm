@@ -778,7 +778,7 @@ classification rule behind them, and the measured delta live in
 | `autopilot` | `next` | `fetch:next` | object — **one-shot**, see below |
 | `estimate` | `mechanicalModel` | `model:mechanical` | non-empty string |
 | `estimate` | `phaseList` | `estimate:list` | array |
-| `plan-review` | `fetched` | `fetch:roadmap` / `fetch:<kind>` | object with a non-empty `body` (plus an array `phases` for the roadmap kind) |
+| `plan-review` | `fetched` | `fetch:roadmap` / `fetch:<kind>` | object with a non-empty `body` **and** a `tags` array of strings (roadmap kind additionally: an array `phases` whose every entry carries a non-empty `stem`, a string `body`, and its own `tags` array) |
 | `plan-review` | `wontFixedTexts` | `fetch:wontfix` | array |
 | `plan-review` | `mechanicalModel` | `model:mechanical` | non-empty string |
 | `backlog` | `mechanicalModel` | `model:mechanical` | non-empty string |
@@ -831,6 +831,15 @@ provably cannot catch it (both corrupt returns were schema-valid). See
 "The hoist with a recorded correctness failure". Driver-side validation of a hoisted
 payload's *content* is deliberately out of scope there and owned by task
 `fix-plan-review-gate-tag-clobber`.
+
+`hoistedFetchedOk` is nonetheless held to be **no weaker than the schema it stands
+in for**: `PLAN_TARGET_SCHEMA` / `ROADMAP_TARGET_SCHEMA` both list `tags` as
+`required`, so the guard requires it too, all-or-nothing, per phase entry as well.
+That is not shape pedantry — the gate writes the list back with `rdm ... update
+--tags "<list>"`, and `--tags` **replaces** the whole list. A payload accepted with
+no `tags` would be defaulted to `[]` by `buildReviewUnits` and issued as
+`--tags ""`, wiping every real tag the item carried. Rejecting it costs one fetch
+agent; accepting it costs the item's tags.
 
 ### `dispatch-phase` absorbs its diff instead of hoisting it
 

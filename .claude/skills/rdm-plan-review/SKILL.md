@@ -33,6 +33,7 @@ Run the reads yourself and pass the parsed JSON through the workflow `args`. Eve
   - single phase → `./target/debug/rdm phase show <phase> --roadmap <slug> --project rdm --format json`; pass `{ body, tags }`.
   - `--roadmap <slug>` → one `./target/debug/rdm roadmap show <slug> --project rdm --format json`, **plus one `./target/debug/rdm phase show <stem> --roadmap <slug> --project rdm --format json` per phase**; assemble `{ body, tags, phases: [{ stem, body, tags }, …] }` with one entry per real phase.
   - **Never summarize, paraphrase, or describe what you did.** `body` is the document's own text and `tags` is the exact array the binary printed — not a description of the fetch, not words from this prompt. If you cannot read the target, omit `fetched` entirely and let the workflow's fetch agent run; do not pass a placeholder.
+  - **`tags` is required, all-or-nothing.** The workflow rejects a `fetched` payload that omits `tags` (or any phase entry that omits `stem`/`body`/`tags`) and runs the fetch agent instead, because the gate writes the tag list back with `--tags`, which replaces the whole list — an absent `tags` defaulted to `[]` would wipe every real tag the item carries. Pass the array exactly as printed, `[]` only when the binary really printed an empty one.
 - **`wontFixedTexts`** — the array of prior wont-fix finding texts from `./target/debug/rdm search "" --type review --project rdm` (or omit it).
 - **`mechanicalModel`** — the id printed by `./target/debug/rdm model resolve mechanical`, verbatim (or omit it).
 

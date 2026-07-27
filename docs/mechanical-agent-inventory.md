@@ -204,6 +204,17 @@ of the fetched payload — is deliberately **not** this phase's job: it is scope
 originally-preferred mechanism (a `parallel()` per-phase fan-out) was rejected precisely because
 it would multiply this phase's mechanical agents, and must not be reintroduced.
 
+One consequence is worth stating on its own, because the hoist's shape guard replaces a
+`required`-bearing schema: `hoistedFetchedOk` is held to be **no weaker** than
+`PLAN_TARGET_SCHEMA` / `ROADMAP_TARGET_SCHEMA`. Both list `tags` as `required`, so the guard
+requires a `tags` array of strings — on the payload *and* on every roadmap phase entry
+(alongside a non-empty `stem` and a string `body`) — and rejects the payload outright otherwise.
+The reason is the write-back: the gate issues `rdm ... update --tags "<list>"`, and `--tags`
+**replaces** the whole list. A tags-less payload accepted here would be defaulted to `[]` by
+`buildReviewUnits` and written as `--tags ""`, wiping every real tag the item carried — the same
+outcome as the recorded incidents, reached by omission rather than by transcription. Rejecting
+costs one fetch agent on the fallback path; accepting costs the item's tags.
+
 `scripts/verify-workflow-review.sh` § 6 asserts the hoisted path carries the target's **real**
 field values — `tags` deep-equal to what `./target/debug/rdm ... show --format json` reports,
 real phase stems, and a `gate:clear-tag` prompt carrying exactly the sibling-preserved tag list

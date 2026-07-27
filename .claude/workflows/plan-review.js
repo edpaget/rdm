@@ -1137,14 +1137,44 @@ function parsePlanArgs(rawArgs) {
 }
 
 // hoistedFetchedOk(fetched, kind) — the shape guard on a caller-supplied target
-// payload. Mirrors buildReviewUnits' own fail-closed condition (a non-empty
-// body), plus an array `phases` for the roadmap kind, so a payload this guard
-// accepts is one buildReviewUnits can actually build units from. Anything it
-// rejects runs the original fetch agent instead.
+// payload. It stands in for the schema the fetch agent it replaces was forced to
+// satisfy (PLAN_TARGET_SCHEMA / ROADMAP_TARGET_SCHEMA), so it must be no weaker
+// than that schema: a non-empty `body` (buildReviewUnits' own fail-closed
+// condition) AND a `tags` array of strings, plus — for the roadmap kind — an
+// array `phases` whose every entry carries a non-empty string `stem`, a string
+// `body`, and its own `tags` array of strings.
+//
+// `tags` is required, not optional-with-a-default, because it is WRITTEN BACK:
+// on a `reviewed` outcome the gate issues `rdm ... update --tags "<list>"`, and
+// `--tags` replaces the whole list. Accepting a payload with no `tags` would let
+// buildReviewUnits default it to `[]` and the gate would then clobber every real
+// tag the item carried. Anything this guard rejects runs the original
+// schema-enforced fetch agent instead — a cost, never a correctness loss.
+//
+// This is a SHAPE guard only: it cannot tell a real tag list from a transcribed
+// one (see parsePlanArgs' note on the two recorded corruptions, both of which
+// are schema-valid and are accepted here by design). Content validation is task
+// fix-plan-review-gate-tag-clobber's scope.
+function stringArrayOk(v) {
+  return Array.isArray(v) && v.every((s) => typeof s === 'string')
+}
 function hoistedFetchedOk(fetched, kind) {
   if (!fetched || typeof fetched !== 'object') return false
   if (typeof fetched.body !== 'string' || String(fetched.body).trim() === '') return false
-  if (kind === 'roadmap' && !Array.isArray(fetched.phases)) return false
+  if (!stringArrayOk(fetched.tags)) return false
+  if (kind === 'roadmap') {
+    if (!Array.isArray(fetched.phases)) return false
+    const phasesOk = fetched.phases.every(
+      (p) =>
+        p &&
+        typeof p === 'object' &&
+        typeof p.stem === 'string' &&
+        p.stem.trim() !== '' &&
+        typeof p.body === 'string' &&
+        stringArrayOk(p.tags)
+    )
+    if (!phasesOk) return false
+  }
   return true
 }
 

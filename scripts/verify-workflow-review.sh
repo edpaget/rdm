@@ -2134,16 +2134,53 @@ for (const [name, bad] of [
   ['empty body', { body: '', tags: [] }],
   ['whitespace body', { body: '   ', tags: [] }],
   ['no body key', { tags: ['bug'] }],
+  // `tags` is WRITTEN BACK by the gate (`--tags` replaces the whole list), so a
+  // payload that omits or malforms it must reach the schema-enforced agent
+  // rather than defaulting to [] and clobbering every real tag the item carries.
+  ['no tags key', { body: taskJson.body }],
+  ['non-array tags', { body: taskJson.body, tags: 'bug' }],
+  ['null tags', { body: taskJson.body, tags: null }],
+  ['non-string tag entry', { body: taskJson.body, tags: ['bug', 7] }],
 ]) {
   const h = makeDeps({});
   await runPlanReviewDriver({ task: 'hoist-target', fetched: bad }, h.deps).catch(() => {});
   assert.equal(labels(h).filter((l) => l === 'fetch:task').length, 1, '7d: malformed fetched (' + name + ') falls back to the fetch agent');
 }
 {
-  // roadmap kind additionally requires an array `phases`.
+  // The consequence the tags requirement exists to prevent: a hoisted payload
+  // with a REAL body but no tags must never reach a gate write at all — an
+  // accepted-then-defaulted [] would be issued as `--tags ""`, replacing the
+  // item's whole tag list. Assert on the write, not just on the fallback count.
   const h = makeDeps({});
-  await runPlanReviewDriver({ roadmap: 'hoist-rm', fetched: { body: 'b', tags: [] } }, h.deps).catch(() => {});
-  assert.equal(labels(h).filter((l) => l === 'fetch:roadmap').length, 1, '7d: a roadmap payload with no phases array falls back to the fetch agent');
+  await runPlanReviewDriver({ task: 'hoist-target', fetched: { body: taskJson.body } }, h.deps).catch(() => {});
+  const gate = promptFor(h, 'gate:clear-tag:task:hoist-target');
+  assert.equal(gate, undefined, '7d: a tags-less hoisted payload never reaches the gate — no tag write at all');
+  assert.ok(
+    !labels(h).some((l) => l.startsWith('gate:clear-tag')),
+    '7d: ... so no `--tags ""` clobber of the real list can be issued'
+  );
+}
+for (const [name, bad] of [
+  ['no phases array', { body: 'b', tags: [] }],
+  ['phase entry missing tags', { body: 'b', tags: [], phases: [{ stem: 'phase-1-alpha', body: 'x' }] }],
+  ['phase entry non-array tags', { body: 'b', tags: [], phases: [{ stem: 'phase-1-alpha', body: 'x', tags: 'alpha' }] }],
+  ['phase entry missing stem', { body: 'b', tags: [], phases: [{ body: 'x', tags: ['alpha'] }] }],
+  ['phase entry blank stem', { body: 'b', tags: [], phases: [{ stem: '  ', body: 'x', tags: ['alpha'] }] }],
+  ['phase entry missing body', { body: 'b', tags: [], phases: [{ stem: 'phase-1-alpha', tags: ['alpha'] }] }],
+  ['phase entry not an object', { body: 'b', tags: [], phases: ['phase-1-alpha'] }],
+  ['roadmap no tags key', { body: 'b', phases: [] }],
+]) {
+  const h = makeDeps({});
+  await runPlanReviewDriver({ roadmap: 'hoist-rm', fetched: bad }, h.deps).catch(() => {});
+  assert.equal(
+    labels(h).filter((l) => l === 'fetch:roadmap').length,
+    1,
+    '7d: malformed roadmap fetched (' + name + ') falls back to the fetch agent'
+  );
+  assert.ok(
+    !labels(h).some((l) => l.startsWith('gate:clear-tag')),
+    '7d: malformed roadmap fetched (' + name + ') writes no tags'
+  );
 }
 {
   // wontFixedTexts hoist + fallback.
@@ -2219,6 +2256,18 @@ assert_plan_mutant_fails "$TMP/plan-mutant-fetched-from-string.mjs" "lets a raw 
 sed "s/^  if (typeof fetched.body !== 'string' || String(fetched.body).trim() === '') return false\$/  if (typeof fetched.body !== 'string') return false/" \
     "$PLAN_LIB" >"$TMP/plan-mutant-weak-fetched-guard.mjs"
 assert_plan_mutant_fails "$TMP/plan-mutant-weak-fetched-guard.mjs" "accepts an empty-body hoisted payload"
+
+# (5) Drop the `tags` requirement from the shape guard — the exact weakening that
+# lets a tags-less payload through to buildReviewUnits' `[]` default and on into a
+# `--tags ""` gate write that replaces the item's whole tag list.
+sed "s/^  if (!stringArrayOk(fetched.tags)) return false\$//" \
+    "$PLAN_LIB" >"$TMP/plan-mutant-no-tags-requirement.mjs"
+assert_plan_mutant_fails "$TMP/plan-mutant-no-tags-requirement.mjs" "drops the hoisted-payload tags requirement"
+
+# (6) Drop the per-phase entry checks on the roadmap path (stem/body/tags), so a
+# phase entry with no tags of its own is accepted and gated with an empty list.
+sed "s/^    if (!phasesOk) return false\$//" "$PLAN_LIB" >"$TMP/plan-mutant-no-phase-entry-checks.mjs"
+assert_plan_mutant_fails "$TMP/plan-mutant-no-phase-entry-checks.mjs" "drops the per-phase-entry shape checks"
 
 # --- 7f. SHIM: the LOCAL rdm-plan-review shim gathers the payload verbatim -----
 # `.claude/skills/rdm-plan-review/SKILL.md` is a LOCAL dogfood shim; its
