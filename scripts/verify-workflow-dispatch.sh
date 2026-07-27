@@ -2349,4 +2349,54 @@ for run in wf_e3402021-0af wf_f4be8027-dbb; do
 done
 pass "7: both recorded plan-review corruption runs are cited by id"
 
+# --- 8. MEASURED-DELTA SELF-CONSISTENCY ---------------------------------------
+# scripts/measure-hoist-delta.mjs executes the real, post-change dispatch-phase
+# driver under a recording fake agent and counts the mechanical subagents each
+# run actually spawns, then prices them off docs/token-baseline.json. Its
+# --check mode asserts those computed figures appear VERBATIM in the inventory
+# doc. That mode is the only thing standing between the doc's "Direct
+# measurement" section and a stale hand-transcription, so it is run here rather
+# than left as a documented-but-unexecuted invocation: CI runs every
+# scripts/verify-*.sh, and measure-hoist-delta.mjs is not one.
+say "8. Measured delta: measure-hoist-delta.mjs --check agrees with the inventory doc"
+
+HOIST_DELTA="$REPO_ROOT/scripts/measure-hoist-delta.mjs"
+[ -f "$HOIST_DELTA" ] || fail "8: scripts/measure-hoist-delta.mjs is missing"
+
+run_node "$HOIST_DELTA" --check "$INV" >"$TMP/hoist-check.out" 2>&1 ||
+    fail "8: measure-hoist-delta.mjs --check failed against the inventory doc:
+$(cat "$TMP/hoist-check.out")"
+pass "8: the inventory doc carries the figures measure-hoist-delta.mjs computes from the shipped code"
+
+# The checker must also be able to recompute independently of the doc — a
+# --check that silently succeeded on any input would be worthless.
+run_node "$HOIST_DELTA" --format json >"$TMP/hoist-delta.json" 2>/dev/null ||
+    fail "8: measure-hoist-delta.mjs --format json did not run"
+grep -q '"agentsEliminated"' "$TMP/hoist-delta.json" ||
+    fail "8: measure-hoist-delta.mjs --format json emitted no agentsEliminated field"
+pass "8: measure-hoist-delta.mjs recomputes the delta from the shipped code"
+
+# Self-test A — a doc whose token figure has been rewritten must be REJECTED.
+# This proves --check reads the doc's numbers rather than merely existing.
+sed 's/1,536,932/1,536,933/' "$INV" >"$TMP/inv-bad-tokens.md"
+if run_node "$HOIST_DELTA" --check "$TMP/inv-bad-tokens.md" >/dev/null 2>&1; then
+    fail "8: --check accepted a doc with a rewritten token figure — the gate is vacuous"
+fi
+pass "8: --check fires on a rewritten measured-token figure"
+
+# Self-test B — a doc that has dropped one of the measured labels must be
+# REJECTED, so a future elimination that changes WHICH agents disappear cannot
+# leave the doc silently listing the old set.
+sed 's/diff:signals/zz-removed-label/g' "$INV" >"$TMP/inv-bad-label.md"
+if run_node "$HOIST_DELTA" --check "$TMP/inv-bad-label.md" >/dev/null 2>&1; then
+    fail "8: --check accepted a doc missing a measured label row — the gate is vacuous"
+fi
+pass "8: --check fires when the doc drops a measured label"
+
+# ...and the unmutated doc still passes, so the two self-tests above are not
+# just reporting a checker that rejects everything.
+run_node "$HOIST_DELTA" --check "$INV" >/dev/null 2>&1 ||
+    fail "8: --check rejects the real doc after the self-tests — the detector rejects everything"
+pass "8: --check still accepts the real doc (the self-tests are discriminating, not blanket)"
+
 say "verify-workflow-dispatch.sh: ALL GREEN"

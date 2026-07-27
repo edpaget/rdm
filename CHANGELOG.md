@@ -17,7 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   subagents each run actually spawns, then prices them using
   `docs/token-baseline.json`'s own measured per-class figures. It reports both a
   raw and a fresh (ex-cache-read) token column, since cache reads dominate the
-  raw totals and are the cheapest token there is. Stdlib-only Node, no packages.
+  raw totals and are the cheapest token there is. Its `--check <doc>` mode
+  asserts the figures it computes appear verbatim in
+  `docs/mechanical-agent-inventory.md`, so that document cannot drift into a
+  stale hand-transcription; `scripts/verify-workflow-dispatch.sh` section 8 runs
+  that check in CI with planted-mutation self-tests. Stdlib-only Node, no
+  packages.
 - `rdm task create` gained a `--no-plan-review` flag: it skips the automatic
   `needs-plan-review` stamp even when the `plan_review` config flag is
   enabled. Intended for tasks filed from a plan-review finding itself, so the
@@ -47,6 +52,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   measured corpus this removes 115 of 304 mechanical subagents (~38%); see
   `docs/mechanical-agent-inventory.md` for the full census, the classification
   rule, and the measured delta.
+- A caller-supplied `phaseMeta` payload for `dispatch-phase` must now carry the
+  phase's non-empty `model` difficulty tier (alongside its body and all five
+  resolved model ids) or it is rejected and the in-workflow fetch runs instead —
+  so the `rdm-dispatch-phase` and `rdm-do --auto` skills now gather and pass the
+  tier. The tier is the sole input to the code-review gate's strictness, and an
+  absent one silently fell back to `medium`: a caller that supplied everything
+  *but* the tier would have had a `large` phase reviewed at `medium` strictness,
+  letting a blocking finding that should have forced a rework round pass
+  straight to `reviewed`. A task payload carries no tier and is unaffected.
+  Rejection is a fallback, never an error — the run proceeds exactly as it does
+  with no payload at all.
 - The `rdm-plan-review` skill now reads its target with
   `rdm task show|phase show|roadmap show --format json` itself and passes the
   parsed JSON verbatim, instead of asking a subagent to transcribe it. That

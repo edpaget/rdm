@@ -334,13 +334,20 @@ therefore observed from the shipped code rather than asserted, and are then pric
 
 ```
 node scripts/measure-hoist-delta.mjs
+node scripts/measure-hoist-delta.mjs --check docs/mechanical-agent-inventory.md
 ```
 
 Over one dispatch pair it reports **6 of 6 mechanical subagents (100%) no longer spawned** —
 `fetch:phase-meta`/`fetch:task-meta`, `stamp:in-progress` and `diff:signals` in both phase and
-task mode. Priced against the baseline that is ~1.54M tokens, or **~298k on the fresh
-(ex-cache-read) column**, which is the decision-relevant one: cache reads dominate the raw
-totals and are the cheapest token there is, so the script reports both and neither alone.
+task mode. Priced against the baseline that is **1,536,932 tokens eliminated**, or **297,882 on
+the fresh (ex-cache-read) column**, which is the decision-relevant one: cache reads dominate the
+raw totals and are the cheapest token there is, so the script reports both and neither alone.
+
+Those two figures, and the six labels above, are written here **verbatim** rather than rounded
+because `--check` greps this document for them: it recomputes the delta from the shipped code and
+fails if the numbers here no longer match, so this section cannot rot into a stale
+hand-transcription. `scripts/verify-workflow-dispatch.sh` section 8 runs that `--check` (with a
+planted-mutation self-test), so CI enforces it.
 
 Its limits are stated in the script's own header and are worth repeating: a fake agent returns
 canned values instantly, so this measures **agent count exactly** and token cost only as

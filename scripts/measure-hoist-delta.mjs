@@ -372,7 +372,11 @@ if (args.check) {
   // The doc must carry the numbers this script computes, so it cannot drift
   // into being a stale hand-transcription — which is exactly the failure mode
   // the prior pass's "replay delta" prose had.
-  const docPath = path.join(REPO_ROOT, args.check);
+  // `resolve`, not `join`: a relative path still resolves against the repo root
+  // (so the documented `--check docs/...` invocation works from any cwd), but an
+  // ABSOLUTE path is honoured as given — which is what lets a harness point the
+  // checker at a mutated copy outside the working tree for a self-test.
+  const docPath = path.resolve(REPO_ROOT, args.check);
   const doc = fs.readFileSync(docPath, 'utf8');
   const missing = [];
   const need = [
