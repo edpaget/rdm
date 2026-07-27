@@ -116,7 +116,42 @@ function parseDispatchArgs(args) {
     planOnly: !!dispatchArgs.planOnly,
     maxPlanRevise: parseBudget(dispatchArgs.maxPlanRevise, 'maxPlanRevise', DEFAULT_MAX_PLAN_REVISE),
     maxCodeRework: parseBudget(dispatchArgs.maxCodeRework, 'maxCodeRework', DEFAULT_MAX_CODE_REWORK),
+    // --- Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md).
+    // A caller that is ALREADY a running agent with the repo in context (the
+    // rdm-dispatch-phase / rdm-do --auto shims) can run the mechanical command
+    // itself and pass the result here, so the workflow never spawns a dedicated
+    // subagent for it. Every one of these is OPTIONAL: absent/malformed simply
+    // falls through to the in-workflow agent, which is exactly what a direct
+    // `Workflow` invocation (no caller) does.
+    phaseMeta: dispatchArgs.phaseMeta && typeof dispatchArgs.phaseMeta === 'object' ? dispatchArgs.phaseMeta : null,
+    taskMeta: dispatchArgs.taskMeta && typeof dispatchArgs.taskMeta === 'object' ? dispatchArgs.taskMeta : null,
+    // The caller already wrote `--status in-progress` itself and it exited 0, so
+    // the workflow's own observability stamp is redundant. NEVER set by a
+    // --plan-only invocation (the workflow suppresses the stamp there anyway).
+    alreadyInProgress: !!dispatchArgs.alreadyInProgress,
   };
+}
+
+// hoistedMetaComplete(meta, isTask) — the ALL-OR-NOTHING guard on a caller-
+// supplied phase/task meta payload. A hoisted meta replaces a fetch agent that
+// did TWO things: read the item body AND resolve the five per-step model ids.
+// Accepting a partial payload would therefore save nothing (the driver would
+// still need a model-resolving agent) while actively breaking the run: an
+// incomplete `models` map trips the driver's `unresolvedStep` check and
+// short-circuits the whole dispatch as a fetchError. So: accept only when the
+// body is a non-empty string AND all five model ids are non-empty strings —
+// otherwise reject and let the original agent run untouched.
+//
+// `isTask` is accepted for symmetry with the two schemas (TASK_META carries no
+// roadmap/stem/model tier) but imposes no extra requirement: body + models are
+// the only fields the driver cannot derive on its own.
+function hoistedMetaComplete(meta, isTask) {
+  if (!meta || typeof meta !== 'object') return false;
+  if (typeof meta.body !== 'string' || String(meta.body).trim() === '') return false;
+  const m = meta.models;
+  if (!m || typeof m !== 'object') return false;
+  const keys = ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'];
+  return keys.filter((k) => typeof m[k] !== 'string' || m[k] === '').length === 0;
 }
 
 // runPlanGate(config, deps) — the bounded plan stage. Author a plan, review it,
@@ -502,6 +537,7 @@ export {
   DEFAULT_MAX_CODE_REWORK,
   parseBudget,
   parseDispatchArgs,
+  hoistedMetaComplete,
   runPlanGate,
   runCodeGate,
   codeReviewRounds,

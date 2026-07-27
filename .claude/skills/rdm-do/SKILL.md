@@ -84,13 +84,18 @@ For unattended Claude Code runs (where no human is present to approve permission
 
 ## Auto phase dispatch (--auto, phase flow only)
 
-1. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`, provisioned automatically by `rdm agent-config claude --skills`) via the `Workflow` tool with `{ roadmap: <slug>, phase: <stem> }`; block for its returned OUTCOME.
-2. Interpret the OUTCOME and persist status. The OUTCOME carries the canonical gate policy **as data** — `outcome.status` (the status the canonical review mapped this outcome to), `outcome.reason` (already carrying its `[code]`/`[plan]` gate tag), and `outcome.writesCompletion` — so read those fields rather than restating the map. dispatch-phase's code-review stage IS the canonical review, so the work is already reviewed by the time you see the OUTCOME.
+1. Gather the mechanical values yourself first and hand them to the workflow. You already ran `rdm phase show` in step 2 and stamped the phase `in-progress` in step 3 — reuse both rather than making the workflow re-do them with dedicated subagents. Every one of these args is **optional**; the workflow falls back to its own in-workflow fetch for anything you omit or get wrong.
+   - Re-run `./target/debug/rdm phase show <phase> --roadmap <slug> --project rdm --format json` if you did not keep the parsed JSON.
+   - Resolve the five per-step model ids. Let `T` be the phase JSON's `model` tier: run `./target/debug/rdm model resolve plan --tier T` and `./target/debug/rdm model resolve implement --tier T` **with** the tier hint when `T` is a non-empty string, without it otherwise; then `./target/debug/rdm model resolve review-find`, `./target/debug/rdm model resolve review-verify` and `./target/debug/rdm model resolve mechanical` with **no** `--tier` argument, always.
+   - Assemble `phaseMeta` as `{ roadmap, phase, stem, model, body, models: { plan, implement, review_find, review_verify, mechanical } }`, copying the `body` and the model ids **verbatim** — never summarize or invent one. The workflow applies an all-or-nothing guard: a payload missing the body or any one of the five ids is rejected outright and the in-workflow fetch runs instead.
+   - Pass `alreadyInProgress: true` **only** because step 3 already ran `./target/debug/rdm phase update <phase> --status in-progress` and it exited 0 — that write happens strictly before the workflow is invoked, so the phase is observably `in-progress` earlier than the workflow's own stamp would make it. Never pass it for a `--plan-only` invocation.
+2. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`, provisioned automatically by `rdm agent-config claude --skills`) via the `Workflow` tool with `{ roadmap: <slug>, phase: <stem>, phaseMeta, alreadyInProgress: true }`; block for its returned OUTCOME.
+3. Interpret the OUTCOME and persist status. The OUTCOME carries the canonical gate policy **as data** — `outcome.status` (the status the canonical review mapped this outcome to), `outcome.reason` (already carrying its `[code]`/`[plan]` gate tag), and `outcome.writesCompletion` — so read those fields rather than restating the map. dispatch-phase's code-review stage IS the canonical review, so the work is already reviewed by the time you see the OUTCOME.
    - `reviewed` → persist `outcome.status`: `rdm phase update <phase> --status reviewed --no-edit --roadmap <slug> --project rdm` then `rdm commit -m "chore(plan): finalize <phase>"`
    - `rework` → this lane is single-pass, so park it in the escalation queue with `outcome.reason` instead of leaving it merely in-progress: `rdm phase update <phase> --status blocked --reason "[code] <outcome.summary>" --no-edit --roadmap <slug> --project rdm` then `rdm commit -m "chore(plan): park <phase>"`
    - `escalated` → same, with the plan-gate tag: `rdm phase update <phase> --status blocked --reason "[plan] <outcome.summary>" --no-edit --roadmap <slug> --project rdm` then `rdm commit -m "chore(plan): park <phase>"`
    - Do NOT add a `Done:` line here. `outcome.writesCompletion` is `true` only on `reviewed`, and it is `rdm-land` that reads it and synthesizes the trailer via `rdm hook done-line` at land time — no manual rebase, and no pre-step before `rdm-land`.
-3. Return the OUTCOME JSON verbatim as the final message.
+4. Return the OUTCOME JSON verbatim as the final message.
 
 This section applies only to `--auto` + the phase flow. Interactive `rdm-do` (either flow) is unaffected and keeps the steps above unchanged.
 
@@ -98,13 +103,18 @@ This section applies only to `--auto` + the phase flow. Interactive `rdm-do` (ei
 
 The task-flow twin of the phase dispatch above. A task belongs to no roadmap, carries no difficulty/model tier, and lives in its own `task/<slug>` worktree.
 
-1. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`) via the `Workflow` tool with `{ task: <slug> }`; block for its returned OUTCOME. The task-mode OUTCOME is keyed by `task` (the slug), not `roadmap`/`phase`.
-2. Interpret the OUTCOME and persist status (a true mirror of the phase contract). The task-mode OUTCOME carries the same canonical `outcome.status` / `outcome.reason` / `outcome.writesCompletion` fields — read them rather than restating the map. `escalated` maps to the `blocked` **task** status; it is never downgraded to `in-progress`.
+1. Gather the mechanical values yourself first and hand them to the workflow. You already ran `rdm task show` in step 2 and stamped the task `in-progress` in step 3 — reuse both rather than making the workflow re-do them with dedicated subagents. Every one of these args is **optional**; the workflow falls back to its own in-workflow fetch for anything you omit or get wrong.
+   - Re-run `./target/debug/rdm task show <slug> --project rdm --format json` if you did not keep the parsed JSON.
+   - Resolve the five per-step model ids. A task carries no tier, so run all five with **no** `--tier` argument: `./target/debug/rdm model resolve plan`, `./target/debug/rdm model resolve implement`, `./target/debug/rdm model resolve review-find`, `./target/debug/rdm model resolve review-verify`, `./target/debug/rdm model resolve mechanical`.
+   - Assemble `taskMeta` as `{ task, body, models: { plan, implement, review_find, review_verify, mechanical } }`, copying the `body` and the model ids **verbatim** — never summarize or invent one. The same all-or-nothing guard applies: a payload missing the body or any one of the five ids is rejected and the in-workflow fetch runs instead.
+   - Pass `alreadyInProgress: true` **only** because step 3 already ran `./target/debug/rdm task update <slug> --status in-progress` and it exited 0.
+2. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`) via the `Workflow` tool with `{ task: <slug>, taskMeta, alreadyInProgress: true }`; block for its returned OUTCOME. The task-mode OUTCOME is keyed by `task` (the slug), not `roadmap`/`phase`.
+3. Interpret the OUTCOME and persist status (a true mirror of the phase contract). The task-mode OUTCOME carries the same canonical `outcome.status` / `outcome.reason` / `outcome.writesCompletion` fields — read them rather than restating the map. `escalated` maps to the `blocked` **task** status; it is never downgraded to `in-progress`.
    - `reviewed` -> persist `outcome.status`: `rdm task update <slug> --status reviewed --no-edit --project rdm` then `rdm commit -m "chore(plan): finalize <slug>"`
    - `rework` -> single-pass park with `outcome.reason`: `rdm task update <slug> --status blocked --reason "[code] <outcome.summary>" --no-edit --project rdm` then `rdm commit -m "chore(plan): park <slug>"`
    - `escalated` -> `rdm task update <slug> --status blocked --reason "[plan] <outcome.summary>" --no-edit --project rdm` then `rdm commit -m "chore(plan): park <slug>"`
    - Do NOT add a `Done:` line here. On `reviewed` the OUTCOME's `writesCompletion` is `true` and `rdm-land` is the land-time writer — it synthesizes `Done: task/<slug>` via `rdm hook done-line` before the rebase.
-3. Return the OUTCOME JSON verbatim as the final message.
+4. Return the OUTCOME JSON verbatim as the final message.
 
 Tasks always dispatch at the fixed `medium` tier (there is no task estimate), so the `large`-tier gate tightening never applies. Task bodies often carry no formal acceptance criteria; the plan/review gates tolerate their absence.
 

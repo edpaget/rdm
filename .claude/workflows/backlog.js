@@ -538,6 +538,39 @@ const MECHANICAL_MODEL_SCHEMA = {
 }
 
 // --- Driver ------------------------------------------------------------------
+
+// coerceRawArgs(a) — JSON-string-tolerant read of the raw payload, so a
+// stringified `args` still surfaces the optional caller-supplied hoists below.
+// Never throws: anything unusable yields {} and every hoist read then falls
+// through to its agent.
+function coerceRawArgs(a) {
+  let raw = a || {}
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw) || {}
+    } catch (e) {
+      raw = {}
+    }
+  }
+  if (!raw || typeof raw !== 'object') raw = {}
+  return raw
+}
+// Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md). The
+// rdm-backlog shim is already a running agent with the repo in context, so it
+// runs `rdm model resolve mechanical` / `rdm backlog report --format json`
+// itself and passes the results here. Both are OPTIONAL: absent or malformed
+// falls through to the original agent, which is what a direct `Workflow`
+// invocation always does. Hoisting `report` does not weaken the propose-only
+// contract — `rdm backlog report` is read-only whoever runs it.
+const rawBacklogArgs = coerceRawArgs(args)
+// hoistedReportOk(r) — the shape guard: an object carrying all four signal
+// arrays. Anything else is rejected and the fetch:report agent runs.
+function hoistedReportOk(r) {
+  if (!r || typeof r !== 'object') return false
+  return ['stale_tasks', 'duplicate_clusters', 'tag_clusters', 'archivable_roadmaps'].filter((k) => !Array.isArray(r[k]))
+    .length === 0
+}
+
 // Real deps close over the ambient Workflow globals (agent/parallel/log). These
 // live OUTSIDE the copied block; the block itself names no ambient global.
 let mechanicalModel = ''
@@ -553,6 +586,11 @@ const realDeps = {
   // mechanical-tier sweep whitelists this label by name for exactly that
   // reason — do not add a `model:` key here.
   resolveMechanicalModel: async function () {
+    // HOIST: the caller already ran `rdm model resolve mechanical`.
+    if (typeof rawBacklogArgs.mechanicalModel === 'string' && rawBacklogArgs.mechanicalModel.trim() !== '') {
+      log('backlog: mechanical model hoisted from caller args')
+      return rawBacklogArgs.mechanicalModel.trim()
+    }
     const r = await agent(buildMechanicalModelPrompt(), {
       label: 'model:mechanical',
       phase: 'Report',
@@ -564,6 +602,11 @@ const realDeps = {
   // report` only (see buildFetchReportPrompt's comment for why its command
   // template is provably read-only by construction).
   fetchReport: async function (cfg) {
+    // HOIST: the caller already ran `rdm backlog report --format json`.
+    if (hoistedReportOk(rawBacklogArgs.report)) {
+      log('backlog: report hoisted from caller args')
+      return rawBacklogArgs.report
+    }
     return agent(buildFetchReportPrompt(cfg), {
       label: 'fetch:report',
       phase: 'Report',

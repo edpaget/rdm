@@ -242,6 +242,136 @@ else
 fi
 
 # --- 7. hermeticity guard: repo git status unchanged after the whole run ---
+# --- 6d. HOIST ARGS on the three REAL shims --------------------------------
+# Phase 3 of the workflow-token-reduction roadmap teaches the Workflow-invoking
+# shims to gather mechanical values themselves and pass them through `args`, so
+# the workflow never spawns a dedicated subagent for them
+# (docs/mechanical-agent-inventory.md).
+#
+# SCOPE: this check is deliberately limited to the THREE emitted skills that are
+# actually Workflow shims — rdm-autopilot, rdm-dispatch-phase and rdm-do. The
+# other five (rdm-plan-review, rdm-backlog, rdm-document, rdm-review,
+# rdm-estimate) are NOT shims on the distribution surface: their templates still
+# dispatch their own Agent/Bash prose and contain zero `.claude/workflows`
+# references. Their hoists live only in this repo's LOCAL dogfood copies and are
+# gated by each workflow's own harness (verify-workflow-{review,backlog,document,
+# estimate,review-outcome}.sh). Converting those ten templates is tracked by task
+# convert-remaining-skill-templates-to-workflow-shims — extending this check to
+# them would fail immediately and pressure an out-of-scope conversion.
+say "6d. Hoist args: the three real Workflow shims gather and pass their optional args"
+
+# assert_shim_hoists <emitted-root> <variant> — each of the three shims must
+# name the arg keys it passes AND the command/tool it gathers them with. The MCP
+# variant deliberately omits the model-derived hoists (no MCP model-resolve
+# tool), so the two variants have different, explicitly-listed expectations.
+assert_shim_hoists() {
+    root=$1
+    variant=$2
+    HOIST_REF_COUNT=0
+    HOIST_FAILURE=""
+
+    _need() {
+        f=$1
+        needle=$2
+        if grep -qF -e "$needle" "$f"; then
+            HOIST_REF_COUNT=$((HOIST_REF_COUNT + 1))
+        else
+            HOIST_FAILURE="$variant: $(basename "$(dirname "$f")") is missing '$needle'"
+            return 1
+        fi
+    }
+
+    ap="$root/.claude/skills/rdm-autopilot/SKILL.md"
+    dp="$root/.claude/skills/rdm-dispatch-phase/SKILL.md"
+    do_="$root/.claude/skills/rdm-do/SKILL.md"
+
+    # rdm-autopilot: phaseList + next on both variants; mechanicalModel on CLI only.
+    _need "$ap" 'phaseList' || return 1
+    _need "$ap" 'next' || return 1
+    if [ "$variant" = cli ]; then
+        _need "$ap" 'mechanicalModel' || return 1
+        _need "$ap" 'rdm model resolve mechanical' || return 1
+        _need "$ap" 'rdm phase list --roadmap <slug> --format json' || return 1
+        _need "$ap" 'rdm next --roadmap <slug> --format json' || return 1
+    fi
+    # `next` must be documented as one-shot on both variants, or a caller could
+    # cache it and re-dispatch the same phase forever.
+    _need "$ap" 'one-shot, on the first loop iteration only' || return 1
+
+    # rdm-dispatch-phase: alreadyInProgress on both; phaseMeta/taskMeta CLI only.
+    _need "$dp" 'alreadyInProgress' || return 1
+    if [ "$variant" = cli ]; then
+        _need "$dp" 'phaseMeta' || return 1
+        _need "$dp" 'taskMeta' || return 1
+        _need "$dp" 'phase show <phase> --roadmap <slug>' || return 1
+        _need "$dp" 'rdm model resolve mechanical' || return 1
+        _need "$dp" '--status in-progress' || return 1
+    fi
+
+    # rdm-do --auto: same contract, both flows.
+    _need "$do_" 'alreadyInProgress' || return 1
+    if [ "$variant" = cli ]; then
+        _need "$do_" 'phaseMeta' || return 1
+        _need "$do_" 'taskMeta' || return 1
+        _need "$do_" 'rdm model resolve mechanical' || return 1
+    fi
+
+    return 0
+}
+
+for variant in cli mcp; do
+    if assert_shim_hoists "$TMP/$variant" "$variant"; then
+        pass "$variant: all $HOIST_REF_COUNT hoist-arg reference(s) present across the three real shims"
+    else
+        fail "$HOIST_FAILURE"
+    fi
+    # Occurrence floor, so the check can never pass vacuously: CLI asserts 15
+    # references, MCP 5. A drop below the floor means a shim silently stopped
+    # gathering.
+    if [ "$variant" = cli ]; then
+        [ "$HOIST_REF_COUNT" -ge 15 ] ||
+            fail "cli: expected >= 15 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
+    else
+        [ "$HOIST_REF_COUNT" -ge 5 ] ||
+            fail "mcp: expected >= 5 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
+    fi
+done
+pass "hoist-arg occurrence floors hold for both variants"
+
+# Negative: the five NON-shim skills must NOT have been dragged into this — if a
+# future edit turns them into shims, that is a deliberate change belonging to
+# task convert-remaining-skill-templates-to-workflow-shims, and this assertion
+# is the reminder to move their checks here at the same time.
+for variant in cli mcp; do
+    for skill in rdm-plan-review rdm-backlog rdm-document rdm-review rdm-estimate; do
+        md="$TMP/$variant/.claude/skills/$skill/SKILL.md"
+        if grep -qF '.claude/workflows' "$md"; then
+            fail "$variant: $skill became a Workflow shim — move its hoist-arg check into section 6d (see task convert-remaining-skill-templates-to-workflow-shims)"
+        fi
+    done
+done
+pass "the five non-shim skills are still non-shims — their hoists correctly stay on the local dogfood copies"
+
+# --- 6e. Self-test: a typo'd arg key in a real shim must be caught ----------
+say "6e. Self-test: planted typo in a shim's hoist-arg key"
+cp -R "$TMP/cli" "$TMP/cli-hoist-typo"
+sed 's/phaseMeta/phaseMata/g' "$TMP/cli/.claude/skills/rdm-dispatch-phase/SKILL.md" \
+    >"$TMP/cli-hoist-typo/.claude/skills/rdm-dispatch-phase/SKILL.md"
+if assert_shim_hoists "$TMP/cli-hoist-typo" cli; then
+    fail "6e: hoist-arg check did not detect a typo'd 'phaseMeta' key — the check is vacuous"
+fi
+pass "6e: hoist-arg check detects a typo'd arg key ($HOIST_FAILURE)"
+
+say "6f. Self-test: a shim that stops gathering must be caught"
+cp -R "$TMP/cli" "$TMP/cli-hoist-drop"
+sed 's/rdm model resolve mechanical/rdm model resolve mechanicl/g' \
+    "$TMP/cli/.claude/skills/rdm-autopilot/SKILL.md" \
+    >"$TMP/cli-hoist-drop/.claude/skills/rdm-autopilot/SKILL.md"
+if assert_shim_hoists "$TMP/cli-hoist-drop" cli; then
+    fail "6f: hoist-arg check did not detect a mangled gathering command — the check is vacuous"
+fi
+pass "6f: hoist-arg check detects a mangled gathering command ($HOIST_FAILURE)"
+
 say "7. Confirming $REPO_ROOT git status is unchanged after the whole run"
 AFTER_STATUS=$(git -C "$REPO_ROOT" status --porcelain)
 if [ "$BEFORE_STATUS" != "$AFTER_STATUS" ]; then

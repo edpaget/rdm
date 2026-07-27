@@ -805,4 +805,155 @@ LINES=$(wc -l <"$SKILL" | tr -d ' ')
 [ "$LINES" -le 60 ] || fail "SKILL.md is $LINES lines — expected a thin shim (~40-60 lines), the old prose may not be fully removed"
 pass "SKILL.md is a thin shim ($LINES lines) invoking the backlog Workflow, old prose removed"
 
+# --- HOIST: caller-supplied mechanicalModel / report --------------------------
+# Phase 3 of the workflow-token-reduction roadmap eliminates mechanical
+# subagents by never spawning them (docs/mechanical-agent-inventory.md). In
+# backlog.js both hoists live in the DRIVER REGION's realDeps only; the copied
+# `backlog-groom` block is untouched. Both are OPTIONAL — the original agent
+# call is reached through a fall-through and is never deleted — and neither
+# weakens the propose-only contract: `rdm backlog report` is read-only whoever
+# runs it, and the zero-mutation section above still gates that independently.
+say "HOIST. backlog.js driver region: mechanicalModel / report hoists and their fallbacks"
+
+cat >"$TMP/hoist.mjs" <<'NODE_HOIST'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const wfPath = process.argv[2];
+let src = fs.readFileSync(wfPath, 'utf8');
+src = src.replace(/^export /m, '');
+const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-backlog-hoist-wrapped.mjs');
+fs.writeFileSync(wrapperPath, 'export default async function(args, agent, parallel, log) {\n' + src + '\n}\n');
+const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
+const run = mod.default;
+
+const REPORT = {
+  stale_tasks: [{ slug: 's1', title: 'Stale one', status: 'open', age_days: 99 }],
+  duplicate_clusters: [],
+  tag_clusters: [],
+  archivable_roadmaps: [],
+};
+
+function makeAgent(o) {
+  o = o || {};
+  const calls = [];
+  const agent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    calls.push({ label, prompt, opts });
+    if (label === 'model:mechanical') return { model: o.model === undefined ? 'agent-haiku' : o.model };
+    if (label === 'fetch:report') return o.report === undefined ? REPORT : o.report;
+    if (label.startsWith('analyze:')) return { proposals: [], openQuestions: [] };
+    return {};
+  };
+  return { agent, calls, count: (l) => calls.filter((c) => c.label === l).length };
+}
+const refParallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+const nolog = () => {};
+
+{
+  const a = makeAgent({});
+  const out = await run({ mechanicalModel: 'hoisted-haiku', report: REPORT }, a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 0, 'hoisted mechanicalModel -> no model:mechanical agent call');
+  assert.equal(a.count('fetch:report'), 0, 'hoisted report -> no fetch:report agent call');
+  assert.equal(a.count('analyze:stale_tasks'), 1, 'the hoisted report really drives the analyzer fan-out');
+  assert.ok(out && typeof out.summary === 'string', 'the hoisted path still returns a summary');
+}
+{
+  const a = makeAgent({});
+  const outPlain = await run({}, a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 1, 'no hoist -> exactly one model:mechanical agent call');
+  assert.equal(a.count('fetch:report'), 1, 'no hoist -> exactly one fetch:report agent call');
+  const b = makeAgent({});
+  const outHoisted = await run({ mechanicalModel: 'agent-haiku', report: REPORT }, b.agent, refParallel, nolog);
+  assert.deepEqual(outHoisted, outPlain, 'the result is deep-equal with and without the hoists');
+}
+for (const [name, bad] of [
+  ['null', null],
+  ['empty string', ''],
+  ['wrong type', 7],
+]) {
+  const a = makeAgent({});
+  await run({ mechanicalModel: bad, report: REPORT }, a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 1, 'malformed mechanicalModel (' + name + ') falls back to the agent');
+}
+for (const [name, bad] of [
+  ['null', null],
+  ['array', []],
+  ['missing one signal array', { stale_tasks: [], duplicate_clusters: [], tag_clusters: [] }],
+  ['a signal key that is not an array', { ...REPORT, tag_clusters: 'none' }],
+]) {
+  const a = makeAgent({});
+  await run({ mechanicalModel: 'hoisted-haiku', report: bad }, a.agent, refParallel, nolog);
+  assert.equal(a.count('fetch:report'), 1, 'malformed report (' + name + ') falls back to the agent');
+}
+{
+  const a = makeAgent({});
+  await run(JSON.stringify({ mechanicalModel: 'hoisted-haiku', report: REPORT }), a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 0, 'a stringified args payload still surfaces mechanicalModel');
+  assert.equal(a.count('fetch:report'), 0, 'a stringified args payload still surfaces report');
+}
+console.log('backlog hoist assertions passed');
+NODE_HOIST
+
+if run_node "$TMP/hoist.mjs" "$WF"; then
+    pass "backlog hoist/fallback verified against the real driver under a recording fake agent"
+else
+    fail "backlog hoist/fallback assertions failed against $WF"
+fi
+
+assert_wf_mutant_fails() {
+    mutant=$1
+    desc=$2
+    if cmp -s "$WF" "$mutant"; then
+        fail "HOIST: planted mutation was a no-op — $desc"
+    fi
+    if run_node "$TMP/hoist.mjs" "$mutant" >/dev/null 2>&1; then
+        fail "HOIST: assertions PASSED against a driver that $desc — they are vacuous"
+    fi
+    pass "HOIST: assertions fire when the driver $desc"
+}
+
+# (1) Drop the fetch:report fallback: return the (possibly absent) hoist always.
+awk '
+    index($0, "  fetchReport: async function (cfg) {") { print; print "    return rawBacklogArgs.report"; skipping = 1; next }
+    skipping && index($0, "  },") == 1 { skipping = 0; print; next }
+    skipping { next }
+    { print }
+' "$WF" >"$TMP/mutant-no-report-fallback.js"
+assert_wf_mutant_fails "$TMP/mutant-no-report-fallback.js" "drops the fetch:report fallback"
+
+# (2) Weaken the report shape guard to "anything object-ish".
+sed 's/^  return \[.stale_tasks., .duplicate_clusters., .tag_clusters., .archivable_roadmaps.\].filter((k) => !Array.isArray(r\[k\]))$/  return true \&\& [].filter((k) => !Array.isArray(r[k]))/' "$WF" >"$TMP/mutant-weak-report-guard.js"
+assert_wf_mutant_fails "$TMP/mutant-weak-report-guard.js" "weakens the report shape guard to any object"
+
+# (3) Drop the model:mechanical fallback.
+sed "s/^    if (typeof rawBacklogArgs.mechanicalModel === 'string' \&\& rawBacklogArgs.mechanicalModel.trim() !== '') {\$/    if (true) {/" "$WF" >"$TMP/mutant-no-model-fallback.js"
+assert_wf_mutant_fails "$TMP/mutant-no-model-fallback.js" "drops the model:mechanical fallback"
+
+# --- SHIM: the LOCAL rdm-backlog shim gathers and passes both hoists ----------
+# `.claude/skills/rdm-backlog/SKILL.md` is a LOCAL dogfood shim; its distributed
+# template (rdm-core/src/templates/skill-backlog-{cli,mcp}.md) is NOT a Workflow
+# shim yet (tracked by task convert-remaining-skill-templates-to-workflow-shims),
+# so this check belongs here and NOT in verify-agent-config-distribution.sh.
+say "HOIST-SHIM. .claude/skills/rdm-backlog/SKILL.md gathers and passes mechanicalModel + report"
+
+assert_shim_gathers() {
+    grep -qF 'rdm model resolve mechanical' "$1" || return 1
+    grep -qF 'rdm backlog report --format json' "$1" || return 1
+    [ "$(grep -cF 'mechanicalModel' "$1")" -ge 2 ] || return 1
+    [ "$(grep -cF 'report' "$1")" -ge 2 ] || return 1
+    return 0
+}
+assert_shim_gathers "$SKILL" ||
+    fail "HOIST-SHIM: $SKILL must gather 'rdm model resolve mechanical' and 'rdm backlog report --format json' and pass mechanicalModel + report (each named at least twice)"
+pass "HOIST-SHIM: the local shim gathers and passes both hoisted args"
+
+sed 's/mechanicalModel/mechModel/g' "$SKILL" >"$TMP/shim-typo.md"
+if assert_shim_gathers "$TMP/shim-typo.md"; then
+    fail "HOIST-SHIM: detector missed a typo'd arg key in the shim"
+fi
+pass "HOIST-SHIM: detector fires on a typo'd arg key in the shim"
+
 say "verify-workflow-backlog.sh: ALL GREEN"

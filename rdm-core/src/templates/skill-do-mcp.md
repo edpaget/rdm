@@ -93,13 +93,16 @@ This skill does its work in an isolated git worktree — **one worktree per road
 
 ## Auto phase dispatch (--auto, phase flow only)
 
-1. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`, provisioned automatically by `rdm agent-config claude --skills`) via the `Workflow` tool with `{ roadmap: <slug>, phase: <stem> }`; block for its returned OUTCOME.
-2. Interpret the OUTCOME and persist status. The OUTCOME carries the canonical gate policy **as data** — `outcome.status` (the status the canonical review mapped this outcome to), `outcome.reason` (already carrying its `[code]`/`[plan]` gate tag), and `outcome.writesCompletion` — so read those fields rather than restating the map. dispatch-phase's code-review stage IS the canonical review, so the work is already reviewed by the time you see the OUTCOME.
+1. Pass `alreadyInProgress: true` in the workflow args, because step 3 already ran `{t_phase_update}` with `status: "in-progress"` and it succeeded — that write happens strictly before the workflow is invoked, so the phase is observably `in-progress` earlier than the workflow's own stamp would make it, and the workflow can skip a dedicated subagent for it. The flag is **optional**: omit it and the workflow stamps the phase itself, exactly as before. Never pass it for a `--plan-only` invocation.
+
+   `phaseMeta` is **deliberately not hoisted here**: the workflow applies an all-or-nothing guard requiring the body plus all five resolved per-step model ids, and there is no MCP model-resolve tool — so a partial payload would be rejected outright and the in-workflow fetch remains the path on MCP. Do not invent model ids.
+2. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`, provisioned automatically by `rdm agent-config claude --skills`) via the `Workflow` tool with `{ roadmap: <slug>, phase: <stem>, alreadyInProgress: true }`; block for its returned OUTCOME.
+3. Interpret the OUTCOME and persist status. The OUTCOME carries the canonical gate policy **as data** — `outcome.status` (the status the canonical review mapped this outcome to), `outcome.reason` (already carrying its `[code]`/`[plan]` gate tag), and `outcome.writesCompletion` — so read those fields rather than restating the map. dispatch-phase's code-review stage IS the canonical review, so the work is already reviewed by the time you see the OUTCOME.
    - `reviewed` → persist `outcome.status`: use `{t_phase_update}` with `project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "reviewed"` then call `{t_commit}` with `message: "chore(plan): finalize <phase>"`
    - `rework` → this lane is single-pass, so park it in the escalation queue with `outcome.reason` instead of leaving it merely in-progress: use `{t_phase_update}` with `status: "blocked", reason: "[code] <outcome.summary>"` then call `{t_commit}` with `message: "chore(plan): park <phase>"`
    - `escalated` → same, with the plan-gate tag: use `{t_phase_update}` with `status: "blocked", reason: "[plan] <outcome.summary>"` then call `{t_commit}` with `message: "chore(plan): park <phase>"`
    - Do NOT add a `Done:` line here. `outcome.writesCompletion` is `true` only on `reviewed`, and it is `rdm-land` that reads it and synthesizes the trailer via `rdm hook done-line` at land time — no manual rebase, and no pre-step before `rdm-land`.
-3. Return the OUTCOME JSON verbatim as the final message.
+4. Return the OUTCOME JSON verbatim as the final message.
 
 This section applies only to `--auto` + the phase flow. Interactive `rdm-do` (either flow) is unaffected and keeps the steps above unchanged.
 
@@ -107,13 +110,14 @@ This section applies only to `--auto` + the phase flow. Interactive `rdm-do` (ei
 
 The task-flow twin of the phase dispatch above. A task belongs to no roadmap, carries no difficulty/model tier, and lives in its own `task/<slug>` worktree.
 
-1. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`) via the `Workflow` tool with `{ task: <slug> }`; block for its returned OUTCOME. The task-mode OUTCOME is keyed by `task` (the slug), not `roadmap`/`phase`.
-2. Interpret the OUTCOME and persist status (a true mirror of the phase contract). The task-mode OUTCOME carries the same canonical `outcome.status` / `outcome.reason` / `outcome.writesCompletion` fields — read them rather than restating the map. `escalated` maps to the `blocked` **task** status; it is never downgraded to `in-progress`.
+1. Pass `alreadyInProgress: true` in the workflow args, because step 3 already ran `{t_task_update}` with `status: "in-progress"` and it succeeded. As on the phase path, `taskMeta` is **not** hoisted on MCP — there is no model-resolve tool, and the workflow's all-or-nothing guard would reject a payload missing the five model ids.
+2. Invoke the `dispatch-phase` Workflow (`.claude/workflows/dispatch-phase.js`) via the `Workflow` tool with `{ task: <slug>, alreadyInProgress: true }`; block for its returned OUTCOME. The task-mode OUTCOME is keyed by `task` (the slug), not `roadmap`/`phase`.
+3. Interpret the OUTCOME and persist status (a true mirror of the phase contract). The task-mode OUTCOME carries the same canonical `outcome.status` / `outcome.reason` / `outcome.writesCompletion` fields — read them rather than restating the map. `escalated` maps to the `blocked` **task** status; it is never downgraded to `in-progress`.
    - `reviewed` -> persist `outcome.status`: use `{t_task_update}` with `project: {proj_param}, task: "<slug>", status: "reviewed"` then call `{t_commit}` with `message: "chore(plan): finalize <slug>"`
    - `rework` -> single-pass park with `outcome.reason`: use `{t_task_update}` with `status: "blocked", reason: "[code] <outcome.summary>"` then call `{t_commit}` with `message: "chore(plan): park <slug>"`
    - `escalated` -> use `{t_task_update}` with `status: "blocked", reason: "[plan] <outcome.summary>"` then call `{t_commit}` with `message: "chore(plan): park <slug>"`
    - Do NOT add a `Done:` line here. On `reviewed` the OUTCOME's `writesCompletion` is `true` and `rdm-land` is the land-time writer — it synthesizes `Done: task/<slug>` via `rdm hook done-line` before the rebase.
-3. Return the OUTCOME JSON verbatim as the final message.
+4. Return the OUTCOME JSON verbatim as the final message.
 
 Tasks always dispatch at the fixed `medium` tier (there is no task estimate), so the `large`-tier gate tightening never applies. Task bodies often carry no formal acceptance criteria; the plan/review gates tolerate their absence.
 

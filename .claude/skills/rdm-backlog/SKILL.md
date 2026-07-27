@@ -17,11 +17,14 @@ Run a batched **grooming pass** over the backlog by invoking the **`backlog` Wor
 ## What to do
 
 1. **Parse `$ARGUMENTS`** into `{ project, olderThan, tag }`, omitting any field not supplied.
-2. **Invoke the `backlog` workflow** via the Workflow tool with that object. Pass `args` as a JSON object, never a stringified value. The workflow:
-   - runs `rdm backlog report --format json` once (the only Bash-executing step);
+2. **Gather the two mechanical values yourself and add them to that object.** You are already a running agent with the repo in context; the workflow is not, so each of these otherwise costs it a whole dedicated subagent. Both are **optional** — the workflow falls back to its own in-workflow fetch for anything you omit or get wrong. Neither weakens the propose-only contract: both commands are read-only.
+   - `mechanicalModel` — the id printed by `./target/debug/rdm model resolve mechanical`, verbatim.
+   - `report` — the parsed object from `./target/debug/rdm backlog report --format json` (adding `--older-than <days>` / `--tag <tag>` when supplied), passed through **verbatim**, never summarized. It must carry all four signal arrays (`stale_tasks`, `duplicate_clusters`, `tag_clusters`, `archivable_roadmaps`) or the workflow rejects it and fetches its own.
+3. **Invoke the `backlog` workflow** via the Workflow tool with that object (`{ project, olderThan, tag, mechanicalModel, report }`). Pass `args` as a JSON object, never a stringified value. The workflow:
+   - uses the `report` you supplied, or runs `rdm backlog report --format json` itself once (its only Bash-executing step);
    - fans one READ-ONLY analyzer agent out per populated signal category (`stale_tasks`, `duplicate_clusters`, `tag_clusters`, `archivable_roadmaps`) in parallel;
    - consolidates the results into one ordered batch — a subsection per category that produced a proposal, plus a merged `## Open questions` section for anything it could not confidently resolve;
    - short-circuits to `{ groomed: false, summary: "Nothing to groom — the backlog report returned no signals" }` when all four categories are empty.
-3. **Print the returned `summary` field verbatim** as your final message — the whole grooming plan (or the "Nothing to groom" message). Do not paraphrase, re-order, or drop any proposal.
+4. **Print the returned `summary` field verbatim** as your final message — the whole grooming plan (or the "Nothing to groom" message). Do not paraphrase, re-order, or drop any proposal.
 
 See [`docs/workflow-schemas.md`](../../../docs/workflow-schemas.md) for the full workflow contract.

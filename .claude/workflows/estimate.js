@@ -420,6 +420,30 @@ const MECHANICAL_MODEL_SCHEMA = {
 const estimateArgs = parseEstimateArgs(args)
 const roadmapSlug = estimateArgs.roadmap
 
+// coerceRawArgs(a) — the same JSON-string tolerance parseEstimateArgs applies,
+// so a stringified payload still surfaces the optional caller-supplied hoists
+// below. Never throws: anything unusable yields {} and every hoist read then
+// falls through to its agent.
+function coerceRawArgs(a) {
+  let raw = a || {}
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw) || {}
+    } catch (e) {
+      raw = {}
+    }
+  }
+  if (!raw || typeof raw !== 'object') raw = {}
+  return raw
+}
+// Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md). The
+// rdm-estimate shim is already a running agent with the repo in context, so it
+// runs `rdm model resolve mechanical` / `rdm phase list --format json` itself
+// and passes the results here — this workflow then spawns no subagent for them.
+// Both are OPTIONAL: absent or malformed falls through to the original agent,
+// which is what a direct `Workflow` invocation always does.
+const rawEstimateArgs = coerceRawArgs(args)
+
 // Real deps close over the ambient Workflow globals (agent/parallel/log). These
 // live OUTSIDE the copied block; the block itself names no ambient global. Every
 // agent() result is guarded against null (an unresolvable model resolves agent()
@@ -438,6 +462,11 @@ const realDeps = {
   // this label by name for exactly that reason — do not add a `model:` key
   // here.
   resolveMechanicalModel: async function () {
+    // HOIST: the caller already ran `rdm model resolve mechanical`.
+    if (typeof rawEstimateArgs.mechanicalModel === 'string' && rawEstimateArgs.mechanicalModel.trim() !== '') {
+      log('estimate: mechanical model hoisted from caller args')
+      return rawEstimateArgs.mechanicalModel.trim()
+    }
     const r = await agent(buildMechanicalModelPrompt(), {
       label: 'model:mechanical',
       phase: 'List',
@@ -446,6 +475,11 @@ const realDeps = {
     return r && typeof r.model === 'string' ? r.model.trim() : ''
   },
   list: async function (slug) {
+    // HOIST: the caller already ran `rdm phase list --format json`.
+    if (Array.isArray(rawEstimateArgs.phaseList)) {
+      log('estimate: phase list hoisted from caller args')
+      return rawEstimateArgs.phaseList
+    }
     // The StructuredOutput tool schema — not the prompt text — governs the
     // agent's output shape; the in-block prompt says "Return the parsed JSON
     // array verbatim", so we wrap it under `phases` in PHASE_LIST_SCHEMA and

@@ -36,13 +36,18 @@ Run **one** rdm phase (or task) to completion by invoking the **`dispatch-phase`
 ## What to do
 
 1. **Parse `$ARGUMENTS`** as `<roadmap-slug> <phase>` (stem or number) for phase mode, or `--task <slug>` for task mode.
-2. **Invoke the `dispatch-phase` workflow** via the Workflow tool with `{ roadmap, phase }` (phase mode) or `{ task }` (task mode); pass `args` as a JSON object, never a stringified value. Block for its returned OUTCOME. The workflow:
-   - reads the phase/task and its model tier, creates or reuses the roadmap's (or task's) shared worktree, and stamps it `in-progress`;
+2. **Gather the mechanical values yourself and hand them to the workflow.** You are already a running agent with the repo in context; the workflow is not, so anything it has to look up costs it a whole dedicated subagent. Run these yourself and pass the results in the workflow `args` — every one of them is **optional**, and the workflow falls back to its own in-workflow fetch for anything you omit or get wrong, so a partial gather is safe:
+   - `./target/debug/rdm phase show <phase> --roadmap <slug> --project rdm --format json` (phase mode) or `./target/debug/rdm task show <slug> --project rdm --format json` (task mode) — parse the JSON.
+   - The five per-step model ids. Let `T` be the phase JSON's `model` tier (phase mode only; a task carries no tier). Run `./target/debug/rdm model resolve plan --tier T` and `./target/debug/rdm model resolve implement --tier T` **with** the tier hint when `T` is a non-empty string, without it otherwise; then run `./target/debug/rdm model resolve review-find`, `./target/debug/rdm model resolve review-verify` and `./target/debug/rdm model resolve mechanical` with **no** `--tier` argument, always.
+   - Assemble `phaseMeta` (phase mode) as `{ roadmap, phase, stem, model, body, models: { plan, implement, review_find, review_verify, mechanical } }`, or `taskMeta` (task mode) as `{ task, body, models: { … } }`. Copy the `body` and the resolved model ids **verbatim** — never summarize, paraphrase, or invent one. The workflow applies an all-or-nothing guard: a payload missing the body or any one of the five model ids is rejected outright and the in-workflow fetch runs instead, so a partial payload buys nothing.
+   - Unless this is a `--plan-only` invocation, stamp the item in-progress yourself, **before** invoking the workflow: `./target/debug/rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> --project rdm` (or `./target/debug/rdm task update <slug> --status in-progress --no-edit --project rdm`). Pass `alreadyInProgress: true` **only** if that command exited 0. This makes the item observably `in-progress` strictly earlier than the workflow's own stamp would, and lets the workflow skip a subagent. Never pass `alreadyInProgress` for a `--plan-only` run.
+3. **Invoke the `dispatch-phase` workflow** via the Workflow tool with `{ roadmap, phase, phaseMeta, alreadyInProgress }` (phase mode) or `{ task, taskMeta, alreadyInProgress }` (task mode); pass `args` as a JSON object, never a stringified value. Block for its returned OUTCOME. The workflow:
+   - reads the phase/task and its model tier (or uses the `phaseMeta`/`taskMeta` you supplied), creates or reuses the roadmap's (or task's) shared worktree, and stamps it `in-progress` unless you already did;
    - runs a **planning** stage, then a **separate, independent plan-review** stage — scaled to the phase's difficulty tier — bounded to at most one revise round before escalating;
    - on approval, runs an **implementation** stage inside the worktree;
    - runs the **canonical code review** (the same find → refute → filter → verdict → gate pipeline `rdm-review` runs), bounded to one rework pass before escalating;
    - classifies the result into `reviewed | rework | escalated` and returns the OUTCOME above. It never emits a `Done:` line itself — only `writesCompletion: true`, which is `rdm-land`'s signal to synthesize the trailer at land time.
-3. **Return the OUTCOME JSON verbatim** as your final message — do not paraphrase or drop fields.
+4. **Return the OUTCOME JSON verbatim** as your final message — do not paraphrase or drop fields.
 
 ## Safe operations under --permission-mode auto
 

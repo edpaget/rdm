@@ -112,6 +112,19 @@ function parseAutopilotArgs(args) {
   // means "let dispatch-phase apply its own default".
   const maxPlanRevise = parseAutopilotBudget(a.maxPlanRevise, '--max-plan-revise');
   const maxCodeRework = parseAutopilotBudget(a.maxCodeRework, '--max-code-rework');
+  // --- Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md).
+  // A caller that is already a running agent with the repo in context (the
+  // rdm-autopilot skill shim) runs the mechanical command itself and passes the
+  // result here, so this workflow never spawns a dedicated subagent for it.
+  // Every one is OPTIONAL: absent or malformed falls through to the existing
+  // dep call, which is what a direct `Workflow` invocation always does.
+  const mechanicalModel =
+    typeof a.mechanicalModel === 'string' && a.mechanicalModel.trim() !== '' ? a.mechanicalModel.trim() : null;
+  const phaseList = Array.isArray(a.phaseList) ? a.phaseList : null;
+  // `next` is consumed ONE-SHOT — see runAutopilot. `rdm next` is what advances
+  // the cursor, so reusing a cached result on iteration 2 would re-dispatch the
+  // same phase forever.
+  const next = a.next && typeof a.next === 'object' ? a.next : null;
   return {
     roadmap: roadmap,
     maxPhases: maxPhases,
@@ -119,6 +132,9 @@ function parseAutopilotArgs(args) {
     globalBudget: globalBudget,
     maxPlanRevise: maxPlanRevise,
     maxCodeRework: maxCodeRework,
+    mechanicalModel: mechanicalModel,
+    phaseList: phaseList,
+    next: next,
   };
 }
 
@@ -389,7 +405,14 @@ function buildAutopilot(deps) {
     // it stops the run immediately and loudly, before any mechanical agent
     // fires, but still returns the always-on batched summary rather than
     // throwing.
-    const mechanicalModelRaw = await d.resolveMechanicalModel();
+    //
+    // HOIST: `cfg.mechanicalModel`, when the caller resolved it itself, replaces
+    // this dep call entirely. The empty-string fail-closed stop below applies
+    // identically to both paths.
+    const mechanicalModelRaw =
+      typeof cfg.mechanicalModel === 'string' && cfg.mechanicalModel.trim() !== ''
+        ? cfg.mechanicalModel
+        : await d.resolveMechanicalModel();
     const mechanicalModel = typeof mechanicalModelRaw === 'string' ? mechanicalModelRaw.trim() : '';
     if (!mechanicalModel) {
       log(
@@ -404,7 +427,9 @@ function buildAutopilot(deps) {
     // the mid tier at dispatch time. estimateList/estimateWriteback are
     // mechanical (fetch/write only) and run on mechanicalModel; parallelEstimate
     // is the difficulty-rating JUDGMENT agent and stays on its own resolved tier.
-    const phaseList = await d.estimateList(roadmap, mechanicalModel);
+    // HOIST: `cfg.phaseList`, when the caller ran `rdm phase list` itself,
+    // replaces this dep call. selectUnestimated is unchanged either way.
+    const phaseList = Array.isArray(cfg.phaseList) ? cfg.phaseList : await d.estimateList(roadmap, mechanicalModel);
     const unestimated = selectUnestimated(phaseList);
     if (unestimated.length) {
       let ests = [];
@@ -437,13 +462,21 @@ function buildAutopilot(deps) {
     const planOnlySeen = new Set();
     let dispatchCount = 0;
     let stopReason = 'nothing';
+    // HOIST (ONE-SHOT): a caller-supplied `rdm next` result covers the FIRST
+    // iteration only. Every later iteration must re-read live state, because
+    // `rdm next` is what steps the cursor forward once advance/park has
+    // persisted a status — reusing a cached result would re-dispatch the same
+    // phase forever after a rework.
+    let pendingNext = cfg.next && typeof cfg.next === 'object' ? cfg.next : null;
 
     while (true) {
       if (maxPhasesReached(dispatchCount, maxPhases) || stepBudgetExhausted(dispatchCount, globalBudget)) {
         stopReason = 'budget';
         break;
       }
-      const next = interpretNext(await d.fetchNext(roadmap, mechanicalModel));
+      const rawNext = pendingNext || (await d.fetchNext(roadmap, mechanicalModel));
+      pendingNext = null;
+      const next = interpretNext(rawNext);
       if (next.kind === 'stop') {
         stopReason = next.reason;
         break;

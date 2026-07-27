@@ -453,4 +453,172 @@ run_node "$TMP/test-real.mjs" || fail "hermetic real-binary assertions failed"
 pass "real rdm JSON output round-trips correctly through the pure decision functions"
 
 # ==============================================================================
+# --- HOIST: caller-supplied mechanicalModel / roadmapMeta --------------------
+# Phase 3 of the workflow-token-reduction roadmap eliminates mechanical
+# subagents by never spawning them (docs/mechanical-agent-inventory.md). In
+# document.js both hoists live in the DRIVER REGION only; the copied
+# `document-core` block is untouched. Both are OPTIONAL — the original agent
+# call is reached through an `else` branch and is never deleted — and the
+# all-done validation, the gather fan-out and the write stage are unchanged.
+say "HOIST. document.js driver region: mechanicalModel / roadmapMeta hoists and their fallbacks"
+
+cat >"$TMP/hoist.mjs" <<'NODE_HOIST'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const wfPath = process.argv[2];
+let src = fs.readFileSync(wfPath, 'utf8');
+src = src.replace(/^export /m, '');
+const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-document-hoist-wrapped.mjs');
+fs.writeFileSync(wrapperPath, 'export default async function(args, agent, parallel, log) {\n' + src + '\n}\n');
+const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
+const run = mod.default;
+
+const META = {
+  found: true,
+  slug: 'rm',
+  title: 'Roadmap',
+  phases: [
+    { stem: 'phase-1-a', title: 'A', status: 'done' },
+    { stem: 'phase-2-b', title: 'B', status: 'done' },
+  ],
+};
+
+function makeAgent(o) {
+  o = o || {};
+  const calls = [];
+  const agent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    calls.push({ label, prompt, opts });
+    if (label === 'model:mechanical') return { model: o.model === undefined ? 'agent-haiku' : o.model };
+    if (label === 'fetch:roadmap-meta') return o.meta === undefined ? META : o.meta;
+    if (label.startsWith('gather:')) return { stem: label.slice('gather:'.length), title: 't', body: 'b', hasSha: true };
+    if (label === 'synthesize:draft') return { draft: '# Doc\n' };
+    if (label === 'write:draft') return { ok: true, path: 'docs/rm.md' };
+    throw new Error('unexpected agent label: ' + label);
+  };
+  return { agent, calls, count: (l) => calls.filter((c) => c.label === l).length };
+}
+const refParallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+const nolog = () => {};
+
+{
+  const a = makeAgent({});
+  const out = await run({ roadmap: 'rm', mechanicalModel: 'hoisted-haiku', roadmapMeta: META }, a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 0, 'hoisted mechanicalModel -> no model:mechanical agent call');
+  assert.equal(a.count('fetch:roadmap-meta'), 0, 'hoisted roadmapMeta -> no fetch:roadmap-meta agent call');
+  assert.equal(a.count('gather:phase-1-a'), 1, 'the hoisted meta really drives the per-phase gather fan-out');
+  assert.equal(a.count('gather:phase-2-b'), 1, 'both hoisted phases are gathered');
+  assert.equal(out.aborted, false, 'the hoisted path still completes');
+  const gather = a.calls.find((c) => c.label === 'gather:phase-1-a');
+  assert.equal(gather.opts.model, 'hoisted-haiku', 'the hoisted model id pins the mechanical gather agents');
+}
+{
+  const a = makeAgent({});
+  const outPlain = await run({ roadmap: 'rm' }, a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 1, 'no hoist -> exactly one model:mechanical agent call');
+  assert.equal(a.count('fetch:roadmap-meta'), 1, 'no hoist -> exactly one fetch:roadmap-meta agent call');
+  const b = makeAgent({});
+  const outHoisted = await run({ roadmap: 'rm', mechanicalModel: 'agent-haiku', roadmapMeta: META }, b.agent, refParallel, nolog);
+  assert.deepEqual(outHoisted, outPlain, 'the result is deep-equal with and without the hoists');
+}
+for (const [name, bad] of [
+  ['null', null],
+  ['empty string', ''],
+  ['wrong type', 3],
+]) {
+  const a = makeAgent({});
+  await run({ roadmap: 'rm', mechanicalModel: bad, roadmapMeta: META }, a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 1, 'malformed mechanicalModel (' + name + ') falls back to the agent');
+}
+for (const [name, bad] of [
+  ['null', null],
+  ['found not true', { ...META, found: false }],
+  ['found missing', { slug: 'rm', title: 'x', phases: [] }],
+  ['phases not an array', { ...META, phases: 'phase-1-a' }],
+  ['string', 'rm'],
+]) {
+  const a = makeAgent({});
+  await run({ roadmap: 'rm', mechanicalModel: 'hoisted-haiku', roadmapMeta: bad }, a.agent, refParallel, nolog);
+  assert.equal(a.count('fetch:roadmap-meta'), 1, 'malformed roadmapMeta (' + name + ') falls back to the agent');
+}
+{
+  // The all-done validation is unchanged on the hoisted path: an incomplete
+  // phase in a HOISTED payload still aborts before any gather/synthesis/write.
+  const a = makeAgent({});
+  const out = await run(
+    { roadmap: 'rm', mechanicalModel: 'hoisted-haiku', roadmapMeta: { ...META, phases: [{ stem: 'phase-1-a', title: 'A', status: 'in-progress' }] } },
+    a.agent,
+    refParallel,
+    nolog
+  );
+  assert.equal(out.aborted, true, 'a hoisted payload with an incomplete phase still aborts');
+  assert.equal(a.count('synthesize:draft'), 0, 'the abort happens BEFORE synthesis, as on the agent path');
+  assert.equal(a.count('write:draft'), 0, 'and before the write stage');
+}
+{
+  const a = makeAgent({});
+  await run(JSON.stringify({ roadmap: 'rm', mechanicalModel: 'hoisted-haiku', roadmapMeta: META }), a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 0, 'a stringified args payload still surfaces mechanicalModel');
+  assert.equal(a.count('fetch:roadmap-meta'), 0, 'a stringified args payload still surfaces roadmapMeta');
+}
+console.log('document hoist assertions passed');
+NODE_HOIST
+
+if run_node "$TMP/hoist.mjs" "$WF"; then
+    pass "document hoist/fallback verified against the real driver under a recording fake agent"
+else
+    fail "document hoist/fallback assertions failed against $WF"
+fi
+
+assert_wf_mutant_fails() {
+    mutant=$1
+    desc=$2
+    if cmp -s "$WF" "$mutant"; then
+        fail "HOIST: planted mutation was a no-op — $desc"
+    fi
+    if run_node "$TMP/hoist.mjs" "$mutant" >/dev/null 2>&1; then
+        fail "HOIST: assertions PASSED against a driver that $desc — they are vacuous"
+    fi
+    pass "HOIST: assertions fire when the driver $desc"
+}
+
+# (1) Drop the fetch:roadmap-meta fallback: take the (possibly absent) hoist always.
+sed 's/^if (hoistedRoadmapMetaOk(rawDocumentArgs.roadmapMeta)) {$/if (true) {/' "$WF" >"$TMP/mutant-no-meta-fallback.js"
+assert_wf_mutant_fails "$TMP/mutant-no-meta-fallback.js" "drops the fetch:roadmap-meta fallback"
+
+# (2) Weaken the roadmapMeta shape guard to "anything object-ish".
+sed "s/^  return !!(m \&\& typeof m === 'object' \&\& m.found === true \&\& Array.isArray(m.phases))\$/  return !!(m \&\& typeof m === 'object')/" "$WF" >"$TMP/mutant-weak-meta-guard.js"
+assert_wf_mutant_fails "$TMP/mutant-weak-meta-guard.js" "weakens the roadmapMeta shape guard to any object"
+
+# (3) Drop the model:mechanical fallback.
+sed "s/^if (typeof rawDocumentArgs.mechanicalModel === 'string' \&\& rawDocumentArgs.mechanicalModel.trim() !== '') {\$/if (true) {/" "$WF" >"$TMP/mutant-no-model-fallback.js"
+assert_wf_mutant_fails "$TMP/mutant-no-model-fallback.js" "drops the model:mechanical fallback"
+
+# --- SHIM: the LOCAL rdm-document shim gathers and passes both hoists ---------
+# `.claude/skills/rdm-document/SKILL.md` is a LOCAL dogfood shim; its distributed
+# template (rdm-core/src/templates/skill-document-{cli,mcp}.md) is NOT a Workflow
+# shim yet (tracked by task convert-remaining-skill-templates-to-workflow-shims),
+# so this check belongs here and NOT in verify-agent-config-distribution.sh.
+say "HOIST-SHIM. .claude/skills/rdm-document/SKILL.md gathers and passes mechanicalModel + roadmapMeta"
+
+assert_shim_gathers() {
+    grep -qF 'rdm model resolve mechanical' "$1" || return 1
+    grep -qF 'rdm roadmap show <slug>' "$1" || return 1
+    [ "$(grep -cF 'mechanicalModel' "$1")" -ge 2 ] || return 1
+    [ "$(grep -cF 'roadmapMeta' "$1")" -ge 2 ] || return 1
+    return 0
+}
+assert_shim_gathers "$SKILL" ||
+    fail "HOIST-SHIM: $SKILL must gather 'rdm model resolve mechanical' and 'rdm roadmap show --format json' and pass mechanicalModel + roadmapMeta (each named at least twice)"
+pass "HOIST-SHIM: the local shim gathers and passes both hoisted args"
+
+sed 's/roadmapMeta/rdmapMeta/g' "$SKILL" >"$TMP/shim-typo.md"
+if assert_shim_gathers "$TMP/shim-typo.md"; then
+    fail "HOIST-SHIM: detector missed a typo'd arg key in the shim"
+fi
+pass "HOIST-SHIM: detector fires on a typo'd arg key in the shim"
+
 say "verify-workflow-document.sh: ALL GREEN"

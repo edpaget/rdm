@@ -26,12 +26,16 @@ This skill is **non-interactive**. Launch unattended runs with `--permission-mod
    - `planOnly` — `true` when `--plan-only` is present (omit otherwise).
    - `maxPlanRevise` — the non-negative integer following `--max-plan-revise`, when present (omit otherwise).
    - `maxCodeRework` — the non-negative integer following `--max-code-rework`, when present (omit otherwise).
-2. **Invoke the `autopilot` workflow** via the Workflow tool with `{ roadmap, maxPhases, planOnly, maxPlanRevise, maxCodeRework }` (omit any of `maxPhases`/`planOnly`/`maxPlanRevise`/`maxCodeRework` when not supplied). Pass `args` as a JSON object, never a stringified value. The workflow:
+2. **Gather the three bootstrap values yourself and hand them to the workflow.** You are already a running agent with the repo in context; the workflow is not, so each of these otherwise costs it a whole dedicated subagent. All three are **optional** — the workflow falls back to its own in-workflow fetch for anything you omit or get wrong, so a partial gather is safe:
+   - `mechanicalModel` — the id printed by `./target/debug/rdm model resolve mechanical`, verbatim. An empty/failed result: omit the key.
+   - `phaseList` — the parsed array from `./target/debug/rdm phase list --roadmap <slug> --format json --project rdm`, passed through verbatim (never summarized). It feeds the estimate pre-pass's unestimated filter.
+   - `next` — the parsed object from `./target/debug/rdm next --roadmap <slug> --format json --project rdm`. The workflow consumes this **one-shot, on the first loop iteration only**; every later iteration re-reads live state, because `rdm next` is what steps the cursor forward once a phase's status is persisted. Fetch it fresh at invocation time and never cache it across runs.
+3. **Invoke the `autopilot` workflow** via the Workflow tool with `{ roadmap, maxPhases, planOnly, maxPlanRevise, maxCodeRework, mechanicalModel, phaseList, next }` (omit any of `maxPhases`/`planOnly`/`maxPlanRevise`/`maxCodeRework`/`mechanicalModel`/`phaseList`/`next` when not supplied). Pass `args` as a JSON object, never a stringified value. The workflow:
    - runs the **estimate pre-pass** over the roadmap's unestimated phases in one parallel fan-out, persisting each difficulty (the model tier derives automatically);
    - loops `rdm next --roadmap <slug> --format json --project rdm` → the `dispatch-phase` workflow (via the one allowed level of `workflow()` nesting) → interpret the OUTCOME;
    - **advances** a `reviewed` phase (`rdm phase update --status reviewed`, so `rdm next` steps past it), **re-dispatches** a `rework` phase against a per-phase budget and **parks** it `blocked [code]` when the budget is spent, and **parks** an `escalated` phase `blocked [plan]`;
    - bounds the run with a **global step budget** and **`--max-phases`**, and under **`--plan-only`** stops each dispatch after its plan gate (no implementation), guarding against re-vetting the same phase.
-3. **Print the returned summary verbatim.** It lists the phases completed this run (in order), the escalations awaiting review (each tagged `plan` vs `code`) pointing at `rdm review blocked --project rdm`, the stop reason, and the note that reviewed work is left on the `roadmap/<slug>` branch with `main` untouched.
+4. **Print the returned summary verbatim.** It lists the phases completed this run (in order), the escalations awaiting review (each tagged `plan` vs `code`) pointing at `rdm review blocked --project rdm`, the stop reason, and the note that reviewed work is left on the `roadmap/<slug>` branch with `main` untouched.
 
 ## Run modes
 

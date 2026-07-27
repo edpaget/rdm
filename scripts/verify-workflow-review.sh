@@ -1922,4 +1922,341 @@ run_node "$TMP/plan-args-mut-test.mjs" "$PLANMUT/.claude/workflows/lib/plan-revi
 
 pass "plan helper + driver checks fire on planted mutations (proven non-vacuous)"
 
+# --- 7. PLAN-REVIEW HOIST (workflow-token-reduction phase 3) ------------------
+# `fetch:roadmap` / `fetch:<kind>` are the ONE mechanical hoist in this phase
+# that is not a pure cost question: they have twice transcribed junk over real
+# plan tags in production (runs wf_e3402021-0af and wf_f4be8027-dbb, recorded on
+# task fix-plan-review-gate-tag-clobber), and `agent(..., { schema })` provably
+# cannot catch it — BOTH corrupt returns were schema-valid. So this section
+# asserts the hoisted path carries the target's REAL FIELD VALUES read from the
+# real `./target/debug/rdm` binary, and then replays the recorded corruption
+# payload as a NEGATIVE, proving a shape-only/schema check would have passed it.
+#
+# Driver-side validation of a hoisted payload is deliberately NOT this phase's
+# job (it is task fix-plan-review-gate-tag-clobber's) — this section gates the
+# hoist itself: that the shim's real values survive intact through
+# buildReviewUnits, filterPlanReviewTag and the gate prompt.
+say "7. Plan-review hoist: REAL field values from the real binary, plus the recorded-corruption negative"
+
+RDM_BIN="$REPO_ROOT/target/debug/rdm"
+if [ ! -x "$RDM_BIN" ]; then
+    fail "7: $RDM_BIN not found — run \`cargo build\` first (this section drives the REAL binary)"
+fi
+
+# Hermetic seed: a temp git-backed plan repo with a task carrying known tags and
+# a roadmap with two differently-tagged phases. Modelled on
+# scripts/verify-workflow-estimate.sh's real-binary seed.
+SEED_ROOT="$TMP/plan-seed"
+SEED_PROJ="plan-hoist-verify"
+mkdir -p "$SEED_ROOT"
+seed_rdm() { "$RDM_BIN" --root "$SEED_ROOT" "$@"; }
+
+seed_rdm init --default-project "$SEED_PROJ" >/dev/null 2>&1 || fail "7: seed rdm init failed"
+seed_rdm task create hoist-target --title "Hoist target" \
+    --body "A task body the harness can compare against verbatim." \
+    --tags "needs-plan-review,bug,auth" --no-edit --project "$SEED_PROJ" >/dev/null 2>&1 ||
+    fail "7: seed task create failed"
+seed_rdm roadmap create hoist-rm --title "Hoist roadmap" \
+    --body "Roadmap body." --tags "needs-plan-review,infra" --no-edit --project "$SEED_PROJ" >/dev/null 2>&1 ||
+    fail "7: seed roadmap create failed"
+seed_rdm phase create alpha --title "Alpha" --number 1 --body "Phase alpha body." \
+    --tags "needs-plan-review,alpha-tag" --no-edit --roadmap hoist-rm --project "$SEED_PROJ" >/dev/null 2>&1 ||
+    fail "7: seed phase 1 create failed"
+seed_rdm phase create beta --title "Beta" --number 2 --body "Phase beta body." \
+    --tags "needs-plan-review,beta-tag" --no-edit --roadmap hoist-rm --project "$SEED_PROJ" >/dev/null 2>&1 ||
+    fail "7: seed phase 2 create failed"
+seed_rdm commit -m "chore(plan): seed" >/dev/null 2>&1 || fail "7: seed commit failed"
+
+seed_rdm task show hoist-target --project "$SEED_PROJ" --format json 2>/dev/null >"$TMP/seed-task.json" ||
+    fail "7: seed task show --format json failed"
+seed_rdm roadmap show hoist-rm --project "$SEED_PROJ" --format json 2>/dev/null >"$TMP/seed-roadmap.json" ||
+    fail "7: seed roadmap show --format json failed"
+seed_rdm phase show phase-1-alpha --roadmap hoist-rm --project "$SEED_PROJ" --format json 2>/dev/null >"$TMP/seed-phase-1.json" ||
+    fail "7: seed phase 1 show --format json failed"
+seed_rdm phase show phase-2-beta --roadmap hoist-rm --project "$SEED_PROJ" --format json 2>/dev/null >"$TMP/seed-phase-2.json" ||
+    fail "7: seed phase 2 show --format json failed"
+pass "7: hermetic plan repo seeded with the REAL binary (task + roadmap + 2 phases, distinct tags)"
+
+cat >"$TMP/plan-hoist.mjs" <<'NODE_PLAN_HOIST'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const [libPath, seedDir] = process.argv.slice(2);
+const { runPlanReviewDriver, parsePlanArgs, hoistedFetchedOk } = await import('file://' + libPath);
+
+const readJson = (f) => JSON.parse(fs.readFileSync(path.join(seedDir, f), 'utf8'));
+const taskJson = readJson('seed-task.json');
+const roadmapJson = readJson('seed-roadmap.json');
+const phase1Json = readJson('seed-phase-1.json');
+const phase2Json = readJson('seed-phase-2.json');
+
+// The payload the local rdm-plan-review shim is instructed to assemble: the
+// binary's OWN body/tags copied verbatim, never summarized.
+const TASK_FETCHED = { body: taskJson.body, tags: taskJson.tags };
+const ROADMAP_FETCHED = {
+  body: roadmapJson.body,
+  tags: roadmapJson.tags,
+  phases: [phase1Json, phase2Json].map((p) => ({ stem: p.stem, body: p.body, tags: p.tags })),
+};
+
+// Sanity: the seed really does carry the tags this section asserts on, so a
+// green run can never be an artefact of the binary emitting nothing.
+assert.deepEqual(taskJson.tags, ['needs-plan-review', 'bug', 'auth'], 'seed task tags are as created');
+assert.deepEqual(phase1Json.tags, ['needs-plan-review', 'alpha-tag'], 'seed phase-1 tags are as created');
+assert.deepEqual(phase2Json.tags, ['needs-plan-review', 'beta-tag'], 'seed phase-2 tags are as created');
+
+function makeDeps(o) {
+  o = o || {};
+  const calls = [];
+  const agent = async (prompt, opts) => {
+    calls.push({ label: (opts && opts.label) || '', prompt, opts });
+    return { ok: true };
+  };
+  const parallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t)));
+  return {
+    calls,
+    deps: {
+      agent,
+      parallel,
+      log: () => {},
+      // A clean review, so every unit reaches `reviewed` and the gate fires.
+      runPlanReview: async () => ({ survivors: o.survivors || [], acTable: null }),
+      mechanicalModel: o.mechanicalModel,
+    },
+  };
+}
+const labels = (h) => h.calls.map((c) => c.label);
+const promptFor = (h, label) => (h.calls.find((c) => c.label === label) || {}).prompt;
+
+// ============================================================================
+// 7a. TASK path — REAL values, not merely a schema-valid shape.
+// ============================================================================
+{
+  const h = makeDeps({});
+  const out = await runPlanReviewDriver(
+    { task: 'hoist-target', fetched: TASK_FETCHED, wontFixedTexts: [], mechanicalModel: 'haiku' },
+    h.deps
+  );
+  assert.ok(!labels(h).some((l) => l.startsWith('fetch:')), '7a: no fetch: agent ran on the hoisted task path');
+  assert.equal(out.units.length, 1, '7a: exactly one unit');
+  assert.deepEqual(out.units[0].ident, 'hoist-target', '7a: the unit is keyed by the real slug');
+  assert.equal(out.outcome, 'reviewed', '7a: a clean review reaches reviewed and gates');
+
+  // The REAL-VALUE assertion: the gate's tag write must carry exactly the
+  // sibling-preserved list read off the binary, with needs-plan-review removed
+  // and NOTHING invented.
+  const gatePrompt = promptFor(h, 'gate:clear-tag:task:hoist-target');
+  assert.ok(gatePrompt, '7a: the gate:clear-tag agent ran');
+  assert.ok(gatePrompt.includes('--tags "bug,auth"'), '7a: the gate writes exactly the sibling-preserved real tags: --tags "bug,auth"');
+  for (const invented of ['plan-target', 'fetch', 'roadmap', 'hoist-target"']) {
+    assert.ok(!gatePrompt.includes('--tags "' + invented), '7a: the gate never writes an invented tag list starting with ' + invented);
+  }
+}
+console.log('7a OK: task hoist carries the binary\'s real tags into the gate');
+
+// ============================================================================
+// 7b. ROADMAP path — one unit per REAL phase, with each phase's own real tags.
+// ============================================================================
+{
+  const h = makeDeps({});
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', fetched: ROADMAP_FETCHED, wontFixedTexts: [] }, h.deps);
+  assert.ok(!labels(h).some((l) => l.startsWith('fetch:')), '7b: no fetch: agent ran on the hoisted roadmap path');
+  assert.equal(out.units.length, 3, '7b: one unit for the roadmap body plus one per REAL phase (2)');
+  assert.deepEqual(
+    out.units.map((u) => u.ident),
+    ['hoist-rm', phase1Json.stem, phase2Json.stem],
+    '7b: the units carry the REAL phase stems from the binary, not the roadmap slug repeated'
+  );
+  const p1 = promptFor(h, 'gate:clear-tag:phase:' + phase1Json.stem);
+  const p2 = promptFor(h, 'gate:clear-tag:phase:' + phase2Json.stem);
+  const rm = promptFor(h, 'gate:clear-tag:roadmap:hoist-rm');
+  assert.ok(p1.includes('--tags "alpha-tag"'), '7b: phase 1 gate writes its OWN real sibling tag');
+  assert.ok(p2.includes('--tags "beta-tag"'), '7b: phase 2 gate writes its OWN real sibling tag');
+  assert.ok(rm.includes('--tags "infra"'), '7b: the roadmap gate writes the roadmap\'s OWN real sibling tag');
+  assert.ok(!p1.includes('beta-tag') && !p2.includes('alpha-tag'), '7b: no phase inherits a sibling phase\'s tags');
+}
+console.log('7b OK: roadmap hoist yields one unit per real phase, each with its own real tags');
+
+// ============================================================================
+// 7c. NEGATIVE — the recorded wf_e3402021-0af corruption payload. It is
+// SCHEMA-VALID (a string body, an array of strings for tags, an array of
+// well-shaped phase objects), so a shape-only check passes it. The REAL-VALUE
+// assertions above must fail on it.
+// ============================================================================
+const CORRUPTION = {
+  body: 'Fetched roadmap and phase data for workflow-token-reduction',
+  tags: ['fetch', 'roadmap', 'workflow-token-reduction'],
+  phases: [{ stem: 'workflow-token-reduction', body: roadmapJson.body, tags: roadmapJson.tags }],
+};
+{
+  // Shape-only / schema-shaped check: PASSES. This is the false assurance.
+  const shapeOk =
+    typeof CORRUPTION.body === 'string' &&
+    Array.isArray(CORRUPTION.tags) &&
+    CORRUPTION.tags.every((t) => typeof t === 'string') &&
+    Array.isArray(CORRUPTION.phases) &&
+    CORRUPTION.phases.every((p) => typeof p.stem === 'string' && typeof p.body === 'string' && Array.isArray(p.tags));
+  assert.equal(shapeOk, true, '7c: the recorded corruption payload IS schema-valid — a shape-only check passes it');
+  assert.equal(hoistedFetchedOk(CORRUPTION, 'roadmap'), true, '7c: even the driver\'s own shape guard accepts it (shape is not the defence)');
+
+  const h = makeDeps({});
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', fetched: CORRUPTION, wontFixedTexts: [] }, h.deps);
+
+  // ... and every REAL-VALUE assertion fails on it.
+  assert.notEqual(out.units.length, 3, '7c: the corruption payload does NOT produce one unit per real phase (five of six vanished, in the real incident)');
+  assert.notDeepEqual(
+    out.units.map((u) => u.ident),
+    ['hoist-rm', phase1Json.stem, phase2Json.stem],
+    '7c: the corruption payload does NOT carry the real phase stems'
+  );
+  const rm = promptFor(h, 'gate:clear-tag:roadmap:hoist-rm');
+  assert.ok(!rm.includes('--tags "infra"'), '7c: the corruption payload does NOT write the roadmap\'s real sibling tags');
+  assert.ok(
+    rm.includes('fetch') || rm.includes('workflow-token-reduction'),
+    '7c: it writes the junk transcribed from the agent\'s own prompt instead — exactly the recorded incident'
+  );
+}
+console.log('7c OK: the recorded corruption payload passes a shape-only check and FAILS every real-value assertion');
+
+// ============================================================================
+// 7d. FALLBACK — every hoist is optional. Absent / malformed reaches the agent.
+// ============================================================================
+{
+  const h = makeDeps({});
+  await runPlanReviewDriver({ task: 'hoist-target' }, h.deps).catch(() => {});
+  assert.equal(labels(h).filter((l) => l === 'fetch:task').length, 1, '7d: fetched absent -> exactly one fetch:task agent call');
+  assert.equal(labels(h).filter((l) => l === 'fetch:wontfix').length, 0, '7d: the fetch failed closed before the wont-fix search (fail-closed preserved)');
+}
+for (const [name, bad] of [
+  ['null', null],
+  ['string', 'hoist-target'],
+  ['empty body', { body: '', tags: [] }],
+  ['whitespace body', { body: '   ', tags: [] }],
+  ['no body key', { tags: ['bug'] }],
+]) {
+  const h = makeDeps({});
+  await runPlanReviewDriver({ task: 'hoist-target', fetched: bad }, h.deps).catch(() => {});
+  assert.equal(labels(h).filter((l) => l === 'fetch:task').length, 1, '7d: malformed fetched (' + name + ') falls back to the fetch agent');
+}
+{
+  // roadmap kind additionally requires an array `phases`.
+  const h = makeDeps({});
+  await runPlanReviewDriver({ roadmap: 'hoist-rm', fetched: { body: 'b', tags: [] } }, h.deps).catch(() => {});
+  assert.equal(labels(h).filter((l) => l === 'fetch:roadmap').length, 1, '7d: a roadmap payload with no phases array falls back to the fetch agent');
+}
+{
+  // wontFixedTexts hoist + fallback.
+  const h = makeDeps({});
+  await runPlanReviewDriver({ task: 'hoist-target', fetched: TASK_FETCHED, wontFixedTexts: ['already decided'] }, h.deps);
+  assert.equal(labels(h).filter((l) => l === 'fetch:wontfix').length, 0, '7d: hoisted wontFixedTexts -> zero fetch:wontfix calls');
+  const b = makeDeps({});
+  await runPlanReviewDriver({ task: 'hoist-target', fetched: TASK_FETCHED }, b.deps);
+  assert.equal(labels(b).filter((l) => l === 'fetch:wontfix').length, 1, '7d: wontFixedTexts absent -> exactly one fetch:wontfix call');
+  const c = makeDeps({});
+  await runPlanReviewDriver({ task: 'hoist-target', fetched: TASK_FETCHED, wontFixedTexts: 'nope' }, c.deps);
+  assert.equal(labels(c).filter((l) => l === 'fetch:wontfix').length, 1, '7d: a non-array wontFixedTexts falls back to the agent');
+}
+{
+  // mechanicalModel hoist: parsePlanArgs surfaces it and it pins the mechanical
+  // agents, overriding an absent injected dep.
+  const parsed = parsePlanArgs({ task: 'hoist-target', mechanicalModel: '  haiku-x  ' });
+  assert.equal(parsed.mechanicalModel, 'haiku-x', '7d: parsePlanArgs trims and surfaces mechanicalModel');
+  assert.equal(parsePlanArgs({ task: 't', mechanicalModel: '   ' }).mechanicalModel, null, '7d: a blank mechanicalModel is rejected');
+  const h = makeDeps({});
+  await runPlanReviewDriver({ task: 'hoist-target', fetched: TASK_FETCHED, mechanicalModel: 'haiku-x' }, h.deps);
+  const gate = h.calls.find((c) => c.label === 'gate:clear-tag:task:hoist-target');
+  assert.equal(gate.opts.model, 'haiku-x', '7d: the hoisted mechanicalModel pins the mechanical gate agent');
+}
+{
+  // `fetched` must come from STRUCTURED object keys only — never parsed out of
+  // the $ARGUMENTS flag string, or a prose target could masquerade as a payload.
+  const parsed = parsePlanArgs('--task hoist-target');
+  assert.equal(parsed.fetched, null, '7d: a raw $ARGUMENTS string never yields a fetched payload');
+  assert.equal(parsed.wontFixedTexts, null, '7d: nor a wontFixedTexts payload');
+  assert.equal(parsed.mechanicalModel, null, '7d: nor a mechanicalModel');
+  assert.equal(parsed.kind, 'task', '7d: ... while the pre-existing flag-string parsing is unchanged');
+}
+console.log('7d OK: every plan-review hoist is optional and falls back on anything malformed');
+
+console.log('ALL PLAN-REVIEW HOIST CHECKS PASSED');
+NODE_PLAN_HOIST
+
+if run_node "$TMP/plan-hoist.mjs" "$PLAN_LIB" "$TMP"; then
+    pass "plan-review hoist: real binary values survive into the units and the gate; the recorded corruption is caught"
+else
+    fail "plan-review hoist checks failed against $PLAN_LIB"
+fi
+
+# Planted-mutation self-tests on the plan-review hoists.
+say "7e. Plan-review hoist planted-mutation self-tests"
+assert_plan_mutant_fails() {
+    mutant=$1
+    desc=$2
+    if cmp -s "$PLAN_LIB" "$mutant"; then
+        fail "7e: planted mutation was a no-op — $desc"
+    fi
+    if run_node "$TMP/plan-hoist.mjs" "$mutant" "$TMP" >/dev/null 2>&1; then
+        fail "7e: plan-review hoist checks PASSED against a lib that $desc — they are vacuous"
+    fi
+    pass "7e: assertions fire when the lib $desc"
+}
+
+# (1) Drop the fetch fallback: take the (possibly absent) hoist unconditionally.
+sed 's/^  if (hoistedFetchedOk(parsed.fetched, kind)) {$/  if (true) {/' "$PLAN_LIB" >"$TMP/plan-mutant-no-fetch-fallback.mjs"
+assert_plan_mutant_fails "$TMP/plan-mutant-no-fetch-fallback.mjs" "drops the fetch:roadmap / fetch:<kind> fallback"
+
+# (2) Drop the wont-fix fallback.
+sed 's/^  if (Array.isArray(parsed.wontFixedTexts)) {$/  if (true) {/' "$PLAN_LIB" >"$TMP/plan-mutant-no-wontfix-fallback.mjs"
+assert_plan_mutant_fails "$TMP/plan-mutant-no-wontfix-fallback.mjs" "drops the fetch:wontfix fallback"
+
+# (3) Let `fetched` be read out of the $ARGUMENTS flag string as well.
+sed "s/^  const fetched = a.fetched \&\& typeof a.fetched === 'object' ? a.fetched : null\$/  const fetched = (a.fetched \&\& typeof a.fetched === 'object' ? a.fetched : null) || { body: rawTarget, tags: [] }/" \
+    "$PLAN_LIB" >"$TMP/plan-mutant-fetched-from-string.mjs"
+assert_plan_mutant_fails "$TMP/plan-mutant-fetched-from-string.mjs" "lets a raw \$ARGUMENTS string masquerade as a fetched payload"
+
+# (4) Weaken the shape guard so an empty body is accepted (defeating fail-closed).
+sed "s/^  if (typeof fetched.body !== 'string' || String(fetched.body).trim() === '') return false\$/  if (typeof fetched.body !== 'string') return false/" \
+    "$PLAN_LIB" >"$TMP/plan-mutant-weak-fetched-guard.mjs"
+assert_plan_mutant_fails "$TMP/plan-mutant-weak-fetched-guard.mjs" "accepts an empty-body hoisted payload"
+
+# --- 7f. SHIM: the LOCAL rdm-plan-review shim gathers the payload verbatim -----
+# `.claude/skills/rdm-plan-review/SKILL.md` is a LOCAL dogfood shim; its
+# distributed template (rdm-core/src/templates/skill-plan-review-{cli,mcp}.md) is
+# NOT a Workflow shim yet (tracked by task
+# convert-remaining-skill-templates-to-workflow-shims), so this check belongs
+# here and NOT in verify-agent-config-distribution.sh.
+say "7f. rdm-plan-review SKILL.md gathers the target payload itself and passes it as args.fetched"
+
+assert_plan_shim_gathers() {
+    doc=$1
+    # It must name each of the three reads it performs...
+    grep -qF 'task show <slug> --project rdm --format json' "$doc" || return 1
+    grep -qF 'phase show <phase> --roadmap <slug> --project rdm --format json' "$doc" || return 1
+    grep -qF 'roadmap show <slug> --project rdm --format json' "$doc" || return 1
+    # ... pass the payload under the right key, at least twice (the gathering
+    # bullet and the never-summarize instruction), ...
+    [ "$(grep -cF 'fetched' "$doc")" -ge 2 ] || return 1
+    grep -qF 'wontFixedTexts' "$doc" || return 1
+    grep -qF 'mechanicalModel' "$doc" || return 1
+    # ... and carry the never-summarize instruction naming the recorded failures.
+    grep -qiF 'verbatim' "$doc" || return 1
+    grep -qF 'wf_e3402021-0af' "$doc" || return 1
+    grep -qF 'wf_f4be8027-dbb' "$doc" || return 1
+    return 0
+}
+assert_plan_shim_gathers "$SKILL_MD" ||
+    fail "7f: $SKILL_MD must gather task/phase/roadmap 'show --format json' itself, pass fetched/wontFixedTexts/mechanicalModel, and carry the verbatim instruction naming both recorded corruption runs"
+pass "7f: the local shim gathers the payload and passes it verbatim, citing both recorded corruption runs"
+
+sed 's/--format json/--format jsn/g' "$SKILL_MD" >"$TMP/plan-shim-typo.md"
+if assert_plan_shim_gathers "$TMP/plan-shim-typo.md"; then
+    fail "7f: detector missed a typo'd gathering command in the shim"
+fi
+sed 's/fetched/fetchd/g' "$SKILL_MD" >"$TMP/plan-shim-key-typo.md"
+if assert_plan_shim_gathers "$TMP/plan-shim-key-typo.md"; then
+    fail "7f: detector missed a typo'd arg key in the shim"
+fi
+pass "7f: detector fires on a typo'd gathering command AND a typo'd arg key"
+
 say "verify-workflow-review.sh: ALL GREEN"

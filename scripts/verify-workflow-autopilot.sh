@@ -188,8 +188,14 @@ assert.deepEqual(
     globalBudget: DEFAULT_GLOBAL_BUDGET,
     maxPlanRevise: null,
     maxCodeRework: null,
+    // The three optional caller-supplied hoists default to null (absent) — the
+    // in-workflow dep call is then the path taken, which is exactly what a
+    // direct `Workflow` invocation does.
+    mechanicalModel: null,
+    phaseList: null,
+    next: null,
   },
-  'defaults (both dispatch-phase budget overrides unset)'
+  'defaults (both dispatch-phase budget overrides unset; all three hoists absent)'
 );
 assert.ok(!('land' in base), 'parsed config never carries a land flag');
 assert.equal(parseAutopilotArgs({ roadmap: 'rm', maxPhases: 3 }).maxPhases, 3, 'maxPhases int');
@@ -420,6 +426,7 @@ function makeFakes(opts) {
   const mechanicalModel = o.mechanicalModel !== undefined ? o.mechanicalModel : 'haiku';
 
   const callLog = [];
+  const resolveCalls = [];
   const advanceCalls = [];
   const parkCalls = [];
   const dispatchCalls = [];
@@ -442,7 +449,11 @@ function makeFakes(opts) {
 
   const fakes = {
     log: (msg) => callLog.push('log:' + msg),
-    resolveMechanicalModel: async () => mechanicalModel,
+    resolveMechanicalModel: async () => {
+      resolveCalls.push(1);
+      callLog.push('resolveMechanicalModel');
+      return mechanicalModel;
+    },
     estimateList: async (slug, model) => {
       callLog.push('estimateList');
       modelCalls.estimateList.push(model);
@@ -496,6 +507,7 @@ function makeFakes(opts) {
     fakes,
     statusMap,
     callLog,
+    resolveCalls,
     advanceCalls,
     parkCalls,
     dispatchCalls,
@@ -917,14 +929,155 @@ function makeFakes(opts) {
   );
 }
 
+// === HOIST: caller-supplied mechanicalModel / phaseList / next replace their
+// dep calls, and every one falls back when absent. `next` is ONE-SHOT — only
+// the first loop iteration may consume it, because `rdm next` is what steps the
+// cursor forward once advance/park has persisted a status. ====================
+const THREE_PHASES = [
+  { stem: 'phase-1-a', status: 'not-started' },
+  { stem: 'phase-2-b', status: 'not-started' },
+  { stem: 'phase-3-c', status: 'not-started' },
+];
+{
+  // mechanicalModel supplied -> the dep is never called; the hoisted id still
+  // reaches every mechanical dep call.
+  const h = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })) });
+  await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20, mechanicalModel: 'hoisted-haiku' });
+  assert.equal(h.resolveCalls.length, 0, 'hoisted mechanicalModel -> resolveMechanicalModel dep never called');
+  assert.ok(h.modelCalls.fetchNext.every((m) => m === 'hoisted-haiku'), 'the hoisted model id reaches fetchNext');
+  assert.ok(h.modelCalls.advance.every((m) => m === 'hoisted-haiku'), 'the hoisted model id reaches advance');
+}
+{
+  // Absent -> the dep is called exactly once, as today.
+  const h = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })) });
+  await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  assert.equal(h.resolveCalls.length, 1, 'no hoist -> resolveMechanicalModel dep called exactly once');
+}
+{
+  // A whitespace-only / empty hoist must NOT be accepted as a resolved model —
+  // it falls through to the dep, whose own empty-string fail-closed stop is
+  // preserved unchanged.
+  const h = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })), mechanicalModel: '' });
+  const summary = await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20, mechanicalModel: '   ' });
+  assert.equal(h.resolveCalls.length, 1, 'a blank hoisted mechanicalModel falls back to the dep');
+  assert.ok(summary.includes('mechanical-model-unresolved'), 'the fail-closed empty-model stop is unchanged on the fallback path');
+}
+{
+  // phaseList supplied -> estimateList dep never called, and the hoisted list
+  // really drives the unestimated filter (this one has an unrated phase).
+  const h = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })) });
+  await buildAutopilot(h.fakes)({
+    roadmap: 'rm',
+    globalBudget: 20,
+    phaseList: [
+      { stem: 'phase-1-a', status: 'not-started', difficulty: 'moderate', model: 'medium' },
+      { stem: 'phase-2-b', status: 'not-started' },
+      { stem: 'phase-3-c', status: 'not-started', difficulty: 'easy', model: 'small' },
+    ],
+  });
+  assert.ok(!h.callLog.includes('estimateList'), 'hoisted phaseList -> estimateList dep never called');
+  assert.deepEqual(h.parallelEstimateCalls, [['phase-2-b']], 'the hoisted list drives selectUnestimated (only the unrated phase is rated)');
+}
+{
+  const h = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })) });
+  await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  assert.equal(h.callLog.filter((l) => l === 'estimateList').length, 1, 'no hoist -> estimateList dep called exactly once');
+}
+{
+  // A non-array phaseList hoist is rejected and falls back.
+  const h = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })) });
+  await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20, phaseList: { phases: [] } });
+  assert.equal(h.callLog.filter((l) => l === 'estimateList').length, 1, 'a non-array phaseList hoist falls back to the dep');
+}
+{
+  // ONE-SHOT next: over a 3-phase drive the fetchNext dep is called
+  // dispatchCount - 1 + 1 (the terminating 'nothing' read) times — i.e. exactly
+  // one fewer than the unhoisted run, and iteration 1 uses the hoisted value.
+  const h = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })) });
+  await buildAutopilot(h.fakes)({
+    roadmap: 'rm',
+    globalBudget: 20,
+    next: { result: 'phase', stem: 'phase-1-a', number: 1, model: 'medium' },
+  });
+  const hoistedFetches = h.callLog.filter((l) => l === 'fetchNext').length;
+  assert.deepEqual(h.dispatchCalls.map((d) => d.stem), ['phase-1-a', 'phase-2-b', 'phase-3-c'], 'the hoisted next does not derail the drive order');
+
+  const b = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })) });
+  await buildAutopilot(b.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  const plainFetches = b.callLog.filter((l) => l === 'fetchNext').length;
+  assert.equal(hoistedFetches, plainFetches - 1, 'hoisted next saves EXACTLY one fetchNext call — iterations 2..N always re-read');
+  assert.equal(hoistedFetches, b.dispatchCalls.length, 'the saved call is iteration 1 only (one fetchNext per later iteration + the terminating read)');
+}
+{
+  // A stale/lying hoisted next must not be able to re-dispatch forever: it is
+  // consumed once, and iteration 2 reads the real (mutated) state.
+  const h = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })) });
+  await buildAutopilot(h.fakes)({
+    roadmap: 'rm',
+    globalBudget: 20,
+    next: { result: 'phase', stem: 'phase-1-a', number: 1, model: 'medium' },
+  });
+  const firstStems = h.dispatchCalls.map((d) => d.stem);
+  assert.equal(new Set(firstStems).size, firstStems.length, 'no phase is dispatched twice — the hoisted next was consumed exactly once');
+}
+{
+  // A non-object next hoist is rejected and falls back.
+  const h = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })) });
+  await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20, next: 'phase-1-a' });
+  const b = makeFakes({ phases: THREE_PHASES.map((p) => ({ ...p })) });
+  await buildAutopilot(b.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  assert.equal(
+    h.callLog.filter((l) => l === 'fetchNext').length,
+    b.callLog.filter((l) => l === 'fetchNext').length,
+    'a non-object next hoist falls back to the dep on every iteration'
+  );
+}
+console.log('autopilot hoist assertions passed');
+
 console.log('all autopilot driven-loop assertions passed');
 NODE_TEST
 
 if run_node "$TMP/driven.mjs" "$LIB" "$DISPATCH_LIB"; then
-    pass "loop drives to reviewed / parks / budgets / pre-pass / plan-only / mid-tier / writeback-ack-check-causality / budget passthrough"
+    pass "loop drives to reviewed / parks / budgets / pre-pass / plan-only / mid-tier / writeback-ack-check-causality / budget passthrough / hoists + fallbacks"
 else
     fail "autopilot driven-loop assertions failed"
 fi
+
+# --- 1c. HOIST planted-mutation self-tests ------------------------------------
+# The hoist assertions above are only load-bearing if the corresponding
+# production mutation makes them fail. Each mutant is driven through the SAME
+# driven.mjs and must break it.
+say "1c. Hoist planted-mutation self-tests (one-shot next, and each fallback branch)"
+
+assert_lib_mutant_fails() {
+    mutant=$1
+    desc=$2
+    if cmp -s "$LIB" "$mutant"; then
+        fail "1c: planted mutation was a no-op — $desc"
+    fi
+    if run_node "$TMP/driven.mjs" "$mutant" "$DISPATCH_LIB" >/dev/null 2>&1; then
+        fail "1c: driven assertions PASSED against a lib that $desc — the hoist assertions are vacuous"
+    fi
+    pass "1c: assertions fire when the lib $desc"
+}
+
+# (1) Make `next` NON-one-shot: never clear pendingNext, so iterations 2..N keep
+#     reusing the caller's stale value and the same phase re-dispatches forever.
+sed 's/^      pendingNext = null;$//' "$LIB" >"$TMP/mutant-next-not-one-shot.mjs"
+assert_lib_mutant_fails "$TMP/mutant-next-not-one-shot.mjs" "makes the hoisted next non-one-shot (pendingNext never cleared)"
+
+# (2) Drop the mechanicalModel fallback: always take the (possibly absent) hoist.
+sed "s|^        : await d.resolveMechanicalModel();\$|        : '';|" "$LIB" >"$TMP/mutant-no-model-fallback.mjs"
+assert_lib_mutant_fails "$TMP/mutant-no-model-fallback.mjs" "drops the resolveMechanicalModel fallback"
+
+# (3) Drop the phaseList fallback.
+sed 's|^    const phaseList = Array.isArray(cfg.phaseList) ? cfg.phaseList : await d.estimateList(roadmap, mechanicalModel);$|    const phaseList = Array.isArray(cfg.phaseList) ? cfg.phaseList : [];|' "$LIB" >"$TMP/mutant-no-list-fallback.mjs"
+assert_lib_mutant_fails "$TMP/mutant-no-list-fallback.mjs" "drops the estimateList fallback"
+
+# (4) Weaken the phaseList shape guard to "anything truthy", so a non-array hoist
+#     is accepted and the unestimated filter silently sees garbage.
+sed 's|^    const phaseList = Array.isArray(cfg.phaseList) ? cfg.phaseList : await d.estimateList(roadmap, mechanicalModel);$|    const phaseList = cfg.phaseList ? cfg.phaseList : await d.estimateList(roadmap, mechanicalModel);|' "$LIB" >"$TMP/mutant-weak-list-guard.mjs"
+assert_lib_mutant_fails "$TMP/mutant-weak-list-guard.mjs" "weakens the phaseList shape guard to any truthy value"
 
 # --- 2. BLOCK DRIFT GATE -----------------------------------------------------
 say "2. Block drift: the autopilot-loop region is byte-identical (lib vs workflow)"

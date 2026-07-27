@@ -754,3 +754,108 @@ the reference `pipeline`/`parallel` implementations and assertions are written
 inline with `node:assert`. It resolves `node` via the `.mise.toml`-pinned
 toolchain (bare `node`, else `mise exec node --`) and fails hard if node is truly
 absent, matching the sibling harnesses' tool-guard convention.
+
+## Optional caller-supplied args (mechanical-agent hoists)
+
+A Workflow script cannot run a shell command itself, which is why the lane spawns
+**mechanical** subagents — agents that run one `rdm`/`git` command and return its
+output. That forces a *subagent*; it does not force a *dedicated* one. The parent
+**skill shim** is already a running agent with the repo in context, so anything it
+runs itself and passes through the `Workflow` tool's `args` costs a tool call
+instead of a whole 27k-token context load.
+
+Each workflow therefore accepts a set of **optional** args. The full census, the
+classification rule behind them, and the measured delta live in
+[`docs/mechanical-agent-inventory.md`](mechanical-agent-inventory.md).
+
+| workflow | optional arg | replaces | shape guard |
+|---|---|---|---|
+| `dispatch-phase` | `phaseMeta` | `fetch:phase-meta` | **all-or-nothing** — see below |
+| `dispatch-phase` | `taskMeta` | `fetch:task-meta` | **all-or-nothing** — see below |
+| `dispatch-phase` | `alreadyInProgress` | `stamp:in-progress` | boolean; the caller must already have written the status |
+| `autopilot` | `mechanicalModel` | `model:mechanical` | non-empty string |
+| `autopilot` | `phaseList` | `estimate:list` | array |
+| `autopilot` | `next` | `fetch:next` | object — **one-shot**, see below |
+| `estimate` | `mechanicalModel` | `model:mechanical` | non-empty string |
+| `estimate` | `phaseList` | `estimate:list` | array |
+| `plan-review` | `fetched` | `fetch:roadmap` / `fetch:<kind>` | object with a non-empty `body` (plus an array `phases` for the roadmap kind) |
+| `plan-review` | `wontFixedTexts` | `fetch:wontfix` | array |
+| `plan-review` | `mechanicalModel` | `model:mechanical` | non-empty string |
+| `backlog` | `mechanicalModel` | `model:mechanical` | non-empty string |
+| `backlog` | `report` | `fetch:report` | object carrying all four signal arrays |
+| `document` | `mechanicalModel` | `model:mechanical` | non-empty string |
+| `document` | `roadmapMeta` | `fetch:roadmap-meta` | object with `found === true` and an array `phases` |
+| `review-refute-fix` | `diff` | `diff:signals` | object with an array `changedFiles` |
+
+### The invariant: every hoist is optional
+
+At every one of these sites the original `agent()` call is kept **byte-unchanged**
+and reached through an `else` branch. It is never deleted, and no hoisted field is
+ever added to a schema's `required` list. A missing key, a wrong type, a `null`, an
+empty string, an empty array, or a JSON-string `args` payload that fails to parse
+all reject-and-fall-back rather than throwing. A **direct `Workflow` invocation**
+therefore behaves exactly as it did before — and, until the five unconverted skill
+templates become shims, that fallback is a live production path, not a degenerate
+case.
+
+Each site logs which path it took (`hoisted` vs `fetched`), so a direct invocation
+is observable in the run transcript.
+
+### `phaseMeta` / `taskMeta` are all-or-nothing
+
+`hoistedMetaComplete(meta, isTask)` (in `.claude/workflows/lib/dispatch-phase.mjs`)
+accepts a payload only when the `body` is a non-empty string **and** all five model
+ids (`plan`, `implement`, `review_find`, `review_verify`, `mechanical`) are
+non-empty strings. A partial payload is rejected outright, because the fetch agent
+it replaces did *two* things — read the body **and** resolve the five per-step model
+ids — so a partial hoist would still need a model-resolving agent (saving nothing)
+while tripping the driver's `unresolvedStep` check and short-circuiting the whole
+dispatch as a `fetchError`.
+
+### `autopilot`'s `next` is one-shot
+
+`rdm next` is what *advances the cursor* once `advance`/`park` has persisted a
+status. A caller-supplied `next` is therefore consumed on the **first loop
+iteration only**; iterations 2..N always re-read live state. A non-one-shot
+implementation would re-dispatch the same phase forever after a rework.
+
+### `plan-review`'s `fetched` is structured-keys-only
+
+`parsePlanArgs` reads `fetched` / `wontFixedTexts` / `mechanicalModel` from
+**structured object keys only** — never from the `$ARGUMENTS` flag string, which
+would let a raw prose target string masquerade as a fetched payload. This hoist is
+the one in the set that is not a pure cost question: the agents it replaces have
+twice transcribed junk over real plan tags in production, and `agent(..., { schema })`
+provably cannot catch it (both corrupt returns were schema-valid). See
+[`docs/mechanical-agent-inventory.md`](mechanical-agent-inventory.md) §
+"The hoist with a recorded correctness failure". Driver-side validation of a hoisted
+payload's *content* is deliberately out of scope there and owned by task
+`fix-plan-review-gate-tag-clobber`.
+
+### `dispatch-phase` absorbs its diff instead of hoisting it
+
+`diff:signals` is not hoisted — it is **absorbed**. `runCodeGate` calls
+`d.implement(...)` immediately before every `d.review()` with nothing in between, so
+the implementer (already in the worktree it just wrote to) runs the same two `git
+diff` commands and returns `{ changedFiles, diffText }` under
+`IMPLEMENT_RESULT_SCHEMA`. The review closure consumes it **one-shot** — read and
+cleared — so a round-2 review can never inherit round 1's diff, and a null/empty
+return falls back to the untouched `diff:signals` agent. Adding the schema changes
+only the implementer's output contract: its `model` and effort are untouched.
+
+`stamp:in-progress` is deliberately **not** absorbed: it fires before `runPlanGate`,
+and a blocking plan finding escalates before any implementer runs, which would take
+the item from `not-started` straight to `blocked` with no in-progress signal.
+
+### Which caller surfaces supply them today
+
+- **`dispatch-phase`, `autopilot`, `rdm-do --auto`** — supplied by the *distributed*
+  skill shims (`rdm-core/src/templates/skill-{autopilot,dispatch-phase,do}-{cli,mcp}.md`)
+  and their local copies.
+- **`plan-review`, `backlog`, `document`, `review-refute-fix`, `estimate`** — supplied
+  only by this repo's **local** `.claude/skills/*/SKILL.md` dogfood copies. Their
+  distributed templates are not yet Workflow shims; converting them is tracked by task
+  `convert-remaining-skill-templates-to-workflow-shims`.
+- **MCP shims** hoist only what their tool surface produces. There is no MCP
+  model-resolve tool, so `mechanicalModel` — and, by the all-or-nothing rule,
+  `phaseMeta`/`taskMeta` — are omitted there and the in-workflow agent runs.

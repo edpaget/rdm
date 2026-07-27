@@ -1083,16 +1083,29 @@ function buildDiffSignalsPrompt(ref) {
 // the stamped block, with NO independent code-review logic in this driver.
 const runReview = buildReviewPipeline('code')
 
+// HOIST (see docs/mechanical-agent-inventory.md): the caller — the rdm-review
+// shim, already a running agent with the repo in context — may run the same two
+// `git diff` commands itself and pass `{ changedFiles, diffText }` as
+// `args.diff`. OPTIONAL: absent or malformed falls through to the agent below,
+// which is left byte-unchanged and is what a direct `Workflow` invocation always
+// does. The shape guard is deliberately the same one the agent result is
+// subjected to, so both paths feed `deriveSignals` identical input.
+const hoistedDiff = rawArgs.diff
 let diff = null
-try {
-  diff = await agent(buildDiffSignalsPrompt(worktreeRef), {
-    label: 'diff:signals',
-    phase: 'Review',
-    schema: DIFF_SIGNALS_SCHEMA,
-    model: findModel,
-  })
-} catch (e) {
-  diff = null
+if (hoistedDiff && typeof hoistedDiff === 'object' && Array.isArray(hoistedDiff.changedFiles)) {
+  diff = hoistedDiff
+  log('review-refute-fix: diff hoisted from caller args for ' + reviewTarget)
+} else {
+  try {
+    diff = await agent(buildDiffSignalsPrompt(worktreeRef), {
+      label: 'diff:signals',
+      phase: 'Review',
+      schema: DIFF_SIGNALS_SCHEMA,
+      model: findModel,
+    })
+  } catch (e) {
+    diff = null
+  }
 }
 const changedFiles = diff && Array.isArray(diff.changedFiles) ? diff.changedFiles.filter(Boolean) : []
 

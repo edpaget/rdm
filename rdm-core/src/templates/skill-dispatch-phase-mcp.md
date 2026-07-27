@@ -4,6 +4,8 @@ description: Dispatch a single rdm phase end-to-end in the roadmap's shared work
 allowed-tools:
   - Workflow
   - {t_phase_show}
+  - {t_phase_update}
+  - {t_task_update}
 ---
 
 Run **one** rdm phase (or task) to completion by invoking the **`dispatch-phase` Workflow** (`.claude/workflows/dispatch-phase.js`, provisioned automatically by `rdm agent-config claude --skills`). This skill is a **thin shim**: it parses the invocation, hands off to the workflow, and returns the OUTCOME JSON the workflow returns verbatim. All the per-phase work — planning, the independent plan gate, implementation, and code review — happens inside the workflow's own deterministic 4-stage pipeline (Plan → PlanReview → Implement → CodeReview), not in this prose.
@@ -36,13 +38,16 @@ Run **one** rdm phase (or task) to completion by invoking the **`dispatch-phase`
 ## What to do
 
 1. **Parse `$ARGUMENTS`** as `<roadmap-slug> <phase>` (stem or number) for phase mode, or `--task <slug>` for task mode. Optionally sanity-check that the phase exists first with `{t_phase_show}` (`project: {proj_param}, roadmap: "<slug>", phase: "<phase>"`), so a typo'd phase ref fails fast before the workflow spends any tokens.
-2. **Invoke the `dispatch-phase` workflow** via the Workflow tool with `{ roadmap, phase }` (phase mode) or `{ task }` (task mode); pass `args` as a JSON object, never a stringified value. Block for its returned OUTCOME. The workflow:
-   - reads the phase/task and its model tier, creates or reuses the roadmap's (or task's) shared worktree, and stamps it `in-progress`;
+2. **Stamp the item in-progress yourself** unless this is a `--plan-only` invocation: `{t_phase_update}` (`project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`) or `{t_task_update}` (`project: {proj_param}, slug: "<slug>", status: "in-progress"`). Pass `alreadyInProgress: true` in the workflow args **only** if that call succeeded; never pass it for a `--plan-only` run. This makes the item observably `in-progress` strictly earlier than the workflow's own stamp would, and lets the workflow skip a dedicated subagent for it. The flag is **optional** — omit it and the workflow stamps the item itself, exactly as before.
+
+   The CLI variant of this shim additionally hoists the phase/task body plus the five resolved per-step model ids as `phaseMeta`/`taskMeta`. That is **deliberately not done here**: the workflow applies an all-or-nothing guard requiring all five model ids, there is no MCP model-resolve tool, and a partial payload is rejected outright — so this shim omits `phaseMeta`/`taskMeta` entirely and the in-workflow fetch remains the path on MCP.
+3. **Invoke the `dispatch-phase` workflow** via the Workflow tool with `{ roadmap, phase, alreadyInProgress }` (phase mode) or `{ task, alreadyInProgress }` (task mode); pass `args` as a JSON object, never a stringified value. Block for its returned OUTCOME. The workflow:
+   - reads the phase/task and its model tier, creates or reuses the roadmap's (or task's) shared worktree, and stamps it `in-progress` unless you already did;
    - runs a **planning** stage, then a **separate, independent plan-review** stage — scaled to the phase's difficulty tier — bounded to at most one revise round before escalating;
    - on approval, runs an **implementation** stage inside the worktree;
    - runs the **canonical code review** (the same find → refute → filter → verdict → gate pipeline `rdm-review` runs), bounded to one rework pass before escalating;
    - classifies the result into `reviewed | rework | escalated` and returns the OUTCOME above. It never emits a `Done:` line itself — only `writesCompletion: true`, which is `rdm-land`'s signal to synthesize the trailer at land time.
-3. **Return the OUTCOME JSON verbatim** as your final message — do not paraphrase or drop fields.
+4. **Return the OUTCOME JSON verbatim** as your final message — do not paraphrase or drop fields.
 
 ## Safe operations under --permission-mode auto
 

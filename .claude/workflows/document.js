@@ -324,6 +324,36 @@ const documentArgs = parseDocumentArgs(args)
 const roadmapSlug = documentArgs.roadmap
 const outPath = resolveOutPath(documentArgs)
 
+// coerceRawArgs(a) — JSON-string-tolerant read of the raw payload, so a
+// stringified `args` still surfaces the optional caller-supplied hoists below.
+// Never throws: anything unusable yields {} and every hoist read then falls
+// through to its agent.
+function coerceRawArgs(a) {
+  let raw = a || {}
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw) || {}
+    } catch (e) {
+      raw = {}
+    }
+  }
+  if (!raw || typeof raw !== 'object') raw = {}
+  return raw
+}
+// Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md). The
+// rdm-document shim is already a running agent with the repo in context, so it
+// runs `rdm model resolve mechanical` / `rdm roadmap show --format json` itself
+// and passes the results here. Both are OPTIONAL: absent or malformed falls
+// through to the original agent, which is what a direct `Workflow` invocation
+// always does.
+const rawDocumentArgs = coerceRawArgs(args)
+// hoistedRoadmapMetaOk(m) — the shape guard, matching the fetch agent's own
+// success condition: `found === true` plus an array of phases. Anything else is
+// rejected so the all-done validation below can never run on a partial payload.
+function hoistedRoadmapMetaOk(m) {
+  return !!(m && typeof m === 'object' && m.found === true && Array.isArray(m.phases))
+}
+
 if (!roadmapSlug) {
   log('document: no roadmap slug provided')
   return { roadmap: roadmapSlug, aborted: true, incompletePhases: [], path: null, draft: null, fetchError: true }
@@ -333,16 +363,22 @@ if (!roadmapSlug) {
 // (including Stage 0's roadmap fetch). An unresolved result stops the run
 // before any mechanical agent fires, rather than silently falling through to
 // an unpinned Stage 0/1/3 agent.
+// HOIST: the caller already ran `rdm model resolve mechanical`.
 let mechanicalModel = ''
-try {
-  const mechanicalModelResult = await agent(buildMechanicalModelPrompt(), {
-    label: 'model:mechanical',
-    phase: 'Fetch',
-    schema: MECHANICAL_MODEL_SCHEMA,
-  })
-  mechanicalModel = mechanicalModelResult && typeof mechanicalModelResult.model === 'string' ? mechanicalModelResult.model.trim() : ''
-} catch (e) {
-  mechanicalModel = ''
+if (typeof rawDocumentArgs.mechanicalModel === 'string' && rawDocumentArgs.mechanicalModel.trim() !== '') {
+  mechanicalModel = rawDocumentArgs.mechanicalModel.trim()
+  log('document: mechanical model hoisted from caller args')
+} else {
+  try {
+    const mechanicalModelResult = await agent(buildMechanicalModelPrompt(), {
+      label: 'model:mechanical',
+      phase: 'Fetch',
+      schema: MECHANICAL_MODEL_SCHEMA,
+    })
+    mechanicalModel = mechanicalModelResult && typeof mechanicalModelResult.model === 'string' ? mechanicalModelResult.model.trim() : ''
+  } catch (e) {
+    mechanicalModel = ''
+  }
 }
 if (!mechanicalModel) {
   log('document: mechanical model could not be resolved (rdm model resolve mechanical returned nothing) — stopping before any mechanical agent runs')
@@ -350,16 +386,22 @@ if (!mechanicalModel) {
 }
 
 // Stage 0: fetch the roadmap's phase list via a mechanical Bash agent.
+// HOIST: the caller already ran `rdm roadmap show --format json`.
 let roadmapMeta = null
-try {
-  roadmapMeta = await agent(buildRoadmapFetchPrompt(roadmapSlug), {
-    label: 'fetch:roadmap-meta',
-    phase: 'Fetch',
-    schema: ROADMAP_META_SCHEMA,
-    model: mechanicalModel,
-  })
-} catch (e) {
-  roadmapMeta = null
+if (hoistedRoadmapMetaOk(rawDocumentArgs.roadmapMeta)) {
+  roadmapMeta = rawDocumentArgs.roadmapMeta
+  log('document: roadmap meta hoisted from caller args')
+} else {
+  try {
+    roadmapMeta = await agent(buildRoadmapFetchPrompt(roadmapSlug), {
+      label: 'fetch:roadmap-meta',
+      phase: 'Fetch',
+      schema: ROADMAP_META_SCHEMA,
+      model: mechanicalModel,
+    })
+  } catch (e) {
+    roadmapMeta = null
+  }
 }
 
 // Unresolvable roadmap: mirror dispatch-phase's fetchError short-circuit rather

@@ -13,8 +13,11 @@ This skill is a thin shim over the `document` Workflow (`.claude/workflows/docum
 ## Steps
 
 1. Parse `$ARGUMENTS` into the roadmap slug and an optional `--out <path>`.
-2. Invoke the `document` Workflow with `{ roadmap: <slug>, out: <path or omitted> }`.
-3. Branch on the result:
+2. Gather the two mechanical values yourself and pass them along. You are already a running agent with the repo in context; the workflow is not, so each of these otherwise costs it a whole dedicated subagent. Both are **optional** — the workflow falls back to its own in-workflow fetch for anything you omit or get wrong.
+   - `mechanicalModel` — the id printed by `./target/debug/rdm model resolve mechanical`, verbatim.
+   - `roadmapMeta` — the parsed object from `./target/debug/rdm roadmap show <slug> --project rdm --format json`, shaped as `{ found: true, roadmap, title, phases: [{ stem, title, status, commit, body }, …] }` with the phase records copied **verbatim**, never summarized. The workflow rejects anything without `found === true` and an array `phases` and fetches its own.
+3. Invoke the `document` Workflow with `{ roadmap: <slug>, out: <path or omitted>, mechanicalModel, roadmapMeta }`.
+4. Branch on the result:
    - **`result.aborted === true`**: report why and stop — this is a human decision, not a retry.
      - `result.incompletePhases` non-empty: list each incomplete phase and its status; the roadmap isn't ready to document yet.
      - `result.incompletePhases` empty (a fetch or synthesis failure): relay that the roadmap could not be read or drafted, and suggest checking the slug.

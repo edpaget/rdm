@@ -22,6 +22,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The autonomous-lane Workflow scripts now accept **optional caller-supplied
+  arguments** so they no longer spawn a dedicated mechanical subagent for work
+  the invoking skill already did: `dispatch-phase` takes
+  `phaseMeta`/`taskMeta`/`alreadyInProgress`, `autopilot` takes
+  `mechanicalModel`/`phaseList`/`next`, `estimate` takes
+  `mechanicalModel`/`phaseList`, `plan-review` takes
+  `fetched`/`wontFixedTexts`/`mechanicalModel`, `backlog` takes
+  `mechanicalModel`/`report`, `document` takes `mechanicalModel`/`roadmapMeta`,
+  and `review-refute-fix` takes `diff`. `dispatch-phase` additionally absorbs the
+  branch diff into its implementer instead of running a separate diff agent.
+  **Every one of these is optional and behaviour-neutral** — invoking a workflow
+  directly via the `Workflow` tool with the previous argument shape produces the
+  same outcome as before, exercising the unchanged in-workflow fetch. Across the
+  measured corpus this removes 115 of 304 mechanical subagents (~38%); see
+  `docs/mechanical-agent-inventory.md` for the full census, the classification
+  rule, and the measured delta.
+- The `rdm-plan-review` skill now reads its target with
+  `rdm task show|phase show|roadmap show --format json` itself and passes the
+  parsed JSON verbatim, instead of asking a subagent to transcribe it. That
+  transcription step had twice written junk over a target's real tag list, and
+  schema validation could not catch it because both bad returns were
+  schema-valid.
+- The distributed `rdm-plan-review`, `rdm-backlog`, `rdm-document`, `rdm-review`
+  and `rdm-estimate` skills are **not** yet Workflow shims, so they continue to
+  use each workflow's own in-workflow fetch — correct, just not yet cheaper.
+  Converting them is tracked by task
+  `convert-remaining-skill-templates-to-workflow-shims`. MCP skill variants
+  likewise omit the model-derived arguments, since there is no MCP
+  model-resolve tool.
+
 - The plan-review gate's `coherence` dimension no longer blocks a plan merely
   because it leaves an implementation decision undecided. A plan may delegate
   decisions to whoever carries it out; an undecided point is now a `concern`

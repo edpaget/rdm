@@ -795,4 +795,164 @@ else
     fail "hermetic real-binary estimate assertions failed"
 fi
 
+# --- HOIST: caller-supplied mechanicalModel / phaseList -----------------------
+# Phase 3 of the workflow-token-reduction roadmap eliminates mechanical
+# subagents by never spawning them (docs/mechanical-agent-inventory.md). In
+# estimate.js the two hoists live in the DRIVER REGION's realDeps only — the
+# stamped `estimate-core` block and scripts/gen-workflow-estimate.sh are
+# untouched. Both are OPTIONAL: the original agent call is reached through a
+# fall-through and is never deleted, so a direct `Workflow` invocation behaves
+# exactly as before.
+say "HOIST. estimate.js driver region: mechanicalModel / phaseList hoists and their fallbacks"
+
+cat >"$TMP/hoist.mjs" <<'NODE_HOIST'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const wfPath = process.argv[2];
+let src = fs.readFileSync(wfPath, 'utf8');
+src = src.replace(/^export /m, '');
+const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-estimate-hoist-wrapped.mjs');
+fs.writeFileSync(wrapperPath, 'export default async function(args, agent, parallel, log) {\n' + src + '\n}\n');
+const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
+const run = mod.default;
+
+const PHASES = [
+  { stem: 'phase-1-a', status: 'not-started' },
+  { stem: 'phase-2-b', status: 'not-started', difficulty: 'moderate', model: 'medium' },
+];
+
+function makeAgent(o) {
+  o = o || {};
+  const calls = [];
+  const agent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    calls.push({ label, prompt, opts });
+    if (label === 'model:mechanical') return { model: o.model === undefined ? 'agent-haiku' : o.model };
+    if (label === 'estimate:list') return { phases: o.phases === undefined ? PHASES : o.phases };
+    if (label.startsWith('estimate:rate:')) return { stem: label.slice('estimate:rate:'.length), difficulty: 'easy', justification: 'j' };
+    if (label.startsWith('estimate:write:')) return { ok: true };
+    if (label.startsWith('estimate:tier:')) return { model: 'small' };
+    throw new Error('unexpected agent label: ' + label);
+  };
+  return { agent, calls, count: (l) => calls.filter((c) => c.label === l).length };
+}
+const refParallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+const nolog = () => {};
+
+{
+  // Both hoists supplied -> neither agent runs, and the hoisted values are used.
+  const a = makeAgent({});
+  const out = await run(
+    { roadmap: 'rm', mechanicalModel: 'hoisted-haiku', phaseList: PHASES },
+    a.agent,
+    refParallel,
+    nolog
+  );
+  assert.equal(a.count('model:mechanical'), 0, 'hoisted mechanicalModel -> no model:mechanical agent call');
+  assert.equal(a.count('estimate:list'), 0, 'hoisted phaseList -> no estimate:list agent call');
+  assert.deepEqual(out.estimated.map((e) => e.stem), ['phase-1-a'], 'the hoisted list drives the unestimated filter');
+  const write = a.calls.find((c) => c.label.startsWith('estimate:write:'));
+  assert.equal(write.opts.model, 'hoisted-haiku', 'the hoisted model id pins the mechanical writeback agent');
+}
+{
+  // Neither supplied -> exactly one of each agent, as today, and the SAME result.
+  const a = makeAgent({});
+  const out = await run({ roadmap: 'rm' }, a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 1, 'no hoist -> exactly one model:mechanical agent call');
+  assert.equal(a.count('estimate:list'), 1, 'no hoist -> exactly one estimate:list agent call');
+  assert.deepEqual(out.estimated.map((e) => e.stem), ['phase-1-a'], 'the fallback path produces the same estimate set');
+}
+for (const [name, bad] of [
+  ['null', null],
+  ['empty string', ''],
+  ['whitespace only', '   '],
+  ['wrong type', 42],
+]) {
+  const a = makeAgent({});
+  await run({ roadmap: 'rm', mechanicalModel: bad, phaseList: PHASES }, a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 1, 'malformed mechanicalModel (' + name + ') falls back to the agent');
+}
+for (const [name, bad] of [
+  ['null', null],
+  ['object', { phases: PHASES }],
+  ['string', 'phase-1-a'],
+]) {
+  const a = makeAgent({});
+  await run({ roadmap: 'rm', mechanicalModel: 'hoisted-haiku', phaseList: bad }, a.agent, refParallel, nolog);
+  assert.equal(a.count('estimate:list'), 1, 'malformed phaseList (' + name + ') falls back to the agent');
+}
+{
+  // A JSON-STRINGIFIED args payload (which real LLM callers have delivered
+  // despite the contract) must still surface both hoists.
+  const a = makeAgent({});
+  await run(JSON.stringify({ roadmap: 'rm', mechanicalModel: 'hoisted-haiku', phaseList: PHASES }), a.agent, refParallel, nolog);
+  assert.equal(a.count('model:mechanical'), 0, 'a stringified args payload still surfaces mechanicalModel');
+  assert.equal(a.count('estimate:list'), 0, 'a stringified args payload still surfaces phaseList');
+}
+console.log('estimate hoist assertions passed');
+NODE_HOIST
+
+if run_node "$TMP/hoist.mjs" "$WF"; then
+    pass "estimate hoist/fallback verified against the real driver under a recording fake agent"
+else
+    fail "estimate hoist/fallback assertions failed against $WF"
+fi
+
+# Planted-mutation self-tests: each fallback branch must be load-bearing.
+assert_wf_mutant_fails() {
+    mutant=$1
+    desc=$2
+    if cmp -s "$WF" "$mutant"; then
+        fail "HOIST: planted mutation was a no-op — $desc"
+    fi
+    if run_node "$TMP/hoist.mjs" "$mutant" >/dev/null 2>&1; then
+        fail "HOIST: assertions PASSED against a driver that $desc — they are vacuous"
+    fi
+    pass "HOIST: assertions fire when the driver $desc"
+}
+
+# (1) Drop the model fallback: return the (possibly absent) hoist unconditionally.
+awk '
+    index($0, "  resolveMechanicalModel: async function () {") { print; print "    return String(rawEstimateArgs.mechanicalModel || \"\").trim()"; skipping = 1; next }
+    skipping && index($0, "  },") == 1 { skipping = 0; print; next }
+    skipping { next }
+    { print }
+' "$WF" >"$TMP/mutant-no-model-fallback.js"
+assert_wf_mutant_fails "$TMP/mutant-no-model-fallback.js" "drops the model:mechanical fallback"
+
+# (2) Weaken the phaseList guard to "anything truthy".
+sed 's/if (Array.isArray(rawEstimateArgs.phaseList)) {/if (rawEstimateArgs.phaseList) {/' "$WF" >"$TMP/mutant-weak-list-guard.js"
+assert_wf_mutant_fails "$TMP/mutant-weak-list-guard.js" "weakens the phaseList shape guard to any truthy value"
+
+# --- SHIM: the LOCAL rdm-estimate shim gathers and passes both hoists ---------
+# `.claude/skills/rdm-estimate/SKILL.md` is a LOCAL dogfood shim; its distributed
+# template (rdm-core/src/templates/skill-estimate-{cli,mcp}.md) is NOT a Workflow
+# shim yet (tracked by task convert-remaining-skill-templates-to-workflow-shims),
+# so this check belongs here and NOT in verify-agent-config-distribution.sh.
+say "HOIST-SHIM. .claude/skills/rdm-estimate/SKILL.md gathers and passes mechanicalModel + phaseList"
+
+assert_shim_gathers() {
+    grep -qF 'rdm model resolve mechanical' "$1" || return 1
+    grep -qF 'phase list --roadmap <slug>' "$1" || return 1
+    grep -qF 'mechanicalModel' "$1" || return 1
+    grep -qF 'phaseList' "$1" || return 1
+    # Occurrence floor: each key is named in the gathering bullet AND in the
+    # workflow-invocation arg object, so a single stray mention cannot satisfy it.
+    [ "$(grep -cF 'mechanicalModel' "$1")" -ge 2 ] || return 1
+    [ "$(grep -cF 'phaseList' "$1")" -ge 2 ] || return 1
+    return 0
+}
+assert_shim_gathers "$SKILL" ||
+    fail "HOIST-SHIM: $SKILL must gather 'rdm model resolve mechanical' and 'rdm phase list --format json' and pass mechanicalModel + phaseList (each named at least twice)"
+pass "HOIST-SHIM: the local shim gathers and passes both hoisted args"
+
+sed 's/mechanicalModel/mechModel/g' "$SKILL" >"$TMP/shim-typo.md"
+if assert_shim_gathers "$TMP/shim-typo.md"; then
+    fail "HOIST-SHIM: detector missed a typo'd arg key in the shim"
+fi
+pass "HOIST-SHIM: detector fires on a typo'd arg key in the shim"
+
 say "verify-workflow-estimate.sh: ALL GREEN"

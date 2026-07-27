@@ -1080,7 +1080,42 @@ function parseDispatchArgs(args) {
     planOnly: !!dispatchArgs.planOnly,
     maxPlanRevise: parseBudget(dispatchArgs.maxPlanRevise, 'maxPlanRevise', DEFAULT_MAX_PLAN_REVISE),
     maxCodeRework: parseBudget(dispatchArgs.maxCodeRework, 'maxCodeRework', DEFAULT_MAX_CODE_REWORK),
+    // --- Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md).
+    // A caller that is ALREADY a running agent with the repo in context (the
+    // rdm-dispatch-phase / rdm-do --auto shims) can run the mechanical command
+    // itself and pass the result here, so the workflow never spawns a dedicated
+    // subagent for it. Every one of these is OPTIONAL: absent/malformed simply
+    // falls through to the in-workflow agent, which is exactly what a direct
+    // `Workflow` invocation (no caller) does.
+    phaseMeta: dispatchArgs.phaseMeta && typeof dispatchArgs.phaseMeta === 'object' ? dispatchArgs.phaseMeta : null,
+    taskMeta: dispatchArgs.taskMeta && typeof dispatchArgs.taskMeta === 'object' ? dispatchArgs.taskMeta : null,
+    // The caller already wrote `--status in-progress` itself and it exited 0, so
+    // the workflow's own observability stamp is redundant. NEVER set by a
+    // --plan-only invocation (the workflow suppresses the stamp there anyway).
+    alreadyInProgress: !!dispatchArgs.alreadyInProgress,
   };
+}
+
+// hoistedMetaComplete(meta, isTask) — the ALL-OR-NOTHING guard on a caller-
+// supplied phase/task meta payload. A hoisted meta replaces a fetch agent that
+// did TWO things: read the item body AND resolve the five per-step model ids.
+// Accepting a partial payload would therefore save nothing (the driver would
+// still need a model-resolving agent) while actively breaking the run: an
+// incomplete `models` map trips the driver's `unresolvedStep` check and
+// short-circuits the whole dispatch as a fetchError. So: accept only when the
+// body is a non-empty string AND all five model ids are non-empty strings —
+// otherwise reject and let the original agent run untouched.
+//
+// `isTask` is accepted for symmetry with the two schemas (TASK_META carries no
+// roadmap/stem/model tier) but imposes no extra requirement: body + models are
+// the only fields the driver cannot derive on its own.
+function hoistedMetaComplete(meta, isTask) {
+  if (!meta || typeof meta !== 'object') return false;
+  if (typeof meta.body !== 'string' || String(meta.body).trim() === '') return false;
+  const m = meta.models;
+  if (!m || typeof m !== 'object') return false;
+  const keys = ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'];
+  return keys.filter((k) => typeof m[k] !== 'string' || m[k] === '').length === 0;
 }
 
 // runPlanGate(config, deps) — the bounded plan stage. Author a plan, review it,
@@ -1477,6 +1512,27 @@ const DIFF_SIGNALS_SCHEMA = {
   },
 }
 
+// IMPLEMENT_RESULT — the ABSORBED diff the implementer returns alongside its
+// work. The implementer is already running in the item's worktree with the repo
+// in context immediately before every review round (runCodeGate calls
+// `d.implement(...)` right before `d.review()` with nothing in between), so
+// asking it for the same two `git diff` commands the diff:signals agent would
+// have run costs a tool call instead of a whole subagent context load.
+//
+// Deliberately OPTIONAL by construction: a truncated, refused, or absent
+// StructuredOutput leaves `pendingDiff` null and the review closure falls back
+// to the untouched `diff:signals` agent. Same fields, same base, same
+// truncation as DIFF_SIGNALS_SCHEMA so `deriveSignals` sees identical input.
+const IMPLEMENT_RESULT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['changedFiles', 'diffText'],
+  properties: {
+    changedFiles: { type: 'array', items: { type: 'string' } },
+    diffText: { type: 'string' },
+  },
+}
+
 // PHASE_META — what the Stage-0 fetch agent returns from `rdm phase show`.
 const PHASE_META_SCHEMA = {
   type: 'object',
@@ -1720,6 +1776,19 @@ function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes) 
       lines.push(JSON.stringify(acGaps, null, 2))
     }
   }
+  // ABSORBED diff report. Appended LAST so it never displaces the implementation
+  // instructions above. The wording deliberately mirrors buildDiffSignalsPrompt
+  // (same three-dot `main...HEAD` base, same 40000-character truncation) so
+  // `deriveSignals` receives byte-identical input whichever path produced it.
+  lines.push(
+    'Finally, AFTER committing, run exactly these two commands in the worktree and read their output:',
+    '  git diff --name-only main...HEAD',
+    '  git diff main...HEAD',
+    'Return an IMPLEMENT_RESULT object: `changedFiles` — the repo-relative paths from the first command,',
+    'verbatim, one array element each; and `diffText` — the second command\'s output TRUNCATED to the',
+    'first 40000 characters (append nothing; just stop). If either command fails or the branch has no',
+    'commits of its own, return an empty `changedFiles` array and an empty `diffText`.'
+  )
   return lines.join('\n')
 }
 
@@ -1772,6 +1841,14 @@ const planOnly = dispatchArgs.planOnly
 // per run via the maxPlanRevise / maxCodeRework args.
 const maxPlanRevise = dispatchArgs.maxPlanRevise
 const maxCodeRework = dispatchArgs.maxCodeRework
+// Optional caller-supplied hoists. A caller that is already a running agent with
+// the repo in context (the rdm-dispatch-phase / rdm-do --auto shims) runs the
+// mechanical command itself and passes the result here, so this workflow never
+// spawns a dedicated subagent for it. All three are OPTIONAL — absent or
+// malformed simply falls through to the original agent, which is what a direct
+// `Workflow` invocation (no caller) always does.
+const hoistedMeta = isTask ? dispatchArgs.taskMeta : dispatchArgs.phaseMeta
+const alreadyInProgress = dispatchArgs.alreadyInProgress
 
 // itemOutcome — emit the identifier-correct OUTCOME for whichever mode is
 // active. Keeps every downstream return site mode-agnostic.
@@ -1810,21 +1887,35 @@ const itemLabelRaw = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
 // Stage 0: fetch the phase/task metadata + body via a mechanical Bash agent.
 // NOTE: this local is `phaseMeta`, NOT `meta` — the top-level `export const meta`
 // (the workflow contract) already owns that identifier in this module scope.
+//
+// HOIST: when the caller supplied a COMPLETE meta payload (non-empty body plus
+// all five resolved model ids — hoistedMetaComplete, from the copied block), use
+// it and skip the agent entirely. The guard is all-or-nothing on purpose: a
+// partial payload would still need a model-resolving agent (saving nothing) and
+// would trip the `unresolvedStep` check below, short-circuiting the dispatch as
+// a fetchError. Anything the guard rejects falls through to the agent path,
+// which is left BYTE-UNCHANGED.
 let phaseMeta = null
-try {
-  phaseMeta = isTask
-    ? await agent(buildTaskFetchPrompt(taskSlug), {
-        label: 'fetch:task-meta',
-        phase: 'Plan',
-        schema: TASK_META_SCHEMA,
-      })
-    : await agent(buildFetchPrompt(roadmap, phaseArg), {
-        label: 'fetch:phase-meta',
-        phase: 'Plan',
-        schema: PHASE_META_SCHEMA,
-      })
-} catch (e) {
-  phaseMeta = null
+if (hoistedMetaComplete(hoistedMeta, isTask)) {
+  phaseMeta = hoistedMeta
+  log('dispatch-phase: ' + (isTask ? 'task' : 'phase') + ' meta hoisted from caller args for ' + itemLabelRaw)
+} else {
+  log('dispatch-phase: fetching ' + (isTask ? 'task' : 'phase') + ' meta for ' + itemLabelRaw + ' (no usable caller hoist)')
+  try {
+    phaseMeta = isTask
+      ? await agent(buildTaskFetchPrompt(taskSlug), {
+          label: 'fetch:task-meta',
+          phase: 'Plan',
+          schema: TASK_META_SCHEMA,
+        })
+      : await agent(buildFetchPrompt(roadmap, phaseArg), {
+          label: 'fetch:phase-meta',
+          phase: 'Plan',
+          schema: PHASE_META_SCHEMA,
+        })
+  } catch (e) {
+    phaseMeta = null
+  }
 }
 
 if (!phaseMeta || !phaseMeta.body || String(phaseMeta.body).trim() === '') {
@@ -1875,20 +1966,37 @@ const itemLabel = isTask ? 'task/' + taskSlug : roadmap + '/' + stem
 // stamping in-progress would misreport it, and skipping (not reverting) avoids
 // clobbering a phase legitimately left in-progress by an earlier interrupted
 // run.
+//
+// REDUNDANCY SUPPRESSION: `alreadyInProgress` says the CALLER already ran the
+// `--status in-progress` write itself and it exited 0 — so this agent would
+// re-write a status that is already correct. It is only ever set by a shim that
+// actually performed that write, and never by a --plan-only invocation. The
+// `!planOnly` guard is kept INDEPENDENTLY of it: a plan-only pass must skip the
+// stamp whatever the flag says. On every path where no caller stamped (a direct
+// `Workflow` invocation, and every autopilot-nested dispatch — autopilot is
+// itself a workflow and cannot shell out), the stamp still runs here, BEFORE the
+// plan gate. That ordering is load-bearing: a blocking plan finding escalates
+// before any implementer runs, so the stamp can never be folded into the
+// implementer without leaving the item going not-started → blocked with no
+// in-progress signal at all.
 if (!planOnly) {
-  try {
-    const target = isTask ? taskSlug : stem
-    const stampAck = await agent(buildStampInProgressPrompt(isTask, roadmapSlug, target), {
-      label: 'stamp:in-progress',
-      phase: 'Implement',
-      schema: STAMP_ACK_SCHEMA,
-      model: models.mechanical,
-    })
-    if (!stampAck || stampAck.ok !== true) {
-      log('dispatch-phase: in-progress stamp did not confirm for ' + itemLabel + ' — continuing (observability only)')
+  if (alreadyInProgress) {
+    log('dispatch-phase: in-progress stamp skipped for ' + itemLabel + ' — the caller already stamped it')
+  } else {
+    try {
+      const target = isTask ? taskSlug : stem
+      const stampAck = await agent(buildStampInProgressPrompt(isTask, roadmapSlug, target), {
+        label: 'stamp:in-progress',
+        phase: 'Implement',
+        schema: STAMP_ACK_SCHEMA,
+        model: models.mechanical,
+      })
+      if (!stampAck || stampAck.ok !== true) {
+        log('dispatch-phase: in-progress stamp did not confirm for ' + itemLabel + ' — continuing (observability only)')
+      }
+    } catch (e) {
+      log('dispatch-phase: in-progress stamp failed for ' + itemLabel + ' — continuing (observability only)')
     }
-  } catch (e) {
-    log('dispatch-phase: in-progress stamp failed for ' + itemLabel + ' — continuing (observability only)')
   }
 }
 
@@ -1963,37 +2071,60 @@ if (planOnly) {
 const approvedPlanText = renderPlanDoc(planDoc)
 const runCodeReview = buildReviewPipeline('code')
 const reviewTarget = isTask ? 'task/' + taskSlug : roadmapSlug + '/' + stem
+// ABSORPTION handoff: the implementer reports its own branch diff (see
+// IMPLEMENT_RESULT_SCHEMA), and the review closure immediately below consumes it
+// ONE-SHOT — it reads and clears `pendingDiff` on entry, so a round-2 review can
+// never inherit round 1's stale diff. Per-round freshness is preserved because
+// runCodeGate implements exactly once before every review round.
+let pendingDiff = null
 const codeGate = await runCodeGate(
   { maxRework: maxCodeRework, tier: tier },
   {
-    implement: async (notes) =>
-      notes == null
-        ? agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText), {
-            model: models.implement,
-            label: 'implement:worktree',
-            phase: 'Implement',
-          })
-        : agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, notes), {
-            model: models.implement,
-            label: 'implement:rework',
-            phase: 'Implement',
-          }),
+    implement: async (notes) => {
+      const r =
+        notes == null
+          ? await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText), {
+              model: models.implement,
+              label: 'implement:worktree',
+              phase: 'Implement',
+              schema: IMPLEMENT_RESULT_SCHEMA,
+            })
+          : await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, notes), {
+              model: models.implement,
+              label: 'implement:rework',
+              phase: 'Implement',
+              schema: IMPLEMENT_RESULT_SCHEMA,
+            })
+      pendingDiff = r && Array.isArray(r.changedFiles) && r.changedFiles.length > 0 ? r : null
+      return r
+    },
     // The code gate IS the canonical review — `buildReviewPipeline('code')` from
     // the stamped block, with NO independent code-review logic in this driver.
     // The diff is fetched INSIDE this closure so every rework round re-derives
     // its signals from the post-rework tree: a round-2 fix that newly touches an
     // `rdm-core` public item must turn `api-docs` on for round 2.
     review: async () => {
+      // ONE-SHOT consume: read and clear, so the next round cannot inherit this
+      // round's diff. A null (implementer returned nothing usable, resolved to
+      // null on an unknown model, or threw) falls through to the untouched
+      // diff:signals agent below.
+      const diffFromImplementer = pendingDiff
+      pendingDiff = null
       let diff = null
-      try {
-        diff = await agent(buildDiffSignalsPrompt(worktreeRef), {
-          label: 'diff:signals',
-          phase: 'Review',
-          schema: DIFF_SIGNALS_SCHEMA,
-          model: models.mechanical,
-        })
-      } catch (e) {
-        diff = null
+      if (diffFromImplementer) {
+        diff = diffFromImplementer
+        log('dispatch-phase: diff signals absorbed from the implementer for ' + itemLabel)
+      } else {
+        try {
+          diff = await agent(buildDiffSignalsPrompt(worktreeRef), {
+            label: 'diff:signals',
+            phase: 'Review',
+            schema: DIFF_SIGNALS_SCHEMA,
+            model: models.mechanical,
+          })
+        } catch (e) {
+          diff = null
+        }
       }
       const changedFiles = diff && Array.isArray(diff.changedFiles) ? diff.changedFiles.filter(Boolean) : []
       if (changedFiles.length === 0) {

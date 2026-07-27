@@ -35,15 +35,24 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are now 
    Extract the acceptance criteria, steps, and any other requirements from the body.
 3. **Orient on the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed, so you can discuss the result with context. You do not need to derive trigger signals by hand — the `review-refute-fix` workflow invoked in step 2 derives them itself from the item's worktree diff (falling open to every dimension if the diff is unavailable).
 
+   While you are here, capture that diff so the workflow does not have to spawn a dedicated subagent for it. In the item's worktree run exactly:
+
+   ```
+   git diff --name-only main...HEAD
+   git diff main...HEAD
+   ```
+
+   and keep `diff = { changedFiles: [<the paths from the first command, verbatim>], diffText: "<the second command's output, truncated to the first 40000 characters>" }`. Pass it as `args.diff` in step 2. It is **optional** — omit it (or omit it when either command fails) and the workflow runs its own `diff:signals` agent exactly as before. Use the three-dot `main...HEAD` base and the 40000-character truncation verbatim: the workflow feeds this straight into `deriveSignals`, so a different base or a summarized diff silently changes which review dimensions run.
+
 ### 2. Review — invoke the canonical pipeline (find → refute → verdict)
 
 Invoke the `review-refute-fix` Workflow tool to run the dimension-finding and per-finding-refuting mechanics — **Review specification § Dimensions / Find / Refute / Filter & consolidate / Verdict** below describe exactly what it does, so you can explain the result, but you no longer perform those steps by hand:
 
 ```
 Workflow: review-refute-fix
-args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false }
+args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, diff: <the object captured in step 3, or omitted> }
 # or, for a task:
-args: { mode: "code", task: "<slug>", gate: false }
+args: { mode: "code", task: "<slug>", gate: false, diff: <the object captured in step 3, or omitted> }
 ```
 
 Always pass `gate: false` (or omit `gate`) — this skill owns the gate (step 5 below), never the workflow's own mechanical status-persist path, which is reserved for headless/ad hoc callers. The workflow returns the dispatch-shaped OUTCOME: `{ roadmap, phase, outcome, status, writesCompletion, summary, reason, findings }` (or `{ task, ... }`), with `outcome` ∈ `reviewed | rework | escalated` and `findings` already ranked survivors. Treat this as the one canonical review pass — do not additionally dispatch your own finder/refuter agents.

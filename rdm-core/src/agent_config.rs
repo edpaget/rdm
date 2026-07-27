@@ -679,7 +679,14 @@ fn skill_dispatch_phase_mcp(proj: &str, principles_note: Option<&str>) -> SkillF
             include_str!("templates/skill-dispatch-phase-mcp.md"),
             proj,
             principles_note,
-            &[("t_phase_show", "rdm_phase_show")],
+            &[
+                ("t_phase_show", "rdm_phase_show"),
+                // The shim stamps the item in-progress itself and passes
+                // `alreadyInProgress: true`, so the workflow can skip its own
+                // dedicated stamp subagent.
+                ("t_phase_update", "rdm_phase_update"),
+                ("t_task_update", "rdm_task_update"),
+            ],
         ),
     }
 }
@@ -693,6 +700,9 @@ fn skill_autopilot_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
             principles_note,
             &[
                 ("t_next", "rdm_next"),
+                // The shim hoists the phase list into the workflow's estimate
+                // pre-pass so the workflow skips its own estimate:list subagent.
+                ("t_phase_list", "rdm_phase_list"),
                 ("t_phase_update", "rdm_phase_update"),
             ],
         ),

@@ -1815,4 +1815,496 @@ if assert_doc_agrees "$TMP/doc.scratch" 2>/dev/null; then
 fi
 pass "doc/constant agreement detector fires on rewritten budget values"
 
+# --- 6. HOIST / ABSORB --------------------------------------------------------
+# Phase 3 of the workflow-token-reduction roadmap eliminates mechanical
+# subagents by never spawning them (docs/mechanical-agent-inventory.md):
+#
+#   * HOIST      — `args.phaseMeta` / `args.taskMeta` replace the Stage-0
+#                  `fetch:phase-meta` / `fetch:task-meta` agent, behind an
+#                  ALL-OR-NOTHING `hoistedMetaComplete` guard (non-empty body
+#                  plus all five resolved model ids).
+#   * REDUNDANCY — `args.alreadyInProgress` suppresses `stamp:in-progress` when
+#                  the caller already performed that write, independently of the
+#                  pre-existing `!planOnly` guard.
+#   * ABSORB     — the implementer returns its own branch diff, which the review
+#                  closure consumes ONE-SHOT in place of the `diff:signals`
+#                  agent; a null/empty/absent return falls back to that agent.
+#
+# Every one of the three is OPTIONAL: the original agent call is reached through
+# an `else` branch and is never deleted, so a direct `Workflow` invocation with
+# the pre-phase args shape behaves exactly as before. This section drives the
+# REAL driver in Node under a recording fake agent (the wrapper technique from
+# scripts/verify-workflow-review-outcome.sh section 3) and asserts both halves,
+# then plants the mutations that must break each assertion.
+say "6. Hoist/absorb: caller-supplied args eliminate mechanical agents, and every one falls back when absent"
+
+cat >"$TMP/hoist.mjs" <<'NODE_HOIST'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const wfPath = process.argv[2];
+let src = fs.readFileSync(wfPath, 'utf8');
+src = src.replace(/^export /m, '');
+
+// Wrap the workflow script's top-level body (which uses `export`, a top-level
+// `return`, and top-level `await`) in an async function taking the Workflow
+// runtime's ambient globals as parameters, so the REAL driver runs unmodified.
+const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-dispatch-hoist-wrapped.mjs');
+fs.writeFileSync(wrapperPath, 'export default async function(args, agent, pipeline, parallel, log) {\n' + src + '\n}\n');
+const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
+const run = mod.default;
+
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+
+const MODELS = {
+  plan: 'm-plan',
+  implement: 'm-impl',
+  review_find: 'm-find',
+  review_verify: 'm-verify',
+  mechanical: 'm-mech',
+};
+const PHASE_META = { roadmap: 'rm', phase: '1', stem: 'phase-1-x', model: 'medium', body: 'PHASE BODY TEXT', models: MODELS };
+const TASK_META = { task: 'my-task', body: 'TASK BODY TEXT', models: MODELS };
+const PLAN_DOC = {
+  steps_per_ac: [{ ac: 'AC1', steps: ['do it'] }],
+  file_map: [{ path: 'a.rs', change: 'edit' }],
+  tests_per_ac: [{ ac: 'AC1', test: 't' }],
+  edge_cases: [],
+  cross_phase_deps: [],
+  summary: 'plan',
+};
+
+// makeAgent(o) — a recording fake `agent`. Every label the driver can emit is
+// answered; `o.planFindings` seeds the PLAN-mode finders (forcing the
+// escalation path when blocking), `o.codeFindingsByRound` seeds the CODE-mode
+// finders per review round, and `o.implementResult` is what the implementer
+// returns (an array = one entry per round).
+function makeAgent(o) {
+  o = o || {};
+  const calls = [];
+  let codeRound = -1;
+  let implementRound = -1;
+  const agent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    calls.push({ label, prompt, opts });
+    if (label === 'fetch:phase-meta') return o.fetchResult === undefined ? PHASE_META : o.fetchResult;
+    if (label === 'fetch:task-meta') return o.fetchResult === undefined ? TASK_META : o.fetchResult;
+    if (label === 'stamp:in-progress') return { ok: true };
+    if (label === 'plan:author' || label === 'plan:revise') return PLAN_DOC;
+    if (label === 'act:code') return { handled: [] };
+    if (label === 'diff:signals') return o.diffResult === undefined ? { changedFiles: ['fallback.rs'], diffText: '' } : o.diffResult;
+    if (label === 'implement:worktree' || label === 'implement:rework') {
+      implementRound++;
+      const r = o.implementResult;
+      if (r === undefined) return undefined;
+      return Array.isArray(r) ? r[implementRound] : r;
+    }
+    const parts = label.split(':');
+    if (parts[0] === 'find') {
+      const mode = parts[1];
+      const dim = parts[2];
+      if (mode === 'plan') return { findings: (o.planFindings || {})[dim] || [] };
+      // Code mode: the `ac` dimension returns { ac, findings }.
+      if (dim === 'ac') {
+        codeRound++;
+        const round = Math.floor(codeRound);
+        const seeds = (o.codeFindingsByRound || [])[round] || {};
+        return { ac: o.acTable || [], findings: seeds.ac || [] };
+      }
+      const round = Math.max(0, Math.floor(codeRound));
+      const seeds = (o.codeFindingsByRound || [])[round] || {};
+      return { findings: seeds[dim] || [] };
+    }
+    if (parts[0] === 'refute') return { refuted: false, confidence: 95 };
+    throw new Error('unexpected agent label: ' + label);
+  };
+  return { agent, calls, labels: () => calls.map((c) => c.label) };
+}
+
+const nolog = () => {};
+const count = (a, label) => a.calls.filter((c) => c.label === label).length;
+
+// ============================================================================
+// (a)/(b)/(c) phaseMeta hoist, fallback, and all-or-nothing rejection.
+// ============================================================================
+{
+  const a = makeAgent({});
+  const out = await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'fetch:phase-meta'), 0, '(a) complete phaseMeta -> no fetch:phase-meta agent call');
+  assert.ok(a.calls.some((c) => c.label === 'plan:author' && c.prompt.includes('PHASE BODY TEXT')), '(a) the hoisted body reaches the planner');
+  assert.ok(a.calls.some((c) => c.label === 'plan:author' && c.opts.model === 'm-plan'), '(a) the hoisted model ids are used');
+  assert.equal(out.outcome, 'reviewed');
+}
+{
+  const a = makeAgent({});
+  await run({ roadmap: 'rm', phase: '1' }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'fetch:phase-meta'), 1, '(b) phaseMeta absent -> exactly one fetch:phase-meta agent call');
+}
+for (const [name, bad] of [
+  ['null', null],
+  ['wrong type', 'phase-1-x'],
+  ['empty body', { ...PHASE_META, body: '' }],
+  ['no models', { ...PHASE_META, models: undefined }],
+  ['missing one model id', { ...PHASE_META, models: { ...MODELS, mechanical: '' } }],
+  ['four of five model ids', { ...PHASE_META, models: { plan: 'a', implement: 'b', review_find: 'c', review_verify: 'd' } }],
+]) {
+  const a = makeAgent({});
+  await run({ roadmap: 'rm', phase: '1', phaseMeta: bad }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'fetch:phase-meta'), 1, '(c) incomplete phaseMeta (' + name + ') is REJECTED -> the fetch agent runs');
+}
+console.log('6a OK: phaseMeta hoist / fallback / all-or-nothing rejection');
+
+// ============================================================================
+// (d) the same trio for taskMeta / fetch:task-meta.
+// ============================================================================
+{
+  const a = makeAgent({});
+  await run({ task: 'my-task', taskMeta: TASK_META }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'fetch:task-meta'), 0, '(d) complete taskMeta -> no fetch:task-meta agent call');
+  assert.ok(a.calls.some((c) => c.label === 'plan:author' && c.prompt.includes('TASK BODY TEXT')), '(d) the hoisted task body reaches the planner');
+}
+{
+  const a = makeAgent({});
+  await run({ task: 'my-task' }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'fetch:task-meta'), 1, '(d) taskMeta absent -> exactly one fetch:task-meta agent call');
+}
+{
+  const a = makeAgent({});
+  await run({ task: 'my-task', taskMeta: { ...TASK_META, models: { ...MODELS, plan: '' } } }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'fetch:task-meta'), 1, '(d) incomplete taskMeta is REJECTED -> the fetch agent runs');
+  // A phase-mode hoist must never satisfy task mode and vice versa.
+  const b = makeAgent({});
+  await run({ task: 'my-task', phaseMeta: PHASE_META }, b.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(b, 'fetch:task-meta'), 1, '(d) a phaseMeta payload never satisfies task mode');
+}
+console.log('6b OK: taskMeta hoist / fallback / rejection, and mode isolation');
+
+// ============================================================================
+// (e)/(f) alreadyInProgress suppresses the stamp; --plan-only still suppresses
+// it regardless, and the two guards are independent.
+// ============================================================================
+{
+  const a = makeAgent({});
+  await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META, alreadyInProgress: true }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'stamp:in-progress'), 0, '(e) alreadyInProgress: true -> zero stamp:in-progress calls');
+}
+{
+  const a = makeAgent({});
+  await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'stamp:in-progress'), 1, '(e) alreadyInProgress absent -> exactly one stamp:in-progress call');
+}
+for (const flag of [true, false, undefined]) {
+  const a = makeAgent({});
+  const args = { roadmap: 'rm', phase: '1', phaseMeta: PHASE_META, planOnly: true };
+  if (flag !== undefined) args.alreadyInProgress = flag;
+  await run(args, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'stamp:in-progress'), 0, '(f) planOnly -> zero stamps whatever alreadyInProgress is (' + String(flag) + ')');
+}
+console.log('6c OK: alreadyInProgress suppression, and the --plan-only guard is independent of it');
+
+// ============================================================================
+// (g)/(h)/(i) diff ABSORPTION into the implementer, its fallback, and per-round
+// freshness (a one-shot pendingDiff — round 2 never inherits round 1's diff).
+// ============================================================================
+const ABSORBED = { changedFiles: ['rdm-core/src/foo.rs'], diffText: '+pub fn foo() {}' };
+{
+  const a = makeAgent({ implementResult: ABSORBED });
+  await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'diff:signals'), 0, '(g) an implementer-returned diff -> zero diff:signals calls');
+  const dims = a.calls.filter((c) => c.label.startsWith('find:code:')).map((c) => c.label).sort();
+  assert.ok(dims.includes('find:code:api-docs'), '(g) the absorbed diff threads deriveSignals output (rdm-core path triggers api-docs)');
+  assert.ok(!dims.includes('find:code:changelog'), '(g) a non-triggered dimension stays off — signals really were computed');
+  // The implementer prompt must carry the same commands and truncation the
+  // diff:signals prompt uses, or deriveSignals sees different input.
+  const impl = a.calls.find((c) => c.label === 'implement:worktree');
+  assert.ok(impl.prompt.includes('git diff --name-only main...HEAD'), '(g) implementer prompt asks for the same three-dot name-only diff');
+  assert.ok(impl.prompt.includes('git diff main...HEAD'), '(g) implementer prompt asks for the same three-dot full diff');
+  assert.ok(impl.prompt.includes('40000'), '(g) implementer prompt uses the same 40000-char truncation');
+  assert.equal(impl.opts.model, 'm-impl', '(g) the implementer keeps its own model — absorption never re-tiers it');
+}
+for (const [name, r] of [
+  ['nothing', undefined],
+  ['null', null],
+  ['empty changedFiles', { changedFiles: [], diffText: '' }],
+  ['no changedFiles key', { diffText: 'x' }],
+]) {
+  const a = makeAgent({ implementResult: r });
+  await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'diff:signals'), 1, '(h) implementer returned ' + name + ' -> exactly one diff:signals call for that round');
+}
+{
+  // (i) Two-round rework: each round's signals come from THAT round's own
+  // implementer return. Round 1 touches rdm-core/src (api-docs on via
+  // publicApiChanged, changelog off); round 2 touches rdm-cli/src instead
+  // (changelog on via userFacing, api-docs off).
+  const blocking = { ac: [{ id: 'b1', concern: 'ac', severity: 'blocking', confidence: 95, what_fails: 'x' }] };
+  const a = makeAgent({
+    implementResult: [ABSORBED, { changedFiles: ['rdm-cli/src/main.rs'], diffText: '' }],
+    codeFindingsByRound: [blocking, {}],
+  });
+  await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META, maxCodeRework: 1 }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'diff:signals'), 0, '(i) both rounds absorbed -> no diff:signals call at all');
+  assert.equal(count(a, 'implement:rework'), 1, '(i) exactly one rework round ran');
+  const findLabels = a.calls.filter((c) => c.label.startsWith('find:code:')).map((c) => c.label);
+  const changelogRuns = findLabels.filter((l) => l === 'find:code:changelog').length;
+  assert.equal(changelogRuns, 1, '(i) changelog fires in round 2 ONLY — round 1 did not see the round-2 file (no stale diff)');
+  const apiDocRuns = findLabels.filter((l) => l === 'find:code:api-docs').length;
+  assert.equal(apiDocRuns, 1, '(i) api-docs fires in round 1 ONLY — round 2 did not inherit round 1 diff (pendingDiff is one-shot)');
+}
+{
+  // (i2) The direct staleness probe: round 1 absorbs a diff, round 2's
+  // implementer returns NOTHING. Round 2 must fall back to the diff:signals
+  // agent rather than silently reusing round 1's diff.
+  const blocking = { ac: [{ id: 'b1', concern: 'ac', severity: 'blocking', confidence: 95, what_fails: 'x' }] };
+  const a = makeAgent({ implementResult: [ABSORBED, null], codeFindingsByRound: [blocking, {}] });
+  await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META, maxCodeRework: 1 }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(count(a, 'implement:rework'), 1, '(i2) exactly one rework round ran');
+  assert.equal(count(a, 'diff:signals'), 1, '(i2) round 2 returned no diff -> exactly one diff:signals call, never round 1 stale reuse');
+  const findLabels = a.calls.filter((c) => c.label.startsWith('find:code:')).map((c) => c.label);
+  assert.equal(findLabels.filter((l) => l === 'find:code:api-docs').length, 1, '(i2) api-docs fires only in round 1 — round 2 used the fallback diff');
+}
+console.log('6d OK: diff absorbed from the implementer, falls back per round, and is one-shot across rework rounds');
+
+// ============================================================================
+// (AC9) Outcome equivalence + the in-progress observability invariant.
+// ============================================================================
+const BLOCKING_PLAN = { coherence: [{ id: 'p1', concern: 'coherence', severity: 'blocking', confidence: 95, what_fails: 'vague' }] };
+const BLOCKING_CODE = [{ ac: [{ id: 'c1', concern: 'ac', severity: 'blocking', confidence: 95, what_fails: 'x' }] }];
+const SEEDS = [
+  ['clean review', {}, {}],
+  ['blocking code finding', { codeFindingsByRound: BLOCKING_CODE }, {}],
+  ['AC-only gap', { acTable: [{ criterion: 'AC1', status: 'FAIL', evidence: 'e' }] }, {}],
+  ['plan escalation', { planFindings: BLOCKING_PLAN }, {}],
+  ['fetch failure', { fetchResult: null }, { noMetaHoist: true }],
+  ['plan-only', {}, { extra: { planOnly: true } }],
+];
+for (const [name, seed, cfg] of SEEDS) {
+  const base = { roadmap: 'rm', phase: '1', ...(cfg.extra || {}) };
+  const a = makeAgent(seed);
+  const outPlain = await run(base, a.agent, refPipeline, refParallel, nolog);
+  const b = makeAgent(seed);
+  const hoisted = { ...base, alreadyInProgress: true };
+  if (!cfg.noMetaHoist) hoisted.phaseMeta = PHASE_META;
+  const outHoisted = await run(hoisted, b.agent, refPipeline, refParallel, nolog);
+  assert.deepEqual(outHoisted, outPlain, 'AC9: OUTCOME deep-equal with and without the hoists (' + name + ')');
+}
+{
+  // Observability: on a plan-ESCALATION run with no caller stamp, the item is
+  // still stamped in-progress BEFORE the planner runs — the exact gap that
+  // forbids folding the stamp into the implementer, which never runs here.
+  const a = makeAgent({ planFindings: BLOCKING_PLAN });
+  const out = await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META }, a.agent, refPipeline, refParallel, nolog);
+  assert.equal(out.outcome, 'escalated', 'AC9: the blocking plan finding really did escalate');
+  assert.equal(count(a, 'implement:worktree') + count(a, 'implement:rework'), 0, 'AC9: no implementer runs on the escalation path');
+  const labels = a.labels();
+  const stampAt = labels.indexOf('stamp:in-progress');
+  const planAt = labels.indexOf('plan:author');
+  assert.ok(stampAt >= 0, 'AC9: the escalation path still stamps in-progress');
+  assert.ok(stampAt < planAt, 'AC9: the stamp precedes the first plan:author call');
+}
+console.log('6e OK: outcome equivalence across six seeds, and in-progress precedes the plan gate even on an escalation');
+
+console.log('ALL HOIST/ABSORB CHECKS PASSED');
+NODE_HOIST
+
+if run_node "$TMP/hoist.mjs" "$WF"; then
+    pass "hoist/absorb: real driver verified under a recording fake agent"
+else
+    fail "hoist/absorb checks failed against $WF"
+fi
+
+# --- 6f. Planted-mutation self-tests ------------------------------------------
+# Each assertion above is only load-bearing if the corresponding production
+# mutation makes it fail. Every mutant must break the run; each is discarded
+# afterwards (the real file is never modified).
+say "6f. Hoist/absorb planted-mutation self-tests"
+
+assert_mutant_fails() {
+    mutant=$1
+    desc=$2
+    if cmp -s "$WF" "$mutant"; then
+        fail "6f: planted mutation was a no-op — $desc"
+    fi
+    if run_node "$TMP/hoist.mjs" "$mutant" >/dev/null 2>&1; then
+        fail "6f: hoist/absorb checks PASSED against a mutant that $desc — the assertions are vacuous"
+    fi
+    pass "6f: assertions fire when the production code $desc"
+}
+
+# (1) Delete the meta fetch fallback: make the hoist unconditional.
+sed 's/^if (hoistedMetaComplete(hoistedMeta, isTask)) {$/if (true) { phaseMeta = hoistedMeta;/' "$WF" >"$TMP/mutant-no-meta-fallback.js"
+assert_mutant_fails "$TMP/mutant-no-meta-fallback.js" "drops the fetch:phase-meta fallback branch"
+
+# (2) Weaken the all-or-nothing guard to "any object".
+sed 's/^if (hoistedMetaComplete(hoistedMeta, isTask)) {$/if (hoistedMeta \&\& typeof hoistedMeta === "object") {/' "$WF" >"$TMP/mutant-weak-guard.js"
+assert_mutant_fails "$TMP/mutant-weak-guard.js" "accepts an incomplete hoisted meta (guard weakened to any object)"
+
+# (3) Break the one-shot property, so round 2 inherits round 1's diff.
+#     `pendingDiff` is cleared at TWO sites by design (defence in depth): the
+#     implement dep's `: null` branch on an unusable return, and the review
+#     closure's read-and-clear. Either alone is sufficient, so a mutation that
+#     removes only one is provably a no-op — the self-test must remove BOTH to
+#     actually produce a stale diff, and that is exactly what assertion (i2)
+#     catches.
+sed -e 's/^      pendingDiff = null$//' \
+    -e 's/^      pendingDiff = r \&\& Array.isArray(r.changedFiles) \&\& r.changedFiles.length > 0 ? r : null$/      if (r \&\& Array.isArray(r.changedFiles) \&\& r.changedFiles.length > 0) pendingDiff = r/' \
+    "$WF" >"$TMP/mutant-stale-diff.js"
+assert_mutant_fails "$TMP/mutant-stale-diff.js" "breaks the one-shot pendingDiff contract at both clearing sites (stale round-1 diff leaks into round 2)"
+
+# (4) Hard-code alreadyInProgress true, so the stamp never runs.
+sed 's/^const alreadyInProgress = dispatchArgs.alreadyInProgress$/const alreadyInProgress = true/' "$WF" >"$TMP/mutant-always-stamped.js"
+assert_mutant_fails "$TMP/mutant-always-stamped.js" "hard-codes alreadyInProgress to true (the stamp never runs)"
+
+# (5) Drop the diff:signals fallback, so an implementer that returns nothing
+#     leaves the review with no signals at all.
+awk '
+    index($0, "const diffFromImplementer = pendingDiff") { print; next }
+    index($0, "      if (diffFromImplementer) {") { print "      if (true) {"; next }
+    { print }
+' "$WF" >"$TMP/mutant-no-diff-fallback.js"
+assert_mutant_fails "$TMP/mutant-no-diff-fallback.js" "drops the diff:signals fallback branch"
+
+# --- 7. INVENTORY DOC ---------------------------------------------------------
+# docs/mechanical-agent-inventory.md is phase 3's primary deliverable and phase
+# 4's input. It is gated here rather than left as prose because a stale
+# inventory is worse than none: phase 4 scopes its work off the "irreducible"
+# section. The checks are derived LIVE from the workflow scripts, so a newly
+# added mechanical label with no row fails, and a transcribed (stale) total
+# fails too.
+say "7. Inventory doc: docs/mechanical-agent-inventory.md is complete and live-consistent"
+
+INV="$REPO_ROOT/docs/mechanical-agent-inventory.md"
+[ -f "$INV" ] || fail "7: docs/mechanical-agent-inventory.md is missing — it is this phase's primary deliverable"
+
+# The LIVE call-site total, re-derived exactly as the doc documents.
+LIVE_TOTAL=$(grep -h "label: *['\"]" "$REPO_ROOT"/.claude/workflows/*.js |
+    grep -vc 'spike-agent-type' 2>/dev/null || true)
+LIVE_TOTAL=$(for f in "$REPO_ROOT"/.claude/workflows/*.js; do
+    case "$f" in *spike-agent-type.js) continue ;; esac
+    grep -c "label: *['\"]" "$f" || true
+done | awk '{s += $1} END {print s+0}')
+[ "$LIVE_TOTAL" -gt 0 ] || fail "7: live call-site grep returned 0 — the derivation itself is broken"
+
+assert_doc_total() {
+    grep -qF "**$LIVE_TOTAL labelled \`agent()\` call sites**" "$1" &&
+        grep -qE "^\| \*\*total\*\* \| \*\*$LIVE_TOTAL\*\* \|" "$1"
+}
+assert_doc_total "$INV" ||
+    fail "7: the doc's stated call-site total does not equal the LIVE grep count ($LIVE_TOTAL) — it was transcribed, not derived"
+pass "7: doc's stated call-site total matches the live grep ($LIVE_TOTAL)"
+
+# Self-test: a rewritten total must be caught.
+sed "s/\*\*$LIVE_TOTAL labelled/**999 labelled/" "$INV" >"$TMP/inv-bad-total.md"
+if assert_doc_total "$TMP/inv-bad-total.md"; then
+    fail "7: total detector missed a rewritten call-site count"
+fi
+pass "7: total detector fires on a rewritten call-site count"
+
+# Every MECHANICAL label emitted by the workflow scripts must have a row. Labels
+# are read live and normalized to their static prefix (the part before any
+# runtime concatenation), which is exactly how the doc names them. The judgment
+# set is excluded by an EXPLICIT allowlist, not a loose regex, so a newly added
+# mechanical label can never be silently classified as judgment.
+# EXACT static-label allowlist for the judgment set (never a prefix match: an
+# `estimate:`-prefixed rule would also swallow the mechanical estimate:list /
+# estimate:write: / estimate:tier: labels).
+JUDGMENT_LABELS="find: refute: plan:author plan:revise implement:rework implement:worktree act: act:code analyze: synthesize:draft estimate:rate: estimate:"
+
+live_mechanical_labels() {
+    for f in "$REPO_ROOT"/.claude/workflows/*.js; do
+        case "$f" in *spike-agent-type.js) continue ;; esac
+        grep -oE "label: '[^']*'" "$f" | sed "s/label: '//;s/'\$//"
+    done | sort -u | while read -r lbl; do
+        [ -n "$lbl" ] || continue
+        skip=0
+        for j in $JUDGMENT_LABELS; do
+            [ "$lbl" = "$j" ] && skip=1
+        done
+        [ "$skip" -eq 1 ] || printf '%s\n' "$lbl"
+    done
+}
+
+# assert_doc_has_every_row <doc> — the actual detector, applied to whatever doc
+# path it is handed, so the self-test below drives the SAME code the real check
+# does rather than re-testing sed.
+assert_doc_has_every_row() {
+    doc=$1
+    missing=""
+    for lbl in $(live_mechanical_labels); do
+        grep -qF "\`$lbl" "$doc" || missing="$missing $lbl"
+    done
+    [ -z "$missing" ] || {
+        DOC_MISSING_ROWS="$missing"
+        return 1
+    }
+    return 0
+}
+
+DOC_MISSING_ROWS=""
+assert_doc_has_every_row "$INV" ||
+    fail "7: mechanical label(s) with no row in the inventory doc:$DOC_MISSING_ROWS"
+pass "7: every live mechanical label has a row in the inventory doc ($(live_mechanical_labels | wc -l | tr -d ' ') static labels checked)"
+
+# Self-test: strip every mention of one mechanical label from the doc and require
+# the SAME detector to fail on it.
+sed 's/fetch:report/zz-removed-label/g' "$INV" >"$TMP/inv-missing-row.md"
+if assert_doc_has_every_row "$TMP/inv-missing-row.md"; then
+    fail "7: row detector missed a doc with no fetch:report row — the check is vacuous"
+fi
+pass "7: row detector fires when a mechanical label loses its row"
+
+# Vocabulary: each of the four classification words, each of the three
+# maintenance-route words, and each of the three caller-surface values appears.
+for word in hoistable absorbable redundant irreducible; do
+    grep -qi "$word" "$INV" || fail "7: the doc never uses the classification word '$word'"
+done
+for word in stamped byte-copied unprojected; do
+    grep -qi "$word" "$INV" || fail "7: the doc never names the maintenance route '$word'"
+done
+for word in 'distributed shim' 'local shim only' 'no caller'; do
+    grep -qiF "$word" "$INV" || fail "7: the doc never records the caller surface '$word'"
+done
+pass "7: all four classifications, three maintenance routes, and three caller surfaces are named"
+
+# The irreducible section must name phase 4's scope explicitly.
+grep -qE '^## Irreducible \(phase 4 scope\)' "$INV" ||
+    fail "7: the doc must carry an '## Irreducible (phase 4 scope)' section"
+for needle in 'stamp:in-progress' 'estimate:write' 'advance:' 'park:' 'gate:clear-tag' 'gate:persist' 'act:round-note' 'write:draft' 'gather:' 'fallback path' 'convert-remaining-skill-templates-to-workflow-shims'; do
+    grep -qF "$needle" "$INV" ||
+        fail "7: the irreducible/phase-4 material must name '$needle'"
+done
+pass "7: the irreducible set names the stamp, every write-class label, the fallback paths, and the follow-up task"
+
+# The measured delta must be recorded per class against the baseline's figures.
+grep -qF 'docs/token-baseline.json' "$INV" || fail "7: the doc must reference docs/token-baseline.json"
+for cls in fetch stamp model diff estimate; do
+    grep -qE "^\| \`?$cls\`?" "$INV" || fail "7: no before/after row for the '$cls' agent class"
+done
+pass "7: a before/after agent-count row is recorded for each of the fetch/stamp/model/diff/estimate classes"
+
+# The two recorded plan-review corruption runs must be cited by id.
+for run in wf_e3402021-0af wf_f4be8027-dbb; do
+    grep -qF "$run" "$INV" || fail "7: the doc must cite the recorded corruption run $run"
+done
+pass "7: both recorded plan-review corruption runs are cited by id"
+
 say "verify-workflow-dispatch.sh: ALL GREEN"

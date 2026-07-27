@@ -1105,7 +1105,47 @@ function parsePlanArgs(rawArgs) {
       'plan-review: no target — pass --task <slug>, --roadmap <slug>, <slug> [phase], or --implementation-plan'
     )
 
-  return { kind: kind, roadmap: roadmap, phase: phase, task: task, planText: planText }
+  // --- Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md).
+  // Read from STRUCTURED OBJECT KEYS ONLY — deliberately never parsed out of the
+  // `$ARGUMENTS` flag string, which would let a raw prose target string
+  // masquerade as a fetched payload. Every one is OPTIONAL: absent or malformed
+  // falls through to the in-workflow agent, which is what a direct `Workflow`
+  // invocation (and, today, every DISTRIBUTED caller of this workflow) does.
+  //
+  // `fetched` is the priority hoist: the fetch agents it replaces have twice
+  // transcribed junk over real plan tags in production (runs wf_e3402021-0af and
+  // wf_f4be8027-dbb), and `agent(..., { schema })` provably cannot catch that —
+  // both corrupt returns were schema-valid. Passing the parsed
+  // `rdm ... show --format json` through `args` removes the transcription step
+  // entirely. NOTE: validating the CONTENT of a hoisted payload is deliberately
+  // NOT done here — that belongs to task fix-plan-review-gate-tag-clobber.
+  const fetched = a.fetched && typeof a.fetched === 'object' ? a.fetched : null
+  const wontFixedTexts = Array.isArray(a.wontFixedTexts) ? a.wontFixedTexts : null
+  const mechanicalModel =
+    typeof a.mechanicalModel === 'string' && a.mechanicalModel.trim() !== '' ? a.mechanicalModel.trim() : null
+
+  return {
+    kind: kind,
+    roadmap: roadmap,
+    phase: phase,
+    task: task,
+    planText: planText,
+    fetched: fetched,
+    wontFixedTexts: wontFixedTexts,
+    mechanicalModel: mechanicalModel,
+  }
+}
+
+// hoistedFetchedOk(fetched, kind) — the shape guard on a caller-supplied target
+// payload. Mirrors buildReviewUnits' own fail-closed condition (a non-empty
+// body), plus an array `phases` for the roadmap kind, so a payload this guard
+// accepts is one buildReviewUnits can actually build units from. Anything it
+// rejects runs the original fetch agent instead.
+function hoistedFetchedOk(fetched, kind) {
+  if (!fetched || typeof fetched !== 'object') return false
+  if (typeof fetched.body !== 'string' || String(fetched.body).trim() === '') return false
+  if (kind === 'roadmap' && !Array.isArray(fetched.phases)) return false
+  return true
 }
 
 // Schemas the mechanical Bash fetch agents are forced to satisfy. Plumbing, not
@@ -1542,7 +1582,10 @@ async function runPlanReviewDriver(args, deps) {
   // gate:clear-tag:*). Left unset (undefined) is inert — see agent()'s
   // documented `model: undefined` behavior — so a caller that does not supply
   // it degrades to the pre-existing unpinned behavior rather than breaking.
-  const _mechanicalModel = d.mechanicalModel
+  // A caller-supplied `args.mechanicalModel` (see parsePlanArgs) takes
+  // precedence over the injected dep, so the local shim can skip the whole
+  // model:mechanical bootstrap agent.
+  let _mechanicalModel = d.mechanicalModel
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
   // the review core, with NO independent review logic in this driver. Passing NO
   // signals is deliberate (see the header note); phase-only unit-of-work scoping
@@ -1551,6 +1594,7 @@ async function runPlanReviewDriver(args, deps) {
 
   const parsed = parsePlanArgs(args)
   const kind = parsed.kind
+  if (parsed.mechanicalModel) _mechanicalModel = parsed.mechanicalModel
 
   // reviewUnit — run find → refute → filter for ONE review unit, then strip
   // non-phase unit-of-work survivors, drop anything already resolved
@@ -1602,8 +1646,17 @@ async function runPlanReviewDriver(args, deps) {
 
   // ------------------------------------------------------------------ persisted targets
   // Fetch the artifact(s), then build the independent review unit list.
+  //
+  // HOIST: a caller-supplied `fetched` payload replaces the transcribing agent
+  // outright. This is the priority hoist of the whole elimination pass — see
+  // parsePlanArgs' note on the two recorded production corruptions that
+  // schema validation could not catch. A payload the shape guard rejects falls
+  // through to the agent below, which is left byte-unchanged.
   let fetched = null
-  if (kind === 'roadmap') {
+  if (hoistedFetchedOk(parsed.fetched, kind)) {
+    fetched = parsed.fetched
+    _log('plan-review: ' + kind + ' payload hoisted from caller args (no fetch agent)')
+  } else if (kind === 'roadmap') {
     try {
       fetched = await _agent(buildRoadmapFetchPrompt(parsed.roadmap), {
         label: 'fetch:roadmap',
@@ -1641,17 +1694,23 @@ async function runPlanReviewDriver(args, deps) {
 
   // One wont-fix search covers every unit in this run — a human's explicit
   // override on one finding must never be looked up per unit.
+  // HOIST: a caller-supplied `wontFixedTexts` array replaces this search agent.
   let wontFixedTexts = []
-  try {
-    const wf = await _agent(buildWontFixFetchPrompt(), {
-      label: 'fetch:wontfix',
-      phase: 'Read',
-      schema: WONTFIX_LIST_SCHEMA,
-      model: _mechanicalModel,
-    })
-    wontFixedTexts = wf && Array.isArray(wf.texts) ? wf.texts : []
-  } catch (e) {
-    wontFixedTexts = []
+  if (Array.isArray(parsed.wontFixedTexts)) {
+    wontFixedTexts = parsed.wontFixedTexts
+    _log('plan-review: wont-fix texts hoisted from caller args (no fetch agent)')
+  } else {
+    try {
+      const wf = await _agent(buildWontFixFetchPrompt(), {
+        label: 'fetch:wontfix',
+        phase: 'Read',
+        schema: WONTFIX_LIST_SCHEMA,
+        model: _mechanicalModel,
+      })
+      wontFixedTexts = wf && Array.isArray(wf.texts) ? wf.texts : []
+    } catch (e) {
+      wontFixedTexts = []
+    }
   }
 
   // Review each unit independently (parallel per-unit fan-out — a phase's outcome
@@ -1789,8 +1848,19 @@ const MECHANICAL_MODEL_SCHEMA = {
   },
 }
 
+// HOIST (see docs/mechanical-agent-inventory.md): the caller — already a running
+// agent with the repo in context — may run `rdm model resolve mechanical` itself
+// and pass the id as `args.mechanicalModel`. OPTIONAL: absent or malformed falls
+// through to the bootstrap agent below, which is left byte-unchanged and is what
+// a direct `Workflow` invocation always does. The unresolved-model fail-closed
+// abort applies identically to both paths.
 let mechanicalModel = ''
-if (typeof agent !== 'undefined') {
+const hoistedMechanicalModel =
+  args && typeof args === 'object' && typeof args.mechanicalModel === 'string' ? args.mechanicalModel.trim() : ''
+if (hoistedMechanicalModel) {
+  mechanicalModel = hoistedMechanicalModel
+  if (typeof log !== 'undefined') log('plan-review: mechanical model hoisted from caller args')
+} else if (typeof agent !== 'undefined') {
   try {
     const mechanicalModelResult = await agent(buildMechanicalModelPrompt(), {
       label: 'model:mechanical',

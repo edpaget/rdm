@@ -474,3 +474,36 @@ byte-identical before and after this phase.
   measurement (see [Run set](#run-set)) — this baseline cannot speak to
   their per-run cost, only to the `estimate:*`-labelled agent class as
   observed nested inside `autopilot` runs.
+
+## Phase 3: mechanical-agent elimination
+
+Phase 3 of this roadmap removes mechanical subagents by **never spawning them** —
+hoisting the command to the caller that already has the repo in context, absorbing
+it into an adjacent running agent, or suppressing it as redundant. The full call-site
+census, the classification rule, the irreducible set that scopes phase 4, and the
+measured delta are in
+[`docs/mechanical-agent-inventory.md`](mechanical-agent-inventory.md).
+
+Headline: **115 of 304 mechanical agents (37.8%)** observed across the measured
+corpus would not have been spawned had phase 3's code been live. The `model` and
+`diff` agent classes go to **zero** on the shim-driven paths; `diff` goes to zero
+everywhere for `dispatch-phase`, because absorption needs no caller.
+
+Two measurement caveats that constrain how that number may be compared with the
+baseline above:
+
+- **`docs/token-baseline.json` carries no `byLabel` section.** The JSON comparison
+  is therefore done at **agent-class** granularity, and per-label figures are read
+  from the CLI's own `byLabel` output.
+- **The corpus has grown since this baseline was taken**, and every run in it
+  executed pre-change code. A raw `byAgentClass` subtraction between two JSON
+  snapshots measures corpus growth, not the change. The inventory doc reports a
+  **replay delta** instead — the observed per-label counts with phase 3's
+  elimination rules applied — and states which caller surface each elimination
+  depends on. A fresh post-change dispatch is the natural confirmation and should
+  be taken on the next real lane run.
+
+The measured delta reflects the **local dogfood shim callers**. The distributed
+side of `plan-review`, `backlog`, `document`, `review` and `estimate` stays on the
+in-workflow fallback until task
+`convert-remaining-skill-templates-to-workflow-shims` lands.

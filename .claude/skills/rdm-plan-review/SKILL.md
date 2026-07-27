@@ -20,7 +20,23 @@ Pass `$ARGUMENTS` straight through to the `plan-review` Workflow. It accepts the
 - `<roadmap-slug> [phase-number]` — a single phase when the phase arg is present; with no phase arg it behaves exactly like `--roadmap <slug>`.
 - `--implementation-plan` — review an `rdm-do` plan document handed over in context, ahead of implementation. There is **no persisted rdm item** behind this mode, so it is report-only (see the carve-out below).
 
-The workflow reads the target artifact(s) via mechanical Bash agents, runs the shared `find → refute → filter → verdict → act → gate` pipeline (`buildReviewPipeline('plan')`), and returns a per-unit outcome (`reviewed` | `rework` | `escalated`) with its findings.
+The workflow runs the shared `find → refute → filter → verdict → act → gate` pipeline (`buildReviewPipeline('plan')`) and returns a per-unit outcome (`reviewed` | `rework` | `escalated`) with its findings.
+
+### Gather the target payload yourself — do not let a subagent transcribe it
+
+You are already a running agent with the repo in context; the workflow is not, so anything it has to look up costs it a whole dedicated mechanical subagent — and, for the target artifact specifically, that subagent has **twice corrupted real plan data in production** (runs `wf_e3402021-0af` and `wf_f4be8027-dbb`, recorded in full on task `fix-plan-review-gate-tag-clobber`). Both corrupt returns were *schema-valid*: one transposed the roadmap's real body and tags into `phases[0]` and packed three words lifted from its own prompt into `tags`, losing five of six phases; the other returned `tags: ["plan-target"]` — a phrase from the prompt's own "Return a PLAN_TARGET object". The gate then faithfully wrote that junk over the target's real tags. `agent(..., { schema })` cannot catch this, because the schema constrains shape and never content.
+
+Run the reads yourself and pass the parsed JSON through the workflow `args`. Every one of these is **optional** — the workflow falls back to its in-workflow fetch agent for anything you omit or get wrong — but supplying them is what removes the transcription step entirely:
+
+- **`fetched`** — the target artifact, **verbatim**:
+  - `--task <slug>` → `./target/debug/rdm task show <slug> --project rdm --format json`; pass `{ body, tags }` copied straight from that JSON.
+  - single phase → `./target/debug/rdm phase show <phase> --roadmap <slug> --project rdm --format json`; pass `{ body, tags }`.
+  - `--roadmap <slug>` → one `./target/debug/rdm roadmap show <slug> --project rdm --format json`, **plus one `./target/debug/rdm phase show <stem> --roadmap <slug> --project rdm --format json` per phase**; assemble `{ body, tags, phases: [{ stem, body, tags }, …] }` with one entry per real phase.
+  - **Never summarize, paraphrase, or describe what you did.** `body` is the document's own text and `tags` is the exact array the binary printed — not a description of the fetch, not words from this prompt. If you cannot read the target, omit `fetched` entirely and let the workflow's fetch agent run; do not pass a placeholder.
+- **`wontFixedTexts`** — the array of prior wont-fix finding texts from `./target/debug/rdm search "" --type review --project rdm` (or omit it).
+- **`mechanicalModel`** — the id printed by `./target/debug/rdm model resolve mechanical`, verbatim (or omit it).
+
+`fetched` is read from the structured `args` object only — never parsed out of the `$ARGUMENTS` flag string.
 
 ## What the workflow does (domain intent)
 

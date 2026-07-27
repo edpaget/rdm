@@ -439,6 +439,76 @@ console.log('3e OK: gate defaults off, gate:true persists mapped status without 
 }
 console.log('3f OK: AC-only-gap summary names the real cause');
 
+// ============================================================================
+// 3g. args.diff HOIST — a caller-supplied diff replaces the diff:signals agent
+// entirely, threads the SAME deriveSignals output the agent path would have,
+// and is strictly optional: absent / malformed / empty all fall back to the
+// agent, which stays byte-unchanged.
+// ============================================================================
+const HOIST_DIFF = { changedFiles: ['rdm-core/src/foo.rs'], diffText: '+pub fn foo() {}' };
+{
+  // Supplied and shape-valid -> ZERO diff:signals calls.
+  const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
+  const out = await run(
+    { mode: 'code', roadmap: 'rm', phase: '1', gate: false, diff: HOIST_DIFF },
+    a.agent,
+    refPipeline,
+    refParallel,
+    () => {}
+  );
+  assert.equal(a.calls.filter((c) => c.label === 'diff:signals').length, 0, 'hoisted diff -> no diff:signals agent call');
+  assert.equal(out.outcome, 'reviewed', 'hoisted diff still produces the normal OUTCOME');
+
+  // Same run WITHOUT the hoist -> exactly one diff:signals call, and a
+  // deep-equal OUTCOME. The hoist changes agent count, never behaviour.
+  const b = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
+  const outNoHoist = await run({ mode: 'code', roadmap: 'rm', phase: '1', gate: false }, b.agent, refPipeline, refParallel, () => {});
+  assert.equal(b.calls.filter((c) => c.label === 'diff:signals').length, 1, 'no hoist -> exactly one diff:signals agent call');
+  assert.deepEqual(out, outNoHoist, 'OUTCOME is deep-equal with and without the hoisted diff');
+
+  // ... and the dimension selection is identical: `api-docs` is triggered by the
+  // rdm-core path on both paths, `changelog` by neither.
+  const dimsHoisted = a.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label).sort();
+  const dimsFetched = b.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label).sort();
+  assert.deepEqual(dimsHoisted, dimsFetched, 'hoisted diff threads the same deriveSignals output as the agent path');
+  assert.ok(dimsHoisted.includes('find:code:api-docs'), 'the rdm-core path triggers api-docs on the hoisted path too');
+}
+for (const [name, bad] of [
+  ['absent', undefined],
+  ['null', null],
+  ['wrong type', 'main...HEAD'],
+  ['missing changedFiles', { diffText: 'x' }],
+  ['changedFiles not an array', { changedFiles: 'a.rs', diffText: 'x' }],
+]) {
+  const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
+  const args = { mode: 'code', roadmap: 'rm', phase: '1', gate: false };
+  if (name !== 'absent') args.diff = bad;
+  const out = await run(args, a.agent, refPipeline, refParallel, () => {});
+  assert.equal(
+    a.calls.filter((c) => c.label === 'diff:signals').length,
+    1,
+    'malformed hoisted diff (' + name + ') falls back to exactly one diff:signals agent call'
+  );
+  assert.equal(out.outcome, 'reviewed', 'fallback path (' + name + ') still produces the normal OUTCOME');
+}
+{
+  // A shape-valid but EMPTY changedFiles hoist is accepted (it IS the agent's
+  // own "no commits of its own" answer) and lands on the untouched FAIL-OPEN
+  // branch: no diff:signals call, and every dimension runs.
+  const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
+  await run(
+    { mode: 'code', roadmap: 'rm', phase: '1', gate: false, diff: { changedFiles: [], diffText: '' } },
+    a.agent,
+    refPipeline,
+    refParallel,
+    () => {}
+  );
+  assert.equal(a.calls.filter((c) => c.label === 'diff:signals').length, 0, 'empty hoisted diff -> still no agent call');
+  const dims = a.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label).sort();
+  assert.deepEqual(dims, ALL_CODE_DIMS.map((d) => 'find:code:' + d).sort(), 'empty hoisted diff fails OPEN — every dimension runs');
+}
+console.log('3g OK: args.diff hoist eliminates the agent, threads identical signals, and falls back on anything malformed');
+
 console.log('ALL BEHAVIOR CHECKS PASSED');
 NODE_TEST
 
@@ -447,6 +517,62 @@ if run_node "$TMP/behavior.mjs" "$WF"; then
 else
     fail "behavior checks failed against $WF"
 fi
+
+# --- 3h. HOIST FALLBACK: planted-mutation self-test ---------------------------
+# The 3g fallback assertions are only meaningful if deleting the `else` branch
+# that reaches the diff:signals agent actually makes them fail. Plant exactly
+# that mutation (collapse the hoist to an unconditional assignment, so the
+# agent path is unreachable) and require the behavior run to FAIL.
+say "3h. Hoist fallback self-test: removing the diff:signals fallback branch must break the behavior run"
+
+awk '
+    index($0, "const hoistedDiff = rawArgs.diff") { print; next }
+    index($0, "if (hoistedDiff && typeof hoistedDiff") {
+        print "if (true) {"
+        print "  diff = hoistedDiff"
+        mutating = 1
+        next
+    }
+    mutating && index($0, "}") == 1 { mutating = 0; print "}"; next }
+    mutating { next }
+    { print }
+' "$WF" >"$TMP/hoist-mutant.js"
+
+if cmp -s "$WF" "$TMP/hoist-mutant.js"; then
+    fail "3h: planted mutation was a no-op — the hoist fallback branch was not found in $WF"
+fi
+if run_node "$TMP/behavior.mjs" "$TMP/hoist-mutant.js" >/dev/null 2>&1; then
+    fail "3h: behavior run PASSED against a driver whose diff:signals fallback branch was deleted — the fallback assertions are vacuous"
+fi
+pass "3h: fallback assertions fire when the diff:signals else-branch is removed"
+
+# --- 3i. SKILL SHIM gathers the diff --------------------------------------
+# `.claude/skills/rdm-review/SKILL.md` is a LOCAL dogfood shim (its distributed
+# template `rdm-core/src/templates/skill-review-{cli,mcp}.md` is NOT a Workflow
+# shim yet — tracked by task convert-remaining-skill-templates-to-workflow-shims),
+# so the gathering check lives here rather than in the distribution harness.
+say "3i. Skill shim gathers the branch diff and passes it as args.diff"
+
+assert_skill_gathers_diff() {
+    grep -qF 'git diff --name-only main...HEAD' "$1" || return 1
+    grep -qF 'git diff main...HEAD' "$1" || return 1
+    grep -qF 'changedFiles' "$1" || return 1
+    grep -qF 'diffText' "$1" || return 1
+    grep -qF '40000' "$1" || return 1
+    # Occurrence floor: the arg key must appear in BOTH invocation shapes
+    # (phase and task) plus the gathering instruction.
+    [ "$(grep -cF 'diff:' "$1")" -ge 2 ] || return 1
+    return 0
+}
+assert_skill_gathers_diff "$SKILL" ||
+    fail "3i: $SKILL must gather 'git diff --name-only main...HEAD' / 'git diff main...HEAD' into { changedFiles, diffText } (40000-char truncation) and pass it as args.diff"
+pass "3i: skill shim gathers the diff and passes it as args.diff"
+
+sed 's/git diff --name-only main\.\.\.HEAD/git diff --name-onlyX main...HEAD/' "$SKILL" >"$TMP/skill-diff-typo.md"
+if assert_skill_gathers_diff "$TMP/skill-diff-typo.md"; then
+    fail "3i: gathering detector missed a typo'd git-diff command in the shim"
+fi
+pass "3i: gathering detector fires on a planted typo in the shim's git-diff command"
 
 # --- 4. SKILL SHIM -------------------------------------------------------------
 say "4. Skill shim: references the workflow, retains interactive Report/Act/Gate + Done: trailer mechanism"
