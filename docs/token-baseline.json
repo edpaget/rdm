@@ -7,6 +7,7 @@
     "instrumentGitShaNote": "commit that landed the phase-1 instrument on the workflow-token-reduction roadmap's shared worktree branch; not yet on main",
     "regenerateCommand": "node scripts/measure-lane-tokens.mjs --format json --workflow autopilot --workflow dispatch-phase --workflow plan-review --workflow backlog --workflow estimate --workflow document",
     "regenerateCommandScope": "reproduces byAgentClass/byLabel/byModel/byWorkflow/totalsDiscrepancy/warnings exactly; does NOT reproduce runSet enumeration or agentContextFloor (see known-limitations) \u2014 filed as task measure-lane-tokens-regenerability-gap",
+    "ac5RegenerabilityStatus": "partial \u2014 AC5 as literally worded ('is regenerable by re-running the phase-1 CLI') is not fully met: runSet and agentContextFloor do not regenerate from the shipped CLI (see regenerateCommandScope). Closing this fully requires adding output modes to scripts/measure-lane-tokens.mjs, which this phase's own AC7 (\"no reduction change is made in this phase\") forbids touching. AC7 is kept satisfied; the remainder of AC5 is tracked as follow-up task measure-lane-tokens-regenerability-gap.",
     "projectsRoot": "/Users/edward/.claude/projects",
     "runDefinition": "one wf_*.json session-sidecar file, i.e. one Workflow tool invocation",
     "agentDefinition": "one workflow_agent entry inside a run's workflowProgress[]",

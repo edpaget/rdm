@@ -178,14 +178,38 @@ headline numbers.
 
 **Model-identity edge case:** 11 agent records carry a generic alias
 (`"haiku"`, `"sonnet"`) instead of a resolved snapshot ID, and all 11 have
-zero deduped requests and zero tokens in every class — these are agents for
-which no real transcript usage could be recovered (see the `warnings` array
-in the JSON twin; 6 of the 10 listed warnings are "no `agentId`" cases, which
-land in this bucket). They are kept as **separate rows**, not merged into
-the resolved-snapshot rows for the same family, per the "model version
-drift" risk this phase was asked to guard against — merging them would
-silently under-attribute a resolved snapshot's real total to the alias, or
-vice versa.
+zero deduped requests and zero tokens in every class. Cross-checking these
+11 records directly against `buildRecords()`'s per-record flags (not against
+the `warnings` array alone) splits them into two distinct populations, not
+one:
+
+- **6 are genuinely `cached: true` agents** (1 `haiku`, 5 `sonnet`) — real
+  zero-cost cache hits (`agent.cached`), not fallback warnings at all.
+- **5 are `haiku`-alias agents with no `agentId`** — these hit the
+  no-transcript fallback described above, and in this data the sidecar
+  `tokens` scalar they fall back to also happens to be `0`, so the fallback
+  still produces an all-zero row.
+
+All **10 of the 10** entries in the JSON twin's `warnings` array are "no
+`agentId`" cases (every string in that array contains the phrase "has no
+agentId"; an earlier draft of this document miscounted this as "6 of the
+10"). Only 5 of those 10 warnings are accounted for above — the other 5
+carry a *resolved* `claude-opus-5[1m]` model id rather than a generic
+alias, so their (also-zero) sidecar-fallback contribution folds invisibly
+into `claude-opus-5[1m]`'s large non-zero row instead of producing a
+visible all-zero row of its own. This is consistent with, not in tension
+with, the "lossy fallback attributed entirely to output" behavior described
+under [Known limits](#methodology) above: the fallback did attribute
+sidecar `tokens` to `output` for all 10 no-`agentId` agents; it is only
+coincidental to this data set that every one of those 10 agents' sidecar
+`tokens` value was itself `0`, so no non-zero `output` appears anywhere in
+this table as a result of the fallback.
+
+The 6 genuinely-cached and 5 no-`agentId`-fallback alias records are kept
+as **separate rows** from the resolved-snapshot rows for the same model
+family (not merged), per the "model version drift" risk this phase was
+asked to guard against — merging them would silently under-attribute a
+resolved snapshot's real total to the alias, or vice versa.
 
 ## Reconciliation vs the `tokens`-field survey
 
@@ -406,15 +430,26 @@ byte-identical before and after this phase.
 
 ## Known limitations and follow-ups
 
-- **The phase-1 instrument's public CLI does not expose per-run enumeration
-  or the first-request/regression floor analysis** used above — both were
-  derived by importing `scripts/lib/token-report.mjs`'s exported functions
-  directly in ad hoc, uncommitted analysis scripts, reading the same on-disk
-  data the CLI's `--format json` output reads, but not through a documented
-  CLI output mode. `docs/token-baseline.json`'s `regenerateCommand` field
-  regenerates the per-agent-class/per-model/discrepancy figures exactly; it
-  does not regenerate the run-set enumeration or the floor figures. Filed as
-  follow-up task `measure-lane-tokens-regenerability-gap`.
+- **AC5 ("`docs/token-baseline.json` ... is regenerable by re-running the
+  phase-1 CLI") is only PARTIALLY met, and this document says so explicitly
+  rather than leaving a reader to discover the gap.** Re-running the exact
+  `regenerateCommand` above reproduces `byAgentClass`/`byLabel`/`byModel`/
+  `byWorkflow`/`totalsDiscrepancy`/`warnings` byte-for-byte — the bulk of the
+  committed JSON's figures. It does **not** reproduce two sections: `runSet`
+  (run-level enumeration/inclusion accounting) and `agentContextFloor` (the
+  first-request/regression floor analysis) — both were derived by importing
+  `scripts/lib/token-report.mjs`'s exported functions directly in ad hoc,
+  uncommitted analysis scripts, reading the same on-disk data the CLI reads,
+  but not through a documented CLI output mode. Closing this gap for real
+  means adding output modes to `scripts/measure-lane-tokens.mjs`, which this
+  phase's own acceptance criteria forbid (AC7: "no reduction change is made
+  in this phase" — the approved plan scopes `scripts/measure-lane-tokens.mjs`
+  as no-change, and AC7's own check asserts the commit touches only the two
+  docs files). Fixing AC5 in full and satisfying AC7 in full are mutually
+  exclusive within this phase's scope; this phase keeps AC7 (zero behavior
+  change to the shipped instrument) and reports AC5 as partially met, with
+  the remainder tracked as follow-up task
+  `measure-lane-tokens-regenerability-gap` rather than fixed inline here.
 - **A real bug was found in the committed phase-1 instrument while producing
   this document**: `scripts/lib/token-report.mjs`'s `parseWorkflowRun`
   accepts a syntactically-valid `wf_*.json` that is missing its `runId`
