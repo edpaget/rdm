@@ -4,7 +4,12 @@
 // Reports token usage across Claude Code Workflow runs, broken out by token
 // class (output / uncached input / cache write / cache read) and grouped by
 // agent class, full label, model, and workflow — with the sidecar-vs-deduped
-// totalTokens discrepancy always surfaced as its own named line.
+// totalTokens discrepancy always surfaced as its own named line. Also
+// surfaces a per-agent-class first-request floor (n/min/p10/median/mean of
+// each measured agent's first transcript request only), in both
+// `--format json` (a `floorByAgentClass` key on the report object — no extra
+// code needed, the report is spread verbatim) and `--format text` (a
+// "-- Per-agent-class first-request floor --" section).
 //
 // Usage:
 //   node scripts/measure-lane-tokens.mjs [options]
@@ -112,6 +117,28 @@ function fmtGroup(title, rows) {
 }
 
 /**
+ * Text renderer for `floorByAgentClass` rows, mirroring `fmtGroup`'s shape
+ * but over the floor statistic's own fields (n/min/p10/median/mean) rather
+ * than the token-class totals `fmtGroup` renders.
+ *
+ * @param {string} title
+ * @param {ReturnType<typeof import('./lib/token-report.mjs').floorByAgentClass>} rows
+ */
+function fmtFloorGroup(title, rows) {
+  const lines = [`-- ${title} --`];
+  if (rows.length === 0) {
+    lines.push('  (none)');
+    return lines.join('\n');
+  }
+  for (const r of rows) {
+    lines.push(
+      `  ${r.key}  n=${r.n} min=${r.minTokens} p10=${r.p10Tokens} median=${r.medianTokens} mean=${r.meanTokens}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
  * @param {ReturnType<typeof buildReport>} report
  * @param {string[]} warnings
  */
@@ -130,6 +157,8 @@ export function formatText(report, warnings) {
     fmtGroup('By model', report.byModel),
     '',
     fmtGroup('By workflow', report.byWorkflow),
+    '',
+    fmtFloorGroup('Per-agent-class first-request floor', report.floorByAgentClass),
   ];
   if (warnings.length > 0) {
     lines.push('', '-- Warnings --');

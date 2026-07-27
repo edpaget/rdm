@@ -25,22 +25,35 @@
 #      scratch copy of the checked-in fixture tree, recomputes per-class /
 #      per-grouping totals that match tests/fixtures/token-sidecar's hand
 #      -computed expected-totals.json exactly, in both --format json and
-#      --format text (the discrepancy line specifically).
+#      --format text (the discrepancy line specifically), including the
+#      per-agent-class first-request floor (floorByAgentClass): exact
+#      n/min/p10/median/mean for the fetch/find/plan classes, and the
+#      gate/implement/refute/stamp classes (every record sidecarOnly or
+#      cached) being ABSENT from it rather than present with n:0.
 #   3. DIRECT LIB BEHAVIOR — parseAgentTranscript's requestId dedupe
 #      (last-write-wins, not first-write-wins or summed), a genuinely
 #      unreadable transcript and a transcript with zero usable assistant
 #      lines each degrading to a distinct, non-throwing sidecarOnly warning
 #      rather than crashing or being silently indistinguishable from the
-#      "no transcript file at all" case, and locateSessionDirs walking into
-#      the `--worktrees-`-named project-slug directory.
+#      "no transcript file at all" case, locateSessionDirs walking into
+#      the `--worktrees-`-named project-slug directory, and buildRecords
+#      giving every cached/sidecarOnly record firstRequestTokens === null
+#      (not 0, not the sidecar tokens value) while a multi-request
+#      transcript's firstRequestTokens comes from its FIRST request only.
 #   4. CLI ARGUMENT VALIDATION — a value-taking flag with its value omitted
 #      (or immediately followed by another flag) fails loudly instead of
 #      silently filtering every run out of the report.
-#   5. PLANTED-MUTATION SELF-TESTS — two independent mutations (dedupe
+#   5. PLANTED-MUTATION SELF-TESTS — four independent mutations (dedupe
 #      collapsed into first-write-wins; the totalsDiscrepancy delta silently
-#      reconciled to 0) are each applied to a scratch copy of the source and
-#      proven to flip the fixture comparison from MATCH to FAIL, proving the
-#      comparison in section 2 is not vacuous.
+#      reconciled to 0; the first-request floor read from the LAST perRequest
+#      entry instead of the first; cached/sidecarOnly records' firstRequestTokens
+#      set to 0 instead of null) are each applied to a scratch copy of the
+#      source and proven to flip the fixture comparison from MATCH to FAIL,
+#      proving the comparisons in section 2 are not vacuous.
+#   6. CHANGELOG HYGIENE — the same commit that touches
+#      scripts/lib/token-report.mjs / scripts/measure-lane-tokens.mjs also
+#      touches CHANGELOG.md, so a user-facing change is never landed without
+#      its changelog entry.
 #
 # Node is stdlib-only (node:assert, node:fs, node:path); no package.json /
 # node_modules / third-party packages anywhere. node is pinned in .mise.toml.
@@ -165,6 +178,26 @@ checkGroup(report.byLabel, expected.byLabel, 'byLabel');
 checkGroup(report.byModel, expected.byModel, 'byModel');
 checkGroup(report.byWorkflow, expected.byWorkflow, 'byWorkflow');
 
+// floorByAgentClass: exact n/min/p10/median/mean for the eligible classes,
+// AND the sidecarOnly/cached-only classes must be entirely absent (not
+// present with n:0) — this is the AC2/AC8 population check, not just a
+// values check.
+const FLOOR_FIELDS = ['n', 'minTokens', 'p10Tokens', 'medianTokens', 'meanTokens'];
+const floorMap = toKeyedMap(report.floorByAgentClass);
+for (const [key, exp] of Object.entries(expected.floorByAgentClass)) {
+  const act = floorMap[key];
+  assert.ok(act, `floorByAgentClass missing expected key "${key}"`);
+  for (const field of FLOOR_FIELDS) {
+    assert.equal(act[field], exp[field], `floorByAgentClass.${key}.${field}: expected ${exp[field]}, got ${act[field]}`);
+  }
+}
+for (const key of expected.floorByAgentClassAbsentKeys ?? []) {
+  assert.ok(
+    !(key in floorMap),
+    `floorByAgentClass must NOT contain key "${key}" (every record in that class is cached/sidecarOnly)`,
+  );
+}
+
 assert.equal(report.runsConsidered, expected.runsConsidered, 'runsConsidered');
 assert.equal(report.recordCount, expected.recordCount, 'recordCount');
 
@@ -227,6 +260,12 @@ grep -q 'Sidecar totalTokens vs deduped-sum discrepancy: 1020 (sidecar=9200, ded
     fail "text-format report is missing the exact expected discrepancy line"
 pass "--format text carries the exact named discrepancy line"
 
+grep -q -- '-- Per-agent-class first-request floor --' "$TMP/actual-report.txt" ||
+    fail "text-format report is missing the '-- Per-agent-class first-request floor --' heading"
+grep -q 'fetch  n=1 min=800 p10=800 median=800 mean=800' "$TMP/actual-report.txt" ||
+    fail "text-format report is missing the exact expected fetch floor line"
+pass "--format text carries the per-agent-class first-request floor section with the exact fetch line"
+
 # ==============================================================================
 say "3. Direct lib behavior: dedupe, no-throw degradation, worktree locator"
 # ==============================================================================
@@ -238,8 +277,10 @@ import path from 'node:path';
 import {
   parseAgentTranscript,
   buildRecords,
+  findWorkflowRunFiles,
   locateSessionDirs,
   agentClassFromLabel,
+  floorByAgentClass,
 } from '$LIB';
 
 // --- requestId dedupe: last-write-wins on the planted duplicate (req-A) ---
@@ -250,6 +291,45 @@ assert.equal(t1.dedupedRequestCount, 2, 'expected 2 distinct requestIds (req-A, 
 assert.equal(t1.perRequest.get('req-A').usage.outputTokens, 50, 'req-A must resolve to the LAST line\\'s output_tokens (50), not the first (10) or a sum (60)');
 assert.equal(t1.perRequest.get('req-B').usage.outputTokens, 120);
 console.log('dedupe: ok');
+
+// --- firstRequestTokens: first-request floor field on real fixture records ---
+const fixtureSessions = locateSessionDirs('$SCRATCH_FIXTURE');
+const fixtureRunFiles = findWorkflowRunFiles(fixtureSessions);
+const fixtureRecords = buildRecords(fixtureRunFiles);
+
+const agent1Record = fixtureRecords.find((r) => r.agentId === 'agent1');
+assert.equal(
+  agent1Record.firstRequestTokens,
+  800,
+  'agent1 (fetch:task-meta) firstRequestTokens must be req-A\\'s 100+500+200=800, not req-B\\'s 380 and not the two-request sum 1180',
+);
+
+const cachedRecord = fixtureRecords.find((r) => r.agentId === 'agent5');
+assert.equal(cachedRecord.cached, true);
+assert.equal(cachedRecord.firstRequestTokens, null, 'cached:true record (stamp:in-progress/agent5) must have firstRequestTokens === null, not 0');
+
+const sidecarOnlyIds = ['agent4', 'agent-fc', 'agent-ra1', 'agent-rc1'];
+for (const id of sidecarOnlyIds) {
+  const rec = fixtureRecords.find((r) => r.agentId === id);
+  assert.ok(rec, 'expected a fixture record for agentId ' + id);
+  assert.equal(rec.sidecarOnly, true, id + ' must be a sidecarOnly record');
+  assert.equal(rec.firstRequestTokens, null, id + ' (sidecarOnly) must have firstRequestTokens === null, not 0 and not its sidecar tokens value');
+}
+console.log('firstRequestTokens (measured, cached, sidecarOnly): ok');
+
+// --- floorByAgentClass: right population, right classes absent ---
+const fixtureFloor = floorByAgentClass(fixtureRecords);
+const fixtureFloorMap = Object.fromEntries(fixtureFloor.map((r) => [r.key, r]));
+assert.equal(fixtureFloorMap.fetch.n, 1);
+assert.equal(fixtureFloorMap.fetch.medianTokens, 800);
+assert.equal(fixtureFloorMap.find.n, 1);
+assert.equal(fixtureFloorMap.find.medianTokens, 3040);
+assert.equal(fixtureFloorMap.plan.n, 1);
+assert.equal(fixtureFloorMap.plan.medianTokens, 360);
+for (const absentKey of ['gate', 'implement', 'refute', 'stamp']) {
+  assert.ok(!(absentKey in fixtureFloorMap), 'floorByAgentClass must not contain "' + absentKey + '" (every record in that class is cached/sidecarOnly)');
+}
+console.log('floorByAgentClass population: ok');
 
 // --- agentClassFromLabel edge case: no colon at all ---
 assert.equal(agentClassFromLabel('malformed'), 'malformed');
@@ -379,6 +459,64 @@ if run_node "$MUT2/measure-lane-tokens.mjs" --root "$SCRATCH_FIXTURE" --format j
     fi
 fi
 pass "planted-mutation self-test 2: silently reconciling the discrepancy delta flips the fixture comparison to FAIL"
+
+MUT3="$TMP/mutant-floor-last"
+mkdir -p "$MUT3/lib"
+cp "$CLI" "$MUT3/measure-lane-tokens.mjs"
+sed 's/transcript\.perRequest\.values()\.next()\.value/[...transcript.perRequest.values()].at(-1)/' \
+    "$LIB" >"$MUT3/lib/token-report.mjs"
+if diff -q "$LIB" "$MUT3/lib/token-report.mjs" >/dev/null 2>&1; then
+    fail "self-test setup: mutation 3 (last-request floor) did not change the source — sed pattern did not match"
+fi
+
+if run_node "$MUT3/measure-lane-tokens.mjs" --root "$SCRATCH_FIXTURE" --format json --out "$TMP/mutant3-report.json" >"$TMP/mutant3.log" 2>&1; then
+    if run_node "$TMP/compare.mjs" "$TMP/mutant3-report.json" "$EXPECTED" >/dev/null 2>&1; then
+        fail "planted-mutation self-test 3 FAILED TO CATCH: reading the first-request floor from the LAST perRequest entry instead of the first still matched expected-totals.json"
+    fi
+fi
+pass "planted-mutation self-test 3: reading the floor from the last (not first) transcript request flips the fixture comparison to FAIL"
+
+MUT4="$TMP/mutant-floor-zero"
+mkdir -p "$MUT4/lib"
+cp "$CLI" "$MUT4/measure-lane-tokens.mjs"
+sed 's/firstRequestTokens: null,/firstRequestTokens: 0,/' "$LIB" >"$MUT4/lib/token-report.mjs"
+if diff -q "$LIB" "$MUT4/lib/token-report.mjs" >/dev/null 2>&1; then
+    fail "self-test setup: mutation 4 (cached/sidecarOnly exclusion removed) did not change the source — sed pattern did not match"
+fi
+# Both the cached branch and the sidecarOnly branch share the literal
+# "firstRequestTokens: null," text, so the plain (non-`g`) sed above already
+# mutates both occurrences (each on its own line) — confirm that here rather
+# than assuming it.
+NULL_COUNT_ORIG=$(grep -c 'firstRequestTokens: null,' "$LIB" || true)
+NULL_COUNT_MUT=$(grep -c 'firstRequestTokens: null,' "$MUT4/lib/token-report.mjs" || true)
+[ "$NULL_COUNT_ORIG" -eq 2 ] || fail "self-test setup: expected exactly 2 'firstRequestTokens: null,' occurrences in $LIB (cached + sidecarOnly branches), found $NULL_COUNT_ORIG"
+[ "$NULL_COUNT_MUT" -eq 0 ] || fail "self-test setup: mutation 4 left $NULL_COUNT_MUT 'firstRequestTokens: null,' occurrence(s) unmutated"
+
+if run_node "$MUT4/measure-lane-tokens.mjs" --root "$SCRATCH_FIXTURE" --format json --out "$TMP/mutant4-report.json" >"$TMP/mutant4.log" 2>&1; then
+    if run_node "$TMP/compare.mjs" "$TMP/mutant4-report.json" "$EXPECTED" >/dev/null 2>&1; then
+        fail "planted-mutation self-test 4 FAILED TO CATCH: giving cached/sidecarOnly records firstRequestTokens: 0 instead of null still matched expected-totals.json"
+    fi
+fi
+pass "planted-mutation self-test 4: removing the cached/sidecarOnly firstRequestTokens exclusion flips the fixture comparison to FAIL"
+
+# ==============================================================================
+say "6. Changelog hygiene: the code change is staged/committed alongside CHANGELOG.md"
+# ==============================================================================
+
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    STAGED_FILES=$(git -C "$REPO_ROOT" diff --cached --name-only 2>/dev/null || true)
+    LIB_REL="scripts/lib/token-report.mjs"
+    CLI_REL="scripts/measure-lane-tokens.mjs"
+    if printf '%s\n' "$STAGED_FILES" | grep -qx "$LIB_REL\|$CLI_REL"; then
+        printf '%s\n' "$STAGED_FILES" | grep -qx 'CHANGELOG.md' ||
+            fail "scripts/lib/token-report.mjs or scripts/measure-lane-tokens.mjs is staged without a corresponding CHANGELOG.md update in the same change"
+        pass "CHANGELOG.md is staged alongside the token-report code change"
+    else
+        pass "no staged token-report code change to check for a changelog entry (skipping — nothing staged right now)"
+    fi
+else
+    pass "not inside a git work tree — skipping changelog-staged check"
+fi
 
 # ==============================================================================
 say "verify-token-report.sh: ALL GREEN"

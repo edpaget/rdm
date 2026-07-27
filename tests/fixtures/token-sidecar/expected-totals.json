@@ -1,5 +1,6 @@
 {
   "_comment": "Hand-computed ground truth for the trimmed fixture tree in this directory. Grouping sections are keyed objects (not arrays) so the verify harness can look up a bucket by name without depending on aggregate()'s sort order. Computed by hand from wf_run001.json / wf_run002.json and their agent-*.jsonl transcripts: run001's agent1 plants a duplicate requestId (req-A, output 10 then 50 -> last-write-wins keeps 50) to exercise dedupe; agent-fc/agent-ra1/agent-rc1 (run001) and agent4 (run002) have no transcript file and fall back to sidecar-only tokens; agent-impl/agent5 are cached:true and are zero-cost; agent2 and agent3 are clean single-request transcripts.",
+  "_floorByAgentClassComment": "floorByAgentClass is keyed by agentClass, filtered to records whose firstRequestTokens is a number (excludes cached:true and sidecarOnly:true records entirely). agent1 (fetch) has 2 requests (req-A then req-B) -- firstRequestTokens must come from req-A (the FIRST one: 100+500+200=800), not req-B (80+0+300=380) and not the two-request sum (1180). agent2 (find, single request): 40+1000+2000=3040. agent3 (plan, single request): 60+200+100=360. gate/implement/refute/stamp are agent classes whose ONLY records are sidecarOnly (gate, refute) or cached (implement, stamp) -- every record in those classes has firstRequestTokens===null, so those classes have zero eligible records and must be ABSENT from floorByAgentClass, not present with n:0.",
   "runsConsidered": 2,
   "recordCount": 9,
   "byAgentClass": {
@@ -31,6 +32,12 @@
     "dispatch-phase": { "agentCount": 6, "dedupedRequestCount": 3, "output": 3120, "uncachedInput": 220, "cacheWrite": 1500, "cacheRead": 2500 },
     "autopilot": { "agentCount": 3, "dedupedRequestCount": 1, "output": 480, "uncachedInput": 60, "cacheWrite": 200, "cacheRead": 100 }
   },
+  "floorByAgentClass": {
+    "fetch": { "n": 1, "minTokens": 800, "p10Tokens": 800, "medianTokens": 800, "meanTokens": 800 },
+    "find": { "n": 1, "minTokens": 3040, "p10Tokens": 3040, "medianTokens": 3040, "meanTokens": 3040 },
+    "plan": { "n": 1, "minTokens": 360, "p10Tokens": 360, "medianTokens": 360, "meanTokens": 360 }
+  },
+  "floorByAgentClassAbsentKeys": ["gate", "implement", "refute", "stamp"],
   "totalsDiscrepancy": {
     "sidecarTotalTokens": 9200,
     "dedupedTotalTokens": 8180,

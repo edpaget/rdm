@@ -357,6 +357,48 @@ either a real tokenizer or a controlled experiment across agent classes with
 different tool-schema surfaces — neither was in scope for this
 measurement-only phase.
 
+### Addendum: per-agent-class floor (`floorByAgentClass`)
+
+The median above is a **single whole-corpus figure** — it says nothing about
+whether a `fetch` agent's fixed cost differs from a `refute` agent's. A later
+phase (`add-per-agent-class-floor`) closed exactly that gap: `firstRequestTokens`
+(the same uncached-input + cache-write + cache-read-of-the-first-request
+quantity `measuredFloor` above is defined over) is now a field on every
+measured `buildRecords` record, and `floorByAgentClass` aggregates it — n,
+min, p10, median, mean — **per agent class** instead of across the whole
+corpus. `cached`/sidecar-only-fallback records (no per-class split
+recoverable) are excluded from the population entirely, not counted as zero.
+It is surfaced by `scripts/measure-lane-tokens.mjs` in both `--format json`
+and `--format text`, and regenerates exactly via this document's own
+`regenerateCommand` (see `docs/token-baseline.json`'s `methodology` block).
+
+The figures were regenerated over the on-disk corpus **as it stood when that
+later phase ran** (44 runs / 2,110 records) — a larger corpus than this
+baseline's own 40 runs / 1,943 records, since dogfooding continued in the
+interim. This is corpus growth between two measurements, not a re-baseline:
+every section above (`byAgentClass`, `runSet`, `agentContextFloor`,
+`totalsDiscrepancy`, `warnings`) is byte-unchanged from this phase's own
+commit. See `docs/token-baseline.json`'s `floorByAgentClass.populationCaveat`
+for the exact reconciliation.
+
+Every mechanical agent class this roadmap's phase 3 acts on (`fetch`,
+`stamp`, `model`, `diff`, `gate`, `advance`, `park`) has a recorded pre-change
+floor. Two classes carry an important caveat before being read as a clean
+mechanical figure:
+
+- **`estimate`** mixes mechanical (`estimate:list`/`write:*`/`tier:*`) and
+  judgment (`estimate:rate:*`) sub-labels under one `agentClass` bucket,
+  because the class is derived by splitting a label on its first colon only.
+- **`act`** mixes mechanical (`act:round-note:*`, irreducible per
+  [`docs/mechanical-agent-inventory.md`](mechanical-agent-inventory.md)) and
+  judgment (`act:code`, `act:<kind>:<ident>`) sub-labels under the same
+  one-bucket-per-colon-split rule.
+
+Neither `estimate`'s nor `act`'s floor may be read as a clean mechanical-only
+figure; a phase comparing a mechanical-elimination target against either
+bucket must apply this caveat rather than treat every listed class as
+equally clean.
+
 ## Totals discrepancy: sidecar vs. deduped
 
 | | tokens |

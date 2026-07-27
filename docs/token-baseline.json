@@ -6,8 +6,8 @@
     "instrumentGitSha": "9ec1d881142cf95e4ff370c153940a2c3182f724",
     "instrumentGitShaNote": "commit that landed the phase-1 instrument on the workflow-token-reduction roadmap's shared worktree branch; not yet on main",
     "regenerateCommand": "node scripts/measure-lane-tokens.mjs --format json --workflow autopilot --workflow dispatch-phase --workflow plan-review --workflow backlog --workflow estimate --workflow document",
-    "regenerateCommandScope": "reproduces byAgentClass/byLabel/byModel/byWorkflow/totalsDiscrepancy/warnings exactly; does NOT reproduce runSet enumeration or agentContextFloor (see known-limitations) \u2014 filed as task measure-lane-tokens-regenerability-gap",
-    "ac5RegenerabilityStatus": "partial \u2014 AC5 as literally worded ('is regenerable by re-running the phase-1 CLI') is not fully met: runSet and agentContextFloor do not regenerate from the shipped CLI (see regenerateCommandScope). Closing this fully requires adding output modes to scripts/measure-lane-tokens.mjs, which this phase's own AC7 (\"no reduction change is made in this phase\") forbids touching. AC7 is kept satisfied; the remainder of AC5 is tracked as follow-up task measure-lane-tokens-regenerability-gap.",
+    "regenerateCommandScope": "reproduces byAgentClass/byLabel/byModel/byWorkflow/totalsDiscrepancy/warnings/floorByAgentClass exactly; does NOT reproduce runSet enumeration or the whole-corpus agentContextFloor (legacyRegression/correctedRegression/measuredFloor/attribution) (see known-limitations) \u2014 filed as task measure-lane-tokens-regenerability-gap. floorByAgentClass (per-agent-class first-request floor) IS now reproduced exactly by this same regenerateCommand, as of the add-per-agent-class-floor phase; this narrows, but does not close, the regenerability gap \u2014 agentContextFloor itself remains derived out-of-band, unchanged by that phase.",
+    "ac5RegenerabilityStatus": "partial, and narrower than before \u2014 AC5 as literally worded ('is regenerable by re-running the phase-1 CLI') is still not fully met: runSet and the whole-corpus agentContextFloor (legacyRegression/correctedRegression/measuredFloor/attribution) do not regenerate from the shipped CLI (see regenerateCommandScope). The add-per-agent-class-floor phase closed one slice of this gap \u2014 floorByAgentClass now regenerates exactly via the CLI's --format json, sourced from the same regenerateCommand \u2014 without re-baselining or otherwise touching runSet/byAgentClass/agentContextFloor/totalsDiscrepancy/warnings, which remain exactly as this phase (2) left them. Closing the remainder in full still requires adding output modes to scripts/measure-lane-tokens.mjs for runSet enumeration and the whole-corpus regression figures, which this phase's own AC7 (\"no reduction change is made in this phase\") forbids touching. AC7 is kept satisfied; the remainder of AC5 is tracked as follow-up task measure-lane-tokens-regenerability-gap.",
     "projectsRoot": "/Users/edward/.claude/projects",
     "runDefinition": "one wf_*.json session-sidecar file, i.e. one Workflow tool invocation",
     "agentDefinition": "one workflow_agent entry inside a run's workflowProgress[]",
@@ -15,7 +15,7 @@
       "totalTokens / workflowProgress[].tokens (the sidecar 'tokens' field) is not a cost basis - see reconciliation.reviewVsImplement",
       "a cached:true agent is genuinely zero-cost and correctly contributes 0 to every class",
       "an agent with no agentId, no transcript file, or an empty transcript falls back to the sidecar-only tokens scalar attributed entirely to output (lossy fallback, 10 agents in this run set - see warnings)",
-      "the CLI's --format json does not expose per-run enumeration or the first-request/regression floor analysis; both were derived by importing scripts/lib/token-report.mjs's exported functions directly and cross-checked against the CLI's own aggregate output"
+      "the CLI's --format json does not expose per-run enumeration (runSet) or the whole-corpus regression/first-request floor analysis (agentContextFloor's legacyRegression/correctedRegression/measuredFloor/attribution); both were derived by importing scripts/lib/token-report.mjs's exported functions directly and cross-checked against the CLI's own aggregate output. As of the add-per-agent-class-floor phase, the CLI's --format json DOES expose a per-agent-class first-request floor (see the floorByAgentClass section) using the exact same underlying firstRequestTokens quantity — this is a narrower, CLI-native complement to agentContextFloor.measuredFloor's whole-corpus figure, not a replacement for it."
     ]
   },
   "runSet": {
@@ -419,6 +419,134 @@
       },
       "tokenizerNote": "no local Anthropic tokenizer was available; CLAUDE.md token figures use the ~4-chars-per-token English-prose approximation applied to a directly measured character count"
     }
+  },
+  "floorByAgentClass": {
+    "description": "Per-agent-class first-request floor: median (n/min/p10/mean) of each measured agent's first transcript request only (uncachedInput + cacheWrite + cacheRead, before any tool use) -- the same definition agentContextFloor.measuredFloor uses, broken out per agentClass instead of a single whole-corpus figure.",
+    "basis": "measured",
+    "source": "this phase's own regenerateCommand (see methodology.regenerateCommand), re-run against the existing on-disk corpus -- no fresh dispatch; every record counted predates this phase's own code change",
+    "zeroValueNote": "6 records in this regeneration have firstRequestTokens === 0 (contributing the minTokens: 0 seen on estimate/plan/refute below) -- the same count as, and consistent with, agentContextFloor's already-documented 'excluding 6 agents with a tokens value of exactly 0 - orphaned zero-usage transcript entries, not real observations'. This addendum does NOT apply that exclusion -- it counts every record with a non-null firstRequestTokens, including zero-valued ones -- because the approved scope of this phase excludes only cached/sidecarOnly (null) records, not zero-valued measured ones; a future phase revisiting this exclusion should treat it as a methodology decision, not a bug.",
+    "regeneratedAt": "2026-07-27",
+    "runsConsidered": 44,
+    "recordCount": 2110,
+    "populationCaveat": "The corpus grew between phase 2's measurement (runSet.included: 40 runs / 1943 records) and this regeneration (44 runs / 2110 records) -- this is corpus growth between measurements, not a re-baseline; runSet/byAgentClass/agentContextFloor above remain byte-unchanged from phase 2. Summing n across every class below gives 2086, a 24-record gap against this regeneration's own recordCount of 2110 -- consistent with the 23-record gap phase 2 already noted between agentContextFloor.measuredFloor.n (1920) and runSet.included.totalAgentRecords (1943); in both cases the gap is exactly the count of cached/sidecarOnly records excluded from the floor population, not an error.",
+    "mixedBucketCaveat": {
+      "estimate": "Mixes mechanical (estimate:list/write:*/tier:*) and judgment (estimate:rate:*) sub-labels under one agentClass bucket, because agentClassFromLabel groups purely on the string before the first colon -- this figure must NOT be read as a clean mechanical-only floor.",
+      "act": "Mixes mechanical (act:round-note:*, irreducible per docs/mechanical-agent-inventory.md) and judgment (act:code, act:<kind>:<ident>) sub-labels under the same one-bucket-per-colon-split rule -- this figure must NOT be read as a clean mechanical-only floor either, mirroring the estimate caveat above."
+    },
+    "byClass": [
+      {
+        "key": "act",
+        "n": 53,
+        "minTokens": 37586,
+        "p10Tokens": 38554.4,
+        "medianTokens": 41453,
+        "meanTokens": 41510.84905660377
+      },
+      {
+        "key": "advance",
+        "n": 27,
+        "minTokens": 26582,
+        "p10Tokens": 26584,
+        "medianTokens": 29826,
+        "meanTokens": 29143
+      },
+      {
+        "key": "analyze",
+        "n": 3,
+        "minTokens": 33632,
+        "p10Tokens": 34108.8,
+        "medianTokens": 36016,
+        "meanTokens": 36152.666666666664
+      },
+      {
+        "key": "diff",
+        "n": 40,
+        "minTokens": 28512,
+        "p10Tokens": 29802.7,
+        "medianTokens": 35298,
+        "meanTokens": 33718.2
+      },
+      {
+        "key": "estimate",
+        "n": 96,
+        "minTokens": 0,
+        "p10Tokens": 23252.5,
+        "medianTokens": 29932.5,
+        "meanTokens": 29113.21875
+      },
+      {
+        "key": "fetch",
+        "n": 112,
+        "minTokens": 21371,
+        "p10Tokens": 26600,
+        "medianTokens": 30098,
+        "meanTokens": 31118.241071428572
+      },
+      {
+        "key": "find",
+        "n": 622,
+        "minTokens": 28678,
+        "p10Tokens": 35456.2,
+        "medianTokens": 40032,
+        "meanTokens": 40489.73954983923
+      },
+      {
+        "key": "gate",
+        "n": 9,
+        "minTokens": 29717,
+        "p10Tokens": 29723.4,
+        "medianTokens": 29901,
+        "meanTokens": 32275.444444444445
+      },
+      {
+        "key": "implement",
+        "n": 56,
+        "minTokens": 31898,
+        "p10Tokens": 36026.5,
+        "medianTokens": 44333,
+        "meanTokens": 46108.25
+      },
+      {
+        "key": "model",
+        "n": 16,
+        "minTokens": 24523,
+        "p10Tokens": 24530,
+        "medianTokens": 36877,
+        "meanTokens": 33764.8125
+      },
+      {
+        "key": "park",
+        "n": 8,
+        "minTokens": 26578,
+        "p10Tokens": 26767,
+        "medianTokens": 29817.5,
+        "meanTokens": 29478
+      },
+      {
+        "key": "plan",
+        "n": 74,
+        "minTokens": 0,
+        "p10Tokens": 31423.6,
+        "medianTokens": 37366,
+        "meanTokens": 38824.68918918919
+      },
+      {
+        "key": "refute",
+        "n": 946,
+        "minTokens": 0,
+        "p10Tokens": 33049.5,
+        "medianTokens": 39493.5,
+        "meanTokens": 39984.17124735729
+      },
+      {
+        "key": "stamp",
+        "n": 24,
+        "minTokens": 28357,
+        "p10Tokens": 29673.6,
+        "medianTokens": 30687,
+        "meanTokens": 32908.125
+      }
+    ]
   },
   "confounds": [
     "roadmap size - a roadmap with more phases dispatches more dispatch-phase/plan-review/estimate agent invocations inside a single autopilot run; larger roadmap does not imply a more expensive phase",

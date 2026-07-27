@@ -5,8 +5,11 @@
 // locates workflow-run sidecar files (`workflows/wf_*.json`) and their
 // per-agent transcripts (`subagents/workflows/<runId>/agent-*.jsonl`), joins
 // them into flat per-agent records broken out by token class, and aggregates
-// those records by agent class / full label / model / workflow. No network,
-// no third-party packages — `node:fs`, `node:path`, `node:os` only.
+// those records by agent class / full label / model / workflow — plus a
+// per-agent-class "first transcript request" floor (median/min/p10/mean of
+// `firstRequestTokens`, matching `docs/token-baseline.json`'s
+// `agentContextFloor.measuredFloor` definition verbatim). No network, no
+// third-party packages — `node:fs`, `node:path`, `node:os` only.
 //
 // Every fact this module relies on about the on-disk shape was verified by
 // direct inspection of real sidecar/transcript files (not assumed from the
@@ -284,15 +287,33 @@ export function parseAgentTranscript(filePath) {
  * transcript-derived (deduped) usage, producing one flat record per agent.
  *
  * Three cases per agent, in priority order:
- *   1. `cached: true` — zero-cost, no transcript to read.
+ *   1. `cached: true` — zero-cost, no transcript to read. `firstRequestTokens`
+ *      is `null` — a cached agent made no request of its own, so there is
+ *      nothing to measure a floor from (NOT `0` — `0` would silently drag a
+ *      floor's median down rather than honestly excluding the record).
  *   2. A transcript file exists and yields at least one deduped request — use
- *      its per-class breakdown.
+ *      its per-class breakdown. `firstRequestTokens` is set to the FIRST
+ *      entry of `transcript.perRequest` (a Map, so insertion-ordered; the
+ *      dedupe in `parseAgentTranscript` only overwrites the value at a
+ *      repeated key's original position, it never reorders) — its
+ *      `inputTokens + cacheCreationInputTokens + cacheReadInputTokens`,
+ *      deliberately excluding `outputTokens`. This matches
+ *      `docs/token-baseline.json`'s `agentContextFloor.measuredFloor`
+ *      description verbatim ("median of each agent's first transcript
+ *      request only (uncachedInput + cacheWrite + cacheRead, before any tool
+ *      use)").
  *   3. Otherwise (no `agentId`, no transcript file, or an empty transcript) —
  *      degrade to a sidecar-only fallback: the entry's own `tokens` scalar
  *      (defaulting to 0) is attributed entirely to the `output` class, since
  *      that is the only number available and no per-class split can be
  *      recovered from it. `sidecarOnly: true` flags this so callers can tell
- *      measured records from the fallback.
+ *      measured records from the fallback. `firstRequestTokens` is `null`
+ *      here too — no per-class split (and therefore no first-request figure)
+ *      is recoverable from a single undifferentiated sidecar scalar.
+ *
+ * `firstRequestTokens` is consumed by `floorByAgentClass` below, which
+ * filters to records where it is a `number` before computing any statistic —
+ * a `null` never contributes to a class's n, min, p10, median, or mean.
  *
  * @param {ReturnType<typeof findWorkflowRunFiles>} runFiles
  * @param {{ warn?: (msg: string) => void }} [opts]
@@ -326,6 +347,7 @@ export function buildRecords(runFiles, opts = {}) {
           dedupedRequestCount: 0,
           sidecarOnly: false,
           cached: true,
+          firstRequestTokens: null,
         });
         continue;
       }
@@ -338,6 +360,18 @@ export function buildRecords(runFiles, opts = {}) {
       }
 
       if (transcript && transcript.ok && transcript.perRequest.size > 0) {
+        // The FIRST entry inserted into the perRequest Map is the agent's
+        // first transcript request — a Map iterates in first-insertion
+        // order per key, and parseAgentTranscript's last-write-wins dedupe
+        // only overwrites the VALUE at a repeated requestId's original
+        // position, it never reorders. This must be read before the
+        // summing loop below consumes the same iterator's values.
+        const firstPerRequestEntry = transcript.perRequest.values().next().value;
+        const firstRequestTokens =
+          firstPerRequestEntry.usage.inputTokens +
+          firstPerRequestEntry.usage.cacheCreationInputTokens +
+          firstPerRequestEntry.usage.cacheReadInputTokens;
+
         let output = 0;
         let uncachedInput = 0;
         let cacheWrite = 0;
@@ -357,6 +391,7 @@ export function buildRecords(runFiles, opts = {}) {
           dedupedRequestCount: transcript.perRequest.size,
           sidecarOnly: false,
           cached: false,
+          firstRequestTokens,
         });
       } else {
         if (!agentId) {
@@ -382,6 +417,7 @@ export function buildRecords(runFiles, opts = {}) {
           dedupedRequestCount: 0,
           sidecarOnly: true,
           cached: false,
+          firstRequestTokens: null,
         });
       }
     }
@@ -441,7 +477,95 @@ export function aggregateByWorkflow(records) {
 }
 
 /**
- * Assemble the full report: every grouping plus the `totalsDiscrepancy` line.
+ * Percentile of a numeric array using linear interpolation between the two
+ * nearest ranks (the same method as NumPy's default `'linear'` interpolation
+ * / Excel's `PERCENTILE.INC`). At `n === 1` every percentile collapses to
+ * the single value regardless of interpolation method — this choice is only
+ * observable once a class has 2+ eligible records in the real corpus, which
+ * is why the fixture (every class n=1) cannot distinguish between
+ * interpolation methods and this is documented here instead.
+ *
+ * @param {number[]} values - need not be pre-sorted.
+ * @param {number} p - in `[0, 1]`.
+ * @returns {number}
+ */
+function percentile(values, p) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  if (n === 1) return sorted[0];
+  const idx = (n - 1) * p;
+  const lower = Math.floor(idx);
+  const upper = Math.ceil(idx);
+  if (lower === upper) return sorted[lower];
+  const weight = idx - lower;
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * weight;
+}
+
+/**
+ * Summarize a numeric array as n/min/p10/median/mean, mirroring the shape of
+ * `docs/token-baseline.json`'s `agentContextFloor.measuredFloor`.
+ *
+ * @param {number[]} values - non-empty.
+ * @returns {{ n: number, minTokens: number, p10Tokens: number, medianTokens: number, meanTokens: number }}
+ */
+function summarizeFloor(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  const sum = sorted.reduce((s, v) => s + v, 0);
+  return {
+    n,
+    minTokens: sorted[0],
+    p10Tokens: percentile(sorted, 0.1),
+    medianTokens: percentile(sorted, 0.5),
+    meanTokens: sum / n,
+  };
+}
+
+/**
+ * Per-agent-class first-request floor: the median (plus n, min, p10, mean)
+ * of `firstRequestTokens` across every record in that class that HAS one —
+ * i.e. every `buildRecords` record for which `firstRequestTokens` is a
+ * `number`, not `null`. `cached: true` and `sidecarOnly: true` records carry
+ * `firstRequestTokens: null` (see `buildRecords`) and are filtered out
+ * before grouping; they contribute to NO class's n/min/p10/median/mean.
+ *
+ * A class whose every record is cached/sidecarOnly is OMITTED from the
+ * returned array entirely — no `n: 0` / `medianTokens: null` bucket is
+ * emitted for it. Callers must not assume every `byAgentClass` key has a
+ * matching entry here.
+ *
+ * This is a sibling aggregation to `aggregateByAgentClass`, not a
+ * replacement — `byAgentClass` still reports whole-agent totals across
+ * every record (including cached/sidecarOnly ones); this reports a
+ * first-request-only floor across the measured subset.
+ *
+ * @param {ReturnType<typeof buildRecords>} records
+ * @returns {Array<{ key: string, n: number, minTokens: number, p10Tokens: number,
+ *   medianTokens: number, meanTokens: number }>} sorted by key for
+ *   deterministic output.
+ */
+export function floorByAgentClass(records) {
+  const byClass = new Map();
+  for (const r of records) {
+    if (typeof r.firstRequestTokens !== 'number') continue;
+    let values = byClass.get(r.agentClass);
+    if (!values) {
+      values = [];
+      byClass.set(r.agentClass, values);
+    }
+    values.push(r.firstRequestTokens);
+  }
+
+  const result = [];
+  for (const [key, values] of byClass) {
+    result.push({ key, ...summarizeFloor(values) });
+  }
+  return result.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+/**
+ * Assemble the full report: every grouping, the per-agent-class first-request
+ * floor (`floorByAgentClass`), plus the `totalsDiscrepancy` line.
  *
  * `totalsDiscrepancy` compares each run's own `totalTokens` field (summed
  * across runs in scope) against the independently deduped per-class sum
@@ -477,6 +601,7 @@ export function buildReport(options = {}) {
     byLabel: aggregateByLabel(records),
     byModel: aggregateByModel(records),
     byWorkflow: aggregateByWorkflow(records),
+    floorByAgentClass: floorByAgentClass(records),
     totalsDiscrepancy: {
       sidecarTotalTokens,
       dedupedTotalTokens,
