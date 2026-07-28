@@ -162,10 +162,11 @@ the harness injects fakes through the `deps` argument instead.
 
 ### agentType / effort options spike (can a mechanical subagent be trimmed?)
 
-**Status: apparatus landed, live run NOT yet performed. The three questions below
-are answered at the *mechanism* level from the shipped runtime, and left
-explicitly OPEN at the *this-repo* level.** No `agent()` call site was edited on
-the strength of the mechanism-level answers — see "Disposition" at the end.
+**Status: all three questions answered, two of them from a live controlled
+measurement against this repo. No `agent()` call site was edited** — the one
+sub-question that gates that edit (does `agent({agentType})` resolve *from inside
+a Workflow run*) is the single thing still unverified, and the distributed half of
+the change is separately blocked. See "Disposition" at the end.
 
 Per-agent context is the whole cost of a mechanical agent:
 `docs/token-baseline.json` records `agentContextFloor.measuredFloor.reportedFloorTokens`
@@ -181,18 +182,56 @@ The discipline is the one the `model` spike above established: an option that is
 as inert and an unknown model id resolving the agent to `null` rather than
 throwing — both invisible to a caller who only checks that the key did not throw.
 
-#### The apparatus (landed here, unrun)
+#### The apparatus
 
 | Artifact | Purpose |
 |---|---|
 | `.claude/agents/rdm-mechanical.md` | The custom agent definition. Minimal system prompt, `tools: Bash, StructuredOutput`. Deliberately carries **no `model:` key** — every mechanical call site already passes `model: models.mechanical` / `_mechanicalModel`, and `scripts/verify-workflow-review.sh` §5b-mechanical asserts that pinning. |
 | `.claude/workflows/spike-agent-type.js` | Sequential probe. Crosses `agentType` (absent / `'rdm-mechanical'` / unknown id / `undefined`) with `effort` (absent / `'low'` / `undefined` / invalid), one identical trivial prompt per case, each returning a small schema'd probe object. Excluded from the inventory gate by `scripts/verify-workflow-dispatch.sh` §7 and from `docs/mechanical-agent-inventory.md`'s mechanical-label derivation; **not** excluded from the dir-wide hygiene greps, so it complies with them. |
 
-Running it requires the `Workflow` tool. The implementing agent for this phase had
-no `Workflow` tool in its harness, and the fallback (a nested `claude -p` session
-with `Workflow` allow-listed) is refused by the auto-mode permission classifier.
-That is an environment limitation, not a finding about the runtime, and it is
-recorded as such rather than papered over with a self-reported result.
+The probe workflow itself remains **unrun**: dispatching it needs the `Workflow`
+tool, which no implementing harness for this phase has had. That is an environment
+limitation, not a finding about the runtime.
+
+**The questions did not have to wait for it.** `agentType` resolves against the
+same `.claude/agents/` registry the CLI's own `--agent <name>` flag uses, and a
+`claude -p` session records exactly the same per-request usage the phase-4
+instrument reads out of `agent-*.jsonl`. That makes a **controlled 2×2** possible
+with no `Workflow` tool at all — and, unlike a single spike run, it isolates each
+variable rather than confounding them.
+
+<a id="the-2x2"></a>
+
+#### The measurement (2×2, live, this repo)
+
+One identical trivial prompt (`Run the command: echo RESOLUTION_PROBE_OK`), run
+four times in this worktree on `claude-opus-5`. Two factors, crossed:
+
+- **agent** — the session default agent vs. `--agent rdm-mechanical` (this repo's
+  definition, resolved out of `.claude/agents/`).
+- **project `CLAUDE.md`** — present, vs. temporarily moved aside for the duration
+  of the run and restored immediately after. The user-global
+  `~/.claude/CLAUDE.md` (13040 chars) is present in **all four** cells and
+  therefore cancels out of every difference below.
+
+Cell values are `firstRequestTokens` — `input + cache_creation + cache_read` on
+the session's first assistant record, the same quantity
+`scripts/lib/token-report.mjs` computes per agent, so it is directly comparable to
+`floorByAgentClass`. It is cache-placement-independent by construction (the three
+classes are summed), which is why the numbers are stable despite the four runs
+warming each other's caches.
+
+| `firstRequestTokens` | project `CLAUDE.md` present | absent | **Δ `CLAUDE.md`** |
+|---|---:|---:|---:|
+| default agent | 47084 | 27775 | **19309** |
+| `--agent rdm-mechanical` | 27190 | 7870 | **19320** |
+| **Δ `agentType`** | **−19894** | **−19905** | |
+
+The two factors are **independent and additive to within 11 tokens** on both
+margins — a 0.06 % disagreement across a 39 k-token span. Neither effect is an
+artifact of the other, and both replicate.
+
+Every number in Q1 and Q3 below is read off this table.
 
 #### Q1 — is the `agentType` registry reachable, and does a definition resolve?
 
@@ -207,9 +246,33 @@ recorded as such rather than papered over with a self-reported result.
 | `/context` renders "Custom agents … `.claude/agents/`" | `.claude/agents/` is the registry directory |
 | Task-tool docs: "Each agent type's model, reasoning effort, and tools come from its definition (`.claude/agents/*.md` frontmatter or SDK `agents`)" … "the `model` parameter here overrides the definition for this one call" | definitions carry model + reasoning effort + tools; a per-call `model` wins over the definition — so our call sites' existing `model:` pins survive an `agentType` |
 
-**Open at the this-repo level:** that `.claude/agents/rdm-mechanical.md`
-specifically resolves, and what the resulting system prompt actually contains, is
-unverified. Only the spike run settles it.
+**This repo, live: YES — `.claude/agents/rdm-mechanical.md` resolves, and the
+trim is real and large.** `claude --agent rdm-mechanical -p "Run the command: echo
+RESOLUTION_PROBE_OK"`, run in this worktree, resolved the definition, ran the
+command through `Bash`, and answered in exactly the definition's voice (the
+command, its output, its exit status, no commentary) — so the registry lookup, the
+custom system prompt, and the restricted tool list are all in force, not merely
+accepted.
+
+| Question | Answer | Evidence |
+|---|---|---|
+| Does the registry exist and is it reachable? | **YES** | `.claude/agents/` — the definition resolved by name |
+| Does *this repo's* definition resolve? | **YES** | the run above succeeded; an unresolvable name raises instead |
+| Is the restricted tool list enforced? | **YES** | the agent ran `Bash` and nothing else; the runtime carries a dedicated `agent({agentType}): '…' is denied by permission rule '…'` error |
+| How much context does it save? | **19894–19905 tokens (−42.3 % / −41.7 %)** | [the 2×2](#the-2x2), both `CLAUDE.md` conditions |
+
+That trim is *net of* `CLAUDE.md`, which loads either way (Q3) — it is the default
+agent's system prompt plus the tool schemas of every tool `rdm-mechanical` does
+not get, and it is the entire prize on offer.
+
+**One sub-question remains open, and it is the one AC4 gates on.** The verified
+path is the CLI's session-agent (`--agent`), not `agent({ agentType })` called
+from inside a Workflow run. Both read the same registry — the runtime's `agent()`
+opts destructure contains `agentType`, and its not-found error names the same
+"Available agents" list — so the residual risk is low. But *low* is not
+*measured*, and this phase's whole discipline is that an option which merely looks
+right is not evidence. Closing it needs one `Workflow` dispatch of
+`spike-agent-type.js`, and nothing else.
 
 #### Q2 — is `effort: 'low'` honored, or merely accepted?
 
@@ -240,35 +303,120 @@ conclusive in both directions: an `effort: 'low'` call site that produces
 `effort: "low"` records is honored; one that keeps producing `"high"`/absent is
 the `model: undefined` inert case and `effort` must be dropped.
 
-**Open:** no live low-effort observation exists yet. Per the phase's own rule —
-"drop `effort` and let the phase stand on `agentType` alone rather than shipping a
-key a harness only proves is spelled correctly" — **no call site passes `effort`,
-and a harness now enforces that** (`scripts/verify-workflow-review.sh` §2b:
-`effort:` may appear nowhere under `.claude/workflows/` except the spike itself).
+**Live result: NEGATIVE on the one route that could be tested.** The
+definition-side route the Task-tool docs surface — declaring reasoning effort in
+the agent definition rather than threading a key at each call site — *is* testable
+without the `Workflow` tool, via `--agents` (the same schema an `.claude/agents/`
+frontmatter parses into; the runtime's zod object for it carries
+`effort: E.union([E.enum(vO), E.number().int()]).optional()`, so the key is
+genuinely part of the contract and not silently dropped at parse time):
 
-Note the definition-side alternative the Task-tool docs surface: reasoning effort
-can also be declared in `.claude/agents/*.md` frontmatter, which would trim every
-call site at once without threading a key. That route is equally unverified and is
-left to the spike run to compare.
+| Declared | Recorded on the first assistant record | Conclusion |
+|---|---|---|
+| *(nothing)* | `effort: "high"` | control |
+| `effort: "low"` in the agent definition | `effort: "high"` | **accepted, not honored** |
+
+The agent resolved and ran normally — the key did not throw, was not rejected, and
+did not prevent the definition from loading. It simply had no observable effect on
+what the request ran at. This is the `model: undefined` inert case in another
+costume, and it is precisely the outcome the "accepted ≠ honored" discipline
+exists to catch.
+
+Two honest limits on that result: it tests the **definition-side** route, not
+`agent(prompt, { effort })` from a Workflow run, and it is one observation per
+cell. Neither limit changes the disposition, because the disposition was already
+"do not ship an unproven key" and this evidence points the same way.
+
+Per the phase's own rule — "drop `effort` and let the phase stand on `agentType`
+alone rather than shipping a key a harness only proves is spelled correctly" —
+**no call site passes `effort`, and a harness enforces that**
+(`scripts/verify-workflow-review.sh` §2b: `effort:` may appear nowhere under
+`.claude/workflows/` except the spike itself).
 
 #### Q3 — does `CLAUDE.md` load into a custom `agentType` subagent?
 
-**UNANSWERED, and the reason is structural.** `agent-*.jsonl` records `user`,
-`assistant` and `attachment` entries — it does **not** record the system prompt,
-which is where `CLAUDE.md` is injected. A sentinel-quote self-report from the
-agent is not evidence (it is exactly the "the key was accepted" fallacy in another
-costume). The only sound instrument is the one phase 4 built: compare
-`firstRequestTokens` (which prices the system prompt through
-`cache_creation + cache_read + input`) for a control agent against an
-`agentType: 'rdm-mechanical'` agent in the same run. That difference *is* the
-measured floor movement, and it is directly comparable to
-`agentContextFloor.attribution.claudeMdProject.estimatedTokens` = **12052**
-(project copy) and `claudeMdSubtotal.estimatedTokens` = **15312** (project +
-user-global), bearing the tokenizer caveat the baseline already carries
-(`chars/4` estimate vs. measured transcript tokens).
+**YES — it loads, in full, and there is no way to stop it per agent type.**
 
-That comparison needs the spike run. It is not derivable from the existing corpus,
-which contains no custom-`agentType` agent at all.
+*Why self-report and transcript-reading both fail.* `agent-*.jsonl` records
+`user`, `assistant` and `attachment` entries only; its two attachments are
+`deferred_tools_delta` and `skill_listing`, never a memory payload. The system
+prompt — where `CLAUDE.md` is injected — is not recorded anywhere. And asking the
+agent to quote a sentinel is not evidence; it is the "the key was accepted"
+fallacy wearing a different hat. The sound instrument is the one phase 4 built:
+`firstRequestTokens`, which prices the system prompt through
+`input + cache_creation + cache_read`. [The 2×2](#the-2x2) applies it with
+`CLAUDE.md` as a directly manipulated variable.
+
+*The measurement.* Moving this repo's `CLAUDE.md` aside and restoring it changes
+the floor by:
+
+| Agent | with `CLAUDE.md` | without | measured cost |
+|---|---:|---:|---:|
+| default | 47084 | 27775 | **19309** |
+| `rdm-mechanical` (custom `agentType`) | 27190 | 7870 | **19320** |
+
+**The custom-`agentType` agent pays the same 19.3 k tokens the default agent
+does** — the two costs differ by 11 tokens (0.06 %). A trimmed system prompt and a
+two-tool allowlist do not displace one byte of project memory.
+
+*Against the recorded estimate.* `docs/token-baseline.json`
+`agentContextFloor.attribution.claudeMdProject.estimatedTokens` records **12052**,
+derived as `chars / 4` from a measured 48207 chars, with the baseline's own caveat
+that no local tokenizer was available.
+
+| | tokens | chars/token |
+|---|---:|---:|
+| recorded estimate (`chars / 4`) | 12052 | 4.00 |
+| **measured (this 2×2)** | **19320** | **2.49** |
+| error | **+7268 (+60.3 %)** | |
+
+The `chars/4` heuristic **understates this file by 60 %**, which is the expected
+direction for its content — dense Markdown tables, fenced shell blocks, slugs and
+paths tokenize far below prose. The 15312-token `claudeMdSubtotal` (project +
+user-global) is understated the same way: at the measured 2.49 ratio its 61247
+chars price at roughly **24.6 k tokens**, and the residual
+`remainderToolSchemasSystemPrompt` = 23526 is correspondingly overstated, since it
+is defined as the floor minus that subtotal.
+
+*Share of the floor.* `CLAUDE.md` is **41.0 %** of the default agent's 47084-token
+floor and **71.1 %** of the trimmed agent's 27190 — i.e. trimming the agent makes
+project memory the overwhelmingly dominant remaining term.
+
+*Is it avoidable?* **No, not per agent type.** The runtime's agent-definition
+frontmatter schema accepts `description`, `tools`, `disallowedTools`, `prompt`,
+`model`, `effort`, `permissionMode`, `mcpServers`, `hooks`, `maxTurns`, `color`,
+`background`, `memory`, `isolation`, `observer`, `observerMessage`,
+`observeSubagents` — and **none of them suppresses `CLAUDE.md`**. The one that
+looks like it might, `memory`, is
+`E.enum(["user","project","local"]).optional().describe("Scope for auto-loading
+agent memory files…")` — it governs `~/.claude/agent-memory/` and *adds* context.
+The only suppression switches in the runtime are process-global and unusable here:
+`CLAUDE_CODE_DISABLE_CLAUDE_MDS`, and `--bare` / `CLAUDE_CODE_SIMPLE=1` ("skip …
+CLAUDE.md auto-discovery"), which also strips hooks, LSP and auth.
+
+Per the phase body — "if it is unavoidable, record that as a finding and stop
+pursuing it — do not restructure `CLAUDE.md` speculatively" — **that is where this
+stops.** No `CLAUDE.md` restructuring was attempted or is proposed here. Note only
+that the 19.3 k figure reprices the option: a hypothetical 30 % reduction in
+`CLAUDE.md` would be worth ~5.8 k tokens per agent, not the ~3.6 k the recorded
+estimate implied.
+
+*Corroboration from the existing corpus.* Independently of the 2×2, grouping every
+workflow-agent record by project slug and agent class reproduces the effect across
+two repos whose `CLAUDE.md` files differ by 31144 chars (rdm 48207 vs.
+bowling-app 17063; both share the same user-global copy, which cancels):
+
+| agent class | rdm median | bowling-app median | Δ |
+|---|---:|---:|---:|
+| `estimate` | 30050 (n=79) | 21710 (n=15) | 8340 |
+| `find` | 40032 (n=622) | 28764 (n=7) | 11268 |
+| `model` | 37003 (n=13) | 24530 (n=3) | 12473 |
+| `refute` | 39444 (n=954) | 23792 (n=209) | 15652 |
+
+Median Δ **11870.5** against a `chars/4` prediction of 7786 — the same
+"understated by roughly half again" signature, from a completely different
+dataset. This is corroborating only: the two repos differ in skills, hooks and
+prompt sizes as well, so it cannot isolate `CLAUDE.md` the way the 2×2 does.
 
 #### Distribution: the phase's stated assumption is WRONG, and it inverts the risk
 
@@ -293,7 +441,7 @@ and `review-refute-fix.js` and re-synced into
 literal `.claude/workflows/<name>.js` references and would not catch it.
 
 This is a blocking reason not to thread the three distributed files until the
-follow-up task `emit-agent-definitions-from-agent-config` lands an emission
+follow-up task `ship-mechanical-agent-type-downstream` lands an emission
 surface plus a reference-resolution gate. **This phase does not claim
 distribution self-consistency, and it does not introduce a distributed dangling
 reference either — it declines to create one.**
@@ -301,18 +449,47 @@ reference either — it declines to create one.**
 #### Disposition
 
 The phase is feasibility-gated for both options, and a recorded result is a
-legitimate completion. Landed: the agent definition, the spike, these findings,
-the `effort:` guard, and a fixed pre-change comparison point in
-`docs/token-baseline.json` (`mechanicalContextTrim`). **No `agent()` call site was
-edited**, because AC4's precondition is a *live-verified* reachability answer and
-Q1 is only answered at the mechanism level; because Q3 — the size of the prize —
-is entirely unmeasured; and because the distribution finding above makes the
-distributed half of the change unsafe regardless of how Q1 and Q3 resolve.
+legitimate completion. Landed: the agent definition, the spike, these findings and
+their measurements, the `effort:` guard, the distributed-`agentType` guard, and a
+fixed pre-change comparison point in `docs/token-baseline.json`
+(`mechanicalContextTrim`).
 
-What remains is mechanical and is carried by
-`finish-agent-type-effort-spike-and-thread-mechanical-sites`: run the spike, fill
-the three answer tables above, then thread (or decline to thread) the call sites
-against a measured `floorByAgentClass` delta.
+**Answers, in one place:**
+
+| Question | Answer |
+|---|---|
+| Q1 — registry reachable, definition resolves? | **YES**, live, this repo. Worth **19894–19905 tokens (≈42 %)** per agent |
+| Q1a — resolves from *inside a Workflow run*? | **NOT VERIFIED** — no `Workflow` tool in any implementing harness |
+| Q2 — is `effort: 'low'` honored? | **NO** — declared, accepted, and the request still ran at `high` |
+| Q3 — does `CLAUDE.md` load into a custom `agentType` agent? | **YES**, unavoidably, at **19320 measured tokens** (recorded estimate 12052 understates by 60 %) |
+
+**No `agent()` call site was edited.** Three independent reasons, each sufficient:
+
+1. **AC4's precondition is Q1a, and Q1a is unverified.** The AC gates on the
+   registry being reachable *from the Workflow runtime*. What is verified is the
+   registry and this repo's definition, through the CLI's session-agent path. The
+   remaining gap is small and specific, but the phase's entire discipline is that a
+   small specific gap is still a gap. AC4 therefore takes its recorded-negative
+   branch, which it explicitly provides for.
+2. **The change could not be exercised.** Threading `agentType` into live lanes
+   without a single Workflow dispatch means shipping an unexercised runtime option
+   whose failure mode is a *raised* error on every mechanical step. That trades a
+   measured 42 % context saving for an unmeasured chance of breaking the lane
+   outright.
+3. **The distributed half is blocked outright**, for the reason in § Distribution
+   above, regardless of how Q1a resolves.
+
+**Nothing about the prize is in doubt any more, only its delivery.** The saving is
+measured (19894 tokens/agent), it replicates, it is additive with `CLAUDE.md`, and
+it is 42 % of a mechanical agent's floor — this is worth finishing. What remains is
+carried by two tasks:
+
+- `finish-agent-type-effort-spike-and-thread-mechanical-sites` — one `Workflow`
+  dispatch of `spike-agent-type.js` to close Q1a, then thread the mechanical call
+  sites in the four local-only workflows and re-measure `floorByAgentClass`.
+- `ship-mechanical-agent-type-downstream` — the `.claude/agents/` emission surface
+  and its reference-resolution gate, which is what unblocks the three distributed
+  workflows and lifts §2b(ii).
 
 ## Schema contracts
 

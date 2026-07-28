@@ -549,9 +549,59 @@
     ]
   },
   "mechanicalContextTrim": {
-    "description": "Comparison point for the mechanical-agent context trim (agentType / effort). This key exists to PIN the pre-change side of the comparison so a later run cannot silently re-baseline it; it records no post-change measurement because none was taken.",
-    "status": "not-measured",
-    "statusReason": "The phase is feasibility-gated on a spike (.claude/workflows/spike-agent-type.js) that requires the Workflow tool. The implementing environment had no Workflow tool, and the nested `claude -p` fallback is refused by the auto-mode permission classifier. No agent() call site was edited, so there is no post-change corpus to measure and no delta to report. See docs/workflow-schemas.md § 'agentType / effort options spike' for the full evidence tables and the disposition.",
+    "description": "Comparison point for the mechanical-agent context trim (agentType / effort), plus the measured size of the trim itself. preChangeMedianTokens below PINS the pre-change side of the eventual lane comparison so a later run cannot silently re-baseline it. No post-change LANE corpus exists (no agent() call site was edited), but the per-agent effect of agentType and of CLAUDE.md was measured directly -- see measuredTrim2x2.",
+    "status": "trim-measured-directly; no post-change lane corpus",
+    "statusReason": "The phase is feasibility-gated on a spike (.claude/workflows/spike-agent-type.js) that requires the Workflow tool, and no implementing environment has had one. The gated questions were instead answered by a controlled 2x2 over `claude -p` sessions, which resolve the SAME .claude/agents/ registry and record the SAME per-request usage that scripts/lib/token-report.mjs reads (see measuredTrim2x2). agentType resolves against this repo's definition and is worth 19894-19905 tokens per agent; CLAUDE.md loads into the custom agent unchanged. No agent() call site was edited -- resolution from inside a Workflow run specifically remains unverified, and the distributed half is separately blocked -- so there is no post-change LANE corpus and no floorByAgentClass delta to report. See docs/workflow-schemas.md § 'agentType / effort options spike' for the full evidence tables and the disposition.",
+    "measuredTrim2x2": {
+      "description": "Controlled 2x2, run live in this worktree on claude-opus-5, one identical trivial prompt per cell. Factor A: session default agent vs `claude --agent rdm-mechanical` (this repo's .claude/agents/ definition). Factor B: project CLAUDE.md present vs temporarily moved aside and restored. The user-global ~/.claude/CLAUDE.md is present in all four cells and cancels out of every difference.",
+      "metric": "firstRequestTokens = input + cache_creation + cache_read on the session's first assistant record -- the same quantity buildRecords computes per agent, so it is directly comparable to floorByAgentClass. Cache-placement-independent by construction.",
+      "basis": "measured",
+      "cells": {
+        "defaultAgent_withClaudeMd": 47084,
+        "defaultAgent_withoutClaudeMd": 27775,
+        "rdmMechanical_withClaudeMd": 27190,
+        "rdmMechanical_withoutClaudeMd": 7870
+      },
+      "agentTypeTrimTokens": {
+        "withClaudeMd": 19894,
+        "withoutClaudeMd": 19905,
+        "percentOfDefaultFloor": 42.3,
+        "note": "The two margins agree to within 11 tokens (0.06%), so the agentType effect and the CLAUDE.md effect are independent and additive. This is the whole prize on offer: the default agent's system prompt plus the tool schemas of every tool rdm-mechanical does not receive."
+      },
+      "claudeMdCostTokens": {
+        "inDefaultAgent": 19309,
+        "inCustomAgentType": 19320,
+        "note": "Equal to within 11 tokens: a custom agentType pays the FULL project-memory cost. A trimmed system prompt and a two-tool allowlist displace none of it."
+      }
+    },
+    "claudeMdFinding": {
+      "loadsIntoCustomAgentType": true,
+      "measuredTokens": 19320,
+      "recordedEstimateTokens": 12052,
+      "estimateErrorTokens": 7268,
+      "estimateErrorPercent": 60.3,
+      "measuredCharsPerToken": 2.49,
+      "chars": 48207,
+      "shareOfDefaultAgentFloorPercent": 41.0,
+      "shareOfTrimmedAgentFloorPercent": 71.1,
+      "implicationForAttribution": "agentContextFloor.attribution uses chars/4 and is left UNCHANGED as the recorded phase-2 figure, but it is now known to understate this file by 60%. At the measured 2.49 chars/token, claudeMdSubtotal's 61247 chars price at roughly 24600 tokens rather than 15312, and remainderToolSchemasSystemPrompt (23526) is overstated by the same amount since it is derived as floor minus that subtotal.",
+      "avoidable": false,
+      "avoidabilityEvidence": "The runtime's agent-definition frontmatter schema accepts description, tools, disallowedTools, prompt, model, effort, permissionMode, mcpServers, hooks, maxTurns, color, background, memory, isolation, observer, observerMessage, observeSubagents -- none suppresses CLAUDE.md. `memory` is E.enum([\"user\",\"project\",\"local\"]) scoping auto-loading of ~/.claude/agent-memory/ files, i.e. it ADDS context. The only suppression switches are process-global: CLAUDE_CODE_DISABLE_CLAUDE_MDS, and --bare / CLAUDE_CODE_SIMPLE=1 (which also strips hooks, LSP and auth).",
+      "disposition": "Per the phase body: recorded as a finding, and not pursued further. No CLAUDE.md restructuring was attempted or is proposed. The measurement only reprices the option -- a hypothetical 30% CLAUDE.md reduction would be worth ~5800 tokens per agent, not the ~3600 the chars/4 estimate implied."
+    },
+    "corroborationCrossProject": {
+      "description": "Independent corroboration from the existing on-disk corpus: per-agent-class median firstRequestTokens grouped by project slug, for two repos whose CLAUDE.md files differ by 31144 chars (rdm 48207, bowling-app 17063) and which share the same user-global copy.",
+      "basis": "measured",
+      "byClassDeltaTokens": {
+        "estimate": { "rdm": 30050, "rdmN": 79, "bowlingApp": 21710, "bowlingAppN": 15, "delta": 8340 },
+        "find": { "rdm": 40032, "rdmN": 622, "bowlingApp": 28764, "bowlingAppN": 7, "delta": 11268 },
+        "model": { "rdm": 37003, "rdmN": 13, "bowlingApp": 24530, "bowlingAppN": 3, "delta": 12473 },
+        "refute": { "rdm": 39444, "rdmN": 954, "bowlingApp": 23792, "bowlingAppN": 209, "delta": 15652 }
+      },
+      "medianDeltaTokens": 11870.5,
+      "charsFourPrediction": 7786,
+      "caveat": "CORROBORATING ONLY. The two repos differ in skills, hooks and prompt sizes as well as CLAUDE.md, so this cannot isolate CLAUDE.md the way measuredTrim2x2 does. It is reported because it reproduces the same 'chars/4 understates by roughly half again' signature from an entirely different dataset."
+    },
     "preChangeBasis": "floorByAgentClass.byClass above, verbatim -- the per-class medianTokens recorded by the add-per-agent-class-floor phase over the 44-run / 2110-record on-disk corpus. These are the ONLY figures the eventual before/after claim may use.",
     "preChangeMedianTokens": {
       "fetch": { "medianTokens": 30098, "n": 112 },
@@ -570,10 +620,10 @@
     },
     "mustNotCompareAgainst": "agentContextFloor.measuredFloor.reportedFloorTokens (38837.5) and agentContextFloor.legacyRegression.interceptTokens (37552) -- both are WHOLE-CORPUS figures, not per-class ones; comparing a mechanical-class median against either measures corpus composition, not the change.",
     "measurementProtocolForTheFollowUp": "Scope the fresh run with --since <ISO date of the first post-change run> so the pre-change corpus is not averaged in: `node scripts/measure-lane-tokens.mjs --format json --since <date> --workflow autopilot --workflow dispatch-phase --workflow plan-review --workflow backlog --workflow estimate --workflow document`, then read report.floorByAgentClass. A single fresh dispatch yields single-digit n per class, so the resulting delta is DIRECTIONAL, not a re-baseline -- record n per class alongside it and do not overwrite the figures above.",
-    "effortDecision": "NOT applied at any call site. The verification channel was identified and its control fixed (every `assistant` transcript record carries a top-level `effort` field; across 6290 transcripts / 156384 assistant records it holds only \"high\" (55945) or is absent (100439), and never \"low\"), but no observation of effort:'low' taking effect exists. scripts/verify-workflow-review.sh §2b now fails if any workflow script passes effort:.",
+    "effortDecision": "NOT applied at any call site, and now on a LIVE negative observation rather than an absent one. Control: across 6290 transcripts / 156384 assistant records the top-level `effort` field holds only \"high\" (55945) or is absent (100439), never \"low\". Test: an agent declared with effort:\"low\" (the definition-side route, via --agents, whose zod schema carries effort: E.union([E.enum(vO), E.number().int()]).optional()) resolved and ran normally, and its first assistant record still says effort:\"high\" -- accepted, not honored; the model:undefined inert case in another costume. Limits: this tests the definition-side route, not agent(prompt, {effort}) from a Workflow run, and it is one observation per cell; neither changes the disposition. scripts/verify-workflow-review.sh §2b fails if any workflow script passes effort:.",
     "followUpTasks": [
       "finish-agent-type-effort-spike-and-thread-mechanical-sites",
-      "emit-agent-definitions-from-agent-config"
+      "ship-mechanical-agent-type-downstream"
     ]
   },
   "confounds": [

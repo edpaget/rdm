@@ -195,23 +195,31 @@ The autonomous do/autopilot lane has migrated from prose-orchestrated skills to 
 `.claude/agents/` is the custom-agent registry the Workflow runtime resolves `agent()`'s
 `opts.agentType` against, and it now holds one definition: `rdm-mechanical.md`, a trimmed
 transcribe-one-command agent intended for the irreducible mechanical `agent()` call sites named
-in `docs/mechanical-agent-inventory.md` § Irreducible. **Nothing references it yet.** It is the
-apparatus half of a feasibility spike (`.claude/workflows/spike-agent-type.js`) that is landed
-but unrun — the full evidence tables and the disposition are in `docs/workflow-schemas.md`
-§ "agentType / effort options spike".
+in `docs/mechanical-agent-inventory.md` § Irreducible. **Nothing references it yet**, and that
+is a deliberate hold, not an oversight: the definition resolves and a controlled 2×2 measures it
+saving **19894 tokens (−42 %)** per agent, but resolution from inside a *Workflow* run
+specifically is still unverified and the distributed half is blocked. Full evidence tables and
+disposition: `docs/workflow-schemas.md` § "agentType / effort options spike". Its companion
+probe, `.claude/workflows/spike-agent-type.js`, is landed but unrun — dispatching it is what
+closes the last open question.
 
 Two rules follow from it, both gated by `scripts/verify-workflow-review.sh` §2b with
 planted-mutation self-tests:
 
-- **No workflow script may pass `effort:`.** The spike identified the verification channel
-  (every `assistant` transcript record carries a top-level `effort` field) but produced no
-  observation of `effort: 'low'` actually taking effect, so the key does not ship.
+- **No workflow script may pass `effort:`.** An agent declared with `effort: "low"` still ran at
+  `"high"` — accepted, not honored — so the key does not ship.
 - **No *distributed* workflow template (`rdm-core/src/templates/workflows/*.js`) may reference
   `agentType`.** `rdm agent-config` emits skills and workflows only — there is no
   `.claude/agents/` emission surface — and an unresolvable `agentType` *raises* in the runtime
   rather than degrading silently the way an unknown `model` id does, so a reference in a shipped
   template would hard-break every downstream lane on first dispatch. Lift this only together
-  with the follow-up task `emit-agent-definitions-from-agent-config`.
+  with the follow-up task `ship-mechanical-agent-type-downstream`.
+
+One further finding worth knowing when editing this file: **the project `CLAUDE.md` is loaded
+into every subagent, including a custom-`agentType` one, and costs a measured 19320 tokens per
+agent** — 60 % more than the `chars/4` estimate in `docs/token-baseline.json`, and 71 % of a
+trimmed agent's floor. It cannot be suppressed per agent type. Every paragraph added here is
+paid for once per dispatched agent.
 
 #### Two surfaces: workflow vs skill
 

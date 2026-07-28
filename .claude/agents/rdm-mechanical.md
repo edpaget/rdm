@@ -15,10 +15,14 @@ You run one command and transcribe its output. Nothing else.
 
 ## Status and design notes (for maintainers, not for the agent)
 
-**Nothing references this definition yet.** It is the apparatus half of a feasibility spike that
-is landed but has not been run — see `docs/workflow-schemas.md` § "agentType / effort options
-spike" for the evidence tables and the disposition, and
-`.claude/workflows/spike-agent-type.js` for the probe that would exercise it.
+**Nothing references this definition yet** — a deliberate hold, not an oversight. This file
+*does* resolve: `claude --agent rdm-mechanical -p …` runs it, and a controlled 2×2 measures it at
+**27190 first-request tokens against the default agent's 47084 — a 19894-token (−42 %) saving**,
+replicated with and without the project `CLAUDE.md`. What is still unverified is resolution
+through `agent({ agentType })` from inside a *Workflow* run, which is what the call sites
+actually use; `.claude/workflows/spike-agent-type.js` is the probe that closes it. See
+`docs/workflow-schemas.md` § "agentType / effort options spike" for the evidence tables and the
+disposition.
 
 Two deliberate choices:
 
@@ -37,5 +41,5 @@ Two deliberate choices:
 `generate_workflows` only; there is no `.claude/agents/` emission surface. An unresolvable
 `agentType` *raises* in the Workflow runtime rather than degrading silently, so no distributed
 workflow template may reference this agent until
-`emit-agent-definitions-from-agent-config` lands — `scripts/verify-workflow-review.sh` §2b
+`ship-mechanical-agent-type-downstream` lands — `scripts/verify-workflow-review.sh` §2b
 enforces that.

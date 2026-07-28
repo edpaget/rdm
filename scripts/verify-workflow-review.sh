@@ -368,20 +368,24 @@ pass "no forbidden globals present; detector catches a planted one"
 
 # --- 2b. AGENT-CONTEXT-TRIM GUARDS -------------------------------------------
 # Two guards recording decisions from the agentType/effort options spike
-# (docs/workflow-schemas.md § "agentType / effort options spike"). Both exist
-# because that spike is LANDED BUT UNRUN — the questions it gates are answered
-# only at the runtime-mechanism level, not against this repo.
+# (docs/workflow-schemas.md § "agentType / effort options spike"). That spike's
+# questions ARE answered now — a controlled 2x2 measured agentType saving
+# 19894 tokens/agent, and CLAUDE.md costing 19320 inside the custom agent just
+# as it does inside the default one — but no call site was edited, so both
+# guards stay live: (i) effort was measured NOT honored, and (ii) the
+# distributed `.claude/agents/` emission surface still does not exist.
 say "2b. Agent-context-trim guards (agentType / effort options spike)"
 
-# (i) No call site may pass `effort:`. The spike established the verification
-#     channel (each `assistant` transcript record carries a top-level `effort`
-#     field) but produced no observation of `effort: "low"` actually taking
-#     effect. Per the phase rule, an option a harness can only prove is spelled
-#     correctly does not ship. `spike-agent-type.js` is the one file allowed to
-#     contain it — probing the option is its entire purpose.
+# (i) No call site may pass `effort:`. The verification channel is the top-level
+#     `effort` field on each `assistant` transcript record. An agent DECLARED
+#     with effort:"low" resolved, ran normally, and still recorded
+#     effort:"high" — accepted, not honored, i.e. the `model: undefined` inert
+#     case in another costume. Per the phase rule, an option a harness can only
+#     prove is spelled correctly does not ship. `spike-agent-type.js` is the one
+#     file allowed to contain it — probing the option is its entire purpose.
 if grep -nE '(^|[^A-Za-z-])effort:' "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null |
     grep -v '/spike-agent-type\.js:'; then
-    fail "a workflow script passes effort: — the spike never observed effort:'low' being honored, so it must not ship (see docs/workflow-schemas.md § agentType / effort options spike)"
+    fail "a workflow script passes effort: — a declared effort:'low' was measured NOT honored (the request still ran at high), so it must not ship (see docs/workflow-schemas.md § agentType / effort options spike)"
 fi
 printf 'await agent(P, { label: "x", effort: %s })\n' "'low'" >"$SCRATCH/planted-effort.js"
 if ! grep -nE '(^|[^A-Za-z-])effort:' "$SCRATCH/planted-effort.js" >/dev/null 2>&1; then
@@ -395,7 +399,7 @@ pass "no workflow call site passes effort:; detector catches a planted one"
 #      (`agent({agentType}): agent type '...' not found`), not the silent null
 #      an unknown `model` id produces. Threading one into a shipped template
 #      would hard-fail every downstream lane on first dispatch. Lift this guard
-#      only together with `emit-agent-definitions-from-agent-config`.
+#      only together with `ship-mechanical-agent-type-downstream`.
 if grep -nE 'agentType' "$TEMPLATES"/workflows/*.js 2>/dev/null; then
     fail "a distributed workflow template references agentType, but rdm agent-config emits no .claude/agents/ definitions — an unresolvable agentType RAISES in the runtime and would break every downstream lane"
 fi

@@ -331,6 +331,31 @@ for (const absentKey of ['gate', 'implement', 'refute', 'stamp']) {
 }
 console.log('floorByAgentClass population: ok');
 
+// --- percentile interpolation: the fixture gives every agentClass n=1,
+// which short-circuits percentile() at 'if (n === 1) return sorted[0]'
+// before the linear-interpolation arithmetic ever runs. Feed
+// floorByAgentClass a synthetic n=4 class so p10/median both land on a
+// non-integer rank and exercise the interpolation branch directly, with
+// hand-computed expectations:
+//   sorted = [10, 20, 30, 40]
+//   p10:    idx = (4-1)*0.1 = 0.3  -> lower=0 upper=1 weight=0.3
+//           -> 10 + (20-10)*0.3 = 13
+//   median: idx = (4-1)*0.5 = 1.5  -> lower=1 upper=2 weight=0.5
+//           -> 20 + (30-20)*0.5 = 25
+const syntheticRecords = [10, 20, 30, 40].map((v, i) => ({
+  agentClass: 'synthtest',
+  agentId: 'synth' + i,
+  firstRequestTokens: v,
+}));
+const syntheticFloor = floorByAgentClass(syntheticRecords);
+const synthMap = Object.fromEntries(syntheticFloor.map((r) => [r.key, r]));
+assert.equal(synthMap.synthtest.n, 4);
+assert.equal(synthMap.synthtest.minTokens, 10);
+assert.equal(synthMap.synthtest.p10Tokens, 13, 'p10 must be linearly interpolated (10 + (20-10)*0.3 = 13), not floored/ceiled to 10 or 20');
+assert.equal(synthMap.synthtest.medianTokens, 25, 'median must be linearly interpolated (20 + (30-20)*0.5 = 25), not floored/ceiled to 20 or 30');
+assert.equal(synthMap.synthtest.meanTokens, 25);
+console.log('percentile interpolation (multi-record class): ok');
+
 // --- agentClassFromLabel edge case: no colon at all ---
 assert.equal(agentClassFromLabel('malformed'), 'malformed');
 assert.equal(agentClassFromLabel(''), '');

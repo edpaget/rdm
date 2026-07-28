@@ -363,28 +363,45 @@ for a fresh post-change lane run, which remains the natural confirmation.
   still passes unchanged.
 - Token *sizes* per surviving mechanical agent are phase 4's subject, not this phase's.
 
-## Context trim: the phase-5 result (apparatus landed, unrun — no call site edited)
+## Context trim: the phase-5 result (measured — but no call site edited)
 
 Phase 5 is the context-size lever over the § Irreducible set above. It is **feasibility-gated
 for both of its options**, and it completed on a recorded result rather than a code change. The
 full evidence tables live in [`docs/workflow-schemas.md`](workflow-schemas.md) § "agentType /
 effort options spike"; the operative outcomes are:
 
-- **`agentType` — mechanism confirmed, this-repo resolution unverified.** `.claude/agents/` is
-  the registry, `agent()` destructures `agentType` alongside `model`/`effort`/`isolation`, an
-  agent definition supplies model + reasoning effort + tools, and a per-call `model` overrides
-  the definition (so the mechanical-tier pins § Maintenance routes depends on survive an
-  `agentType`). What is *not* verified is that `.claude/agents/rdm-mechanical.md` specifically
-  resolves, because running the spike needs the `Workflow` tool the implementing environment
-  lacked.
+- **`agentType` — resolves, and is worth 19894 tokens per agent (−42 %).** Measured live in
+  this worktree by a controlled 2×2 over `claude -p` sessions, which resolve the same
+  `.claude/agents/` registry and record the same per-request usage the phase-4 instrument
+  reads:
+
+  | `firstRequestTokens` | with `CLAUDE.md` | without | Δ `CLAUDE.md` |
+  |---|---:|---:|---:|
+  | default agent | 47084 | 27775 | 19309 |
+  | `rdm-mechanical` | 27190 | 7870 | 19320 |
+  | **Δ `agentType`** | **−19894** | **−19905** | |
+
+  The two factors are independent and additive to within 11 tokens. A per-call `model`
+  overrides the definition, so the mechanical-tier pins § Maintenance routes depends on survive
+  an `agentType`. **One sub-question stays open, and it is the one the phase's AC gates on:**
+  resolution from inside a *Workflow* run specifically (as opposed to the CLI session-agent
+  path) still needs one `Workflow` dispatch of `spike-agent-type.js`.
 - **`effort` — dropped, and now guarded.** The verification channel was identified (each
   `assistant` transcript record carries a top-level `effort` field) and its pre-change control
-  fixed (156 384 records across the corpus: `"high"` or absent, `"low"` **never**), but no
-  observation of `low` taking effect exists. Per the phase rule, the key does not ship;
-  `scripts/verify-workflow-review.sh` §2b now fails if any workflow script passes `effort:`.
-- **`CLAUDE.md` loading — unanswered.** `agent-*.jsonl` does not record the system prompt, so
-  the only sound instrument is the control-vs-`agentType` `firstRequestTokens` delta phase 4
-  built. That needs the run. No `CLAUDE.md` restructuring was attempted or is implied.
+  fixed (156 384 records across the corpus: `"high"` or absent, `"low"` **never**). A live test
+  then closed it negatively: an agent *declared* with `effort: "low"` resolved and ran, and its
+  first assistant record still says `effort: "high"` — accepted, not honored. Per the phase
+  rule the key does not ship; `scripts/verify-workflow-review.sh` §2b fails if any workflow
+  script passes `effort:`.
+- **`CLAUDE.md` loading — answered: it loads, in full, and cannot be stopped per agent type.**
+  The same 2×2 measures it at **19320 tokens** inside the custom `agentType` agent, versus
+  19309 inside the default one — an 11-token difference, i.e. a trimmed system prompt and a
+  two-tool allowlist displace none of it. That is **60 % more** than the 12052 `chars/4`
+  estimate `docs/token-baseline.json` records (measured ratio 2.49 chars/token), and it is
+  **71 %** of a trimmed agent's remaining floor. No agent-definition frontmatter key suppresses
+  it (`memory:` scopes `~/.claude/agent-memory/` auto-loading and *adds* context); the only
+  switches are process-global. Per the phase body this is recorded and dropped — **no
+  `CLAUDE.md` restructuring was attempted or is implied.**
 - **The distribution assumption was wrong, and it inverts the risk.** An unresolvable
   `agentType` is a *raised* error in the runtime, not the silent `null` an unknown `model` id
   produces. Since `rdm agent-config` emits no `.claude/agents/` definitions, threading
@@ -399,6 +416,7 @@ relabelled, or re-tiered, so the § Raw inventory total, the § Classification t
 
 The comparison point for the eventual change is pinned in `docs/token-baseline.json` under
 `mechanicalContextTrim`, quoting phase 4's per-class pre-change medians verbatim so a later run
-cannot silently re-baseline. The remaining work is carried by task
-`finish-agent-type-effort-spike-and-thread-mechanical-sites`, and the distribution close-out by
-`emit-agent-definitions-from-agent-config`.
+cannot silently re-baseline; the measured per-agent figures above are recorded alongside them
+under `mechanicalContextTrim.measuredTrim2x2` and `.claudeMdFinding`. The remaining work is
+carried by task `finish-agent-type-effort-spike-and-thread-mechanical-sites`, and the
+distribution close-out by `ship-mechanical-agent-type-downstream`.
