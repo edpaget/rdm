@@ -315,7 +315,7 @@ That trim is *net of* `CLAUDE.md`, which loads either way (Q3) — it is the def
 agent's system prompt plus the tool schemas of every tool `rdm-mechanical` does
 not get, and it is the entire prize on offer.
 
-##### Q1a — does it resolve from *inside a Workflow run*? **STILL OPEN — the test was invalid.**
+##### Q1a — does it resolve from *inside a Workflow run*? **YES — CONFIRMED 2026-07-28.**
 
 This is the sub-question AC4 gates on. The [Workflow-path run](#the-workflow-run)
 appeared to close it negatively. **That reading is retracted.** The `agentType`
@@ -367,12 +367,51 @@ registry as the Agent tool", i.e. `.claude/agents/`. So the residual gap is
 narrow: whether `agent({ agentType })` inside a Workflow run reads that registry
 the same way, tested from a session that can actually see the definition.
 
-**Closing it needs one thing this run did not have:** a dispatch from a session
-whose project root contains `.claude/agents/rdm-mechanical.md` *at session start*.
-Once this branch lands, the definition sits at the repo root, so any ordinary
-session in this repo satisfies that by construction. Re-run `spike-agent-type.js`
-from such a session and read case B's `toolNames`: a trimmed list is the positive
-evidence AC4 gates on.
+**That dispatch has now been done** (run `wf_40f5594e-208`), from a session
+restarted with its root inside this worktree so `.claude/agents/` was present at
+session start. **The answer is YES:**
+
+| Evidence | Result |
+|---|---|
+| Case B `toolNames` | **`["Bash", "StructuredOutput"]`** vs the control's nine — the definition loaded *and* its tool restriction is enforced |
+| Case C's registry listing | now enumerates `rdm-mechanical` alongside the built-ins |
+| Live `backlog` lane sidecars | `{"agentType":"rdm-mechanical","model":"haiku"}` — confirming a per-call `model` still overrides the definition, the assumption behind omitting `model:` from the agent file |
+
+AC4's precondition is therefore met, and the threading described below rests on a
+measured result rather than a documented expectation.
+
+<a id="workflow-path-trim"></a>
+
+##### The Workflow-path trim, measured — and it is HALF the 2×2's prediction
+
+Cases A and B ran back-to-back in one session on an identical prompt:
+
+| Case | `firstRequestTokens` |
+|---|---:|
+| A — control | 38689 |
+| **B — `agentType`** | **29782** |
+| **Δ** | **8907 (−23.0 %)** |
+
+Cases E/F repeat the pair with `effort: 'low'` on both sides and reproduce it
+*exactly*: 38689 → 29782. All five default-agent cases measured exactly 38689;
+both `agentType` cases exactly 29782.
+
+A first live lane dispatch (`backlog`, propose-only, verified zero-mutation)
+agrees, against the pinned per-class medians:
+
+| Site | post | pinned pre | Δ |
+|---|---:|---:|---:|
+| `model:mechanical` | 29524 | 36877 (n=16) | −7353 (−19.9 %) |
+| `fetch:report` | 24418 | 30098 (n=112) | −5680 (−18.9 %) |
+
+n=1 per class, so those are **directional, not a re-baseline**.
+
+**The 19894-token figure from [the 2×2](#the-2x2) overstates these call sites by
+2.23×.** Both ends compress on the Workflow path: a Workflow subagent's default
+floor is far cheaper than a CLI session's (38689 vs 47084 — fewer tools, no skill
+listing, leaner harness), while the trimmed agent is slightly *dearer* (29782 vs
+27190). The 2×2 is not wrong; it measures a different call path. **Quote 8907
+(−23 %) for these sites, never 19894.**
 
 #### Q2 — is `effort: 'low'` honored, or merely accepted?
 
@@ -611,7 +650,7 @@ Workflow-path answer governs, because that is the call path the call sites use.
 | Question | Answer | Source |
 |---|---|---|
 | Q1 — registry reachable, definition resolves? | **YES** — worth **19894–19905 tokens (≈42 %)** per agent | `claude -p` 2×2 |
-| **Q1a — resolves from *inside a Workflow run*?** | **STILL OPEN** — the cases that appeared to answer it were invalidated by a dispatching-session setup error (§ Q1a). Not a negative result | — |
+| **Q1a — resolves from *inside a Workflow run*?** | **YES** — case B returned the trimmed `["Bash","StructuredOutput"]`; worth a measured **8907 tokens (−23 %)**, not the 19894 the 2×2 predicted | **Workflow run, observed** |
 | Q1b — how does an `agentType` absent from the registry fail? | **RAISES** (was inferred from a string table; now observed via case C) | **Workflow run, observed** |
 | Q2 — `effort: 'low'` declared in a *definition*? | **NOT honored** — ran at `high` | `claude -p` |
 | **Q2a — `effort: 'low'` passed to `agent()`?** | **HONORED** — first `effort:"low"` record in a 156 384-record corpus | **Workflow run, observed** |
@@ -641,15 +680,12 @@ self-tests in both directions and a completeness sweep that fails if a site is
 added or removed without updating the asserted list, or if any `agentType` other
 than `rdm-mechanical` appears.
 
-**This ships ahead of Q1a's confirming dispatch, which is a deliberate call, not
-an oversight.** The evidence supporting it: the definition resolves and its tool
-restriction is enforced through `--agent` (measured, [the 2×2](#the-2x2)); the
-Agent-tool contract states `agentType` resolves against that same registry; and
-the documentation confirms `.claude/agents/` is consulted and watched. The
-residual risk is the failure mode in § Distribution — a raise, not a silent
-degradation — bounded to the four local-only workflows, whose definition sits in
-this repo at the path the runtime searches. Confirming it costs one dispatch of
-`spike-agent-type.js` from any ordinary session in this repo once this lands.
+**Q1a has since confirmed this threading** — see
+[the Workflow-path trim](#workflow-path-trim). Case B resolves with the trimmed
+tool list, and a live `backlog` dispatch shows both its threaded sites dropping
+~19–20 %. The measured saving is **8907 tokens/agent (−23 %)**, not the 19894 the
+`claude -p` 2×2 predicted; every figure quoted for these call sites is the
+measured one.
 
 **Not threaded, and each for its own reason:**
 

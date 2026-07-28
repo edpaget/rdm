@@ -25,22 +25,20 @@ This file *does* resolve through the CLI's session-agent path: `claude --agent r
 default agent's 47084 — a 19894-token (−42 %) saving**, replicated with and without the project
 `CLAUDE.md`. The prize is real.
 
-**What is not yet confirmed is resolution through `agent({ agentType })` from inside a Workflow
-run**, the path every call site would use. Spike `wf_2bea58b9-38f` attempted it and raised
-`agent type 'rdm-mechanical' not found`, but **that result is invalid and has been retracted**:
-the run was dispatched from a session whose project root had no `.claude/agents/` directory at
-session start, with this file copied in mid-session. Per Claude Code's subagent docs the
-watcher "covers only directories that existed when the session started, so after creating a
-scope's first agent file in a new `agents` directory, restart to load it" — so the definition
-was never loaded, and the spike measured that, not the runtime.
+**Resolution through `agent({ agentType })` from inside a Workflow run is CONFIRMED**
+(2026-07-28, run `wf_40f5594e-208`): case B resolved and reported
+`toolNames: ["Bash", "StructuredOutput"]`, so both the registry lookup and the tool
+restriction are in force on the path the call sites actually use.
 
-The call sites were threaded on that basis anyway — the documented registry behaviour plus the
-measured `--agent` resolution — with the confirming dispatch still outstanding. **To close it:**
-dispatch `.claude/workflows/spike-agent-type.js` from a session whose project root contains this
-file **at session start**; once this branch lands, any ordinary session in this repo qualifies.
-Read case B's `toolNames` — a trimmed list is the confirmation. If it instead raises, the four
-local-only workflows fail loudly on first dispatch rather than degrading silently, so the failure
-will be unmissable rather than corrupting.
+An earlier spike appeared to show the opposite; that result was invalid — it was dispatched from
+a session whose project root had no `.claude/agents/` directory at session start, which the
+subagent docs name as a restart case, so the definition was never loaded.
+
+**Measured saving on the Workflow path: 8907 tokens per agent (−23 %)** — 38689 for the default
+agent against 29782 for this one, reproduced exactly across two independent case pairs. Note
+this is roughly **half** the 19894 (−42 %) the `claude -p` 2×2 measures; a Workflow subagent's
+default floor is already much leaner than a CLI session's, so the margin is smaller. Quote 8907
+for these call sites.
 
 See `docs/workflow-schemas.md` § "agentType / effort options spike" for the evidence tables and
 the disposition.
@@ -51,13 +49,13 @@ Two deliberate choices:
   `model: models.mechanical` / `_mechanicalModel`, and a per-call `model` overrides the
   definition. `scripts/verify-workflow-review.sh` §5b-mechanical asserts those pins, so a
   definition-level model would fight a gated invariant for no gain.
-- **`tools: Bash, StructuredOutput` is a hypothesis, not a verified minimum.** The mechanical
-  call sites all return through `agent(prompt, { schema })`
-  (`STAMP_ACK_SCHEMA`, `DIFF_SIGNALS_SCHEMA`, `ACK_SCHEMA`, `ESTIMATE_SCHEMA`), and it is not
-  yet confirmed which tool the runtime uses for that structured return. Narrowing this list
-  further without first proving the schema-return path still works would break every site that
-  depends on it. The spike's case B was meant to answer it and **could not** — case B threw on
-  registry lookup, so nothing ever ran under this tool list. It stays a hypothesis.
+- **`tools: Bash, StructuredOutput` is now a VERIFIED working set** — though still not a proven
+  *minimum*. The mechanical call sites all return through `agent(prompt, { schema })`
+  (`STAMP_ACK_SCHEMA`, `DIFF_SIGNALS_SCHEMA`, `ACK_SCHEMA`, `ESTIMATE_SCHEMA`), and the 2026-07-28
+  spike confirmed that path survives this list: case B ran `Bash` and returned a valid schema'd
+  object under exactly these two tools, as did both threaded agents in the live `backlog`
+  dispatch. Do not narrow the list further without re-proving the schema-return path — every
+  threaded site depends on it.
 
 **This file is not distributed.** `rdm-core/src/agent_config.rs` exposes `generate_skills` and
 `generate_workflows` only; there is no `.claude/agents/` emission surface. An unresolvable

@@ -196,7 +196,9 @@ The autonomous do/autopilot lane has migrated from prose-orchestrated skills to 
 holds one definition, `rdm-mechanical.md`. The **four local-only workflows** (`document.js`,
 `backlog.js`, `estimate.js`, `plan-review.js`) thread it at their mechanical call sites; the
 three distributed workflows and every judgment site must not. `scripts/verify-workflow-review.sh`
-§2c asserts both directions with planted-mutation self-tests. It is **not distributed**.
+§2c asserts both directions with planted-mutation self-tests. Resolution is confirmed on the
+Workflow path and the trim measured at **8907 tokens/agent (−23 %)** — roughly half the 19894
+the `claude -p` 2×2 predicts, so quote 8907 for these sites. It is **not distributed**.
 Evidence, measurements and disposition live in
 `docs/workflow-schemas.md` § "agentType / effort options spike" — that section is canonical; do
 not restate its tables here.

@@ -550,7 +550,7 @@
   },
   "mechanicalContextTrim": {
     "description": "Comparison point for the mechanical-agent context trim (agentType / effort), plus the measured size of the trim itself. preChangeMedianTokens below PINS the pre-change side of the eventual lane comparison so a later run cannot silently re-baseline it. No post-change LANE corpus exists (no agent() call site was edited), but the per-agent effect of agentType and of CLAUDE.md was measured directly -- see measuredTrim2x2.",
-    "status": "trim measured; agentType THREADED at the local-only mechanical sites; Workflow-path resolution not yet confirmed; no post-change lane corpus",
+    "status": "agentType CONFIRMED resolving from the Workflow runtime and THREADED at the local-only mechanical sites; Workflow-path trim MEASURED at 8907 tokens/agent (-23%), roughly half the 19894 the claude -p 2x2 predicted",
     "statusReason": "The phase is feasibility-gated on a spike (.claude/workflows/spike-agent-type.js). It HAS NOW BEEN RUN via the Workflow tool -- run wf_2bea58b9-38f (8 cases, 5 OK / 3 threw) plus follow-up probe wf_6cca94eb-de0 -- and its result is recorded under workflowPathSpike below. ONE HALF OF THAT RUN IS INVALID AND ITS APPARENT FINDING IS RETRACTED. (1) The agentType cases raised `agent type not found`, but for a documented DISPATCHING-SIDE setup reason, not a runtime limitation: the run was dispatched from a session whose project root had no .claude/agents/ directory at session start, and the definition was copied in mid-run. Claude Code's subagent docs state the watcher covers only directories that existed when the session started, so creating a scope's first agent file in a NEW agents directory requires a restart. Those cases measured that mistake. agentType Workflow-path resolution is therefore UNVERIFIED, exactly as it was before the run -- it is NOT a measured negative, and the earlier claim that the trim is 'undeliverable' was wrong and is withdrawn. (2) effort:'low' passed to agent() IS honored (see effortDecision), reversing the definition-side negative; that result is sound and unaffected. The context-floor figures in measuredTrim2x2 are likewise unaffected: they come from a controlled 2x2 over `claude -p` sessions, which resolve the .claude/agents/ registry successfully and record the SAME per-request usage that scripts/lib/token-report.mjs reads. agentType: 'rdm-mechanical' IS now threaded at the mechanical call sites of the four local-only workflows (19 records; see threadedSites), on the strength of the documented registry behaviour plus the measured --agent resolution, with the confirming Workflow dispatch still outstanding. No FRESH lane run has been dispatched since, so there is still no post-change LANE corpus and no floorByAgentClass delta to report -- the delta must be measured per measurementProtocolForTheFollowUp before any saving is claimed. See docs/workflow-schemas.md § 'agentType / effort options spike' for the full evidence tables and the disposition.",
     "workflowPathSpike": {
       "description": "The live Workflow-tool dispatch of .claude/workflows/spike-agent-type.js. This is the call path the actual call sites use, so where it disagrees with the `claude -p` measurement it governs.",
@@ -612,8 +612,59 @@
       "notThreaded": "The three DISTRIBUTED workflows (autopilot.js, dispatch-phase.js, review-refute-fix.js) -- blocked by the missing emission surface -- and every JUDGMENT site (find:*, refute:*, plan:*, implement:*, synthesize:draft, analyze:*, estimate:rate:*, plan-review's act:*).",
       "gate": "scripts/verify-workflow-review.sh §2c asserts both directions with planted-mutation self-tests, plus a completeness sweep that fails if a site is added or removed without updating the asserted list, or if any agentType other than 'rdm-mechanical' appears.",
       "residualRisk": "Workflow-path resolution is unconfirmed (see workflowPathSpike). If it does not resolve, these four workflows RAISE on first dispatch rather than degrading silently -- a loud failure, not a corrupting one.",
-      "expectedSavingPerAgent": 19894,
-      "expectedSavingBasis": "measuredTrim2x2, via the CLI --agent path. NOT yet observed on the lane; do not quote it as a realized saving."
+      "expectedSavingPerAgent": 8907,
+      "expectedSavingBasis": "workflowPathTrimMeasured.controlledPair -- MEASURED on the Workflow path these sites use, and corroborated by a live backlog dispatch (laneDelta, ~19-20% per class at n=1). The earlier 19894 from measuredTrim2x2 measured the CLI --agent path and overstates these sites by 2.23x."
+    },
+    "workflowPathTrimMeasured": {
+      "description": "The Workflow-path measurement of the agentType trim, taken after a session restart rooted in this worktree so .claude/agents/ was present at session start. THIS IS THE GOVERNING FIGURE for the threaded call sites: it measures the same call path they use. measuredTrim2x2 below measures the CLI --agent path and predicts roughly TWICE this saving -- see predictionError.",
+      "basis": "measured",
+      "runId": "wf_40f5594e-208",
+      "dispatchedOn": "2026-07-28",
+      "resolutionConfirmed": true,
+      "resolutionEvidence": "Spike case B resolved and reported toolNames ['Bash','StructuredOutput'] against the control's nine, so the definition loaded AND its tool restriction is enforced. Case C (unknown id) now enumerates 'rdm-mechanical' in its Available-agents list. The live backlog lane's agent sidecars record {'agentType':'rdm-mechanical','model':'haiku'} -- which also confirms a per-call model pin still overrides the definition, the assumption behind omitting model: from the agent file.",
+      "controlledPair": {
+        "description": "Spike cases A and B: same session, identical prompt, dispatched back-to-back. firstRequestTokens = input + cache_creation + cache_read on the first assistant record.",
+        "defaultAgent": 38689,
+        "rdmMechanical": 29782,
+        "trimTokens": 8907,
+        "trimPercent": 23.0,
+        "replication": "Cases E and F repeat the pair with effort:'low' added to both sides and reproduce it EXACTLY: 38689 -> 29782, the same 8907. All five default-agent cases (A,D,E,G,H) measured exactly 38689; both agentType cases (B,F) exactly 29782.",
+        "n": 2
+      },
+      "laneDelta": {
+        "description": "The first post-change lane dispatch: `backlog` (propose-only, verified zero-mutation -- rdm status and git worktree both clean afterwards). Compared against the PINNED preChangeMedianTokens for the same agent classes, which is the only legal basis.",
+        "runId": "wf_b98b01c5-786",
+        "sites": {
+          "model:mechanical": {
+            "postChange": 29524,
+            "preChangeMedian": 36877,
+            "preChangeN": 16,
+            "delta": 7353,
+            "percent": 19.9,
+            "n": 1,
+            "model": "claude-opus-5"
+          },
+          "fetch:report": {
+            "postChange": 24418,
+            "preChangeMedian": 30098,
+            "preChangeN": 112,
+            "delta": 5680,
+            "percent": 18.9,
+            "n": 1,
+            "model": "claude-haiku-4-5-20251001"
+          }
+        },
+        "caveats": "n=1 per class -- DIRECTIONAL, not a re-baseline. Do NOT overwrite preChangeMedianTokens with these. Not perfectly like-for-like either: model:mechanical runs unpinned on opus (it is the bootstrap that RESOLVES the tier), fetch:report on haiku, while the pinned medians aggregate mixed models over different prompts. Both classes nonetheless drop ~19-20%, consistent with the controlled 23%."
+      },
+      "predictionError": {
+        "predictedTokens": 19894,
+        "predictedPercent": 42.3,
+        "measuredTokens": 8907,
+        "measuredPercent": 23.0,
+        "overstatementFactor": 2.23,
+        "explanation": "Both ends of the comparison compress on the Workflow path. A Workflow subagent's DEFAULT floor is much cheaper than a CLI session's (38689 vs 47084) -- fewer tools, no skill listing, leaner harness -- while the TRIMMED agent is slightly more expensive (29782 vs 27190). The margin between them therefore roughly halves. The claude -p 2x2 remains internally valid; it simply measures a different call path than the call sites use.",
+        "lesson": "This is precisely what AC5 exists to catch: the per-agent figure was recorded as a prediction and labelled as such everywhere, and measuring it on the real path cut it by more than half. Never quote measuredTrim2x2's 19894 as the saving these call sites deliver."
+      }
     },
     "measuredTrim2x2": {
       "description": "Controlled 2x2, run live in this worktree on claude-opus-5, one identical trivial prompt per cell. Factor A: session default agent vs `claude --agent rdm-mechanical` (this repo's .claude/agents/ definition). Factor B: project CLAUDE.md present vs temporarily moved aside and restored. The user-global ~/.claude/CLAUDE.md is present in all four cells and cancels out of every difference.",

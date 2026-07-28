@@ -384,29 +384,24 @@ effort options spike"; the operative outcomes are:
   The two factors are independent and additive to within 11 tokens. A per-call `model`
   overrides the definition, so the mechanical-tier pins § Maintenance routes depends on survive
   an `agentType`.
-- **…but Workflow-path resolution is still UNVERIFIED — the spike's `agentType` cases were
-  invalid.** The spike was dispatched (`wf_2bea58b9-38f`, plus probe `wf_6cca94eb-de0`) and its
-  `agentType` cases raised `agent type 'rdm-mechanical' not found`. **That was first written up
-  as a measured negative; it is retracted.** The run went out from a session rooted at the main
-  checkout, whose project root had no `.claude/agents/` directory at session start; the
-  definition was copied in mid-session. Claude Code's subagent docs name this exact case as
-  needing a restart — the watcher "covers only directories that existed when the session
-  started, so after creating a scope's first agent file in a new `agents` directory, restart to
-  load it." The definition was never loaded, and the retry probe re-tested that same unwatched
-  directory rather than proving a non-refreshing registry. The docs also note project subagents
-  are discovered by walking up from the CWD, so the worktree's own committed `.claude/agents/`
-  was never in scope for a session rooted elsewhere.
+- **Workflow-path resolution: CONFIRMED, and the trim is HALF what the 2×2 predicted.** The
+  spike's first `agentType` cases were invalid — dispatched from a session whose project root
+  had no `.claude/agents/` directory at session start, which Claude Code's docs name as a
+  restart case. Re-run on 2026-07-28 from a session rooted in this worktree (`wf_40f5594e-208`),
+  case B resolved and reported `toolNames: ["Bash", "StructuredOutput"]` against the control's
+  nine, and case C's registry listing now enumerates `rdm-mechanical`.
 
-  So the gating sub-question is **open, exactly as it was before the run** — not answered
-  negatively. Everything else points the other way: the definition resolves through `--agent`,
-  the trim is measured at −42 %, and the registry is documented as consulted and watched.
-  Confirming it costs one dispatch from a session whose project root holds the definition **at
-  session start**, which any ordinary session in this repo satisfies once this branch lands.
+  The controlled A/B pair — same session, identical prompt, back to back — measures
+  **38689 → 29782, a saving of 8907 tokens (−23.0 %)**, reproduced exactly by the E/F pair. A
+  live `backlog` dispatch (propose-only, verified zero-mutation) agrees against the pinned
+  medians: `model:mechanical` 36877 → 29524 (−19.9 %) and `fetch:report` 30098 → 24418
+  (−18.9 %), both n=1 and therefore directional rather than a re-baseline.
 
-  **`agentType` is threaded at the local-only mechanical sites on that basis**, ahead of the
-  confirming dispatch — see the enumerated table below for exactly which. The distribution
-  blocker is unaffected and still bars the three distributed workflows on its own separate
-  grounds: a downstream tree receives no `.claude/agents/` at all.
+  **The 19894-token (−42 %) figure from the `claude -p` 2×2 overstates these call sites by
+  2.23×** and must not be quoted for them. Both ends compress on the Workflow path: its default
+  floor is far cheaper than a CLI session's (38689 vs 47084) while its trimmed agent is slightly
+  dearer (29782 vs 27190). The 2×2 measures a different call path, not a wrong one.
+
 - **`effort` — still not threaded, but the reason changed from "inert" to "out of scope".** The
   verification channel was identified (each `assistant` transcript record carries a top-level
   `effort` field) and its pre-change control fixed (156 384 records across the corpus: `"high"`
