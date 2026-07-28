@@ -383,16 +383,45 @@ effort options spike"; the operative outcomes are:
 
   The two factors are independent and additive to within 11 tokens. A per-call `model`
   overrides the definition, so the mechanical-tier pins § Maintenance routes depends on survive
-  an `agentType`. **One sub-question stays open, and it is the one the phase's AC gates on:**
-  resolution from inside a *Workflow* run specifically (as opposed to the CLI session-agent
-  path) still needs one `Workflow` dispatch of `spike-agent-type.js`.
-- **`effort` — dropped, and now guarded.** The verification channel was identified (each
-  `assistant` transcript record carries a top-level `effort` field) and its pre-change control
-  fixed (156 384 records across the corpus: `"high"` or absent, `"low"` **never**). A live test
-  then closed it negatively: an agent *declared* with `effort: "low"` resolved and ran, and its
-  first assistant record still says `effort: "high"` — accepted, not honored. Per the phase
-  rule the key does not ship; `scripts/verify-workflow-review.sh` §2b fails if any workflow
-  script passes `effort:`.
+  an `agentType`.
+- **…but `agentType` is NOT reachable from the Workflow runtime (measured).** The spike has now
+  been dispatched (`wf_2bea58b9-38f`, plus probe `wf_6cca94eb-de0`), and it closed the phase's
+  gating sub-question **negatively**. `agent({ agentType: 'rdm-mechanical' })` **raised**
+  `agent type 'rdm-mechanical' not found. Available agents: claude, claude-code-guide, Explore,
+  general-purpose, Plan, statusline-setup` — a list holding only built-in agent types, with no
+  project-local definition of any kind. The definition was copied into the dispatching
+  session's project root beforehand and still did not resolve; a retry minutes later threw
+  identically, so the registry is a **session-start snapshot**.
+
+  **This is the finding that bounds the whole phase, and it is wider than the distribution
+  blocker below.** An `agentType` literal raises on first dispatch from any session whose
+  start-of-session registry lacks the definition — which includes every session rooted outside
+  this worktree. It therefore applies to the four **local-only** workflows exactly as it does
+  to the three distributed ones. Since §2b greps only
+  `rdm-core/src/templates/workflows/*.js`, threading `document.js` / `backlog.js` /
+  `plan-review.js` / `estimate.js` would have passed every gate in this repo and still broken
+  them. **No call site in either group was threaded**, and the ~19 k trim is measured but
+  currently undeliverable.
+- **`effort` — still not threaded, but the reason changed from "inert" to "out of scope".** The
+  verification channel was identified (each `assistant` transcript record carries a top-level
+  `effort` field) and its pre-change control fixed (156 384 records across the corpus: `"high"`
+  or absent, `"low"` **never**). The two routes were then measured separately and they
+  **disagree**:
+
+  | Route | Result |
+  |---|---|
+  | declared in the agent *definition* frontmatter | ran at `"high"` — accepted, not honored |
+  | **`agent(prompt, { effort: 'low' })` from a Workflow run** | **recorded `effort: "low"` — HONORED** |
+
+  Spike case E is the first `"low"` record in the entire corpus, and the four sibling cases in
+  the same run all recorded `"high"`, so it is conclusive by the control's own terms. Case H
+  adds that an *invalid* effort value is accepted and silently degrades to `"high"` rather than
+  throwing — the opposite of `agentType`'s failure mode. `scripts/verify-workflow-review.sh`
+  §2b still fails if any workflow script passes `effort:`, but now because the phase body
+  forbids threading it (a rule written on the strength of the definition-side negative this run
+  overturned), not because the option does nothing. That reversal is handed to
+  `finish-agent-type-effort-spike-and-thread-mechanical-sites` scope item 5, which is now live
+  and unblocked — its remaining risk is fidelity, not mechanism.
 - **`CLAUDE.md` loading — answered: it loads, in full, and cannot be stopped per agent type.**
   The same 2×2 measures it at **19320 tokens** inside the custom `agentType` agent, versus
   19309 inside the default one — an 11-token difference, i.e. a trimmed system prompt and a
@@ -402,13 +431,44 @@ effort options spike"; the operative outcomes are:
   it (`memory:` scopes `~/.claude/agent-memory/` auto-loading and *adds* context); the only
   switches are process-global. Per the phase body this is recorded and dropped — **no
   `CLAUDE.md` restructuring was attempted or is implied.**
-- **The distribution assumption was wrong, and it inverts the risk.** An unresolvable
-  `agentType` is a *raised* error in the runtime, not the silent `null` an unknown `model` id
-  produces. Since `rdm agent-config` emits no `.claude/agents/` definitions, threading
-  `agentType` into the three distributed workflow templates would **hard-break** every
-  downstream lane on first dispatch rather than degrade it. §2b of the review harness now gates
-  that too. This phase therefore does not introduce a distributed dangling reference — it
-  declines to.
+- **The distribution assumption was wrong, and it inverts the risk — now OBSERVED.** An
+  unresolvable `agentType` is a *raised* error in the runtime, not the silent `null` an unknown
+  `model` id produces. This was previously inferred from a runtime string table; the spike
+  observed it four times (cases B, C, F and the retry probe), and the script distinguishes a
+  throw from a null return explicitly, so the shape is unambiguous. Since `rdm agent-config`
+  emits no `.claude/agents/` definitions, threading `agentType` into the three distributed
+  workflow templates would **hard-break** every downstream lane on first dispatch rather than
+  degrade it. §2b of the review harness gates that. This phase therefore does not introduce a
+  distributed dangling reference — it declines to.
+
+### The threadable surface, enumerated (so the next attempt need not re-derive it)
+
+The phase expected to thread ~16 mechanical sites across the four local-only workflows, and
+that enumeration was completed before the spike returned. It is recorded here because it stays
+valid: it is the exact worklist for whichever option becomes threadable first (`effort:` now,
+`agentType:` if it ever resolves). Judgment sites are excluded by § The classification rule and
+must stay excluded.
+
+| File | Threadable mechanical sites | Maintenance route |
+|---|---|---|
+| `document.js` | `model:mechanical`, `fetch:roadmap-meta`, `gather:<stem>`, `write:draft` | unprojected driver (all below `document-core:end`) — edit in place |
+| `backlog.js` | `model:mechanical`, `fetch:report` | unprojected driver — edit in place |
+| `estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver (below `estimate-core:end`) — edit in place. **Verified NOT stamped**: the generator projects only the `estimate-core` block, so these do not propagate into the distributed `autopilot.js`, which carries its own duplicate driver copies of the same labels |
+| `plan-review.js` | `fetch:roadmap`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | **byte-copied** — inside the `plan-review-driver` block; edit `lib/plan-review.mjs` first, then copy verbatim. `verify-workflow-review.sh` §5b-drift gates the pair |
+| `plan-review.js` | `model:mechanical` | unprojected driver (below `plan-review-driver:end`) — edit in place |
+
+15 sites, three maintenance routes. **Off-limits regardless:** `autopilot.js`,
+`dispatch-phase.js`, `review-refute-fix.js` (byte-identical to the distributed templates, gated
+by `verify-agent-config-distribution.sh`), anything stamped from `lib/review.mjs` or
+`lib/estimate.mjs`, and every judgment site — `find:*`, `refute:*`, `plan:*`, `implement:*`,
+`synthesize:draft`, `analyze:*`, `estimate:rate:*`, and plan-review's `act:*` (including
+`act:round-note:*`, which the inventory classes as a mechanical mid-run write but the phase body
+excludes).
+
+One per-site check worth keeping: **`write:draft` is threading-compatible.** Its prompt issues
+only `mkdir -p` and a `cat` heredoc via Bash and returns a `WRITE_ACK` schema object, so it
+needs nothing beyond `rdm-mechanical`'s `tools: Bash, StructuredOutput`. It does not use the
+`Write` tool despite its name.
 
 **Nothing in this document's counts changed.** No `agent()` call site was added, removed,
 relabelled, or re-tiered, so the § Raw inventory total, the § Classification table, and the
@@ -417,6 +477,17 @@ relabelled, or re-tiered, so the § Raw inventory total, the § Classification t
 The comparison point for the eventual change is pinned in `docs/token-baseline.json` under
 `mechanicalContextTrim`, quoting phase 4's per-class pre-change medians verbatim so a later run
 cannot silently re-baseline; the measured per-agent figures above are recorded alongside them
-under `mechanicalContextTrim.measuredTrim2x2` and `.claudeMdFinding`. The remaining work is
-carried by task `finish-agent-type-effort-spike-and-thread-mechanical-sites`, and the
-distribution close-out by `ship-mechanical-agent-type-downstream`.
+under `mechanicalContextTrim.measuredTrim2x2` and `.claudeMdFinding`, and the Workflow-path
+dispatch under `.workflowPathSpike`. The remaining work is carried by task
+`finish-agent-type-effort-spike-and-thread-mechanical-sites`, and the distribution close-out by
+`ship-mechanical-agent-type-downstream`.
+
+**What the spike changed about that remaining work.** It was expected to unblock threading; it
+did the opposite for one option and the opposite-of-the-opposite for the other. `agentType` went
+from "one dispatch away" to blocked on a newly-discovered prerequisite — making a project-local
+definition resolvable from a Workflow run at all — which no task named before, and which is
+strictly upstream of `ship-mechanical-agent-type-downstream`'s emission surface (emitting a
+definition downstream is worthless if the runtime will not read it). `effort` went the other
+way, from "inert, do not ship" to "honored, and blocked only on a scope decision plus a
+fidelity check". The follow-up task carries both halves and no longer instructs anyone to redo
+the spike.

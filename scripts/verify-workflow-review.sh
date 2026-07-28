@@ -368,24 +368,33 @@ pass "no forbidden globals present; detector catches a planted one"
 
 # --- 2b. AGENT-CONTEXT-TRIM GUARDS -------------------------------------------
 # Two guards recording decisions from the agentType/effort options spike
-# (docs/workflow-schemas.md § "agentType / effort options spike"). That spike's
-# questions ARE answered now — a controlled 2x2 measured agentType saving
-# 19894 tokens/agent, and CLAUDE.md costing 19320 inside the custom agent just
-# as it does inside the default one — but no call site was edited, so both
-# guards stay live: (i) effort was measured NOT honored, and (ii) the
-# distributed `.claude/agents/` emission surface still does not exist.
+# (docs/workflow-schemas.md § "agentType / effort options spike"). The spike has
+# now been RUN via the Workflow tool (wf_2bea58b9-38f), and it moved both guards'
+# rationales without moving either verdict:
+#   (i)  effort IS honored at the call site (reversing the earlier
+#        definition-side negative), so this guard is now a SCOPE boundary, not a
+#        statement that the option is inert.
+#   (ii) agentType did not resolve from inside a Workflow run AT ALL, and an
+#        unresolvable one RAISES (now observed, not inferred).
+# No call site was edited, so both guards stay live.
 say "2b. Agent-context-trim guards (agentType / effort options spike)"
 
-# (i) No call site may pass `effort:`. The verification channel is the top-level
-#     `effort` field on each `assistant` transcript record. An agent DECLARED
-#     with effort:"low" resolved, ran normally, and still recorded
-#     effort:"high" — accepted, not honored, i.e. the `model: undefined` inert
-#     case in another costume. Per the phase rule, an option a harness can only
-#     prove is spelled correctly does not ship. `spike-agent-type.js` is the one
-#     file allowed to contain it — probing the option is its entire purpose.
+# (i) No call site may pass `effort:`. READ THIS BEFORE "FIXING" IT: the option
+#     is NOT inert. The verification channel is the top-level `effort` field on
+#     each `assistant` transcript record, and the two routes disagree:
+#       - DECLARED in an agent definition -> ran at "high" (not honored)
+#       - agent(prompt, {effort:'low'}) from a Workflow run -> recorded "low"
+#         (spike case E: the first "low" record in a 156384-record corpus)
+#     So this guard encodes the phase body's scope rule ("do not thread effort:
+#     anywhere"), written before that reversal was known — not a claim that the
+#     key does nothing. Lifting it is owned by
+#     `finish-agent-type-effort-spike-and-thread-mechanical-sites` scope item 5,
+#     which must also establish that low effort does not degrade mechanical
+#     transcription fidelity. `spike-agent-type.js` is the one file allowed to
+#     contain it — probing the option is its entire purpose.
 if grep -nE '(^|[^A-Za-z-])effort:' "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null |
     grep -v '/spike-agent-type\.js:'; then
-    fail "a workflow script passes effort: — a declared effort:'low' was measured NOT honored (the request still ran at high), so it must not ship (see docs/workflow-schemas.md § agentType / effort options spike)"
+    fail "a workflow script passes effort: — threading it is out of scope until finish-agent-type-effort-spike-and-thread-mechanical-sites lands (NB: effort:'low' IS honored at the call site; this guard is a scope boundary, not an inertness claim — see docs/workflow-schemas.md § agentType / effort options spike)"
 fi
 printf 'await agent(P, { label: "x", effort: %s })\n' "'low'" >"$SCRATCH/planted-effort.js"
 if ! grep -nE '(^|[^A-Za-z-])effort:' "$SCRATCH/planted-effort.js" >/dev/null 2>&1; then
@@ -397,9 +406,22 @@ pass "no workflow call site passes effort:; detector catches a planted one"
 #      emits skills and workflows only — there is no `.claude/agents/` emission
 #      surface — and an unresolvable agentType is a RAISED error in the runtime
 #      (`agent({agentType}): agent type '...' not found`), not the silent null
-#      an unknown `model` id produces. Threading one into a shipped template
-#      would hard-fail every downstream lane on first dispatch. Lift this guard
-#      only together with `ship-mechanical-agent-type-downstream`.
+#      an unknown `model` id produces. That raise is now OBSERVED, not inferred:
+#      spike cases B, C and F plus a retry probe all threw it. Threading one into
+#      a shipped template would hard-fail every downstream lane on first
+#      dispatch. Lift this guard only together with
+#      `ship-mechanical-agent-type-downstream`.
+#
+#      SCOPE CAVEAT, deliberate and load-bearing: this greps only "$TEMPLATES",
+#      so an agentType in a LOCAL-ONLY workflow (document.js, backlog.js,
+#      plan-review.js, estimate.js) passes it. That is NOT a licence to thread
+#      those four. The spike showed agentType does not resolve from a Workflow
+#      run at all — the registry it sees is a session-start snapshot of the
+#      SESSION's project root — so threading the local four would break them on
+#      first dispatch from any ordinary session while passing every gate here.
+#      Widening this guard to $WF_DIR was left to the follow-up task rather than
+#      done here, because that task may instead make the registry resolvable and
+#      need the local sites threadable.
 if grep -nE 'agentType' "$TEMPLATES"/workflows/*.js 2>/dev/null; then
     fail "a distributed workflow template references agentType, but rdm agent-config emits no .claude/agents/ definitions — an unresolvable agentType RAISES in the runtime and would break every downstream lane"
 fi

@@ -35,6 +35,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   counterweight to `unit-of-work`: it flags a plan that specifies an
   implementation decision better left to whoever carries it out, or whose
   level of detail has grown past the point where more of it reduces risk.
+- A new local-only agent registry, `.claude/agents/`, holding one definition:
+  `rdm-mechanical.md`, a trimmed transcribe-one-command agent for the autonomous
+  lane's mechanical `agent()` call sites. It is **not referenced by any workflow
+  and is not distributed** — `rdm agent-config` emits skills and workflows only.
+  It is the apparatus of a measured feasibility result rather than a live
+  optimization: the definition saves a measured 19,894 tokens per agent (−42%)
+  through the CLI's `--agent` path, but does **not** resolve through
+  `agent({ agentType })` from inside a Workflow run, so no call site could adopt
+  it. Companion probe: `.claude/workflows/spike-agent-type.js`. Full evidence —
+  including the measured 19,320-token per-agent cost of loading `CLAUDE.md` into
+  any subagent, 60% above the previously recorded `chars/4` estimate — is in
+  `docs/workflow-schemas.md` § "agentType / effort options spike" and
+  `docs/token-baseline.json` → `mechanicalContextTrim`.
+- Two new guards in `scripts/verify-workflow-review.sh` §2b, each with a
+  planted-mutation self-test: no workflow script may pass `effort:`, and no
+  *distributed* workflow template may reference `agentType` (an unresolvable one
+  raises rather than degrading silently, so it would hard-break every downstream
+  lane on first dispatch).
+- `scripts/verify-token-report.sh` gained coverage for `percentile()`'s linear
+  interpolation branch, which every existing fixture short-circuited by giving
+  each agent class only one record.
 
 ### Changed
 

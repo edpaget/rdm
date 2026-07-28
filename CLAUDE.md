@@ -195,25 +195,37 @@ The autonomous do/autopilot lane has migrated from prose-orchestrated skills to 
 `.claude/agents/` is the custom-agent registry the Workflow runtime resolves `agent()`'s
 `opts.agentType` against, and it now holds one definition: `rdm-mechanical.md`, a trimmed
 transcribe-one-command agent intended for the irreducible mechanical `agent()` call sites named
-in `docs/mechanical-agent-inventory.md` § Irreducible. **Nothing references it yet**, and that
-is a deliberate hold, not an oversight: the definition resolves and a controlled 2×2 measures it
-saving **19894 tokens (−42 %)** per agent, but resolution from inside a *Workflow* run
-specifically is still unverified and the distributed half is blocked. Full evidence tables and
-disposition: `docs/workflow-schemas.md` § "agentType / effort options spike". Its companion
-probe, `.claude/workflows/spike-agent-type.js`, is landed but unrun — dispatching it is what
-closes the last open question.
+in `docs/mechanical-agent-inventory.md` § Irreducible. **Nothing references it, and nothing
+currently can.** A controlled 2×2 measures the definition saving **19894 tokens (−42 %)** per
+agent through the CLI's `--agent` path, but its companion probe
+`.claude/workflows/spike-agent-type.js` has now been dispatched (`wf_2bea58b9-38f`) and
+`agent({ agentType: 'rdm-mechanical' })` **raised** `agent type not found` from inside a
+Workflow run: the registry a Workflow run resolves is a session-start snapshot of the
+*session's* project root, and it contained no project-local definition at all. The trim is
+measured but undeliverable — at the four local-only workflows as much as the three distributed
+ones. Full evidence tables and disposition: `docs/workflow-schemas.md` § "agentType / effort
+options spike".
 
-Two rules follow from it, both gated by `scripts/verify-workflow-review.sh` §2b with
-planted-mutation self-tests:
+Two rules follow, both gated by `scripts/verify-workflow-review.sh` §2b with planted-mutation
+self-tests:
 
-- **No workflow script may pass `effort:`.** An agent declared with `effort: "low"` still ran at
-  `"high"` — accepted, not honored — so the key does not ship.
+- **No workflow script may pass `effort:`** — but the reason is *scope*, not mechanism. Declaring
+  `effort: "low"` in an agent *definition* is accepted and not honored; passing
+  `effort: 'low'` to `agent()` from a Workflow run **is honored** (spike case E produced the
+  first `effort:"low"` transcript record in a 156 384-record corpus, and an invalid value
+  silently degrades to `high` rather than throwing). Threading it is handed to
+  `finish-agent-type-effort-spike-and-thread-mechanical-sites`; until that lands, the guard
+  holds.
 - **No *distributed* workflow template (`rdm-core/src/templates/workflows/*.js`) may reference
   `agentType`.** `rdm agent-config` emits skills and workflows only — there is no
   `.claude/agents/` emission surface — and an unresolvable `agentType` *raises* in the runtime
-  rather than degrading silently the way an unknown `model` id does, so a reference in a shipped
-  template would hard-break every downstream lane on first dispatch. Lift this only together
-  with the follow-up task `ship-mechanical-agent-type-downstream`.
+  (observed 4× in the spike) rather than degrading silently the way an unknown `model` id does,
+  so a reference in a shipped template would hard-break every downstream lane on first dispatch.
+  Lift this only together with the follow-up task `ship-mechanical-agent-type-downstream`.
+  **Caveat this guard's scope:** it greps only the distributed templates, so it would *not*
+  catch an `agentType` threaded into `document.js` / `backlog.js` / `plan-review.js` /
+  `estimate.js` — which the spike shows would break them just the same. Do not read the guard's
+  narrow scope as a licence to thread the local four.
 
 One further finding worth knowing when editing this file: **the project `CLAUDE.md` is loaded
 into every subagent, including a custom-`agentType` one, and costs a measured 19320 tokens per
