@@ -550,8 +550,8 @@
   },
   "mechanicalContextTrim": {
     "description": "Comparison point for the mechanical-agent context trim (agentType / effort), plus the measured size of the trim itself. preChangeMedianTokens below PINS the pre-change side of the eventual lane comparison so a later run cannot silently re-baseline it. No post-change LANE corpus exists (no agent() call site was edited), but the per-agent effect of agentType and of CLAUDE.md was measured directly -- see measuredTrim2x2.",
-    "status": "trim-measured-directly; agentType Workflow-path resolution UNVERIFIED (spike invalid, needs re-run); no post-change lane corpus",
-    "statusReason": "The phase is feasibility-gated on a spike (.claude/workflows/spike-agent-type.js). It HAS NOW BEEN RUN via the Workflow tool -- run wf_2bea58b9-38f (8 cases, 5 OK / 3 threw) plus follow-up probe wf_6cca94eb-de0 -- and its result is recorded under workflowPathSpike below. ONE HALF OF THAT RUN IS INVALID AND ITS APPARENT FINDING IS RETRACTED. (1) The agentType cases raised `agent type not found`, but for a documented DISPATCHING-SIDE setup reason, not a runtime limitation: the run was dispatched from a session whose project root had no .claude/agents/ directory at session start, and the definition was copied in mid-run. Claude Code's subagent docs state the watcher covers only directories that existed when the session started, so creating a scope's first agent file in a NEW agents directory requires a restart. Those cases measured that mistake. agentType Workflow-path resolution is therefore UNVERIFIED, exactly as it was before the run -- it is NOT a measured negative, and the earlier claim that the trim is 'undeliverable' was wrong and is withdrawn. (2) effort:'low' passed to agent() IS honored (see effortDecision), reversing the definition-side negative; that result is sound and unaffected. The context-floor figures in measuredTrim2x2 are likewise unaffected: they come from a controlled 2x2 over `claude -p` sessions, which resolve the .claude/agents/ registry successfully and record the SAME per-request usage that scripts/lib/token-report.mjs reads. No agent() call site was edited, so there is still no post-change LANE corpus and no floorByAgentClass delta to report. See docs/workflow-schemas.md § 'agentType / effort options spike' for the full evidence tables and the disposition.",
+    "status": "trim measured; agentType THREADED at the local-only mechanical sites; Workflow-path resolution not yet confirmed; no post-change lane corpus",
+    "statusReason": "The phase is feasibility-gated on a spike (.claude/workflows/spike-agent-type.js). It HAS NOW BEEN RUN via the Workflow tool -- run wf_2bea58b9-38f (8 cases, 5 OK / 3 threw) plus follow-up probe wf_6cca94eb-de0 -- and its result is recorded under workflowPathSpike below. ONE HALF OF THAT RUN IS INVALID AND ITS APPARENT FINDING IS RETRACTED. (1) The agentType cases raised `agent type not found`, but for a documented DISPATCHING-SIDE setup reason, not a runtime limitation: the run was dispatched from a session whose project root had no .claude/agents/ directory at session start, and the definition was copied in mid-run. Claude Code's subagent docs state the watcher covers only directories that existed when the session started, so creating a scope's first agent file in a NEW agents directory requires a restart. Those cases measured that mistake. agentType Workflow-path resolution is therefore UNVERIFIED, exactly as it was before the run -- it is NOT a measured negative, and the earlier claim that the trim is 'undeliverable' was wrong and is withdrawn. (2) effort:'low' passed to agent() IS honored (see effortDecision), reversing the definition-side negative; that result is sound and unaffected. The context-floor figures in measuredTrim2x2 are likewise unaffected: they come from a controlled 2x2 over `claude -p` sessions, which resolve the .claude/agents/ registry successfully and record the SAME per-request usage that scripts/lib/token-report.mjs reads. agentType: 'rdm-mechanical' IS now threaded at the mechanical call sites of the four local-only workflows (19 records; see threadedSites), on the strength of the documented registry behaviour plus the measured --agent resolution, with the confirming Workflow dispatch still outstanding. No FRESH lane run has been dispatched since, so there is still no post-change LANE corpus and no floorByAgentClass delta to report -- the delta must be measured per measurementProtocolForTheFollowUp before any saving is claimed. See docs/workflow-schemas.md § 'agentType / effort options spike' for the full evidence tables and the disposition.",
     "workflowPathSpike": {
       "description": "The live Workflow-tool dispatch of .claude/workflows/spike-agent-type.js. This is the call path the actual call sites use, so where it disagrees with the `claude -p` measurement it governs.",
       "basis": "measured",
@@ -573,6 +573,47 @@
       "firstRequestTokensNote": "Identical across all 5 OK cases, which is expected: every one ran as the DEFAULT agent because no agentType ever resolved. The run therefore yields NO Workflow-path floor measurement, and measuredTrim2x2 remains the only floor evidence. Not comparable to the 2x2 cells -- different prompt, different session.",
       "structuredReturnUnderRestrictedToolsTested": false,
       "structuredReturnNote": "The follow-up task's scope item 3 (does agent(prompt,{schema}) still work under `tools: Bash, StructuredOutput`, and is agentType honored through parallel()) could NOT be exercised, because nothing resolved."
+    },
+    "threadedSites": {
+      "description": "Mechanical agent() call sites now passing agentType: 'rdm-mechanical'. Written as a plain literal at each site, never a module-level constant, because the source text is byte-copied across files with different scopes.",
+      "totalRecords": 19,
+      "uniqueCallSites": 15,
+      "byFile": {
+        "document.js": [
+          "model:mechanical",
+          "fetch:roadmap-meta",
+          "gather:<stem>",
+          "write:draft"
+        ],
+        "backlog.js": [
+          "model:mechanical",
+          "fetch:report"
+        ],
+        "estimate.js": [
+          "model:mechanical",
+          "estimate:list",
+          "estimate:write:<stem>",
+          "estimate:tier:<stem>"
+        ],
+        "plan-review.js": [
+          "model:mechanical",
+          "fetch:roadmap",
+          "fetch:<kind>",
+          "fetch:wontfix",
+          "gate:clear-tag:<kind>:<ident>"
+        ],
+        "lib/plan-review.mjs": [
+          "fetch:roadmap",
+          "fetch:<kind>",
+          "fetch:wontfix",
+          "gate:clear-tag:<kind>:<ident>"
+        ]
+      },
+      "notThreaded": "The three DISTRIBUTED workflows (autopilot.js, dispatch-phase.js, review-refute-fix.js) -- blocked by the missing emission surface -- and every JUDGMENT site (find:*, refute:*, plan:*, implement:*, synthesize:draft, analyze:*, estimate:rate:*, plan-review's act:*).",
+      "gate": "scripts/verify-workflow-review.sh §2c asserts both directions with planted-mutation self-tests, plus a completeness sweep that fails if a site is added or removed without updating the asserted list, or if any agentType other than 'rdm-mechanical' appears.",
+      "residualRisk": "Workflow-path resolution is unconfirmed (see workflowPathSpike). If it does not resolve, these four workflows RAISE on first dispatch rather than degrading silently -- a loud failure, not a corrupting one.",
+      "expectedSavingPerAgent": 19894,
+      "expectedSavingBasis": "measuredTrim2x2, via the CLI --agent path. NOT yet observed on the lane; do not quote it as a realized saving."
     },
     "measuredTrim2x2": {
       "description": "Controlled 2x2, run live in this worktree on claude-opus-5, one identical trivial prompt per cell. Factor A: session default agent vs `claude --agent rdm-mechanical` (this repo's .claude/agents/ definition). Factor B: project CLAUDE.md present vs temporarily moved aside and restored. The user-global ~/.claude/CLAUDE.md is present in all four cells and cancels out of every difference.",

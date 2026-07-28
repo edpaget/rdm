@@ -41,21 +41,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   probe `.claude/workflows/spike-agent-type.js` — **no lane workflow adopts it,
   and it is not distributed** (`rdm agent-config` emits skills and workflows
   only).
-  It is the apparatus of a measured feasibility result rather than a live
-  optimization: the definition saves a measured 19,894 tokens per agent (−42%)
-  through the CLI's `--agent` path, but whether it resolves through
-  `agent({ agentType })` from inside a Workflow run is not yet verified, so no
-  call site adopts it. Companion probe:
-  `.claude/workflows/spike-agent-type.js`. Full evidence — including the measured
+  The definition saves a measured 19,894 tokens per agent (−42%), and the
+  mechanical call sites of the four local-only workflows (`document.js`,
+  `backlog.js`, `estimate.js`, `plan-review.js`) now resolve against it. The
+  three distributed workflows deliberately do not, since `rdm agent-config`
+  emits no agent definitions. Full evidence — including the measured
   19,320-token per-agent cost of loading `CLAUDE.md` into any subagent, 60% above
   the previously recorded `chars/4` estimate — is in `docs/workflow-schemas.md`
   § "agentType / effort options spike" and `docs/token-baseline.json` →
   `mechanicalContextTrim`.
-- Two new guards in `scripts/verify-workflow-review.sh` §2b, each with a
-  planted-mutation self-test: no workflow script may pass `effort:`, and no
+- New guards in `scripts/verify-workflow-review.sh`, each with a
+  planted-mutation self-test: §2b — no workflow script may pass `effort:`, and no
   *distributed* workflow template may reference `agentType` (an unresolvable one
   raises rather than degrading silently, so it would hard-break every downstream
-  lane on first dispatch).
+  lane on first dispatch); §2c — a bidirectional assertion that every mechanical
+  call site carries `agentType: 'rdm-mechanical'` and no judgment site does, with
+  a completeness sweep that fails if a site is added or removed without updating
+  the asserted list.
 - `scripts/verify-token-report.sh` gained coverage for `percentile()`'s linear
   interpolation branch, which every existing fixture short-circuited by giving
   each agent class only one record.

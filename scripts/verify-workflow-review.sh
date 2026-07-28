@@ -413,13 +413,11 @@ pass "no workflow call site passes effort:; detector catches a planted one"
 #      `ship-mechanical-agent-type-downstream`.
 #
 #      SCOPE, deliberate: this greps only "$TEMPLATES", not $WF_DIR. The local
-#      workflows are intentionally NOT covered — their definition lives in this
-#      same repo at the path the runtime searches, so a local agentType is
-#      resolvable in principle. It stays unthreaded only because Workflow-path
-#      resolution has not yet been verified (the spike's agentType cases were
-#      invalidated by a dispatching-session setup error — see docs/
-#      workflow-schemas.md § Q1a), and that is the follow-up task's job, not a
-#      gate's.
+#      workflows DO carry agentType — see §2c, which asserts exactly which of
+#      their call sites carry it. Their definition lives in this same repo at
+#      the path the runtime searches, so a local agentType resolves; a
+#      downstream tree receives no .claude/agents/ at all, which is what makes
+#      the distributed case different in kind rather than in degree.
 if grep -nE 'agentType' "$TEMPLATES"/workflows/*.js 2>/dev/null; then
     fail "a distributed workflow template references agentType, but rdm agent-config emits no .claude/agents/ definitions — an unresolvable agentType RAISES in the runtime and would break every downstream lane"
 fi
@@ -434,6 +432,112 @@ TPL_WF_COUNT=$(find "$TEMPLATES/workflows" -name '*.js' | wc -l | tr -d ' ')
 [ "$TPL_WF_COUNT" -ge 1 ] ||
     fail "no distributed workflow templates matched — the agentType guard would pass vacuously"
 pass "no distributed workflow template references agentType ($TPL_WF_COUNT scanned); detector catches a planted one"
+
+# --- 2c. MECHANICAL agentType THREADING (bidirectional) ----------------------
+# The local-only workflows thread `agentType: 'rdm-mechanical'` at their
+# MECHANICAL call sites — the ones that run one command and transcribe its
+# output — and must never thread it at a JUDGMENT site, whose whole task is the
+# reasoning a trimmed transcribe-only agent cannot do.
+#
+# Asserted in BOTH directions, each with a planted-mutation self-test, plus a
+# completeness sweep so a future mechanical site cannot ship untrimmed.
+#
+# LABEL-MATCHING HAZARD: these labels are substrings of one another. `act:`
+# also matches the mechanical `act:round-note:`, and `estimate:` matches both
+# the judgment `estimate:rate:` and the mechanical `estimate:list`/`write`/
+# `tier`. Every pattern below therefore matches the label's OPENING QUOTE plus
+# its exact prefix, never a bare substring.
+say "2c. Mechanical agentType threading (bidirectional)"
+
+# has_agent_type <file> <label-prefix> — true when the agent() options object
+# whose `label:` starts with the given prefix also carries agentType within the
+# next 4 lines. The call sites are formatted one option per line, so a fixed
+# window is sufficient and keeps this a grep rather than a JS parser.
+has_agent_type() {
+    grep -A4 -F "label: '$2" "$1" 2>/dev/null | grep -q "agentType: 'rdm-mechanical'"
+}
+
+# (i) POSITIVE — every mechanical site carries it, as `<file>|<label-prefix>`
+#     records. POSIX sh has no arrays, so the list is a newline-separated here-doc
+#     consumed by `while read`, matching this harness's existing style.
+MECHANICAL_SITES=$(
+    cat <<'SITES'
+document.js|model:mechanical'
+document.js|fetch:roadmap-meta'
+document.js|gather:' +
+document.js|write:draft'
+backlog.js|model:mechanical'
+backlog.js|fetch:report'
+estimate.js|model:mechanical'
+estimate.js|estimate:list'
+estimate.js|estimate:write:' +
+estimate.js|estimate:tier:' +
+plan-review.js|model:mechanical'
+plan-review.js|fetch:roadmap'
+plan-review.js|fetch:' + kind
+plan-review.js|fetch:wontfix'
+plan-review.js|gate:clear-tag:' +
+lib/plan-review.mjs|fetch:roadmap'
+lib/plan-review.mjs|fetch:' + kind
+lib/plan-review.mjs|fetch:wontfix'
+lib/plan-review.mjs|gate:clear-tag:' +
+SITES
+)
+MECH_EXPECTED=$(printf '%s\n' "$MECHANICAL_SITES" | grep -c .)
+printf '%s\n' "$MECHANICAL_SITES" | while IFS= read -r site; do
+    [ -n "$site" ] || continue
+    f=${site%%|*}
+    lbl=${site#*|}
+    [ -f "$WF_DIR/$f" ] || fail "2c: expected workflow file $f is missing — the mechanical-site list is stale"
+    has_agent_type "$WF_DIR/$f" "$lbl" ||
+        fail "2c: mechanical call site '$lbl' in $f does NOT carry agentType: 'rdm-mechanical' — every mechanical site must be trimmed (see docs/mechanical-agent-inventory.md § 'The threadable surface, enumerated')"
+done || exit 1
+# Self-test: strip the key from one site in a scratch copy; the check must fail.
+mkdir -p "$SCRATCH/2c"
+sed "s/ *agentType: 'rdm-mechanical',//" "$WF_DIR/document.js" >"$SCRATCH/2c/stripped.js"
+if has_agent_type "$SCRATCH/2c/stripped.js" "write:draft'"; then
+    fail "2c: positive detector did NOT notice a stripped agentType — it is vacuous"
+fi
+pass "all $MECH_EXPECTED mechanical call sites carry agentType; detector catches a stripped one"
+
+# (ii) NEGATIVE — no judgment site carries it. These agents reason; a
+#      transcribe-only definition with a two-tool allowlist would break them.
+JUDGMENT_LABELS="find: refute: plan:author plan:revise implement: synthesize:draft analyze: estimate:rate: act:' act:code"
+JUDGMENT_COUNT=0
+for lbl in $JUDGMENT_LABELS; do
+    JUDGMENT_COUNT=$((JUDGMENT_COUNT + 1))
+    for f in "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs; do
+        case "$f" in */spike-agent-type.js) continue ;; esac
+        if has_agent_type "$f" "$lbl"; then
+            fail "2c: JUDGMENT call site '$lbl' in $(basename "$f") carries agentType — rdm-mechanical is a transcribe-only agent and would break it"
+        fi
+    done
+done
+# Self-test: plant agentType on a judgment-shaped site; the check must catch it.
+mkdir -p "$SCRATCH/2c"
+printf "await _agent(P, {\n  label: 'find:' + mode,\n  phase: 'Find',\n  agentType: 'rdm-mechanical',\n})\n" >"$SCRATCH/2c/planted-judgment.js"
+if ! has_agent_type "$SCRATCH/2c/planted-judgment.js" "find:"; then
+    fail "2c: negative detector did NOT catch a planted judgment-site agentType — it is vacuous"
+fi
+pass "no judgment call site carries agentType ($JUDGMENT_COUNT labels swept); detector catches a planted one"
+
+# (iii) COMPLETENESS — derived live from the tree, so a NEW agentType value or a
+#       new site cannot ship unnoticed. Every occurrence outside the spike must
+#       be exactly our definition, and the total must match the asserted list.
+# spike-agent-type.js is excluded: probing an unknown id is its entire purpose,
+# so it deliberately carries agentType values that resolve to nothing.
+STRAY=$(grep -rnoE "agentType: *'[^']*'" "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null |
+    grep -v '/spike-agent-type\.js:' |
+    grep -v "agentType: 'rdm-mechanical'" | sort -u || true)
+if [ -n "$STRAY" ]; then
+    printf '%s\n' "$STRAY"
+    fail "2c: a workflow references an agentType other than 'rdm-mechanical' — only that definition exists in .claude/agents/"
+fi
+THREADED=$(grep -rc "agentType: 'rdm-mechanical'" "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null |
+    grep -v '/spike-agent-type\.js:' | awk -F: '{s+=$2} END {print s+0}')
+[ "$THREADED" -eq "$MECH_EXPECTED" ] ||
+    fail "2c: found $THREADED threaded agentType sites but $MECH_EXPECTED are asserted — a call site was added or removed without updating MECHANICAL_SITES"
+pass "agentType completeness: $THREADED threaded sites, all 'rdm-mechanical', matching the asserted list"
 
 # --- 3. BEHAVIOR -------------------------------------------------------------
 say "3. Behavior: find -> refute -> filter, both modes, deterministic"

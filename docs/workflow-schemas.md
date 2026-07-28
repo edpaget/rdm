@@ -181,9 +181,12 @@ dispatched via the `Workflow` tool on 2026-07-27 (run `wf_2bea58b9-38f`, 8 cases
   mistake, and **must not be read as evidence about `agent({ agentType })`.**
   See § Q1a for the full retraction.
 
-**No `agent()` call site was edited.** With Q1a retracted, that is a *deferral
-pending a valid re-run*, not a measured impossibility. See "Disposition" at the
-end.
+**`agentType` IS threaded at the mechanical call sites of the four local-only
+workflows** (19 records across `document.js`, `backlog.js`, `estimate.js`,
+`plan-review.js` and `lib/plan-review.mjs`), on the strength of the documented
+registry behaviour plus the measured `--agent` resolution — with Q1a's confirming
+dispatch still outstanding. `effort:` is threaded nowhere. See "Disposition" at
+the end.
 
 Per-agent context is the whole cost of a mechanical agent:
 `docs/token-baseline.json` records `agentContextFloor.measuredFloor.reportedFloorTokens`
@@ -615,26 +618,55 @@ Workflow-path answer governs, because that is the call path the call sites use.
 | Q2b — an *invalid* `effort` value? | **Accepted, silently degrades to `high`** — no throw | **Workflow run, observed** |
 | Q3 — does `CLAUDE.md` load into a custom `agentType` agent? | **YES**, unavoidably, at **19320 measured tokens** (recorded estimate 12052 understates by 60 %) | `claude -p` 2×2 |
 
-**No `agent()` call site was edited**, and the reasons differ per option.
+**What was threaded, and what was not.**
 
-For `agentType`:
+**`agentType: 'rdm-mechanical'` IS threaded** at every mechanical call site of the
+four local-only workflows — 19 records in all (15 call sites in the `.js`
+consumers, 4 of which are duplicated into `lib/plan-review.mjs` as the byte-copied
+source of `plan-review.js`'s `plan-review-driver` block):
 
-1. **AC4's precondition is Q1a, and Q1a is unverified** — as it was before the
-   run, because the run's answer to it does not count. This is a deferral pending
-   one valid re-run, **not** a finding that the option cannot work. Everything
-   known points the other way: the definition resolves through `--agent`, the
-   trim is measured at 42 %, and the documentation says `.claude/agents/` is
-   consulted and watched.
-2. **The distributed half stays blocked outright** by the missing emission surface
-   (§ Distribution), independently of Q1a.
+| File | Sites | Route |
+|---|---|---|
+| `document.js` | `model:mechanical`, `fetch:roadmap-meta`, `gather:<stem>`, `write:draft` | unprojected driver |
+| `backlog.js` | `model:mechanical`, `fetch:report` | unprojected driver |
+| `estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver, below `estimate-core:end` — verified not to propagate into the distributed `autopilot.js` |
+| `plan-review.js` + `lib/plan-review.mjs` | `fetch:roadmap`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | byte-copied block — both halves edited, gated by §5b-drift |
+| `plan-review.js` | `model:mechanical` | unprojected driver, below `plan-review-driver:end` |
 
-For `effort`:
+It is written as a plain literal at each site, never a module-level constant,
+because the source text is byte-copied across files with different scopes.
+`scripts/verify-workflow-review.sh` §2c asserts this **bidirectionally** — every
+mechanical site carries it, no judgment site does — with planted-mutation
+self-tests in both directions and a completeness sweep that fails if a site is
+added or removed without updating the asserted list, or if any `agentType` other
+than `rdm-mechanical` appears.
 
-3. **Q2a is positive, so the technical objection is gone** — but the phase body
-   forbids threading `effort:` anywhere, on the strength of a negative this run
-   overturned. Acting on the reversal means flipping a gated invariant and editing
-   ~15 call sites, which is a scope decision for the roadmap owner, not something
-   to fold silently into a phase that was scoped as a recorded result.
+**This ships ahead of Q1a's confirming dispatch, which is a deliberate call, not
+an oversight.** The evidence supporting it: the definition resolves and its tool
+restriction is enforced through `--agent` (measured, [the 2×2](#the-2x2)); the
+Agent-tool contract states `agentType` resolves against that same registry; and
+the documentation confirms `.claude/agents/` is consulted and watched. The
+residual risk is the failure mode in § Distribution — a raise, not a silent
+degradation — bounded to the four local-only workflows, whose definition sits in
+this repo at the path the runtime searches. Confirming it costs one dispatch of
+`spike-agent-type.js` from any ordinary session in this repo once this lands.
+
+**Not threaded, and each for its own reason:**
+
+1. **The three distributed workflows** — blocked outright by the missing emission
+   surface (§ Distribution). A downstream tree receives no `.claude/agents/` at
+   all, so the reference could never resolve there. §2b(ii) gates this.
+2. **Every judgment site** — finders, refuters, planners, implementers,
+   `synthesize:draft`, `analyze:*`, `estimate:rate:*` and plan-review's `act:*`.
+   `rdm-mechanical` is a transcribe-only agent with a two-tool allowlist; giving
+   it work that requires reasoning would break it. §2c(ii) gates this.
+3. **`effort:` anywhere** — even though Q2a is positive. The phase body forbids it,
+   and lifting a gated invariant on the back of a result the plan did not
+   anticipate is a scope decision, carried by
+   `finish-agent-type-effort-spike-and-thread-mechanical-sites`. Its real
+   remaining risk is fidelity: the run showed the request *ran* at low effort, not
+   that low effort preserves mechanical transcription accuracy — and a degraded
+   schema return is a silent corruption, unlike a raise.
 
 **A methodological note, since this phase's whole discipline is about evidence.**
 The Q1a error was not a subtle one: an experiment was run in an environment that

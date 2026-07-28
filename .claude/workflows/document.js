@@ -373,6 +373,7 @@ if (typeof rawDocumentArgs.mechanicalModel === 'string' && rawDocumentArgs.mecha
     const mechanicalModelResult = await agent(buildMechanicalModelPrompt(), {
       label: 'model:mechanical',
       phase: 'Fetch',
+      agentType: 'rdm-mechanical',
       schema: MECHANICAL_MODEL_SCHEMA,
     })
     mechanicalModel = mechanicalModelResult && typeof mechanicalModelResult.model === 'string' ? mechanicalModelResult.model.trim() : ''
@@ -396,6 +397,7 @@ if (hoistedRoadmapMetaOk(rawDocumentArgs.roadmapMeta)) {
     roadmapMeta = await agent(buildRoadmapFetchPrompt(roadmapSlug), {
       label: 'fetch:roadmap-meta',
       phase: 'Fetch',
+      agentType: 'rdm-mechanical',
       schema: ROADMAP_META_SCHEMA,
       model: mechanicalModel,
     })
@@ -434,6 +436,7 @@ async function gatherPhase(p) {
     const record = await agent(buildPhaseGatherPrompt(roadmapSlug, p, gitCmdTemplate), {
       label: 'gather:' + p.stem,
       phase: 'Gather',
+      agentType: 'rdm-mechanical',
       schema: PHASE_RECORD_SCHEMA,
       model: mechanicalModel,
     })
@@ -472,6 +475,7 @@ try {
   writeAck = await agent(buildWritePrompt(outPath, draftText), {
     label: 'write:draft',
     phase: 'Write',
+    agentType: 'rdm-mechanical',
     schema: WRITE_ACK_SCHEMA,
     model: mechanicalModel,
   })

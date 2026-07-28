@@ -594,6 +594,7 @@ const realDeps = {
     const r = await agent(buildMechanicalModelPrompt(), {
       label: 'model:mechanical',
       phase: 'Report',
+      agentType: 'rdm-mechanical',
       schema: MECHANICAL_MODEL_SCHEMA,
     })
     return r && typeof r.model === 'string' ? r.model.trim() : ''
@@ -610,6 +611,7 @@ const realDeps = {
     return agent(buildFetchReportPrompt(cfg), {
       label: 'fetch:report',
       phase: 'Report',
+      agentType: 'rdm-mechanical',
       schema: BACKLOG_REPORT_SCHEMA,
       model: mechanicalModel,
     })

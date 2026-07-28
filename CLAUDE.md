@@ -193,10 +193,11 @@ The autonomous do/autopilot lane has migrated from prose-orchestrated skills to 
 #### `.claude/agents/` — a new LOCAL-ONLY surface (not distributed)
 
 `.claude/agents/` is the custom-agent registry `agent()`'s `opts.agentType` resolves against. It
-holds one definition, `rdm-mechanical.md`, referenced only by the companion probe
-`.claude/workflows/spike-agent-type.js` — **no lane workflow adopts it yet, and it is not
-distributed.** Adoption is pending one verification: whether `agent({ agentType })` resolves it
-from inside a Workflow run. Evidence, measurements and disposition live in
+holds one definition, `rdm-mechanical.md`. The **four local-only workflows** (`document.js`,
+`backlog.js`, `estimate.js`, `plan-review.js`) thread it at their mechanical call sites; the
+three distributed workflows and every judgment site must not. `scripts/verify-workflow-review.sh`
+§2c asserts both directions with planted-mutation self-tests. It is **not distributed**.
+Evidence, measurements and disposition live in
 `docs/workflow-schemas.md` § "agentType / effort options spike" — that section is canonical; do
 not restate its tables here.
 

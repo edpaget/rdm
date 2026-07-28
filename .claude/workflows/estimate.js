@@ -470,6 +470,7 @@ const realDeps = {
     const r = await agent(buildMechanicalModelPrompt(), {
       label: 'model:mechanical',
       phase: 'List',
+      agentType: 'rdm-mechanical',
       schema: MECHANICAL_MODEL_SCHEMA,
     })
     return r && typeof r.model === 'string' ? r.model.trim() : ''
@@ -487,6 +488,7 @@ const realDeps = {
     const r = await agent(buildEstimateListPrompt(slug), {
       label: 'estimate:list',
       phase: 'List',
+      agentType: 'rdm-mechanical',
       schema: PHASE_LIST_SCHEMA,
       model: mechanicalModel,
     })
@@ -519,6 +521,7 @@ const realDeps = {
     return agent(buildEstimateWritebackPrompt(stem, difficulty, justification, slug), {
       label: 'estimate:write:' + stem,
       phase: 'Writeback',
+      agentType: 'rdm-mechanical',
       schema: ACK_SCHEMA,
       model: mechanicalModel,
     })
@@ -529,6 +532,7 @@ const realDeps = {
     const r = await agent(buildEstimateTierPrompt(stem, slug), {
       label: 'estimate:tier:' + stem,
       phase: 'Writeback',
+      agentType: 'rdm-mechanical',
       schema: TIER_SCHEMA,
       model: mechanicalModel,
     })

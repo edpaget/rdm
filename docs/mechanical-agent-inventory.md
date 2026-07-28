@@ -400,10 +400,13 @@ effort options spike"; the operative outcomes are:
   So the gating sub-question is **open, exactly as it was before the run** — not answered
   negatively. Everything else points the other way: the definition resolves through `--agent`,
   the trim is measured at −42 %, and the registry is documented as consulted and watched.
-  Closing it needs one dispatch from a session whose project root holds the definition **at
+  Confirming it costs one dispatch from a session whose project root holds the definition **at
   session start**, which any ordinary session in this repo satisfies once this branch lands.
-  **No call site was threaded**, and that is a deferral pending that re-run, not a measured
-  impossibility. The distribution blocker below is unaffected and still stands on its own.
+
+  **`agentType` is threaded at the local-only mechanical sites on that basis**, ahead of the
+  confirming dispatch — see the enumerated table below for exactly which. The distribution
+  blocker is unaffected and still bars the three distributed workflows on its own separate
+  grounds: a downstream tree receives no `.claude/agents/` at all.
 - **`effort` — still not threaded, but the reason changed from "inert" to "out of scope".** The
   verification channel was identified (each `assistant` transcript record carries a top-level
   `effort` field) and its pre-change control fixed (156 384 records across the corpus: `"high"`
@@ -443,15 +446,16 @@ effort options spike"; the operative outcomes are:
   degrade it. §2b of the review harness gates that. This phase therefore does not introduce a
   distributed dangling reference — it declines to.
 
-### The threadable surface, enumerated (so the next attempt need not re-derive it)
+### The threaded surface, enumerated
 
-The phase expected to thread ~16 mechanical sites across the four local-only workflows, and
-that enumeration was completed before the spike returned. It is recorded here because it stays
-valid: it is the exact worklist for whichever option becomes threadable first (`effort:` now,
-`agentType:` if it ever resolves). Judgment sites are excluded by § The classification rule and
-must stay excluded.
+These are the mechanical sites that now carry `agentType: 'rdm-mechanical'` — 15 call sites in
+the four local-only workflows, 4 of them duplicated into `lib/plan-review.mjs` as the
+byte-copied source of `plan-review.js`'s driver block, for 19 records in total. The same table
+is the worklist for `effort:` if that is threaded later. Judgment sites are excluded by § The
+classification rule and must stay excluded; `scripts/verify-workflow-review.sh` §2c asserts
+both directions with planted-mutation self-tests.
 
-| File | Threadable mechanical sites | Maintenance route |
+| File | Mechanical sites now carrying `agentType` | Maintenance route |
 |---|---|---|
 | `document.js` | `model:mechanical`, `fetch:roadmap-meta`, `gather:<stem>`, `write:draft` | unprojected driver (all below `document-core:end`) — edit in place |
 | `backlog.js` | `model:mechanical`, `fetch:report` | unprojected driver — edit in place |
@@ -459,7 +463,7 @@ must stay excluded.
 | `plan-review.js` | `fetch:roadmap`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | **byte-copied** — inside the `plan-review-driver` block; edit `lib/plan-review.mjs` first, then copy verbatim. `verify-workflow-review.sh` §5b-drift gates the pair |
 | `plan-review.js` | `model:mechanical` | unprojected driver (below `plan-review-driver:end`) — edit in place |
 
-15 sites, three maintenance routes. **Off-limits regardless:** `autopilot.js`,
+15 sites, three maintenance routes, all threaded. **Off-limits regardless:** `autopilot.js`,
 `dispatch-phase.js`, `review-refute-fix.js` (byte-identical to the distributed templates, gated
 by `verify-agent-config-distribution.sh`), anything stamped from `lib/review.mjs` or
 `lib/estimate.mjs`, and every judgment site — `find:*`, `refute:*`, `plan:*`, `implement:*`,
@@ -467,7 +471,7 @@ by `verify-agent-config-distribution.sh`), anything stamped from `lib/review.mjs
 `act:round-note:*`, which the inventory classes as a mechanical mid-run write but the phase body
 excludes).
 
-One per-site check worth keeping: **`write:draft` is threading-compatible.** Its prompt issues
+One per-site check that mattered: **`write:draft` is threading-compatible.** Its prompt issues
 only `mkdir -p` and a `cat` heredoc via Bash and returns a `WRITE_ACK` schema object, so it
 needs nothing beyond `rdm-mechanical`'s `tools: Bash, StructuredOutput`. It does not use the
 `Write` tool despite its name.

@@ -713,6 +713,7 @@ async function runPlanReviewDriver(args, deps) {
       fetched = await _agent(buildRoadmapFetchPrompt(parsed.roadmap), {
         label: 'fetch:roadmap',
         phase: 'Read',
+        agentType: 'rdm-mechanical',
         schema: ROADMAP_TARGET_SCHEMA,
         model: _mechanicalModel,
       })
@@ -726,6 +727,7 @@ async function runPlanReviewDriver(args, deps) {
       fetched = await _agent(fetchPrompt, {
         label: 'fetch:' + kind,
         phase: 'Read',
+        agentType: 'rdm-mechanical',
         schema: PLAN_TARGET_SCHEMA,
         model: _mechanicalModel,
       })
@@ -756,6 +758,7 @@ async function runPlanReviewDriver(args, deps) {
       const wf = await _agent(buildWontFixFetchPrompt(), {
         label: 'fetch:wontfix',
         phase: 'Read',
+        agentType: 'rdm-mechanical',
         schema: WONTFIX_LIST_SCHEMA,
         model: _mechanicalModel,
       })
@@ -822,6 +825,7 @@ async function runPlanReviewDriver(args, deps) {
           const ack = await _agent(buildTagWritePrompt(u.kind, u.roadmap, u.ident, remaining), {
             label: 'gate:clear-tag:' + u.kind + ':' + u.ident,
             phase: 'Gate',
+            agentType: 'rdm-mechanical',
             schema: STAMP_ACK_SCHEMA,
             model: _mechanicalModel,
           })

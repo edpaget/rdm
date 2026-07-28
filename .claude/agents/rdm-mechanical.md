@@ -15,7 +15,10 @@ You run one command and transcribe its output. Nothing else.
 
 ## Status and design notes (for maintainers, not for the agent)
 
-**Nothing references this definition yet** — a deliberate hold pending one verification step.
+**This definition is live.** The mechanical `agent()` call sites of the four local-only
+workflows (`document.js`, `backlog.js`, `estimate.js`, `plan-review.js`) resolve against it —
+19 records in all, asserted bidirectionally by `scripts/verify-workflow-review.sh` §2c. It is
+**not** used by the three distributed workflows, and not by any judgment agent.
 
 This file *does* resolve through the CLI's session-agent path: `claude --agent rdm-mechanical
 -p …` runs it, and a controlled 2×2 measures it at **27190 first-request tokens against the
@@ -31,10 +34,13 @@ watcher "covers only directories that existed when the session started, so after
 scope's first agent file in a new `agents` directory, restart to load it" — so the definition
 was never loaded, and the spike measured that, not the runtime.
 
-To close it: dispatch `.claude/workflows/spike-agent-type.js` from a session whose project root
-contains this file **at session start**. Once this branch lands, the definition sits at the repo
-root, so any ordinary session in this repo qualifies. Read case B's `toolNames` — a trimmed list
-is the positive evidence.
+The call sites were threaded on that basis anyway — the documented registry behaviour plus the
+measured `--agent` resolution — with the confirming dispatch still outstanding. **To close it:**
+dispatch `.claude/workflows/spike-agent-type.js` from a session whose project root contains this
+file **at session start**; once this branch lands, any ordinary session in this repo qualifies.
+Read case B's `toolNames` — a trimmed list is the confirmation. If it instead raises, the four
+local-only workflows fail loudly on first dispatch rather than degrading silently, so the failure
+will be unmissable rather than corrupting.
 
 See `docs/workflow-schemas.md` § "agentType / effort options spike" for the evidence tables and
 the disposition.
