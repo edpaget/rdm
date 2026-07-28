@@ -365,6 +365,7 @@ if (!roadmapSlug) {
 // an unpinned Stage 0/1/3 agent.
 // HOIST: the caller already ran `rdm model resolve mechanical`.
 let mechanicalModel = ''
+let mechanicalErr = ''
 if (typeof rawDocumentArgs.mechanicalModel === 'string' && rawDocumentArgs.mechanicalModel.trim() !== '') {
   mechanicalModel = rawDocumentArgs.mechanicalModel.trim()
   log('document: mechanical model hoisted from caller args')
@@ -379,10 +380,11 @@ if (typeof rawDocumentArgs.mechanicalModel === 'string' && rawDocumentArgs.mecha
     mechanicalModel = mechanicalModelResult && typeof mechanicalModelResult.model === 'string' ? mechanicalModelResult.model.trim() : ''
   } catch (e) {
     mechanicalModel = ''
+    mechanicalErr = String((e && e.message) || e)
   }
 }
 if (!mechanicalModel) {
-  log('document: mechanical model could not be resolved (rdm model resolve mechanical returned nothing) — stopping before any mechanical agent runs')
+  log('document: mechanical model could not be resolved (' + (mechanicalErr || 'rdm model resolve mechanical returned nothing') + ') — stopping before any mechanical agent runs')
   return { roadmap: roadmapSlug, aborted: true, incompletePhases: [], path: null, draft: null, fetchError: true }
 }
 

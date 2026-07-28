@@ -521,11 +521,24 @@ if ! has_agent_type "$SCRATCH/2c/planted-judgment.js" "find:"; then
 fi
 pass "no judgment call site carries agentType ($JUDGMENT_COUNT labels swept); detector catches a planted one"
 
-# (iii) COMPLETENESS — derived live from the tree, so a NEW agentType value or a
-#       new site cannot ship unnoticed. Every occurrence outside the spike must
-#       be exactly our definition, and the total must match the asserted list.
-# spike-agent-type.js is excluded: probing an unknown id is its entire purpose,
-# so it deliberately carries agentType values that resolve to nothing.
+# (iii) COMPLETENESS. Two separate checks, because they catch different things
+#       and an earlier version of this section conflated them:
+#         (a) every agentType VALUE is our definition — a live grep;
+#         (b) the threaded COUNT matches BOTH the asserted list AND a
+#             tree-derived expectation.
+#       (b)'s second half is the one that matters. Comparing THREADED against
+#       the static MECHANICAL_SITES list alone cannot detect a NEW mechanical
+#       site shipped without the key: both sides stay at their old value and the
+#       equality holds. So derive the expectation from the tree instead —
+#       every mechanical site except the four `model:mechanical` bootstraps pins
+#       `model: mechanicalModel` / `model: _mechanicalModel` (verified: no
+#       judgment site pins either), and the bootstraps carry no pin because they
+#       are what resolves that model. Hence THREADED must equal PINNED + 4.
+#       Add an unthreaded mechanical site and PINNED rises while THREADED does
+#       not, so the check fires.
+# spike-agent-type.js is excluded throughout: probing an unknown id is its
+# entire purpose, so it deliberately carries agentType values that resolve to
+# nothing.
 STRAY=$(grep -rnoE "agentType: *'[^']*'" "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null |
     grep -v '/spike-agent-type\.js:' |
     grep -v "agentType: 'rdm-mechanical'" | sort -u || true)
@@ -533,11 +546,89 @@ if [ -n "$STRAY" ]; then
     printf '%s\n' "$STRAY"
     fail "2c: a workflow references an agentType other than 'rdm-mechanical' — only that definition exists in .claude/agents/"
 fi
-THREADED=$(grep -rc "agentType: 'rdm-mechanical'" "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null |
-    grep -v '/spike-agent-type\.js:' | awk -F: '{s+=$2} END {print s+0}')
+
+# count_threaded <dir> / count_pinned <dir> — same sweeps, parameterized by tree
+# so the self-test below can run them against a mutated scratch copy.
+count_threaded() {
+    grep -rc "agentType: 'rdm-mechanical'" "$1"/*.js "$1"/lib/*.mjs 2>/dev/null |
+        grep -v '/spike-agent-type\.js:' | awk -F: '{s+=$2} END {print s+0}'
+}
+count_pinned() {
+    grep -rcE "model: _?mechanicalModel,?$" "$1"/*.js "$1"/lib/*.mjs 2>/dev/null |
+        grep -v '/spike-agent-type\.js:' | awk -F: '{s+=$2} END {print s+0}'
+}
+MECH_BOOTSTRAPS=4 # document/backlog/estimate/plan-review, one `model:mechanical` each
+THREADED=$(count_threaded "$WF_DIR")
+PINNED=$(count_pinned "$WF_DIR")
 [ "$THREADED" -eq "$MECH_EXPECTED" ] ||
     fail "2c: found $THREADED threaded agentType sites but $MECH_EXPECTED are asserted — a call site was added or removed without updating MECHANICAL_SITES"
-pass "agentType completeness: $THREADED threaded sites, all 'rdm-mechanical', matching the asserted list"
+[ "$THREADED" -eq "$((PINNED + MECH_BOOTSTRAPS))" ] ||
+    fail "2c: $THREADED threaded sites but $PINNED mechanical-model pins + $MECH_BOOTSTRAPS bootstraps = $((PINNED + MECH_BOOTSTRAPS)) — a mechanical call site is missing agentType, or a threaded site lost its model pin"
+# Self-test: plant a NEW mechanical site (model pin, no agentType) in a scratch
+# copy of the tree — the derived check must fire where the static one cannot.
+rm -rf "$SCRATCH/2c-tree"
+mkdir -p "$SCRATCH/2c-tree/lib"
+cp "$WF_DIR"/*.js "$SCRATCH/2c-tree/" 2>/dev/null || true
+cp "$WF_DIR"/lib/*.mjs "$SCRATCH/2c-tree/lib/" 2>/dev/null || true
+cat >>"$SCRATCH/2c-tree/document.js" <<'PLANTED'
+await agent(P, {
+  label: 'fetch:newly-added-mechanical-site',
+  phase: 'Fetch',
+  schema: SOME_SCHEMA,
+  model: mechanicalModel,
+})
+PLANTED
+PLANTED_THREADED=$(count_threaded "$SCRATCH/2c-tree")
+PLANTED_PINNED=$(count_pinned "$SCRATCH/2c-tree")
+if [ "$PLANTED_THREADED" -eq "$MECH_EXPECTED" ] &&
+    [ "$PLANTED_THREADED" -ne "$((PLANTED_PINNED + MECH_BOOTSTRAPS))" ]; then
+    : # correct: static check still passes, derived check catches it
+else
+    fail "2c: derived completeness check did NOT catch a planted untrimmed mechanical site (threaded=$PLANTED_THREADED pinned=$PLANTED_PINNED) — it is vacuous"
+fi
+pass "agentType completeness: $THREADED threaded = $PINNED pinned + $MECH_BOOTSTRAPS bootstraps; derived check catches a planted untrimmed site"
+
+# (iv) REFERENT RESOLUTION — the other half of the reference. (i)-(iii) assert
+#      the call sites SPELL the name; none of them assert the name RESOLVES.
+#      Delete .claude/agents/rdm-mechanical.md, rename it, or edit one word of
+#      its `name:` frontmatter and every threaded workflow raises
+#      `agent type '...' not found` on first dispatch — with the whole suite
+#      green. This mirrors verify-agent-config-distribution.sh, which resolves
+#      every literal `.claude/workflows/<name>.js` mention to a real file.
+#      Derived from the sweep rather than hardcoded, so the two sides of the
+#      reference cannot drift apart.
+AGENTS_DIR="$REPO_ROOT/.claude/agents"
+REFERENCED=$(grep -rhoE "agentType: *'[^']*'" "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null |
+    grep -v "no-such-agent" | sed "s/.*'\(.*\)'/\1/" | sort -u)
+[ -n "$REFERENCED" ] ||
+    fail "2c(iv): no agentType literal found to resolve — the referent check would pass vacuously"
+REF_COUNT=0
+for name in $REFERENCED; do
+    REF_COUNT=$((REF_COUNT + 1))
+    found=""
+    for def in "$AGENTS_DIR"/*.md; do
+        [ -f "$def" ] || continue
+        # frontmatter `name:` must equal the referenced agent type exactly
+        defname=$(sed -n '/^name:[[:space:]]*/{s/^name:[[:space:]]*//p;q;}' "$def")
+        [ "$defname" = "$name" ] && found="$def" && break
+    done
+    [ -n "$found" ] ||
+        fail "2c(iv): workflows reference agentType '$name' but no file in .claude/agents/ declares 'name: $name' — an unresolvable agentType RAISES on first dispatch"
+done
+# Self-test: corrupt the frontmatter name in a scratch copy; resolution must fail.
+rm -rf "$SCRATCH/2c-agents"
+mkdir -p "$SCRATCH/2c-agents"
+cp "$AGENTS_DIR"/*.md "$SCRATCH/2c-agents/" 2>/dev/null || true
+sed -i.bak 's/^name: rdm-mechanical$/name: rdm-mechanical-TYPO/' "$SCRATCH/2c-agents/rdm-mechanical.md"
+corrupted_hit=""
+for def in "$SCRATCH/2c-agents"/*.md; do
+    case "$def" in *.bak) continue ;; esac
+    defname=$(sed -n '/^name:[[:space:]]*/{s/^name:[[:space:]]*//p;q;}' "$def")
+    [ "$defname" = "rdm-mechanical" ] && corrupted_hit="$def"
+done
+[ -z "$corrupted_hit" ] ||
+    fail "2c(iv): referent detector still resolved 'rdm-mechanical' after the frontmatter name was corrupted — it is vacuous"
+pass "all $REF_COUNT referenced agentType name(s) resolve to a .claude/agents/ definition; detector catches a corrupted name"
 
 # --- 3. BEHAVIOR -------------------------------------------------------------
 say "3. Behavior: find -> refute -> filter, both modes, deterministic"

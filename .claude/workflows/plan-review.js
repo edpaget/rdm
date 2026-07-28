@@ -1889,6 +1889,7 @@ const MECHANICAL_MODEL_SCHEMA = {
 // a direct `Workflow` invocation always does. The unresolved-model fail-closed
 // abort applies identically to both paths.
 let mechanicalModel = ''
+let mechanicalErr = ''
 const hoistedMechanicalModel =
   args && typeof args === 'object' && typeof args.mechanicalModel === 'string' ? args.mechanicalModel.trim() : ''
 if (hoistedMechanicalModel) {
@@ -1905,6 +1906,7 @@ if (hoistedMechanicalModel) {
     mechanicalModel = mechanicalModelResult && typeof mechanicalModelResult.model === 'string' ? mechanicalModelResult.model.trim() : ''
   } catch (e) {
     mechanicalModel = ''
+    mechanicalErr = String((e && e.message) || e)
   }
 }
 
@@ -1916,7 +1918,9 @@ if (hoistedMechanicalModel) {
 if (!mechanicalModel) {
   const safeLog = typeof log !== 'undefined' ? log : function () {}
   safeLog(
-    'plan-review: mechanical model could not be resolved (rdm model resolve mechanical returned nothing) — stopping before any mechanical agent runs'
+    'plan-review: mechanical model could not be resolved (' +
+      (mechanicalErr || 'rdm model resolve mechanical returned nothing') +
+      ') — stopping before any mechanical agent runs'
   )
   const parsedForAbort = parsePlanArgs(args)
   return {

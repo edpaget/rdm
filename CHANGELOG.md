@@ -36,20 +36,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   implementation decision better left to whoever carries it out, or whose
   level of detail has grown past the point where more of it reduces risk.
 - A new local-only agent registry, `.claude/agents/`, holding one definition:
-  `rdm-mechanical.md`, a trimmed transcribe-one-command agent for the autonomous
-  lane's mechanical `agent()` call sites. It is referenced only by the companion
-  probe `.claude/workflows/spike-agent-type.js` — **no lane workflow adopts it,
-  and it is not distributed** (`rdm agent-config` emits skills and workflows
-  only).
-  The definition saves a measured 19,894 tokens per agent (−42%), and the
-  mechanical call sites of the four local-only workflows (`document.js`,
-  `backlog.js`, `estimate.js`, `plan-review.js`) now resolve against it. The
-  three distributed workflows deliberately do not, since `rdm agent-config`
-  emits no agent definitions. Full evidence — including the measured
-  19,320-token per-agent cost of loading `CLAUDE.md` into any subagent, 60% above
-  the previously recorded `chars/4` estimate — is in `docs/workflow-schemas.md`
-  § "agentType / effort options spike" and `docs/token-baseline.json` →
-  `mechanicalContextTrim`.
+  `rdm-mechanical.md`, a trimmed transcribe-one-command agent with a two-tool
+  allowlist. The mechanical `agent()` call sites of the four local-only
+  workflows (`document.js`, `backlog.js`, `estimate.js`, `plan-review.js`) now
+  dispatch under it, so those lanes' command-transcribing steps run with a far
+  smaller context — a measured 19,894 tokens per agent (−42%) less. Judgment
+  steps (finders, refuters, planners, implementers) are deliberately unchanged.
+  The definition is **not distributed**: `rdm agent-config` emits skills and
+  workflows only, so the three distributed workflows do not reference it.
+  Full evidence — including the measured 19,320-token per-agent cost of loading
+  `CLAUDE.md` into any subagent, 60% above the previously recorded `chars/4`
+  estimate — is in `docs/workflow-schemas.md` § "agentType / effort options
+  spike" and `docs/token-baseline.json` → `mechanicalContextTrim`. The per-agent
+  figure is measured via the CLI's `--agent` path; the end-to-end lane delta has
+  not yet been re-measured.
 - New guards in `scripts/verify-workflow-review.sh`, each with a
   planted-mutation self-test: §2b — no workflow script may pass `effort:`, and no
   *distributed* workflow template may reference `agentType` (an unresolvable one
