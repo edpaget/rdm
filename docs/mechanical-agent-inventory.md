@@ -384,24 +384,26 @@ effort options spike"; the operative outcomes are:
   The two factors are independent and additive to within 11 tokens. A per-call `model`
   overrides the definition, so the mechanical-tier pins § Maintenance routes depends on survive
   an `agentType`.
-- **…but `agentType` is NOT reachable from the Workflow runtime (measured).** The spike has now
-  been dispatched (`wf_2bea58b9-38f`, plus probe `wf_6cca94eb-de0`), and it closed the phase's
-  gating sub-question **negatively**. `agent({ agentType: 'rdm-mechanical' })` **raised**
-  `agent type 'rdm-mechanical' not found. Available agents: claude, claude-code-guide, Explore,
-  general-purpose, Plan, statusline-setup` — a list holding only built-in agent types, with no
-  project-local definition of any kind. The definition was copied into the dispatching
-  session's project root beforehand and still did not resolve; a retry minutes later threw
-  identically, so the registry is a **session-start snapshot**.
+- **…but Workflow-path resolution is still UNVERIFIED — the spike's `agentType` cases were
+  invalid.** The spike was dispatched (`wf_2bea58b9-38f`, plus probe `wf_6cca94eb-de0`) and its
+  `agentType` cases raised `agent type 'rdm-mechanical' not found`. **That was first written up
+  as a measured negative; it is retracted.** The run went out from a session rooted at the main
+  checkout, whose project root had no `.claude/agents/` directory at session start; the
+  definition was copied in mid-session. Claude Code's subagent docs name this exact case as
+  needing a restart — the watcher "covers only directories that existed when the session
+  started, so after creating a scope's first agent file in a new `agents` directory, restart to
+  load it." The definition was never loaded, and the retry probe re-tested that same unwatched
+  directory rather than proving a non-refreshing registry. The docs also note project subagents
+  are discovered by walking up from the CWD, so the worktree's own committed `.claude/agents/`
+  was never in scope for a session rooted elsewhere.
 
-  **This is the finding that bounds the whole phase, and it is wider than the distribution
-  blocker below.** An `agentType` literal raises on first dispatch from any session whose
-  start-of-session registry lacks the definition — which includes every session rooted outside
-  this worktree. It therefore applies to the four **local-only** workflows exactly as it does
-  to the three distributed ones. Since §2b greps only
-  `rdm-core/src/templates/workflows/*.js`, threading `document.js` / `backlog.js` /
-  `plan-review.js` / `estimate.js` would have passed every gate in this repo and still broken
-  them. **No call site in either group was threaded**, and the ~19 k trim is measured but
-  currently undeliverable.
+  So the gating sub-question is **open, exactly as it was before the run** — not answered
+  negatively. Everything else points the other way: the definition resolves through `--agent`,
+  the trim is measured at −42 %, and the registry is documented as consulted and watched.
+  Closing it needs one dispatch from a session whose project root holds the definition **at
+  session start**, which any ordinary session in this repo satisfies once this branch lands.
+  **No call site was threaded**, and that is a deferral pending that re-run, not a measured
+  impossibility. The distribution blocker below is unaffected and still stands on its own.
 - **`effort` — still not threaded, but the reason changed from "inert" to "out of scope".** The
   verification channel was identified (each `assistant` transcript record carries a top-level
   `effort` field) and its pre-change control fixed (156 384 records across the corpus: `"high"`
@@ -482,12 +484,9 @@ dispatch under `.workflowPathSpike`. The remaining work is carried by task
 `finish-agent-type-effort-spike-and-thread-mechanical-sites`, and the distribution close-out by
 `ship-mechanical-agent-type-downstream`.
 
-**What the spike changed about that remaining work.** It was expected to unblock threading; it
-did the opposite for one option and the opposite-of-the-opposite for the other. `agentType` went
-from "one dispatch away" to blocked on a newly-discovered prerequisite — making a project-local
-definition resolvable from a Workflow run at all — which no task named before, and which is
-strictly upstream of `ship-mechanical-agent-type-downstream`'s emission surface (emitting a
-definition downstream is worthless if the runtime will not read it). `effort` went the other
-way, from "inert, do not ship" to "honored, and blocked only on a scope decision plus a
-fidelity check". The follow-up task carries both halves and no longer instructs anyone to redo
-the spike.
+**What the spike changed about that remaining work.** `effort` moved from "inert, do not ship"
+to "honored, and blocked only on a scope decision plus a fidelity check" — that half is sound
+and actionable. `agentType` did **not** move: its cases were invalid, so it remains where it
+was, one valid dispatch away from an answer. The follow-up task carries both halves, and it
+must re-run the spike for the `agentType` half specifically — from a session that can see the
+definition at session start, a condition the invalid run did not meet.

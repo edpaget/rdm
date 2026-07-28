@@ -412,16 +412,14 @@ pass "no workflow call site passes effort:; detector catches a planted one"
 #      dispatch. Lift this guard only together with
 #      `ship-mechanical-agent-type-downstream`.
 #
-#      SCOPE CAVEAT, deliberate and load-bearing: this greps only "$TEMPLATES",
-#      so an agentType in a LOCAL-ONLY workflow (document.js, backlog.js,
-#      plan-review.js, estimate.js) passes it. That is NOT a licence to thread
-#      those four. The spike showed agentType does not resolve from a Workflow
-#      run at all — the registry it sees is a session-start snapshot of the
-#      SESSION's project root — so threading the local four would break them on
-#      first dispatch from any ordinary session while passing every gate here.
-#      Widening this guard to $WF_DIR was left to the follow-up task rather than
-#      done here, because that task may instead make the registry resolvable and
-#      need the local sites threadable.
+#      SCOPE, deliberate: this greps only "$TEMPLATES", not $WF_DIR. The local
+#      workflows are intentionally NOT covered — their definition lives in this
+#      same repo at the path the runtime searches, so a local agentType is
+#      resolvable in principle. It stays unthreaded only because Workflow-path
+#      resolution has not yet been verified (the spike's agentType cases were
+#      invalidated by a dispatching-session setup error — see docs/
+#      workflow-schemas.md § Q1a), and that is the follow-up task's job, not a
+#      gate's.
 if grep -nE 'agentType' "$TEMPLATES"/workflows/*.js 2>/dev/null; then
     fail "a distributed workflow template references agentType, but rdm agent-config emits no .claude/agents/ definitions — an unresolvable agentType RAISES in the runtime and would break every downstream lane"
 fi

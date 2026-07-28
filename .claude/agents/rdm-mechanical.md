@@ -15,28 +15,26 @@ You run one command and transcribe its output. Nothing else.
 
 ## Status and design notes (for maintainers, not for the agent)
 
-**Nothing references this definition, and as of the spike run nothing CAN.** This is now a
-measured blocker, not a deliberate hold.
+**Nothing references this definition yet** — a deliberate hold pending one verification step.
 
 This file *does* resolve through the CLI's session-agent path: `claude --agent rdm-mechanical
 -p …` runs it, and a controlled 2×2 measures it at **27190 first-request tokens against the
 default agent's 47084 — a 19894-token (−42 %) saving**, replicated with and without the project
 `CLAUDE.md`. The prize is real.
 
-**But it does not resolve through `agent({ agentType })` from inside a Workflow run**, which is
-the path every call site would use. Spike `wf_2bea58b9-38f` (and retry probe `wf_6cca94eb-de0`)
-raised `agent type 'rdm-mechanical' not found. Available agents: claude, claude-code-guide,
-Explore, general-purpose, Plan, statusline-setup` — a registry containing no project-local
-definition at all. Copying this file into the dispatching session's project root before the run
-did not help, and a retry minutes later failed identically: the registry is a session-start
-snapshot of the *session's* root, not of the workflow script's directory.
+**What is not yet confirmed is resolution through `agent({ agentType })` from inside a Workflow
+run**, the path every call site would use. Spike `wf_2bea58b9-38f` attempted it and raised
+`agent type 'rdm-mechanical' not found`, but **that result is invalid and has been retracted**:
+the run was dispatched from a session whose project root had no `.claude/agents/` directory at
+session start, with this file copied in mid-session. Per Claude Code's subagent docs the
+watcher "covers only directories that existed when the session started, so after creating a
+scope's first agent file in a new `agents` directory, restart to load it" — so the definition
+was never loaded, and the spike measured that, not the runtime.
 
-The consequence for anyone tempted to wire this up: **an `agentType` literal raises on first
-dispatch from any session whose start-of-session registry lacks this file** — including every
-session rooted outside this worktree. That applies to the four local-only workflows as much as
-to the three distributed ones, and `scripts/verify-workflow-review.sh` §2b would not catch it,
-because it greps only the distributed templates. Making a project-local definition resolvable
-from a Workflow run is an unsolved prerequisite, upstream of the distribution work below.
+To close it: dispatch `.claude/workflows/spike-agent-type.js` from a session whose project root
+contains this file **at session start**. Once this branch lands, the definition sits at the repo
+root, so any ordinary session in this repo qualifies. Read case B's `toolNames` — a trimmed list
+is the positive evidence.
 
 See `docs/workflow-schemas.md` § "agentType / effort options spike" for the evidence tables and
 the disposition.

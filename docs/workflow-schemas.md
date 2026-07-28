@@ -162,22 +162,28 @@ the harness injects fakes through the `deps` argument instead.
 
 ### agentType / effort options spike (can a mechanical subagent be trimmed?)
 
-**Status: SPIKE RUN. All questions answered, and the Workflow-path dispatch
-changed two of the answers.** `spike-agent-type.js` was dispatched via the
-`Workflow` tool on 2026-07-27 (run `wf_2bea58b9-38f`, 8 cases, 5 OK / 3 threw),
-plus a two-case follow-up probe (`wf_6cca94eb-de0`). Two results differ from what
-the earlier `claude -p` measurement concluded, and **both differences are recorded
-in place below rather than being reconciled away**:
+**Status: SPIKE RUN, with one half of it INVALID.** `spike-agent-type.js` was
+dispatched via the `Workflow` tool on 2026-07-27 (run `wf_2bea58b9-38f`, 8 cases,
+5 OK / 3 threw), plus a two-case follow-up probe (`wf_6cca94eb-de0`).
 
-- **Q1a is NEGATIVE.** `agent({ agentType: 'rdm-mechanical' })` did **not**
-  resolve from inside a Workflow run — it raised. The registry the Workflow
-  runtime resolved contains only built-in agent types.
 - **Q2 is POSITIVE**, reversing the definition-side negative.
   `agent(prompt, { effort: 'low' })` produced a transcript recording
-  `effort: "low"` — the first such record in a 156 384-record corpus.
+  `effort: "low"` — the first such record in a 156 384-record corpus. This result
+  is sound and unaffected by the problem below.
+- **Q1a is UNRESOLVED — the `agentType` cases did not test what they appear to.**
+  They raised `agent type not found`, but for a **documented setup reason on the
+  dispatching side, not a runtime limitation**: the spike was dispatched from a
+  session whose project root had no `.claude/agents/` directory at session start,
+  and the definition was copied in mid-run. Claude Code's subagent documentation
+  states the watcher "covers only directories that existed when the session
+  started, so after creating a scope's first agent file in a new `agents`
+  directory, restart to load it." The cases therefore measured the operator's
+  mistake, and **must not be read as evidence about `agent({ agentType })`.**
+  See § Q1a for the full retraction.
 
-**No `agent()` call site was edited**, and Q1a is now the *measured* reason rather
-than the unverified one. See "Disposition" at the end.
+**No `agent()` call site was edited.** With Q1a retracted, that is a *deferral
+pending a valid re-run*, not a measured impossibility. See "Disposition" at the
+end.
 
 Per-agent context is the whole cost of a mechanical agent:
 `docs/token-baseline.json` records `agentContextFloor.measuredFloor.reportedFloorTokens`
@@ -223,9 +229,16 @@ StructuredOutput`) and an identical `firstRequestTokens` of **37725** — expect
 since all five ran as the default agent. The run therefore yields **no
 Workflow-path floor measurement**; the 2×2 below remains the only floor evidence.
 
-**Note the asymmetry between the two options' failure modes**, both now observed
-rather than inferred: an unresolvable `agentType` *raises* (B, C, F), while an
-invalid `effort` string is *accepted and silently degraded* (H).
+> **⚠ Cases B and F are INVALID — see § Q1a.** They were dispatched from a session
+> that could not see the definition, for a documented reason, so their throws say
+> nothing about whether a *properly registered* `agentType` resolves. Case C
+> (a genuinely unknown id) and case H remain valid: C exercises the not-found path
+> deliberately, and neither depends on the registry containing our definition.
+
+**What the run does establish about the two options' failure modes** is an
+asymmetry, and this part stands: an `agentType` that the registry does not contain
+*raises* (C, deliberately), while an invalid `effort` string is *accepted and
+silently degraded* (H).
 
 **The questions did not have to wait for it.** `agentType` resolves against the
 same `.claude/agents/` registry the CLI's own `--agent <name>` flag uses, and a
@@ -299,43 +312,64 @@ That trim is *net of* `CLAUDE.md`, which loads either way (Q3) — it is the def
 agent's system prompt plus the tool schemas of every tool `rdm-mechanical` does
 not get, and it is the entire prize on offer.
 
-##### Q1a — does it resolve from *inside a Workflow run*? **NO (measured).**
+##### Q1a — does it resolve from *inside a Workflow run*? **STILL OPEN — the test was invalid.**
 
-This is the sub-question AC4 gates on, and the [Workflow-path run](#the-workflow-run)
-closed it — **negatively**, which is the opposite of what the low residual risk
-above predicted.
+This is the sub-question AC4 gates on. The [Workflow-path run](#the-workflow-run)
+appeared to close it negatively. **That reading is retracted.** The `agentType`
+cases were confounded by how the run was set up, and they measured the setup, not
+the runtime.
 
-| Probe | Result |
+*What happened.* The spike was dispatched from a session rooted at the main
+checkout (`/Users/edward/Projects/rdm`), not at this worktree. That root had **no
+`.claude/agents/` directory at all** when the session started. Noticing this, the
+operator created the directory and copied the definition in *mid-session*, then
+dispatched. Cases B and F raised `agent type 'rdm-mechanical' not found`, and a
+retry probe minutes later raised identically — which looked like proof that the
+registry is a non-refreshing snapshot.
+
+*Why that inference was wrong.* Claude Code's subagent documentation describes
+this exact situation as a known restart case:
+
+> "Claude Code watches `~/.claude/agents/` and `.claude/agents/`. When you add or
+> edit a subagent file on disk … Claude Code detects the change within a few
+> seconds and the next delegation uses the updated definition, with no restart
+> needed. Two cases still need a restart: the watcher covers only directories that
+> existed when the session started, so **after creating a scope's first agent file
+> in a new `agents` directory, restart to load it.**"
+
+Creating the scope's first agent file in a new `agents` directory is precisely
+what was done, so the watcher never covered it and the definition was never
+loaded. The retry probe did not confirm a snapshot; it confirmed this documented
+restriction. The docs also note project subagents are "discovered by walking up
+from the current working directory", so the worktree's own committed
+`.claude/agents/` was never in scope for a session rooted elsewhere either.
+
+*What this means for the two hypotheses.* The earlier H1 ("a Workflow run never
+consults a project-local `.claude/agents/`") is **ruled out by the documentation**
+— the directory is consulted, and watched live once it exists at session start.
+H2 was never really in question either. Neither is a finding of this run.
+
+| Case | Status |
 |---|---|
-| Case B, `agentType: 'rdm-mechanical'` | **THREW** — `agent type 'rdm-mechanical' not found. Available agents: claude, claude-code-guide, Explore, general-purpose, Plan, statusline-setup` |
-| Case F, same + `effort` | THREW identically |
-| Case C, a deliberately unknown id | THREW identically — so the error is the generic not-found path, not something specific to our definition |
-| Retry probe `wf_6cca94eb-de0`, several minutes later | **THREW again**, same list |
+| B, `agentType: 'rdm-mechanical'` | **INVALID** — definition not loadable in the dispatching session |
+| F, same + `effort` | **INVALID**, same cause |
+| C, a deliberately unknown id | **Valid** — an id absent from the registry raises. Independent of our definition |
+| Retry probe `wf_6cca94eb-de0` | **INVALID** — re-tested the same unwatched directory |
 
-The "Available agents" list is the finding. It contains only built-in and plugin
-agent types — **no project-local definition at all**, ours or any other. Before
-dispatching, `.claude/agents/rdm-mechanical.md` was copied into the *session's*
-project root (the dispatching session is rooted at the main checkout, not at this
-worktree, and a Workflow run resolves the session's registry, not the script's
-directory). It was still not found, and the retry probe minutes later confirms the
-registry does not re-read mid-session: **it is a session-start snapshot of the
-session's project root.**
+**What is still known, and it is not nothing.** The definition resolves and its
+restricted tool list is enforced through the CLI's session-agent path — that is
+what [the 2×2](#the-2x2) measured, and it is where the 19894-token figure comes
+from. The Agent-tool contract states an `agentType` is resolved "from the same
+registry as the Agent tool", i.e. `.claude/agents/`. So the residual gap is
+narrow: whether `agent({ agentType })` inside a Workflow run reads that registry
+the same way, tested from a session that can actually see the definition.
 
-Two hypotheses survive — (H1) a Workflow run never consults a project-local
-`.claude/agents/`, or (H2) it does, but only as captured at session start — and
-this run cannot separate them. **It does not need to, because they have the same
-operational consequence**, and it is a hard one:
-
-> An `agentType` literal in a workflow script raises on first dispatch from any
-> session whose start-of-session registry lacks that definition. That includes
-> every session rooted outside this worktree, and every session that started
-> before the definition existed.
-
-That consequence applies to the four **local-only** workflows exactly as it does
-to the three distributed ones. The §2b guard forbids `agentType` only in
-`rdm-core/src/templates/workflows/*.js`, so threading the local files would pass
-every gate in the repo — and still break them. **This, not the distribution
-blocker, is the reason no local call site was threaded either.**
+**Closing it needs one thing this run did not have:** a dispatch from a session
+whose project root contains `.claude/agents/rdm-mechanical.md` *at session start*.
+Once this branch lands, the definition sits at the repo root, so any ordinary
+session in this repo satisfies that by construction. Re-run `spike-agent-type.js`
+from such a session and read case B's `toolNames`: a trimmed list is the positive
+evidence AC4 gates on.
 
 #### Q2 — is `effort: 'low'` honored, or merely accepted?
 
@@ -527,17 +561,20 @@ unresolvable reference likely degrades silently rather than failing loudly",
 reasoning by analogy from the model spike's unknown-id → `null` behaviour.
 
 **The runtime does the opposite for `agentType` — and this is now OBSERVED, not
-read off a string table.** Cases B, C and F of the [Workflow-path run](#the-workflow-run)
-each raised `agent({agentType}): agent type '…' not found. Available agents: …`,
-and the workflow script distinguishes a throw from a null return explicitly, so
-the shape is unambiguous. `agentType` and `model` are handled by different code
-paths and only `model` has the silent-null hazard.
+read off a string table.** Case C of the [Workflow-path run](#the-workflow-run)
+passed a deliberately unknown id and raised
+`agent({agentType}): agent type '…' not found. Available agents: …`, and the
+workflow script distinguishes a throw from a null return explicitly, so the shape
+is unambiguous. (Cases B and F raised the same error, but for the setup reason in
+§ Q1a; C alone carries this conclusion, and it is sufficient — it is the case
+designed to test exactly this.) `agentType` and `model` are handled by different
+code paths and only `model` has the silent-null hazard.
 
-The observation also **widens** this section's conclusion. What was framed as a
-distribution-only hazard is general: per [Q1a](#q1a--does-it-resolve-from-inside-a-workflow-run-no-measured),
-the registry a Workflow run resolves did not contain a project-local definition at
-all, so the same hard failure reaches the four local-only workflows. The §2b guard
-covers only the distributed templates and would not have caught it.
+This remains a **distribution-scoped** hazard, as originally framed. A downstream
+repo receives no `.claude/agents/` definitions at all, so an `agentType` in a
+shipped template resolves against a registry that provably cannot contain it. That
+is not the situation for the four local-only workflows, whose definition sits in
+the same repo at the path the runtime searches.
 
 The consequence is material. `rdm-core/src/agent_config.rs` exposes exactly
 `generate_skills` and `generate_workflows`; there is **no** emission surface for
@@ -571,53 +608,58 @@ Workflow-path answer governs, because that is the call path the call sites use.
 | Question | Answer | Source |
 |---|---|---|
 | Q1 — registry reachable, definition resolves? | **YES** — worth **19894–19905 tokens (≈42 %)** per agent | `claude -p` 2×2 |
-| **Q1a — resolves from *inside a Workflow run*?** | **NO — raised `agent type 'rdm-mechanical' not found`; the resolved registry held no project-local definition at all** | **Workflow run, observed** |
-| Q1b — how does an unresolvable `agentType` fail? | **RAISES** (was inferred from a string table; now observed 4×) | **Workflow run, observed** |
+| **Q1a — resolves from *inside a Workflow run*?** | **STILL OPEN** — the cases that appeared to answer it were invalidated by a dispatching-session setup error (§ Q1a). Not a negative result | — |
+| Q1b — how does an `agentType` absent from the registry fail? | **RAISES** (was inferred from a string table; now observed via case C) | **Workflow run, observed** |
 | Q2 — `effort: 'low'` declared in a *definition*? | **NOT honored** — ran at `high` | `claude -p` |
 | **Q2a — `effort: 'low'` passed to `agent()`?** | **HONORED** — first `effort:"low"` record in a 156 384-record corpus | **Workflow run, observed** |
 | Q2b — an *invalid* `effort` value? | **Accepted, silently degrades to `high`** — no throw | **Workflow run, observed** |
 | Q3 — does `CLAUDE.md` load into a custom `agentType` agent? | **YES**, unavoidably, at **19320 measured tokens** (recorded estimate 12052 understates by 60 %) | `claude -p` 2×2 |
 
-**No `agent()` call site was edited** — and after the run, the reasons are firmer
-and differ per option.
+**No `agent()` call site was edited**, and the reasons differ per option.
 
-For `agentType`, two independent reasons, each sufficient:
+For `agentType`:
 
-1. **AC4's precondition is Q1a, and Q1a came back NEGATIVE.** Not "unverified" any
-   more, and not a small residual gap: the definition did not resolve, and the
-   failure mode is a raised error that takes the whole lane down. AC4 takes its
-   recorded-negative branch on measured grounds.
-2. **The distributed half is blocked outright** by the missing emission surface
+1. **AC4's precondition is Q1a, and Q1a is unverified** — as it was before the
+   run, because the run's answer to it does not count. This is a deferral pending
+   one valid re-run, **not** a finding that the option cannot work. Everything
+   known points the other way: the definition resolves through `--agent`, the
+   trim is measured at 42 %, and the documentation says `.claude/agents/` is
+   consulted and watched.
+2. **The distributed half stays blocked outright** by the missing emission surface
    (§ Distribution), independently of Q1a.
 
-Note what changed: before the run, the local-only workflows looked threadable and
-only the distributed three looked blocked. Q1a removes that distinction —
-threading *any* file would have shipped a lane that raises on first dispatch from
-an ordinary session, while passing every gate in the repo.
-
-For `effort`, one reason, and it is a scope reason rather than a technical one:
+For `effort`:
 
 3. **Q2a is positive, so the technical objection is gone** — but the phase body
    forbids threading `effort:` anywhere, on the strength of a negative this run
    overturned. Acting on the reversal means flipping a gated invariant and editing
    ~15 call sites, which is a scope decision for the roadmap owner, not something
-   to fold silently into a phase that was scoped as a recorded result. The guard
+   to fold silently into a phase that was scoped as a recorded result.
+
+**A methodological note, since this phase's whole discipline is about evidence.**
+The Q1a error was not a subtle one: an experiment was run in an environment that
+could not produce a positive result, and its negative was written up across five
+surfaces as a measured finding before anyone checked the documented behaviour of
+the thing being tested. The "accepted ≠ honored" rule this section exists to
+enforce has a mirror image — *failed ≠ impossible* — and the same standard of
+proof applies to a negative as to a positive. The guard
    therefore stays, with a corrected rationale, and the work is handed over.
 
 **Nothing about the `agentType` prize is in doubt, only its delivery** — the saving
 is measured (19894 tokens/agent), it replicates, it is additive with `CLAUDE.md`,
 and it is 42 % of a mechanical agent's floor. What remains is carried by two tasks:
 
-- `finish-agent-type-effort-spike-and-thread-mechanical-sites` — now split cleanly
-  by this run. Its `effort` half (scope item 5) is **unblocked and actionable**:
-  Q2a is positive, so thread `effort: 'low'` at the mechanical sites, drop §2b's
-  `effort:` half in the same commit, and first establish that low effort does not
-  degrade transcription fidelity. Its `agentType` half (scope item 4) is **blocked
-  on a prerequisite the task does not yet name**: making a project-local
-  `.claude/agents/` definition resolvable from a Workflow run at all. Scope item 3
-  (does the `{ schema }` structured-return path survive the restricted `tools:`
-  list; is `agentType` honored through `parallel()`) could **not** be tested,
-  because nothing resolved.
+- `finish-agent-type-effort-spike-and-thread-mechanical-sites` — its `effort` half
+  (scope item 5) is **unblocked and actionable**: Q2a is positive, so thread
+  `effort: 'low'` at the mechanical sites, drop §2b's `effort:` half in the same
+  commit, and first establish that low effort does not degrade transcription
+  fidelity. Its `agentType` half (scope items 3 and 4) needs **one valid re-run of
+  the spike first** — from a session whose project root holds
+  `.claude/agents/rdm-mechanical.md` at session start, which any ordinary session
+  in this repo satisfies once this branch lands. Scope item 3 (does the
+  `{ schema }` structured-return path survive the restricted `tools:` list; is
+  `agentType` honored through `parallel()`) is untested for the same reason: in
+  the invalid run, nothing ever ran under the definition.
 - `ship-mechanical-agent-type-downstream` — the `.claude/agents/` emission surface
   and its reference-resolution gate, which unblocks the three distributed
   workflows and lifts §2b(ii). Its "hard failure on first dispatch" premise is now

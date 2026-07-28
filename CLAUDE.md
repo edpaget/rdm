@@ -192,46 +192,36 @@ The autonomous do/autopilot lane has migrated from prose-orchestrated skills to 
 
 #### `.claude/agents/` — a new LOCAL-ONLY surface (not distributed)
 
-`.claude/agents/` is the custom-agent registry the Workflow runtime resolves `agent()`'s
-`opts.agentType` against, and it now holds one definition: `rdm-mechanical.md`, a trimmed
-transcribe-one-command agent intended for the irreducible mechanical `agent()` call sites named
-in `docs/mechanical-agent-inventory.md` § Irreducible. **Nothing references it, and nothing
-currently can.** A controlled 2×2 measures the definition saving **19894 tokens (−42 %)** per
-agent through the CLI's `--agent` path, but its companion probe
-`.claude/workflows/spike-agent-type.js` has now been dispatched (`wf_2bea58b9-38f`) and
-`agent({ agentType: 'rdm-mechanical' })` **raised** `agent type not found` from inside a
-Workflow run: the registry a Workflow run resolves is a session-start snapshot of the
-*session's* project root, and it contained no project-local definition at all. The trim is
-measured but undeliverable — at the four local-only workflows as much as the three distributed
-ones. Full evidence tables and disposition: `docs/workflow-schemas.md` § "agentType / effort
-options spike".
+`.claude/agents/` is the custom-agent registry `agent()`'s `opts.agentType` resolves against. It
+holds one definition, `rdm-mechanical.md`, referenced only by the companion probe
+`.claude/workflows/spike-agent-type.js` — **no lane workflow adopts it yet, and it is not
+distributed.** Adoption is pending one verification: whether `agent({ agentType })` resolves it
+from inside a Workflow run. Evidence, measurements and disposition live in
+`docs/workflow-schemas.md` § "agentType / effort options spike" — that section is canonical; do
+not restate its tables here.
+
+Note when adding an agent definition: Claude Code watches `.claude/agents/`, but the watcher
+covers only directories that existed at session start, so creating a scope's **first** agent
+file in a new `agents` directory needs a restart before it resolves. Project definitions are
+also discovered by walking up from the cwd, so a session rooted outside this repo will not see
+this one.
 
 Two rules follow, both gated by `scripts/verify-workflow-review.sh` §2b with planted-mutation
 self-tests:
 
-- **No workflow script may pass `effort:`** — but the reason is *scope*, not mechanism. Declaring
-  `effort: "low"` in an agent *definition* is accepted and not honored; passing
-  `effort: 'low'` to `agent()` from a Workflow run **is honored** (spike case E produced the
-  first `effort:"low"` transcript record in a 156 384-record corpus, and an invalid value
-  silently degrades to `high` rather than throwing). Threading it is handed to
-  `finish-agent-type-effort-spike-and-thread-mechanical-sites`; until that lands, the guard
-  holds.
+- **No workflow script may pass `effort:`.** The reason is *scope*, not mechanism —
+  `effort: 'low'` at a call site **is** honored. Lifting this is owned by
+  `finish-agent-type-effort-spike-and-thread-mechanical-sites`.
 - **No *distributed* workflow template (`rdm-core/src/templates/workflows/*.js`) may reference
-  `agentType`.** `rdm agent-config` emits skills and workflows only — there is no
-  `.claude/agents/` emission surface — and an unresolvable `agentType` *raises* in the runtime
-  (observed 4× in the spike) rather than degrading silently the way an unknown `model` id does,
-  so a reference in a shipped template would hard-break every downstream lane on first dispatch.
-  Lift this only together with the follow-up task `ship-mechanical-agent-type-downstream`.
-  **Caveat this guard's scope:** it greps only the distributed templates, so it would *not*
-  catch an `agentType` threaded into `document.js` / `backlog.js` / `plan-review.js` /
-  `estimate.js` — which the spike shows would break them just the same. Do not read the guard's
-  narrow scope as a licence to thread the local four.
+  `agentType`.** A downstream repo receives no `.claude/agents/` definitions at all, and an
+  `agentType` the registry lacks *raises* rather than degrading silently, so a shipped reference
+  hard-breaks every downstream lane on first dispatch. Lift only with
+  `ship-mechanical-agent-type-downstream`.
 
-One further finding worth knowing when editing this file: **the project `CLAUDE.md` is loaded
-into every subagent, including a custom-`agentType` one, and costs a measured 19320 tokens per
-agent** — 60 % more than the `chars/4` estimate in `docs/token-baseline.json`, and 71 % of a
-trimmed agent's floor. It cannot be suppressed per agent type. Every paragraph added here is
-paid for once per dispatched agent.
+**When editing this file:** the project `CLAUDE.md` is loaded into every subagent, including a
+custom-`agentType` one, and cannot be suppressed per agent type — it was measured at 19320
+tokens (2.49 chars/token, against a 48207-char file). Every paragraph added here is paid for once
+per dispatched agent, so keep additions here short and put the detail in `docs/`.
 
 #### Two surfaces: workflow vs skill
 
