@@ -106,6 +106,19 @@ Three consequences the dispatch path depends on:
    so the guard converts it to a thrown stage — the only thing `pipeline()` turns
    into a `null` element.
 
+**`plan-review.js` omits `findModel`/`verifyModel` — that omission is an
+OVERSIGHT, not policy.** `.claude/workflows/lib/plan-review.mjs` calls
+`runPlanReview({ target })` at both call sites, so `buildReviewPipeline` sees no
+`ctx.findModel`/`ctx.verifyModel` and its finders and refuters inherit the
+ambient session model (see the "key omitted" row above), while the sibling
+`dispatch-phase.js` threads
+`{ findModel: models.review_find, verifyModel: models.review_verify }`. The
+counter-argument that judgment sites are deliberately unpinned does not cover
+this case: `f4e89d7` and `scripts/verify-workflow-review.sh` §5b-mechanical both
+govern only the MECHANICAL pin, and no artifact says a judgment site should
+carry no model at all. Evidence, citations and the follow-up task are in
+[`docs/refuter-model-tiering.md`](refuter-model-tiering.md) — not restated here.
+
 Tier→model resolution itself belongs to `rdm-core` (`rdm model resolve <step>
 [--tier <t>]`). The hint is forwarded **only** for `plan`/`implement`, and only
 when a tier is actually persisted: `resolve_tier` gives the caller hint top

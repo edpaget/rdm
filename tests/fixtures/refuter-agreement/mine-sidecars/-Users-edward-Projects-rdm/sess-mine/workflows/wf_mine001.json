@@ -1,0 +1,109 @@
+{
+  "runId": "wf_mine001",
+  "timestamp": "2026-07-25T09:00:00.000Z",
+  "workflowName": "plan-review",
+  "status": "completed",
+  "startTime": 1784970000000,
+  "defaultModel": "claude-opus-5[1m]",
+  "agentCount": 6,
+  "totalTokens": 9999,
+  "totalToolCalls": 12,
+  "phases": [
+    {
+      "index": 1,
+      "title": "Review"
+    }
+  ],
+  "summary": "hermetic fixture for scripts/verify-refuter-agreement.sh",
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Review"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "find:code:correctness",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "find-a",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 100
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "refute:code:ok",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "refute-ok",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 1111
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "refute:plan:planTarget",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "refute-plan",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 2222
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "refute:code:unparseable",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "refute-bad",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 3333
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "refute:code:noverdict",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "refute-noverdict",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 4444
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "refute:code:missing",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "refute-missing",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 5555
+    }
+  ]
+}

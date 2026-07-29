@@ -424,7 +424,13 @@ reasons:
   difficulty and model tier; a `high`-tier phase's `implement`/`find`/`refute`
   agents run on a more expensive model and, per the "Evidence already
   gathered" section of the roadmap body, do not necessarily use fewer tokens
-  for it (Sonnet was *not* cheaper in tokens than Opus in the controlled A/B).
+  for it. Sonnet was *not* cheaper in tokens than Opus: the original 8-finding
+  A/B measured 52.9k vs 48.4k, and that finding has since been re-measured
+  against a 56-item adjudicated corpus — see
+  [`refuter-model-tiering.md`](refuter-model-tiering.md), which supersedes the
+  8-finding A/B as the reference for this confound. Per-agent cost is dominated
+  by boot and file reading, so re-tiering changes price per token, not token
+  volume.
 - **Rework rounds** — a phase that bounces through plan-review or code-review
   rework rounds re-runs `find`/`refute`/`plan`/`implement` agents multiple
   times; its total is not comparable to a phase that passed review on the
@@ -598,3 +604,26 @@ Gating: every figure above is `--check`-gated against the real corpus
 run by hand since it needs the sidecars) and, corpus-free, `--audit`-gated by
 `scripts/verify-token-report.sh` on any machine. The prose framing (the caveats,
 the decision rationale) is provenance-only.
+
+## Refuter model tiering
+
+Refuters run on the most expensive tier everywhere (`review-verify` resolves to
+`opus`; `plan-review.js` passes no models and inherits the opus-class session
+model). Whether they must was settled against a 56-item adjudicated finding
+corpus rather than the original 8-finding A/B, with false-negative and
+false-positive rates reported separately — a false negative ships a defect, a
+false positive costs a rework round — alongside per-tier token volume and
+tool-call counts.
+
+The headline: **token volume is not the lever here.** The cheaper tier does not
+spend fewer tokens; per-agent cost is dominated by boot and file reading. Any
+saving from re-tiering is a price-per-token argument, and this roadmap's metric
+is volume.
+
+The full method, the corpus composition, the per-class and authoritative-only
+tables, the self-consistency flip rates, the answer to the `plan-review.js`
+model-omission question, and the decision itself are in
+[`refuter-model-tiering.md`](refuter-model-tiering.md). Machine-readable figures
+live in `docs/token-baseline.json` § `refuterModelTiering` and are audited
+corpus-free by `node scripts/run-refuter-agreement.mjs --audit
+docs/token-baseline.json`. Tables are not restated here.

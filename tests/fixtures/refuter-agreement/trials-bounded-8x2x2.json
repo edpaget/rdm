@@ -1,0 +1,587 @@
+{
+  "note": "Raw trials from the recorded bounded two-tier run behind docs/refuter-model-tiering.md. Rationale text is stripped; the decision does not rest on it.",
+  "label": "bounded-8x2x2",
+  "corpusSha256": "688444b48d19c39c7fef6d6d559953460718a93531706e7958478df4d04ad1d3",
+  "baselineTier": "opus",
+  "tiers": [
+    "opus",
+    "sonnet"
+  ],
+  "replicates": 2,
+  "subset": [
+    "mined-wf_4d4e31c2-e6a-a9a79c41385d01b94",
+    "mined-wf_8df5d963-f14-af6ee0e0613005cb4",
+    "mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3",
+    "mined-wf_909dbdd4-a29-a7caffc6c9f254a77",
+    "mined-wf_c8d0fac2-6d9-a29ede2859745b969",
+    "mined-wf_22f5d9e5-0f3-adb447b8339296f2c",
+    "mined-wf_22f5d9e5-0f3-a894b1cd4c8af4808",
+    "constructed-misread-scope-dedupe"
+  ],
+  "trials": [
+    {
+      "trialId": "mined-wf_4d4e31c2-e6a-a9a79c41385d01b94|opus|1",
+      "corpusId": "mined-wf_4d4e31c2-e6a-a9a79c41385d01b94",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 70
+      },
+      "error": null,
+      "usage": {
+        "output": 7462,
+        "uncachedInput": 13,
+        "cacheWrite": 54249,
+        "cacheRead": 365012
+      },
+      "toolCalls": 12
+    },
+    {
+      "trialId": "mined-wf_4d4e31c2-e6a-a9a79c41385d01b94|opus|2",
+      "corpusId": "mined-wf_4d4e31c2-e6a-a9a79c41385d01b94",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 75
+      },
+      "error": null,
+      "usage": {
+        "output": 7040,
+        "uncachedInput": 15,
+        "cacheWrite": 52995,
+        "cacheRead": 411756
+      },
+      "toolCalls": 14
+    },
+    {
+      "trialId": "mined-wf_4d4e31c2-e6a-a9a79c41385d01b94|sonnet|1",
+      "corpusId": "mined-wf_4d4e31c2-e6a-a9a79c41385d01b94",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 68
+      },
+      "error": null,
+      "usage": {
+        "output": 4960,
+        "uncachedInput": 24,
+        "cacheWrite": 68668,
+        "cacheRead": 905777
+      },
+      "toolCalls": 11
+    },
+    {
+      "trialId": "mined-wf_4d4e31c2-e6a-a9a79c41385d01b94|sonnet|2",
+      "corpusId": "mined-wf_4d4e31c2-e6a-a9a79c41385d01b94",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 80
+      },
+      "error": null,
+      "usage": {
+        "output": 3697,
+        "uncachedInput": 22,
+        "cacheWrite": 53276,
+        "cacheRead": 724761
+      },
+      "toolCalls": 10
+    },
+    {
+      "trialId": "mined-wf_8df5d963-f14-af6ee0e0613005cb4|opus|1",
+      "corpusId": "mined-wf_8df5d963-f14-af6ee0e0613005cb4",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 86
+      },
+      "error": null,
+      "usage": {
+        "output": 4035,
+        "uncachedInput": 10,
+        "cacheWrite": 44932,
+        "cacheRead": 225641
+      },
+      "toolCalls": 8
+    },
+    {
+      "trialId": "mined-wf_8df5d963-f14-af6ee0e0613005cb4|opus|2",
+      "corpusId": "mined-wf_8df5d963-f14-af6ee0e0613005cb4",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": true,
+        "confidence": 85
+      },
+      "error": null,
+      "usage": {
+        "output": 5294,
+        "uncachedInput": 13,
+        "cacheWrite": 42494,
+        "cacheRead": 331535
+      },
+      "toolCalls": 10
+    },
+    {
+      "trialId": "mined-wf_8df5d963-f14-af6ee0e0613005cb4|sonnet|1",
+      "corpusId": "mined-wf_8df5d963-f14-af6ee0e0613005cb4",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 85
+      },
+      "error": null,
+      "usage": {
+        "output": 3743,
+        "uncachedInput": 18,
+        "cacheWrite": 44584,
+        "cacheRead": 533922
+      },
+      "toolCalls": 8
+    },
+    {
+      "trialId": "mined-wf_8df5d963-f14-af6ee0e0613005cb4|sonnet|2",
+      "corpusId": "mined-wf_8df5d963-f14-af6ee0e0613005cb4",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": true,
+        "confidence": 72
+      },
+      "error": null,
+      "usage": {
+        "output": 4437,
+        "uncachedInput": 22,
+        "cacheWrite": 45575,
+        "cacheRead": 668475
+      },
+      "toolCalls": 10
+    },
+    {
+      "trialId": "mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3|opus|1",
+      "corpusId": "mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": null,
+      "error": "no boolean `refuted` in the response",
+      "usage": {
+        "output": 11329,
+        "uncachedInput": 25,
+        "cacheWrite": 58108,
+        "cacheRead": 784274
+      },
+      "toolCalls": 17
+    },
+    {
+      "trialId": "mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3|opus|2",
+      "corpusId": "mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 82
+      },
+      "error": null,
+      "usage": {
+        "output": 10102,
+        "uncachedInput": 23,
+        "cacheWrite": 55157,
+        "cacheRead": 714039
+      },
+      "toolCalls": 16
+    },
+    {
+      "trialId": "mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3|sonnet|1",
+      "corpusId": "mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 72
+      },
+      "error": null,
+      "usage": {
+        "output": 16108,
+        "uncachedInput": 38,
+        "cacheWrite": 72323,
+        "cacheRead": 1391519
+      },
+      "toolCalls": 18
+    },
+    {
+      "trialId": "mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3|sonnet|2",
+      "corpusId": "mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 78
+      },
+      "error": null,
+      "usage": {
+        "output": 15684,
+        "uncachedInput": 48,
+        "cacheWrite": 46847,
+        "cacheRead": 1965749
+      },
+      "toolCalls": 23
+    },
+    {
+      "trialId": "mined-wf_909dbdd4-a29-a7caffc6c9f254a77|opus|1",
+      "corpusId": "mined-wf_909dbdd4-a29-a7caffc6c9f254a77",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88
+      },
+      "error": null,
+      "usage": {
+        "output": 9577,
+        "uncachedInput": 18,
+        "cacheWrite": 53641,
+        "cacheRead": 553919
+      },
+      "toolCalls": 17
+    },
+    {
+      "trialId": "mined-wf_909dbdd4-a29-a7caffc6c9f254a77|opus|2",
+      "corpusId": "mined-wf_909dbdd4-a29-a7caffc6c9f254a77",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": null,
+      "error": "no boolean `refuted` in the response",
+      "usage": {
+        "output": 8841,
+        "uncachedInput": 17,
+        "cacheWrite": 21156,
+        "cacheRead": 516360
+      },
+      "toolCalls": 15
+    },
+    {
+      "trialId": "mined-wf_909dbdd4-a29-a7caffc6c9f254a77|sonnet|1",
+      "corpusId": "mined-wf_909dbdd4-a29-a7caffc6c9f254a77",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 85
+      },
+      "error": null,
+      "usage": {
+        "output": 9094,
+        "uncachedInput": 60,
+        "cacheWrite": 61453,
+        "cacheRead": 2247420
+      },
+      "toolCalls": 29
+    },
+    {
+      "trialId": "mined-wf_909dbdd4-a29-a7caffc6c9f254a77|sonnet|2",
+      "corpusId": "mined-wf_909dbdd4-a29-a7caffc6c9f254a77",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88
+      },
+      "error": null,
+      "usage": {
+        "output": 8845,
+        "uncachedInput": 60,
+        "cacheWrite": 26157,
+        "cacheRead": 2177526
+      },
+      "toolCalls": 29
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969|opus|1",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88
+      },
+      "error": null,
+      "usage": {
+        "output": 4449,
+        "uncachedInput": 16,
+        "cacheWrite": 46148,
+        "cacheRead": 428665
+      },
+      "toolCalls": 7
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969|opus|2",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 80
+      },
+      "error": null,
+      "usage": {
+        "output": 6941,
+        "uncachedInput": 23,
+        "cacheWrite": 54145,
+        "cacheRead": 714516
+      },
+      "toolCalls": 11
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969|sonnet|1",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 95
+      },
+      "error": null,
+      "usage": {
+        "output": 2805,
+        "uncachedInput": 20,
+        "cacheWrite": 41477,
+        "cacheRead": 627622
+      },
+      "toolCalls": 9
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969|sonnet|2",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 92
+      },
+      "error": null,
+      "usage": {
+        "output": 2317,
+        "uncachedInput": 16,
+        "cacheWrite": 7963,
+        "cacheRead": 523523
+      },
+      "toolCalls": 7
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c|opus|1",
+      "corpusId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 85
+      },
+      "error": null,
+      "usage": {
+        "output": 5777,
+        "uncachedInput": 15,
+        "cacheWrite": 61654,
+        "cacheRead": 486700
+      },
+      "toolCalls": 7
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c|opus|2",
+      "corpusId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 92
+      },
+      "error": null,
+      "usage": {
+        "output": 4566,
+        "uncachedInput": 16,
+        "cacheWrite": 32179,
+        "cacheRead": 527910
+      },
+      "toolCalls": 8
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c|sonnet|1",
+      "corpusId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88
+      },
+      "error": null,
+      "usage": {
+        "output": 6646,
+        "uncachedInput": 16,
+        "cacheWrite": 63051,
+        "cacheRead": 545289
+      },
+      "toolCalls": 7
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c|sonnet|2",
+      "corpusId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 85
+      },
+      "error": null,
+      "usage": {
+        "output": 2964,
+        "uncachedInput": 20,
+        "cacheWrite": 12764,
+        "cacheRead": 675045
+      },
+      "toolCalls": 9
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-a894b1cd4c8af4808|opus|1",
+      "corpusId": "mined-wf_22f5d9e5-0f3-a894b1cd4c8af4808",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 80
+      },
+      "error": null,
+      "usage": {
+        "output": 6864,
+        "uncachedInput": 23,
+        "cacheWrite": 64839,
+        "cacheRead": 808617
+      },
+      "toolCalls": 11
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-a894b1cd4c8af4808|opus|2",
+      "corpusId": "mined-wf_22f5d9e5-0f3-a894b1cd4c8af4808",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": true,
+        "confidence": 85
+      },
+      "error": null,
+      "usage": {
+        "output": 5277,
+        "uncachedInput": 15,
+        "cacheWrite": 31214,
+        "cacheRead": 525730
+      },
+      "toolCalls": 8
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-a894b1cd4c8af4808|sonnet|1",
+      "corpusId": "mined-wf_22f5d9e5-0f3-a894b1cd4c8af4808",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 80
+      },
+      "error": null,
+      "usage": {
+        "output": 7266,
+        "uncachedInput": 34,
+        "cacheWrite": 60940,
+        "cacheRead": 1295898
+      },
+      "toolCalls": 17
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-a894b1cd4c8af4808|sonnet|2",
+      "corpusId": "mined-wf_22f5d9e5-0f3-a894b1cd4c8af4808",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": null,
+      "error": "no boolean `refuted` in the response",
+      "usage": {
+        "output": 6018,
+        "uncachedInput": 12,
+        "cacheWrite": 26282,
+        "cacheRead": 419296
+      },
+      "toolCalls": 5
+    },
+    {
+      "trialId": "constructed-misread-scope-dedupe|opus|1",
+      "corpusId": "constructed-misread-scope-dedupe",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 95
+      },
+      "error": null,
+      "usage": {
+        "output": 1384,
+        "uncachedInput": 8,
+        "cacheWrite": 39437,
+        "cacheRead": 167379
+      },
+      "toolCalls": 3
+    },
+    {
+      "trialId": "constructed-misread-scope-dedupe|opus|2",
+      "corpusId": "constructed-misread-scope-dedupe",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": null,
+      "error": "no boolean `refuted` in the response",
+      "usage": {
+        "output": 1527,
+        "uncachedInput": 6,
+        "cacheWrite": 5707,
+        "cacheRead": 145877
+      },
+      "toolCalls": 3
+    },
+    {
+      "trialId": "constructed-misread-scope-dedupe|sonnet|1",
+      "corpusId": "constructed-misread-scope-dedupe",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 92
+      },
+      "error": null,
+      "usage": {
+        "output": 1888,
+        "uncachedInput": 12,
+        "cacheWrite": 41986,
+        "cacheRead": 338906
+      },
+      "toolCalls": 5
+    },
+    {
+      "trialId": "constructed-misread-scope-dedupe|sonnet|2",
+      "corpusId": "constructed-misread-scope-dedupe",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": true,
+        "confidence": 90
+      },
+      "error": null,
+      "usage": {
+        "output": 1535,
+        "uncachedInput": 10,
+        "cacheWrite": 6181,
+        "cacheRead": 311589
+      },
+      "toolCalls": 4
+    }
+  ]
+}

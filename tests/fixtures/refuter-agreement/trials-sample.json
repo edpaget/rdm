@@ -1,0 +1,440 @@
+{
+  "note": "Hand-built synthetic trials with known ground truth, so scripts/verify-refuter-agreement.sh can check the scorer corpus-free and without dispatching a single paid agent. NOT a real run.",
+  "baselineTier": "opus",
+  "tiers": [
+    "opus",
+    "sonnet"
+  ],
+  "replicates": 2,
+  "trials": [
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969|opus|1",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 15
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969|opus|2",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 15
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c|opus|1",
+      "corpusId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 13
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c|opus|2",
+      "corpusId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 17
+    },
+    {
+      "trialId": "constructed-nongating-suggestion-unrefuted|opus|1",
+      "corpusId": "constructed-nongating-suggestion-unrefuted",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 20
+    },
+    {
+      "trialId": "constructed-nongating-suggestion-unrefuted|opus|2",
+      "corpusId": "constructed-nongating-suggestion-unrefuted",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 20
+    },
+    {
+      "trialId": "mined-wf_ff29f56e-da1-a57dccf581ebcf7d1|opus|1",
+      "corpusId": "mined-wf_ff29f56e-da1-a57dccf581ebcf7d1",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 14
+    },
+    {
+      "trialId": "mined-wf_ff29f56e-da1-a57dccf581ebcf7d1|opus|2",
+      "corpusId": "mined-wf_ff29f56e-da1-a57dccf581ebcf7d1",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 14
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a6474ce6a4b314fd4|opus|1",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a6474ce6a4b314fd4",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 12
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a6474ce6a4b314fd4|opus|2",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a6474ce6a4b314fd4",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": null,
+      "error": "no boolean `refuted` in the response",
+      "usage": {
+        "output": 500,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 3
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a24b59aeb6e8e2d86|opus|1",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a24b59aeb6e8e2d86",
+      "tier": "opus",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 10
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a24b59aeb6e8e2d86|opus|2",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a24b59aeb6e8e2d86",
+      "tier": "opus",
+      "replicate": 2,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 1000,
+        "uncachedInput": 2000,
+        "cacheWrite": 500,
+        "cacheRead": 40000
+      },
+      "toolCalls": 10
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969|sonnet|1",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 8
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969|sonnet|2",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a29ede2859745b969",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 8
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c|sonnet|1",
+      "corpusId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 7
+    },
+    {
+      "trialId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c|sonnet|2",
+      "corpusId": "mined-wf_22f5d9e5-0f3-adb447b8339296f2c",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 7
+    },
+    {
+      "trialId": "constructed-nongating-suggestion-unrefuted|sonnet|1",
+      "corpusId": "constructed-nongating-suggestion-unrefuted",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 9
+    },
+    {
+      "trialId": "constructed-nongating-suggestion-unrefuted|sonnet|2",
+      "corpusId": "constructed-nongating-suggestion-unrefuted",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 9
+    },
+    {
+      "trialId": "mined-wf_ff29f56e-da1-a57dccf581ebcf7d1|sonnet|1",
+      "corpusId": "mined-wf_ff29f56e-da1-a57dccf581ebcf7d1",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 7
+    },
+    {
+      "trialId": "mined-wf_ff29f56e-da1-a57dccf581ebcf7d1|sonnet|2",
+      "corpusId": "mined-wf_ff29f56e-da1-a57dccf581ebcf7d1",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": false,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 7
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a6474ce6a4b314fd4|sonnet|1",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a6474ce6a4b314fd4",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 9
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a6474ce6a4b314fd4|sonnet|2",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a6474ce6a4b314fd4",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 9
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a24b59aeb6e8e2d86|sonnet|1",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a24b59aeb6e8e2d86",
+      "tier": "sonnet",
+      "replicate": 1,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 6
+    },
+    {
+      "trialId": "mined-wf_c8d0fac2-6d9-a24b59aeb6e8e2d86|sonnet|2",
+      "corpusId": "mined-wf_c8d0fac2-6d9-a24b59aeb6e8e2d86",
+      "tier": "sonnet",
+      "replicate": 2,
+      "verdict": {
+        "refuted": true,
+        "confidence": 88,
+        "rationale": "fixture"
+      },
+      "usage": {
+        "output": 2000,
+        "uncachedInput": 3000,
+        "cacheWrite": 1000,
+        "cacheRead": 45000
+      },
+      "toolCalls": 6
+    }
+  ]
+}

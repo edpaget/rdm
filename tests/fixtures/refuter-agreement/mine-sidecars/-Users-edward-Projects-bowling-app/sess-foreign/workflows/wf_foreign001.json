@@ -1,0 +1,39 @@
+{
+  "runId": "wf_foreign001",
+  "timestamp": "2026-07-25T09:00:00.000Z",
+  "workflowName": "plan-review",
+  "status": "completed",
+  "startTime": 1784970000000,
+  "defaultModel": "claude-opus-5[1m]",
+  "agentCount": 1,
+  "totalTokens": 9999,
+  "totalToolCalls": 12,
+  "phases": [
+    {
+      "index": 1,
+      "title": "Review"
+    }
+  ],
+  "summary": "hermetic fixture for scripts/verify-refuter-agreement.sh",
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Review"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "refute:code:foreign",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "refute-foreign",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 7777
+    }
+  ]
+}

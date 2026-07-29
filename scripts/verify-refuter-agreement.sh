@@ -1,0 +1,669 @@
+#!/usr/bin/env bash
+# verify-refuter-agreement.sh — hermetic gate for the refuter-agreement harness.
+#
+# WHAT THIS GATES
+#   1  Hygiene: determinism, no hot-path coupling, --help surface, docs present.
+#   2  Corpus validation: schema, floors, class/authority/provenance shares.
+#   3  Prompt fidelity: every item regenerates through the REAL refutePrompt,
+#      and every MINED prompt exceeds 401 chars (proving the transcript, not the
+#      sidecar's truncated promptPreview, was the source).
+#   4  Miner behavior against the hermetic mine-sidecars fixture, including all
+#      three degradation paths and the project-slug filter.
+#   5  Scorer behavior against trials-sample.json: FN/FP separation, distinct
+#      denominators, ungraded bucketing, flip rate, per-class and
+#      authoritative-only splits, token + tool-call columns on the FN row.
+#   6  The no-blended-accuracy negative assertion (recursive, JSON and text).
+#   7  --dry-run dispatches NOTHING; --dispatch-stub drives the full path.
+#   8  --audit docs/token-baseline.json arithmetic.
+#   9  Planted-mutation self-tests proving 2, 3, 5, and 6 are not vacuous.
+#  10  CHANGELOG hygiene, mirroring scripts/verify-token-report.sh.
+#  11  The AC9 XOR: either a changed model binding is reflected in a new
+#      verify-workflow-review.sh criterion, or the unchanged binding carries the
+#      pointer comment to the decision doc. Exactly one must hold.
+#
+# THIS SCRIPT NEVER DISPATCHES A PAID AGENT. Section 7 proves it with a stub
+# that fails the run if it is ever called under --dry-run.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+FAILURES=0
+say() { printf '\n=== %s\n' "$1"; }
+pass() { printf '  ok   %s\n' "$1"; }
+fail() {
+    printf '  FAIL %s\n' "$1" >&2
+    FAILURES=$((FAILURES + 1))
+    return 0
+}
+die() {
+    printf '  FAIL %s\n' "$1" >&2
+    exit 1
+}
+
+MODULE="scripts/lib/refuter-agreement.mjs"
+MINER="scripts/mine-refuter-corpus.mjs"
+RUNNER="scripts/run-refuter-agreement.mjs"
+CORPUS="tests/fixtures/refuter-agreement/corpus.jsonl"
+TRIALS="tests/fixtures/refuter-agreement/trials-sample.json"
+SIDECARS="tests/fixtures/refuter-agreement/mine-sidecars"
+DOC="docs/refuter-model-tiering.md"
+BASELINE_JSON="docs/token-baseline.json"
+REVIEW_LIB=".claude/workflows/lib/review.mjs"
+
+# ---------------------------------------------------------------------------
+say "1. Hygiene: determinism, no hot-path coupling, help surface, docs"
+
+for f in "$MODULE" "$MINER" "$RUNNER"; do
+    [ -f "$f" ] || die "missing $f"
+    node --check "$f" >/dev/null 2>&1 || fail "$f does not parse under node --check"
+done
+pass "all three scripts parse"
+
+# Determinism: the report must be a pure function of its inputs. A clock or an
+# RNG anywhere makes two runs over the same corpus incomparable.
+BEFORE="$FAILURES"
+for f in "$MODULE" "$MINER" "$RUNNER"; do
+    if grep -nE 'Date\.now\(|Math\.random\(' "$f" >&2; then
+        fail "$f contains a forbidden nondeterministic global (a clock or an RNG)"
+    fi
+done
+[ "$FAILURES" = "$BEFORE" ] && pass "no clock and no RNG anywhere in the harness"
+
+# No network beyond the dispatcher the operator explicitly asks for.
+BEFORE="$FAILURES"
+for f in "$MODULE" "$MINER"; do
+    if grep -nE "\bfetch\(|node:https?|require\('https?'\)|child_process" "$f" >&2; then
+        fail "$f reaches the network or spawns a subprocess; only the runner may"
+    fi
+done
+[ "$FAILURES" = "$BEFORE" ] && pass "the module and the miner neither reach the network nor spawn subprocesses"
+
+# HOT-PATH COUPLING: the harness must be a strict CONSUMER of the lane. It
+# imports FROM .claude/workflows/lib/review.mjs and nothing under
+# .claude/workflows/ may import it back.
+if grep -rn 'refuter-agreement' .claude/workflows/ >&2; then
+    fail "a file under .claude/workflows/ references refuter-agreement — the harness must never be in the hot path"
+fi
+pass "nothing under .claude/workflows/ references refuter-agreement"
+grep -q "workflows/lib/review.mjs" "$RUNNER" || fail "the runner must import the REAL refutePrompt from .claude/workflows/lib/review.mjs"
+pass "the runner imports the real refutePrompt from the canonical review source"
+
+node "$RUNNER" --help >"$TMP/help.txt" 2>&1 || fail "--help exited non-zero"
+for flag in -- --corpus --tiers --replicates --dry-run --dispatch-stub --audit; do
+    [ "$flag" = "--" ] && continue
+    grep -q -- "$flag" "$TMP/help.txt" || fail "--help does not document $flag"
+done
+grep -qi "COST WARNING" "$TMP/help.txt" || fail "--help must carry the paid-dispatch cost warning"
+pass "--help exits 0, documents every flag, and warns about paid dispatch"
+
+[ -f "$DOC" ] || die "missing $DOC"
+grep -q '^## Refuter-agreement harness' "$DOC" || fail "$DOC has no '## Refuter-agreement harness' section"
+for f in "$MODULE" "$MINER" "$RUNNER"; do
+    grep -q "$f" "$DOC" || fail "$DOC does not name $f"
+done
+grep -q 'on-demand' "$DOC" || fail "$DOC must state the harness is on-demand only"
+pass "$DOC documents the harness, names all three scripts, and states on-demand only"
+grep -q 'verify-refuter-agreement.sh' CLAUDE.md || fail "CLAUDE.md has no verify-refuter-agreement.sh bullet"
+pass "CLAUDE.md carries the harness bullet"
+
+# AC7: the plan-review.js model-omission question is answered explicitly.
+BEFORE_AC7="$FAILURES"
+grep -qE '^## The .?plan-review\.js.? model-omission question' "$DOC" ||
+    fail "$DOC has no '## The plan-review.js model-omission question' section"
+grep -q 'f4e89d7' "$DOC" || fail "$DOC must cite commit f4e89d7"
+grep -q 'verify-workflow-review.sh' "$DOC" || fail "$DOC must cite scripts/verify-workflow-review.sh"
+grep -q '5b-mechanical' "$DOC" || fail "$DOC must cite the 5b-mechanical criterion"
+grep -q 'docs/workflow-schemas.md' "$DOC" || fail "$DOC must cite docs/workflow-schemas.md"
+grep -qE '\*\*Verdict: (deliberate|oversight)\*\*' "$DOC" ||
+    fail "$DOC must state an explicit '**Verdict: deliberate|oversight**' token"
+[ "$FAILURES" = "$BEFORE_AC7" ] && pass "AC7 answered with its governing citations and an explicit verdict"
+
+# AC7 code-fact re-derivation: assert the doc's premise mechanically, so it
+# cannot go stale if the binding later changes.
+PLAN_LIB=".claude/workflows/lib/plan-review.mjs"
+if grep -q 'findModel' "$PLAN_LIB"; then
+    grep -cE 'runPlanReview\(\{[^}]*findModel' "$PLAN_LIB" >/dev/null ||
+        fail "$PLAN_LIB mentions findModel but no runPlanReview call site threads it"
+    pass "plan-review.mjs threads findModel (the decision changed the binding)"
+else
+    grep -q 'runPlanReview({ target' "$PLAN_LIB" ||
+        fail "$PLAN_LIB no longer calls runPlanReview({ target ... }) — the doc's premise is stale"
+    pass "plan-review.mjs still calls runPlanReview with no findModel/verifyModel (the doc's premise holds)"
+fi
+grep -q "$DOC" docs/workflow-schemas.md || fail "docs/workflow-schemas.md must cross-reference $DOC"
+pass "docs/workflow-schemas.md cross-references the decision doc"
+
+# AC8: the decision doc's structure and its cross-artifact agreement with the JSON.
+BEFORE_HEADINGS="$FAILURES"
+for h in '^## The question' '^## Method' '^## Decision rule' '^## Results' \
+    '^### False negatives' '^### False positives' '^### Token volume' '^### Per-class' \
+    '^## DECISION' '^## Limitations'; do
+    grep -q "$h" "$DOC" || fail "$DOC is missing a required section matching $h"
+done
+[ "$FAILURES" = "$BEFORE_HEADINGS" ] && pass "$DOC carries every required section"
+DOC_DECISION="$(grep -oE 'keep-opus|tier-by-severity|thread-plan-review-models' "$DOC" | head -1 || true)"
+[ -n "$DOC_DECISION" ] || fail "$DOC's DECISION section carries no recognized decision token"
+JSON_DECISION="$(node -e 'const j=require("./'"$BASELINE_JSON"'");process.stdout.write(String(j.refuterModelTiering&&j.refuterModelTiering.decision))')"
+if [ -n "$DOC_DECISION" ] && [ "$DOC_DECISION" = "$JSON_DECISION" ]; then
+    pass "the doc and $BASELINE_JSON agree on the decision token ($DOC_DECISION)"
+else
+    fail "decision token disagrees: $DOC says '$DOC_DECISION', $BASELINE_JSON says '$JSON_DECISION'"
+fi
+grep -q "refuter-model-tiering.md" docs/token-baseline.md || fail "docs/token-baseline.md must link to the decision doc"
+pass "docs/token-baseline.md links to the decision doc"
+
+# ---------------------------------------------------------------------------
+say "2. Corpus validation and composition floors"
+
+cat >"$TMP/check-corpus.mjs" <<'EOF'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+// argv[2] is the MODULE under test (the real one, or a planted mutant), so the
+// self-tests below can re-run this exact file against a mutated module.
+const {
+  loadCorpus, summarizeCorpus, GROUND_TRUTH_CLASSES, AUTHORITIES, PROVENANCE_KINDS,
+  MIN_CORPUS_SIZE, MIN_DIVERGENCE_CLASS_SHARE, MIN_MINED_SHARE, MIN_AUTHORITATIVE_SHARE,
+  DIVERGENCE_CLASS, HISTORICAL_ONLY_SEVERITIES, AUTHORITATIVE_EVIDENCE_RE,
+} = await import(pathToFileURL(process.argv[2]).href);
+
+const text = fs.readFileSync(process.argv[3], 'utf8');
+const { items, errors } = loadCorpus(text);
+assert.deepEqual(errors, [], 'corpus has validation errors');
+const s = summarizeCorpus(items);
+
+assert.ok(items.length >= MIN_CORPUS_SIZE, `corpus is ${items.length}, floor is ${MIN_CORPUS_SIZE}`);
+assert.equal(new Set(items.map((i) => i.id)).size, items.length, 'duplicate corpus ids');
+assert.ok(s.divergenceClassShare >= MIN_DIVERGENCE_CLASS_SHARE * 100,
+  `${DIVERGENCE_CLASS} share ${s.divergenceClassShare}% is below the ${MIN_DIVERGENCE_CLASS_SHARE * 100}% floor`);
+assert.ok(s.minedShare >= MIN_MINED_SHARE * 100, `mined share ${s.minedShare}% below floor`);
+assert.ok(s.authoritativeShare >= MIN_AUTHORITATIVE_SHARE * 100, `authoritative share ${s.authoritativeShare}% below floor`);
+
+for (const i of items) {
+  assert.ok(GROUND_TRUTH_CLASSES.includes(i.groundTruth.class), `${i.id}: bad class`);
+  assert.ok(AUTHORITIES.includes(i.groundTruth.authority), `${i.id}: bad authority`);
+  assert.ok(PROVENANCE_KINDS.includes(i.provenance.kind), `${i.id}: bad provenance kind`);
+  assert.ok(i.groundTruth.evidence.trim().length > 0, `${i.id}: empty evidence`);
+  if (i.groundTruth.authority === 'authoritative') {
+    assert.ok(AUTHORITATIVE_EVIDENCE_RE.test(i.groundTruth.evidence), `${i.id}: authoritative evidence cites no artifact`);
+  }
+  assert.ok(/^[0-9a-f]{7,40}$/.test(i.groundTruth.adjudicatedAgainstCommit), `${i.id}: no adjudication commit`);
+  if (i.provenance.kind === 'mined') {
+    for (const f of ['projectSlug', 'sessionId', 'runId', 'agentId', 'workflow']) {
+      assert.ok(i.provenance[f], `${i.id}: mined item missing provenance.${f}`);
+    }
+    assert.equal(typeof i.provenance.historicalVerdict.refuted, 'boolean', `${i.id}: no historical verdict`);
+  } else {
+    assert.ok(i.provenance.builtAgainstCommit, `${i.id}: constructed item missing builtAgainstCommit`);
+    assert.ok(i.provenance.rationale, `${i.id}: constructed item missing rationale`);
+  }
+  // No corpus item may embed an absolute path outside this repo — mined
+  // findings quote real source text and must never carry a foreign tree in.
+  const blob = JSON.stringify(i);
+  const abs = blob.match(/\/Users\/[A-Za-z0-9_.-]+\/Projects\/[A-Za-z0-9_.-]+/g) || [];
+  for (const a of abs) {
+    assert.ok(/\/Projects\/rdm/.test(a), `${i.id}: embeds an absolute path outside the rdm repo: ${a}`);
+  }
+}
+
+// Both GATING severities and both modes must be represented.
+for (const sev of ['blocking', 'concern']) assert.ok(s.bySeverity[sev] > 0, `no ${sev} items`);
+for (const mode of ['code', 'plan']) assert.ok(s.byMode[mode] > 0, `no ${mode}-mode items`);
+
+// Historical-only severities are recorded, and recorded AS historical-only.
+const histOnly = items.filter((i) => HISTORICAL_ONLY_SEVERITIES.includes(i.finding.severity));
+assert.ok(histOnly.length > 0, 'no historical-only (suggestion) items recorded');
+
+console.log(JSON.stringify({ size: items.length, ...s }));
+EOF
+node "$TMP/check-corpus.mjs" "$REPO_ROOT/$MODULE" "$CORPUS" >"$TMP/corpus-summary.json" ||
+    fail "corpus validation failed"
+if [ -s "$TMP/corpus-summary.json" ]; then
+    pass "corpus validates: $(node -e 'const s=require("'"$TMP"'/corpus-summary.json");console.log(s.size+" items, divergence "+s.divergenceClassShare+"%, mined "+s.minedShare+"%, authoritative "+s.authoritativeShare+"%")')"
+fi
+
+# ---------------------------------------------------------------------------
+say "3. Prompt fidelity: regeneration through the REAL refutePrompt"
+
+cat >"$TMP/check-prompts.mjs" <<'EOF'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const { loadCorpus, checkPromptFidelity, regeneratePrompt } = await import(pathToFileURL(process.argv[2]).href);
+const { refutePrompt } = await import(pathToFileURL(process.argv[3]).href);
+
+const { items } = loadCorpus(fs.readFileSync(process.argv[4], 'utf8'));
+const drifted = [];
+let minedChecked = 0;
+for (const i of items) {
+  const r = checkPromptFidelity(i, refutePrompt);
+  if (r.drifted !== i.promptDrift) drifted.push(`${i.id}: promptDrift is ${i.promptDrift} but regeneration says ${r.drifted}`);
+  if (i.provenance.kind === 'mined') {
+    // The 401-char truncation is a promptPreview/resultPreview property of the
+    // wf_*.json SIDECARS. A mined prompt longer than that proves the TRANSCRIPT
+    // was the source.
+    const len = regeneratePrompt(i, refutePrompt).length;
+    assert.ok(len > 401, `${i.id}: recovered prompt is only ${len} chars — that is sidecar-preview length, not transcript length`);
+    minedChecked += 1;
+  }
+}
+assert.deepEqual(drifted, [], 'prompt drift is unrecorded');
+assert.ok(minedChecked > 0, 'no mined items to check');
+console.log(`${items.length} prompts regenerate as recorded; ${minedChecked} mined prompts all exceed 401 chars`);
+EOF
+node "$TMP/check-prompts.mjs" "$REPO_ROOT/$MODULE" "$REPO_ROOT/$REVIEW_LIB" "$CORPUS" >"$TMP/prompts.txt" ||
+    fail "prompt fidelity check failed"
+[ -s "$TMP/prompts.txt" ] && pass "$(cat "$TMP/prompts.txt")"
+
+# ---------------------------------------------------------------------------
+say "4. Miner behavior against the hermetic sidecar fixture"
+
+[ -d "$SIDECARS" ] || die "missing fixture tree $SIDECARS"
+node "$MINER" --root "$SIDECARS" --format json >"$TMP/mined.json" 2>"$TMP/mined.err" ||
+    fail "miner exited non-zero against the fixture"
+
+cat >"$TMP/check-miner.mjs" <<'EOF'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const m = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+
+// Two recoverable refuters; three explicit, COUNTED degradation buckets.
+assert.equal(m.recovered, 2, `expected 2 recovered, got ${m.recovered}`);
+assert.equal(m.skips['unparseable-finding'], 1, 'unparseable finding not bucketed');
+assert.equal(m.skips['no-verdict'], 1, 'verdictless transcript not bucketed');
+assert.equal(m.skips['no-transcript'], 1, 'missing transcript not bucketed');
+
+const byId = Object.fromEntries(m.items.map((i) => [i.id, i]));
+const ok = byId['mined-wf_mine001-refute-ok'];
+assert.ok(ok, 'the recoverable code-mode refuter was not mined');
+assert.equal(ok.mode, 'code');
+assert.equal(ok.dim.key, 'correctness');
+assert.equal(ok.finding.severity, 'blocking');
+assert.equal(ok.provenance.historicalVerdict.refuted, true);
+assert.equal(ok.groundTruth, null, 'the miner must NEVER assign ground truth');
+assert.ok(ok.promptLength > 401, 'mined prompt is sidecar-preview length');
+
+// The inline-brace hazard: the target is itself a pretty-printed JSON document,
+// so a naive indexOf('{') finds the TARGET and a first-line read TRUNCATES it.
+const plan = byId['mined-wf_mine001-refute-plan'];
+assert.ok(plan, 'the implementation-plan-target refuter was not mined');
+assert.equal(plan.mode, 'plan');
+assert.equal(plan.dim.key, 'coherence');
+assert.equal(plan.finding.id, 'f-2', 'the finding was mis-extracted from a brace-bearing target');
+assert.ok(plan.target.includes('\n'), 'a multi-line target was truncated to its first line');
+assert.ok(plan.target.includes('steps_per_ac'), 'the pretty-printed plan target was not recovered whole');
+
+// The out-of-scope project slug must contribute NOTHING.
+for (const i of m.items) {
+  assert.ok(i.provenance.projectSlug.startsWith('-Users-edward-Projects-rdm'),
+    `out-of-scope slug leaked into the corpus: ${i.provenance.projectSlug}`);
+}
+console.log('miner recovers both shapes, buckets all three degradations, assigns no ground truth, and filters foreign slugs');
+EOF
+node "$TMP/check-miner.mjs" "$TMP/mined.json" >"$TMP/miner.txt" || fail "miner behavior check failed"
+[ -s "$TMP/miner.txt" ] && pass "$(cat "$TMP/miner.txt")"
+
+# The slug filter is a POSITIVE gate, not an accident of the fixture: opening it
+# up must surface the foreign item.
+node "$MINER" --root "$SIDECARS" --project-slug '-Users-edward-Projects-' --format json >"$TMP/mined-open.json" 2>/dev/null
+FOREIGN="$(node -e 'const m=require("'"$TMP"'/mined-open.json");console.log(m.items.filter(i=>i.provenance.projectSlug.includes("bowling")).length)')"
+[ "$FOREIGN" = "1" ] || fail "widening --project-slug did not surface the out-of-scope item (got $FOREIGN); the filter may be vacuous"
+pass "widening --project-slug surfaces the out-of-scope item — the default filter is load-bearing"
+
+# ---------------------------------------------------------------------------
+say "5. Scorer behavior against the recorded sample trials"
+
+cat >"$TMP/check-scorer.mjs" <<'EOF'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const { loadCorpus, scoreTrials, formatReport, TOKEN_CLASSES } = await import(pathToFileURL(process.argv[2]).href);
+
+const { items } = loadCorpus(fs.readFileSync(process.argv[3], 'utf8'));
+const sample = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
+const r = scoreTrials(items, sample.trials, { baselineTier: sample.baselineTier });
+const tier = Object.fromEntries(r.tiers.map((t) => [t.tier, t]));
+
+// --- FALSE NEGATIVES: defect-truth trials only -------------------------
+assert.equal(tier.opus.all.falseNegatives, 1, 'opus FN count');
+assert.equal(tier.opus.all.defectTrials, 4, 'opus FN denominator');
+assert.equal(tier.opus.all.falseNegativeRate, 25, 'opus FN rate');
+assert.equal(tier.sonnet.all.falseNegatives, 2, 'sonnet FN count');
+assert.equal(tier.sonnet.all.falseNegativeRate, 50, 'sonnet FN rate');
+
+// --- FALSE POSITIVES: non-defect-truth trials only, a DIFFERENT denominator.
+assert.equal(tier.opus.all.falsePositives, 2, 'opus FP count');
+assert.equal(tier.opus.all.nonDefectTrials, 5, 'opus FP denominator');
+assert.equal(tier.opus.all.falsePositiveRate, 40, 'opus FP rate');
+// The two denominators genuinely differ (4 vs 5), so a pooled rate would be a
+// DIFFERENT number — which is exactly why they must never be pooled.
+assert.notEqual(tier.opus.all.defectTrials, tier.opus.all.nonDefectTrials,
+  'the FN and FP denominators must differ in this fixture, or the separation is untested');
+
+// --- UNGRADED belongs to neither rate ----------------------------------
+assert.equal(tier.opus.all.ungraded, 1, 'opus ungraded count');
+assert.equal(tier.opus.all.defectTrials + tier.opus.all.nonDefectTrials + tier.opus.all.ungraded,
+  tier.opus.all.trials, 'ungraded trials leaked into a rate denominator');
+
+// --- authoritative / judgement-call partition --------------------------
+for (const t of ['opus', 'sonnet']) {
+  for (const f of ['trials', 'ungraded', 'defectTrials', 'nonDefectTrials', 'falseNegatives', 'falsePositives']) {
+    assert.equal(tier[t].authoritativeOnly[f] + tier[t].judgementCallOnly[f], tier[t].all[f],
+      `${t}.${f}: authoritativeOnly + judgementCallOnly must partition all`);
+  }
+}
+assert.equal(tier.opus.authoritativeOnly.falsePositives, 0, 'opus authoritative FP');
+assert.equal(tier.opus.judgementCallOnly.falsePositives, 2, 'opus judgement-call FP');
+assert.equal(tier.sonnet.authoritativeOnly.falsePositives, 2, 'sonnet authoritative FP');
+
+// --- self-consistency ---------------------------------------------------
+assert.equal(tier.opus.selfConsistency.replicateFlips, 1, 'opus flips');
+assert.equal(tier.opus.selfConsistency.flipRate, 25, 'opus flip rate');
+assert.equal(tier.sonnet.selfConsistency.replicateFlips, 1, 'sonnet flips');
+
+// --- historical-only severities never reach a rate ----------------------
+assert.equal(r.historicalOnlyTrials, 4, 'historical-only trials not excluded');
+for (const t of ['opus', 'sonnet']) {
+  assert.equal(tier[t].historicalOnlyTrials, 2, `${t} historical-only count`);
+  for (const row of tier[t].byClass) {
+    assert.ok(row.class !== 'suggestion', 'a suggestion severity became a ground-truth class');
+  }
+}
+
+// --- per-class breakdown ------------------------------------------------
+const opusClasses = Object.fromEntries(tier.opus.byClass.map((c) => [c.class, c]));
+assert.equal(opusClasses['real-defect'].falseNegatives, 1);
+assert.equal(opusClasses['mechanically-true-not-a-defect'].falsePositives, 2);
+const sonnetClasses = Object.fromEntries(tier.sonnet.byClass.map((c) => [c.class, c]));
+assert.equal(sonnetClasses['mechanically-true-not-a-defect'].falsePositives, 3);
+
+// --- token + tool-call columns -----------------------------------------
+for (const t of ['opus', 'sonnet']) {
+  for (const c of TOKEN_CLASSES) assert.equal(typeof tier[t].cost[c], 'number', `${t}.cost.${c} missing`);
+  assert.equal(typeof tier[t].cost.meanTokensPerTrial, 'number');
+  assert.equal(typeof tier[t].cost.meanToolCallsPerTrial, 'number');
+}
+// Hand-summed: opus output = 11*1000 + 1*500 = 11500 over 12 dispatched trials.
+assert.equal(tier.opus.cost.output, 11500, 'opus output tokens');
+assert.equal(tier.opus.cost.dispatchedTrials, 12, 'opus dispatched trials');
+assert.equal(tier.sonnet.cost.output, 24000, 'sonnet output tokens');
+// tokenDelta present on the non-baseline tier, absent on the baseline.
+assert.equal(tier.opus.tokenDelta, null, 'the baseline tier must carry tokenDelta: null');
+assert.ok(tier.sonnet.tokenDelta && typeof tier.sonnet.tokenDelta.delta === 'number', 'sonnet tokenDelta missing');
+
+// --- the FN row carries the cost columns on the SAME line ---------------
+const text = formatReport(r, 'text');
+const fnBlock = text.split('## FALSE POSITIVES')[0];
+const opusRow = fnBlock.split('\n').find((l) => l.startsWith('| opus |'));
+assert.ok(opusRow, 'no opus row in the FALSE NEGATIVES table');
+assert.ok(/25\.0%/.test(opusRow), 'the FN row does not carry the FN rate');
+assert.ok(/11,500/.test(opusRow), 'the FN row does not carry the output-token column');
+assert.ok(/13\.6/.test(opusRow), 'the FN row does not carry the mean-tool-calls column');
+
+// --- required prose -----------------------------------------------------
+assert.ok(/ships a defect/i.test(text), 'the FN block does not spell out its consequence');
+assert.ok(/costs a rework round/i.test(text), 'the FP block does not spell out its consequence');
+assert.ok(/PRICE-PER-TOKEN, not token VOLUME/i.test(text), 'the volume-not-price caveat is missing');
+assert.ok(/DELIBERATELY WEIGHTED/i.test(text), 'the weighted-corpus caveat is missing');
+
+console.log('scorer separates FN/FP over distinct denominators, buckets ungraded, partitions by authority, tracks flips, and puts cost on the FN row');
+EOF
+node "$TMP/check-scorer.mjs" "$REPO_ROOT/$MODULE" "$CORPUS" "$TRIALS" >"$TMP/scorer.txt" ||
+    fail "scorer behavior check failed"
+[ -s "$TMP/scorer.txt" ] && pass "$(cat "$TMP/scorer.txt")"
+
+# ---------------------------------------------------------------------------
+say "6. No blended accuracy anywhere — the mechanical form of 'never averaged'"
+
+cat >"$TMP/check-blended.mjs" <<'EOF'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const { loadCorpus, scoreTrials, formatReport, findBlendedAccuracyKeys } = await import(pathToFileURL(process.argv[2]).href);
+
+const { items } = loadCorpus(fs.readFileSync(process.argv[3], 'utf8'));
+const sample = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
+const r = scoreTrials(items, sample.trials, { baselineTier: sample.baselineTier });
+
+// Recursive: no key matching /accuracy|overallCorrect|combinedRate/i at ANY depth.
+const bad = findBlendedAccuracyKeys(r);
+assert.deepEqual(bad, [], `the report carries blended-accuracy key(s): ${bad.join(', ')}`);
+// And the round-tripped JSON too, in case a renderer adds one.
+assert.deepEqual(findBlendedAccuracyKeys(JSON.parse(formatReport(r, 'json'))), []);
+// The text render must not print a bare blended percentage either.
+// The caveat sentence explaining WHY there is no accuracy number is allowed;
+// an actual blended FIGURE is not. Reject accuracy/overall-correct/combined
+// wording that sits next to a number.
+const text = formatReport(r, 'text');
+for (const line of text.split('\n')) {
+  assert.ok(!/(accuracy|overall correct|combined rate)[^.\n]*\d/i.test(line),
+    `the text report prints a blended figure: ${line}`);
+}
+console.log('no blended accuracy field or figure anywhere in the report');
+EOF
+node "$TMP/check-blended.mjs" "$REPO_ROOT/$MODULE" "$CORPUS" "$TRIALS" >"$TMP/blended.txt" ||
+    fail "blended-accuracy negative assertion failed"
+[ -s "$TMP/blended.txt" ] && pass "$(cat "$TMP/blended.txt")"
+
+# ---------------------------------------------------------------------------
+say "7. --dry-run dispatches NOTHING; --dispatch-stub drives the full path"
+
+cat >"$TMP/exploding-stub.mjs" <<'EOF'
+// If this is ever called, the run dispatched when it promised not to.
+export function dispatch() {
+  throw new Error('DISPATCHED-UNDER-DRY-RUN');
+}
+EOF
+node "$RUNNER" --tiers opus,sonnet --replicates 2 --limit 3 --dry-run \
+    --dispatch-stub "$TMP/exploding-stub.mjs" >"$TMP/dry.txt" 2>&1 ||
+    fail "--dry-run exited non-zero"
+grep -q 'Nothing dispatched' "$TMP/dry.txt" || fail "--dry-run did not report that it dispatched nothing"
+grep -q 'DISPATCHED-UNDER-DRY-RUN' "$TMP/dry.txt" && fail "--dry-run CALLED the dispatcher"
+grep -qE '= 12 trial\(s\)' "$TMP/dry.txt" || fail "--dry-run did not plan 3 items x 2 tiers x 2 replicates = 12 trials"
+pass "--dry-run plans 12 trials and provably calls no dispatcher"
+
+cat >"$TMP/fake-stub.mjs" <<'EOF'
+// Deterministic fake: opus refutes, sonnet keeps. No clock, no RNG, no network.
+export function dispatch(trial, prompt) {
+  if (typeof prompt !== 'string' || prompt.length === 0) throw new Error('dispatcher got no prompt');
+  const refuted = trial.tier === 'opus';
+  return {
+    verdict: { refuted, confidence: 90, rationale: 'fake' },
+    usage: { output: 10, uncachedInput: 20, cacheWrite: 5, cacheRead: 100 },
+    toolCalls: trial.tier === 'opus' ? 15 : 8,
+  };
+}
+EOF
+node "$RUNNER" --tiers opus,sonnet --replicates 2 --limit 4 --label stubbed \
+    --dispatch-stub "$TMP/fake-stub.mjs" --out "$TMP/stub-results.json" --format json \
+    >"$TMP/stub.txt" 2>"$TMP/stub.err" || fail "--dispatch-stub run exited non-zero"
+node -e '
+const r = require(process.argv[1]);
+const assert = require("node:assert/strict");
+assert.equal(r.trials.length, 16, "expected 16 trials");
+assert.equal(r.label, "stubbed");
+assert.ok(r.corpusSha256 && /^[0-9a-f]{64}$/.test(r.corpusSha256), "no corpus sha recorded");
+assert.equal(r.baselineTier, "opus");
+const opus = r.report.tiers.find(t => t.tier === "opus");
+assert.equal(opus.cost.meanToolCallsPerTrial, 15, "tool calls not threaded through the stub path");
+console.log("stub run produced " + r.trials.length + " scored trials with cost columns");
+' "$TMP/stub-results.json" >"$TMP/stubchk.txt" || fail "stubbed run produced an unusable results file"
+[ -s "$TMP/stubchk.txt" ] && pass "$(cat "$TMP/stubchk.txt")"
+
+# --score-only must re-score a saved file without dispatching.
+node "$RUNNER" --score-only "$TMP/stub-results.json" --format text >"$TMP/scoreonly.txt" 2>&1 ||
+    fail "--score-only exited non-zero"
+grep -q 'FALSE NEGATIVES' "$TMP/scoreonly.txt" || fail "--score-only did not render a report"
+pass "--score-only re-scores a saved results file with no dispatch"
+
+# An illegal tier must fail AT PLAN TIME, before any dispatch.
+if node "$RUNNER" --tiers not-a-real-tier --dry-run >"$TMP/badtier.txt" 2>&1; then
+    fail "an unknown --tiers value was accepted; a whole run would return null verdicts"
+fi
+grep -q 'not a tier alias' "$TMP/badtier.txt" || fail "the unknown-tier error is not actionable"
+pass "an unknown --tiers value fails at plan time with an actionable error"
+
+# ---------------------------------------------------------------------------
+say "8. --audit: corpus-free arithmetic audit of the committed figures"
+
+node "$RUNNER" --audit "$BASELINE_JSON" >"$TMP/audit.txt" 2>&1 || {
+    cat "$TMP/audit.txt" >&2
+    fail "--audit failed against $BASELINE_JSON"
+}
+grep -q 'OK' "$TMP/audit.txt" && pass "$BASELINE_JSON § refuterModelTiering is internally consistent"
+
+# Self-test: a planted off-by-one in a COPY must make --audit fail.
+node -e '
+const fs = require("fs");
+const j = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+j.refuterModelTiering.tiers[0].cost.totalTokens += 1;
+fs.writeFileSync(process.argv[2], JSON.stringify(j, null, 2));
+' "$BASELINE_JSON" "$TMP/baseline-mutant.json"
+if node "$RUNNER" --audit "$TMP/baseline-mutant.json" >/dev/null 2>&1; then
+    fail "--audit missed a planted off-by-one in cost.totalTokens"
+fi
+pass "--audit fires on a planted off-by-one (the gate is not vacuous)"
+
+# ---------------------------------------------------------------------------
+say "9. Planted-mutation self-tests (sections 2, 3, 5, 6 are not vacuous)"
+
+# 9a. Relabelling the divergence-class items must fail section 2's share floor.
+node -e '
+const fs = require("fs");
+const out = fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean).map((l) => {
+  const i = JSON.parse(l);
+  if (i.groundTruth.class === "mechanically-true-not-a-defect") i.groundTruth.class = "style-preference";
+  return JSON.stringify(i);
+});
+fs.writeFileSync(process.argv[2], out.join("\n") + "\n");
+' "$CORPUS" "$TMP/corpus-relabelled.jsonl"
+if node "$TMP/check-corpus.mjs" "$REPO_ROOT/$MODULE" "$TMP/corpus-relabelled.jsonl" >/dev/null 2>&1; then
+    fail "section 2 missed a corpus whose divergence class was relabelled away"
+fi
+pass "section 2 fires when the divergence class is relabelled away"
+
+# 9b. A bogus authority value must fail validation.
+node -e '
+const fs = require("fs");
+const lines = fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean);
+const i = JSON.parse(lines[0]);
+i.groundTruth.authority = "probably";
+lines[0] = JSON.stringify(i);
+fs.writeFileSync(process.argv[2], lines.join("\n") + "\n");
+' "$CORPUS" "$TMP/corpus-bad-authority.jsonl"
+if node "$TMP/check-corpus.mjs" "$REPO_ROOT/$MODULE" "$TMP/corpus-bad-authority.jsonl" >/dev/null 2>&1; then
+    fail "section 2 accepted an illegal groundTruth.authority"
+fi
+pass "section 2 fires on an illegal groundTruth.authority"
+
+# 9c. Stripping the citation from an authoritative item's evidence must fail.
+node -e '
+const fs = require("fs");
+const lines = fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean);
+for (let n = 0; n < lines.length; n++) {
+  const i = JSON.parse(lines[n]);
+  if (i.groundTruth.authority !== "authoritative") continue;
+  i.groundTruth.evidence = "it is obviously not a bug";
+  lines[n] = JSON.stringify(i);
+  break;
+}
+fs.writeFileSync(process.argv[2], lines.join("\n") + "\n");
+' "$CORPUS" "$TMP/corpus-uncited.jsonl"
+if node "$TMP/check-corpus.mjs" "$REPO_ROOT/$MODULE" "$TMP/corpus-uncited.jsonl" >/dev/null 2>&1; then
+    fail "section 2 accepted an authoritative item whose evidence cites no artifact"
+fi
+pass "section 2 fires when an authoritative item's evidence cites no artifact"
+
+# 9d. Mutating a recorded promptSha256 must be caught by section 3.
+node -e '
+const fs = require("fs");
+const lines = fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean);
+const i = JSON.parse(lines[0]);
+i.promptSha256 = "0".repeat(64);
+lines[0] = JSON.stringify(i);
+fs.writeFileSync(process.argv[2], lines.join("\n") + "\n");
+' "$CORPUS" "$TMP/corpus-bad-sha.jsonl"
+if node "$TMP/check-prompts.mjs" "$REPO_ROOT/$MODULE" "$REPO_ROOT/$REVIEW_LIB" "$TMP/corpus-bad-sha.jsonl" >/dev/null 2>&1; then
+    fail "section 3 missed an unrecorded prompt drift"
+fi
+pass "section 3 fires when a recorded promptSha256 no longer regenerates"
+
+# 9e. Swapping the FN and FP denominators must be caught by section 5.
+sed 's/set.defectTrials += 1;/set.nonDefectTrials += 1;/' "$MODULE" >"$TMP/module-swapped.mjs"
+if ! diff -q "$MODULE" "$TMP/module-swapped.mjs" >/dev/null; then
+    if node "$TMP/check-scorer.mjs" "$TMP/module-swapped.mjs" "$CORPUS" "$TRIALS" >/dev/null 2>&1; then
+        fail "section 5 missed a swapped FN/FP denominator"
+    fi
+    pass "section 5 fires when the FN and FP denominators are swapped"
+else
+    fail "the FN/FP denominator mutation did not apply — the self-test is vacuous"
+fi
+
+# 9f. Adding a blended accuracy field must be caught by section 6.
+sed 's/    caveats: CAVEATS,/    accuracy: 0.5,\n    caveats: CAVEATS,/' "$MODULE" >"$TMP/module-accuracy.mjs"
+if ! diff -q "$MODULE" "$TMP/module-accuracy.mjs" >/dev/null; then
+    if node "$TMP/check-blended.mjs" "$TMP/module-accuracy.mjs" "$CORPUS" "$TRIALS" >/dev/null 2>&1; then
+        fail "section 6 missed a planted blended-accuracy field"
+    fi
+    pass "section 6 fires on a planted blended-accuracy field"
+else
+    fail "the blended-accuracy mutation did not apply — the self-test is vacuous"
+fi
+
+# 9g. Mutating a fixture's finding JSON must change the mined output.
+mkdir -p "$TMP/sidecar-mutant"
+cp -R "$SIDECARS/." "$TMP/sidecar-mutant/"
+MUT_T="$TMP/sidecar-mutant/-Users-edward-Projects-rdm/sess-mine/subagents/workflows/wf_mine001/agent-refute-ok.jsonl"
+sed 's/\\"severity\\": \\"blocking\\"/\\"severity\\": \\"concern\\"/' "$MUT_T" >"$MUT_T.new" && mv "$MUT_T.new" "$MUT_T"
+node "$MINER" --root "$TMP/sidecar-mutant" --format json >"$TMP/mined-mutant.json" 2>/dev/null
+MUT_SEV="$(node -e 'const m=require("'"$TMP"'/mined-mutant.json");const i=m.items.find(x=>x.id==="mined-wf_mine001-refute-ok");console.log(i?i.finding.severity:"MISSING")')"
+[ "$MUT_SEV" = "concern" ] ||
+    fail "mutating the fixture's finding JSON did not change the mined severity (got $MUT_SEV) — the miner may not be reading the transcript"
+pass "mutating a fixture finding changes the mined output — the miner really reads the transcript"
+
+# ---------------------------------------------------------------------------
+say "10. CHANGELOG hygiene"
+
+grep -q '## \[Unreleased\]' CHANGELOG.md || fail "CHANGELOG.md has no [Unreleased] section"
+UNREL="$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md)"
+printf '%s' "$UNREL" | grep -q 'refuter-agreement' ||
+    fail "CHANGELOG.md's [Unreleased] section does not mention the refuter-agreement harness"
+printf '%s' "$UNREL" | grep -q "$DOC" ||
+    fail "CHANGELOG.md's [Unreleased] section does not point at $DOC"
+pass "CHANGELOG.md's [Unreleased] section describes the harness and names the decision doc"
+
+# ---------------------------------------------------------------------------
+say "11. AC9 XOR: a changed binding is gated, or the unchanged one is recorded"
+
+# Exactly ONE of these must hold, so neither a silent binding change nor a
+# silently-dropped decision record can pass.
+BINDING_CHANGED=0
+grep -q 'findModel' "$PLAN_LIB" && BINDING_CHANGED=1
+GATE_HAS_MODELS=0
+grep -q '5b-models' scripts/verify-workflow-review.sh && GATE_HAS_MODELS=1
+GATE_HAS_POINTER=0
+grep -q 'refuter-model-tiering.md' scripts/verify-workflow-review.sh && GATE_HAS_POINTER=1
+
+if [ "$BINDING_CHANGED" = "1" ]; then
+    [ "$GATE_HAS_MODELS" = "1" ] ||
+        fail "plan-review.mjs threads findModel but scripts/verify-workflow-review.sh has no 5b-models criterion"
+    pass "the changed judgment-site binding is gated by a 5b-models criterion"
+else
+    [ "$GATE_HAS_POINTER" = "1" ] ||
+        fail "no binding changed, but scripts/verify-workflow-review.sh carries no pointer to $DOC"
+    [ "$GATE_HAS_MODELS" = "0" ] ||
+        fail "scripts/verify-workflow-review.sh asserts a 5b-models binding that plan-review.mjs does not have"
+    pass "no binding changed, and scripts/verify-workflow-review.sh points at the decision doc"
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n'
+if [ "$FAILURES" -ne 0 ]; then
+    printf 'verify-refuter-agreement: %d check(s) FAILED\n' "$FAILURES" >&2
+    exit 1
+fi
+printf 'verify-refuter-agreement: all checks passed\n'

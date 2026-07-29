@@ -6,8 +6,8 @@
     "instrumentGitSha": "9ec1d881142cf95e4ff370c153940a2c3182f724",
     "instrumentGitShaNote": "commit that landed the phase-1 instrument on the workflow-token-reduction roadmap's shared worktree branch; not yet on main",
     "regenerateCommand": "node scripts/measure-lane-tokens.mjs --format json --workflow autopilot --workflow dispatch-phase --workflow plan-review --workflow backlog --workflow estimate --workflow document",
-    "regenerateCommandScope": "reproduces byAgentClass/byLabel/byModel/byWorkflow/totalsDiscrepancy/warnings/floorByAgentClass exactly; does NOT reproduce runSet enumeration or the whole-corpus agentContextFloor (legacyRegression/correctedRegression/measuredFloor/attribution) (see known-limitations) \u2014 filed as task measure-lane-tokens-regenerability-gap. floorByAgentClass (per-agent-class first-request floor) IS now reproduced exactly by this same regenerateCommand, as of the add-per-agent-class-floor phase; this narrows, but does not close, the regenerability gap \u2014 agentContextFloor itself remains derived out-of-band, unchanged by that phase.",
-    "ac5RegenerabilityStatus": "partial, and narrower than before \u2014 AC5 as literally worded ('is regenerable by re-running the phase-1 CLI') is still not fully met: runSet and the whole-corpus agentContextFloor (legacyRegression/correctedRegression/measuredFloor/attribution) do not regenerate from the shipped CLI (see regenerateCommandScope). The add-per-agent-class-floor phase closed one slice of this gap \u2014 floorByAgentClass now regenerates exactly via the CLI's --format json, sourced from the same regenerateCommand \u2014 without re-baselining or otherwise touching runSet/byAgentClass/agentContextFloor/totalsDiscrepancy/warnings, which remain exactly as this phase (2) left them. Closing the remainder in full still requires adding output modes to scripts/measure-lane-tokens.mjs for runSet enumeration and the whole-corpus regression figures, which this phase's own AC7 (\"no reduction change is made in this phase\") forbids touching. AC7 is kept satisfied; the remainder of AC5 is tracked as follow-up task measure-lane-tokens-regenerability-gap.",
+    "regenerateCommandScope": "reproduces byAgentClass/byLabel/byModel/byWorkflow/totalsDiscrepancy/warnings/floorByAgentClass exactly; does NOT reproduce runSet enumeration or the whole-corpus agentContextFloor (legacyRegression/correctedRegression/measuredFloor/attribution) (see known-limitations) — filed as task measure-lane-tokens-regenerability-gap. floorByAgentClass (per-agent-class first-request floor) IS now reproduced exactly by this same regenerateCommand, as of the add-per-agent-class-floor phase; this narrows, but does not close, the regenerability gap — agentContextFloor itself remains derived out-of-band, unchanged by that phase.",
+    "ac5RegenerabilityStatus": "partial, and narrower than before — AC5 as literally worded ('is regenerable by re-running the phase-1 CLI') is still not fully met: runSet and the whole-corpus agentContextFloor (legacyRegression/correctedRegression/measuredFloor/attribution) do not regenerate from the shipped CLI (see regenerateCommandScope). The add-per-agent-class-floor phase closed one slice of this gap — floorByAgentClass now regenerates exactly via the CLI's --format json, sourced from the same regenerateCommand — without re-baselining or otherwise touching runSet/byAgentClass/agentContextFloor/totalsDiscrepancy/warnings, which remain exactly as this phase (2) left them. Closing the remainder in full still requires adding output modes to scripts/measure-lane-tokens.mjs for runSet enumeration and the whole-corpus regression figures, which this phase's own AC7 (\"no reduction change is made in this phase\") forbids touching. AC7 is kept satisfied; the remainder of AC5 is tracked as follow-up task measure-lane-tokens-regenerability-gap.",
     "projectsRoot": "/Users/edward/.claude/projects",
     "runDefinition": "one wf_*.json session-sidecar file, i.e. one Workflow tool invocation",
     "agentDefinition": "one workflow_agent entry inside a run's workflowProgress[]",
@@ -15,7 +15,7 @@
       "totalTokens / workflowProgress[].tokens (the sidecar 'tokens' field) is not a cost basis - see reconciliation.reviewVsImplement",
       "a cached:true agent is genuinely zero-cost and correctly contributes 0 to every class",
       "an agent with no agentId, no transcript file, or an empty transcript falls back to the sidecar-only tokens scalar attributed entirely to output (lossy fallback, 10 agents in this run set - see warnings)",
-      "the CLI's --format json does not expose per-run enumeration (runSet) or the whole-corpus regression/first-request floor analysis (agentContextFloor's legacyRegression/correctedRegression/measuredFloor/attribution); both were derived by importing scripts/lib/token-report.mjs's exported functions directly and cross-checked against the CLI's own aggregate output. As of the add-per-agent-class-floor phase, the CLI's --format json DOES expose a per-agent-class first-request floor (see the floorByAgentClass section) using the exact same underlying firstRequestTokens quantity \u2014 this is a narrower, CLI-native complement to agentContextFloor.measuredFloor's whole-corpus figure, not a replacement for it."
+      "the CLI's --format json does not expose per-run enumeration (runSet) or the whole-corpus regression/first-request floor analysis (agentContextFloor's legacyRegression/correctedRegression/measuredFloor/attribution); both were derived by importing scripts/lib/token-report.mjs's exported functions directly and cross-checked against the CLI's own aggregate output. As of the add-per-agent-class-floor phase, the CLI's --format json DOES expose a per-agent-class first-request floor (see the floorByAgentClass section) using the exact same underlying firstRequestTokens quantity — this is a narrower, CLI-native complement to agentContextFloor.measuredFloor's whole-corpus figure, not a replacement for it."
     ]
   },
   "runSet": {
@@ -551,7 +551,7 @@
   "mechanicalContextTrim": {
     "description": "Comparison point for the mechanical-agent context trim (agentType / effort), plus the measured size of the trim itself. preChangeMedianTokens below PINS the pre-change side of the eventual lane comparison so a later run cannot silently re-baseline it. No post-change LANE corpus exists (no agent() call site was edited), but the per-agent effect of agentType and of CLAUDE.md was measured directly -- see measuredTrim2x2.",
     "status": "agentType CONFIRMED resolving from the Workflow runtime and THREADED at the local-only mechanical sites; Workflow-path trim MEASURED at 8907 tokens/agent (-23%), roughly half the 19894 the claude -p 2x2 predicted",
-    "statusReason": "The phase is feasibility-gated on a spike (.claude/workflows/spike-agent-type.js). It HAS NOW BEEN RUN via the Workflow tool -- run wf_2bea58b9-38f (8 cases, 5 OK / 3 threw) plus follow-up probe wf_6cca94eb-de0 -- and its result is recorded under workflowPathSpike below. ONE HALF OF THAT RUN IS INVALID AND ITS APPARENT FINDING IS RETRACTED. (1) The agentType cases raised `agent type not found`, but for a documented DISPATCHING-SIDE setup reason, not a runtime limitation: the run was dispatched from a session whose project root had no .claude/agents/ directory at session start, and the definition was copied in mid-run. Claude Code's subagent docs state the watcher covers only directories that existed when the session started, so creating a scope's first agent file in a NEW agents directory requires a restart. Those cases measured that mistake. agentType Workflow-path resolution is therefore UNVERIFIED, exactly as it was before the run -- it is NOT a measured negative, and the earlier claim that the trim is 'undeliverable' was wrong and is withdrawn. (2) effort:'low' passed to agent() IS honored (see effortDecision), reversing the definition-side negative; that result is sound and unaffected. The context-floor figures in measuredTrim2x2 are likewise unaffected: they come from a controlled 2x2 over `claude -p` sessions, which resolve the .claude/agents/ registry successfully and record the SAME per-request usage that scripts/lib/token-report.mjs reads. agentType: 'rdm-mechanical' IS now threaded at the mechanical call sites of the four local-only workflows (19 records; see threadedSites), on the strength of the documented registry behaviour plus the measured --agent resolution, with the confirming Workflow dispatch still outstanding. No FRESH lane run has been dispatched since, so there is still no post-change LANE corpus and no floorByAgentClass delta to report -- the delta must be measured per measurementProtocolForTheFollowUp before any saving is claimed. See docs/workflow-schemas.md \u00a7 'agentType / effort options spike' for the full evidence tables and the disposition.",
+    "statusReason": "The phase is feasibility-gated on a spike (.claude/workflows/spike-agent-type.js). It HAS NOW BEEN RUN via the Workflow tool -- run wf_2bea58b9-38f (8 cases, 5 OK / 3 threw) plus follow-up probe wf_6cca94eb-de0 -- and its result is recorded under workflowPathSpike below. ONE HALF OF THAT RUN IS INVALID AND ITS APPARENT FINDING IS RETRACTED. (1) The agentType cases raised `agent type not found`, but for a documented DISPATCHING-SIDE setup reason, not a runtime limitation: the run was dispatched from a session whose project root had no .claude/agents/ directory at session start, and the definition was copied in mid-run. Claude Code's subagent docs state the watcher covers only directories that existed when the session started, so creating a scope's first agent file in a NEW agents directory requires a restart. Those cases measured that mistake. agentType Workflow-path resolution is therefore UNVERIFIED, exactly as it was before the run -- it is NOT a measured negative, and the earlier claim that the trim is 'undeliverable' was wrong and is withdrawn. (2) effort:'low' passed to agent() IS honored (see effortDecision), reversing the definition-side negative; that result is sound and unaffected. The context-floor figures in measuredTrim2x2 are likewise unaffected: they come from a controlled 2x2 over `claude -p` sessions, which resolve the .claude/agents/ registry successfully and record the SAME per-request usage that scripts/lib/token-report.mjs reads. agentType: 'rdm-mechanical' IS now threaded at the mechanical call sites of the four local-only workflows (19 records; see threadedSites), on the strength of the documented registry behaviour plus the measured --agent resolution, with the confirming Workflow dispatch still outstanding. No FRESH lane run has been dispatched since, so there is still no post-change LANE corpus and no floorByAgentClass delta to report -- the delta must be measured per measurementProtocolForTheFollowUp before any saving is claimed. See docs/workflow-schemas.md § 'agentType / effort options spike' for the full evidence tables and the disposition.",
     "workflowPathSpike": {
       "description": "The live Workflow-tool dispatch of .claude/workflows/spike-agent-type.js. This is the call path the actual call sites use, so where it disagrees with the `claude -p` measurement it governs.",
       "basis": "measured",
@@ -610,7 +610,7 @@
         ]
       },
       "notThreaded": "The three DISTRIBUTED workflows (autopilot.js, dispatch-phase.js, review-refute-fix.js) -- blocked by the missing emission surface -- and every JUDGMENT site (find:*, refute:*, plan:*, implement:*, synthesize:draft, analyze:*, estimate:rate:*, plan-review's act:*).",
-      "gate": "scripts/verify-workflow-review.sh \u00a72c asserts both directions with planted-mutation self-tests, plus a completeness sweep that fails if a site is added or removed without updating the asserted list, or if any agentType other than 'rdm-mechanical' appears.",
+      "gate": "scripts/verify-workflow-review.sh §2c asserts both directions with planted-mutation self-tests, plus a completeness sweep that fails if a site is added or removed without updating the asserted list, or if any agentType other than 'rdm-mechanical' appears.",
       "residualRisk": "Workflow-path resolution is unconfirmed (see workflowPathSpike). If it does not resolve, these four workflows RAISE on first dispatch rather than degrading silently -- a loud failure, not a corrupting one.",
       "expectedSavingPerAgent": 8907,
       "expectedSavingBasis": "workflowPathTrimMeasured.controlledPair -- MEASURED on the Workflow path these sites use, and corroborated by a live backlog dispatch (laneDelta, ~19-20% per class at n=1). The earlier 19894 from measuredTrim2x2 measured the CLI --agent path and overstates these sites by 2.23x."
@@ -627,7 +627,7 @@
         "defaultAgent": 38689,
         "rdmMechanical": 29782,
         "trimTokens": 8907,
-        "trimPercent": 23.0,
+        "trimPercent": 23,
         "replication": "Cases E and F repeat the pair with effort:'low' added to both sides and reproduce it EXACTLY: 38689 -> 29782, the same 8907. All five default-agent cases (A,D,E,G,H) measured exactly 38689; both agentType cases (B,F) exactly 29782.",
         "n": 2
       },
@@ -660,7 +660,7 @@
         "predictedTokens": 19894,
         "predictedPercent": 42.3,
         "measuredTokens": 8907,
-        "measuredPercent": 23.0,
+        "measuredPercent": 23,
         "overstatementFactor": 2.23,
         "explanation": "Both ends of the comparison compress on the Workflow path. A Workflow subagent's DEFAULT floor is much cheaper than a CLI session's (38689 vs 47084) -- fewer tools, no skill listing, leaner harness -- while the TRIMMED agent is slightly more expensive (29782 vs 27190). The margin between them therefore roughly halves. The claude -p 2x2 remains internally valid; it simply measures a different call path than the call sites use.",
         "lesson": "This is precisely what AC5 exists to catch: the per-agent figure was recorded as a prediction and labelled as such everywhere, and measuring it on the real path cut it by more than half. Never quote measuredTrim2x2's 19894 as the saving these call sites deliver."
@@ -696,7 +696,7 @@
       "estimateErrorPercent": 60.3,
       "measuredCharsPerToken": 2.49,
       "chars": 48207,
-      "shareOfDefaultAgentFloorPercent": 41.0,
+      "shareOfDefaultAgentFloorPercent": 41,
       "shareOfTrimmedAgentFloorPercent": 71.1,
       "implicationForAttribution": "agentContextFloor.attribution uses chars/4 and is left UNCHANGED as the recorded phase-2 figure, but it is now known to understate this file by 60%. At the measured 2.49 chars/token, claudeMdSubtotal's 61247 chars price at roughly 24600 tokens rather than 15312, and remainderToolSchemasSystemPrompt (23526) is overstated by the same amount since it is derived as floor minus that subtotal.",
       "avoidable": false,
@@ -779,7 +779,7 @@
     },
     "mustNotCompareAgainst": "agentContextFloor.measuredFloor.reportedFloorTokens (38837.5) and agentContextFloor.legacyRegression.interceptTokens (37552) -- both are WHOLE-CORPUS figures, not per-class ones; comparing a mechanical-class median against either measures corpus composition, not the change.",
     "measurementProtocolForTheFollowUp": "Scope the fresh run with --since <ISO date of the first post-change run> so the pre-change corpus is not averaged in: `node scripts/measure-lane-tokens.mjs --format json --since <date> --workflow autopilot --workflow dispatch-phase --workflow plan-review --workflow backlog --workflow estimate --workflow document`, then read report.floorByAgentClass. A single fresh dispatch yields single-digit n per class, so the resulting delta is DIRECTIONAL, not a re-baseline -- record n per class alongside it and do not overwrite the figures above.",
-    "effortDecision": "NOT applied at any call site -- but as of the Workflow-path run the reason is SCOPE, not inertness. The two routes were measured separately and they DISAGREE. Route 1, definition-side (effort:\"low\" in the agent frontmatter, via --agents, whose zod schema carries effort: E.union([E.enum(vO), E.number().int()]).optional()): the agent resolved, ran normally, and its first assistant record still said effort:\"high\" -- accepted, not honored. Route 2, call-site (agent(prompt, {effort:'low'}) from inside a Workflow run, spike case E): the transcript recorded effort:\"low\" -- HONORED. Against the fixed control (across 6290 transcripts / 156384 assistant records the top-level `effort` field holds only \"high\" (55945) or is absent (100439), and \"low\" ZERO times) a single \"low\" record is conclusive, and case E is that record; the four sibling cases in the same run all recorded \"high\". Case H additionally shows an INVALID effort value is accepted and silently degrades to \"high\" rather than throwing -- the opposite of agentType, where a bad value takes the lane down. scripts/verify-workflow-review.sh \u00a72b still fails if any workflow script passes effort:, now because the phase body forbids threading it (step 4, written on the strength of the definition-side negative that route 2 overturned), not because the option is inert. Flipping that gated invariant across ~15 call sites is a scope decision for the roadmap owner. Carried by task finish-agent-type-effort-spike-and-thread-mechanical-sites scope item 5, which is now live and unblocked. Limits on the positive: n=1 per cell, and the run measured only that the request RAN at low -- not whether low effort degrades mechanical transcription fidelity, which the follow-up must establish before shipping it.",
+    "effortDecision": "NOT applied at any call site -- but as of the Workflow-path run the reason is SCOPE, not inertness. The two routes were measured separately and they DISAGREE. Route 1, definition-side (effort:\"low\" in the agent frontmatter, via --agents, whose zod schema carries effort: E.union([E.enum(vO), E.number().int()]).optional()): the agent resolved, ran normally, and its first assistant record still said effort:\"high\" -- accepted, not honored. Route 2, call-site (agent(prompt, {effort:'low'}) from inside a Workflow run, spike case E): the transcript recorded effort:\"low\" -- HONORED. Against the fixed control (across 6290 transcripts / 156384 assistant records the top-level `effort` field holds only \"high\" (55945) or is absent (100439), and \"low\" ZERO times) a single \"low\" record is conclusive, and case E is that record; the four sibling cases in the same run all recorded \"high\". Case H additionally shows an INVALID effort value is accepted and silently degrades to \"high\" rather than throwing -- the opposite of agentType, where a bad value takes the lane down. scripts/verify-workflow-review.sh §2b still fails if any workflow script passes effort:, now because the phase body forbids threading it (step 4, written on the strength of the definition-side negative that route 2 overturned), not because the option is inert. Flipping that gated invariant across ~15 call sites is a scope decision for the roadmap owner. Carried by task finish-agent-type-effort-spike-and-thread-mechanical-sites scope item 5, which is now live and unblocked. Limits on the positive: n=1 per cell, and the run measured only that the request RAN at low -- not whether low effort degrades mechanical transcription fidelity, which the follow-up must establish before shipping it.",
     "followUpTasks": [
       "finish-agent-type-effort-spike-and-thread-mechanical-sites",
       "ship-mechanical-agent-type-downstream"
@@ -807,7 +807,7 @@
     "measure-lane-tokens-missing-runid-crash"
   ],
   "nonGatingRefutationSkip": {
-    "description": "Refuter spend broken out by the SEVERITY of the finding each refuter graded \u2014 the dimension byAgentClass['refute'] cannot see. This is the evidence behind the phase-6 change: the review pipeline no longer spawns a refuter for a `suggestion`, because `suggestion` gates nothing at any tier (hasBlocking's blocker set is ['blocking'], widened to ['blocking','concern'] at the `large` tier, and the AC table is a separate structured channel that never reads finding severity).",
+    "description": "Refuter spend broken out by the SEVERITY of the finding each refuter graded — the dimension byAgentClass['refute'] cannot see. This is the evidence behind the phase-6 change: the review pipeline no longer spawns a refuter for a `suggestion`, because `suggestion` gates nothing at any tier (hasBlocking's blocker set is ['blocking'], widened to ['blocking','concern'] at the `large` tier, and the AC table is a separate structured channel that never reads finding severity).",
     "instrument": "scripts/measure-refuter-severity.mjs (over scripts/lib/token-report.mjs)",
     "regenerateCommand": "node scripts/measure-refuter-severity.mjs --until 2026-07-29T00:00:00Z --format json",
     "method": "Each refuter's transcript opens with the prompt it was given, and refutePrompt embeds the whole finding as pretty-printed JSON; the forced StructuredOutput tool call carries its verdict. The finding is extracted by brace-matching the object whose closing brace abuts the 'Start from the stance:' sentinel, so a context.target that itself contains braces (the --implementation-plan shape) parses correctly. Usage is the same requestId-deduped, four-class join buildRecords performs for the baseline above.",
@@ -824,7 +824,7 @@
         "estimate",
         "document"
       ],
-      "note": "This window is WIDER than the runSet section above (40 runs / 1943 agent records, measured 2026-07-26): the corpus grew between the two measurements. These rows are therefore NOT subtractable against byAgentClass above \u2014 compare them only within this section."
+      "note": "This window is WIDER than the runSet section above (40 runs / 1943 agent records, measured 2026-07-26): the corpus grew between the two measurements. These rows are therefore NOT subtractable against byAgentClass above — compare them only within this section."
     },
     "refuteBySeverity": [
       {
@@ -907,7 +907,7 @@
       "percentOfRefuteTokens": 20.7,
       "percentOfLaneTokens": 4.1
     },
-    "caveat": "No post-change lane corpus exists \u2014 every run in the window executed pre-change code. The projected drop is measured over the HISTORICAL corpus (the refuters this change would not have spawned, priced at their own real recorded usage), not claimed from a fresh run. Confirm on the next real lane run with the regenerateCommand above: the `suggestion` row should go to zero agents.",
+    "caveat": "No post-change lane corpus exists — every run in the window executed pre-change code. The projected drop is measured over the HISTORICAL corpus (the refuters this change would not have spawned, priced at their own real recorded usage), not claimed from a fresh run. Confirm on the next real lane run with the regenerateCommand above: the `suggestion` row should go to zero agents.",
     "gating": {
       "checkGated": [
         "refuteBySeverity[].agentCount",
@@ -926,7 +926,7 @@
         "projected.percentOfLaneTokens"
       ],
       "checkGatedBy": "node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json (recomputes over the real corpus; requires the sidecars, so it is run by hand, not by the harness)",
-      "auditGatedBy": "node scripts/measure-refuter-severity.mjs --audit docs/token-baseline.json, run by scripts/verify-token-report.sh section 6 \u2014 corpus-free arithmetic audit (rows sum to refuteTotals, projected re-derives from the rows, every refutedRate is its own quotient), so the committed figures are gated on any machine.",
+      "auditGatedBy": "node scripts/measure-refuter-severity.mjs --audit docs/token-baseline.json, run by scripts/verify-token-report.sh section 6 — corpus-free arithmetic audit (rows sum to refuteTotals, projected re-derives from the rows, every refutedRate is its own quotient), so the committed figures are gated on any machine.",
       "provenanceOnly": [
         "description",
         "method",
@@ -937,6 +937,313 @@
         "laneTotals.dedupedRequestCount"
       ]
     },
-    "decision": "`concern` keeps its refuter. Over this window a concern is overturned MORE often than a blocking finding (50.4% of 522 graded vs 38.1% of 197), and it gates outright at the `large` tier, so its refuter is buying something. `suggestion` is overturned 74.2% of the time and gates nothing either way \u2014 the verdict changes no outcome, so the agent is pure cost. The pass-through set is therefore ['suggestion'] and is tier-independent, which is why no tier has to be threaded into the pipeline."
+    "decision": "`concern` keeps its refuter. Over this window a concern is overturned MORE often than a blocking finding (50.4% of 522 graded vs 38.1% of 197), and it gates outright at the `large` tier, so its refuter is buying something. `suggestion` is overturned 74.2% of the time and gates nothing either way — the verdict changes no outcome, so the agent is pure cost. The pass-through set is therefore ['suggestion'] and is tier-independent, which is why no tier has to be threaded into the pipeline."
+  },
+  "refuterModelTiering": {
+    "question": "Must the autonomous lane's refuters stay on Opus? Measured against an adjudicated finding corpus with false-negative and false-positive rates reported separately.",
+    "doc": "docs/refuter-model-tiering.md",
+    "measurementWindow": {
+      "until": "2026-07-29T00:00:00Z"
+    },
+    "adjudicatedAgainstCommit": "0359e3035d31",
+    "corpus": {
+      "path": "tests/fixtures/refuter-agreement/corpus.jsonl",
+      "size": 56,
+      "byClass": {
+        "mechanically-true-not-a-defect": 24,
+        "stale-fact": 15,
+        "false-premise": 5,
+        "real-defect": 7,
+        "style-preference": 3,
+        "misread-scope": 2
+      },
+      "byAuthority": {
+        "authoritative": 43,
+        "judgement-call": 13
+      },
+      "byProvenance": {
+        "mined": 44,
+        "constructed": 12
+      },
+      "bySeverity": {
+        "concern": 45,
+        "blocking": 7,
+        "suggestion": 4
+      },
+      "byMode": {
+        "code": 42,
+        "plan": 14
+      },
+      "divergenceClassShare": 42.9,
+      "authoritativeShare": 76.8,
+      "minedShare": 78.6,
+      "defectItems": 7,
+      "nonDefectItems": 49,
+      "minedRefuterRecordsSeen": 987,
+      "minedRecovered": 953,
+      "minedSkipped": {
+        "noTranscript": 26,
+        "noVerdict": 8
+      }
+    },
+    "run": {
+      "label": "bounded-8x2x2",
+      "trialsFile": "tests/fixtures/refuter-agreement/trials-bounded-8x2x2.json",
+      "bounded": true,
+      "boundedRationale": "A full 56-item x 2-tier x 2-replicate pass is 224 dispatches. At the means this run measured (533k tokens per Opus dispatch, 1.01M per Sonnet one), that is ~173M tokens. Spending that to decide a token-reduction question would be self-defeating, so the recorded run uses a stratified 8-item subset. The instrument supports the full pass.",
+      "subsetSize": 8,
+      "replicates": 2,
+      "promptDrift": 0
+    },
+    "baselineTier": "opus",
+    "tiers": [
+      {
+        "tier": "opus",
+        "authoritativeOnly": {
+          "trials": 16,
+          "ungraded": 3,
+          "defectTrials": 6,
+          "nonDefectTrials": 7,
+          "falseNegatives": 1,
+          "falseNegativeRate": 16.7,
+          "correctRefutations": 4,
+          "falsePositives": 3,
+          "falsePositiveRate": 42.9,
+          "correctKeeps": 5
+        },
+        "judgementCallOnly": {
+          "trials": 0,
+          "ungraded": 0,
+          "defectTrials": 0,
+          "nonDefectTrials": 0,
+          "falseNegatives": 0,
+          "falseNegativeRate": null,
+          "correctRefutations": 0,
+          "falsePositives": 0,
+          "falsePositiveRate": null,
+          "correctKeeps": 0
+        },
+        "all": {
+          "trials": 16,
+          "ungraded": 3,
+          "defectTrials": 6,
+          "nonDefectTrials": 7,
+          "falseNegatives": 1,
+          "falseNegativeRate": 16.7,
+          "correctRefutations": 4,
+          "falsePositives": 3,
+          "falsePositiveRate": 42.9,
+          "correctKeeps": 5
+        },
+        "byClass": [
+          {
+            "class": "false-premise",
+            "trials": 2,
+            "ungraded": 1,
+            "defectTrials": 0,
+            "nonDefectTrials": 1,
+            "falseNegatives": 0,
+            "falseNegativeRate": null,
+            "correctRefutations": 0,
+            "falsePositives": 1,
+            "falsePositiveRate": 100,
+            "correctKeeps": 0
+          },
+          {
+            "class": "mechanically-true-not-a-defect",
+            "trials": 6,
+            "ungraded": 1,
+            "defectTrials": 0,
+            "nonDefectTrials": 5,
+            "falseNegatives": 0,
+            "falseNegativeRate": null,
+            "correctRefutations": 3,
+            "falsePositives": 2,
+            "falsePositiveRate": 40,
+            "correctKeeps": 0
+          },
+          {
+            "class": "misread-scope",
+            "trials": 2,
+            "ungraded": 1,
+            "defectTrials": 0,
+            "nonDefectTrials": 1,
+            "falseNegatives": 0,
+            "falseNegativeRate": null,
+            "correctRefutations": 1,
+            "falsePositives": 0,
+            "falsePositiveRate": 0,
+            "correctKeeps": 0
+          },
+          {
+            "class": "real-defect",
+            "trials": 6,
+            "ungraded": 0,
+            "defectTrials": 6,
+            "nonDefectTrials": 0,
+            "falseNegatives": 1,
+            "falseNegativeRate": 16.7,
+            "correctRefutations": 0,
+            "falsePositives": 0,
+            "falsePositiveRate": null,
+            "correctKeeps": 5
+          }
+        ],
+        "selfConsistency": {
+          "replicatePairs": 5,
+          "replicateFlips": 2,
+          "flipRate": 40
+        },
+        "historicalOnlyTrials": 0,
+        "cost": {
+          "dispatchedTrials": 16,
+          "output": 100465,
+          "uncachedInput": 256,
+          "cacheWrite": 718055,
+          "cacheRead": 7707930,
+          "totalTokens": 8526706,
+          "meanTokensPerTrial": 532919.1,
+          "toolCalls": 167,
+          "meanToolCallsPerTrial": 10.4
+        },
+        "tokenDelta": null
+      },
+      {
+        "tier": "sonnet",
+        "authoritativeOnly": {
+          "trials": 16,
+          "ungraded": 1,
+          "defectTrials": 5,
+          "nonDefectTrials": 10,
+          "falseNegatives": 2,
+          "falseNegativeRate": 40,
+          "correctRefutations": 5,
+          "falsePositives": 5,
+          "falsePositiveRate": 50,
+          "correctKeeps": 3
+        },
+        "judgementCallOnly": {
+          "trials": 0,
+          "ungraded": 0,
+          "defectTrials": 0,
+          "nonDefectTrials": 0,
+          "falseNegatives": 0,
+          "falseNegativeRate": null,
+          "correctRefutations": 0,
+          "falsePositives": 0,
+          "falsePositiveRate": null,
+          "correctKeeps": 0
+        },
+        "all": {
+          "trials": 16,
+          "ungraded": 1,
+          "defectTrials": 5,
+          "nonDefectTrials": 10,
+          "falseNegatives": 2,
+          "falseNegativeRate": 40,
+          "correctRefutations": 5,
+          "falsePositives": 5,
+          "falsePositiveRate": 50,
+          "correctKeeps": 3
+        },
+        "byClass": [
+          {
+            "class": "false-premise",
+            "trials": 2,
+            "ungraded": 0,
+            "defectTrials": 0,
+            "nonDefectTrials": 2,
+            "falseNegatives": 0,
+            "falseNegativeRate": null,
+            "correctRefutations": 0,
+            "falsePositives": 2,
+            "falsePositiveRate": 100,
+            "correctKeeps": 0
+          },
+          {
+            "class": "mechanically-true-not-a-defect",
+            "trials": 6,
+            "ungraded": 0,
+            "defectTrials": 0,
+            "nonDefectTrials": 6,
+            "falseNegatives": 0,
+            "falseNegativeRate": null,
+            "correctRefutations": 3,
+            "falsePositives": 3,
+            "falsePositiveRate": 50,
+            "correctKeeps": 0
+          },
+          {
+            "class": "misread-scope",
+            "trials": 2,
+            "ungraded": 0,
+            "defectTrials": 0,
+            "nonDefectTrials": 2,
+            "falseNegatives": 0,
+            "falseNegativeRate": null,
+            "correctRefutations": 2,
+            "falsePositives": 0,
+            "falsePositiveRate": 0,
+            "correctKeeps": 0
+          },
+          {
+            "class": "real-defect",
+            "trials": 6,
+            "ungraded": 1,
+            "defectTrials": 5,
+            "nonDefectTrials": 0,
+            "falseNegatives": 2,
+            "falseNegativeRate": 40,
+            "correctRefutations": 0,
+            "falsePositives": 0,
+            "falsePositiveRate": null,
+            "correctKeeps": 3
+          }
+        ],
+        "selfConsistency": {
+          "replicatePairs": 7,
+          "replicateFlips": 2,
+          "flipRate": 28.6
+        },
+        "historicalOnlyTrials": 0,
+        "cost": {
+          "dispatchedTrials": 16,
+          "output": 98007,
+          "uncachedInput": 432,
+          "cacheWrite": 679527,
+          "cacheRead": 15352317,
+          "totalTokens": 16130283,
+          "meanTokensPerTrial": 1008142.7,
+          "toolCalls": 201,
+          "meanToolCallsPerTrial": 12.6
+        },
+        "tokenDelta": {
+          "baselineTier": "opus",
+          "meanTokensPerTrial": 1008142.7,
+          "baselineMeanTokensPerTrial": 532919.1,
+          "delta": 475223.6,
+          "percent": 89.2
+        }
+      }
+    ],
+    "historicalOnlyTrials": 0,
+    "notes": [
+      "The corpus is DELIBERATELY WEIGHTED toward mechanically-true-not-a-defect (the class where the tiers diverged). The aggregate is therefore NOT a population estimate of production finding mix — quote the per-class rates.",
+      "False negatives and false positives have asymmetric cost and structurally different denominators. They are reported separately and are never averaged into an accuracy number.",
+      "Token figures here are VOLUME, not price. Re-tiering changes price-per-token, not token volume (the initial A/B measured Sonnet at 52.9k vs Opus 48.4k per refuter). Any cost conclusion is a price-per-token argument and must be labelled as such.",
+      "Historical `suggestion`-severity items are recorded but excluded from every headline rate: phase 6 landed NON_GATING_SEVERITIES = [suggestion], so no refuter is spawned for one again.",
+      "Ground truth is adjudicated against the PINNED TREE recorded in each item's groundTruth.adjudicatedAgainstCommit — the tree a replay run actually reads — not against the tree the historical refuter read. A finding that was real then and is fixed now is `stale-fact`/defect:false, because that is the correct answer for a refuter reading this tree."
+    ],
+    "planReviewModelOmission": {
+      "verdict": "oversight",
+      "evidence": [
+        "f4e89d7 pins MECHANICAL agents only; its own dispatch-phase half keeps review_find/review_verify threaded.",
+        "scripts/verify-workflow-review.sh 5b-mechanical asserts only that act:* is not pinned to _mechanicalModel.",
+        "docs/workflow-schemas.md \"agent() options spike\": an omitted/undefined model inherits the session model.",
+        "CHANGELOG.md describes the same session-model-inheritance leak as a defect closed elsewhere."
+      ],
+      "followUpTask": "thread-plan-review-judgment-models"
+    },
+    "decision": "keep-opus"
   }
 }

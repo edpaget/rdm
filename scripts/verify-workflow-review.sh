@@ -1825,6 +1825,16 @@ fi
 pass "plan-review.js parses four targets, fans out, reuses the core, and carves out implementation-plan"
 
 # --- 5b-mechanical. Mechanical-tier pin: fetch/gate agents pinned, act:* is not.
+#
+# JUDGMENT-SITE MODEL BINDING WAS EVALUATED AND DELIBERATELY LEFT AS-IS.
+# This section pins the MECHANICAL tier only. The separate questions — whether
+# plan-review's finders/refuters should carry an explicit model (today they
+# inherit the session model, because lib/plan-review.mjs passes no
+# findModel/verifyModel), and whether refuters can move off Opus at all — were
+# measured against an adjudicated finding corpus. The decision, its numbers and
+# the follow-up task live in docs/refuter-model-tiering.md. No model binding
+# changed, so no criterion here needed updating; read that doc before
+# re-litigating it.
 say "5b-mechanical. Mechanical-tier pin: fetch:roadmap, fetch:<kind>, gate:clear-tag:* resolve to the mechanical model"
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
