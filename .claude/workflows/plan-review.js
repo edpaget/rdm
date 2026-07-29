@@ -306,6 +306,7 @@ const PLAN_SEVERITY_CALIBRATION =
   'Plan-stage severity contract: `blocking` means the goal, approach, or scope is wrong, or the plan violates a stated architectural constraint. A defect in a specific proposed line of code or shell (e.g. an off-by-one in proposed pseudo-code) is a `concern` that rides along as an implementation note for the implementing agent — not a gate. An empty or ambiguous plan is still `blocking` (see the coherence dimension).';
 
 // Prompt for a finder agent reviewing a single dimension of `mode`.
+// >>> find-refute-verdict:begin (the default `//|` span below is swapped for the adjacent local-code-override block, defined right after this span's `:end` marker, only when scripts/gen-skill-review.sh runs with --target local --mode code — every other target/mode combination renders this span unchanged) <<<
 //|
 //| ### Find — one read-only agent per applicable dimension, in parallel
 //|
@@ -467,6 +468,58 @@ function refutePrompt(mode, dim, finding, context) {
 //|code|    another round.
 //|plan| 2. **rework** — else if any surviving finding is `blocking`. The defect is
 //|plan|    fixable in place; the work goes back for another round.
+// >>> find-refute-verdict:end <<<
+// >>> find-refute-verdict:local-code-override:begin (skipped everywhere except --target local --mode code; scripts/gen-skill-review.sh's extract_region swaps THIS `//|` span in for the default one above only in that one combination) <<<
+//|
+//| ### Find & Refute — performed by the `review-refute-fix` workflow
+//|
+//| The mechanics that used to live here — one **read-only** finder agent per
+//| applicable dimension, then a **fresh** read-only refuter per finding (the
+//| finder is never the refuter; the refuter's stance is *"this is NOT a real
+//| issue unless the code proves otherwise"*) — are now performed deterministically
+//| by the `review-refute-fix` Workflow tool invoked in step 2 above. Each finding
+//| it returns carries `id`, `concern`, `location`, `severity`, `confidence`,
+//| `what_fails`, `why`, and `recommendation`.
+//|
+//| A refuter runs only where its verdict could change something. A `suggestion`
+//| gates nothing at any tier, so the workflow dispatches no refuter for one: it
+//| passes straight through, marked `unrefuted: true`, still subject to the
+//| confidence floor. `blocking` and `concern` are always refuted (measured over
+//| the recorded corpus, a `concern` is overturned *more* often than a `blocking`
+//| one — 50.4 % vs 38.1 %), and a finding whose severity is missing or
+//| unrecognized is refuted too.
+//|
+//| ### Filter & consolidate
+//|
+//| The workflow already applies this before returning; it is recapped here so you
+//| can explain a result:
+//|
+//| - **Drop** any finding a refuter refuted, and any whose post-refutation
+//|   confidence is below the confidence floor (70).
+//| - A refuter that *crashes* is not proof of refutation — keep such a finding as
+//|   un-refuted rather than silently dropping it. It is **not** marked
+//|   `unrefuted: true` — that marker means "deliberately never graded", not
+//|   "grading failed".
+//| - A finding passed through un-refuted carries `unrefuted: true` and faces the
+//|   **same confidence floor** as everything else: the refuter is skipped, the
+//|   floor is not.
+//| - **Dedup** findings pointing at the same location / same root cause (the
+//|   fleet covers overlapping ground by design).
+//| - **Rank** survivors by severity, then confidence, then id.
+//| - Keep the AC table intact; surviving AC FAIL/PARTIAL items become findings.
+//|
+//| ### Verdict — one outcome vocabulary: `reviewed` | `rework` | `escalated`
+//|
+//| Determine the outcome in this strict order — the first matching rule wins:
+//|
+//| 1. **escalated** — a surviving blocker that needs a *human decision* rather
+//|    than a code change: the goal, approach, or scope is wrong, the work
+//|    violates a stated architectural constraint, or the acceptance criteria
+//|    themselves are missing, contradictory, or unimplementable as written.
+//| 2. **rework** — else if any surviving finding is `blocking`, or the AC table
+//|    contains any FAIL or PARTIAL criterion. The defect is fixable in place; the
+//|    work goes back for another round.
+// >>> find-refute-verdict:local-code-override:end <<<
 //| 3. **reviewed** — else. Clean, or clean after small fixes. Surviving
 //|    `concern` and `suggestion` findings are recorded and do **not** gate.
 //|

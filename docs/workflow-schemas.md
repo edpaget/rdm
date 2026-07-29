@@ -1012,6 +1012,25 @@ literal must be absent from the plan render; `needs-plan-review` and
 `unit-of-work` absent from the code render) are the detector for a mistagged
 line leaking across.
 
+`gen-skill-review.sh` also carries an orthogonal **`--target shipped|local`**
+axis (default `shipped`), independent of `--mode`: `shipped` renders the
+`rdm-core/src/templates/skill-{review,plan-review}-{cli,mcp}.md` files baked
+into released binaries; `local` renders this repo's own dogfood skill copies,
+`.claude/skills/{rdm-review,rdm-plan-review}/SKILL.md` — nothing else
+re-stamps them, so without this target they drift silently behind the
+canonical source (as the plan-mode `restraint`/severity-calibration gap this
+axis was added to close in fact did). A third, innermost marker pair nested
+inside `review-spec` — `find-refute-verdict` and its sibling
+`find-refute-verdict:local-code-override` — lets `--target local --mode code`
+swap in `rdm-review`'s workflow-delegation recap in place of the default
+Find/Refute/Verdict-point-2 prose; every other `(target, mode)` pair renders
+the default span unchanged and never sees the override block. A `{rdm_bin}`
+placeholder on example commands resolves to `rdm` for `shipped` and
+`./target/debug/rdm` for `local` (this repo's own hard dev-build rule) from
+the one substitution point in the generator. Both local targets are
+`--check`-gated in `scripts/verify-workflow-review.sh` § 1g alongside the
+shipped ones in § 1c/1d.
+
 The gate itself is likewise mode-dispatched data rather than a fork:
 `GATE_POLICY[mode][outcome]` yields `{ status, writesCompletion,
 clearsPlanReviewTag, reasonPrefix }`, and `STATUS_MAPPING` *is*

@@ -353,6 +353,168 @@ if ! grep -lE 'scripts/gen-skill-review\.sh|\.claude/workflows/lib/review\.mjs' 
 fi
 pass "no shipped template references the dogfood-only generator or its source module"
 
+# --- 1g. LOCAL DOGFOOD SKILL PROJECTION ---------------------------------------
+# The SAME canonical source ALSO projects into the two LOCAL dogfood skill
+# copies — `.claude/skills/rdm-review/SKILL.md` and
+# `.claude/skills/rdm-plan-review/SKILL.md` — via
+# `scripts/gen-skill-review.sh --target local`. Nothing else re-stamps these;
+# without this section a hand-patch (like the plan-mode drift this very phase
+# discovered) can silently recur. Gated the same way as the shipped templates:
+# --check on the real tree, a scratch drift/heal self-test per local target, a
+# non-vacuity + target-isolation self-test for the find-refute-verdict
+# local-code-override, and a {rdm_bin} substitution hygiene grep with its own
+# non-vacuity self-test.
+say "1g. Local dogfood skill projection: rdm-review and rdm-plan-review stay in sync"
+
+LOCAL_SKILLS="$REPO_ROOT/.claude/skills"
+
+if sh "$SKILL_GEN" --check --target local --mode code; then
+    pass "gen-skill-review.sh --check --target local --mode code clean"
+else
+    fail "the local rdm-review skill drifted from $LIB — run scripts/gen-skill-review.sh --target local --mode code"
+fi
+if sh "$SKILL_GEN" --check --target local --mode plan; then
+    pass "gen-skill-review.sh --check --target local --mode plan clean"
+else
+    fail "the local rdm-plan-review skill drifted from $LIB — run scripts/gen-skill-review.sh --target local --mode plan"
+fi
+
+# An unknown --target must be rejected, mirroring the existing --mode bogus
+# negative test above.
+sh "$SKILL_GEN" --target bogus >/dev/null 2>&1 &&
+    fail "an unknown --target must be rejected"
+
+# Fresh scratch tree carrying everything both local targets need, plus the
+# shipped templates (needed for the target-isolation self-test below).
+LOCALSCRATCH="$TMP/local-skill-scratch"
+mkdir -p "$LOCALSCRATCH/scripts" "$LOCALSCRATCH/.claude/workflows/lib" \
+    "$LOCALSCRATCH/rdm-core/src/templates" "$LOCALSCRATCH/.claude/skills/rdm-review" \
+    "$LOCALSCRATCH/.claude/skills/rdm-plan-review"
+cp "$SKILL_GEN" "$LOCALSCRATCH/scripts/gen-skill-review.sh"
+
+reset_localscratch_source() {
+    cp "$LIB" "$LOCALSCRATCH/.claude/workflows/lib/review.mjs"
+}
+reset_localscratch_consumers() {
+    cp "$LOCAL_SKILLS/rdm-review/SKILL.md" "$LOCALSCRATCH/.claude/skills/rdm-review/SKILL.md"
+    cp "$LOCAL_SKILLS/rdm-plan-review/SKILL.md" "$LOCALSCRATCH/.claude/skills/rdm-plan-review/SKILL.md"
+    for t in skill-review-cli.md skill-review-mcp.md skill-plan-review-cli.md skill-plan-review-mcp.md; do
+        cp "$TEMPLATES/$t" "$LOCALSCRATCH/rdm-core/src/templates/$t"
+    done
+}
+reset_localscratch_source
+reset_localscratch_consumers
+
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --check --target local --mode code >/dev/null 2>&1 ||
+    fail "scratch local/code --check should pass on a clean copy"
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --check --target local --mode plan >/dev/null 2>&1 ||
+    fail "scratch local/plan --check should pass on a clean copy"
+
+# Drift+heal self-test, target=local mode=code: corrupt the CONSUMER's
+# generated region directly (this is the file a stray hand-patch would touch —
+# the discovery that motivated this phase — so the detector must catch drift
+# on the consumer side, not just the source side already covered by 1c/1d).
+sed 's/\*\*Drop\*\* any finding a refuter refuted/**DROP** ANY FINDING A REFUTER REFUTED (mutated)/' \
+    "$LOCALSCRATCH/.claude/skills/rdm-review/SKILL.md" >"$LOCALSCRATCH/mut-review" &&
+    mv "$LOCALSCRATCH/mut-review" "$LOCALSCRATCH/.claude/skills/rdm-review/SKILL.md"
+if sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --check --target local --mode code >/dev/null 2>&1; then
+    fail "local rdm-review drift gate did NOT detect a planted consumer-side edit"
+fi
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode code >/dev/null 2>&1
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --check --target local --mode code >/dev/null 2>&1 ||
+    fail "regeneration did not restore sync in the local rdm-review scratch copy"
+pass "local rdm-review (target=local mode=code) drift detector fires on a consumer-side edit and heals"
+
+# Drift+heal self-test, target=local mode=plan.
+reset_localscratch_consumers
+sed 's/Internal consistency and completeness/INTERNAL CONSISTENCY AND COMPLETENESS (mutated)/' \
+    "$LOCALSCRATCH/.claude/skills/rdm-plan-review/SKILL.md" >"$LOCALSCRATCH/mut-plan" &&
+    mv "$LOCALSCRATCH/mut-plan" "$LOCALSCRATCH/.claude/skills/rdm-plan-review/SKILL.md"
+if sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --check --target local --mode plan >/dev/null 2>&1; then
+    fail "local rdm-plan-review drift gate did NOT detect a planted consumer-side edit"
+fi
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode plan >/dev/null 2>&1
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --check --target local --mode plan >/dev/null 2>&1 ||
+    fail "regeneration did not restore sync in the local rdm-plan-review scratch copy"
+pass "local rdm-plan-review (target=local mode=plan) drift detector fires on a consumer-side edit and heals"
+
+reset_localscratch_consumers
+
+# Non-vacuity + target-isolation: mutate a distinguishing sentence INSIDE the
+# find-refute-verdict:local-code-override block in a scratch SOURCE copy. The
+# target=local mode=code render must change; the target=shipped mode=code
+# render from the SAME mutated source must NOT (the override must never leak
+# into the shipped template).
+cp "$LOCAL_SKILLS/rdm-review/SKILL.md" "$LOCALSCRATCH/baseline-local-review.md"
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode code >/dev/null 2>&1
+cp "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" "$LOCALSCRATCH/baseline-shipped-review.md"
+
+sed 's/are now performed deterministically/ARE NOW PERFORMED DETERMINISTICALLY (mutated)/' \
+    "$LOCALSCRATCH/.claude/workflows/lib/review.mjs" >"$LOCALSCRATCH/mut-src" &&
+    mv "$LOCALSCRATCH/mut-src" "$LOCALSCRATCH/.claude/workflows/lib/review.mjs"
+grep -q 'ARE NOW PERFORMED DETERMINISTICALLY (mutated)' "$LOCALSCRATCH/.claude/workflows/lib/review.mjs" ||
+    fail "override non-vacuity mutation setup did not actually mutate the local-code-override block"
+
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode code >/dev/null 2>&1
+if diff -q "$LOCALSCRATCH/.claude/skills/rdm-review/SKILL.md" "$LOCALSCRATCH/baseline-local-review.md" >/dev/null 2>&1; then
+    fail "mutating the local-code-override block did not change the local/code render — the override is not actually consumed"
+fi
+grep -q 'ARE NOW PERFORMED DETERMINISTICALLY (mutated)' "$LOCALSCRATCH/.claude/skills/rdm-review/SKILL.md" ||
+    fail "the local/code render did not pick up the mutated override text"
+
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode code >/dev/null 2>&1
+diff -u "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" "$LOCALSCRATCH/baseline-shipped-review.md" >/dev/null 2>&1 ||
+    fail "the local-code-override mutation LEAKED into the shipped/code render — target isolation is broken"
+pass "the find-refute-verdict local-code-override is consumed by target=local mode=code and isolated from target=shipped"
+
+# Restore the scratch source and consumers before the {rdm_bin} hygiene pass.
+reset_localscratch_source
+reset_localscratch_consumers
+
+# {rdm_bin} hygiene: every freshly generated output, across both targets and
+# both modes, must never carry an unsubstituted {rdm_bin} literal, and must
+# resolve to the RIGHT binary per target.
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode code >/dev/null 2>&1
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode plan >/dev/null 2>&1
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode code >/dev/null 2>&1
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode plan >/dev/null 2>&1
+if grep -rn '{rdm_bin}' "$LOCALSCRATCH/.claude/skills" "$LOCALSCRATCH/rdm-core/src/templates" >&2; then
+    fail "an unsubstituted {rdm_bin} literal survived generation"
+fi
+grep -q './target/debug/rdm hook done-line' "$LOCALSCRATCH/.claude/skills/rdm-review/SKILL.md" ||
+    fail "the local/code render must contain './target/debug/rdm hook done-line'"
+if grep -n '\./target/debug/rdm hook done-line' "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" >&2; then
+    fail "the shipped/code render must use a bare 'rdm hook done-line', never './target/debug/rdm'"
+fi
+grep -q 'rdm hook done-line' "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" ||
+    fail "the shipped/code render must contain the bare 'rdm hook done-line' example"
+pass "{rdm_bin} resolves per target (rdm vs ./target/debug/rdm) with no leftover placeholder"
+
+# Self-test: the {rdm_bin} leftover-placeholder check must not be vacuous —
+# disable the substitution step in a scratch copy of the generator and confirm
+# it now fires.
+grep -v 'sed -i.bak "s/{rdm_bin}' "$SKILL_GEN" >"$LOCALSCRATCH/scripts/gen-skill-review-nosub.sh"
+chmod +x "$LOCALSCRATCH/scripts/gen-skill-review-nosub.sh"
+if sh "$LOCALSCRATCH/scripts/gen-skill-review-nosub.sh" --target local --mode code 2>"$LOCALSCRATCH/nosub-err"; then
+    fail "the {rdm_bin} leftover-placeholder check did not fire when substitution was disabled — it is vacuous"
+fi
+grep -q 'unsubstituted {rdm_bin}' "$LOCALSCRATCH/nosub-err" ||
+    fail "disabling {rdm_bin} substitution did not produce the expected leftover-placeholder error"
+pass "the {rdm_bin} hygiene check is not vacuous — it fires when substitution is disabled"
+
+# Direct regression assertion (AC4): the phase's reported gap — a missing
+# `restraint` dimension and missing severity-calibration paragraph in the
+# LOCAL rdm-plan-review skill — must stay closed.
+grep -q 'restraint' "$LOCAL_SKILLS/rdm-plan-review/SKILL.md" ||
+    fail "the local rdm-plan-review skill is missing the 'restraint' dimension"
+grep -q 'Plan-stage severity calibration' "$LOCAL_SKILLS/rdm-plan-review/SKILL.md" ||
+    fail "the local rdm-plan-review skill is missing the 'Plan-stage severity calibration' paragraph"
+pass "the local rdm-plan-review skill carries the restraint dimension and severity-calibration paragraph"
+
+# 1e (NO SECOND MECHANISM) already covers the invariant this section depends
+# on — one generator, one dimension table — and needed no change for --target
+# to be added, so it is not re-asserted here.
+
 # --- 2. HYGIENE --------------------------------------------------------------
 say "2. Hygiene: no forbidden nondeterministic global in workflow scripts"
 if grep -nE 'Date\.now\(|Math\.random\(' "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null; then
