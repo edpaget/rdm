@@ -2606,15 +2606,22 @@ mod tests {
     }
 
     #[test]
-    fn skill_review_acts_only_on_verified() {
+    fn skill_review_acts_by_finding_provenance() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: false,
         });
         let content = &skills[2].content;
-        assert!(content.contains("only on verified"));
-        assert!(content.contains("Never fix or file an unverified"));
+        // Findings reach the act step with two provenances: refuter-verified,
+        // and non-gating ones the pipeline passed through un-refuted. The
+        // shipped skill must state both, and must NOT keep the retired
+        // absolute that forbids acting on anything un-refuted.
+        assert!(content.contains("un-refuted ones by disposition"));
+        assert!(content.contains("graded and failed to refute"));
+        assert!(content.contains("`unrefuted: true`"));
+        assert!(content.contains("reported, not verified"));
+        assert!(!content.contains("Never fix or file an unverified"));
     }
 
     #[test]
@@ -2656,15 +2663,22 @@ mod tests {
     }
 
     #[test]
-    fn skill_review_mcp_acts_only_on_verified() {
+    fn skill_review_mcp_acts_by_finding_provenance() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
             mcp: true,
         });
         let content = &skills[2].content;
-        assert!(content.contains("only on verified"));
-        assert!(content.contains("Never fix or file an unverified"));
+        // Findings reach the act step with two provenances: refuter-verified,
+        // and non-gating ones the pipeline passed through un-refuted. The
+        // shipped skill must state both, and must NOT keep the retired
+        // absolute that forbids acting on anything un-refuted.
+        assert!(content.contains("un-refuted ones by disposition"));
+        assert!(content.contains("graded and failed to refute"));
+        assert!(content.contains("`unrefuted: true`"));
+        assert!(content.contains("reported, not verified"));
+        assert!(!content.contains("Never fix or file an unverified"));
     }
 
     #[test]

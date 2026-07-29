@@ -41,7 +41,7 @@ Run the reads yourself and pass the parsed JSON through the workflow `args`. Eve
 
 ## What the workflow does (domain intent)
 
-The pipeline runs `find → refute → filter → verdict → act → gate`; no finding is surfaced, fixed, or acted on until a *separate* refuter agent has failed to refute it. Its full specification — which dimensions run, how findings are graded, what each outcome means — is **generated from the canonical review source** (shared with `rdm-review`, which reviews the diff after implementation) and appears under "Review specification" below.
+The pipeline runs `find → refute → filter → verdict → act → gate`; no finding of a gating severity is surfaced, fixed, or acted on until a *separate* refuter agent has failed to refute it (a non-gating `suggestion` passes through marked `unrefuted: true`). Its full specification — which dimensions run, how findings are graded, what each outcome means — is **generated from the canonical review source** (shared with `rdm-review`, which reviews the diff after implementation) and appears under "Review specification" below.
 
 Key domain behaviors the workflow implements, worth knowing when reading its output:
 
@@ -54,7 +54,7 @@ Key domain behaviors the workflow implements, worth knowing when reading its out
 ## Guidelines
 
 - Be objective, and cite evidence for every finding.
-- The dispatched sub-agents only review and report — they never edit. Only the orchestrator applies small fixes (whole-`--body` writes) and files large findings as tasks, and only after refutation.
+- The dispatched sub-agents only review and report — they never edit. Only the orchestrator applies small fixes (whole-`--body` writes) and files large findings as tasks, and only after refutation or under the un-refuted disposition rule.
 - Never guess intent when the target document is ambiguous or missing — report it as a finding instead.
 - A surviving `blocking` finding yields `rework` or `escalated`; concerns and suggestions alone never hold the gate closed.
 
@@ -198,9 +198,22 @@ proposed pseudo-code) is a `concern` that rides along as an implementation
 note for the implementing agent — not a gate. An empty or ambiguous plan is
 still `blocking`.
 
-### Act — only on verified findings
+### Act — verified findings by size, un-refuted ones by disposition
 
-Report first, then act. Never fix or file an unverified finding.
+Report first, then act. Findings reach this step with two different
+provenances, and they are handled differently:
+
+- A finding a refuter **graded and failed to refute** is acted on by SIZE —
+  small or large, below.
+- A finding marked `unrefuted: true` was **reported, not verified** — no
+  refuter graded it (it is a non-gating severity; see § Refute), so treat it
+  as an observation, never as a confirmed defect. Incorporate the ones that
+  improve readability or clarity where the change is **not major**; skip the
+  rest and state why. "Major" means anything that would alter the approach,
+  widen scope, or touch code outside the diff under review — that is
+  follow-up material, not an in-flight edit.
+
+Never fix or file a finding that carries neither provenance.
 
 - **Small** — a localized wording, typo, or missing-detail fix to the plan
   document itself. Apply it directly: the body is whole-document-authoritative,
@@ -261,12 +274,16 @@ Scope of the gate by target type:
 - Be objective — evaluate against the stated acceptance criteria, not personal
   preferences.
 - Provide specific evidence (file:line, test name) for every finding.
-- **No finding is surfaced, fixed, or filed until a separate refuter agent has
-  failed to refute it.** The finder never grades its own work.
+- **No finding of a GATING severity is surfaced, fixed, or filed until a
+  separate refuter agent has failed to refute it.** The finder never grades
+  its own work. Non-gating `suggestion` findings are the one exception: they
+  pass through un-refuted, marked `unrefuted: true`, and are acted on under
+  the disposition rule above rather than fixed as verified defects.
 - Filter hard: drop refuted findings and anything below 70 confidence. One
   strong finding beats five weak ones.
 - The dispatched sub-agents only review and report — they never modify code.
-  The orchestrator applies small fixes, and only after refutation.
+  The orchestrator applies small fixes, and only after refutation or under the
+  un-refuted disposition rule.
 - Never fix large changes inline — file them as tasks.
 - If acceptance criteria are missing or vague, report it as a finding rather
   than guessing intent.

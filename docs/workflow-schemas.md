@@ -754,6 +754,24 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `what_fails`    | string (required)                        | the specific problem                              |
 | `why`           | string                                   | root cause / which rule, AC, or principle         |
 | `recommendation`| string                                   | concrete fix                                      |
+| `unrefuted`     | `true` (post-pipeline only)              | set by `buildReviewPipeline`, never by a finder    |
+
+`unrefuted` is added by the pipeline, not returned by a finder: a finding whose
+severity is in `NON_GATING_SEVERITIES` (`['suggestion']`) gets **no refuter at
+all** — its verdict could not change the outcome at any tier, since
+`hasBlocking`'s blocker set is `['blocking']` (widened to
+`['blocking','concern']` at the `large` tier) and the AC table never reads
+finding severity — so it passes straight through carrying `unrefuted: true`.
+The confidence floor still applies to it (`survives(finding, null)`), and the
+rule is fail-safe: a finding whose severity is missing or unrecognized is
+refuted like a gating one. A refuter that *crashes* also yields a null verdict,
+but such a finding is **not** marked `unrefuted` — the marker means
+"deliberately never graded", not "grading failed". Consumers must treat an
+`unrefuted` finding as an observation, never a confirmed defect (see
+`UNREFUTED_DISPOSITION`, single-sourced in the stamped block and appended to
+both act prompts). Measured evidence for the set's membership —
+per-severity refutation rates and the token cost of the skipped refuters — is in
+`docs/token-baseline.json` § `nonGatingRefutationSkip`.
 
 ### `AC_ENTRY` / `AC_REVIEW_SCHEMA`
 
@@ -1169,10 +1187,19 @@ commit). `dispatch-phase.js` wires this dep to an `agent()` call using
 
 | field                | type                                       | notes                                    |
 | -------------------- | ------------------------------------------ | ------------------------------------------ |
-| `handled`            | array of `{ id, action, taskSlug? }` (required) | one entry per finding the Act step was asked to incorporate |
+| `handled`            | array of `{ id, action, taskSlug?, reason? }` (required) | one entry per finding the Act step was asked to incorporate |
 | `handled[].id`       | string (required)                         | matches the `FINDING.id` it disposed of  |
-| `handled[].action`   | `fixed-inline` \| `filed-as-task` (required) | how the finding was incorporated       |
+| `handled[].action`   | `fixed-inline` \| `filed-as-task` \| `skipped` (required) | how the finding was incorporated       |
 | `handled[].taskSlug` | string                                     | present when `action` is `filed-as-task` |
+| `handled[].reason`   | string                                     | why, when `action` is `skipped`          |
+
+`skipped` exists for the `unrefuted` half of a mixed payload (see `FINDING`
+above): the disposition rule tells the act step to incorporate the un-refuted
+observations that are not major and to *skip the rest and state why*, and
+without this action it would have to misreport such a skip as one of the other
+two. The prompt only asks for it when a survivor actually carries
+`unrefuted: true`; with an all-verified payload `buildCodeActPrompt` is
+byte-identical to its pre-pass-through form.
 
 The Act step is a no-op when `d.act` is omitted, and its result (or a thrown
 call) never affects the outcome — concern/suggestion findings are non-gating

@@ -13,7 +13,7 @@ allowed-tools:
 
 Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task.
 {principles}
-The review runs as a pipeline: **find → refute → filter → verdict → act → gate**. Findings are never surfaced, fixed, or acted on until a *separate* agent has tried to refute them. The agent that finds an issue is never the agent that confirms it.
+The review runs as a pipeline: **find → refute → filter → verdict → act → gate**. Findings of a **gating** severity are never surfaced, fixed, or acted on until a *separate* agent has tried to refute them; a non-gating `suggestion` is passed through marked `unrefuted: true` and acted on under the un-refuted disposition rule (§ Act). The agent that finds an issue is never the agent that confirms it.
 
 The specification of that pipeline — which dimensions run, how findings are graded, and what each outcome means — is **generated from the canonical review source** and is identical across every rdm surface (the interactive skill, `rdm-dispatch-phase`, and `rdm-autopilot`). It appears under "Review specification" below. The steps here wire it to the CLI.
 
@@ -44,7 +44,7 @@ using the tier hint derived in step 1, and pass `model` explicitly when dispatch
 
 ### 3. Refute — per-finding refute pass (parallel)
 
-Dispatch a **fresh** `Agent` per finding, per **Review specification § Refute**. Run these concurrently; the finder is never the refuter. Suggestions may skip refutation (low stakes) but are still subject to the confidence floor.
+Dispatch a **fresh** `Agent` per **gating** finding (`blocking` / `concern`), per **Review specification § Refute**. Run these concurrently; the finder is never the refuter. A `suggestion` skips refutation — it gates nothing at any tier — and passes through marked `unrefuted: true`, still subject to the confidence floor.
 
 The refute agent also runs on an explicitly resolved model, never the inherited session model: resolve `model=$(rdm model resolve review-verify)` once (its default tier is already floored to the top review tier, so no `--tier` hint is needed) and pass `model` when dispatching each refute agent.
 
@@ -179,20 +179,51 @@ Each finding is reported as:
   recommendation: <concrete fix>
 ```
 
-### Refute — a FRESH agent per finding, in parallel
+### Refute — a FRESH agent per GATING finding, in parallel
 
-For every finding, dispatch a **separate** read-only refuter. The agent that
-found an issue is never the agent that confirms it. The refuter starts from
-the stance *"this is NOT a real issue unless the code proves otherwise"*,
-reads the actual cited location and its surrounding context, and returns
-`refuted` (boolean), a corrected `confidence` (0-100), and a rationale.
+For every finding whose severity can gate the outcome, dispatch a **separate**
+read-only refuter. The agent that found an issue is never the agent that
+confirms it. The refuter starts from the stance *"this is NOT a real issue
+unless the code proves otherwise"*, reads the actual cited location and its
+surrounding context, and returns `refuted` (boolean), a corrected `confidence`
+(0-100), and a rationale.
+
+**Non-gating pass-through.** A `suggestion` gates nothing at any tier — the
+verdict consults only `blocking` (and `concern`, at the `large` tier), and the
+acceptance-criteria channel never reads a finding's severity at all — so a
+refuter's verdict on one cannot change the outcome either way. No refuter is
+dispatched for it. It passes straight through, marked `unrefuted: true`, and
+is still subject to the confidence floor. `suggestion` is the ONLY severity
+treated this way, and the rule is fail-safe: a finding whose severity is
+missing or unrecognized is refuted like a gating one.
+
+`concern` is deliberately **not** passed through, even though it does not gate
+at the default tier. Measured over the whole recorded refuter corpus (989
+refuters; `scripts/measure-refuter-severity.mjs`, recorded in
+`docs/token-baseline.json` § `nonGatingRefutationSkip`):
+
+| severity | graded | refuted | rate |
+|---|---:|---:|---:|
+| blocking | 197 | 75 | 38.1 % |
+| concern | 522 | 263 | 50.4 % |
+| suggestion | 236 | 175 | 74.2 % |
+
+A `concern` is overturned MORE often than a `blocking` one, so its refuter is
+doing real work — and it gates outright at the `large` tier. Skipping only
+`suggestion` drops 239 refuters (24.2 % of all refuters, 20.7 % of refuter
+tokens) with no severity that can gate losing its counter-check.
 
 ### Filter & consolidate
 
 - **Drop** any finding a refuter refuted, and any whose post-refutation
   confidence is below the confidence floor (70).
 - A refuter that *crashes* is not proof of refutation — keep such a finding as
-  un-refuted rather than silently dropping it.
+  un-refuted rather than silently dropping it. It is **not** marked
+  `unrefuted: true`: that marker means "deliberately never graded", not
+  "grading failed".
+- A finding passed through un-refuted carries `unrefuted: true` and faces the
+  **same confidence floor** as everything else: the refuter is skipped, the
+  floor is not.
 - **Dedup** findings pointing at the same location / same root cause (the
   fleet covers overlapping ground by design).
 - **Rank** survivors by severity, then confidence, then id.
@@ -228,9 +259,22 @@ Determine the outcome in this strict order — the first matching rule wins:
 Never downgrade a surviving `blocking` finding to "reviewed with concerns" —
 a blocker always yields `rework` or `escalated`.
 
-### Act — only on verified findings
+### Act — verified findings by size, un-refuted ones by disposition
 
-Report first, then act. Never fix or file an unverified finding.
+Report first, then act. Findings reach this step with two different
+provenances, and they are handled differently:
+
+- A finding a refuter **graded and failed to refute** is acted on by SIZE —
+  small or large, below.
+- A finding marked `unrefuted: true` was **reported, not verified** — no
+  refuter graded it (it is a non-gating severity; see § Refute), so treat it
+  as an observation, never as a confirmed defect. Incorporate the ones that
+  improve readability or clarity where the change is **not major**; skip the
+  rest and state why. "Major" means anything that would alter the approach,
+  widen scope, or touch code outside the diff under review — that is
+  follow-up material, not an in-flight edit.
+
+Never fix or file a finding that carries neither provenance.
 
 - **Small** — localized, low-risk, no new acceptance criteria (a typo, a
   missing doc comment, a tightened error message, an extra test). Fix it
@@ -277,12 +321,16 @@ On `rework` and `escalated`, write **no** trailer.
 - Be objective — evaluate against the stated acceptance criteria, not personal
   preferences.
 - Provide specific evidence (file:line, test name) for every finding.
-- **No finding is surfaced, fixed, or filed until a separate refuter agent has
-  failed to refute it.** The finder never grades its own work.
+- **No finding of a GATING severity is surfaced, fixed, or filed until a
+  separate refuter agent has failed to refute it.** The finder never grades
+  its own work. Non-gating `suggestion` findings are the one exception: they
+  pass through un-refuted, marked `unrefuted: true`, and are acted on under
+  the disposition rule above rather than fixed as verified defects.
 - Filter hard: drop refuted findings and anything below 70 confidence. One
   strong finding beats five weak ones.
 - The dispatched sub-agents only review and report — they never modify code.
-  The orchestrator applies small fixes, and only after refutation.
+  The orchestrator applies small fixes, and only after refutation or under the
+  un-refuted disposition rule.
 - Never fix large changes inline — file them as tasks.
 - If acceptance criteria are missing or vague, report it as a finding rather
   than guessing intent.

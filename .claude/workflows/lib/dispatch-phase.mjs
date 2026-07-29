@@ -27,6 +27,7 @@
 //! below, which lives OUTSIDE the markers and is re-exported for the harness.
 
 import {
+  UNREFUTED_DISPOSITION,
   classifyOutcome,
   codeReviewRounds,
   hasBlocking,
@@ -318,8 +319,13 @@ const CODE_ACT_SCHEMA = {
         required: ['id', 'action'],
         properties: {
           id: { type: 'string', minLength: 1 },
-          action: { type: 'string', enum: ['fixed-inline', 'filed-as-task'] },
+          // `skipped` is what an un-refuted (non-gating) finding's disposition
+          // rule actually resolves to when the change would be major — without
+          // it the act step has no way to record "deliberately not done", and
+          // would have to misreport a skip as one of the other two actions.
+          action: { type: 'string', enum: ['fixed-inline', 'filed-as-task', 'skipped'] },
           taskSlug: { type: 'string' },
+          reason: { type: 'string' },
         },
       },
     },
@@ -335,9 +341,25 @@ const CODE_ACT_SCHEMA = {
 // large ones are filed with `rdm task create`, not a plan-doc note.
 function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) {
   const target = kind === 'task' ? 'task/' + ident : roadmapOrTask + '/' + ident;
-  return [
-    'You are acting on ALREADY-VERIFIED code-review findings for ' + target + ' (worktree: ' + worktreeRef + ').',
-    'These findings survived refutation and are non-gating (the reviewed outcome is already decided).',
+  // Provenance is MIXED once the review passes a non-gating finding through
+  // un-refuted, so the LEADING claim has to be conditional: an unconditional
+  // "these survived refutation" would be a false statement about part of the
+  // payload, not merely an incomplete one. The all-verified branch stays
+  // byte-identical to the pre-pass-through prompt.
+  const list = Array.isArray(survivors) ? survivors : [];
+  const hasUnrefuted = list.some((f) => f && f.unrefuted);
+  const lines = hasUnrefuted
+    ? [
+        'You are acting on code-review findings of MIXED provenance for ' + target +
+          ' (worktree: ' + worktreeRef + ').',
+        'None of them gates (the reviewed outcome is already decided). A finding WITHOUT `unrefuted: true` ' +
+          'survived an independent refuter; a finding WITH it was never graded by one.',
+      ]
+    : [
+        'You are acting on ALREADY-VERIFIED code-review findings for ' + target + ' (worktree: ' + worktreeRef + ').',
+        'These findings survived refutation and are non-gating (the reviewed outcome is already decided).',
+      ];
+  lines.push(
     JSON.stringify(survivors, null, 2),
     'For EACH finding, decide SMALL vs LARGE:',
     '- SMALL — localized, low-risk, no new acceptance criterion (a typo, a missing doc comment, a tightened ' +
@@ -346,10 +368,20 @@ function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) 
       'eventual land-time commit.',
     '- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance ' +
       'criterion. Do NOT edit code for these: file it with `./target/debug/rdm task create <slug> --title ' +
-      '"Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.',
-    'Return JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — ' +
-      'id, action (fixed-inline|filed-as-task), and taskSlug when you filed a task.',
-  ].join('\n');
+      '"Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.'
+  );
+  if (hasUnrefuted) {
+    lines.push(UNREFUTED_DISPOSITION);
+  }
+  lines.push(
+    hasUnrefuted
+      ? 'Return JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — ' +
+          'id, action (fixed-inline|filed-as-task|skipped), taskSlug when you filed a task, and a one-line ' +
+          '`reason` when you skipped one under the rule above.'
+      : 'Return JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — ' +
+          'id, action (fixed-inline|filed-as-task), and taskSlug when you filed a task.'
+  );
+  return lines.join('\n');
 }
 
 // OUTCOME_REASON_PREFIX — which gate a non-clean outcome came out of.

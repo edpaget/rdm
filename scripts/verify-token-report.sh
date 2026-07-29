@@ -50,10 +50,22 @@
 #      set to 0 instead of null) are each applied to a scratch copy of the
 #      source and proven to flip the fixture comparison from MATCH to FAIL,
 #      proving the comparisons in section 2 are not vacuous.
-#   6. CHANGELOG HYGIENE — the same commit that touches
-#      scripts/lib/token-report.mjs / scripts/measure-lane-tokens.mjs also
-#      touches CHANGELOG.md, so a user-facing change is never landed without
-#      its changelog entry.
+#   6. REFUTER-SEVERITY MEASUREMENT — scripts/measure-refuter-severity.mjs,
+#      the second instrument over the same library, which breaks refuter
+#      spend out by the SEVERITY of the finding each refuter graded (the
+#      dimension the single `refute` agent-class bucket cannot see, and the
+#      evidence behind the non-gating-refutation skip). Gated against its own
+#      hermetic fixture (exact per-severity agent counts, verdict tallies and
+#      all four token classes, including a braced-target prompt that defeats a
+#      naive extractor and a transcript-less refuter that must NOT count as
+#      non-gating), its --check path, a corpus-free --audit of the COMMITTED
+#      figures in docs/token-baseline.json, a pin of its NON_GATING_SEVERITIES
+#      to the canonical review source, and two planted mutations (an edited doc
+#      figure; a broken extractor) proving neither check is vacuous.
+#   7. CHANGELOG HYGIENE — the same commit that touches
+#      scripts/lib/token-report.mjs / scripts/measure-lane-tokens.mjs /
+#      scripts/measure-refuter-severity.mjs also touches CHANGELOG.md, so a
+#      user-facing change is never landed without its changelog entry.
 #
 # Node is stdlib-only (node:assert, node:fs, node:path); no package.json /
 # node_modules / third-party packages anywhere. node is pinned in .mise.toml.
@@ -525,16 +537,163 @@ fi
 pass "planted-mutation self-test 4: removing the cached/sidecarOnly firstRequestTokens exclusion flips the fixture comparison to FAIL"
 
 # ==============================================================================
-say "6. Changelog hygiene: the code change is staged/committed alongside CHANGELOG.md"
+say "6. Refuter-severity measurement (scripts/measure-refuter-severity.mjs)"
+# ==============================================================================
+# The phase-6 "stop refuting findings that cannot change the outcome" change is
+# justified by a MEASURED per-severity breakdown of refuter spend, which the
+# per-agent-class report above cannot see (it has one undifferentiated `refute`
+# bucket). This section gates that second instrument the same way section 2
+# gates the first: a hermetic fixture with hand-checkable numbers, its --check
+# path, a corpus-free --audit of the COMMITTED figures in docs/token-baseline.json,
+# and planted mutations proving neither check is vacuous.
+
+REFSEV="$REPO_ROOT/scripts/measure-refuter-severity.mjs"
+REFSEV_FIXTURE="$REPO_ROOT/tests/fixtures/token-refuter-severity"
+REFSEV_EXPECTED="$REFSEV_FIXTURE/expected-nonGatingRefutationSkip.json"
+BASELINE_DOC="$REPO_ROOT/docs/token-baseline.json"
+
+[ -f "$REFSEV" ] || fail "refuter-severity instrument not found: $REFSEV"
+[ -d "$REFSEV_FIXTURE" ] || fail "refuter-severity fixture not found: $REFSEV_FIXTURE"
+[ -f "$REFSEV_EXPECTED" ] || fail "refuter-severity expected-figures fixture not found: $REFSEV_EXPECTED"
+[ -f "$BASELINE_DOC" ] || fail "token baseline doc not found: $BASELINE_DOC"
+
+run_node --check "$REFSEV" || fail "node --check failed on $REFSEV"
+if grep -q 'homedir(' "$REFSEV"; then
+    fail "$REFSEV must not call os.homedir() directly — it must go through the library's defaultProjectsRoot()"
+fi
+# Determinism: the same corpus in must give the same numbers out.
+# Strip comment lines first: the module header DOCUMENTS this rule, and a naive
+# grep would fire on the documentation instead of on real code.
+if grep -vE '^[[:space:]]*(//|\*|/\*)' "$REFSEV" | grep -qE 'Date\.now\(|Math\.random\('; then
+    fail "$REFSEV must be deterministic — no Date.now()/Math.random()"
+fi
+pass "the instrument parses, is deterministic, and has no unguarded home-directory access"
+
+# The skip set is duplicated across two runtimes that cannot import each other
+# (the Workflow lib and this Node script), so pin them to each other here rather
+# than trusting the copy.
+REVIEW_LIB="$REPO_ROOT/.claude/workflows/lib/review.mjs"
+[ -f "$REVIEW_LIB" ] || fail "canonical review source not found: $REVIEW_LIB"
+LIB_NONGATING=$(grep -F 'const NON_GATING_SEVERITIES =' "$REVIEW_LIB" | head -1 | sed 's/.*= //; s/;$//')
+SCRIPT_NONGATING=$(grep -F 'const NON_GATING_SEVERITIES =' "$REFSEV" | head -1 | sed 's/.*= //; s/;$//')
+[ -n "$LIB_NONGATING" ] || fail "could not read NON_GATING_SEVERITIES from $REVIEW_LIB"
+[ "$LIB_NONGATING" = "$SCRIPT_NONGATING" ] ||
+    fail "NON_GATING_SEVERITIES drifted: $REVIEW_LIB has $LIB_NONGATING, $REFSEV has $SCRIPT_NONGATING"
+pass "the instrument's NON_GATING_SEVERITIES matches the canonical review source ($LIB_NONGATING)"
+
+# --- fixture comparison: exact per-severity agent counts and token classes ----
+REFSEV_SCRATCH="$TMP/refsev-fixture"
+cp -R "$REFSEV_FIXTURE" "$REFSEV_SCRATCH"
+rm -f "$REFSEV_SCRATCH/expected-nonGatingRefutationSkip.json"
+
+run_node "$REFSEV" --root "$REFSEV_SCRATCH" --format json >"$TMP/refsev-report.json" ||
+    fail "measure-refuter-severity.mjs failed against the fixture"
+
+cat >"$TMP/refsev-compare.mjs" <<'NODE_REFSEV_COMPARE'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const [, , reportPath, expectedPath] = process.argv;
+const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+const expected = JSON.parse(readFileSync(expectedPath, 'utf8')).nonGatingRefutationSkip;
+
+const ROW_FIELDS = ['agentCount', 'graded', 'refuted', 'refutedRate', 'output', 'uncachedInput', 'cacheWrite', 'cacheRead'];
+const byKey = Object.fromEntries(report.refuteBySeverity.map((r) => [r.key, r]));
+
+assert.deepEqual(
+  report.refuteBySeverity.map((r) => r.key),
+  expected.refuteBySeverity.map((r) => r.key),
+  'the fixture yields exactly the expected severity rows, in the expected order'
+);
+for (const exp of expected.refuteBySeverity) {
+  const act = byKey[exp.key];
+  assert.ok(act, `missing severity row "${exp.key}"`);
+  for (const f of ROW_FIELDS) {
+    assert.equal(act[f], exp[f], `refuteBySeverity.${exp.key}.${f}: expected ${exp[f]}, got ${act[f]}`);
+  }
+}
+
+// The finding whose refuter prompt embeds a TARGET containing braces (the
+// --implementation-plan shape) must still resolve — it is the extraction edge
+// case that defeated the ad hoc first-pass parser.
+assert.equal(byKey.blocking.agentCount, 1, 'the braced-target refuter resolved to its real severity, not "unparseable"');
+assert.ok(!('unrecoverable:unparseable' in byKey), 'no fixture refuter falls into the unparseable bucket');
+
+// A refuter with no transcript at all is reported as unrecoverable and is NEVER
+// counted toward the projected drop — an unknown severity is not a non-gating one.
+assert.equal(byKey['unrecoverable:no-transcript'].agentCount, 1, 'the transcript-less refuter is bucketed as unrecoverable');
+assert.equal(byKey['unrecoverable:no-transcript'].graded, 0, 'an unrecoverable refuter grades nothing');
+
+for (const f of ['agentCount', 'output', 'uncachedInput', 'cacheWrite', 'cacheRead']) {
+  assert.equal(report.refuteTotals[f], expected.refuteTotals[f], `refuteTotals.${f}`);
+  assert.equal(report.laneTotals[f], expected.laneTotals[f], `laneTotals.${f}`);
+}
+for (const f of ['agentsNotSpawned', 'allTokens', 'freshTokens', 'percentOfRefuteAgents', 'percentOfRefuteTokens', 'percentOfLaneTokens']) {
+  assert.equal(report.projected[f], expected.projected[f], `projected.${f}`);
+}
+assert.deepEqual(report.projected.severities, ['suggestion'], 'only `suggestion` is projected away');
+
+console.log('refuter-severity fixture comparison MATCH');
+NODE_REFSEV_COMPARE
+
+run_node "$TMP/refsev-compare.mjs" "$TMP/refsev-report.json" "$REFSEV_EXPECTED" ||
+    fail "the refuter-severity report did not match the hand-checked fixture figures"
+pass "per-severity agent counts, verdict tallies and all four token classes match the fixture exactly"
+
+# --- the --check and --audit paths -------------------------------------------
+run_node "$REFSEV" --root "$REFSEV_SCRATCH" --check "$REFSEV_EXPECTED" >/dev/null ||
+    fail "--check failed against the fixture's own recorded figures"
+run_node "$REFSEV" --audit "$REFSEV_EXPECTED" >/dev/null ||
+    fail "--audit failed against the fixture's own recorded figures"
+# The COMMITTED baseline figures are gated corpus-free, so this holds on any
+# machine — the sidecar-reading --check is run by hand (see the doc's
+# gating.checkGatedBy).
+run_node "$REFSEV" --audit "$BASELINE_DOC" >/dev/null ||
+    fail "docs/token-baseline.json's nonGatingRefutationSkip figures are not internally consistent — re-run the instrument and update the doc"
+pass "--check matches the fixture, and the committed baseline figures pass the corpus-free --audit"
+
+# --- planted mutations: neither check may be vacuous --------------------------
+# (a) A doc figure edited by hand must fail BOTH --check and --audit.
+sed 's/"agentsNotSpawned": 1,/"agentsNotSpawned": 2,/' "$REFSEV_EXPECTED" >"$TMP/refsev-doc-mutant.json"
+if diff -q "$REFSEV_EXPECTED" "$TMP/refsev-doc-mutant.json" >/dev/null 2>&1; then
+    fail "self-test setup: the doc mutation did not change the fixture figures"
+fi
+if run_node "$REFSEV" --root "$REFSEV_SCRATCH" --check "$TMP/refsev-doc-mutant.json" >/dev/null 2>&1; then
+    fail "planted-mutation self-test FAILED TO CATCH: --check accepted a hand-edited projected.agentsNotSpawned"
+fi
+if run_node "$REFSEV" --audit "$TMP/refsev-doc-mutant.json" >/dev/null 2>&1; then
+    fail "planted-mutation self-test FAILED TO CATCH: --audit accepted a projected figure its own rows do not derive"
+fi
+pass "planted-mutation self-test: an edited doc figure flips both --check and --audit to FAIL"
+
+# (b) A broken severity extractor must flip the fixture comparison.
+mkdir -p "$TMP/refsev-mut/lib"
+cp "$LIB" "$TMP/refsev-mut/lib/token-report.mjs"
+# Force the sentinel search to miss, so every finding becomes unparseable.
+sed "s/const sentinel = '\\\\nStart from the stance:';/const sentinel = '\\\\nNEVER MATCHES THIS SENTINEL:';/" \
+    "$REFSEV" >"$TMP/refsev-mut/measure-refuter-severity.mjs"
+if diff -q "$REFSEV" "$TMP/refsev-mut/measure-refuter-severity.mjs" >/dev/null 2>&1; then
+    fail "self-test setup: the extractor mutation did not change the source — sed pattern did not match"
+fi
+if run_node "$TMP/refsev-mut/measure-refuter-severity.mjs" --root "$REFSEV_SCRATCH" --format json >"$TMP/refsev-mutant-report.json" 2>/dev/null; then
+    if run_node "$TMP/refsev-compare.mjs" "$TMP/refsev-mutant-report.json" "$REFSEV_EXPECTED" >/dev/null 2>&1; then
+        fail "planted-mutation self-test FAILED TO CATCH: a broken finding extractor still matched the fixture figures"
+    fi
+fi
+pass "planted-mutation self-test: a broken severity extractor flips the fixture comparison to FAIL"
+
+# ==============================================================================
+say "7. Changelog hygiene: the code change is staged/committed alongside CHANGELOG.md"
 # ==============================================================================
 
 if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     STAGED_FILES=$(git -C "$REPO_ROOT" diff --cached --name-only 2>/dev/null || true)
     LIB_REL="scripts/lib/token-report.mjs"
     CLI_REL="scripts/measure-lane-tokens.mjs"
-    if printf '%s\n' "$STAGED_FILES" | grep -qx "$LIB_REL\|$CLI_REL"; then
+    REFSEV_REL="scripts/measure-refuter-severity.mjs"
+    if printf '%s\n' "$STAGED_FILES" | grep -qx "$LIB_REL\|$CLI_REL\|$REFSEV_REL"; then
         printf '%s\n' "$STAGED_FILES" | grep -qx 'CHANGELOG.md' ||
-            fail "scripts/lib/token-report.mjs or scripts/measure-lane-tokens.mjs is staged without a corresponding CHANGELOG.md update in the same change"
+            fail "a token-measurement script (token-report.mjs / measure-lane-tokens.mjs / measure-refuter-severity.mjs) is staged without a corresponding CHANGELOG.md update in the same change"
         pass "CHANGELOG.md is staged alongside the token-report code change"
     else
         pass "no staged token-report code change to check for a changelog entry (skipping — nothing staged right now)"

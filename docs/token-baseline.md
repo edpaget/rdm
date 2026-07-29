@@ -549,3 +549,52 @@ The measured delta reflects the **local dogfood shim callers**. The distributed
 side of `plan-review`, `backlog`, `document`, `review` and `estimate` stays on the
 in-workflow fallback until task
 `convert-remaining-skill-templates-to-workflow-shims` lands.
+
+## Phase 6: non-gating refutation
+
+Phase 6 stops spawning a refuter for a finding whose verdict cannot change the
+outcome. `hasBlocking` gates on `blocking` (and, at the `large` tier, `concern`);
+the acceptance-criteria table is a separate structured channel that never reads
+finding severity. `suggestion` therefore gates nothing at any tier, and its
+refuter is pure cost. Such findings now pass through marked `unrefuted: true`,
+still subject to the confidence floor, and act steps handle them under an
+explicit disposition rule rather than as confirmed defects.
+
+The per-severity breakdown that justifies this — a dimension the single `refute`
+agent-class bucket above cannot see — is measured by
+`scripts/measure-refuter-severity.mjs` and recorded in full in
+[`docs/token-baseline.json`](token-baseline.json) § `nonGatingRefutationSkip`.
+Headline figures, over the 48-run window ending 2026-07-29 (989 refuters):
+
+| severity | agents | graded | refuted | rate | all tokens | fresh tokens |
+|---|---:|---:|---:|---:|---:|---:|
+| blocking | 197 | 197 | 75 | 38.1 % | 58,706,344 | 9,913,110 |
+| concern | 527 | 522 | 263 | 50.4 % | 147,254,974 | 25,364,063 |
+| suggestion | 239 | 236 | 175 | 74.2 % | 54,310,983 | 10,334,840 |
+| unrecoverable (no transcript) | 26 | 0 | 0 | — | 1,724,157 | 1,724,157 |
+
+**239 refuters (24.2 % of all refuters, 20.7 % of refuter tokens, 4.1 % of all
+lane tokens) would not have been spawned** had this change been live —
+54,310,983 tokens, or 10,334,840 excluding cache reads.
+
+`concern` deliberately keeps its refuter: it is overturned *more* often than a
+`blocking` finding (50.4 % vs 38.1 %), so the refuter is doing real work, and it
+gates outright at the `large` tier. That also makes the pass-through set
+tier-independent, so no tier has to be threaded into the pipeline.
+
+Two caveats, the same shape as phase 3's:
+
+- **The window is wider than the run set above** (48 runs / 2208 agent records vs
+  40 / 1943): the corpus grew between the two measurements. These rows are not
+  subtractable against the per-agent-class table — compare only within the
+  section.
+- **No post-change lane corpus exists.** Every run in the window executed
+  pre-change code, so this is an exact accounting of what non-gating refutation
+  actually cost, not a forecast. The natural confirmation is the next real lane
+  run: the `suggestion` row should go to zero agents.
+
+Gating: every figure above is `--check`-gated against the real corpus
+(`node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json`,
+run by hand since it needs the sidecars) and, corpus-free, `--audit`-gated by
+`scripts/verify-token-report.sh` on any machine. The prose framing (the caveats,
+the decision rationale) is provenance-only.

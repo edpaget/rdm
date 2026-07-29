@@ -25,6 +25,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stale hand-transcription; `scripts/verify-workflow-dispatch.sh` section 8 runs
   that check in CI with planted-mutation self-tests. Stdlib-only Node, no
   packages.
+- A new dev tool, `scripts/measure-refuter-severity.mjs` (over the same
+  `scripts/lib/token-report.mjs`), breaks refuter token spend out by the
+  **severity of the finding each refuter graded** — the dimension the single
+  `refute` agent-class bucket cannot see. It recovers each finding from the
+  refuter's own transcript (brace-matching the embedded finding JSON, so a
+  review target that itself contains braces still parses) and its verdict from
+  the forced `StructuredOutput` call, then reports agent count, verdict tally,
+  refutation rate, and all four token classes per severity, plus the projected
+  drop from skipping non-gating refutation. `--until` pins the measurement
+  window so a committed figure cannot be silently re-baselined by a later lane
+  run; `--check <doc>` recomputes over the corpus and asserts a document's
+  recorded figures match; `--audit <doc>` checks a document's numbers for
+  internal consistency without reading any sidecars, so the committed figures
+  are gated on any machine. `scripts/verify-token-report.sh` section 6 gates it
+  against a hermetic fixture with two planted-mutation self-tests. The measured
+  result is recorded in `docs/token-baseline.json` §
+  `nonGatingRefutationSkip` and summarized in `docs/token-baseline.md`.
 - `rdm task create` gained a `--no-plan-review` flag: it skips the automatic
   `needs-plan-review` stamp even when the `plan_review` config flag is
   enabled. Intended for tasks filed from a plan-review finding itself, so the
@@ -62,6 +79,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   each agent class only one record.
 
 ### Changed
+
+- The review pipeline no longer spawns a refuter for a **`suggestion`**
+  finding. Severity is the only thing that turns a finding into an outcome, and
+  a `suggestion` gates nothing at any tier, so a refuter's verdict on one could
+  never change anything. Such findings now pass straight through marked
+  `unrefuted: true` — still subject to the same confidence floor — and both act
+  steps handle them under an explicit disposition rule: incorporate the ones
+  that improve readability or clarity where the change is not major, skip the
+  rest and say why (recordable as a new `skipped` action, with a `reason`, in
+  the code-lane `CODE_ACT` schema). `blocking` and `concern` keep their refuter
+  — over the measured corpus a `concern` is overturned *more* often than a
+  `blocking` finding — and the rule is fail-safe: a finding whose severity is
+  missing or unrecognized is still refuted. Measured effect over the recorded
+  corpus: 239 of 989 refuters (24.2 %, 20.7 % of refuter tokens) would not have
+  been spawned. A refuter that *crashes* still keeps its finding and is
+  deliberately not marked `unrefuted`.
 
 - The autonomous-lane Workflow scripts now accept **optional caller-supplied
   arguments** so they no longer spawn a dedicated mechanical subagent for work

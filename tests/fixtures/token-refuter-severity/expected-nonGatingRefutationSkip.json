@@ -1,0 +1,86 @@
+{
+  "_comment": "Hand-checked ground truth for scripts/verify-token-report.sh section 6. Shaped exactly like docs/token-baseline.json is nonGatingRefutationSkip section so the SAME --check/--audit code paths are exercised against a hermetic fixture. Every number here is derivable by hand from the fixture transcripts.",
+  "nonGatingRefutationSkip": {
+    "refuteBySeverity": [
+      {
+        "key": "blocking",
+        "agentCount": 1,
+        "dedupedRequestCount": 1,
+        "output": 5,
+        "uncachedInput": 10,
+        "cacheWrite": 100,
+        "cacheRead": 1000,
+        "graded": 1,
+        "refuted": 0,
+        "refutedRate": 0
+      },
+      {
+        "key": "concern",
+        "agentCount": 1,
+        "dedupedRequestCount": 1,
+        "output": 7,
+        "uncachedInput": 20,
+        "cacheWrite": 200,
+        "cacheRead": 2000,
+        "graded": 1,
+        "refuted": 1,
+        "refutedRate": 100
+      },
+      {
+        "key": "suggestion",
+        "agentCount": 1,
+        "dedupedRequestCount": 1,
+        "output": 9,
+        "uncachedInput": 30,
+        "cacheWrite": 300,
+        "cacheRead": 3000,
+        "graded": 1,
+        "refuted": 1,
+        "refutedRate": 100
+      },
+      {
+        "key": "unrecoverable:no-transcript",
+        "agentCount": 1,
+        "dedupedRequestCount": 0,
+        "output": 500,
+        "uncachedInput": 0,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "graded": 0,
+        "refuted": 0,
+        "refutedRate": 0
+      }
+    ],
+    "refuteTotals": {
+      "agentCount": 4,
+      "dedupedRequestCount": 3,
+      "output": 521,
+      "uncachedInput": 60,
+      "cacheWrite": 600,
+      "cacheRead": 6000
+    },
+    "laneTotals": {
+      "agentCount": 5,
+      "dedupedRequestCount": 4,
+      "output": 532,
+      "uncachedInput": 100,
+      "cacheWrite": 1000,
+      "cacheRead": 10000
+    },
+    "projected": {
+      "severities": [
+        "suggestion"
+      ],
+      "agentsNotSpawned": 1,
+      "output": 9,
+      "uncachedInput": 30,
+      "cacheWrite": 300,
+      "cacheRead": 3000,
+      "allTokens": 3339,
+      "freshTokens": 339,
+      "percentOfRefuteAgents": 25,
+      "percentOfRefuteTokens": 46.5,
+      "percentOfLaneTokens": 28.7
+    }
+  }
+}

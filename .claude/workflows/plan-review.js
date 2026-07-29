@@ -82,6 +82,43 @@ const CONFIDENCE_FLOOR = 70;
 //| Rank survivors most-severe first, then by confidence descending, then by id.
 const SEVERITY_RANK = { blocking: 0, concern: 1, suggestion: 2 };
 
+// NON_GATING_SEVERITIES — the severities whose refuter verdict cannot change
+// anything, so no refuter is dispatched for them.
+//
+// DERIVATION (auditable, not a guess): `hasBlocking` below is the ONLY place a
+// severity becomes an outcome. Its blocker set is ['blocking'], widened to
+// ['blocking', 'concern'] at the `large` tier — so `blocking` always gates and
+// `concern` gates at some tier. The one other outcome channel, `acTableHasGap`,
+// reads the structured AC table and never consults a finding's severity at all.
+// Subtracting the WIDEST blocker set from the severity scale therefore leaves
+// exactly `suggestion`, and leaves it non-gating at EVERY tier — which is why
+// this set is tier-independent and no tier has to be threaded into the pipeline.
+const NON_GATING_SEVERITIES = ['suggestion'];
+
+// needsRefutation(finding) — should this finding get a refuter?
+//
+// FAIL-SAFE BY CONSTRUCTION: refute UNLESS the severity is *explicitly* listed
+// as non-gating. A finding with a missing, misspelled, or newly-invented
+// severity is therefore still refuted — the skip is opt-in per severity, never
+// a default. (Ranking degrades the same way: an unknown severity sorts last via
+// SEVERITY_RANK's `!= null` guard rather than gating.)
+function needsRefutation(finding) {
+  const severity = finding && finding.severity;
+  return NON_GATING_SEVERITIES.indexOf(severity) === -1;
+}
+
+// UNREFUTED_DISPOSITION — how an act step must treat a finding that reached it
+// WITHOUT a refuter verdict (`unrefuted: true`). Single-sourced here, in the
+// stamped block, so every act-step consumer (dispatch-phase's code act step,
+// plan-review's plan act step) states one identical rule — the same reason
+// `hasBlocking` lives here rather than in each consumer.
+const UNREFUTED_DISPOSITION = [
+  'Findings marked `unrefuted: true` were **reported, not verified** — no refuter graded them, so treat them as',
+  'observations, never as confirmed defects. Incorporate the ones that improve readability or clarity where the',
+  'change is **not major**; skip the rest and state why. "Major" means anything that would alter the approach,',
+  'widen scope, or touch code outside the diff under review — that is follow-up material, not an in-flight edit.',
+].join('\n');
+
 // The two dimension sets, selected by `mode`. Each finder agent reviews exactly
 // one dimension; a fresh refuter then grades each finding it produced.
 //   code — reviews an implementation diff (dispatch-phase's code-review stage).
@@ -331,20 +368,51 @@ function findPrompt(mode, dim, context) {
 // the finder never grades its own work. The refuter's default stance is that the
 // finding is NOT real unless the code/plan proves it.
 //|
-//| ### Refute — a FRESH agent per finding, in parallel
+//| ### Refute — a FRESH agent per GATING finding, in parallel
 //|
-//| For every finding, dispatch a **separate** read-only refuter. The agent that
-//| found an issue is never the agent that confirms it. The refuter starts from
-//| the stance *"this is NOT a real issue unless the code proves otherwise"*,
-//| reads the actual cited location and its surrounding context, and returns
-//| `refuted` (boolean), a corrected `confidence` (0-100), and a rationale.
+//| For every finding whose severity can gate the outcome, dispatch a **separate**
+//| read-only refuter. The agent that found an issue is never the agent that
+//| confirms it. The refuter starts from the stance *"this is NOT a real issue
+//| unless the code proves otherwise"*, reads the actual cited location and its
+//| surrounding context, and returns `refuted` (boolean), a corrected `confidence`
+//| (0-100), and a rationale.
+//|
+//| **Non-gating pass-through.** A `suggestion` gates nothing at any tier — the
+//| verdict consults only `blocking` (and `concern`, at the `large` tier), and the
+//| acceptance-criteria channel never reads a finding's severity at all — so a
+//| refuter's verdict on one cannot change the outcome either way. No refuter is
+//| dispatched for it. It passes straight through, marked `unrefuted: true`, and
+//| is still subject to the confidence floor. `suggestion` is the ONLY severity
+//| treated this way, and the rule is fail-safe: a finding whose severity is
+//| missing or unrecognized is refuted like a gating one.
+//|
+//| `concern` is deliberately **not** passed through, even though it does not gate
+//| at the default tier. Measured over the whole recorded refuter corpus (989
+//| refuters; `scripts/measure-refuter-severity.mjs`, recorded in
+//| `docs/token-baseline.json` § `nonGatingRefutationSkip`):
+//|
+//| | severity | graded | refuted | rate |
+//| |---|---:|---:|---:|
+//| | blocking | 197 | 75 | 38.1 % |
+//| | concern | 522 | 263 | 50.4 % |
+//| | suggestion | 236 | 175 | 74.2 % |
+//|
+//| A `concern` is overturned MORE often than a `blocking` one, so its refuter is
+//| doing real work — and it gates outright at the `large` tier. Skipping only
+//| `suggestion` drops 239 refuters (24.2 % of all refuters, 20.7 % of refuter
+//| tokens) with no severity that can gate losing its counter-check.
 //|
 //| ### Filter & consolidate
 //|
 //| - **Drop** any finding a refuter refuted, and any whose post-refutation
 //|   confidence is below the confidence floor (70).
 //| - A refuter that *crashes* is not proof of refutation — keep such a finding as
-//|   un-refuted rather than silently dropping it.
+//|   un-refuted rather than silently dropping it. It is **not** marked
+//|   `unrefuted: true`: that marker means "deliberately never graded", not
+//|   "grading failed".
+//| - A finding passed through un-refuted carries `unrefuted: true` and faces the
+//|   **same confidence floor** as everything else: the refuter is skipped, the
+//|   floor is not.
 //| - **Dedup** findings pointing at the same location / same root cause (the
 //|   fleet covers overlapping ground by design).
 //| - **Rank** survivors by severity, then confidence, then id.
@@ -951,8 +1019,23 @@ function buildReviewPipeline(mode, deps) {
       },
       (found, dim) =>
         _parallel(
-          ((found && found.findings) || []).map((f, idx) => () =>
-            _agent(refutePrompt(mode, dim, f, ctx), {
+          ((found && found.findings) || []).map((f, idx) => () => {
+            // NON-GATING PASS-THROUGH. A refuter is dispatched only where its
+            // verdict could change something. A `suggestion` gates nothing at
+            // any tier (see NON_GATING_SEVERITIES), so grading it burns a whole
+            // agent to reach the same outcome either way: pass it straight
+            // through, marked `unrefuted: true` so every downstream consumer can
+            // tell reported-only from refuter-verified. verdict stays null, so
+            // survives() applies the confidence floor to it EXACTLY as it does
+            // to a refuted-but-not-killed finding — the floor is not bypassed.
+            if (!needsRefutation(f)) {
+              return Promise.resolve({
+                finding: { ...f, concern: f.concern || dim.key, unrefuted: true },
+                verdict: null,
+                skipped: true,
+              });
+            }
+            return _agent(refutePrompt(mode, dim, f, ctx), {
               // Unique per finding even if a finder emits an empty/duplicate id,
               // so a colliding label can never misattribute a verdict.
               label: 'refute:' + mode + ':' + (f.id || dim.key + ':' + idx),
@@ -964,8 +1047,11 @@ function buildReviewPipeline(mode, deps) {
               // A refuter CRASH is not proof of refutation. Keep the finding as
               // un-refuted (verdict=null ⇒ survives() retains it if confidence ≥
               // floor) instead of silently dropping it as if it were refuted.
-              .catch(() => ({ finding: { ...f, concern: f.concern || dim.key }, verdict: null }))
-          )
+              // NOT marked `unrefuted` — that marker means "deliberately never
+              // graded", and an act step must not treat a crashed gating finding
+              // as a mere observation.
+              .catch(() => ({ finding: { ...f, concern: f.concern || dim.key }, verdict: null }));
+          })
         )
     );
 
@@ -986,7 +1072,10 @@ function buildReviewPipeline(mode, deps) {
     // nulls are filtered here. A refuter error instead surfaces as verdict=null
     // (see the .catch above) and is kept, not dropped.
     const graded = perDimension.filter(Boolean).flat().filter(Boolean);
-    const refuterErrors = graded.filter((g) => g.verdict === null).length;
+    // A pass-through ALSO carries verdict === null, so it must be excluded here
+    // or a deliberate non-gating skip would be mis-reported as a refuter crash.
+    const refuterErrors = graded.filter((g) => g.verdict === null && !g.skipped).length;
+    const passedThrough = graded.filter((g) => g.skipped).length;
     const survivors = graded.filter((g) => survives(g.finding, g.verdict)).map((g) => g.finding);
     _log(
       mode +
@@ -995,7 +1084,8 @@ function buildReviewPipeline(mode, deps) {
         '/' +
         graded.length +
         ' finding(s) survived refutation' +
-        (refuterErrors ? ' (' + refuterErrors + ' kept un-refuted after a refuter error)' : '')
+        (refuterErrors ? ' (' + refuterErrors + ' kept un-refuted after a refuter error)' : '') +
+        (passedThrough ? ' (' + passedThrough + ' non-gating passed through un-refuted)' : '')
     );
     return { survivors: rankFindings(survivors), acTable: acTable };
   };
@@ -1285,9 +1375,23 @@ function buildTagWritePrompt(kind, roadmap, ident, remainingTags) {
 // filed with `--no-plan-review` so the gate's own output is never re-stamped
 // `needs-plan-review` and fed back into itself as new input.
 function buildActPrompt(kind, roadmap, ident, survivors) {
-  return [
-    'You are the plan-review orchestrator applying already-verified findings. The findings below already',
-    'survived independent refutation — do not re-review; act on them.',
+  // Once the review passes a non-gating finding through un-refuted the payload
+  // is of MIXED provenance, so the leading "already survived refutation — do not
+  // re-review" claim would be false for part of it. Both the claim and the
+  // do-not-re-review directive are therefore conditional; with no un-refuted
+  // survivor the prompt is byte-identical to the pre-pass-through one.
+  const list = Array.isArray(survivors) ? survivors : []
+  const hasUnrefuted = list.some((f) => f && f.unrefuted)
+  const lines = hasUnrefuted
+    ? [
+        'You are the plan-review orchestrator applying findings of MIXED provenance. A finding WITHOUT',
+        '`unrefuted: true` survived independent refutation; a finding WITH it was never graded by a refuter.',
+      ]
+    : [
+        'You are the plan-review orchestrator applying already-verified findings. The findings below already',
+        'survived independent refutation — do not re-review; act on them.',
+      ]
+  lines.push(
     'Findings (ranked, most-severe first):',
     JSON.stringify(survivors, null, 2),
     'For each finding, decide small vs large:',
@@ -1302,13 +1406,19 @@ function buildActPrompt(kind, roadmap, ident, survivors) {
     '- LARGE (a structural concern: a missing prerequisite, scope too big for one phase, a conflicting design',
     '  decision): do NOT edit the plan document — file it as a task, with `--no-plan-review` so this finding',
     '  does not itself get re-stamped `needs-plan-review`:',
-    '    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-plan-review --no-edit --project rdm',
+    '    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-plan-review --no-edit --project rdm'
+  )
+  if (hasUnrefuted) {
+    lines.push(UNREFUTED_DISPOSITION)
+  }
+  lines.push(
     'After applying any changes, run: ./target/debug/rdm commit -m "chore(plan): address plan review findings on ' +
       (kind === 'phase' ? roadmap + '/' + ident : ident) +
       '"',
     'If there is nothing small to fix and nothing large to file, make no changes.',
-    'Return a STAMP_ACK object: { ok: true } if you completed without error (including the no-op case), else { ok: false }.',
-  ].join('\n')
+    'Return a STAMP_ACK object: { ok: true } if you completed without error (including the no-op case), else { ok: false }.'
+  )
+  return lines.join('\n')
 }
 
 // --- Round-capping helpers (bounds repeated plan-review passes on one item) --

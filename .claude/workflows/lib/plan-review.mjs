@@ -27,6 +27,7 @@
 //! which lives OUTSIDE the markers and is re-exported for the harness.
 
 import {
+  UNREFUTED_DISPOSITION,
   buildReviewPipeline,
   stripNonPhaseUnitOfWork,
   filterPlanReviewTag,
@@ -307,9 +308,23 @@ function buildTagWritePrompt(kind, roadmap, ident, remainingTags) {
 // filed with `--no-plan-review` so the gate's own output is never re-stamped
 // `needs-plan-review` and fed back into itself as new input.
 function buildActPrompt(kind, roadmap, ident, survivors) {
-  return [
-    'You are the plan-review orchestrator applying already-verified findings. The findings below already',
-    'survived independent refutation — do not re-review; act on them.',
+  // Once the review passes a non-gating finding through un-refuted the payload
+  // is of MIXED provenance, so the leading "already survived refutation — do not
+  // re-review" claim would be false for part of it. Both the claim and the
+  // do-not-re-review directive are therefore conditional; with no un-refuted
+  // survivor the prompt is byte-identical to the pre-pass-through one.
+  const list = Array.isArray(survivors) ? survivors : []
+  const hasUnrefuted = list.some((f) => f && f.unrefuted)
+  const lines = hasUnrefuted
+    ? [
+        'You are the plan-review orchestrator applying findings of MIXED provenance. A finding WITHOUT',
+        '`unrefuted: true` survived independent refutation; a finding WITH it was never graded by a refuter.',
+      ]
+    : [
+        'You are the plan-review orchestrator applying already-verified findings. The findings below already',
+        'survived independent refutation — do not re-review; act on them.',
+      ]
+  lines.push(
     'Findings (ranked, most-severe first):',
     JSON.stringify(survivors, null, 2),
     'For each finding, decide small vs large:',
@@ -324,13 +339,19 @@ function buildActPrompt(kind, roadmap, ident, survivors) {
     '- LARGE (a structural concern: a missing prerequisite, scope too big for one phase, a conflicting design',
     '  decision): do NOT edit the plan document — file it as a task, with `--no-plan-review` so this finding',
     '  does not itself get re-stamped `needs-plan-review`:',
-    '    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-plan-review --no-edit --project rdm',
+    '    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-plan-review --no-edit --project rdm'
+  )
+  if (hasUnrefuted) {
+    lines.push(UNREFUTED_DISPOSITION)
+  }
+  lines.push(
     'After applying any changes, run: ./target/debug/rdm commit -m "chore(plan): address plan review findings on ' +
       (kind === 'phase' ? roadmap + '/' + ident : ident) +
       '"',
     'If there is nothing small to fix and nothing large to file, make no changes.',
-    'Return a STAMP_ACK object: { ok: true } if you completed without error (including the no-op case), else { ok: false }.',
-  ].join('\n')
+    'Return a STAMP_ACK object: { ok: true } if you completed without error (including the no-op case), else { ok: false }.'
+  )
+  return lines.join('\n')
 }
 
 // --- Round-capping helpers (bounds repeated plan-review passes on one item) --

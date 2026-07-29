@@ -761,7 +761,11 @@ assert.equal(outAcTable, null, 'no ac table resolved when the ac finder returns 
 const findCalls = spy.calls.filter((c) => c.label.startsWith('find:'));
 const refuteCalls = spy.calls.filter((c) => c.label.startsWith('refute:'));
 assert.equal(findCalls.length, CODE_DIM_KEYS.length, 'one finder per code dimension');
-assert.equal(refuteCalls.length, 3, 'a fresh refuter per finding');
+assert.equal(
+  refuteCalls.length,
+  2,
+  'a fresh refuter per GATING finding — the planted `suggestion` is passed through, not refuted'
+);
 assert.equal(
   new Set(findCalls.map((c) => c.label)).size,
   CODE_DIM_KEYS.length,
@@ -858,7 +862,11 @@ assert.equal(poutAcTable, null, 'plan mode always resolves acTable to null');
 const pFind = pspy.calls.filter((c) => c.label.startsWith('find:'));
 const pRefute = pspy.calls.filter((c) => c.label.startsWith('refute:'));
 assert.equal(pFind.length, 4, 'one finder per plan dimension');
-assert.equal(pRefute.length, 3, 'a fresh refuter per plan finding');
+assert.equal(
+  pRefute.length,
+  2,
+  'a fresh refuter per GATING plan finding — the planted `suggestion` is passed through, not refuted'
+);
 assert.ok(pFind.every((c) => c.label.startsWith('find:plan:')), 'plan finders labelled by dimension');
 assert.ok(pFind.every((c) => c.prompt.includes(CTX.target)), 'context.target threaded into plan finder prompts');
 
@@ -2571,5 +2579,396 @@ if assert_plan_shim_gathers "$TMP/plan-shim-key-typo.md"; then
     fail "7f: detector missed a typo'd arg key in the shim"
 fi
 pass "7f: detector fires on a typo'd gathering command AND a typo'd arg key"
+
+# --- 8. NON-GATING REFUTATION SKIP (workflow-token-reduction phase 6) ---------
+# A refuter is dispatched only where its verdict could change the outcome. The
+# blocker set behind `hasBlocking` is ['blocking'] (['blocking','concern'] at the
+# `large` tier), and the AC table is a separate structured channel that never
+# reads a finding's severity — so `suggestion` is the ONE severity that can never
+# gate, at any tier. This section gates that skip end to end: the pipeline
+# dispatches no refuter for it, the pass-through is MARKED so a downstream act
+# step can tell reported-only from verified, the confidence floor still applies
+# to it, a refuter CRASH is still not marked as a deliberate skip, and both act
+# prompts stop asserting "these survived refutation" once the payload is mixed.
+say '8. Non-gating refutation skip: no refuter for a suggestion, marked pass-through, honest act prompts'
+
+DISPATCH_LIB="$REPO_ROOT/.claude/workflows/lib/dispatch-phase.mjs"
+[ -f "$DISPATCH_LIB" ] || fail "8: dispatch lib not found: $DISPATCH_LIB"
+
+cat >"$TMP/nongating-test.mjs" <<'NODE_NONGATING_TEST'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const [libPath, dispatchPath, planPath] = process.argv.slice(2);
+const mod = await import(pathToFileURL(libPath).href);
+const dispatchMod = await import(pathToFileURL(dispatchPath).href);
+const planMod = await import(pathToFileURL(planPath).href);
+
+const { buildReviewPipeline, NON_GATING_SEVERITIES, needsRefutation, UNREFUTED_DISPOSITION } = mod;
+const { buildCodeActPrompt, CODE_ACT_SCHEMA } = dispatchMod;
+const { buildActPrompt } = planMod;
+
+// Same reference runtime as section 3: order-preserving, with the documented
+// error semantics (a thrown thunk -> null; a thrown stage -> null item).
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+function makeSpyAgent(plantFindings, plantVerdicts) {
+  const calls = [];
+  async function agent(prompt, opts) {
+    const label = (opts && opts.label) || '';
+    calls.push({ label, prompt });
+    const parts = label.split(':');
+    if (parts[0] === 'find') return { findings: plantFindings[parts[2]] || [] };
+    if (parts[0] === 'refute') {
+      const id = parts.slice(2).join(':');
+      return plantVerdicts[id] || { refuted: false, confidence: 90 };
+    }
+    throw new Error('unexpected agent label: ' + label);
+  }
+  return { agent, calls };
+}
+function deps(spy) {
+  return { agent: spy.agent, pipeline: refPipeline, parallel: refParallel, log: () => {} };
+}
+const CTX = { target: 'phase widget/phase-1-foo' };
+
+// ============================================================================
+// The rule itself: derived from the widest blocker set, and FAIL-SAFE.
+// ============================================================================
+assert.deepEqual(NON_GATING_SEVERITIES, ['suggestion'], 'only `suggestion` is non-gating at every tier');
+assert.equal(needsRefutation({ severity: 'blocking' }), true, 'blocking is refuted');
+assert.equal(needsRefutation({ severity: 'concern' }), true, 'concern is refuted (it gates at the large tier)');
+assert.equal(needsRefutation({ severity: 'suggestion' }), false, 'suggestion is not refuted');
+// Fail-safe: anything not EXPLICITLY listed is still refuted.
+assert.equal(needsRefutation({}), true, 'a missing severity is still refuted');
+assert.equal(needsRefutation({ severity: 'Suggestion' }), true, 'an off-case severity is still refuted');
+assert.equal(needsRefutation({ severity: 'nit' }), true, 'an unknown severity is still refuted');
+assert.equal(needsRefutation(null), true, 'a null finding is still refuted');
+
+// ============================================================================
+// Pipeline, both modes: gating findings get a distinctly-labelled refuter each,
+// the suggestion gets NONE, and the pass-through is marked + floor-filtered.
+// ============================================================================
+const GATING_AND_NOT = [
+  { id: 'b1', severity: 'blocking', confidence: 90, what_fails: 'real bug' },
+  { id: 'c1', severity: 'concern', confidence: 90, what_fails: 'real concern' },
+  { id: 's1', severity: 'suggestion', confidence: 90, what_fails: 'readability nit' },
+  { id: 's2', severity: 'suggestion', confidence: 60, what_fails: 'below-floor nit' },
+];
+
+for (const [mode, dimKey] of [['code', 'correctness'], ['plan', 'coherence']]) {
+  const spy = makeSpyAgent({ [dimKey]: GATING_AND_NOT }, {});
+  const { survivors } = await buildReviewPipeline(mode, deps(spy))(CTX);
+  const refuteCalls = spy.calls.filter((c) => c.label.startsWith('refute:'));
+
+  assert.equal(refuteCalls.length, 2, mode + ': exactly one refuter per GATING finding');
+  assert.deepEqual(
+    refuteCalls.map((c) => c.label).sort(),
+    ['refute:' + mode + ':b1', 'refute:' + mode + ':c1'],
+    mode + ': the two refuters are distinctly labelled, one per gating finding'
+  );
+  assert.ok(
+    !refuteCalls.some((c) => c.label.includes('s1') || c.label.includes('s2')),
+    mode + ': NO refuter is dispatched for a `suggestion`'
+  );
+
+  // s2 is dropped by the confidence floor even though no refuter graded it —
+  // the floor is not bypassed by the pass-through path.
+  assert.deepEqual(survivors.map((f) => f.id), ['b1', 'c1', 's1'], mode + ': below-floor suggestion still dropped');
+
+  const byId = Object.fromEntries(survivors.map((f) => [f.id, f]));
+  assert.equal(byId.s1.unrefuted, true, mode + ': the passed-through finding is marked `unrefuted: true`');
+  assert.equal(byId.b1.unrefuted, undefined, mode + ': a refuter-graded blocking finding is NOT marked unrefuted');
+  assert.equal(byId.c1.unrefuted, undefined, mode + ': a refuter-graded concern finding is NOT marked unrefuted');
+}
+
+// A refuter CRASH on a gating finding still keeps the finding (a crash is not
+// proof of refutation) but must NOT masquerade as a deliberate skip.
+{
+  const spy = makeSpyAgent({ correctness: [GATING_AND_NOT[0]] }, {});
+  const base = spy.agent;
+  spy.agent = async (prompt, opts) => {
+    if (opts && opts.label.startsWith('refute:')) throw new Error('boom refuter');
+    return base(prompt, opts);
+  };
+  const { survivors } = await buildReviewPipeline('code', deps(spy))(CTX);
+  assert.deepEqual(survivors.map((f) => f.id), ['b1'], 'a crashed refuter keeps its gating finding');
+  assert.equal(survivors[0].unrefuted, undefined, 'a crashed refuter does NOT mark the finding `unrefuted`');
+}
+
+// ============================================================================
+// The disposition rule, single-sourced, and both act prompts consuming it.
+// ============================================================================
+assert.ok(
+  UNREFUTED_DISPOSITION.includes('reported, not verified'),
+  'the disposition rule states the findings were reported, not verified'
+);
+assert.ok(UNREFUTED_DISPOSITION.includes('not major'), 'the disposition rule bounds what may be incorporated');
+
+const VERIFIED_ONLY = [{ id: 'f1', severity: 'concern', confidence: 90, what_fails: 'x' }];
+const MIXED = VERIFIED_ONLY.concat([{ id: 'f2', severity: 'suggestion', confidence: 90, what_fails: 'y', unrefuted: true }]);
+
+// af-2: the LEADING claim is conditional. With a mixed payload neither prompt may
+// keep asserting that everything in it survived refutation.
+const codeMixed = buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', MIXED);
+assert.ok(codeMixed.includes(UNREFUTED_DISPOSITION), 'code act prompt carries the disposition rule verbatim');
+assert.ok(
+  !codeMixed.includes('These findings survived refutation'),
+  'code act prompt drops the unconditional "survived refutation" lead on a mixed payload'
+);
+assert.ok(!codeMixed.includes('ALREADY-VERIFIED'), 'code act prompt drops the ALREADY-VERIFIED lead on a mixed payload');
+assert.ok(codeMixed.includes('skipped'), 'code act prompt tells the agent how to record a skip');
+
+const planMixed = buildActPrompt('phase', 'rm', 'phase-1-x', MIXED);
+assert.ok(planMixed.includes(UNREFUTED_DISPOSITION), 'plan act prompt carries the disposition rule verbatim');
+assert.ok(
+  !planMixed.includes('do not re-review'),
+  'plan act prompt drops the flat "do not re-review" directive on a mixed payload'
+);
+assert.ok(
+  !planMixed.includes('already-verified findings'),
+  'plan act prompt drops the already-verified lead on a mixed payload'
+);
+
+// ... and with NO un-refuted survivor both prompts are byte-identical to the
+// pre-change ones, so this change cannot silently perturb the existing lane.
+const CODE_ACT_BASELINE = 'You are acting on ALREADY-VERIFIED code-review findings for rm/phase-1-x (worktree: wt/rm).\nThese findings survived refutation and are non-gating (the reviewed outcome is already decided).\n[\n  {\n    "id": "f1",\n    "severity": "concern",\n    "confidence": 90,\n    "what_fails": "x"\n  }\n]\nFor EACH finding, decide SMALL vs LARGE:\n- SMALL — localized, low-risk, no new acceptance criterion (a typo, a missing doc comment, a tightened error message, an extra test). Fix it directly in the worktree at wt/rm and re-run the relevant tests. Do not create a separate landing commit — the fix folds into the eventual land-time commit.\n- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance criterion. Do NOT edit code for these: file it with `./target/debug/rdm task create <slug> --title "Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.\nReturn JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — id, action (fixed-inline|filed-as-task), and taskSlug when you filed a task.';
+const PLAN_ACT_BASELINE = 'You are the plan-review orchestrator applying already-verified findings. The findings below already\nsurvived independent refutation — do not re-review; act on them.\nFindings (ranked, most-severe first):\n[\n  {\n    "id": "f1",\n    "severity": "concern",\n    "confidence": 90,\n    "what_fails": "x"\n  }\n]\nFor each finding, decide small vs large:\n- SMALL (a localized wording/typo/missing-detail fix to the plan document itself): apply it by reading the\n  current body and writing the ENTIRE modified body back — `--body` is whole-document-authoritative, there\n  is no patch mechanism. Use the matching command:\n    ./target/debug/rdm phase update phase-1-x --roadmap rm --body "<full updated body>" --no-edit --project rdm\n- LARGE (a structural concern: a missing prerequisite, scope too big for one phase, a conflicting design\n  decision): do NOT edit the plan document — file it as a task, with `--no-plan-review` so this finding\n  does not itself get re-stamped `needs-plan-review`:\n    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-plan-review --no-edit --project rdm\nAfter applying any changes, run: ./target/debug/rdm commit -m "chore(plan): address plan review findings on rm/phase-1-x"\nIf there is nothing small to fix and nothing large to file, make no changes.\nReturn a STAMP_ACK object: { ok: true } if you completed without error (including the no-op case), else { ok: false }.';
+assert.equal(
+  buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', VERIFIED_ONLY),
+  CODE_ACT_BASELINE,
+  'an all-verified code act prompt is byte-identical to the pre-change baseline'
+);
+assert.equal(
+  buildActPrompt('phase', 'rm', 'phase-1-x', VERIFIED_ONLY),
+  PLAN_ACT_BASELINE,
+  'an all-verified plan act prompt is byte-identical to the pre-change baseline'
+);
+
+// The schema must be able to RECORD the disposition rule's "skip the rest and
+// say why" branch, or the act step has to misreport a skip as something else.
+const action = CODE_ACT_SCHEMA.properties.handled.items.properties.action;
+assert.ok(action.enum.includes('skipped'), 'CODE_ACT action enum accepts `skipped`');
+assert.ok(action.enum.includes('fixed-inline') && action.enum.includes('filed-as-task'), 'the existing actions survive');
+assert.equal(
+  CODE_ACT_SCHEMA.properties.handled.items.properties.reason.type,
+  'string',
+  'CODE_ACT carries an optional `reason` for a skip'
+);
+assert.ok(
+  !CODE_ACT_SCHEMA.properties.handled.items.required.includes('reason'),
+  '`reason` is optional — a fixed-inline entry must not be forced to carry one'
+);
+
+console.log('8: non-gating refutation skip assertions passed');
+NODE_NONGATING_TEST
+
+if run_node "$TMP/nongating-test.mjs" "$LIB" "$DISPATCH_LIB" "$PLAN_LIB"; then
+    pass "8: suggestion is passed through un-refuted and marked; gating severities keep their refuter; act prompts stay honest"
+else
+    fail "8: non-gating refutation skip assertions failed"
+fi
+
+# --- 8b. RENDERED SKILL PROSE (whole file, not just the generated region) -----
+# The refuter invariant is stated TWICE in every review skill: once inside the
+# generated `## Review specification` region, and once in hand-authored prose the
+# generator does not own. Grepping only the region would let the hand-authored
+# copy keep contradicting the code, so these greps are deliberately whole-file.
+say "8b. Every rendered review skill states the pass-through rule, in hand-authored prose too"
+
+REVIEW_DOCS="$TEMPLATES/skill-review-cli.md $TEMPLATES/skill-review-mcp.md \
+$TEMPLATES/skill-plan-review-cli.md $TEMPLATES/skill-plan-review-mcp.md \
+$REPO_ROOT/.claude/skills/rdm-review/SKILL.md $REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
+
+for doc in $REVIEW_DOCS; do
+    [ -f "$doc" ] || fail "8b: expected review skill doc not found: $doc"
+    grep -qF 'unrefuted: true' "$doc" ||
+        fail "8b: $doc never mentions the \`unrefuted: true\` marker"
+    grep -qF 'reported, not verified' "$doc" ||
+        fail "8b: $doc does not carry the un-refuted disposition rule"
+    # The retired absolutes. Each one is now FALSE for a non-gating finding, so
+    # none of them may survive anywhere in the file.
+    ! grep -qF 'Findings are never surfaced, fixed, or acted on until a *separate* agent' "$doc" ||
+        fail "8b: $doc still claims EVERY finding is refuted before being surfaced"
+    ! grep -qF 'no finding is surfaced, fixed, or acted on until a *separate* refuter agent' "$doc" ||
+        fail "8b: $doc still claims EVERY finding is refuted before being acted on"
+    ! grep -qF 'Never fix or file an unverified finding.' "$doc" ||
+        fail "8b: $doc still forbids acting on any un-refuted finding"
+    ! grep -qF 'Suggestions may skip refutation (low stakes)' "$doc" ||
+        fail "8b: $doc still describes the suggestion skip as an optional low-stakes shortcut"
+done
+pass "8b: all six rendered review docs state the marker + disposition rule and drop every retired absolute"
+
+# --- 8c. PLANTED-MUTATION SELF-TESTS (non-vacuity, both directions) -----------
+# Four independent mutations, each of which MUST flip one of the section-8
+# assertions. Without these, a refactor that quietly re-broadened the skip (or
+# dropped the marker, the disposition rule, or the conditional act-prompt lead)
+# would sail through a green harness.
+say "8c. Non-gating skip mutation self-tests (prove section 8 is not vacuous)"
+NGMUT="$TMP/ng-mut/.claude/workflows/lib"
+mkdir -p "$NGMUT"
+
+reset_ngmut() {
+    cp "$LIB" "$NGMUT/review.mjs"
+    cp "$DISPATCH_LIB" "$NGMUT/dispatch-phase.mjs"
+    cp "$PLAN_LIB" "$NGMUT/plan-review.mjs"
+}
+
+# (a) Widen the skip to `concern`: the "one refuter per gating finding" count
+#     must stop holding.
+reset_ngmut
+sed "s/^const NON_GATING_SEVERITIES = \['suggestion'\];/const NON_GATING_SEVERITIES = ['suggestion', 'concern']; \/\/ MUTANT/" \
+    "$LIB" >"$NGMUT/review.mjs"
+grep -q 'MUTANT' "$NGMUT/review.mjs" || fail "8c(a): mutation setup did not widen NON_GATING_SEVERITIES"
+
+cat >"$TMP/ng-mut-widen.mjs" <<'NODE_NG_WIDEN'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const mod = await import(pathToFileURL(process.argv[2]).href);
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(items.map(async (item, i) => {
+    let acc = item;
+    for (const stage of stages) {
+      try { acc = await stage(acc, item, i); } catch { return null; }
+    }
+    return acc;
+  }));
+}
+const calls = [];
+const agent = async (prompt, opts) => {
+  const label = (opts && opts.label) || '';
+  calls.push(label);
+  if (label.startsWith('find:')) {
+    return label.endsWith(':correctness')
+      ? { findings: [
+          { id: 'b1', severity: 'blocking', confidence: 90 },
+          { id: 'c1', severity: 'concern', confidence: 90 },
+          { id: 's1', severity: 'suggestion', confidence: 90 },
+        ] }
+      : { findings: [] };
+  }
+  return { refuted: false, confidence: 90 };
+};
+await mod.buildReviewPipeline('code', { agent, pipeline: refPipeline, parallel: refParallel, log: () => {} })({ target: 't' });
+const refuters = calls.filter((l) => l.startsWith('refute:'));
+assert.throws(
+  () => assert.equal(refuters.length, 2),
+  'widening NON_GATING_SEVERITIES to `concern` must FAIL the gating-refuter count — else the check is vacuous'
+);
+console.log('8c(a) widen mutation self-test passed');
+NODE_NG_WIDEN
+run_node "$TMP/ng-mut-widen.mjs" "$NGMUT/review.mjs" ||
+    fail "8c(a): widening the skip did not flip the gating-refuter count assertion"
+
+# (b) Drop the `unrefuted` marker from the pass-through: an act step could no
+#     longer tell reported-only from verified.
+reset_ngmut
+sed 's/unrefuted: true }/unrefutedMUTANT: true }/' "$LIB" >"$NGMUT/review.mjs"
+grep -q 'unrefutedMUTANT' "$NGMUT/review.mjs" || fail "8c(b): mutation setup did not rename the marker"
+
+cat >"$TMP/ng-mut-marker.mjs" <<'NODE_NG_MARKER'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const mod = await import(pathToFileURL(process.argv[2]).href);
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(items.map(async (item, i) => {
+    let acc = item;
+    for (const stage of stages) {
+      try { acc = await stage(acc, item, i); } catch { return null; }
+    }
+    return acc;
+  }));
+}
+const agent = async (prompt, opts) => {
+  const label = (opts && opts.label) || '';
+  if (label.startsWith('find:')) {
+    return label.endsWith(':correctness')
+      ? { findings: [{ id: 's1', severity: 'suggestion', confidence: 90 }] }
+      : { findings: [] };
+  }
+  return { refuted: false, confidence: 90 };
+};
+const { survivors } = await mod.buildReviewPipeline('code', { agent, pipeline: refPipeline, parallel: refParallel, log: () => {} })({ target: 't' });
+assert.throws(
+  () => assert.equal(survivors[0].unrefuted, true),
+  'a renamed marker must FAIL the pass-through marker check — else the check is vacuous'
+);
+console.log('8c(b) marker mutation self-test passed');
+NODE_NG_MARKER
+run_node "$TMP/ng-mut-marker.mjs" "$NGMUT/review.mjs" ||
+    fail "8c(b): dropping the marker did not flip the marker assertion"
+
+# (c) Strip the disposition sentence: both act prompts lose the rule that makes
+#     an un-refuted finding safe to hand to an acting agent.
+reset_ngmut
+sed 's/were \*\*reported, not verified\*\*/were MUTANT/' "$LIB" >"$NGMUT/review.mjs"
+grep -q 'were MUTANT' "$NGMUT/review.mjs" || fail "8c(c): mutation setup did not strip the disposition wording"
+
+cat >"$TMP/ng-mut-disposition.mjs" <<'NODE_NG_DISP'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const dispatchMod = await import(pathToFileURL(process.argv[2]).href);
+const planMod = await import(pathToFileURL(process.argv[3]).href);
+const MIXED = [{ id: 'f2', severity: 'suggestion', confidence: 90, unrefuted: true }];
+const codePrompt = dispatchMod.buildCodeActPrompt('phase', 'rm', 'p1', 'wt', MIXED);
+const planPrompt = planMod.buildActPrompt('phase', 'rm', 'p1', MIXED);
+assert.throws(
+  () => assert.ok(codePrompt.includes('reported, not verified')),
+  'stripping the disposition wording must FAIL the code act-prompt check — else the check is vacuous'
+);
+assert.throws(
+  () => assert.ok(planPrompt.includes('reported, not verified')),
+  'stripping the disposition wording must FAIL the plan act-prompt check — else the check is vacuous'
+);
+console.log('8c(c) disposition mutation self-test passed');
+NODE_NG_DISP
+run_node "$TMP/ng-mut-disposition.mjs" "$NGMUT/dispatch-phase.mjs" "$NGMUT/plan-review.mjs" ||
+    fail "8c(c): stripping the disposition rule did not flip the act-prompt assertions"
+
+# (d) Restore the UNCONDITIONAL "survived refutation" lead on the code act
+#     prompt: the mixed payload would again be described as fully verified.
+reset_ngmut
+sed 's/const hasUnrefuted = list.some((f) => f \&\& f.unrefuted);/const hasUnrefuted = false; \/\/ MUTANT/' \
+    "$DISPATCH_LIB" >"$NGMUT/dispatch-phase.mjs"
+grep -q 'MUTANT' "$NGMUT/dispatch-phase.mjs" || fail "8c(d): mutation setup did not force the unconditional lead"
+
+cat >"$TMP/ng-mut-lead.mjs" <<'NODE_NG_LEAD'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const dispatchMod = await import(pathToFileURL(process.argv[2]).href);
+const MIXED = [{ id: 'f2', severity: 'suggestion', confidence: 90, unrefuted: true }];
+const prompt = dispatchMod.buildCodeActPrompt('phase', 'rm', 'p1', 'wt', MIXED);
+assert.throws(
+  () => assert.ok(!prompt.includes('These findings survived refutation')),
+  'an unconditional "survived refutation" lead must FAIL the mixed-payload check — else the check is vacuous'
+);
+console.log('8c(d) act-prompt lead mutation self-test passed');
+NODE_NG_LEAD
+run_node "$TMP/ng-mut-lead.mjs" "$NGMUT/dispatch-phase.mjs" ||
+    fail "8c(d): forcing the unconditional lead did not flip the mixed-payload assertion"
+
+pass "8c: all four mutations flip their assertion — section 8 is non-vacuous"
 
 say "verify-workflow-review.sh: ALL GREEN"
