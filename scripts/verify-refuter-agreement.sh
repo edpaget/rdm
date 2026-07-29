@@ -14,8 +14,14 @@
 #      authoritative-only splits, token + tool-call columns on the FN row.
 #   6  The no-blended-accuracy negative assertion (recursive, JSON and text).
 #   7  --dry-run dispatches NOTHING; --dispatch-stub drives the full path.
+#  7b  The REAL paid-dispatch parsing path, driven with zero spend:
+#      parseClaudeResult / tryParseEmbeddedJson / countSessionToolUses /
+#      projectSlugFor as pure functions, plus claudeDispatch against
+#      PATH-shadowed fake `claude` binaries. These branches produce the verdicts
+#      and token/tool-call figures the DECISION was computed from, so a
+#      regression in them would silently corrupt the numbers.
 #   8  --audit docs/token-baseline.json arithmetic.
-#   9  Planted-mutation self-tests proving 2, 3, 5, and 6 are not vacuous.
+#   9  Planted-mutation self-tests proving 2, 3, 5, 6, and 7b are not vacuous.
 #  10  CHANGELOG hygiene, mirroring scripts/verify-token-report.sh.
 #  11  The AC9 XOR: either a changed model binding is reflected in a new
 #      verify-workflow-review.sh criterion, or the unchanged binding carries the
@@ -508,6 +514,281 @@ grep -q 'not a tier alias' "$TMP/badtier.txt" || fail "the unknown-tier error is
 pass "an unknown --tiers value fails at plan time with an actionable error"
 
 # ---------------------------------------------------------------------------
+say "7b. The REAL paid-dispatch parsing path, driven with zero spend"
+
+# Sections 1-7 drive the harness through --dry-run and --dispatch-stub, which
+# BYPASS claudeDispatch/parseClaudeResult entirely. But those are the branches
+# that produced the verdicts and the token/tool-call figures behind this phase's
+# DECISION (computed from a real, non-stubbed two-tier run). A regression in
+# them — picking the FIRST StructuredOutput instead of the last, coercing a
+# non-boolean `refuted` to false, miscounting tool_use blocks — would silently
+# corrupt the FN/FP rates with nothing to catch it. parseClaudeResult is a pure
+# function of a response body, so it is unit-testable with no subprocess at all;
+# claudeDispatch is driven against PATH-shadowed fake `claude` binaries so the
+# spawn/exit/non-JSON/ENOENT branches are covered without a single paid dispatch.
+
+# Fake `claude` binaries. PATH is REPLACED (not prepended) for each case, so the
+# real `claude` can never be reached even if it is installed on this machine.
+mkdir -p "$TMP/bin-ok" "$TMP/bin-fail" "$TMP/bin-garbage" "$TMP/bin-empty"
+
+cat >"$TMP/bin-ok/claude" <<'EOF'
+#!/bin/sh
+# Echo argv and the stdin byte count back through the verdict so the test can
+# prove the prompt really reached the process and --model carried the tier.
+n=$(wc -c | tr -d ' ')
+printf '{"session_id":"sess-fake","usage":{"output_tokens":7,"input_tokens":8,"cache_creation_input_tokens":9,"cache_read_input_tokens":10},"messages":[{"message":{"content":[{"type":"tool_use","name":"StructuredOutput","input":{"refuted":true,"confidence":91,"rationale":"argv=%s stdin=%s"}}]}}]}\n' "$*" "$n"
+EOF
+
+cat >"$TMP/bin-fail/claude" <<'EOF'
+#!/bin/sh
+echo "Invalid API key - please run /login" >&2
+exit 3
+EOF
+
+cat >"$TMP/bin-garbage/claude" <<'EOF'
+#!/bin/sh
+echo "Rate limit reached. Try again later."
+EOF
+
+chmod +x "$TMP/bin-ok/claude" "$TMP/bin-fail/claude" "$TMP/bin-garbage/claude"
+
+# bin-ok's fake needs `wc`/`tr`, but PATH is replaced wholesale rather than
+# prepended so a real `claude` stays unreachable. Symlink just those two in.
+for u in wc tr; do
+    ln -sf "$(command -v "$u")" "$TMP/bin-ok/$u" || die "could not stage $u for the fake claude"
+done
+
+cat >"$TMP/check-dispatch.mjs" <<'EOF'
+import fs from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const [, , runnerPath, modulePath, tmp] = process.argv;
+const {
+  parseClaudeResult,
+  tryParseEmbeddedJson,
+  countSessionToolUses,
+  projectSlugFor,
+  claudeDispatch,
+} = await import(pathToFileURL(runnerPath).href);
+const { TOKEN_CLASSES } = await import(pathToFileURL(modulePath).href);
+
+const structured = (refuted, confidence, rationale) => ({
+  type: 'tool_use',
+  name: 'StructuredOutput',
+  input: { refuted, confidence, rationale },
+});
+const turn = (...blocks) => ({ message: { content: blocks } });
+
+// --- A. The canonical shape: a StructuredOutput tool_use + a usage block ----
+{
+  const r = parseClaudeResult({
+    usage: {
+      output_tokens: 111,
+      input_tokens: 222,
+      cache_creation_input_tokens: 333,
+      cache_read_input_tokens: 444,
+    },
+    messages: [
+      turn({ type: 'text', text: 'reading the cited file' }, { type: 'tool_use', name: 'Read', input: {} }),
+      turn({ type: 'tool_use', name: 'Grep', input: {} }),
+      turn(structured(true, 88, 'governed by a documented exception')),
+    ],
+  });
+  assert.equal(r.verdict.refuted, true, 'A: refuted');
+  assert.equal(r.verdict.confidence, 88, 'A: confidence');
+  assert.equal(r.verdict.rationale, 'governed by a documented exception', 'A: rationale');
+  assert.equal(r.error, null, 'A: a graded trial must record no error');
+  assert.equal(r.usage.output, 111, 'A: output tokens');
+  assert.equal(r.usage.uncachedInput, 222, 'A: uncached input tokens');
+  assert.equal(r.usage.cacheWrite, 333, 'A: cache-write tokens');
+  assert.equal(r.usage.cacheRead, 444, 'A: cache-read tokens');
+  // The tool-call column counts EVERY tool_use, not just the verdict block —
+  // 13-20 calls for Opus vs 7-9 for Sonnet is the divergence signal.
+  assert.equal(r.toolCalls, 3, 'A: every tool_use block must be counted');
+}
+
+// --- B. Several StructuredOutput blocks: the LAST one must win -------------
+// A refuter that revises its verdict emits more than one. Picking the first
+// would record a stale answer and silently corrupt the FN/FP rates.
+{
+  const r = parseClaudeResult({
+    messages: [
+      turn(structured(false, 10, 'first pass — keep it')),
+      turn({ type: 'tool_use', name: 'Read', input: {} }),
+      turn(structured(true, 99, 'on reflection, refuted')),
+    ],
+  });
+  assert.equal(r.verdict.refuted, true, 'B: the LAST StructuredOutput must win');
+  assert.equal(r.verdict.confidence, 99, 'B: the last block s confidence must win');
+  assert.equal(r.toolCalls, 3, 'B: tool-call count');
+}
+
+// --- C. No tool_use at all: `result` is a bare JSON string ------------------
+{
+  const r = parseClaudeResult({
+    usage: { output_tokens: 5 },
+    result: '{"refuted": false, "confidence": 65, "rationale": "the defect is real"}',
+  });
+  assert.equal(r.verdict.refuted, false, 'C: bare-JSON result must parse');
+  assert.equal(r.verdict.confidence, 65, 'C: confidence');
+  assert.equal(r.toolCalls, 0, 'C: no tool_use blocks means no tool calls');
+}
+
+// --- D. `result` wraps JSON in prose and a fence: tryParseEmbeddedJson ------
+{
+  const r = parseClaudeResult({
+    result: 'Here is my verdict:\n\n```json\n{"refuted": true, "confidence": 70, "rationale": "the cited symbol does not exist"}\n```\nDone.',
+  });
+  assert.equal(r.verdict.refuted, true, 'D: fenced/prose-wrapped JSON must still parse');
+  assert.equal(r.verdict.rationale, 'the cited symbol does not exist', 'D: rationale');
+}
+
+// --- E. Neither shape present: ungraded, NEVER coerced to false -------------
+// Coercing a missing verdict to `refuted: false` would count it as a KEPT
+// finding and silently inflate the false-positive rate.
+{
+  const r = parseClaudeResult({ result: 'I was unable to reach a conclusion.', usage: {} });
+  assert.equal(r.verdict, null, 'E: an unparseable answer must be ungraded');
+  assert.match(r.error, /no boolean `refuted`/, 'E: the error must name the missing field');
+}
+
+// --- F. A well-formed response with a NON-BOOLEAN `refuted` is ungraded -----
+{
+  for (const bad of ['true', 1, null, undefined, {}]) {
+    const viaResult = parseClaudeResult({ result: JSON.stringify({ refuted: bad, confidence: 90 }) });
+    assert.equal(viaResult.verdict, null, `F: result-shaped refuted=${JSON.stringify(bad)} must be ungraded`);
+    const viaTool = parseClaudeResult({ messages: [turn(structured(bad, 90, 'x'))] });
+    assert.equal(viaTool.verdict, null, `F: tool-shaped refuted=${JSON.stringify(bad)} must be ungraded`);
+  }
+}
+
+// --- G. A missing `usage` object must zero all four classes, never throw ----
+{
+  const r = parseClaudeResult({ result: '{"refuted":true}' });
+  for (const c of TOKEN_CLASSES) {
+    assert.equal(r.usage[c], 0, `G: ${c} must default to 0 when usage is absent`);
+  }
+  assert.equal(r.verdict.confidence, null, 'G: a missing confidence stays null, not 0');
+  assert.equal(r.verdict.rationale, null, 'G: a missing rationale stays null');
+  // A completely empty body must degrade, not throw.
+  const empty = parseClaudeResult({});
+  assert.equal(empty.verdict, null, 'G: an empty body is ungraded');
+  assert.equal(empty.toolCalls, 0, 'G: an empty body has no tool calls');
+}
+
+// --- H. num_tool_uses is the FALLBACK, never an override -------------------
+{
+  const fallback = parseClaudeResult({ result: '{"refuted":true}', num_tool_uses: 13 });
+  assert.equal(fallback.toolCalls, 13, 'H: num_tool_uses must fill in when no blocks were seen');
+  const observed = parseClaudeResult({
+    messages: [turn({ type: 'tool_use', name: 'Read', input: {} }, structured(true, 50, 'x'))],
+    num_tool_uses: 999,
+  });
+  assert.equal(observed.toolCalls, 2, 'H: an observed block count must not be overwritten by num_tool_uses');
+}
+
+// --- I. tryParseEmbeddedJson is brace-balanced and string-aware ------------
+{
+  assert.equal(tryParseEmbeddedJson('no braces here'), null, 'I: no brace');
+  assert.equal(tryParseEmbeddedJson('{"refuted": true'), null, 'I: unbalanced');
+  assert.equal(tryParseEmbeddedJson(42), null, 'I: non-string');
+  // Braces INSIDE a string must not close the span early.
+  const s = tryParseEmbeddedJson('prefix {"rationale":"a } and a {","refuted":true} suffix');
+  assert.equal(s.refuted, true, 'I: braces inside a JSON string must not terminate the span');
+  // Nested objects must be spanned whole.
+  const n = tryParseEmbeddedJson('x {"refuted":false,"meta":{"a":{"b":1}}} y');
+  assert.equal(n.refuted, false, 'I: nested objects');
+}
+
+// --- J. projectSlugFor mirrors Claude Code's project-directory naming ------
+{
+  assert.equal(projectSlugFor('/Users/edward/Projects/rdm'), '-Users-edward-Projects-rdm', 'J: plain path');
+  assert.equal(
+    projectSlugFor('/Users/edward/Projects/rdm__worktrees/roadmap-x'),
+    '-Users-edward-Projects-rdm--worktrees-roadmap-x',
+    'J: worktree path'
+  );
+}
+
+// --- K. countSessionToolUses reads a real transcript ------------------------
+{
+  const root = path.join(tmp, 'projects-fixture');
+  const cwd = '/Users/edward/Projects/rdm';
+  const dir = path.join(root, projectSlugFor(cwd));
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = [
+    JSON.stringify({ type: 'user', message: { content: 'the refute prompt' } }),
+    // An assistant turn interleaving text and tool_use — only the tool_use counts.
+    JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'looking' }, { type: 'tool_use', name: 'Read' }, { type: 'tool_use', name: 'Grep' }] },
+    }),
+    // A USER turn carrying tool_result blocks must NOT be counted as tool calls.
+    JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result' }, { type: 'tool_use', name: 'NotACall' }] } }),
+    '',
+    'this line is not JSON at all',
+    // An assistant turn whose content is a bare string must be skipped, not throw.
+    JSON.stringify({ type: 'assistant', message: { content: 'plain text answer' } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'StructuredOutput' }] } }),
+  ];
+  fs.writeFileSync(path.join(dir, 'sess-abc.jsonl'), lines.join('\n') + '\n');
+  assert.equal(countSessionToolUses('sess-abc', cwd, root), 3, 'K: only assistant tool_use blocks count');
+  assert.equal(countSessionToolUses('sess-missing', cwd, root), null, 'K: a missing transcript returns null, not 0');
+  assert.equal(countSessionToolUses('sess-abc', '/nope', root), null, 'K: an unknown project slug returns null');
+}
+
+// --- L. claudeDispatch against PATH-SHADOWED fakes (zero paid dispatch) ----
+{
+  const trial = { trialId: 't1', corpusId: 'c1', tier: 'sonnet', replicate: 0 };
+  const prompt = 'X'.repeat(500);
+
+  process.env.PATH = path.join(tmp, 'bin-ok');
+  const ok = await claudeDispatch(trial, prompt, { cwd: tmp });
+  assert.equal(ok.verdict.refuted, true, 'L: a well-formed response parses');
+  assert.equal(ok.usage.cacheRead, 10, 'L: usage threads through the spawn path');
+  assert.equal(ok.toolCalls, 1, 'L: tool calls thread through the spawn path');
+  assert.match(ok.verdict.rationale, /--model sonnet/, 'L: the tier must be passed as --model');
+  assert.match(ok.verdict.rationale, /--output-format json/, 'L: --output-format json must be requested');
+  assert.match(ok.verdict.rationale, new RegExp('stdin=' + prompt.length + '\\b'), 'L: the prompt must arrive on stdin');
+
+  process.env.PATH = path.join(tmp, 'bin-fail');
+  const failed = await claudeDispatch(trial, prompt, { cwd: tmp });
+  assert.equal(failed.verdict, null, 'L: a non-zero exit is ungraded, not refuted:false');
+  assert.match(failed.error, /exited 3/, 'L: the exit status must be reported');
+  assert.match(failed.error, /Invalid API key/, 'L: stderr must be surfaced actionably');
+
+  process.env.PATH = path.join(tmp, 'bin-garbage');
+  const garbage = await claudeDispatch(trial, prompt, { cwd: tmp });
+  assert.equal(garbage.verdict, null, 'L: a non-JSON body is ungraded');
+  assert.match(garbage.error, /non-JSON body/, 'L: a non-JSON body must be named as such');
+
+  // A MISSING binary is a setup error, not a per-trial failure: it must THROW
+  // so a long run aborts immediately instead of returning N null verdicts.
+  process.env.PATH = path.join(tmp, 'bin-empty');
+  let threw = null;
+  try {
+    await claudeDispatch(trial, prompt, { cwd: tmp });
+  } catch (err) {
+    threw = err;
+  }
+  assert.ok(threw, 'L: a missing `claude` binary must throw, not return a null verdict');
+  assert.match(threw.message, /`claude` binary was not found/, 'L: the ENOENT error must name the binary');
+  assert.match(threw.message, /--dry-run|--dispatch-stub/, 'L: the ENOENT error must name the no-spend escape hatches');
+}
+
+console.log('real-dispatch parsing: A-L all pass with zero paid dispatches');
+EOF
+
+node "$TMP/check-dispatch.mjs" "$REPO_ROOT/$RUNNER" "$REPO_ROOT/$MODULE" "$TMP" >"$TMP/dispatch.txt" 2>&1 ||
+    {
+        cat "$TMP/dispatch.txt" >&2
+        fail "the real-dispatch parsing path failed its unit checks"
+    }
+[ -s "$TMP/dispatch.txt" ] && pass "$(tail -1 "$TMP/dispatch.txt")"
+
+# ---------------------------------------------------------------------------
 say "8. --audit: corpus-free arithmetic audit of the committed figures"
 
 node "$RUNNER" --audit "$BASELINE_JSON" >"$TMP/audit.txt" 2>&1 || {
@@ -529,7 +810,7 @@ fi
 pass "--audit fires on a planted off-by-one (the gate is not vacuous)"
 
 # ---------------------------------------------------------------------------
-say "9. Planted-mutation self-tests (sections 2, 3, 5, 6 are not vacuous)"
+say "9. Planted-mutation self-tests (sections 2, 3, 5, 6, 7b are not vacuous)"
 
 # 9a. Relabelling the divergence-class items must fail section 2's share floor.
 node -e '
@@ -624,6 +905,49 @@ MUT_SEV="$(node -e 'const m=require("'"$TMP"'/mined-mutant.json");const i=m.item
 [ "$MUT_SEV" = "concern" ] ||
     fail "mutating the fixture's finding JSON did not change the mined severity (got $MUT_SEV) — the miner may not be reading the transcript"
 pass "mutating a fixture finding changes the mined output — the miner really reads the transcript"
+
+# 9h-9j. Section 7b must fire on the three regressions it exists to catch.
+# The mutants live beside a symlinked `lib/` so the runner's relative import of
+# ./lib/refuter-agreement.mjs still resolves out of the scratch directory.
+mkdir -p "$TMP/mutscripts"
+ln -sf "$REPO_ROOT/scripts/lib" "$TMP/mutscripts/lib"
+
+run_dispatch_mutant() {
+    node "$TMP/check-dispatch.mjs" "$1" "$REPO_ROOT/$MODULE" "$TMP" >/dev/null 2>&1
+}
+
+# 9h. Taking the FIRST StructuredOutput instead of the last records a stale verdict.
+sed "s/if (block.name === 'StructuredOutput'/if (verdict === null \&\& block.name === 'StructuredOutput'/" \
+    "$RUNNER" >"$TMP/mutscripts/runner-first-wins.mjs"
+if diff -q "$RUNNER" "$TMP/mutscripts/runner-first-wins.mjs" >/dev/null; then
+    fail "the first-StructuredOutput-wins mutation did not apply — the self-test is vacuous"
+elif run_dispatch_mutant "$TMP/mutscripts/runner-first-wins.mjs"; then
+    fail "section 7b missed a parser that takes the FIRST StructuredOutput instead of the last"
+else
+    pass "section 7b fires when the parser takes the first StructuredOutput instead of the last"
+fi
+
+# 9i. Coercing a non-boolean `refuted` silently inflates the false-positive rate.
+sed "s/typeof block.input.refuted === 'boolean'/block.input.refuted !== undefined/" \
+    "$RUNNER" >"$TMP/mutscripts/runner-coerce.mjs"
+if diff -q "$RUNNER" "$TMP/mutscripts/runner-coerce.mjs" >/dev/null; then
+    fail "the non-boolean-coercion mutation did not apply — the self-test is vacuous"
+elif run_dispatch_mutant "$TMP/mutscripts/runner-coerce.mjs"; then
+    fail "section 7b missed a parser that accepts a non-boolean \`refuted\`"
+else
+    pass "section 7b fires when a non-boolean \`refuted\` is accepted instead of bucketed ungraded"
+fi
+
+# 9j. Counting only the verdict block undercounts the tool-call cost column.
+sed 's/^        toolCalls += 1;$/        if (block.name === "StructuredOutput") toolCalls += 1;/' \
+    "$RUNNER" >"$TMP/mutscripts/runner-miscount.mjs"
+if diff -q "$RUNNER" "$TMP/mutscripts/runner-miscount.mjs" >/dev/null; then
+    fail "the tool-call miscount mutation did not apply — the self-test is vacuous"
+elif run_dispatch_mutant "$TMP/mutscripts/runner-miscount.mjs"; then
+    fail "section 7b missed a parser that miscounts tool_use blocks"
+else
+    pass "section 7b fires when tool_use blocks are miscounted"
+fi
 
 # ---------------------------------------------------------------------------
 say "10. CHANGELOG hygiene"

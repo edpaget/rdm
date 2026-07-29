@@ -542,3 +542,24 @@ so a typo'd hand edit cannot pass silently.
   as its FN figures, so agreement and cost cannot be read apart.
 - **Determinism.** No `Date.now(`, no `Math.random(`, no network in the module or
   the miner. The run label defaults to the corpus sha, never the clock.
+- **The paid-dispatch path is unit-tested with zero spend.** `--dry-run` and
+  `--dispatch-stub` deliberately *bypass* `claudeDispatch`/`parseClaudeResult`,
+  yet those are exactly the branches that produced the verdicts and the
+  token/tool-call figures the DECISION above was computed from. So
+  `scripts/verify-refuter-agreement.sh` §7b drives them directly.
+  `parseClaudeResult` is a pure function of a response body and is asserted
+  against synthetic `claude -p --output-format json` bodies covering: the
+  StructuredOutput shape; **several** StructuredOutput blocks, where the *last*
+  must win; a bare-JSON `result` string; a prose/fence-wrapped one (exercising
+  `tryParseEmbeddedJson`'s string-aware brace matching); a missing `usage`
+  object; the `num_tool_uses` fallback-not-override; and — critically — a
+  non-boolean or absent `refuted`, which must bucket as `ungraded` rather than
+  coerce to `false` and silently inflate the false-positive rate.
+  `countSessionToolUses`/`projectSlugFor` run against a scratch transcript with
+  interleaved non-`tool_use` blocks, a user turn, and a malformed line. And
+  `claudeDispatch` runs against **PATH-shadowed fake `claude` binaries** — PATH
+  is replaced wholesale rather than prepended, so a real `claude` stays
+  unreachable — covering the success, non-zero-exit, non-JSON-body, and
+  missing-binary branches. §9h–9j plant the three regressions this exists to
+  catch (first-block-wins, non-boolean coercion, tool-call miscount) and assert
+  §7b fails on each, so the coverage is not vacuous.

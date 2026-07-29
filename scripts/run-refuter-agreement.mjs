@@ -258,8 +258,12 @@ function tryParseJson(text) {
   }
 }
 
-/** Last resort: the first balanced `{...}` span inside a prose/fenced answer. */
-function tryParseEmbeddedJson(text) {
+/**
+ * Last resort: the first balanced `{...}` span inside a prose/fenced answer.
+ * Exported so `scripts/verify-refuter-agreement.sh` §7b can drive the
+ * paid-dispatch parsing path without spawning anything.
+ */
+export function tryParseEmbeddedJson(text) {
   if (typeof text !== 'string') return null;
   const start = text.indexOf('{');
   if (start === -1) return null;
