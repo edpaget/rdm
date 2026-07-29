@@ -78,6 +78,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   interpolation branch, which every existing fixture short-circuited by giving
   each agent class only one record.
 
+### Fixed
+
+- The plan-review round-note reader (`parseRoundNotes`) accepted only
+  `blocking` and `concern` bullets while the writer emitted every severity, so
+  the first `suggestion` bullet in a previous round's note truncated the rest
+  of that round's bullet list — making repeat-finding detection re-list them
+  verbatim every pass. The reader now accepts every severity the writer can
+  produce. (Reporting-only; outcomes were classified from the live survivor
+  set, never the parsed one.)
+
 ### Changed
 
 - The review pipeline no longer spawns a refuter for a **`suggestion`**
@@ -86,9 +96,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   never change anything. Such findings now pass straight through marked
   `unrefuted: true` — still subject to the same confidence floor — and both act
   steps handle them under an explicit disposition rule: incorporate the ones
-  that improve readability or clarity where the change is not major, skip the
-  rest and say why (recordable as a new `skipped` action, with a `reason`, in
-  the code-lane `CODE_ACT` schema). `blocking` and `concern` keep their refuter
+  that improve readability or clarity where the change is not major, file the
+  ones worth keeping as follow-up tasks, and skip only the rest with a stated
+  reason (recordable as a new `skipped` action, with a `reason`, in the
+  code-lane `CODE_ACT` schema) — so a real observation can never evaporate into
+  a transient skip reason. `blocking` and `concern` keep their refuter
   — over the measured corpus a `concern` is overturned *more* often than a
   `blocking` finding — and the rule is fail-safe: a finding whose severity is
   missing or unrecognized is still refuted. Measured effect over the recorded

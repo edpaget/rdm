@@ -129,11 +129,18 @@ function needsRefutation(finding) {
 // stamped block, so every act-step consumer (dispatch-phase's code act step,
 // plan-review's plan act step) states one identical rule — the same reason
 // `hasBlocking` lives here rather than in each consumer.
+// The third disposition (file it) is not decoration: "follow-up material" has to
+// have somewhere to go. Without it the only outlet for a real-but-too-big
+// un-refuted observation is a `skipped` reason string that is never persisted
+// anywhere — which would LOSE, for example, a low-severity security note that
+// the pre-change size branch would have filed as a task.
 const UNREFUTED_DISPOSITION = [
   'Findings marked `unrefuted: true` were **reported, not verified** — no refuter graded them, so treat them as',
   'observations, never as confirmed defects. Incorporate the ones that improve readability or clarity where the',
-  'change is **not major**; skip the rest and state why. "Major" means anything that would alter the approach,',
-  'widen scope, or touch code outside the diff under review — that is follow-up material, not an in-flight edit.',
+  'change is **not major**. "Major" means anything that would alter the approach, widen scope, or touch code',
+  'outside the diff under review — that is follow-up material, not an in-flight edit. For each one you do not',
+  'incorporate: if it is worth keeping, FILE it with the LARGE filing command above and record it as filed;',
+  'otherwise skip it and state why. Never let a real observation evaporate into a skip reason.',
 ].join('\n');
 
 // The two dimension sets, selected by `mode`. Each finder agent reviews exactly
@@ -1124,10 +1131,13 @@ function buildReviewPipeline(mode, deps) {
 //| - A finding marked `unrefuted: true` was **reported, not verified** — no
 //|   refuter graded it (it is a non-gating severity; see § Refute), so treat it
 //|   as an observation, never as a confirmed defect. Incorporate the ones that
-//|   improve readability or clarity where the change is **not major**; skip the
-//|   rest and state why. "Major" means anything that would alter the approach,
-//|   widen scope, or touch code outside the diff under review — that is
-//|   follow-up material, not an in-flight edit.
+//|   improve readability or clarity where the change is **not major**. "Major"
+//|   means anything that would alter the approach, widen scope, or touch code
+//|   outside the diff under review — that is follow-up material, not an
+//|   in-flight edit. For each one you do not incorporate: **file** it as a task
+//|   if it is worth keeping (a low-severity security or correctness note is),
+//|   otherwise skip it and state why. An observation must never evaporate into
+//|   a skip reason just because no refuter graded it.
 //|
 //| Never fix or file a finding that carries neither provenance.
 //|
@@ -1144,7 +1154,10 @@ function buildReviewPipeline(mode, deps) {
 //|plan|   one phase, or a conflicting design decision. Do **NOT** edit the plan
 //|plan|   document for these: file it as a task.
 //|
-//| For each finding, state how it was handled (fixed-inline / filed-as-task).
+//| For each finding, state how it was handled (fixed-inline / filed-as-task /
+//| skipped, with a reason). These three are exactly the actions the code lane's
+//| `CODE_ACT` schema accepts — `skipped` exists for an un-refuted observation
+//| that is neither worth incorporating in flight nor worth filing.
 //|plan|
 //|plan| In `--implementation-plan` mode the *act* half is skipped entirely — there is
 //|plan| no persisted rdm item to write to or file against. Findings are still

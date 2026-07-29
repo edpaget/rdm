@@ -303,10 +303,13 @@ provenances, and they are handled differently:
 - A finding marked `unrefuted: true` was **reported, not verified** — no
   refuter graded it (it is a non-gating severity; see § Refute), so treat it
   as an observation, never as a confirmed defect. Incorporate the ones that
-  improve readability or clarity where the change is **not major**; skip the
-  rest and state why. "Major" means anything that would alter the approach,
-  widen scope, or touch code outside the diff under review — that is
-  follow-up material, not an in-flight edit.
+  improve readability or clarity where the change is **not major**. "Major"
+  means anything that would alter the approach, widen scope, or touch code
+  outside the diff under review — that is follow-up material, not an
+  in-flight edit. For each one you do not incorporate: **file** it as a task
+  if it is worth keeping (a low-severity security or correctness note is),
+  otherwise skip it and state why. An observation must never evaporate into
+  a skip reason just because no refuter graded it.
 
 Never fix or file a finding that carries neither provenance.
 
@@ -318,7 +321,10 @@ Never fix or file a finding that carries neither provenance.
   one phase, or a conflicting design decision. Do **NOT** edit the plan
   document for these: file it as a task.
 
-For each finding, state how it was handled (fixed-inline / filed-as-task).
+For each finding, state how it was handled (fixed-inline / filed-as-task /
+skipped, with a reason). These three are exactly the actions the code lane's
+`CODE_ACT` schema accepts — `skipped` exists for an un-refuted observation
+that is neither worth incorporating in flight nor worth filing.
 
 In `--implementation-plan` mode the *act* half is skipped entirely — there is
 no persisted rdm item to write to or file against. Findings are still

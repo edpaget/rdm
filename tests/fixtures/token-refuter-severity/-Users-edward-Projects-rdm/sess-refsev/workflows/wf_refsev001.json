@@ -11,7 +11,7 @@
   "summary": "fixture run for scripts/verify-token-report.sh section 6 (refuter severity)",
   "workflowName": "dispatch-phase",
   "status": "completed",
-  "startTime": 1785060000000,
+  "startTime": 1784970000000,
   "phases": [{ "index": 1, "title": "Review" }],
   "defaultModel": "claude-opus-5[1m]",
   "totalTokens": 12000,

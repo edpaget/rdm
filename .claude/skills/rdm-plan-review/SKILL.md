@@ -96,7 +96,13 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   introduced by another in-flight (not-yet-landed) roadmap or task, is
   only `blocking` when the target item does **not** carry the
   `depends-unlanded` tag and does not state the dependency explicitly;
-  when already annotated, downgrade it to a `concern` (or omit it).
+  when already annotated, downgrade it to a `concern` (or omit it). A
+  plan may delegate implementation decisions to whoever carries it out —
+  an undecided point is a `concern`, not `blocking`, unless the undecided
+  branches would lead to different goals or outcomes. Coherence is
+  `blocking` only when an implementer following the plan as written would
+  build the wrong thing, never merely because they would have to make a
+  decision themselves.
 - **architectural-fit** — *always.* Read the project's principles
   (falling back to `CLAUDE.md` / `AGENTS.md` in the project root when no
   principles note is configured — architectural fit must never go
@@ -117,6 +123,14 @@ plus every phase gated individually), a `phase`, a `task`, or an
 ahead of implementation. `implementation-plan` has **no persisted rdm
 item** behind it, so it is report-only: no body edit, no filed task, and
 no gate (see § Gate).
+- **restraint** — *always.* The counterweight to unit-of-work: flags a
+  plan that has over-specified rather than under-specified. Two shapes
+  are both findings — (1) the plan spells out a decision that could
+  safely be left to whoever carries it out, and (2) the level of detail
+  has grown past the point where adding more of it reduces risk rather
+  than adding new surface for its own review. Symmetric with
+  unit-of-work's two-sided framing: neither too little specification nor
+  too much is the goal.
 
 ### Find — one read-only agent per applicable dimension, in parallel
 
@@ -139,20 +153,51 @@ Each finding is reported as:
   recommendation: <concrete fix>
 ```
 
-### Refute — a FRESH agent per finding, in parallel
+### Refute — a FRESH agent per GATING finding, in parallel
 
-For every finding, dispatch a **separate** read-only refuter. The agent that
-found an issue is never the agent that confirms it. The refuter starts from
-the stance *"this is NOT a real issue unless the code proves otherwise"*,
-reads the actual cited location and its surrounding context, and returns
-`refuted` (boolean), a corrected `confidence` (0-100), and a rationale.
+For every finding whose severity can gate the outcome, dispatch a **separate**
+read-only refuter. The agent that found an issue is never the agent that
+confirms it. The refuter starts from the stance *"this is NOT a real issue
+unless the code proves otherwise"*, reads the actual cited location and its
+surrounding context, and returns `refuted` (boolean), a corrected `confidence`
+(0-100), and a rationale.
+
+**Non-gating pass-through.** A `suggestion` gates nothing at any tier — the
+verdict consults only `blocking` (and `concern`, at the `large` tier), and the
+acceptance-criteria channel never reads a finding's severity at all — so a
+refuter's verdict on one cannot change the outcome either way. No refuter is
+dispatched for it. It passes straight through, marked `unrefuted: true`, and
+is still subject to the confidence floor. `suggestion` is the ONLY severity
+treated this way, and the rule is fail-safe: a finding whose severity is
+missing or unrecognized is refuted like a gating one.
+
+`concern` is deliberately **not** passed through, even though it does not gate
+at the default tier. Measured over the whole recorded refuter corpus (989
+refuters; `scripts/measure-refuter-severity.mjs`, recorded in
+`docs/token-baseline.json` § `nonGatingRefutationSkip`):
+
+| severity | graded | refuted | rate |
+|---|---:|---:|---:|
+| blocking | 197 | 75 | 38.1 % |
+| concern | 522 | 263 | 50.4 % |
+| suggestion | 236 | 175 | 74.2 % |
+
+A `concern` is overturned MORE often than a `blocking` one, so its refuter is
+doing real work — and it gates outright at the `large` tier. Skipping only
+`suggestion` drops 239 refuters (24.2 % of all refuters, 20.7 % of refuter
+tokens) with no severity that can gate losing its counter-check.
 
 ### Filter & consolidate
 
 - **Drop** any finding a refuter refuted, and any whose post-refutation
   confidence is below the confidence floor (70).
 - A refuter that *crashes* is not proof of refutation — keep such a finding as
-  un-refuted rather than silently dropping it.
+  un-refuted rather than silently dropping it. It is **not** marked
+  `unrefuted: true`: that marker means "deliberately never graded", not
+  "grading failed".
+- A finding passed through un-refuted carries `unrefuted: true` and faces the
+  **same confidence floor** as everything else: the refuter is skipped, the
+  floor is not.
 - **Dedup** findings pointing at the same location / same root cause (the
   fleet covers overlapping ground by design).
 - **Rank** survivors by severity, then confidence, then id.
@@ -208,10 +253,13 @@ provenances, and they are handled differently:
 - A finding marked `unrefuted: true` was **reported, not verified** — no
   refuter graded it (it is a non-gating severity; see § Refute), so treat it
   as an observation, never as a confirmed defect. Incorporate the ones that
-  improve readability or clarity where the change is **not major**; skip the
-  rest and state why. "Major" means anything that would alter the approach,
-  widen scope, or touch code outside the diff under review — that is
-  follow-up material, not an in-flight edit.
+  improve readability or clarity where the change is **not major**. "Major"
+  means anything that would alter the approach, widen scope, or touch code
+  outside the diff under review — that is follow-up material, not an
+  in-flight edit. For each one you do not incorporate: **file** it as a task
+  if it is worth keeping (a low-severity security or correctness note is),
+  otherwise skip it and state why. An observation must never evaporate into
+  a skip reason just because no refuter graded it.
 
 Never fix or file a finding that carries neither provenance.
 
@@ -223,7 +271,10 @@ Never fix or file a finding that carries neither provenance.
   one phase, or a conflicting design decision. Do **NOT** edit the plan
   document for these: file it as a task.
 
-For each finding, state how it was handled (fixed-inline / filed-as-task).
+For each finding, state how it was handled (fixed-inline / filed-as-task /
+skipped, with a reason). These three are exactly the actions the code lane's
+`CODE_ACT` schema accepts — `skipped` exists for an un-refuted observation
+that is neither worth incorporating in flight nor worth filing.
 
 In `--implementation-plan` mode the *act* half is skipped entirely — there is
 no persisted rdm item to write to or file against. Findings are still

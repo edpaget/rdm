@@ -401,7 +401,12 @@ function parseRoundNotes(body) {
       continue
     }
     if (!current) continue
-    const bm = /^- \[(blocking|concern)\] ([^:]+): (.*)$/.exec(line)
+    // Every severity the WRITER can emit must round-trip through the READER.
+    // formatRoundNote renders whatever severity a survivor carries, so a reader
+    // that whitelists only two of the three silently truncates a note's bullet
+    // list at its first `suggestion` — and non-gating pass-through makes a
+    // surviving `suggestion` the common case rather than a rarity.
+    const bm = /^- \[(blocking|concern|suggestion)\] ([^:]+): (.*)$/.exec(line)
     if (bm) {
       current.findings.push({ severity: bm[1], concern: bm[2], what_fails: bm[3] })
     } else if (line.trim() !== '' && line.slice(0, 3) !== '## ') {

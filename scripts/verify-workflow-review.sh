@@ -2720,6 +2720,15 @@ assert.ok(
   'the disposition rule states the findings were reported, not verified'
 );
 assert.ok(UNREFUTED_DISPOSITION.includes('not major'), 'the disposition rule bounds what may be incorporated');
+// A finding that is real but too big to take in flight must have somewhere to
+// GO. Without the filing branch the only outlet is a `skipped` reason string
+// that is never persisted, which silently loses e.g. a low-severity security
+// note the pre-change size branch would have filed as a task.
+assert.ok(/\bFILE\b/.test(UNREFUTED_DISPOSITION), 'the disposition rule offers a filing branch, not only skip');
+assert.ok(
+  UNREFUTED_DISPOSITION.includes('evaporate'),
+  'the disposition rule forbids letting a real observation evaporate into a skip reason'
+);
 
 const VERIFIED_ONLY = [{ id: 'f1', severity: 'concern', confidence: 90, what_fails: 'x' }];
 const MIXED = VERIFIED_ONLY.concat([{ id: 'f2', severity: 'suggestion', confidence: 90, what_fails: 'y', unrefuted: true }]);
@@ -2775,6 +2784,15 @@ assert.ok(
   !CODE_ACT_SCHEMA.properties.handled.items.required.includes('reason'),
   '`reason` is optional — a fixed-inline entry must not be forced to carry one'
 );
+// The rendered skills state the act step's reporting vocabulary in prose. Pin
+// that prose to the SCHEMA's enum rather than to a literal, so widening the enum
+// without sweeping the prose (exactly what happened when `skipped` was added)
+// fails here instead of shipping a skill that contradicts the schema.
+assert.equal(
+  action.enum.join(' / '),
+  'fixed-inline / filed-as-task / skipped',
+  'the CODE_ACT action enum must match the vocabulary section 8b greps for in every rendered skill'
+);
 
 console.log('8: non-gating refutation skip assertions passed');
 NODE_NONGATING_TEST
@@ -2812,6 +2830,19 @@ for doc in $REVIEW_DOCS; do
         fail "8b: $doc still forbids acting on any un-refuted finding"
     ! grep -qF 'Suggestions may skip refutation (low stakes)' "$doc" ||
         fail "8b: $doc still describes the suggestion skip as an optional low-stakes shortcut"
+    # The § Refute lead is a THIRD statement of the same invariant, and a
+    # partially-updated doc (§ Act rewritten, § Refute not) contradicts itself
+    # rather than merely lagging. Catch that shape too.
+    ! grep -qF 'For every finding, dispatch a **separate** read-only refuter' "$doc" ||
+        fail "8b: $doc's Refute section still claims EVERY finding gets a refuter, contradicting its own Act section"
+    # The act step's reporting vocabulary must name every action the code lane's
+    # schema accepts, or a skill reader is told to skip a finding and then given
+    # no way to report that it skipped one.
+    # Two literals, because the rendered prose wraps between them.
+    grep -qF 'state how it was handled (fixed-inline / filed-as-task /' "$doc" ||
+        fail "8b: $doc's act step no longer states the fixed-inline/filed-as-task vocabulary"
+    grep -qF 'skipped, with a reason' "$doc" ||
+        fail "8b: $doc's act step still reports a two-action vocabulary that cannot express a skip"
 done
 pass "8b: all six rendered review docs state the marker + disposition rule and drop every retired absolute"
 

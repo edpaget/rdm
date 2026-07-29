@@ -1195,9 +1195,11 @@ commit). `dispatch-phase.js` wires this dep to an `agent()` call using
 
 `skipped` exists for the `unrefuted` half of a mixed payload (see `FINDING`
 above): the disposition rule tells the act step to incorporate the un-refuted
-observations that are not major and to *skip the rest and state why*, and
-without this action it would have to misreport such a skip as one of the other
-two. The prompt only asks for it when a survivor actually carries
+observations that are not major, to **file** the ones it does not incorporate
+but that are worth keeping (so a real-but-too-big observation still becomes a
+durable task rather than a transient reason string), and to skip only the rest
+— with a stated reason. Without this action the act step would have to
+misreport such a skip as one of the other two. The prompt only asks for it when a survivor actually carries
 `unrefuted: true`; with an all-verified payload `buildCodeActPrompt` is
 byte-identical to its pre-pass-through form.
 

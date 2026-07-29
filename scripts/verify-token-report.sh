@@ -652,6 +652,93 @@ run_node "$REFSEV" --audit "$BASELINE_DOC" >/dev/null ||
     fail "docs/token-baseline.json's nonGatingRefutationSkip figures are not internally consistent — re-run the instrument and update the doc"
 pass "--check matches the fixture, and the committed baseline figures pass the corpus-free --audit"
 
+# --- the --until measurement window ------------------------------------------
+# `--until` is the mechanism that PINS every committed figure in
+# docs/token-baseline.json § nonGatingRefutationSkip (its regenerateCommand
+# passes it, and --check re-applies the recorded window). Neither the fixture
+# run above nor --audit exercises it — the fixture doc deliberately records no
+# window, and --audit reads no sidecars at all — so an inverted comparison or a
+# dropped guard would silently change the run set behind a green harness. Gate
+# it directly: the fixture run's startTime is 2026-07-25T09:00:00Z.
+run_node "$REFSEV" --root "$REFSEV_SCRATCH" --until 2026-07-24T00:00:00Z --format json >"$TMP/refsev-before.json" ||
+    fail "--until before the fixture run failed"
+run_node "$REFSEV" --root "$REFSEV_SCRATCH" --until 2026-07-26T00:00:00Z --format json >"$TMP/refsev-after.json" ||
+    fail "--until after the fixture run failed"
+
+cat >"$TMP/refsev-window.mjs" <<'NODE_REFSEV_WINDOW'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const [, , beforePath, afterPath, expectedPath] = process.argv;
+const before = JSON.parse(readFileSync(beforePath, 'utf8'));
+const after = JSON.parse(readFileSync(afterPath, 'utf8'));
+const expected = JSON.parse(readFileSync(expectedPath, 'utf8')).nonGatingRefutationSkip;
+
+// A window that ENDS BEFORE the only run excludes it entirely.
+assert.equal(before.corpus.runCount, 0, '--until before the run excludes it');
+assert.equal(before.corpus.agentRecordCount, 0, 'an excluded run contributes no agent records');
+assert.deepEqual(before.refuteBySeverity, [], 'an excluded run contributes no severity rows');
+assert.equal(before.projected.agentsNotSpawned, 0, 'nothing is projected away from an empty window');
+
+// A window that ends AFTER it keeps everything — same figures as no window at
+// all, so the filter cannot be silently dropping records inside its range.
+assert.equal(after.corpus.runCount, 1, '--until after the run includes it');
+assert.equal(after.corpus.agentRecordCount, 5, 'the whole run is included');
+assert.deepEqual(
+  after.refuteBySeverity.map((r) => [r.key, r.agentCount, r.output]),
+  expected.refuteBySeverity.map((r) => [r.key, r.agentCount, r.output]),
+  'a window that covers the run reproduces the unwindowed figures exactly'
+);
+assert.equal(after.projected.agentsNotSpawned, expected.projected.agentsNotSpawned, 'projected drop unchanged');
+
+console.log('refuter-severity --until window behaves correctly at both edges');
+NODE_REFSEV_WINDOW
+run_node "$TMP/refsev-window.mjs" "$TMP/refsev-before.json" "$TMP/refsev-after.json" "$REFSEV_EXPECTED" ||
+    fail "the --until measurement window did not behave correctly"
+
+# An unparseable window must fail loudly rather than silently measuring
+# everything (or nothing).
+if run_node "$REFSEV" --root "$REFSEV_SCRATCH" --until not-a-date --format json >/dev/null 2>&1; then
+    fail "--until with an unparseable date must fail, not silently ignore the window"
+fi
+
+# A doc that RECORDS a window must have it honored by --check, and --until must
+# override it. Build both cases from the fixture doc.
+run_node -e '
+const fs = require("node:fs");
+const doc = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+doc.nonGatingRefutationSkip.measurementWindow = { until: "2026-07-24T00:00:00Z" };
+fs.writeFileSync(process.argv[2], JSON.stringify(doc, null, 2));
+' "$REFSEV_EXPECTED" "$TMP/refsev-windowed-doc.json"
+# The doc's figures describe the FULL fixture, but its recorded window excludes
+# the only run — so --check must FAIL, proving the window was applied.
+if run_node "$REFSEV" --root "$REFSEV_SCRATCH" --check "$TMP/refsev-windowed-doc.json" >/dev/null 2>&1; then
+    fail "--check ignored the window recorded in the doc's measurementWindow"
+fi
+# ... and an explicit --until must override the doc's window, restoring the match.
+run_node "$REFSEV" --root "$REFSEV_SCRATCH" --until 2026-07-26T00:00:00Z --check "$TMP/refsev-windowed-doc.json" >/dev/null ||
+    fail "--until did not override the window recorded in the doc"
+pass "--until pins the run set at both edges, fails loudly on a bad date, and composes correctly with --check"
+
+# Planted mutation: invert the window comparison. The section above must flip.
+# The mutant scratch tree carries a pristine token-report.mjs beside it, since
+# the instrument imports ./lib/token-report.mjs relative to its own path.
+mkdir -p "$TMP/refsev-mut/lib"
+cp "$LIB" "$TMP/refsev-mut/lib/token-report.mjs"
+sed 's/rf.run.startTimeMs <= untilMs/rf.run.startTimeMs >= untilMs/' \
+    "$REFSEV" >"$TMP/refsev-mut/measure-refuter-severity-window.mjs"
+if diff -q "$REFSEV" "$TMP/refsev-mut/measure-refuter-severity-window.mjs" >/dev/null 2>&1; then
+    fail "self-test setup: the window mutation did not change the source — sed pattern did not match"
+fi
+run_node "$TMP/refsev-mut/measure-refuter-severity-window.mjs" --root "$REFSEV_SCRATCH" --until 2026-07-24T00:00:00Z --format json \
+    >"$TMP/refsev-mut-before.json" 2>/dev/null || true
+run_node "$TMP/refsev-mut/measure-refuter-severity-window.mjs" --root "$REFSEV_SCRATCH" --until 2026-07-26T00:00:00Z --format json \
+    >"$TMP/refsev-mut-after.json" 2>/dev/null || true
+if run_node "$TMP/refsev-window.mjs" "$TMP/refsev-mut-before.json" "$TMP/refsev-mut-after.json" "$REFSEV_EXPECTED" >/dev/null 2>&1; then
+    fail "planted-mutation self-test FAILED TO CATCH: an inverted --until comparison still passed the window checks"
+fi
+pass "planted-mutation self-test: inverting the --until comparison flips the window checks to FAIL"
+
 # --- planted mutations: neither check may be vacuous --------------------------
 # (a) A doc figure edited by hand must fail BOTH --check and --audit.
 sed 's/"agentsNotSpawned": 1,/"agentsNotSpawned": 2,/' "$REFSEV_EXPECTED" >"$TMP/refsev-doc-mutant.json"
@@ -667,8 +754,6 @@ fi
 pass "planted-mutation self-test: an edited doc figure flips both --check and --audit to FAIL"
 
 # (b) A broken severity extractor must flip the fixture comparison.
-mkdir -p "$TMP/refsev-mut/lib"
-cp "$LIB" "$TMP/refsev-mut/lib/token-report.mjs"
 # Force the sentinel search to miss, so every finding becomes unparseable.
 sed "s/const sentinel = '\\\\nStart from the stance:';/const sentinel = '\\\\nNEVER MATCHES THIS SENTINEL:';/" \
     "$REFSEV" >"$TMP/refsev-mut/measure-refuter-severity.mjs"
