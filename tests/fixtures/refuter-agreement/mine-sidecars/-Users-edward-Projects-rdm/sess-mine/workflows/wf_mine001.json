@@ -5,7 +5,7 @@
   "status": "completed",
   "startTime": 1784970000000,
   "defaultModel": "claude-opus-5[1m]",
-  "agentCount": 6,
+  "agentCount": 10,
   "totalTokens": 9999,
   "totalToolCalls": 12,
   "phases": [
@@ -104,6 +104,62 @@
       "toolCalls": 3,
       "durationMs": 4000,
       "tokens": 5555
+    },
+    {
+      "type": "workflow_agent",
+      "index": 7,
+      "label": "refute:code:nomode",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "refute-nomode",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 6666
+    },
+    {
+      "type": "workflow_agent",
+      "index": 8,
+      "label": "refute:code:nodim",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "refute-nodim",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 7777
+    },
+    {
+      "type": "workflow_agent",
+      "index": 9,
+      "label": "refute:code:noprompt",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "refute-noprompt",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 8888
+    },
+    {
+      "type": "workflow_agent",
+      "index": 10,
+      "label": "refute:code:concern",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "refute-concern",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 3,
+      "durationMs": 4000,
+      "tokens": 9999
     }
   ]
 }

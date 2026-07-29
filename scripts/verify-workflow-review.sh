@@ -379,11 +379,6 @@ else
     fail "the local rdm-plan-review skill drifted from $LIB — run scripts/gen-skill-review.sh --target local --mode plan"
 fi
 
-# An unknown --target must be rejected, mirroring the existing --mode bogus
-# negative test above.
-sh "$SKILL_GEN" --target bogus >/dev/null 2>&1 &&
-    fail "an unknown --target must be rejected"
-
 # Fresh scratch tree carrying everything both local targets need, plus the
 # shipped templates (needed for the target-isolation self-test below).
 LOCALSCRATCH="$TMP/local-skill-scratch"
@@ -391,6 +386,19 @@ mkdir -p "$LOCALSCRATCH/scripts" "$LOCALSCRATCH/.claude/workflows/lib" \
     "$LOCALSCRATCH/rdm-core/src/templates" "$LOCALSCRATCH/.claude/skills/rdm-review" \
     "$LOCALSCRATCH/.claude/skills/rdm-plan-review"
 cp "$SKILL_GEN" "$LOCALSCRATCH/scripts/gen-skill-review.sh"
+
+# An unknown --target must be rejected, mirroring the existing --mode bogus
+# negative test. Run the SCRATCH copy, not "$SKILL_GEN": this is the harness's
+# only write-capable (no --check) invocation of the generator, so if the guard
+# ever regressed, pointing it at the real tree would let it write there. Assert
+# on the message too, so the test proves the guard fired rather than merely
+# that the exit status was nonzero.
+target_bogus_err="$(
+    sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target bogus 2>&1 >/dev/null
+)" && fail "an unknown --target must be rejected"
+printf '%s' "$target_bogus_err" | grep -q 'unknown target: bogus' ||
+    fail "an unknown --target must fail with an actionable 'unknown target' message, got: $target_bogus_err"
+pass "an unknown --target is rejected with an actionable message"
 
 reset_localscratch_source() {
     cp "$LIB" "$LOCALSCRATCH/.claude/workflows/lib/review.mjs"

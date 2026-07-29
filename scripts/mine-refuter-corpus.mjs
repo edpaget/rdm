@@ -342,13 +342,19 @@ Options:
   --help                Print this help and exit.
 `;
 
-// `import.meta.main` is not available on the pinned node, so gate on argv[1].
-const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (invokedDirectly) {
-  const args = parseArgs(process.argv.slice(2));
+/**
+ * CLI entry point. Returns the process exit code; every failure surfaces as a
+ * thrown `Error` whose message is actionable, so the caller can render it
+ * without a stack trace (matching `run-refuter-agreement.mjs`).
+ *
+ * @param {string[]} argv
+ * @returns {number}
+ */
+export function main(argv) {
+  const args = parseArgs(argv);
   if (args.help) {
     console.log(HELP);
-    process.exit(0);
+    return 0;
   }
   const result = mine({
     root: args.root,
@@ -374,4 +380,16 @@ if (invokedDirectly) {
     `mine-refuter-corpus: ${result.recovered} recovered of ${result.refuterRecordCount} refuter record(s)` +
       (skipSummary ? ` — skipped: ${skipSummary}` : '')
   );
+  return 0;
+}
+
+// `import.meta.main` is not available on the pinned node, so gate on argv[1].
+const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) {
+  try {
+    process.exit(main(process.argv.slice(2)));
+  } catch (err) {
+    console.error(String(err && err.message ? err.message : err));
+    process.exit(1);
+  }
 }

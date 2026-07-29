@@ -288,13 +288,25 @@ Re-tiering changes PRICE-PER-TOKEN, not token VOLUME. These are volume figures o
   headline figures exclude them.
 - **Historical verdicts are excluded by construction**, which is correct (they
   are circular) but means the corpus has no independent second grader.
-- **Neither tier refuted the constructed `false-premise` item** (Opus 1/1, Sonnet
-  2/2 kept). That result is about the *prompt*, not the tiers: a refuter told to
-  "start from the stance that this is not a real issue" and then unable to locate
-  the cited file appears to treat the absence as inconclusive rather than as
+- **Neither tier refuted the one `false-premise` item that ran** (Opus 1/1,
+  Sonnet 2/2 kept). That item is `mined-wf_909dbdd4-a29-a7caffc6c9f254a77`,
+  **mined**, and its false premise is one of *commit attribution*, not a missing
+  file: the location it cites (`.claude/workflows/dispatch-phase.js:1503-1510`)
+  exists, but its claim about which commit introduced it is false — `git show
+  --stat 31be47a` touches exactly one file, `scripts/verify-workflow-dispatch.sh`,
+  and no `.js` at all. Refuting it therefore required inspecting a commit's
+  contents, not checking that a path exists. The result is about the *prompt*,
+  not the tiers: a refuter told to "start from the stance that this is not a real
+  issue" appears to treat an unverified premise as inconclusive rather than as
   disproof. It is the single most actionable observation in this run and it is
-  orthogonal to tiering — a finding citing a file that does not exist should be
-  the *easiest* thing to refute.
+  orthogonal to tiering.
+- **The easier existence-check case was never tested.** The two corpus items
+  whose findings cite genuinely nonexistent files
+  (`constructed-false-premise-tag-policy`,
+  `constructed-false-premise-no-drift-gate`) fall outside the bounded subset and
+  were not dispatched. The claim that a finding citing a missing file should be
+  the *easiest* thing to refute is therefore untested here; establishing it
+  requires running those items.
 - **Four trials came back ungraded** (3 Opus, 1 Sonnet) — a well-formed response
   with no boolean `refuted`. They are bucketed separately and reach no rate, but
   they shrink already-small denominators, and the baseline tier produced more of
@@ -563,3 +575,18 @@ so a typo'd hand edit cannot pass silently.
   missing-binary branches. §9h–9j plant the three regressions this exists to
   catch (first-block-wins, non-boolean coercion, tool-call miscount) and assert
   §7b fails on each, so the coverage is not vacuous.
+- **The miner's skip branches decide the corpus size, so they are gated too.**
+  How many historical refuters reach the corpus at all is a function of six
+  degradation branches (`no-transcript`, `no-prompt`, `unparseable-finding`,
+  `unrecoverable-mode`, `unrecoverable-dim`, `no-verdict`); a regression that made
+  one of them fire on healthy transcripts would silently shrink the mined
+  majority without failing anything.
+  `tests/fixtures/refuter-agreement/mine-sidecars` therefore carries one
+  transcript per branch, and §4 asserts each bucket's exact count *plus* an
+  accounting identity — `recovered + skipped == refuter records` — so no branch
+  can become a silent drop. §4b drives the rest of the miner's CLI (`--severity`
+  singly and as a comma-set, `--until` in both directions, `--limit`, `--out`,
+  `--help`, and every argument-validation error, each of which must be an
+  actionable named message rather than a stack trace). §9k–9l plant the two
+  regressions those sections exist to catch — a dropped `unrecoverable-mode`
+  guard and an inert `--severity` filter — and assert §4 and §4b fail on each.

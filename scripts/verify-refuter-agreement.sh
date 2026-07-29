@@ -8,7 +8,13 @@
 #      and every MINED prompt exceeds 401 chars (proving the transcript, not the
 #      sidecar's truncated promptPreview, was the source).
 #   4  Miner behavior against the hermetic mine-sidecars fixture, including all
-#      three degradation paths and the project-slug filter.
+#      SIX degradation paths (no-transcript, no-prompt, unparseable-finding,
+#      unrecoverable-mode, unrecoverable-dim, no-verdict), a no-silent-drop
+#      accounting identity, and the project-slug filter.
+#  4b  The miner's remaining CLI surface: --severity (single and comma-set),
+#      --until in both directions, --limit, --out, --help, and every
+#      argument-validation error path (each an actionable named message, never
+#      a stack trace).
 #   5  Scorer behavior against trials-sample.json: FN/FP separation, distinct
 #      denominators, ungraded bucketing, flip rate, per-class and
 #      authoritative-only splits, token + tool-call columns on the FN row.
@@ -21,7 +27,8 @@
 #      and token/tool-call figures the DECISION was computed from, so a
 #      regression in them would silently corrupt the numbers.
 #   8  --audit docs/token-baseline.json arithmetic.
-#   9  Planted-mutation self-tests proving 2, 3, 5, 6, and 7b are not vacuous.
+#   9  Planted-mutation self-tests proving 2, 3, 4, 4b, 5, 6, and 7b are not
+#      vacuous.
 #  10  CHANGELOG hygiene, mirroring scripts/verify-token-report.sh.
 #  11  The AC9 XOR: either a changed model binding is reflected in a new
 #      verify-workflow-review.sh criterion, or the unchanged binding carries the
@@ -277,11 +284,25 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 const m = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 
-// Two recoverable refuters; three explicit, COUNTED degradation buckets.
-assert.equal(m.recovered, 2, `expected 2 recovered, got ${m.recovered}`);
+// Three recoverable refuters; EVERY non-filter degradation branch the miner can
+// take is exercised and COUNTED. These branches decide how many historical
+// refuters make it into the corpus at all, so a regression that made one of them
+// fire on healthy transcripts would silently shrink the mined majority.
+assert.equal(m.recovered, 3, `expected 3 recovered, got ${m.recovered}`);
 assert.equal(m.skips['unparseable-finding'], 1, 'unparseable finding not bucketed');
 assert.equal(m.skips['no-verdict'], 1, 'verdictless transcript not bucketed');
 assert.equal(m.skips['no-transcript'], 1, 'missing transcript not bucketed');
+assert.equal(m.skips['no-prompt'], 1, 'a transcript with no initiating user turn was not bucketed');
+assert.equal(m.skips['unrecoverable-mode'], 1, 'a prompt with no code/plan stance was not bucketed');
+assert.equal(m.skips['unrecoverable-dim'], 1, 'a prompt with no dimension header was not bucketed');
+// No skip bucket may be a silent drop: recovered + skips must account for every
+// refuter record the parser found.
+const skipTotal = Object.values(m.skips).reduce((a, b) => a + b, 0);
+assert.equal(m.recovered + skipTotal, m.refuterRecordCount,
+  `recovered(${m.recovered}) + skipped(${skipTotal}) != refuter records(${m.refuterRecordCount})`);
+// The skip branches are ORDERED, and each must claim only its own transcript:
+// a mode-less prompt must not be filed as unparseable-finding, and vice versa.
+assert.ok(!('severity-filtered' in m.skips), 'no --severity was passed, so nothing may be severity-filtered');
 
 const byId = Object.fromEntries(m.items.map((i) => [i.id, i]));
 const ok = byId['mined-wf_mine001-refute-ok'];
@@ -303,12 +324,19 @@ assert.equal(plan.finding.id, 'f-2', 'the finding was mis-extracted from a brace
 assert.ok(plan.target.includes('\n'), 'a multi-line target was truncated to its first line');
 assert.ok(plan.target.includes('steps_per_ac'), 'the pretty-printed plan target was not recovered whole');
 
+// A recoverable non-blocking refuter, so the --severity filter below has a real
+// item to exclude rather than passing vacuously.
+const concern = byId['mined-wf_mine001-refute-concern'];
+assert.ok(concern, 'the recoverable concern-severity refuter was not mined');
+assert.equal(concern.finding.severity, 'concern');
+assert.equal(concern.dim.key, 'tests');
+
 // The out-of-scope project slug must contribute NOTHING.
 for (const i of m.items) {
   assert.ok(i.provenance.projectSlug.startsWith('-Users-edward-Projects-rdm'),
     `out-of-scope slug leaked into the corpus: ${i.provenance.projectSlug}`);
 }
-console.log('miner recovers both shapes, buckets all three degradations, assigns no ground truth, and filters foreign slugs');
+console.log('miner recovers all three shapes, buckets all six degradations with no silent drops, assigns no ground truth, and filters foreign slugs');
 EOF
 node "$TMP/check-miner.mjs" "$TMP/mined.json" >"$TMP/miner.txt" || fail "miner behavior check failed"
 [ -s "$TMP/miner.txt" ] && pass "$(cat "$TMP/miner.txt")"
@@ -319,6 +347,112 @@ node "$MINER" --root "$SIDECARS" --project-slug '-Users-edward-Projects-' --form
 FOREIGN="$(node -e 'const m=require("'"$TMP"'/mined-open.json");console.log(m.items.filter(i=>i.provenance.projectSlug.includes("bowling")).length)')"
 [ "$FOREIGN" = "1" ] || fail "widening --project-slug did not surface the out-of-scope item (got $FOREIGN); the filter may be vacuous"
 pass "widening --project-slug surfaces the out-of-scope item — the default filter is load-bearing"
+
+# ---------------------------------------------------------------------------
+say "4b. The miner's remaining CLI surface: --severity, --until, --limit, --out, --help, errors"
+
+# --severity is a real filter: it must EXCLUDE the mined concern item and file
+# the exclusion under its own counted bucket, not drop it silently.
+cat >"$TMP/check-miner-severity.mjs" <<'EOF'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const m = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+assert.equal(m.recovered, 1, `--severity blocking should recover exactly the blocking item, got ${m.recovered}`);
+assert.equal(m.items[0].finding.severity, 'blocking');
+assert.equal(m.skips['severity-filtered'], 2, 'the excluded items were not bucketed as severity-filtered');
+console.log('--severity excludes non-matching severities into a counted severity-filtered bucket');
+EOF
+node "$MINER" --root "$SIDECARS" --severity blocking --format json >"$TMP/mined-sev.json" 2>/dev/null
+node "$TMP/check-miner-severity.mjs" "$TMP/mined-sev.json" >"$TMP/sev.txt" ||
+    fail "--severity filter did not exclude and bucket correctly"
+[ -s "$TMP/sev.txt" ] && pass "$(cat "$TMP/sev.txt")"
+
+# A comma-separated --severity admits both, proving the filter is a set test and
+# not a hardcoded equality against one value.
+node "$MINER" --root "$SIDECARS" --severity blocking,concern --format json >"$TMP/mined-sev2.json" 2>/dev/null
+node -e '
+const fs = require("fs"), assert = require("assert");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+assert.equal(m.recovered, 3, "comma-separated --severity should recover all 3, got " + m.recovered);
+assert.ok(!("severity-filtered" in m.skips), "nothing may remain severity-filtered once both severities are admitted");
+' "$TMP/mined-sev2.json" || fail "comma-separated --severity did not admit both severities"
+pass "--severity accepts a comma-separated set"
+
+# --until pins the mining window. The fixture run starts 2026-07-25T09:00:00Z, so
+# a cutoff before it must empty the run set and a cutoff after it must not.
+node "$MINER" --root "$SIDECARS" --until 2026-07-24T00:00:00Z --format json >"$TMP/mined-before.json" 2>/dev/null
+node "$MINER" --root "$SIDECARS" --until 2026-07-26T00:00:00Z --format json >"$TMP/mined-after.json" 2>/dev/null
+node -e '
+const fs = require("fs"), assert = require("assert");
+const before = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const after = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+assert.equal(before.recovered, 0, "--until before the run still mined it");
+assert.equal(before.refuterRecordCount, 0, "--until before the run did not drop the run file");
+assert.equal(after.recovered, 3, "--until after the run should mine everything, got " + after.recovered);
+assert.equal(after.until, "2026-07-26T00:00:00Z", "--until was not echoed into the report");
+' "$TMP/mined-before.json" "$TMP/mined-after.json" || fail "--until window filter is wrong in one direction"
+pass "--until pins the mining window in both directions"
+
+# --limit stops after n RECOVERED records (not n scanned records).
+node "$MINER" --root "$SIDECARS" --limit 1 --format json >"$TMP/mined-limit.json" 2>/dev/null
+node -e '
+const fs = require("fs"), assert = require("assert");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+assert.equal(m.recovered, 1, "--limit 1 recovered " + m.recovered);
+assert.equal(m.items.length, 1);
+' "$TMP/mined-limit.json" || fail "--limit did not cap the recovered records"
+pass "--limit caps recovered records"
+
+# --out writes JSONL to a file and leaves stdout empty; the default format is
+# one JSON object per line, which is what the corpus file is made of.
+node "$MINER" --root "$SIDECARS" --out "$TMP/mined.jsonl" >"$TMP/mined-out.stdout" 2>/dev/null
+[ -s "$TMP/mined.jsonl" ] || fail "--out wrote no file"
+[ -s "$TMP/mined-out.stdout" ] && fail "--out still wrote the body to stdout"
+JSONL_LINES="$(wc -l <"$TMP/mined.jsonl" | tr -d ' ')"
+[ "$JSONL_LINES" = "3" ] || fail "--out JSONL should have 3 lines, got $JSONL_LINES"
+node -e '
+const fs = require("fs"), assert = require("assert");
+for (const line of fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) {
+  const item = JSON.parse(line);
+  assert.equal(item.provenance.kind, "mined");
+  assert.equal(item.groundTruth, null);
+}
+' "$TMP/mined.jsonl" || fail "--out JSONL lines are not parseable mined candidates"
+pass "--out writes parseable JSONL to disk and nothing to stdout"
+
+# --help exits 0 and names every documented flag, so the help text cannot drift
+# away from parseArgs.
+node "$MINER" --help >"$TMP/miner-help.txt" 2>&1 || fail "$MINER --help exited non-zero"
+for flag in --root --project-slug --until --severity --limit --out --format; do
+    grep -q -- "$flag" "$TMP/miner-help.txt" || fail "$MINER --help does not document $flag"
+done
+grep -q "groundTruth: null" "$TMP/miner-help.txt" ||
+    fail "$MINER --help no longer states that it assigns no ground truth"
+pass "--help exits 0, documents every flag, and restates the no-ground-truth contract"
+
+# Every argument-validation failure must be an ACTIONABLE named message, not a
+# stack trace — the miner is run by hand and a raw throw is unreadable.
+miner_arg_error() {
+    local label="$1"
+    shift
+    if node "$MINER" "$@" >/dev/null 2>"$TMP/miner-err.txt"; then
+        fail "$label: miner exited 0 on a malformed argument"
+        return 0
+    fi
+    grep -qE -- "$label" "$TMP/miner-err.txt" ||
+        fail "$label: error message does not name the offending flag/value: $(head -1 "$TMP/miner-err.txt")"
+    if grep -q '^    at ' "$TMP/miner-err.txt"; then
+        fail "$label: a raw stack trace leaked instead of an actionable message"
+    fi
+    return 0
+}
+miner_arg_error '--until' --root "$SIDECARS" --until not-a-date
+miner_arg_error '--limit' --root "$SIDECARS" --limit 0
+miner_arg_error '--limit' --root "$SIDECARS" --limit abc
+miner_arg_error '--format' --root "$SIDECARS" --format yaml
+miner_arg_error '--root' --root
+miner_arg_error 'unrecognized' --nonsense
+pass "every argument-validation failure is an actionable named error, never a stack trace"
 
 # ---------------------------------------------------------------------------
 say "5. Scorer behavior against the recorded sample trials"
@@ -810,7 +944,7 @@ fi
 pass "--audit fires on a planted off-by-one (the gate is not vacuous)"
 
 # ---------------------------------------------------------------------------
-say "9. Planted-mutation self-tests (sections 2, 3, 5, 6, 7b are not vacuous)"
+say "9. Planted-mutation self-tests (sections 2, 3, 4, 4b, 5, 6, 7b are not vacuous)"
 
 # 9a. Relabelling the divergence-class items must fail section 2's share floor.
 node -e '
@@ -910,7 +1044,9 @@ pass "mutating a fixture finding changes the mined output — the miner really r
 # The mutants live beside a symlinked `lib/` so the runner's relative import of
 # ./lib/refuter-agreement.mjs still resolves out of the scratch directory.
 mkdir -p "$TMP/mutscripts"
-ln -sf "$REPO_ROOT/scripts/lib" "$TMP/mutscripts/lib"
+# -n matters: without it, a re-link against an existing dir symlink would create
+# the new link INSIDE the real scripts/lib directory.
+ln -sfn "$REPO_ROOT/scripts/lib" "$TMP/mutscripts/lib"
 
 run_dispatch_mutant() {
     node "$TMP/check-dispatch.mjs" "$1" "$REPO_ROOT/$MODULE" "$TMP" >/dev/null 2>&1
@@ -947,6 +1083,42 @@ elif run_dispatch_mutant "$TMP/mutscripts/runner-miscount.mjs"; then
     fail "section 7b missed a parser that miscounts tool_use blocks"
 else
     pass "section 7b fires when tool_use blocks are miscounted"
+fi
+
+# 9k-9l. Sections 4 and 4b must fire on the miner regressions they exist to
+# catch. The mutants reuse the scratch dir 9h-9j set up (which already carries
+# the symlinked `lib/`) and additionally need `measure-refuter-severity.mjs`,
+# whose brace-matched extractor the miner imports relatively.
+ln -sfn "$REPO_ROOT/scripts/measure-refuter-severity.mjs" "$TMP/mutscripts/measure-refuter-severity.mjs"
+
+# 9k. Dropping the unrecoverable-mode guard lets a mode-less prompt through as a
+# record with `mode: null`, which would silently poison the corpus.
+grep -v "reason: 'unrecoverable-mode'" "$MINER" >"$TMP/mutscripts/miner-no-mode-guard.mjs"
+if diff -q "$MINER" "$TMP/mutscripts/miner-no-mode-guard.mjs" >/dev/null; then
+    fail "the unrecoverable-mode-guard mutation did not apply — the self-test is vacuous"
+else
+    node "$TMP/mutscripts/miner-no-mode-guard.mjs" --root "$SIDECARS" --format json \
+        >"$TMP/mined-nomodeguard.json" 2>/dev/null || true
+    if node "$TMP/check-miner.mjs" "$TMP/mined-nomodeguard.json" >/dev/null 2>&1; then
+        fail "section 4 missed a miner that emits records with an unrecoverable mode"
+    else
+        pass "section 4 fires when the unrecoverable-mode guard is dropped"
+    fi
+fi
+
+# 9l. Making the --severity filter inert must be caught by section 4b.
+sed 's/if (options.severities.indexOf(sev) === -1) {/if (false) {/' "$MINER" \
+    >"$TMP/mutscripts/miner-inert-severity.mjs"
+if diff -q "$MINER" "$TMP/mutscripts/miner-inert-severity.mjs" >/dev/null; then
+    fail "the inert---severity mutation did not apply — the self-test is vacuous"
+else
+    node "$TMP/mutscripts/miner-inert-severity.mjs" --root "$SIDECARS" --severity blocking --format json \
+        >"$TMP/mined-inertsev.json" 2>/dev/null || true
+    if node "$TMP/check-miner-severity.mjs" "$TMP/mined-inertsev.json" >/dev/null 2>&1; then
+        fail "section 4b missed an inert --severity filter"
+    else
+        pass "section 4b fires when the --severity filter is made inert"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
