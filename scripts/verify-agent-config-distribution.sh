@@ -391,6 +391,11 @@ assert_shim_hoists() {
     # `next` must be documented as one-shot on both variants, or a caller could
     # cache it and re-dispatch the same phase forever.
     _need "$ap" 'one-shot, on the first loop iteration only' || return 1
+    if [ "$variant" = mcp ]; then
+        # MCP has no `rdm phase show` CLI command to read a write back with, so
+        # the advance/park confirmation step needs its own dedicated tool.
+        _need "$ap" 'mcp__rdm__rdm_phase_show' || return 1
+    fi
 
     # rdm-dispatch-phase: alreadyInProgress on both; phaseMeta/taskMeta CLI only.
     _need "$dp" 'alreadyInProgress' || return 1
@@ -419,15 +424,16 @@ for variant in cli mcp; do
     else
         fail "$HOIST_FAILURE"
     fi
-    # Occurrence floor, so the check can never pass vacuously: CLI asserts 15
-    # references, MCP 5. A drop below the floor means a shim silently stopped
-    # gathering.
+    # Occurrence floor, so the check can never pass vacuously: CLI asserts
+    # >= 15 references, MCP >= 6 (the extra one is the rdm_phase_show
+    # read-back hoist, added alongside the {t_phase_show} placeholder). A drop
+    # below the floor means a shim silently stopped gathering.
     if [ "$variant" = cli ]; then
         [ "$HOIST_REF_COUNT" -ge 15 ] ||
             fail "cli: expected >= 15 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
     else
-        [ "$HOIST_REF_COUNT" -ge 5 ] ||
-            fail "mcp: expected >= 5 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
+        [ "$HOIST_REF_COUNT" -ge 6 ] ||
+            fail "mcp: expected >= 6 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
     fi
 done
 pass "hoist-arg occurrence floors hold for both variants"

@@ -354,6 +354,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `estimate` Workflows directly instead of nesting through a stamped
   `autopilot.js`/`lib/autopilot.mjs` copy. The emitted workflow-file count
   drops from 3 to 2 (`dispatch-phase.js`, `review-refute-fix.js`).
+- The shipped `rdm-autopilot` skill templates (`rdm agent-config claude
+  --skills`/`--mcp`) now carry the same full prose-parity orchestration
+  content as the local dogfood `rdm-autopilot` skill, replacing the interim
+  "full prose-parity documentation lands in a follow-up phase" placeholder:
+  the budget-check semantics (a shared, rework-inclusive dispatch counter
+  defaulting to 50), the fetch/classify/work/park drive loop, the
+  advance/park read-back confirmation retried up to 2 times, and the exact
+  summary format with its known-good stop-reason allowlist (`nothing`,
+  `blocked-on-dependencies`, `budget`, `plan-only-exhausted`,
+  `mechanical-model-unresolved`). The MCP variant gains a new
+  `rdm_phase_show` tool (surfaced via a new `{t_phase_show}` template
+  placeholder) so it can read a phase back after an advance/park write,
+  mirroring the CLI variant's `rdm phase show --format json` call — MCP has
+  no equivalent of that command otherwise.
 
 ### Fixed
 

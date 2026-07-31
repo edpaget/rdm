@@ -701,6 +701,9 @@ fn skill_autopilot_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 // pre-pass so the workflow skips its own estimate:list subagent.
                 ("t_phase_list", "rdm_phase_list"),
                 ("t_phase_update", "rdm_phase_update"),
+                // Read-back confirmation after an advance/park write, mirroring
+                // the CLI variant's `rdm phase show --format json` call.
+                ("t_phase_show", "rdm_phase_show"),
             ],
         ),
     }
@@ -2052,17 +2055,24 @@ mod tests {
         // Drives one named roadmap; the slug is required and the loop never roams.
         assert!(content.contains("required roadmap slug"));
         assert!(content.contains("never roams to another roadmap"));
-        // Full prose-parity documentation is a follow-up phase's job; the
-        // placeholder claims neither "thin shim" nor a literal
-        // .claude/workflows/autopilot.js path (that file no longer exists).
-        assert!(content.contains("full prose-parity documentation lands in a follow-up phase"));
         assert!(content.contains("Workflow"));
         assert!(content.contains("rdm next --roadmap <slug> --format json"));
         // Composes the per-phase dispatch workflow rather than re-implementing it.
         assert!(content.contains("dispatch-phase"));
         // Bounded run: global step budget + budgets section + always-on summary.
         assert!(content.contains("global step budget"));
+        assert!(content.contains("DEFAULT_GLOBAL_BUDGET"));
         assert!(content.contains("Run modes"));
+        // Full prose-parity content: the known-good stop-reason allowlist and
+        // the advance/park read-back confirmation loop, mirroring the local
+        // dogfood skill's depth (the earlier placeholder sentence is gone).
+        assert!(!content.contains("full prose-parity documentation lands in a follow-up phase"));
+        assert!(content.contains(
+            "nothing`, `blocked-on-dependencies`, `budget`, `plan-only-exhausted`, `mechanical-model-unresolved`"
+        ));
+        assert!(content.contains("read it back"));
+        assert!(content.contains("confirm `status` matches"));
+        assert!(content.contains("up to **2** times total"));
         // Escalation rule is owned by the shared protocol, not redefined here;
         // the batch queue is surfaced via `rdm review blocked`.
         assert!(content.contains("docs/escalation-protocol.md"));
@@ -3151,19 +3161,25 @@ mod tests {
         // Drives one named roadmap; the slug is required and the loop never roams.
         assert!(content.contains("required roadmap slug"));
         assert!(content.contains("never roams to another roadmap"));
-        // Full prose-parity documentation is a follow-up phase's job; the
-        // placeholder claims neither "thin shim" nor a literal
-        // .claude/workflows/autopilot.js path (that file no longer exists).
         // The MCP `rdm_next` tool is named in the body wherever the loop
         // driver is described.
-        assert!(content.contains("full prose-parity documentation lands in a follow-up phase"));
         assert!(content.contains("rdm_next"));
         // Composes the per-phase dispatch workflow.
         assert!(content.contains("dispatch-phase"));
         // Bounded run + run-modes section + shared escalation protocol + batch queue.
         assert!(content.contains("global step budget"));
+        assert!(content.contains("DEFAULT_GLOBAL_BUDGET"));
         assert!(content.contains("docs/escalation-protocol.md"));
         assert!(content.contains("rdm review blocked"));
+        // Full prose-parity content: the known-good stop-reason allowlist and
+        // the advance/park read-back confirmation loop via the new
+        // rdm_phase_show tool (the earlier placeholder sentence is gone).
+        assert!(!content.contains("full prose-parity documentation lands in a follow-up phase"));
+        assert!(content.contains(
+            "nothing`, `blocked-on-dependencies`, `budget`, `plan-only-exhausted`, `mechanical-model-unresolved`"
+        ));
+        assert!(content.contains("mcp__rdm__rdm_phase_show"));
+        assert!(content.contains("up to **2** times total"));
         // No --land flag; dry-run / bounded modes including the two
         // dispatch-phase budget overrides.
         assert!(!content.contains("- `--land`"));
@@ -3177,6 +3193,7 @@ mod tests {
         assert!(!frontmatter.contains("  - Bash"));
         assert!(frontmatter.contains("mcp__rdm__rdm_next"));
         assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
+        assert!(frontmatter.contains("mcp__rdm__rdm_phase_show"));
         // The phase-list hoist: the shim gathers the phase list itself and
         // passes it as `phaseList`, so the workflow skips its estimate:list
         // subagent. Its tool must be both allowed and resolved.
