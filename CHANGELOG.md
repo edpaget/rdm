@@ -215,6 +215,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The shipped review pipeline now grades **at most 5 findings per review unit**
+  by default. It ranks a unit's gating findings by severity, then confidence,
+  and dispatches a refuter only for the top 5; the rest are still reported, but
+  pass through un-refuted and marked `unrefutedReason: 'budget'`. The confidence
+  floor still applies to them — the budget skips *grading*, never *filtering* —
+  so a bounded review can only ever report MORE work to do, never less. Override
+  it per run with `maxRefutations` on `dispatch-phase`, `plan-review`, or
+  `review-refute-fix`; `0` is legal and means "grade nothing". There is no
+  "uncapped" value — pass a large number instead. The default of 5 is measured,
+  not guessed: over the recorded run corpus the finding that actually determined
+  the outcome was within the top 5 for 100 % of units at the default tier and
+  98.2 % at the `large` tier (`docs/token-baseline.md` § "Phase 4: the chosen
+  refutation budget").
+- A bounded review now says so, everywhere you would look. The pipeline logs how
+  many findings it produced, graded, and passed through; the dispatch OUTCOME
+  carries a `reviewBudget` field and appends a short
+  `[review budget hit: N produced, M graded, K ungraded]` clause to its summary
+  (and therefore to the reason recorded on a parked or blocked item, visible in
+  `rdm review blocked`); and an autopilot run summary suffixes a `[budget]` tag
+  onto that phase's entry in its `phases completed (...)` line. A review that
+  stayed under budget reads exactly as it did before.
+- Review findings now carry an explicit provenance marker, so a report can tell
+  four cases apart that used to blur together: graded-and-survived (no marker),
+  deliberately skipped as non-gating (`unrefutedReason: 'non-gating'`), cut for
+  budget (`unrefutedReason: 'budget'`), and **grading crashed**
+  (`refuterError: true`) — the last of which previously carried no marker at all
+  and was indistinguishable from a verified survivor.
+
 - The review pipeline no longer spawns a refuter for a **`suggestion`**
   finding. Severity is the only thing that turns a finding into an outcome, and
   a `suggestion` gates nothing at any tier, so a refuter's verdict on one could

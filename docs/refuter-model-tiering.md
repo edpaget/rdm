@@ -328,9 +328,11 @@ Re-tiering changes PRICE-PER-TOKEN, not token VOLUME. These are volume figures o
 
 ### The mechanical facts
 
-`.claude/workflows/lib/plan-review.mjs` calls `runPlanReview({ target })` at
-**both** call sites — the persisted-unit path and the `--implementation-plan`
-path — with no `findModel` and no `verifyModel` in the context object.
+`.claude/workflows/lib/plan-review.mjs` calls `runPlanReview({ target, ... })`
+at **both** call sites — the persisted-unit path and the `--implementation-plan`
+path — with no `findModel` and no `verifyModel` in the context object. (The
+context object carries non-model keys such as `maxRefutations`; what matters to
+this section is only that neither model key is present.)
 `buildReviewPipeline` in `.claude/workflows/lib/review.mjs` reads
 `ctx.findModel` / `ctx.verifyModel` and passes them straight to the finder and
 refuter `agent()` calls as `model:`. With the keys absent, both resolve to

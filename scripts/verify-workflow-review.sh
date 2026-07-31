@@ -3093,7 +3093,8 @@ run_node "$TMP/ng-mut-widen.mjs" "$NGMUT/review.mjs" ||
 # (b) Drop the `unrefuted` marker from the pass-through: an act step could no
 #     longer tell reported-only from verified.
 reset_ngmut
-sed 's/unrefuted: true }/unrefutedMUTANT: true }/' "$LIB" >"$NGMUT/review.mjs"
+sed "s/unrefuted: true, unrefutedReason: 'non-gating'/unrefutedMUTANT: true, unrefutedReason: 'non-gating'/" \
+    "$LIB" >"$NGMUT/review.mjs"
 grep -q 'unrefutedMUTANT' "$NGMUT/review.mjs" || fail "8c(b): mutation setup did not rename the marker"
 
 cat >"$TMP/ng-mut-marker.mjs" <<'NODE_NG_MARKER'
@@ -3181,5 +3182,687 @@ run_node "$TMP/ng-mut-lead.mjs" "$NGMUT/dispatch-phase.mjs" ||
     fail "8c(d): forcing the unconditional lead did not flip the mixed-payload assertion"
 
 pass "8c: all four mutations flip their assertion — section 8 is non-vacuous"
+
+# --- 9. REFUTATION BUDGET (bound-review-fan-out phase 4) ---------------------
+# The pipeline grades at most DEFAULT_MAX_REFUTATIONS gating findings per review
+# unit; everything past the cut takes the EXISTING un-refuted pass-through with a
+# `budget` reason. This section gates the whole bound end to end: the chosen N is
+# pinned to the evidence that produced it, the ranking is total and stable, the
+# under/at/over-budget boundaries behave, all FOUR provenance states are tellable
+# apart by markers alone, the output is deterministic even under shuffled refuter
+# resolution, and — the blocking correctness question — an over-budget finding can
+# never turn a `rework` outcome into `reviewed`.
+say '9. Refutation budget: under/at/over budget, four-state distinguishability, determinism, monotonicity'
+
+# The chosen N must never be changeable without the evidence that produced it.
+# These greps pin the derivation comment to the concrete phase-2 figures.
+grep -q 'const DEFAULT_MAX_REFUTATIONS = 5;' "$LIB" ||
+    fail "9: DEFAULT_MAX_REFUTATIONS is not declared as 5 in $LIB"
+for lit in 'determiningFindingRank' '98.2' '94.5' 'docs/token-baseline.json'; do
+    grep -qF "$lit" "$LIB" ||
+        fail "9: the DEFAULT_MAX_REFUTATIONS derivation no longer cites '$lit' — N must never change without its evidence"
+done
+# The cut must stay free of the two globals this runtime forbids (section 2
+# greps the workflow scripts; re-assert scoped to the canonical source).
+for forbidden in 'Date.now(' 'Math.random('; do
+    ! grep -qF "$forbidden" "$LIB" || fail "9: $LIB must not use $forbidden"
+done
+
+cat >"$TMP/budget-test.mjs" <<'NODE_BUDGET_TEST'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const [libPath, dispatchPath] = process.argv.slice(2);
+const mod = await import(pathToFileURL(libPath).href);
+const dispatchMod = await import(pathToFileURL(dispatchPath).href);
+
+const {
+  buildReviewPipeline,
+  DEFAULT_MAX_REFUTATIONS,
+  resolveRefutationBudget,
+  rankBudgetCandidates,
+  survives,
+  classifyOutcome,
+  CONFIDENCE_FLOOR,
+} = mod;
+const { runCodeGate } = dispatchMod;
+
+// The SAME reference runtime sections 3 and 8 use.
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+// makeSpyAgent(plantFindings, plantVerdicts, opts) — records every call.
+//   opts.throwOnRefute — a Set of finding ids whose refuter throws.
+//   opts.resolveDelay  — id -> number of microtask ticks before resolving, so a
+//                        FIXED permutation of refuter completion order can be
+//                        planted without Math.random.
+function makeSpyAgent(plantFindings, plantVerdicts, opts) {
+  const o = opts || {};
+  const calls = [];
+  const logs = [];
+  async function agent(prompt, options) {
+    const label = (options && options.label) || '';
+    calls.push({ label, prompt });
+    const parts = label.split(':');
+    if (parts[0] === 'find') return { findings: plantFindings[parts[2]] || [] };
+    if (parts[0] === 'refute') {
+      const id = parts.slice(2).join(':');
+      if (o.throwOnRefute && o.throwOnRefute.indexOf(id) !== -1) throw new Error('boom refuter ' + id);
+      const ticks = (o.resolveDelay && o.resolveDelay[id]) || 0;
+      for (let i = 0; i < ticks; i++) await Promise.resolve();
+      return plantVerdicts[id] || { refuted: false, confidence: 90 };
+    }
+    throw new Error('unexpected agent label: ' + label);
+  }
+  return { agent, calls, logs };
+}
+function deps(spy) {
+  return { agent: spy.agent, pipeline: refPipeline, parallel: refParallel, log: (m) => spy.logs.push(m) };
+}
+const CTX = { target: 'phase widget/phase-1-foo' };
+const refuteIds = (spy) => spy.calls.filter((c) => c.label.startsWith('refute:')).map((c) => c.label.split(':')[2]);
+
+// Deterministic gating-finding factory: b01..bNN, all `blocking`, descending
+// confidence so the rank order is unambiguous and independent of id sorting.
+function gatingFindings(n, base) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const id = 'b' + String(i + 1).padStart(2, '0');
+    out.push({ id: id, severity: 'blocking', confidence: (base || 99) - i, what_fails: 'defect ' + id });
+  }
+  return out;
+}
+
+// ============================================================================
+// 9a. The chosen N, and the configuration surface around it.
+// ============================================================================
+assert.equal(DEFAULT_MAX_REFUTATIONS, 5, 'the default refutation budget is 5 (phase 2 withinTop5: 100 % / 98.2 %)');
+
+assert.equal(resolveRefutationBudget(undefined), 5, 'unset falls back to the default');
+assert.equal(resolveRefutationBudget(null), 5, 'null falls back to the default');
+assert.equal(resolveRefutationBudget(''), 5, "'' falls back to the default");
+assert.equal(resolveRefutationBudget(5), 5, 'a number is accepted');
+assert.equal(resolveRefutationBudget('5'), 5, 'an integer-only string is accepted');
+assert.equal(resolveRefutationBudget(0), 0, '0 is LEGAL and distinct from unset (grade nothing)');
+assert.notEqual(resolveRefutationBudget(0), resolveRefutationBudget(undefined), '0 is never conflated with unset');
+for (const bad of ['5abc', -1, -0, 1.5, {}, [], true, 'five']) {
+  assert.throws(
+    () => resolveRefutationBudget(bad),
+    /maxRefutations must be a non-negative integer/,
+    'rejects ' + JSON.stringify(bad) + ' with an actionable message'
+  );
+}
+// The error must state what 0 means and that there is no uncapped sentinel.
+let budgetErr = null;
+try {
+  resolveRefutationBudget('5abc');
+} catch (e) {
+  budgetErr = e.message;
+}
+assert.ok(/0 means grade nothing/.test(budgetErr), 'the error documents the 0 semantics');
+assert.ok(/no "uncapped" sentinel/.test(budgetErr), 'the error documents that there is no uncapped sentinel');
+
+// ============================================================================
+// 9b. rankBudgetCandidates: severity → confidence desc → id → source order.
+// ============================================================================
+const RANK_SET = [
+  { order: 0, finding: { id: 'z', severity: 'suggestion', confidence: 100 } },
+  { order: 1, finding: { id: 'y', severity: 'concern', confidence: 80 } },
+  { order: 2, finding: { id: 'x', severity: 'blocking', confidence: 70 } },
+  { order: 3, finding: { id: 'w', severity: 'blocking', confidence: 90 } },
+  { order: 4, finding: { id: 'nit', severity: 'unknown-severity', confidence: 100 } },
+  { order: 5, finding: { id: 'a', severity: 'concern', confidence: 80 } },
+  { order: 6, finding: { id: 'dup', severity: 'blocking', confidence: 70 } },
+  { order: 7, finding: { id: 'dup', severity: 'blocking', confidence: 70 } },
+  { order: 8, finding: { id: 'noconf', severity: 'concern' } },
+];
+assert.deepEqual(
+  rankBudgetCandidates(RANK_SET).map((c) => c.order),
+  [3, 6, 7, 2, 5, 1, 8, 0, 4],
+  'ranking is severity, then confidence DESC, then id, then source order (an unknown severity sorts last)'
+);
+// Totality: the two `dup` entries are separated ONLY by `order`.
+const dupOnly = rankBudgetCandidates([RANK_SET[7], RANK_SET[6]]).map((c) => c.order);
+assert.deepEqual(dupOnly, [6, 7], 'two candidates sharing an id are ordered by source order, whatever the input order');
+// Purity: the input array is not mutated.
+const before = RANK_SET.map((c) => c.order);
+rankBudgetCandidates(RANK_SET);
+assert.deepEqual(RANK_SET.map((c) => c.order), before, 'rankBudgetCandidates does not mutate its input');
+assert.deepEqual(rankBudgetCandidates(null), [], 'a non-array input yields an empty ranking');
+
+// ============================================================================
+// 9c-run. UNDER budget: 3 gating candidates, N = 5.
+// ============================================================================
+{
+  const spy = makeSpyAgent({ correctness: gatingFindings(3) }, {});
+  const { survivors, budget } = await buildReviewPipeline('code', deps(spy))(CTX);
+  assert.equal(refuteIds(spy).length, 3, 'under budget: every gating finding is graded');
+  assert.equal(budget.hit, false, 'under budget: hit is false');
+  assert.equal(budget.passedThroughBudget, 0, 'under budget: nothing is passed through for budget');
+  assert.equal(budget.max, 5, 'under budget: the default cap is reported');
+  assert.equal(budget.produced, 3, 'under budget: produced counts the candidates that existed');
+  assert.equal(budget.graded, 3, 'under budget: graded counts the refuters dispatched');
+  assert.ok(!survivors.some((f) => f.unrefutedReason), 'under budget: no survivor carries an unrefutedReason');
+  // REGRESSION GUARD: the find/refute restructure must not perturb the existing
+  // lane. Pin the resolved survivors to an explicit baseline.
+  assert.deepEqual(
+    survivors,
+    [
+      { id: 'b01', severity: 'blocking', confidence: 99, what_fails: 'defect b01', concern: 'correctness' },
+      { id: 'b02', severity: 'blocking', confidence: 98, what_fails: 'defect b02', concern: 'correctness' },
+      { id: 'b03', severity: 'blocking', confidence: 97, what_fails: 'defect b03', concern: 'correctness' },
+    ],
+    'under budget: survivors are byte-identical to the pre-change baseline (no marker, no extra field)'
+  );
+  assert.ok(
+    !spy.logs.join('\n').includes('BUDGET HIT'),
+    'under budget: the log line is unchanged — no budget clause'
+  );
+}
+
+// ============================================================================
+// 9d. EXACTLY at budget: 5 gating candidates, N = 5. The boundary must NOT
+//     read as a hit — an off-by-one here silently reports a bounded run as
+//     complete coverage, or vice versa.
+// ============================================================================
+{
+  const spy = makeSpyAgent({ correctness: gatingFindings(5) }, {});
+  const { budget } = await buildReviewPipeline('code', deps(spy))(CTX);
+  assert.equal(refuteIds(spy).length, 5, 'at budget: exactly 5 refuters');
+  assert.equal(budget.hit, false, 'at budget: hit is FALSE at the boundary');
+  assert.equal(budget.graded, 5, 'at budget: graded === 5');
+  assert.equal(budget.passedThroughBudget, 0, 'at budget: nothing overflowed');
+}
+
+// ============================================================================
+// 9e. OVER budget: 13 gating candidates, N = 5.
+// ============================================================================
+{
+  const planted = gatingFindings(13);
+  const spy = makeSpyAgent({ correctness: planted }, {});
+  const { survivors, budget } = await buildReviewPipeline('code', deps(spy))(CTX);
+  const graded = refuteIds(spy);
+  assert.equal(graded.length, 5, 'over budget: exactly 5 refuters, not 13');
+  // The graded 5 are precisely the top 5 under the module's OWN ranking.
+  const expectedTop = rankBudgetCandidates(
+    planted.map((f, i) => ({ order: i, finding: { ...f, concern: 'correctness' } }))
+  )
+    .slice(0, 5)
+    .map((c) => c.finding.id);
+  assert.deepEqual(graded.slice().sort(), expectedTop.slice().sort(), 'over budget: the graded 5 are the top 5');
+  assert.deepEqual(
+    budget,
+    {
+      max: 5,
+      produced: 13,
+      gating: 13,
+      graded: 5,
+      passedThroughNonGating: 0,
+      passedThroughBudget: 8,
+      refuterErrors: 0,
+      hit: true,
+    },
+    'over budget: the budget accounting is exact'
+  );
+  const overflowSurvivors = survivors.filter((f) => graded.indexOf(f.id) === -1);
+  assert.equal(overflowSurvivors.length, 8, 'over budget: all 8 overflow findings survive the floor at confidence >= 70');
+  assert.ok(
+    overflowSurvivors.every((f) => f.unrefuted === true && f.unrefutedReason === 'budget'),
+    'over budget: every overflow finding takes the EXISTING un-refuted pass-through, marked reason `budget`'
+  );
+  const logLine = spy.logs.join('\n');
+  assert.ok(logLine.includes('BUDGET HIT'), 'over budget: the log announces the bound');
+  assert.ok(logLine.includes('13 finding(s) produced'), 'over budget: the log states how many were produced');
+  assert.ok(logLine.includes('5 graded'), 'over budget: the log states how many were graded');
+  assert.ok(logLine.includes('8 passed through for budget'), 'over budget: the log states how many were passed through');
+  assert.ok(logLine.includes('cap 5'), 'over budget: the log states the cap');
+}
+
+// ============================================================================
+// 9f. FOUR STATES in ONE driven run: graded-and-survived, skipped-as-non-gating,
+//     passed-over-for-budget, and grading-crashed. A single classifier over each
+//     survivor must yield exactly one label — no ambiguous, no unlabelled.
+// ============================================================================
+{
+  const planted = gatingFindings(8).concat([
+    { id: 's1', severity: 'suggestion', confidence: 90, what_fails: 'readability nit' },
+  ]);
+  // b01 is the highest-confidence gating candidate, so it is inside the top 5;
+  // its refuter throws.
+  const spy = makeSpyAgent({ correctness: planted }, {}, { throwOnRefute: ['b01'] });
+  const { survivors } = await buildReviewPipeline('code', deps(spy))(CTX);
+
+  function classify(f) {
+    const labels = [];
+    if (!f.unrefuted && !f.refuterError) labels.push('graded-and-survived');
+    if (f.unrefuted === true && f.unrefutedReason === 'non-gating') labels.push('skipped-as-non-gating');
+    if (f.unrefuted === true && f.unrefutedReason === 'budget') labels.push('passed-over-for-budget');
+    if (f.refuterError === true && !f.unrefuted) labels.push('grading-crashed');
+    return labels;
+  }
+  const seen = {};
+  for (const f of survivors) {
+    const labels = classify(f);
+    assert.equal(labels.length, 1, 'finding ' + f.id + ' must map to EXACTLY one of the four states, got ' + labels.join('+'));
+    seen[labels[0]] = (seen[labels[0]] || 0) + 1;
+  }
+  assert.equal(Object.keys(seen).sort().join(','), 'graded-and-survived,grading-crashed,passed-over-for-budget,skipped-as-non-gating',
+    'all four states occur in one run and are distinguishable by markers alone');
+
+  const byId = Object.fromEntries(survivors.map((f) => [f.id, f]));
+  assert.equal(byId.b01.refuterError, true, 'the crashed refuter marks its finding refuterError');
+  assert.equal(byId.b01.unrefuted, undefined, 'a crashed refuter NEVER marks the finding unrefuted');
+  assert.equal(byId.b01.unrefutedReason, undefined, 'a crashed refuter carries no unrefutedReason');
+  assert.equal(byId.s1.unrefutedReason, 'non-gating', 'the suggestion is marked non-gating');
+  assert.equal(byId.s1.refuterError, undefined, 'a deliberate skip is not a crash');
+  assert.equal(byId.b08.unrefutedReason, 'budget', 'the lowest-ranked gating finding was cut for budget');
+  assert.equal(byId.b08.refuterError, undefined, 'a budget skip is not a crash');
+  assert.equal(byId.b02.unrefuted, undefined, 'a graded survivor carries no marker at all');
+  assert.equal(byId.b02.refuterError, undefined, 'a graded survivor carries no crash marker');
+}
+
+// ============================================================================
+// 9g. DETERMINISM — repeated runs, and a fixed-permutation shuffled refuter
+//     resolution order (no Math.random anywhere).
+// ============================================================================
+{
+  const planted = gatingFindings(13).concat([
+    { id: 'dup', severity: 'blocking', confidence: 70, what_fails: 'shared id A' },
+  ]);
+  // The SAME id emitted by a second dimension: without the source-`order`
+  // tiebreak, the cut between these two is nondeterministic.
+  const plantedTests = [{ id: 'dup', severity: 'blocking', confidence: 70, what_fails: 'shared id B' }];
+  const shuffle = { b01: 7, b02: 3, b03: 11, b04: 1, b05: 5, dup: 9 };
+  const snapshots = [];
+  for (let run = 0; run < 5; run++) {
+    const spy = makeSpyAgent({ correctness: planted, tests: plantedTests }, {}, { resolveDelay: run === 4 ? shuffle : null });
+    const { survivors, budget } = await buildReviewPipeline('code', deps(spy))(CTX);
+    snapshots.push({
+      out: JSON.stringify({ survivors, budget }),
+      refuters: refuteIds(spy).slice().sort().join(','),
+    });
+  }
+  for (let i = 1; i < snapshots.length; i++) {
+    assert.equal(snapshots[i].out, snapshots[0].out, 'run ' + i + ': { survivors, budget } is byte-identical across runs');
+    assert.equal(snapshots[i].refuters, snapshots[0].refuters, 'run ' + i + ': the refuter label set is identical');
+  }
+  assert.ok(
+    snapshots[0].refuters.length > 0,
+    'the determinism check is not vacuous — refuters were actually dispatched'
+  );
+}
+
+// ============================================================================
+// 9h. The budget is not a no-op, and only GATING findings consume it.
+// ============================================================================
+{
+  // N = 0: grade nothing; every gating candidate passes through for budget.
+  const spy = makeSpyAgent({ correctness: gatingFindings(4) }, {});
+  const { survivors, budget } = await buildReviewPipeline('code', deps(spy))({ ...CTX, maxRefutations: 0 });
+  assert.equal(refuteIds(spy).length, 0, 'N=0 dispatches NO refuter');
+  assert.equal(budget.max, 0, 'N=0 is honored, not treated as unset');
+  assert.equal(budget.graded, 0, 'N=0 grades nothing');
+  assert.equal(budget.passedThroughBudget, 4, 'N=0 passes every gating candidate through for budget');
+  assert.ok(
+    survivors.every((f) => f.unrefutedReason === 'budget'),
+    'N=0: every survivor is marked as cut for budget'
+  );
+}
+{
+  // Suggestions never consume budget: 5 gating + 3 suggestions with N = 5 still
+  // grades all 5 gating findings and passes the 3 suggestions through as
+  // `non-gating`, not as `budget`.
+  const suggestions = [
+    { id: 's1', severity: 'suggestion', confidence: 95 },
+    { id: 's2', severity: 'suggestion', confidence: 94 },
+    { id: 's3', severity: 'suggestion', confidence: 93 },
+  ];
+  const spy = makeSpyAgent({ correctness: gatingFindings(5).concat(suggestions) }, {});
+  const { survivors, budget } = await buildReviewPipeline('code', deps(spy))(CTX);
+  assert.equal(refuteIds(spy).length, 5, 'suggestions do not displace a gating finding from the budget');
+  assert.equal(budget.hit, false, 'suggestions do not push the unit over budget');
+  assert.equal(budget.produced, 8, 'produced counts every candidate, gating or not');
+  assert.equal(budget.gating, 5, 'gating counts only the budget-consuming half');
+  assert.equal(budget.passedThroughNonGating, 3, 'the 3 suggestions are non-gating pass-throughs');
+  assert.equal(budget.passedThroughBudget, 0, 'no suggestion is ever reported as cut for budget');
+  assert.ok(
+    survivors.filter((f) => f.id.startsWith('s')).every((f) => f.unrefutedReason === 'non-gating'),
+    'suggestions carry the non-gating reason'
+  );
+}
+{
+  // A finder dimension that CRASHED contributes no candidates, and its absence
+  // must not be conflated with a clean dimension in `budget.produced`.
+  const spy = makeSpyAgent({ correctness: gatingFindings(2) }, {});
+  const base = spy.agent;
+  spy.agent = async (prompt, options) => {
+    if (options && options.label === 'find:code:tests') throw new Error('boom finder');
+    return base(prompt, options);
+  };
+  const { budget } = await buildReviewPipeline('code', deps(spy))(CTX);
+  assert.equal(budget.produced, 2, 'a crashed finder contributes no candidates to `produced`');
+  assert.equal(budget.hit, false, 'a crashed finder does not manufacture a budget hit');
+}
+{
+  // A per-run override reaches the pipeline.
+  const spy = makeSpyAgent({ correctness: gatingFindings(6) }, {});
+  const { budget } = await buildReviewPipeline('code', deps(spy))({ ...CTX, maxRefutations: 2 });
+  assert.equal(refuteIds(spy).length, 2, 'context.maxRefutations overrides the default');
+  assert.equal(budget.max, 2, 'the override is reported in the accounting');
+  assert.equal(budget.passedThroughBudget, 4, 'the rest overflow');
+}
+{
+  // An invalid override throws BEFORE any agent is dispatched.
+  const spy = makeSpyAgent({ correctness: gatingFindings(2) }, {});
+  await assert.rejects(
+    () => buildReviewPipeline('code', deps(spy))({ ...CTX, maxRefutations: '5abc' }),
+    /maxRefutations must be a non-negative integer/,
+    'an invalid budget throws'
+  );
+  assert.equal(spy.calls.length, 0, 'an invalid budget throws before a single agent() call burns tokens');
+}
+
+// ============================================================================
+// 9i. THE FLOOR IS NOT BYPASSED. An over-budget finding below the floor is still
+//     dropped; `survives` itself gained no budget-aware branch.
+// ============================================================================
+{
+  const planted = gatingFindings(5).concat([
+    { id: 'z-high', severity: 'blocking', confidence: 90, what_fails: 'over budget, above floor' },
+    { id: 'z-low', severity: 'blocking', confidence: 69, what_fails: 'over budget, below floor' },
+  ]);
+  const spy = makeSpyAgent({ correctness: planted }, {});
+  const { survivors, budget } = await buildReviewPipeline('code', deps(spy))(CTX);
+  assert.equal(budget.passedThroughBudget, 2, 'both extra findings are over budget');
+  const ids = survivors.map((f) => f.id);
+  assert.ok(ids.includes('z-high'), 'an over-budget finding at 90 confidence survives');
+  assert.ok(!ids.includes('z-low'), 'an over-budget finding at 69 confidence is DROPPED by the floor');
+}
+assert.equal(CONFIDENCE_FLOOR, 70, 'the floor is still 70');
+assert.equal(survives({ confidence: 69 }, null), false, 'survives applies the floor to an ungraded finding');
+assert.equal(survives({ confidence: 70 }, null), true, 'survives keeps an ungraded finding at the floor');
+
+// ============================================================================
+// 9j. AC6 — the monotonicity PROOF, executed rather than only asserted in prose.
+//
+// For a planted 8-candidate set, over EVERY subset treated as "the grader would
+// have refuted this", for both tiers and for N in {0,1,3,5,99}: the budgeted
+// survivor set is always a SUPERSET of the unbudgeted one, and
+// `classifyOutcome(unbudgeted) === 'rework'` implies
+// `classifyOutcome(budgeted) === 'rework'`.
+// ============================================================================
+{
+  const PROOF_SET = [
+    { id: 'p1', severity: 'blocking', confidence: 95 },
+    { id: 'p2', severity: 'blocking', confidence: 90 },
+    { id: 'p3', severity: 'concern', confidence: 88 },
+    { id: 'p4', severity: 'concern', confidence: 80 },
+    { id: 'p5', severity: 'blocking', confidence: 75 },
+    { id: 'p6', severity: 'concern', confidence: 72 },
+    { id: 'p7', severity: 'blocking', confidence: 90 },
+    { id: 'p8', severity: 'concern', confidence: 95 },
+  ];
+  const records = PROOF_SET.map((f, i) => ({ order: i, finding: f }));
+  const ranked = rankBudgetCandidates(records);
+  let checked = 0;
+  let sawRework = 0;
+  for (let mask = 0; mask < 1 << PROOF_SET.length; mask++) {
+    const verdictFor = (id) => {
+      const i = PROOF_SET.findIndex((f) => f.id === id);
+      return mask & (1 << i) ? { refuted: true, confidence: 10 } : { refuted: false, confidence: 90 };
+    };
+    const unbudgeted = ranked
+      .filter((c) => survives(c.finding, verdictFor(c.finding.id)))
+      .map((c) => c.finding);
+    for (const n of [0, 1, 3, 5, 99]) {
+      const budgeted = ranked
+        .filter((c, i) => survives(c.finding, i < n ? verdictFor(c.finding.id) : null))
+        .map((c) => c.finding);
+      // (3) superset
+      for (const f of unbudgeted) {
+        assert.ok(budgeted.indexOf(f) !== -1, 'budgeted survivors are a SUPERSET of the unbudgeted ones');
+      }
+      for (const tier of [undefined, 'large']) {
+        const u = classifyOutcome({ planFindings: [], codeReviews: [unbudgeted], tier: tier });
+        const b = classifyOutcome({ planFindings: [], codeReviews: [budgeted], tier: tier });
+        if (u === 'rework') {
+          sawRework++;
+          assert.equal(b, 'rework', 'a budget hit can NEVER turn a rework outcome into reviewed');
+        }
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked === (1 << 8) * 5 * 2, 'the property test covered every subset x N x tier combination');
+  assert.ok(sawRework > 0, 'the property test is not vacuous — rework outcomes actually occurred');
+}
+{
+  // Severity-first ranking is what protects the determining finding in the
+  // common case: 8 gating candidates whose ONLY blocking one is emitted LAST by
+  // the finder still sorts to rank 1, so it is graded even at N = 5 while six
+  // higher-confidence `concern` candidates are not.
+  const planted = [
+    { id: 'c1', severity: 'concern', confidence: 99 },
+    { id: 'c2', severity: 'concern', confidence: 98 },
+    { id: 'c3', severity: 'concern', confidence: 97 },
+    { id: 'c4', severity: 'concern', confidence: 96 },
+    { id: 'c5', severity: 'concern', confidence: 95 },
+    { id: 'c6', severity: 'concern', confidence: 94 },
+    { id: 'zz-blocker', severity: 'blocking', confidence: 90, what_fails: 'the real defect' },
+    { id: 'c7', severity: 'concern', confidence: 93 },
+  ];
+  const spy = makeSpyAgent({ correctness: planted }, {});
+  const { survivors, budget } = await buildReviewPipeline('code', deps(spy))({ ...CTX, maxRefutations: 5 });
+  assert.equal(budget.max, 5, 'the scenario runs at the chosen N');
+  assert.ok(refuteIds(spy).includes('zz-blocker'), 'severity-first ranking keeps the sole blocker inside the budget');
+  const blocker = survivors.find((f) => f.id === 'zz-blocker');
+  assert.ok(blocker, 'the blocking finding survives');
+  assert.equal(blocker.unrefutedReason, undefined, 'it was graded, not cut for budget');
+  assert.equal(
+    classifyOutcome({ planFindings: [], codeReviews: [survivors] }),
+    'rework',
+    'the unit classifies rework'
+  );
+}
+{
+  // Same shape, but the blocker really IS over budget: six higher-confidence
+  // blocking candidates rank above it, so with N = 5 it is ungraded.
+  const planted = gatingFindings(6, 99).concat([
+    { id: 'zz-late', severity: 'blocking', confidence: 90, what_fails: 'the rank-7 defect' },
+  ]);
+  const spy = makeSpyAgent({ correctness: planted }, {});
+  const { survivors, budget } = await buildReviewPipeline('code', deps(spy))({ ...CTX, maxRefutations: 5 });
+  assert.equal(budget.hit, true, 'rank-7 scenario: the bound was hit');
+  const late = survivors.find((f) => f.id === 'zz-late');
+  assert.ok(late, 'the rank-7 blocking finding survives');
+  assert.equal(late.unrefuted, true, 'it was never graded');
+  assert.equal(late.unrefutedReason, 'budget', 'it was cut for budget, not skipped as non-gating');
+  assert.equal(
+    classifyOutcome({ planFindings: [], codeReviews: [survivors] }),
+    'rework',
+    'an ungraded over-budget blocker STILL forces rework'
+  );
+}
+{
+  // The inverse guard: the SAME over-budget blocker at 69 confidence is dropped
+  // by the floor and the unit classifies `reviewed`. That is the floor doing its
+  // documented job — it is the ONLY thing that can drop an overflow finding.
+  const planted = gatingFindings(6, 99).concat([
+    { id: 'zz-late', severity: 'blocking', confidence: 69, what_fails: 'below the floor' },
+  ]);
+  const spy = makeSpyAgent({ correctness: planted }, { b01: { refuted: true, confidence: 10 } });
+  const { survivors } = await buildReviewPipeline('code', deps(spy))({ ...CTX, maxRefutations: 5 });
+  assert.ok(!survivors.some((f) => f.id === 'zz-late'), 'a below-floor overflow finding is dropped');
+}
+{
+  // The AC table is NEVER budgeted: classifyOutcome step 2 is bit-identical
+  // under every N, including 0.
+  const AC_GAP = [{ criterion: 'AC1', status: 'FAIL', evidence: 'none' }];
+  for (const n of [0, 1, 5, 99]) {
+    assert.equal(
+      classifyOutcome({ planFindings: [], codeReviews: [[]], acTable: AC_GAP }),
+      'rework',
+      'the AC-table gate is unaffected by the budget (N=' + n + ')'
+    );
+  }
+}
+{
+  // The act step must never mistake a gating budget-skipped survivor for a mere
+  // observation: runCodeGate invokes `d.act` only on a CLEAN final round.
+  let actCalls = 0;
+  const blockingBudgetSkipped = [
+    { id: 'zz', severity: 'blocking', confidence: 90, unrefuted: true, unrefutedReason: 'budget' },
+  ];
+  const gate = await runCodeGate(
+    { maxRework: 0, tier: 'medium' },
+    {
+      implement: async () => null,
+      review: async () => ({ survivors: blockingBudgetSkipped, acTable: null, budget: { max: 5, produced: 6, gating: 6, graded: 5, passedThroughNonGating: 0, passedThroughBudget: 1, refuterErrors: 0, hit: true } }),
+      act: async () => {
+        actCalls++;
+        return { handled: [] };
+      },
+    }
+  );
+  assert.equal(actCalls, 0, 'd.act is NOT invoked when the only survivor is a blocking budget-skipped finding');
+  assert.equal(gate.budgetRounds.length, 1, 'runCodeGate records one budget per review round');
+  assert.equal(gate.budgetRounds[0].hit, true, 'the round-level budget is carried out of runCodeGate');
+}
+
+console.log('9: refutation budget assertions passed');
+NODE_BUDGET_TEST
+
+if run_node "$TMP/budget-test.mjs" "$LIB" "$DISPATCH_LIB"; then
+    pass "9: the bound is chosen from evidence, ranked totally, boundaried correctly, four-state legible, deterministic, and monotone"
+else
+    fail "9: refutation budget assertions failed"
+fi
+
+# --- 9b-skills. THE FOUR-STATE VOCABULARY IN EVERY RENDERED SKILL -------------
+# Every rendered review skill must name all four provenance states and the budget
+# rule, or a skill reader is handed a finding it cannot classify. Whole-file
+# greps, like 8b's, so hand-authored prose cannot contradict the generated span.
+say "9b-skills. Every rendered review skill states the budget rule and the four-state marker table"
+for doc in $REVIEW_DOCS; do
+    [ -f "$doc" ] || fail "9b-skills: expected review skill doc not found: $doc"
+    grep -qF "unrefutedReason: 'budget'" "$doc" ||
+        fail "9b-skills: $doc never names the \`budget\` pass-through reason"
+    grep -qF "unrefutedReason: 'non-gating'" "$doc" ||
+        fail "9b-skills: $doc never names the \`non-gating\` pass-through reason"
+    grep -qF 'refuterError: true' "$doc" ||
+        fail "9b-skills: $doc never names the \`refuterError\` crash marker"
+    grep -qF 'Refutation budget' "$doc" ||
+        fail "9b-skills: $doc does not state the refutation budget rule"
+    grep -qF 'determiningFindingRank' "$doc" ||
+        fail "9b-skills: $doc does not point at the evidence behind the default"
+    grep -qF 'maxRefutations' "$doc" ||
+        fail "9b-skills: $doc does not name the per-run override"
+done
+pass "9b-skills: all six rendered review docs state the budget rule, its evidence, and all four state markers"
+
+# --- 9c. PLANTED-MUTATION SELF-TESTS (non-vacuity) ----------------------------
+# Seven independent mutations, each of which MUST flip one of section 9's
+# assertions, plus a control run against the REAL file that must PASS. Without
+# these, a refactor that quietly broke the ranking, the markers, the floor, the
+# cut, or the default would sail through a green harness.
+say "9c. Refutation-budget mutation self-tests (prove section 9 is not vacuous)"
+BMUT="$TMP/budget-mut/.claude/workflows/lib"
+mkdir -p "$BMUT"
+
+reset_bmut() {
+    cp "$LIB" "$BMUT/review.mjs"
+    cp "$DISPATCH_LIB" "$BMUT/dispatch-phase.mjs"
+}
+
+# The CONTROL: section 9 must PASS against the real, unmutated file. Without this
+# the seven negatives below could all "pass" simply because the section is broken.
+reset_bmut
+if run_node "$TMP/budget-test.mjs" "$BMUT/review.mjs" "$BMUT/dispatch-phase.mjs" >/dev/null 2>&1; then
+    pass "9c(control): section 9 passes against an unmutated copy — the self-tests below are discriminating"
+else
+    fail "9c(control): section 9 FAILED against an unmutated copy — the mutation self-tests would be meaningless"
+fi
+
+mutate_and_expect_fail() {
+    label="$1"
+    desc="$2"
+    reset_bmut
+    shift 2
+    "$@" || fail "9c($label): mutation setup failed"
+    if run_node "$TMP/budget-test.mjs" "$BMUT/review.mjs" "$BMUT/dispatch-phase.mjs" >/dev/null 2>&1; then
+        fail "9c($label): $desc did NOT flip a section-9 assertion — the check is vacuous"
+    fi
+    pass "9c($label): $desc flips a section-9 assertion"
+}
+
+# (i) Drop the source-`order` tiebreak: the duplicate-id determinism check breaks.
+mut_order() {
+    sed 's/^    return oa - ob;$/    return 0; \/\/ MUTANT/' "$LIB" >"$BMUT/review.mjs"
+    grep -q 'MUTANT' "$BMUT/review.mjs"
+}
+mutate_and_expect_fail i 'dropping the source-order tiebreak' mut_order
+
+# (ii) Sort ASCENDING by confidence: the top-N selection is wrong.
+mut_conf() {
+    sed 's/^    if (ca !== cb) return cb - ca;$/    if (ca !== cb) return ca - cb; \/\/ MUTANT/' "$LIB" >"$BMUT/review.mjs"
+    grep -q 'MUTANT' "$BMUT/review.mjs"
+}
+mutate_and_expect_fail ii 'sorting confidence ascending instead of descending' mut_conf
+
+# (iii) Remove `unrefutedReason` from the overflow object: the four-state check breaks.
+mut_reason() {
+    sed "s/{ ...c.finding, unrefuted: true, unrefutedReason: 'budget' }/{ ...c.finding, unrefuted: true }/" \
+        "$LIB" >"$BMUT/review.mjs"
+    ! grep -qF "unrefuted: true, unrefutedReason: 'budget' }" "$BMUT/review.mjs"
+}
+mutate_and_expect_fail iii 'dropping the budget unrefutedReason discriminator' mut_reason
+
+# (iv) Bypass the floor on the overflow path: a below-floor overflow finding is retained.
+mut_floor() {
+    sed 's/^    const survivors = graded.filter((g) => survives(g.finding, g.verdict)).map((g) => g.finding);$/    const survivors = graded.filter((g) => g.skipped || survives(g.finding, g.verdict)).map((g) => g.finding); \/\/ MUTANT/' \
+        "$LIB" >"$BMUT/review.mjs"
+    grep -q 'MUTANT' "$BMUT/review.mjs"
+}
+mutate_and_expect_fail iv 'letting a pass-through bypass the confidence floor' mut_floor
+
+# (v) Drop `refuterError` from the .catch: a crash is indistinguishable from a graded survivor.
+mut_crash() {
+    sed 's/\.catch(() => ({ finding: { ...c.finding, refuterError: true }, verdict: null }))/.catch(() => ({ finding: c.finding, verdict: null }))/' \
+        "$LIB" >"$BMUT/review.mjs"
+    ! grep -q 'refuterError: true }, verdict: null' "$BMUT/review.mjs"
+}
+mutate_and_expect_fail v 'dropping the refuterError crash marker' mut_crash
+
+# (vi) Off-by-one on the cut: slice(0, N + 1).
+mut_slice() {
+    sed 's/^    const toGrade = ranked.slice(0, maxRefutations);$/    const toGrade = ranked.slice(0, maxRefutations + 1); \/\/ MUTANT/' \
+        "$LIB" >"$BMUT/review.mjs"
+    grep -q 'MUTANT' "$BMUT/review.mjs"
+}
+mutate_and_expect_fail vi 'an off-by-one on the budget cut' mut_slice
+
+# (vii) Change the default to 3 (the value phase 2's own pre-registered rule rejects).
+mut_default() {
+    sed 's/^const DEFAULT_MAX_REFUTATIONS = 5;$/const DEFAULT_MAX_REFUTATIONS = 3; \/\/ MUTANT/' "$LIB" >"$BMUT/review.mjs"
+    grep -q 'MUTANT' "$BMUT/review.mjs"
+}
+mutate_and_expect_fail vii 'changing the default budget to 3' mut_default
+
+pass "9c: all seven mutations flip a section-9 assertion, and the control passes — section 9 is non-vacuous"
 
 say "verify-workflow-review.sh: ALL GREEN"

@@ -400,6 +400,18 @@ function isAbnormalStop(reason) {
   return KNOWN_GOOD_STOP_REASONS.indexOf(reason) === -1;
 }
 
+// budgetHitTag(outcome) — a short marker appended to a completed phase's stem in
+// the run summary when that phase's review hit its refutation budget.
+//
+// Without this, `buildSummary`'s `phases completed (...)` line prints bare stems
+// and a REVIEWED phase whose review was bounded would be indistinguishable from
+// one that got full coverage — hiding the bound exactly where a reader looks
+// first. Pure, deterministic, and empty for every unbounded phase, so an
+// unbounded run's summary is byte-unchanged.
+function budgetHitTag(outcome) {
+  return outcome && outcome.reviewBudget && outcome.reviewBudget.everHit === true ? ' [budget]' : '';
+}
+
 // buildSummary(state) — the always-on batched run summary. Lists the phases
 // completed in order, the escalations tagged plan/code/fetch with their
 // reasons and a pointer at the `rdm review blocked` queue (plus a loud caveat
@@ -648,7 +660,7 @@ function buildAutopilot(deps) {
             log('autopilot: advance failed for ' + stem + ' (attempt ' + (attempt + 1) + ')');
           }
           if (advanceOk) {
-            completed.push(stem);
+            completed.push(stem + budgetHitTag(outcome));
             log('autopilot: ' + advanceReason(stem));
             break;
           }
@@ -660,7 +672,7 @@ function buildAutopilot(deps) {
 
         if (decision.action === 'noop-vetted') {
           planOnlySeen.add(stem);
-          completed.push(stem);
+          completed.push(stem + budgetHitTag(outcome));
           log('autopilot: plan-only vetted ' + stem);
           break;
         }

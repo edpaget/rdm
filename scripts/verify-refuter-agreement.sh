@@ -182,8 +182,16 @@ if grep -q 'findModel' "$PLAN_LIB"; then
         fail "$PLAN_LIB mentions findModel but no runPlanReview call site threads it"
     pass "plan-review.mjs threads findModel (the decision changed the binding)"
 else
-    grep -q 'runPlanReview({ target' "$PLAN_LIB" ||
-        fail "$PLAN_LIB no longer calls runPlanReview({ target ... }) — the doc's premise is stale"
+    # Matched on the CALL, not on a one-line argument-object spelling: the
+    # context object legitimately grew (e.g. `maxRefutations`) and may be
+    # multi-line. The premise the doc rests on is the ABSENCE of model keys,
+    # which the outer `if` already covers for findModel — assert verifyModel too.
+    grep -q 'runPlanReview({' "$PLAN_LIB" ||
+        fail "$PLAN_LIB no longer calls runPlanReview({ ... }) — the doc's premise is stale"
+    grep -q 'target: unit.target' "$PLAN_LIB" ||
+        fail "$PLAN_LIB no longer threads the review target into runPlanReview — the doc's premise is stale"
+    ! grep -q 'verifyModel' "$PLAN_LIB" ||
+        fail "$PLAN_LIB now threads verifyModel — the doc's 'no model bindings' premise is stale"
     pass "plan-review.mjs still calls runPlanReview with no findModel/verifyModel (the doc's premise holds)"
 fi
 grep -q "$DOC" docs/workflow-schemas.md || fail "docs/workflow-schemas.md must cross-reference $DOC"

@@ -34,6 +34,7 @@ import {
   classifyPlanOutcome,
   gateFor,
   summarizeFindings,
+  resolveRefutationBudget,
 } from './review.mjs';
 
 // >>> plan-review-driver:begin <<<
@@ -47,10 +48,11 @@ import {
 // No Date.now / Math.random — pure array/string ops plus injected async deps.
 //
 // `buildReviewPipeline`, `stripNonPhaseUnitOfWork`, `filterPlanReviewTag`,
-// `classifyPlanOutcome`, `gateFor`, and `summarizeFindings` are NOT declared
-// here: they belong to the canonical review source (lib/review.mjs) and reach
-// this block from the stamped review block that precedes it in the workflow
-// consumer (and from the import above in Node).
+// `classifyPlanOutcome`, `gateFor`, `summarizeFindings`, and
+// `resolveRefutationBudget` are NOT declared here: they belong to the canonical
+// review source (lib/review.mjs) and reach this block from the stamped review
+// block that precedes it in the workflow consumer (and from the import above in
+// Node).
 
 // parsePlanArgs(rawArgs) — resolve the four target types from a raw $ARGUMENTS
 // flag string, a JSON payload, or a structured object. Returns
@@ -146,6 +148,13 @@ function parsePlanArgs(rawArgs) {
   const wontFixedTexts = Array.isArray(a.wontFixedTexts) ? a.wontFixedTexts : null
   const mechanicalModel =
     typeof a.mechanicalModel === 'string' && a.mechanicalModel.trim() !== '' ? a.mechanicalModel.trim() : null
+  // Per-unit REFUTATION budget, threaded into every review context below.
+  // Read from a STRUCTURED key only (like every other hoist here) and RESOLVED
+  // HERE, at parse time — before any agent() call — by the review core's single
+  // validator, so an invalid value throws instead of burning tokens. Unset
+  // resolves to the core's documented default; `0` is legal and distinct from
+  // unset (grade nothing).
+  const maxRefutations = resolveRefutationBudget(a.maxRefutations)
 
   return {
     kind: kind,
@@ -156,6 +165,7 @@ function parsePlanArgs(rawArgs) {
     fetched: fetched,
     wontFixedTexts: wontFixedTexts,
     mechanicalModel: mechanicalModel,
+    maxRefutations: maxRefutations,
   }
 }
 
@@ -634,6 +644,24 @@ function buildReviewUnits(parsed, fetched) {
   }
 }
 
+// formatUnitBudget(budget) — the visible per-unit refutation-budget clause,
+// appended to a unit's log line ONLY when the bound was actually hit. A unit
+// that stayed under budget logs a byte-unchanged line, so a bounded run can
+// never be mistaken for complete coverage and an unbounded one reads exactly as
+// it did before.
+function formatUnitBudget(budget) {
+  if (!budget || budget.hit !== true) return ''
+  return (
+    ' [review budget hit: ' +
+    budget.produced +
+    ' produced, ' +
+    budget.graded +
+    ' graded, ' +
+    budget.passedThroughBudget +
+    ' ungraded]'
+  )
+}
+
 // runPlanReviewDriver(args, deps) — the full plan-review orchestration. Every
 // side effect is reached through the injected `deps`:
 //   deps.agent          — the mechanical fetch / act / tag-write agent runner.
@@ -673,6 +701,8 @@ async function runPlanReviewDriver(args, deps) {
   const parsed = parsePlanArgs(args)
   const kind = parsed.kind
   if (parsed.mechanicalModel) _mechanicalModel = parsed.mechanicalModel
+  // Already validated by parsePlanArgs via the review core's single validator.
+  const maxRefutations = parsed.maxRefutations
 
   // reviewUnit — run find → refute → filter for ONE review unit, then strip
   // non-phase unit-of-work survivors, drop anything already resolved
@@ -682,10 +712,18 @@ async function runPlanReviewDriver(args, deps) {
   // (one search covers the whole run, not one per unit).
   async function reviewUnit(unit, wontFixedTexts) {
     // runPlanReview is a `runReview` from the canonical review source and
-    // resolves `{ survivors, acTable }`; `acTable` is always `null` in plan
-    // mode (the `ac` dimension does not exist there) and is intentionally
-    // discarded here.
-    const { survivors: rawSurvivors } = await runPlanReview({ target: unit.target })
+    // resolves `{ survivors, acTable, budget }`; `acTable` is always `null` in
+    // plan mode (the `ac` dimension does not exist there) and is intentionally
+    // discarded here. `budget` is the per-unit refutation-budget accounting and
+    // is carried through to the reported result.
+    //
+    // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
+    // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
+    // may drop a survivor that consumed budget.
+    const { survivors: rawSurvivors, budget } = await runPlanReview({
+      target: unit.target,
+      maxRefutations: maxRefutations,
+    })
     const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
     const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
     const prior = parseRoundNotes(unit.body)
@@ -699,6 +737,7 @@ async function runPlanReviewDriver(args, deps) {
       round: round,
       newlyReported: partition.fresh,
       repeats: partition.repeats,
+      budget: budget || null,
       summary: summarizeFindings(survivors),
     }
   }
@@ -709,15 +748,26 @@ async function runPlanReviewDriver(args, deps) {
   // 'implementation-plan' !== 'phase').
   if (kind === 'implementation-plan') {
     const planText = parsed.planText || '(the implementation plan provided in context)'
-    // See reviewUnit's identical note: acTable is always null in plan mode.
-    const { survivors: rawSurvivors } = await runPlanReview({ target: planText })
+    // See reviewUnit's identical notes: acTable is always null in plan mode, and
+    // `budget` describes the pipeline, not the post-strip survivor set.
+    const { survivors: rawSurvivors, budget } = await runPlanReview({
+      target: planText,
+      maxRefutations: maxRefutations,
+    })
     const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
     const outcome = classifyPlanOutcome(survivors)
-    _log('plan-review (implementation-plan): ' + outcome + ' — ' + summarizeFindings(survivors))
+    _log(
+      'plan-review (implementation-plan): ' +
+        outcome +
+        ' — ' +
+        summarizeFindings(survivors) +
+        formatUnitBudget(budget)
+    )
     return {
       kind: 'implementation-plan',
       outcome: outcome,
       summary: summarizeFindings(survivors),
+      budget: budget || null,
       findings: survivors,
     }
   }
@@ -876,9 +926,10 @@ async function runPlanReviewDriver(args, deps) {
       tagCleared: tagCleared,
       reason: reason,
       summary: r.summary,
+      budget: r.budget || null,
       findings: r.survivors,
     })
-    _log('plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + r.summary)
+    _log('plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + r.summary + formatUnitBudget(r.budget))
   }
 
   const result = { kind: kind, units: reported }
@@ -886,6 +937,7 @@ async function runPlanReviewDriver(args, deps) {
     // Flatten a single phase/task target onto the top-level result for convenience.
     result.outcome = reported[0].outcome
     result.summary = reported[0].summary
+    result.budget = reported[0].budget
     result.findings = reported[0].findings
   }
   _log('plan-review (' + kind + '): ' + reported.length + ' unit(s) gated')
@@ -917,5 +969,6 @@ export {
   classifyRoundOutcome,
   buildWontFixFetchPrompt,
   buildRoundNoteWritePrompt,
+  formatUnitBudget,
   WONTFIX_LIST_SCHEMA,
 };

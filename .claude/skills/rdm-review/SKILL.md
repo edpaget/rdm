@@ -181,6 +181,33 @@ the recorded corpus, a `concern` is overturned *more* often than a `blocking`
 one — 50.4 % vs 38.1 %), and a finding whose severity is missing or
 unrecognized is refuted too.
 
+**Refutation budget.** The workflow grades at most **5** gating findings per
+review unit. It ranks the unit's gating candidates severity-then-confidence
+and refutes only the top 5; everything past the cut takes the SAME un-refuted
+pass-through, marked `unrefuted: true` with `unrefutedReason: 'budget'`.
+Non-gating `suggestion` findings never consume budget. The budget skips
+**grading**, never **filtering** — an over-budget finding faces the same
+confidence floor, and one that survives it still gates. The default of 5 is
+measured, not guessed: replaying this pipeline's own ranking over the recorded
+corpus (`docs/token-baseline.json` § `determiningFindingRank`) put the
+outcome-determining finding within the top 5 for **100 %** of determining
+units at the default tier and **98.2 %** at the `large` tier. It is
+overridable per run via `maxRefutations` (`0` is legal and means grade
+nothing); there is no "uncapped" sentinel — express that as a large N. When
+the bound is hit the workflow reports how many findings were produced, how
+many were graded, and how many were passed through for budget, so a bounded
+run is never read as complete coverage.
+
+**Four states, four markers.** Every finding the workflow returns is in
+exactly one of these, and they are told apart by markers alone:
+
+| State | Markers |
+|---|---|
+| graded and survived | no `unrefuted`, no `refuterError` |
+| skipped as non-gating | `unrefuted: true`, `unrefutedReason: 'non-gating'` |
+| passed over for budget | `unrefuted: true`, `unrefutedReason: 'budget'` |
+| grading crashed | `refuterError: true`, and never `unrefuted` |
+
 ### Filter & consolidate
 
 The workflow already applies this before returning; it is recapped here so you
@@ -234,6 +261,14 @@ provenances, and they are handled differently:
   if it is worth keeping (a low-severity security or correctness note is),
   otherwise skip it and state why. An observation must never evaporate into
   a skip reason just because no refuter graded it.
+- Read the `unrefutedReason` to tell WHY it went ungraded. `'non-gating'`
+  means its severity could not have changed the outcome, so grading it was
+  pointless. `'budget'` means the per-unit refutation budget was hit and it
+  was cut for COST — prefer FILING that one over skipping it.
+- A finding carrying `refuterError: true` is a THIRD case: a refuter was
+  dispatched for it and CRASHED. That is not proof of refutation and not a
+  deliberate skip, so it is never marked `unrefuted`; treat it as still
+  ungraded and say so.
 
 Never fix or file a finding that carries neither provenance.
 

@@ -155,7 +155,7 @@ const { hasBlocking, summarizeFindings, classifyOutcome, buildOutcome } = mod;
 const B = (id) => ({ id, concern: 'x', severity: 'blocking', confidence: 90, what_fails: id });
 const C = (id) => ({ id, concern: 'x', severity: 'concern', confidence: 90, what_fails: id });
 
-const SHAPE = ['findings', 'outcome', 'phase', 'reason', 'roadmap', 'status', 'summary', 'writesCompletion'];
+const SHAPE = ['findings', 'outcome', 'phase', 'reason', 'reviewBudget', 'roadmap', 'status', 'summary', 'writesCompletion'];
 
 // ============================================================================
 // Happy path FIRST — clean plan + clean code → reviewed, full OUTCOME shape.
@@ -293,7 +293,7 @@ assert.ok(summarizeFindings([B('bug')]).includes('blocking'), 'summary names the
 const { buildTaskOutcome } = mod;
 assert.equal(typeof buildTaskOutcome, 'function', 'buildTaskOutcome is exported from the lib');
 
-const TASK_SHAPE = ['findings', 'outcome', 'reason', 'status', 'summary', 'task', 'writesCompletion'];
+const TASK_SHAPE = ['findings', 'outcome', 'reason', 'reviewBudget', 'status', 'summary', 'task', 'writesCompletion'];
 
 // reviewed — clean code review on the first pass.
 const tRev = buildTaskOutcome({
@@ -1018,6 +1018,119 @@ try {
   assert.ok(mod.hasBlocking(res.findings, 'medium'), 'hasBlocking still detects the unwrapped survivors, not a wrapper object');
   assert.equal(classifyOutcome({ planFindings: res.findings, tier: 'medium' }), 'escalated', 'the plan gate still escalates after the {survivors,acTable} shape change');
 }
+
+// (f) REFUTATION BUDGET threading (bound-review-fan-out phase 4). The review
+// pipeline now resolves a third field, `budget`; both gates must capture it per
+// round and the OUTCOME must surface it — with a VISIBLE summary clause only
+// when a round actually hit its bound.
+{
+  const BUDGET_HIT = { max: 5, produced: 13, gating: 13, graded: 5, passedThroughNonGating: 0, passedThroughBudget: 8, refuterErrors: 0, hit: true };
+  const BUDGET_CLEAN = { max: 5, produced: 2, gating: 2, graded: 2, passedThroughNonGating: 0, passedThroughBudget: 0, refuterErrors: 0, hit: false };
+
+  // Two code rounds: round 1 hits its bound, round 2 does not.
+  let round = 0;
+  const codeGate = await runCodeGate(
+    { maxRework: 2, tier: 'medium' },
+    {
+      implement: async () => null,
+      review: async () => {
+        const r = round++;
+        return r === 0
+          ? { survivors: [B('bug')], acTable: null, budget: BUDGET_HIT }
+          : { survivors: [], acTable: null, budget: BUDGET_CLEAN };
+      },
+    }
+  );
+  assert.equal(codeGate.budgetRounds.length, 2, 'runCodeGate records one budget entry PER ROUND');
+  assert.equal(codeGate.budgetRounds[0].hit, true, 'round 1 hit its bound');
+  assert.equal(codeGate.budgetRounds[1].hit, false, 'round 2 did not');
+
+  const out = buildOutcome({
+    roadmap: 'rm',
+    phase: 'p',
+    planFindings: [],
+    codeReviews: codeGate.rounds,
+    acRounds: codeGate.acRounds,
+    budgetRounds: codeGate.budgetRounds,
+    maxRework: 2,
+    tier: 'medium',
+  });
+  assert.equal(out.outcome, 'reviewed', 'the rework resolved the blocker');
+  assert.equal(out.reviewBudget.everHit, true, 'everHit is true when ANY round hit, even if the last did not');
+  assert.equal(out.reviewBudget.rounds, 2, 'reviewBudget reports how many rounds were budgeted');
+  assert.equal(out.reviewBudget.max, 5, 'reviewBudget carries the LAST round\'s cap');
+  assert.equal(out.reviewBudget.produced, 2, 'reviewBudget carries the LAST round\'s produced count');
+  assert.equal(out.reviewBudget.hit.produced, 13, 'reviewBudget.hit points at the round that actually hit');
+  assert.ok(
+    out.summary.includes('[review budget hit: 13 produced, 5 graded, 8 ungraded]'),
+    'a budget-hit unit is VISIBLY distinguishable in the OUTCOME summary'
+  );
+
+  // No round hit -> the summary clause is ABSENT and the summary is unchanged.
+  const clean = buildOutcome({
+    roadmap: 'rm',
+    phase: 'p',
+    planFindings: [],
+    codeReviews: [[]],
+    acRounds: [null],
+    budgetRounds: [BUDGET_CLEAN],
+    tier: 'medium',
+  });
+  assert.equal(clean.reviewBudget.everHit, false, 'no round hit');
+  assert.ok(!clean.summary.includes('review budget hit'), 'an unbounded run carries NO summary clause');
+  assert.equal(clean.summary, 'phase reviewed clean: no surviving findings', 'the unbounded summary is byte-unchanged');
+
+  // An older caller that reports no budget at all still gets a well-formed
+  // OUTCOME with reviewBudget === null.
+  const legacy = buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], codeFindings: [], tier: 'medium' });
+  assert.equal(legacy.reviewBudget, null, 'no budget reported -> reviewBudget is null, never undefined');
+  assert.ok(!legacy.summary.includes('review budget hit'), 'a budget-less OUTCOME carries no clause');
+
+  // The PLAN gate captures its own budget, counted independently, and a
+  // plan-gate hit surfaces on an escalated OUTCOME's summary and reason.
+  const ph = makePlanFakes({ reviewScript: [[B('plan-defect')]] });
+  const planReviewWithBudget = ph.deps.review;
+  ph.deps.review = async (doc) => ({ ...(await planReviewWithBudget(doc)), budget: BUDGET_HIT });
+  const planGate = await runPlanGate({ maxRevise: 0, tier: 'medium' }, ph.deps);
+  assert.equal(planGate.budgetRounds.length, 1, 'runPlanGate records a budget per review round');
+  assert.equal(planGate.budget.hit, true, 'runPlanGate returns the last round\'s budget');
+  const esc = buildOutcome({
+    roadmap: 'rm',
+    phase: 'p',
+    planFindings: planGate.findings,
+    planBudget: planGate.budget,
+    tier: 'medium',
+  });
+  assert.equal(esc.outcome, 'escalated', 'a blocking plan finding still escalates');
+  assert.equal(esc.reviewBudget.everHit, true, 'a plan-gate budget hit is visible on the OUTCOME');
+  assert.ok(esc.summary.includes('[review budget hit:'), 'the escalated summary carries the clause');
+  assert.ok(esc.reason.includes('[review budget hit:'), 'the persisted reason carries it too (outcomePolicy derives reason from summary)');
+
+  // The task-shaped OUTCOME behaves identically.
+  const tOut = buildTaskOutcome({
+    task: 't',
+    planFindings: [],
+    codeReviews: [[]],
+    acRounds: [null],
+    budgetRounds: [BUDGET_HIT],
+    tier: 'medium',
+  });
+  assert.equal(tOut.reviewBudget.everHit, true, 'task OUTCOME carries reviewBudget');
+  assert.ok(tOut.summary.includes('[review budget hit:'), 'task OUTCOME summary carries the clause');
+}
+
+// (g) parseDispatchArgs validates maxRefutations at PARSE time, before any agent
+// call, exactly like the two retry budgets.
+assert.equal(parseDispatchArgs({}).maxRefutations, 5, 'maxRefutations defaults to the review core\'s 5');
+assert.equal(parseDispatchArgs({ maxRefutations: 0 }).maxRefutations, 0, '0 is legal and distinct from unset');
+assert.equal(parseDispatchArgs({ maxRefutations: '3' }).maxRefutations, 3, 'an integer-only string is accepted');
+assert.throws(
+  () => parseDispatchArgs({ maxRefutations: 'x' }),
+  /maxRefutations must be a non-negative integer/,
+  'an invalid maxRefutations throws at parse time'
+);
+assert.throws(() => parseDispatchArgs({ maxRefutations: '5abc' }), /maxRefutations/, "'5abc' is rejected, not coerced to 5");
+assert.throws(() => parseDispatchArgs({ maxRefutations: -1 }), /maxRefutations/, 'a negative budget is rejected');
 
 console.log('all dispatch-phase gate assertions passed');
 NODE_TEST

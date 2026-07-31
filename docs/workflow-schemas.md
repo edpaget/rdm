@@ -768,6 +768,19 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `why`           | string                                   | root cause / which rule, AC, or principle         |
 | `recommendation`| string                                   | concrete fix                                      |
 | `unrefuted`     | `true` (post-pipeline only)              | set by `buildReviewPipeline`, never by a finder    |
+| `unrefutedReason` | `'non-gating'` \| `'budget'` (post-pipeline only) | present iff `unrefuted` is; WHY it went ungraded |
+| `refuterError`  | `true` (post-pipeline only)              | a refuter was dispatched and CRASHED; never combined with `unrefuted` |
+
+**Four states, four markers.** Every finding a consumer receives is in exactly
+one of these, and they are distinguishable by markers alone — this is the single
+documented contract:
+
+| state | markers |
+| --- | --- |
+| graded and survived | no `unrefuted`, no `refuterError` |
+| skipped as non-gating | `unrefuted: true`, `unrefutedReason: 'non-gating'` |
+| passed over for budget | `unrefuted: true`, `unrefutedReason: 'budget'` |
+| grading crashed | `refuterError: true`, and never `unrefuted` |
 
 `unrefuted` is added by the pipeline, not returned by a finder: a finding whose
 severity is in `NON_GATING_SEVERITIES` (`['suggestion']`) gets **no refuter at
@@ -779,7 +792,11 @@ The confidence floor still applies to it (`survives(finding, null)`), and the
 rule is fail-safe: a finding whose severity is missing or unrecognized is
 refuted like a gating one. A refuter that *crashes* also yields a null verdict,
 but such a finding is **not** marked `unrefuted` — the marker means
-"deliberately never graded", not "grading failed". Consumers must treat an
+"deliberately never graded", not "grading failed"; it carries `refuterError:
+true` instead. The SECOND reason a finding can be deliberately ungraded is the
+per-unit **refutation budget** (see § Refutation budget below): an over-budget
+finding takes the same pass-through path with `unrefutedReason: 'budget'`, and
+is likewise still subject to the confidence floor. Consumers must treat an
 `unrefuted` finding as an observation, never a confirmed defect (see
 `UNREFUTED_DISPOSITION`, single-sourced in the stamped block and appended to
 both act prompts). Measured evidence for the set's membership —
@@ -841,8 +858,9 @@ anything other than `ship-batched`.
 ### `OUTCOME` (review pipeline)
 
 The value `buildReviewPipeline(mode)(context)` resolves to
-`{ survivors, acTable }`: `survivors` is a **ranked** array of the surviving
-`FINDING`s, and `acTable` is the captured `AC_ENTRY[]` from the `ac`
+`{ survivors, acTable, budget }`: `survivors` is a **ranked** array of the
+surviving `FINDING`s, `budget` is the refutation-budget accounting (below), and
+`acTable` is the captured `AC_ENTRY[]` from the `ac`
 dimension's finder in `code` mode (`null` in `plan` mode, and `null` whenever
 the `ac` dimension didn't run or its finder failed to resolve a table — see
 `AC_ENTRY` / `AC_REVIEW_SCHEMA` above). The dispatch-phase keystone (below)
@@ -852,17 +870,30 @@ mapping" below) checks `acTable` directly via `acTableHasGap`, independent of
 `survivors`' severity/refutation, and can only ever push the outcome to
 `rework` — never `escalated`.
 
+The third field, **`budget`**, records what the per-unit refutation budget did:
+`{ max, produced, gating, graded, passedThroughNonGating, passedThroughBudget,
+refuterErrors, hit }`. It describes the **pipeline**, not any consumer-side
+post-filtering — plan-review's `stripNonPhaseUnitOfWork` / `suppressWontFixed`
+run afterwards and may drop a survivor that consumed budget. Consumers project
+it onto their own shape with the two shared helpers in the same stamped block:
+`buildReviewBudget(budgetRounds, planBudget)` yields the `reviewBudget` field
+(last round's counts, `rounds`, `everHit`, the last `hit` object, and the plan
+gate's own budget), and `budgetSummaryClause(reviewBudget)` yields the visible
+` [review budget hit: N produced, M graded, K ungraded]` marker — empty when the
+bound was never hit, so an unbounded run's summary is byte-unchanged.
+
 The standalone `review-refute-fix.js` consumer has three invocation shapes: (a)
 `mode: 'plan'`, and (b) `mode: 'code'` with no `roadmap`+`phase` or `task`
 identifier, both keep returning the legacy survivors-only `{ mode, survivors }`
-shape unchanged, for backward compatibility with ad hoc/document-less reviews;
+shape (plus an additive `budget` field) for backward compatibility with ad
+hoc/document-less reviews;
 (c) `mode: 'code'` with `{ roadmap, phase }` or `{ task }` runs the SAME
 `buildReviewPipeline('code')` pass, then additionally derives real diff signals
 from the item's worktree (mirroring dispatch-phase's code gate — see below) and
 composes the survivors through `classifyOutcome` plus `statusFor` /
 `writesCompletion` / `summarizeFindings` / `gateFor` into the dispatch-shaped
 `OUTCOME` contract: `{ roadmap, phase, outcome, status, writesCompletion,
-summary, reason, findings }` (or the `{ task, ... }` shape). An optional
+summary, reason, reviewBudget, findings }` (or the `{ task, ... }` shape). An optional
 `gate: true` persists the mapped rdm status via a mechanical Bash agent, for
 headless/ad hoc callers of the workflow only. The interactive `rdm-review`
 skill invokes shape (c) with `gate: false` and performs its own gate step
@@ -878,12 +909,14 @@ matching the `rdm-review` skill, where the confidence filter applies to the
 finding. `verdict.confidence` is recorded but does not gate.
 
 **Failure handling.** A refuter crash is not proof of refutation: if a refuter
-`agent()` errors, its finding is kept as **un-refuted** (`verdict = null`) and
-survives on the confidence floor alone, rather than being silently dropped as if
-refuted — the pipeline logs how many findings were kept this way. A finder crash
-instead drops only its own dimension to `null` (the runtime's `pipeline` sends a
-thrown stage to null), so the other dimensions still contribute and the review
-degrades rather than failing.
+`agent()` errors, its finding is kept as **un-refuted** (`verdict = null`,
+marked `refuterError: true`) and survives on the confidence floor alone, rather
+than being silently dropped as if refuted — the pipeline logs how many findings
+were kept this way. A finder crash instead drops only its own dimension to
+`null` (the runtime's `parallel` sends a thrown thunk to null), so the other
+dimensions still contribute and the review degrades rather than failing; a
+crashed dimension contributes no candidates, so it never inflates
+`budget.produced` with coverage it did not provide.
 
 **Ranking (`rankFindings`).** A total order, so `OUTCOME` is deterministic across
 runs (the runtime forbids `Date.now()`/`Math.random()`): by `severity`
@@ -893,17 +926,71 @@ ascending as a stable tiebreaker.
 ## `buildReviewPipeline(mode, deps?)`
 
 Returns an async `runReview(context)` that composes
-`pipeline(selectDimensions(mode, context.signals), find, refute)`:
+`parallel(finders)` → **barrier** → budget cut → `parallel(refuters)`:
 
 0. **Select** — the deterministic pre-step `selectDimensions(mode, signals)`
    decides which dimensions actually run (see below).
-1. **Find** — one finder `agent()` per selected dimension, in parallel
-   (`pipeline` stage 1). In `code` mode, the `ac` dimension's finder is forced
-   to satisfy `AC_REVIEW_SCHEMA` instead of `FINDINGS_SCHEMA`, and the first
-   `ac` array it resolves is captured into the run's `acTable`.
-2. **Refute** — a **fresh** refuter `agent()` per finding, in parallel (stage 2).
-3. **Filter** — drop findings that were refuted or fell below `CONFIDENCE_FLOOR`.
-4. **Rank** — resolve `{ survivors: rankFindings(survivors), acTable }`.
+1. **Find** — one finder `agent()` per selected dimension, in parallel, as a
+   `parallel()` fan-out of per-dimension thunks. In `code` mode, the `ac`
+   dimension's finder is forced to satisfy `AC_REVIEW_SCHEMA` instead of
+   `FINDINGS_SCHEMA`, and the first `ac` array it resolves is captured into the
+   run's `acTable`.
+2. **Barrier + budget cut** — every finder settles, then all dimensions' findings
+   are flattened into ONE unit-wide candidate list, partitioned by
+   `needsRefutation`, and the gating half is ranked by `rankBudgetCandidates` and
+   cut at the refutation budget (see below). The cut is taken BEFORE any refuter
+   is dispatched, so it can never depend on agent-completion order.
+3. **Refute** — a **fresh** refuter `agent()` per finding in the top N, in
+   parallel. Non-gating findings and the over-budget overflow take the
+   un-refuted pass-through instead.
+4. **Filter** — drop findings that were refuted or fell below `CONFIDENCE_FLOOR`.
+5. **Rank** — resolve `{ survivors: rankFindings(survivors), acTable, budget }`.
+
+The barrier is why stage 1 is `parallel()` rather than a single-stage
+`pipeline()`: the budget must rank a unit's WHOLE candidate list across
+dimensions, which the previous no-barrier `pipeline(dims, find, refute)`
+composition — where each dimension's find→refute chain ran independently —
+structurally cannot do. `parallel()`'s thrown-thunk → null degradation is
+identical to `pipeline()`'s thrown-stage → null, so the per-dimension crash
+behavior is unchanged, and it makes no assumption about a minimum `pipeline()`
+stage count.
+
+### Refutation budget
+
+At most `DEFAULT_MAX_REFUTATIONS` (**5**) GATING findings per review unit are
+handed to a refuter. Everything past the cut takes the EXISTING un-refuted
+pass-through carrying `unrefuted: true` and `unrefutedReason: 'budget'` — no
+second mechanism, and the confidence floor still applies (the budget skips
+**grading**, never **filtering**). Non-gating `suggestion` findings never consume
+budget, since they were already never refuted.
+
+| | |
+| --- | --- |
+| arg name | `maxRefutations` (on `dispatch-phase`, `plan-review`, and `review-refute-fix` args; reaches `runReview` as `context.maxRefutations`) |
+| default | `DEFAULT_MAX_REFUTATIONS` = 5 |
+| `0` | LEGAL and meaningful — grade nothing, pass every gating finding through as `unrefutedReason: 'budget'`. Never conflated with "unset" by a falsy check. |
+| uncapped | no sentinel exists; express an effectively-uncapped run as a large N |
+| validation | `resolveRefutationBudget(value)`, mirroring `parseBudget`'s contract — a number or integer-ONLY string; `'5abc'` is rejected, not coerced. `dispatch-phase`/`plan-review` validate at PARSE time, before any `agent()` call. |
+| ranking | `rankBudgetCandidates`: severity → confidence descending → id → source order. The source-order tiebreak is what makes the cut total when two dimensions emit the same finding id. |
+
+**Why 5.** Measured, not guessed: `docs/token-baseline.json` §
+`determiningFindingRank` replayed this pipeline's own ranking over the recorded
+corpus and located the outcome-determining finding within the top 5 for 100 % of
+determining units at the default tier and 98.2 % at the `large` tier. The full
+derivation, the rejection of N = 3, and the monotonicity argument that makes the
+single residual safe live in `docs/token-baseline.md` § "Phase 4: the chosen
+refutation budget" and in the constant's own comment block in
+`.claude/workflows/lib/review.mjs` (canonical) — they are not restated here.
+
+**Why it is safe.** `survives(finding, verdict)` reads the FINDING's confidence,
+never the verdict's, so the only effect a verdict can have is
+`refuted === true ⇒ drop`. Skipping refutation is therefore monotone-increasing
+in the survivor set: the budgeted survivors are always a SUPERSET of the
+unbudgeted ones, and since `hasBlocking` is an existential over that set, the
+budget can only ever move `reviewed → rework`, never `rework → reviewed`. The AC
+table is never budgeted, so `classifyOutcome` step 2 is bit-identical under every
+N including 0. `scripts/verify-workflow-review.sh` § 9 encodes this as an
+exhaustive subset property test, not only as prose.
 
 `context.target` (and any other fields) is threaded into every finder and refuter
 prompt, so the review material reaches the agents. `deps` (`{ agent, pipeline,
@@ -911,7 +998,7 @@ parallel, log }`) is omitted in the Workflow runtime (the ambient globals are
 used) and injected by the verify harness to drive the pipeline with fakes.
 
 **Every consumer of `runReview`/`d.review(...)` must destructure
-`{ survivors, acTable }`** rather than treat the resolved value as a bare
+`{ survivors, acTable, budget }`** rather than treat the resolved value as a bare
 array. In `lib/dispatch-phase.mjs` this means **both** `runCodeGate` (which
 tracks a per-round `acRounds` array alongside `rounds` and checks
 `acTableHasGap` in its rework-loop continuation) and `runPlanGate` (which
@@ -1143,6 +1230,7 @@ prose-only self-test of the distributed template).
 | `writesCompletion` | boolean                          | `writesCompletion(outcome)` — is this branch owed its land-time trailer? |
 | `summary` | string                                    | deterministic one-liner from outcome + top finding |
 | `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
+| `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `everHit`, the last `hit` object, and the plan gate's own `plan` budget. `null` when no review reported one. |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
 
 **Task mode** emits this structure keyed by `task` instead of `roadmap`/`phase`:
@@ -1155,6 +1243,7 @@ prose-only self-test of the distributed template).
 | `writesCompletion` | boolean                          | `writesCompletion(outcome)` — is this branch owed its land-time trailer? |
 | `summary` | string                                    | deterministic one-liner from outcome + top finding |
 | `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
+| `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `everHit`, the last `hit` object, and the plan gate's own `plan` budget. `null` when no review reported one. |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
 
 The `rdm-do --auto --task` wiring into this task-mode contract is regression-tested by `scripts/verify-workflow-do-auto-task.sh` (SKILL.md static invariants, the OUTCOME→status contract against the real binary, and a prose-only self-test of the distributed template).
@@ -1168,6 +1257,16 @@ string (`verify-workflow-dispatch.sh` AC-1). `rdm-land` reads
 `writesCompletion: true` and synthesizes the real trailer at land time via
 `rdm hook done-line`, amending it **before** the rebase, so an autonomously
 produced branch never needs a manual rebase to gain it.
+
+**`reviewBudget` makes a bounded review legible.** When ANY round hit the
+refutation budget, `budgetSummaryClause` appends a short
+` [review budget hit: N produced, M graded, K ungraded]` marker to `summary` in
+all three outcome branches — and because `outcomePolicy` derives `reason` from
+`summary`, a parked or escalated budget-hit unit surfaces it in the
+`rdm review blocked` queue for free. `autopilot` additionally suffixes a
+` [budget]` tag (`budgetHitTag`) onto that phase's stem in `buildSummary`'s
+`phases completed (...)` line, so a *reviewed* budget-hit phase is visible too.
+A run that stayed under budget keeps a byte-unchanged summary.
 
 **`reason` tags the gate, not the module.** dispatch's `escalated` is tagged
 `[plan]` because `classifyOutcome` only escalates from the plan gate, while

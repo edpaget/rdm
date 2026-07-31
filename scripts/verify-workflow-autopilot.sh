@@ -185,6 +185,7 @@ const {
   buildFetchNextPrompt,
   buildAdvancePrompt,
   buildParkPrompt,
+  budgetHitTag,
   buildSummary,
   isAbnormalStop,
 } = m;
@@ -541,6 +542,34 @@ assert.ok(
   !abnormalSummary.split('\n').includes('stop reason: unparseable'),
   'the abnormal marker line replaces (not duplicates) the plain stop-reason line'
 );
+
+// --- budgetHitTag: a budget-hit REVIEWED phase is visible in the run summary --
+// dispatch-phase now reports a per-unit refutation budget on its OUTCOME. Without
+// this tag, `phases completed (...)` prints bare stems and a phase whose review
+// was BOUNDED would be indistinguishable from one that got full coverage —
+// hiding the bound exactly where a reader looks first.
+assert.equal(budgetHitTag(null), '', 'no outcome -> no tag');
+assert.equal(budgetHitTag({}), '', 'an OUTCOME with no reviewBudget -> no tag');
+assert.equal(budgetHitTag({ reviewBudget: null }), '', 'a null reviewBudget -> no tag');
+assert.equal(budgetHitTag({ reviewBudget: { everHit: false } }), '', 'a budget that was never hit -> no tag');
+assert.equal(budgetHitTag({ reviewBudget: { everHit: true } }), ' [budget]', 'a budget hit -> the [budget] tag');
+assert.equal(
+  budgetHitTag({ reviewBudget: { everHit: 'true' } }),
+  '',
+  'the tag is keyed on a STRICT boolean — a truthy string must not trip it'
+);
+{
+  const hitSummary = buildSummary({
+    roadmap: 'rm',
+    completed: ['phase-1-a [budget]', 'phase-2-b'],
+    escalations: [],
+    stopReason: 'nothing',
+  });
+  assert.ok(
+    hitSummary.includes('phase-1-a [budget], phase-2-b'),
+    'a budget-hit completed phase is visually distinguishable from an unbounded one in the run summary'
+  );
+}
 
 console.log('all autopilot behavior assertions passed');
 NODE_TEST
@@ -1283,6 +1312,33 @@ assert_lib_mutant_fails "$TMP/mutant-no-list-fallback.mjs" "drops the estimateLi
 #     is accepted and the unestimated filter silently sees garbage.
 sed 's|^    const phaseList = Array.isArray(cfg.phaseList) ? cfg.phaseList : await d.estimateList(roadmap, mechanicalModel);$|    const phaseList = cfg.phaseList ? cfg.phaseList : await d.estimateList(roadmap, mechanicalModel);|' "$LIB" >"$TMP/mutant-weak-list-guard.mjs"
 assert_lib_mutant_fails "$TMP/mutant-weak-list-guard.mjs" "weakens the phaseList shape guard to any truthy value"
+
+# --- 1d. BUDGET-TAG planted-mutation self-tests -------------------------------
+# The `[budget]` run-summary tag is only load-bearing if dropping it (or
+# loosening its strict-boolean guard) makes the behavior section fail.
+say "1d. Budget-tag planted-mutation self-tests (the [budget] run-summary marker)"
+
+assert_behavior_mutant_fails() {
+    mutant=$1
+    desc=$2
+    if cmp -s "$LIB" "$mutant"; then
+        fail "1d: planted mutation was a no-op — $desc"
+    fi
+    if run_node "$TMP/behavior.mjs" "$mutant" >/dev/null 2>&1; then
+        fail "1d: behavior assertions PASSED against a lib that $desc — the budget-tag checks are vacuous"
+    fi
+    pass "1d: assertions fire when the lib $desc"
+}
+
+# (1) Never tag: a budget-hit reviewed phase becomes invisible in the summary.
+sed "s|^  return outcome && outcome.reviewBudget && outcome.reviewBudget.everHit === true ? ' \[budget\]' : '';\$|  return '';|" \
+    "$LIB" >"$TMP/mutant-no-budget-tag.mjs"
+assert_behavior_mutant_fails "$TMP/mutant-no-budget-tag.mjs" "never emits the [budget] run-summary tag"
+
+# (2) Loosen the strict-boolean guard: a truthy non-boolean everHit trips the tag.
+sed "s|^  return outcome && outcome.reviewBudget && outcome.reviewBudget.everHit === true ? ' \[budget\]' : '';\$|  return outcome \&\& outcome.reviewBudget \&\& outcome.reviewBudget.everHit ? ' [budget]' : '';|" \
+    "$LIB" >"$TMP/mutant-loose-budget-tag.mjs"
+assert_behavior_mutant_fails "$TMP/mutant-loose-budget-tag.mjs" "loosens the budget tag's strict-boolean guard"
 
 # --- 2. BLOCK DRIFT GATE -----------------------------------------------------
 say "2. Block drift: the autopilot-loop region is byte-identical (lib vs workflow)"

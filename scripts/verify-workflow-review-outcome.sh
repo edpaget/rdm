@@ -295,7 +295,7 @@ function makeAgent(opts) {
   const out = await run({ mode: 'code', roadmap: 'rm', phase: '1', gate: false }, a.agent, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
-    ['findings', 'outcome', 'phase', 'reason', 'roadmap', 'status', 'summary', 'writesCompletion'].sort(),
+    ['findings', 'outcome', 'phase', 'reason', 'reviewBudget', 'roadmap', 'status', 'summary', 'writesCompletion'].sort(),
     'reviewed OUTCOME has exactly the dispatch-shaped keys'
   );
   assert.equal(out.outcome, 'reviewed');
@@ -303,6 +303,12 @@ function makeAgent(opts) {
   assert.equal(out.writesCompletion, true);
   assert.equal(out.reason, '');
   assert.deepEqual(out.findings, []);
+  // The refutation budget is projected onto the OUTCOME by the SAME shared
+  // helper dispatch-phase uses, so a bounded standalone review is legible too.
+  assert.equal(typeof out.reviewBudget, 'object', 'the standalone OUTCOME carries reviewBudget');
+  assert.equal(out.reviewBudget.max, 5, 'the default refutation budget is reported');
+  assert.equal(out.reviewBudget.everHit, false, 'a clean review did not hit the bound');
+  assert.ok(!out.summary.includes('review budget hit'), 'an unbounded review carries NO summary clause');
 }
 {
   const findings = { ...CLEAN, ac: [{ id: 'ac1', concern: 'ac', severity: 'blocking', confidence: 90, what_fails: 'missing test' }] };
@@ -311,7 +317,7 @@ function makeAgent(opts) {
   const out = await run({ mode: 'code', task: 'my-task', gate: false }, a.agent, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
-    ['findings', 'outcome', 'reason', 'status', 'summary', 'task', 'writesCompletion'].sort(),
+    ['findings', 'outcome', 'reason', 'reviewBudget', 'status', 'summary', 'task', 'writesCompletion'].sort(),
     'rework OUTCOME (task shape) has exactly the dispatch-shaped keys'
   );
   assert.equal(out.task, 'my-task');
@@ -320,7 +326,40 @@ function makeAgent(opts) {
   assert.equal(out.writesCompletion, false);
   assert.equal(out.findings.length, 1);
 }
-console.log('3a OK: reviewed and rework OUTCOME shapes verified');
+{
+  // OVER BUDGET on the standalone path: with `maxRefutations: 1` a unit that
+  // produced several gating findings grades only one, and the OUTCOME says so —
+  // both in `reviewBudget` and, visibly, in the summary (and therefore in the
+  // persisted reason for a non-clean outcome).
+  const many = {
+    ...CLEAN,
+    correctness: [
+      { id: 'g1', concern: 'correctness', severity: 'blocking', confidence: 95, what_fails: 'a' },
+      { id: 'g2', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'b' },
+      { id: 'g3', concern: 'correctness', severity: 'blocking', confidence: 85, what_fails: 'c' },
+    ],
+  };
+  const a = makeAgent({ diffResult: { changedFiles: ['rdm-core/src/foo.rs'], diffText: '' }, findings: many, verdicts: {} });
+  const out = await run(
+    { mode: 'code', roadmap: 'rm', phase: '1', gate: false, maxRefutations: 1 },
+    a.agent,
+    refPipeline,
+    refParallel,
+    () => {}
+  );
+  assert.equal(out.reviewBudget.max, 1, 'the caller-supplied maxRefutations reaches the pipeline');
+  assert.equal(out.reviewBudget.everHit, true, 'the bound was hit');
+  assert.equal(out.reviewBudget.graded, 1, 'exactly one finding was graded');
+  assert.equal(out.reviewBudget.passedThroughBudget, 2, 'two were passed through for budget');
+  assert.ok(
+    out.summary.includes('[review budget hit: 3 produced, 1 graded, 2 ungraded]'),
+    'a budget-hit standalone review is VISIBLY distinguishable in its summary'
+  );
+  assert.equal(out.outcome, 'rework', 'an ungraded over-budget blocker still gates');
+  const refuteCalls = a.calls.filter((c) => c.label && c.label.startsWith('refute:'));
+  assert.equal(refuteCalls.length, 1, 'only one refuter was dispatched');
+}
+console.log('3a OK: reviewed / rework OUTCOME shapes and the refutation budget verified');
 
 // ============================================================================
 // 3b. Fail-open: diff agent throws -> `signals` key OMITTED -> every dimension
@@ -367,17 +406,31 @@ console.log('3b OK: fail-open omits signals entirely; a real diff threads derive
 console.log('3c OK: mutual-exclusion guard throws');
 
 // ============================================================================
-// 3d. Legacy backward-compatible shapes unaffected.
+// 3d. Legacy backward-compatible shapes: `mode` + `survivors` unchanged, plus
+// the ADDITIVE `budget` field so a caller of either legacy shape can still see
+// the refutation bound the pipeline applied.
 // ============================================================================
 {
   const a = makeAgent({ findings: { coherence: [], 'architectural-fit': [], 'unit-of-work': [] }, verdicts: {} });
   const out = await run({ mode: 'plan' }, a.agent, refPipeline, refParallel, () => {});
-  assert.deepEqual(Object.keys(out).sort(), ['mode', 'survivors'].sort(), 'mode=plan keeps the legacy {mode, survivors} shape');
+  assert.deepEqual(
+    Object.keys(out).sort(),
+    ['budget', 'mode', 'survivors'].sort(),
+    'mode=plan keeps the legacy {mode, survivors} shape plus the additive budget'
+  );
+  assert.equal(typeof out.budget, 'object', 'the legacy plan shape carries the budget accounting');
+  assert.equal(out.budget.max, 5, 'the legacy plan shape reports the default refutation budget');
+  assert.equal(out.budget.hit, false, 'a clean plan review did not hit the bound');
 }
 {
   const a = makeAgent({ findings: CLEAN, verdicts: {} });
   const out = await run({ mode: 'code' }, a.agent, refPipeline, refParallel, () => {});
-  assert.deepEqual(Object.keys(out).sort(), ['mode', 'survivors'].sort(), 'mode=code with no identifiers keeps the legacy {mode, survivors} shape');
+  assert.deepEqual(
+    Object.keys(out).sort(),
+    ['budget', 'mode', 'survivors'].sort(),
+    'mode=code with no identifiers keeps the legacy {mode, survivors} shape plus the additive budget'
+  );
+  assert.equal(out.budget.max, 5, 'the legacy code shape reports the default refutation budget');
   const diffCalls = a.calls.filter((c) => c.label === 'diff:signals');
   assert.equal(diffCalls.length, 0, 'the legacy no-identifier path never calls the diff-signals agent');
 }

@@ -37,6 +37,9 @@ import {
   writesCompletion,
   deriveSignals,
   DEFAULT_MAX_CODE_REWORK,
+  DEFAULT_MAX_REFUTATIONS,
+  buildReviewBudget,
+  budgetSummaryClause,
 } from './review.mjs';
 
 // >>> dispatch-outcome:begin <<<
@@ -49,10 +52,11 @@ import {
 // drift. No Date.now / Math.random — pure array/string ops only.
 //
 // `hasBlocking`, `summarizeFindings`, `codeReviewRounds`, `classifyOutcome`,
-// `statusFor`, `writesCompletion`, and `DEFAULT_MAX_CODE_REWORK` are NOT declared
-// here: they belong to the canonical review source (lib/review.mjs) and reach
-// this block from the stamped review block that precedes it in the workflow
-// consumer.
+// `statusFor`, `writesCompletion`, `DEFAULT_MAX_CODE_REWORK`,
+// `DEFAULT_MAX_REFUTATIONS`, `buildReviewBudget`, and `budgetSummaryClause` are
+// NOT declared here: they belong to the canonical review source
+// (lib/review.mjs) and reach this block from the stamped review block that
+// precedes it in the workflow consumer.
 
 // DEFAULT_MAX_PLAN_REVISE — the in-run plan-revision budget. It is counted
 // INDEPENDENTLY of the code-rework budget (DEFAULT_MAX_CODE_REWORK, which lives
@@ -117,6 +121,13 @@ function parseDispatchArgs(args) {
     planOnly: !!dispatchArgs.planOnly,
     maxPlanRevise: parseBudget(dispatchArgs.maxPlanRevise, 'maxPlanRevise', DEFAULT_MAX_PLAN_REVISE),
     maxCodeRework: parseBudget(dispatchArgs.maxCodeRework, 'maxCodeRework', DEFAULT_MAX_CODE_REWORK),
+    // Per-unit REFUTATION budget (how many gating findings each review round
+    // grades), threaded into BOTH review contexts. Validated here, at parse
+    // time — before any agent() call — exactly like the two retry budgets, so an
+    // invalid value can never burn tokens. 0 is legal and MEANINGFUL (grade
+    // nothing; every gating finding passes through un-refuted), and must never
+    // be conflated with "unset" by a falsy check.
+    maxRefutations: parseBudget(dispatchArgs.maxRefutations, 'maxRefutations', DEFAULT_MAX_REFUTATIONS),
     // --- Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md).
     // A caller that is ALREADY a running agent with the repo in context (the
     // rdm-dispatch-phase / rdm-do --auto shims) can run the mechanical command
@@ -201,6 +212,10 @@ async function runPlanGate(config, deps) {
   }
   let reviewResult = (await d.review(planDoc)) || {};
   let findings = reviewResult.survivors || [];
+  // The per-round refutation-budget accounting the review pipeline returns as
+  // its third field. Captured per round so a plan gate that hit its bound is
+  // visible even when a later round did not.
+  const budgetRounds = [reviewResult.budget || null];
   let reviewCount = 1;
   let reviseCount = 0;
   for (let i = 0; i < maxRevise; i++) {
@@ -213,6 +228,8 @@ async function runPlanGate(config, deps) {
         stage: 'revise',
         planDoc: planDoc,
         findings: findings,
+        budgetRounds: budgetRounds,
+        budget: budgetRounds[budgetRounds.length - 1],
         reviewCount: reviewCount,
         reviseCount: reviseCount,
       };
@@ -220,6 +237,7 @@ async function runPlanGate(config, deps) {
     planDoc = revised;
     reviewResult = (await d.review(planDoc)) || {};
     findings = reviewResult.survivors || [];
+    budgetRounds.push(reviewResult.budget || null);
     reviewCount++;
   }
   return {
@@ -227,6 +245,8 @@ async function runPlanGate(config, deps) {
     stage: null,
     planDoc: planDoc,
     findings: findings,
+    budgetRounds: budgetRounds,
+    budget: budgetRounds[budgetRounds.length - 1],
     reviewCount: reviewCount,
     reviseCount: reviseCount,
   };
@@ -277,6 +297,10 @@ async function runCodeGate(config, deps) {
   let acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
   const rounds = [findings];
   const acRounds = [acTable];
+  // Per-round refutation-budget accounting, parallel to `rounds`/`acRounds`. The
+  // budget re-applies per round, so a round-1 hit that was resolved by round 2
+  // stays visible via `everHit` in the OUTCOME.
+  const budgetRounds = [reviewResult.budget || null];
   let reworkCount = 0;
   for (let i = 0; i < maxRework; i++) {
     if (!hasBlocking(findings, tier) && !acTableHasGap(acTable)) break;
@@ -287,6 +311,7 @@ async function runCodeGate(config, deps) {
     acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
     rounds.push(findings);
     acRounds.push(acTable);
+    budgetRounds.push(reviewResult.budget || null);
   }
   let actResult = null;
   const isClean = !hasBlocking(findings, tier) && !acTableHasGap(acTable);
@@ -297,6 +322,7 @@ async function runCodeGate(config, deps) {
     findings: findings,
     rounds: rounds,
     acRounds: acRounds,
+    budgetRounds: budgetRounds,
     reworkCount: reworkCount,
     reviewCount: rounds.length,
     actResult: actResult,
@@ -452,6 +478,7 @@ function buildOutcome(input) {
       writesCompletion: failPolicy.writesCompletion,
       summary: failSummary,
       reason: failPolicy.reason,
+      reviewBudget: buildReviewBudget(i.budgetRounds, i.planBudget),
       findings: [],
     };
   }
@@ -490,6 +517,13 @@ function buildOutcome(input) {
     findings = annotateHandled(lastRound, i.actResult);
     summary = 'phase reviewed clean: ' + summarizeFindings(lastRound);
   }
+  // The bound is appended to the summary in ALL THREE branches, and only when a
+  // round actually hit it — a run that stayed under budget keeps a
+  // byte-unchanged summary. Because outcomePolicy derives `reason` from
+  // `summary`, a parked/escalated budget-hit unit surfaces it in the
+  // `rdm review blocked` queue for free.
+  const reviewBudget = buildReviewBudget(i.budgetRounds, i.planBudget);
+  summary = summary + budgetSummaryClause(reviewBudget);
   const policy = outcomePolicy(outcome, 'phase', summary);
   return {
     roadmap: roadmap,
@@ -499,6 +533,7 @@ function buildOutcome(input) {
     writesCompletion: policy.writesCompletion,
     summary: summary,
     reason: policy.reason,
+    reviewBudget: reviewBudget,
     findings: findings,
   };
 }
@@ -526,6 +561,7 @@ function buildTaskOutcome(input) {
       writesCompletion: failPolicy.writesCompletion,
       summary: failSummary,
       reason: failPolicy.reason,
+      reviewBudget: buildReviewBudget(i.budgetRounds, i.planBudget),
       findings: [],
     };
   }
@@ -561,6 +597,10 @@ function buildTaskOutcome(input) {
     findings = annotateHandled(lastRound, i.actResult);
     summary = 'task reviewed clean: ' + summarizeFindings(lastRound);
   }
+  // See buildOutcome's identical note: appended in all three branches, only on
+  // an actual hit.
+  const reviewBudget = buildReviewBudget(i.budgetRounds, i.planBudget);
+  summary = summary + budgetSummaryClause(reviewBudget);
   const policy = outcomePolicy(outcome, 'task', summary);
   return {
     task: task,
@@ -569,6 +609,7 @@ function buildTaskOutcome(input) {
     writesCompletion: policy.writesCompletion,
     summary: summary,
     reason: policy.reason,
+    reviewBudget: reviewBudget,
     findings: findings,
   };
 }
@@ -579,6 +620,9 @@ function buildTaskOutcome(input) {
 export {
   DEFAULT_MAX_PLAN_REVISE,
   DEFAULT_MAX_CODE_REWORK,
+  DEFAULT_MAX_REFUTATIONS,
+  buildReviewBudget,
+  budgetSummaryClause,
   parseBudget,
   parseDispatchArgs,
   hoistedMetaComplete,

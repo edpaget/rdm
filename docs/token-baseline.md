@@ -877,13 +877,97 @@ Two caveats carried forward:
 
 **This phase changes no lane behavior.** Nothing under `.claude/workflows/`,
 `.claude/skills/` or `rdm-core/src/templates/` is modified — `review.mjs` is
-imported read-only. The cap this measurement informs is phase 4's to build.
+imported read-only. The cap this measurement informs is phase 4's to build;
+**the value it chose, and why, is in § "Phase 4: the chosen refutation budget"
+immediately below.**
 
 Gating: every figure above is `--check`-gated against the real corpus
 (`node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json`)
 and, corpus-free, `--audit`-gated by `scripts/verify-token-report.sh` section 7
 on any machine — including the supports/kills verdict, which `--audit`
 re-derives from the doc's own numbers. The prose framing is provenance-only.
+
+## Phase 4: the chosen refutation budget
+
+Phase 2 measured; this section decides. **The cap ships at N = 5**, as
+`DEFAULT_MAX_REFUTATIONS` in `.claude/workflows/lib/review.mjs`.
+
+This section records a DECISION, not a new measurement — it adds no key to
+`docs/token-baseline.json` and changes none of the figures above. It reads them.
+
+### Both escape hatches are closed
+
+The phase was explicitly allowed to conclude "no cap needed". It cannot:
+
+- **Phase 2's own pre-registered rule returns `supports-cap`.**
+  `capVerdict.verdict` is `"supports-cap"`, re-derived corpus-free by
+  `--audit`. The rule (`withinTop` n=5 as a percentage of DETERMINING units;
+  supports at ≥ 95 %, kills below 80 %, ≥ 50 % recoverable, ≥ 20 determining
+  units) is satisfied on every input: 100 % within top 5, 85.7 % recoverable,
+  29 determining units.
+- **Phase 3 shipped no pipeline change, so batching did not moot the cap.**
+  `refuterBatching.corpusPower.meetsMinimum` is `false` (1 qualifying group
+  against a floor of 6), and `git diff main..HEAD --stat` on
+  `roadmap/bound-review-fan-out` touches no file under `.claude/workflows/` —
+  `review.mjs` was still byte-identical to `main` when this phase began. The
+  "phase 3 may have made refutation cheap enough that the tail no longer
+  matters" branch therefore does not apply.
+
+### Why 5, and why not 3
+
+| tier (blocker set) | determining units | rank histogram | p90 | max | within top 3 | within top 5 |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| default (`['blocking']`) | 29 | `{1: 23, 2: 6}` | 2 | 2 | **100 %** | **100 %** |
+| `large` (`['blocking','concern']`) | 55 | `{1: 37, 2: 14, 3: 1, 4: 2, 7: 1}` | 2 | 7 | 94.5 % | **98.2 %** |
+
+**N = 3 is rejected.** It is free at the default tier, but its large-tier
+coverage is 94.5 % — below phase 2's own *pre-registered*
+`supportsCapAtOrAbovePercent` of 95. Choosing 3 would contradict the rule the
+evidence was graded under. N = 5 clears it at both tiers.
+
+**The cap is not a no-op.** Candidate-set size over the 72 recoverable units is
+p50 8.5, p90 13, max 15 — so a cap of 5 bites on more than half of all units and
+buys real refuter spend, which is the whole point of bounding the fan-out.
+
+**The residual is one unit.** Exactly 1 of 55 large-tier determining units (the
+rank-7 unit in the histogram above) would have its determining finding go
+ungraded under N = 5.
+
+### Why the residual is safe by construction
+
+Not by luck — by a monotonicity argument that holds for every N, including 0:
+
+1. `survives(finding, verdict)` reads the **finding's** confidence, never the
+   verdict's. The only effect a verdict can have is `refuted === true ⇒ drop`.
+2. Therefore `survives(f, null) === true` whenever `survives(f, v) === true`:
+   skipping refutation is monotone-**increasing** in the survivor set.
+3. Over the same candidate list, the budgeted survivor set is a **superset** of
+   the unbudgeted one — the top N behave identically, and the overflow can only
+   gain survivors that grading would have removed.
+4. `hasBlocking` is an existential over that set, and `classifyOutcome` step 3
+   returns `rework` iff `hasBlocking(lastRound, tier)`. A superset can only ADD
+   a blocking survivor.
+
+So a budget hit can only move `reviewed → rework`, never `rework → reviewed`.
+The rank-7 unit would still have been `rework` under the cap; it would simply
+have arrived there on an ungraded finding. The AC table is never budgeted, so
+`classifyOutcome` step 2 is bit-identical under every N, and plan findings feed
+step 1 through the same monotone `hasBlocking`, so `escalated` is likewise only
+ever reachable more often.
+
+This is encoded EXECUTABLY, not only here: `scripts/verify-workflow-review.sh`
+§ 9 runs an exhaustive property test over every refuted-subset × N × tier
+combination of a planted candidate set, plus the named rank-7 scenario and the
+below-floor inverse.
+
+### What the cap does NOT change
+
+The overflow reuses the pass-through `workflow-token-reduction` phase 6 already
+built (`unrefuted: true`, `verdict: null`, `skipped: true`) with a new
+`unrefutedReason: 'budget'` discriminator. `survives` is untouched: an
+over-budget finding below the 70-point confidence floor is still dropped, and
+one at or above it still gates. The budget skips **grading**, never
+**filtering**.
 
 ## Refuter model tiering
 

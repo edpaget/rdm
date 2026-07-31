@@ -157,6 +157,8 @@ const UNREFUTED_DISPOSITION = [
   'outside the diff under review — that is follow-up material, not an in-flight edit. For each one you do not',
   'incorporate: if it is worth keeping, FILE it with the LARGE filing command above and record it as filed;',
   'otherwise skip it and state why. Never let a real observation evaporate into a skip reason.',
+  "One marked `unrefutedReason: 'budget'` was cut for COST (the per-unit refutation budget), not because",
+  'grading it was pointless — prefer FILING that one over skipping it.',
 ].join('\n');
 
 // The two dimension sets, selected by `mode`. Each finder agent reviews exactly
@@ -443,6 +445,34 @@ function findPrompt(mode, dim, context) {
 //| `suggestion` drops 239 refuters (24.2 % of all refuters, 20.7 % of refuter
 //| tokens) with no severity that can gate losing its counter-check.
 //|
+//| **Refutation budget.** At most **5** gating findings per review unit are
+//| graded. The unit's whole candidate list is assembled first, the gating half is
+//| ranked severity-then-confidence, and only the top 5 get a refuter; everything
+//| past the cut takes the SAME un-refuted pass-through, marked `unrefuted: true`
+//| with `unrefutedReason: 'budget'`. Non-gating `suggestion` findings never
+//| consume budget. The budget skips **grading**, never **filtering** — an
+//| over-budget finding faces the same confidence floor, and one that survives it
+//| still gates. The default of 5 is measured, not guessed: replaying this
+//| pipeline's own ranking over the recorded corpus
+//| (`docs/token-baseline.json` § `determiningFindingRank`) put the
+//| outcome-determining finding within the top 5 for **100 %** of determining
+//| units at the default tier and **98.2 %** at the `large` tier. It is
+//| overridable per run via `maxRefutations` (`0` is legal and means grade
+//| nothing); there is no "uncapped" sentinel — express that as a large N. When
+//| the bound is hit, the run reports how many findings were produced, how many
+//| were graded, and how many were passed through for budget, so a bounded run is
+//| never read as complete coverage.
+//|
+//| **Four states, four markers.** Every finding that reaches you is in exactly
+//| one of these, and they are told apart by markers alone:
+//|
+//| | State | Markers |
+//| |---|---|
+//| | graded and survived | no `unrefuted`, no `refuterError` |
+//| | skipped as non-gating | `unrefuted: true`, `unrefutedReason: 'non-gating'` |
+//| | passed over for budget | `unrefuted: true`, `unrefutedReason: 'budget'` |
+//| | grading crashed | `refuterError: true`, and never `unrefuted` |
+//|
 //| ### Filter & consolidate
 //|
 //| - **Drop** any finding a refuter refuted, and any whose post-refutation
@@ -521,6 +551,33 @@ function refutePrompt(mode, dim, finding, context) {
 //| the recorded corpus, a `concern` is overturned *more* often than a `blocking`
 //| one — 50.4 % vs 38.1 %), and a finding whose severity is missing or
 //| unrecognized is refuted too.
+//|
+//| **Refutation budget.** The workflow grades at most **5** gating findings per
+//| review unit. It ranks the unit's gating candidates severity-then-confidence
+//| and refutes only the top 5; everything past the cut takes the SAME un-refuted
+//| pass-through, marked `unrefuted: true` with `unrefutedReason: 'budget'`.
+//| Non-gating `suggestion` findings never consume budget. The budget skips
+//| **grading**, never **filtering** — an over-budget finding faces the same
+//| confidence floor, and one that survives it still gates. The default of 5 is
+//| measured, not guessed: replaying this pipeline's own ranking over the recorded
+//| corpus (`docs/token-baseline.json` § `determiningFindingRank`) put the
+//| outcome-determining finding within the top 5 for **100 %** of determining
+//| units at the default tier and **98.2 %** at the `large` tier. It is
+//| overridable per run via `maxRefutations` (`0` is legal and means grade
+//| nothing); there is no "uncapped" sentinel — express that as a large N. When
+//| the bound is hit the workflow reports how many findings were produced, how
+//| many were graded, and how many were passed through for budget, so a bounded
+//| run is never read as complete coverage.
+//|
+//| **Four states, four markers.** Every finding the workflow returns is in
+//| exactly one of these, and they are told apart by markers alone:
+//|
+//| | State | Markers |
+//| |---|---|
+//| | graded and survived | no `unrefuted`, no `refuterError` |
+//| | skipped as non-gating | `unrefuted: true`, `unrefutedReason: 'non-gating'` |
+//| | passed over for budget | `unrefuted: true`, `unrefutedReason: 'budget'` |
+//| | grading crashed | `refuterError: true`, and never `unrefuted` |
 //|
 //| ### Filter & consolidate
 //|
@@ -766,6 +823,170 @@ function rankFindings(findings) {
     if (ca !== cb) return cb - ca;
     return String(a.id).localeCompare(String(b.id));
   });
+}
+
+// --- The refutation budget ----------------------------------------------------
+//
+// DEFAULT_MAX_REFUTATIONS — at most this many GATING findings per review unit
+// are handed to a refuter. Everything past the cut passes through un-refuted
+// (see the overflow site in buildReviewPipeline).
+//
+// DERIVATION (measured, not guessed). The value comes from
+// `docs/token-baseline.json` § `determiningFindingRank`, which replayed this
+// pipeline's OWN rule (rankFindings / survives / hasBlocking) over 48 recorded
+// runs / 84 review units (72 recoverable, 85.7 %) and asked where in a
+// severity-then-confidence ranking of the CANDIDATE list the finding that
+// actually determined the outcome sits:
+//
+//   * default tier (blockers ['blocking']): 29 determining units, rank
+//     histogram {1: 23, 2: 6}, max rank 2 — withinTop3 = withinTop5 = 100 %.
+//   * large tier (blockers ['blocking','concern']): 55 determining units, rank
+//     histogram {1: 37, 2: 14, 3: 1, 4: 2, 7: 1}, p90 = 2, max = 7 —
+//     withinTop3 = 94.5 %, withinTop5 = 98.2 %.
+//
+// N = 3 is REJECTED even though it is free at the default tier: 94.5 % at the
+// large tier is below phase 2's own PRE-REGISTERED `supportsCapAtOrAbovePercent`
+// of 95, so choosing 3 would contradict the rule the evidence was graded under.
+// N = 5 clears that rule at both tiers (100 % / 98.2 %).
+//
+// The cap is not a no-op: candidate-set size over the 72 recoverable units is
+// p50 8.5, p90 13, max 15, so a cap of 5 bites on more than half of all units
+// and buys real refuter spend.
+//
+// The residual is exactly ONE unit of 55 (the large-tier rank-7 unit), whose
+// determining finding would go ungraded under N = 5. That is safe BY
+// CONSTRUCTION, not by luck — see the monotonicity proof at the budget cut in
+// buildReviewPipeline: skipping refutation can only ADD survivors, so a budget
+// hit can only move `reviewed → rework`, never `rework → reviewed`.
+//
+// CONFIGURATION SURFACE (canonical statement; docs/workflow-schemas.md
+// § "Refutation budget" and the rendered skills restate it):
+//   * this constant is the default;
+//   * a per-run override arrives as `context.maxRefutations` on runReview, and
+//     is threaded from `maxRefutations` on dispatch-phase / plan-review /
+//     review-refute-fix args;
+//   * `0` is LEGAL AND MEANINGFUL — grade nothing, pass every gating finding
+//     through as `unrefutedReason: 'budget'` — so it must never be conflated
+//     with "unset" by a falsy check (the same trap DEFAULT_MAX_CODE_REWORK
+//     documents);
+//   * there is NO "uncapped" sentinel. The cap is the feature; an effectively
+//     uncapped run is expressed as a large N.
+const DEFAULT_MAX_REFUTATIONS = 5;
+
+// resolveRefutationBudget(value) — validate a per-run refutation budget.
+// Mirrors dispatch-phase's `parseBudget` contract exactly: unset
+// (null/undefined/'') falls back to the default; a number or an integer-ONLY
+// string is accepted; anything else throws an actionable error rather than
+// being coerced (`parseInt('5abc') === 5` is precisely the trap to avoid).
+function resolveRefutationBudget(value) {
+  if (value === null || value === undefined || value === '') return DEFAULT_MAX_REFUTATIONS;
+  let n = NaN;
+  if (typeof value === 'number') {
+    n = value;
+  } else if (typeof value === 'string' && /^[+-]?[0-9]+$/.test(value.trim())) {
+    n = parseInt(value.trim(), 10);
+  }
+  if (!Number.isInteger(n) || n < 0 || Object.is(n, -0)) {
+    throw new Error(
+      'review: maxRefutations must be a non-negative integer (got "' +
+        String(value) +
+        '") — 0 means grade nothing and pass every gating finding through un-refuted; ' +
+        'there is no "uncapped" sentinel, express an effectively-uncapped run as a large N'
+    );
+  }
+  return n;
+}
+
+// rankBudgetCandidates(candidates) — the TOTAL, STABLE order the budget cut is
+// taken from. Operates on `{ dim, finding, order, idx, raw }` candidate records
+// (not bare findings), and reuses SEVERITY_RANK — it introduces no new severity
+// vocabulary. Keys, in order: severity (unknown sorts last), confidence
+// DESCENDING (missing → 0), id ascending, then the source `order`.
+//
+// The `order` tiebreak is LOAD-BEARING for totality. rankFindings' id tiebreak
+// is not total once two dimensions emit the same finding id, and
+// `Array.prototype.sort` guarantees stability only for exact ties — so without
+// it the cut would be nondeterministic in exactly the case this runtime forbids.
+// `order` is the flattened candidate index (dimension index, then
+// within-dimension index), which is deterministic because stage 1 is an
+// order-preserving `Promise.all` over the `selectDimensions` output.
+//
+// No Date.now / Math.random, and nothing here reads agent-completion order: the
+// cut is computed BEFORE any refuter is dispatched.
+function rankBudgetCandidates(candidates) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  return list.slice().sort((a, b) => {
+    const fa = (a && a.finding) || {};
+    const fb = (b && b.finding) || {};
+    const sa = SEVERITY_RANK[fa.severity] != null ? SEVERITY_RANK[fa.severity] : 99;
+    const sb = SEVERITY_RANK[fb.severity] != null ? SEVERITY_RANK[fb.severity] : 99;
+    if (sa !== sb) return sa - sb;
+    const ca = fa.confidence != null ? fa.confidence : 0;
+    const cb = fb.confidence != null ? fb.confidence : 0;
+    if (ca !== cb) return cb - ca;
+    const byId = String(fa.id).localeCompare(String(fb.id));
+    if (byId !== 0) return byId;
+    const oa = a && a.order != null ? a.order : 0;
+    const ob = b && b.order != null ? b.order : 0;
+    return oa - ob;
+  });
+}
+
+// buildReviewBudget(budgetRounds, planBudget) — project the per-round
+// refutation-budget accounting `runReview` returned onto a consumer's
+// `reviewBudget` field. Lives HERE, in the canonical review source, because
+// THREE consumers project it (dispatch-phase's buildOutcome/buildTaskOutcome and
+// review-refute-fix's standalone OUTCOME) and only one of them receives the
+// dispatch-outcome block — one projection, not two.
+//
+// Pure; returns null when nothing reported a budget (an older caller, or a
+// fetch-failure short circuit that never ran a review).
+//
+//   max / produced / graded / passedThroughBudget — the LAST code round's
+//     counts (the plan gate's, when no code round ran at all), matching the rest
+//     of the OUTCOME, which also reports the last round.
+//   rounds   — how many code review rounds reported a budget.
+//   everHit  — did ANY round (code or plan) hit its bound? This is the field a
+//              consumer keys on: a round-1 hit resolved by round 2 must still be
+//              visible.
+//   hit      — the LAST budget object that actually hit, so a summary clause
+//              never reports the degenerate zero-overflow counts of a later
+//              clean round.
+//   plan     — the plan gate's own last-round budget, kept separately because
+//              the two gates are counted independently.
+function buildReviewBudget(budgetRounds, planBudget) {
+  const rounds = Array.isArray(budgetRounds) ? budgetRounds.filter(Boolean) : [];
+  const plan = planBudget && typeof planBudget === 'object' ? planBudget : null;
+  if (rounds.length === 0 && !plan) return null;
+  const last = rounds.length ? rounds[rounds.length - 1] : plan;
+  const hits = rounds.filter((b) => b.hit === true);
+  if (plan && plan.hit === true) hits.push(plan);
+  return {
+    max: last.max,
+    produced: last.produced,
+    graded: last.graded,
+    passedThroughBudget: last.passedThroughBudget,
+    rounds: rounds.length,
+    everHit: hits.length > 0,
+    hit: hits.length ? hits[hits.length - 1] : null,
+    plan: plan,
+  };
+}
+
+// budgetSummaryClause(reviewBudget) — the visible marker that makes a
+// budget-hit unit distinguishable in a run summary (and, because dispatch's
+// `outcomePolicy` derives `reason` from `summary`, in the `rdm review blocked`
+// queue for a parked/escalated unit). Empty string when the bound was never
+// hit, so an unbounded run's summary is byte-unchanged.
+//
+// Deliberately short and free of characters that would need shell quoting in
+// the mechanical gate command that persists the reason.
+function budgetSummaryClause(reviewBudget) {
+  if (!reviewBudget || reviewBudget.everHit !== true) return '';
+  const h = reviewBudget.hit || reviewBudget;
+  return (
+    ' [review budget hit: ' + h.produced + ' produced, ' + h.graded + ' graded, ' + h.passedThroughBudget + ' ungraded]'
+  );
 }
 
 // The boolean signal keys deriveSignals always populates explicitly.
@@ -1041,11 +1262,26 @@ function classifyOutcome(input) {
 //   2. runs one finder agent per selected dimension IN PARALLEL (stage 1) — in
 //      `code` mode the `ac` dimension's finder returns the AC_REVIEW_SCHEMA
 //      shape instead of a bare findings array, and its `ac` table is captured,
-//   3. runs a FRESH refuter agent per finding, in parallel (stage 2),
-//   4. drops any finding that was refuted or scored below CONFIDENCE_FLOOR,
-//   5. returns `{ survivors, acTable }` — survivors ranked most-severe-first,
-//      and the captured AC table (`null` in `plan` mode, or if the `ac`
-//      dimension didn't run or its finder failed to resolve a table).
+//   3. BARRIERS on stage 1, flattens every dimension's findings into ONE
+//      unit-wide candidate list, partitions it with `needsRefutation`, ranks the
+//      gating half with `rankBudgetCandidates`, and cuts it at the refutation
+//      budget (see DEFAULT_MAX_REFUTATIONS),
+//   4. runs a FRESH refuter agent per finding in the top-N, in parallel (stage
+//      2); the overflow and the non-gating findings pass through un-refuted,
+//   5. drops any finding that was refuted or scored below CONFIDENCE_FLOOR,
+//   6. returns `{ survivors, acTable, budget }` — survivors ranked
+//      most-severe-first, the captured AC table (`null` in `plan` mode, or if
+//      the `ac` dimension didn't run or its finder failed to resolve a table),
+//      and the budget accounting (see the `budget` object below).
+//
+// COMPOSITION NOTE: stage 1 is a `parallel()` fan-out of per-dimension thunks,
+// NOT a single-stage `pipeline()`. The budget must rank a unit's WHOLE candidate
+// list across dimensions, which the previous no-barrier
+// `pipeline(dims, find, refute)` composition structurally cannot do (each
+// dimension's find→refute chain ran independently). `parallel()`'s thrown-thunk
+// → null degradation is identical to `pipeline()`'s thrown-stage → null, so the
+// "a crashed finder drops only its own dimension" behavior is unchanged, and it
+// makes no assumption about a minimum `pipeline()` stage count.
 //
 // `deps` lets the verify harness inject fakes; in the Workflow runtime it is
 // omitted and the ambient `agent` / `pipeline` / `parallel` / `log` globals are
@@ -1057,6 +1293,11 @@ function buildReviewPipeline(mode, deps) {
   const _parallel = deps.parallel || (typeof parallel !== 'undefined' ? parallel : undefined);
   const _log = deps.log || (typeof log !== 'undefined' ? log : function () {});
   if (!DIMENSIONS[mode]) throw new Error('unknown review mode: ' + mode + ' (expected "code" or "plan")');
+  // `_pipeline` is still REQUIRED even though the find/refute composition now
+  // uses `_parallel` on both sides (see the composition note above): every
+  // caller already supplies all three primitives, and demanding them together
+  // keeps the contract stable and the missing-dep failure loud rather than
+  // deferring it to a future stage that needs pipeline again.
   if (!_agent || !_pipeline || !_parallel) {
     throw new Error('review-refute-fix: missing agent/pipeline/parallel (pass deps outside the Workflow runtime)');
   }
@@ -1074,6 +1315,10 @@ function buildReviewPipeline(mode, deps) {
     // key is safe and needs no conditional-assignment helper.
     const findModel = ctx.findModel;
     const verifyModel = ctx.verifyModel;
+    // Per-run refutation budget. Resolved HERE, before any agent is dispatched,
+    // so an invalid value throws instead of burning tokens. `0` is legal and is
+    // NOT conflated with unset — see resolveRefutationBudget.
+    const maxRefutations = resolveRefutationBudget(ctx.maxRefutations);
     // Captured the first (only) time the `ac` dimension's finder resolves a
     // table in `code` mode. Stays `null` in `plan` mode (the `ac` dimension
     // does not exist there) and when the `ac` dimension didn't run or its
@@ -1081,11 +1326,12 @@ function buildReviewPipeline(mode, deps) {
     // classifyOutcome consumes directly — never through finding severity or
     // refutation.
     let acTable = null;
-    // Stage 1: parallel dimension finders. Stage 2: a fresh refuter per finding.
-    // pipeline() keeps each dimension's find→refute chain independent (no barrier).
-    const perDimension = await _pipeline(
-      dims,
-      (dim) => {
+    // Stage 1 (the BARRIER): every selected dimension's finder runs in parallel
+    // and ALL of them settle before a single refuter is dispatched. See the
+    // composition note above for why this is `parallel()` rather than a
+    // single-stage `pipeline()`.
+    const perDimension = await _parallel(
+      dims.map((dim) => () => {
         const isAcDimension = mode === 'code' && dim.key === 'ac';
         return _agent(findPrompt(mode, dim, ctx), {
           label: 'find:' + mode + ':' + dim.key,
@@ -1094,9 +1340,9 @@ function buildReviewPipeline(mode, deps) {
           model: findModel,
         }).then((found) => {
           // An UNKNOWN model id makes agent() RESOLVE to null rather than throw
-          // (spike consequence 3). A resolved null would sail through stage 2 as
+          // (spike consequence 3). A resolved null would sail through as
           // `(null && …) || []` → [], i.e. a silently clean review. Convert it to
-          // a thrown stage here — the only thing the runtime's pipeline turns
+          // a thrown thunk here — the only thing the runtime's parallel turns
           // into a null element — so the all-null check below can actually fire.
           if (findModel && (found === null || found === undefined)) {
             throw new Error(
@@ -1109,50 +1355,16 @@ function buildReviewPipeline(mode, deps) {
           }
           return found;
         });
-      },
-      (found, dim) =>
-        _parallel(
-          ((found && found.findings) || []).map((f, idx) => () => {
-            // NON-GATING PASS-THROUGH. A refuter is dispatched only where its
-            // verdict could change something. A `suggestion` gates nothing at
-            // any tier (see NON_GATING_SEVERITIES), so grading it burns a whole
-            // agent to reach the same outcome either way: pass it straight
-            // through, marked `unrefuted: true` so every downstream consumer can
-            // tell reported-only from refuter-verified. verdict stays null, so
-            // survives() applies the confidence floor to it EXACTLY as it does
-            // to a refuted-but-not-killed finding — the floor is not bypassed.
-            if (!needsRefutation(f)) {
-              return Promise.resolve({
-                finding: { ...f, concern: f.concern || dim.key, unrefuted: true },
-                verdict: null,
-                skipped: true,
-              });
-            }
-            return _agent(refutePrompt(mode, dim, f, ctx), {
-              // Unique per finding even if a finder emits an empty/duplicate id,
-              // so a colliding label can never misattribute a verdict.
-              label: 'refute:' + mode + ':' + (f.id || dim.key + ':' + idx),
-              phase: 'Refute',
-              schema: VERDICT_SCHEMA,
-              model: verifyModel,
-            })
-              .then((verdict) => ({ finding: { ...f, concern: f.concern || dim.key }, verdict }))
-              // A refuter CRASH is not proof of refutation. Keep the finding as
-              // un-refuted (verdict=null ⇒ survives() retains it if confidence ≥
-              // floor) instead of silently dropping it as if it were refuted.
-              // NOT marked `unrefuted` — that marker means "deliberately never
-              // graded", and an act step must not treat a crashed gating finding
-              // as a mere observation.
-              .catch(() => ({ finding: { ...f, concern: f.concern || dim.key }, verdict: null }));
-          })
-        )
+      })
     );
 
     // Loud failure on a wholesale model misconfiguration. One dimension dropping
     // to null is tolerated resilience (a single finder crashed); EVERY dimension
     // dropping to null while an explicit model was in play means no review
     // actually ran — e.g. an `[models]` binding this runtime does not know. That
-    // must not be reported as a clean review.
+    // must not be reported as a clean review. This fires BEFORE any budget
+    // accounting, so a wholesale misconfiguration is never reported as
+    // "budget-bounded but clean".
     if (findModel && dims.length > 0 && perDimension.every((d) => d === null || d === undefined)) {
       throw new Error(
         'review-refute-fix: every ' + mode + ' dimension finder failed with model "' + findModel +
@@ -1160,16 +1372,138 @@ function buildReviewPipeline(mode, deps) {
       );
     }
 
-    // Flatten per-dimension → per-finding. A finder whose whole dimension errored
-    // is dropped to null by the runtime's pipeline (a thrown stage → null); those
-    // nulls are filtered here. A refuter error instead surfaces as verdict=null
-    // (see the .catch above) and is kept, not dropped.
-    const graded = perDimension.filter(Boolean).flat().filter(Boolean);
+    // Flatten per-dimension → ONE unit-wide candidate list. A finder whose whole
+    // dimension errored is dropped to null by the runtime's parallel (a thrown
+    // thunk → null); those nulls contribute NO candidates, so a crashed
+    // dimension never inflates `budget.produced` with coverage it did not
+    // provide. `order` is the flattened index and is what makes the ranking
+    // below total (see rankBudgetCandidates); `idx` preserves the
+    // within-dimension index the refuter label falls back to; `raw` is the
+    // finder's untouched finding, which is what the refuter prompt is built from.
+    const candidates = [];
+    for (let di = 0; di < dims.length; di++) {
+      const dim = dims[di];
+      const found = perDimension[di];
+      const list = (found && found.findings) || [];
+      for (let fi = 0; fi < list.length; fi++) {
+        const f = list[fi];
+        if (!f) continue;
+        candidates.push({
+          dim: dim,
+          idx: fi,
+          order: candidates.length,
+          raw: f,
+          finding: { ...f, concern: f.concern || dim.key },
+        });
+      }
+    }
+
+    // Partition. Only the GATING half consumes budget: a `suggestion` was
+    // already never refuted (see NON_GATING_SEVERITIES / needsRefutation, whose
+    // fail-safe rule keeps a missing/unknown severity gating), so it costs
+    // nothing to pass through and must not displace a finding that could gate.
+    // This is strictly MORE generous than the phase-2 measurement behind
+    // DEFAULT_MAX_REFUTATIONS, which ranked the whole candidate list (where
+    // suggestions always sort last), so it cannot understate coverage.
+    const gating = candidates.filter((c) => needsRefutation(c.finding));
+    const nonGating = candidates.filter((c) => !needsRefutation(c.finding));
+
+    // THE BUDGET CUT. Deterministic and taken BEFORE any refuter is dispatched,
+    // so nothing here can depend on agent-completion order.
+    //
+    // PROOF that the budget can never turn a `rework` outcome into `reviewed`
+    // (the blocking correctness question this cap had to answer):
+    //   1. `survives(finding, verdict)` reads `finding.confidence`, NEVER
+    //      `verdict.confidence`. The only effect a verdict can have is
+    //      `verdict.refuted === true ⇒ drop`.
+    //   2. Therefore, for every finding f and every verdict v,
+    //      `survives(f, null) === true` whenever `survives(f, v) === true`.
+    //      Skipping refutation is monotone-INCREASING in the survivor set.
+    //   3. Over the same candidate list the BUDGETED survivor set is therefore a
+    //      SUPERSET of the unbudgeted one: the top-N behave identically, and the
+    //      overflow can only GAIN survivors that grading would have removed.
+    //   4. `hasBlocking` is an existential over the survivor set, hence
+    //      monotone; `classifyOutcome` step 3 returns `rework` iff
+    //      `hasBlocking(lastRound, tier)`. A superset can only ADD a blocking
+    //      survivor, so the budget can only move `reviewed → rework`, never
+    //      `rework → reviewed`.
+    // Two channels the budget provably does not touch at all: `acTableHasGap`
+    // reads the structured AC table, which is never a finding and is never
+    // budgeted (classifyOutcome step 2 is bit-identical under every N,
+    // including 0); and `planFindings` feed step 1 through the same monotone
+    // `hasBlocking`, so `escalated` is likewise only ever reachable MORE often.
+    const ranked = rankBudgetCandidates(gating);
+    const toGrade = ranked.slice(0, maxRefutations);
+    const overflow = ranked.slice(maxRefutations);
+
+    // Stage 2: a FRESH refuter per finding that fits the budget.
+    const gradedGating = await _parallel(
+      toGrade.map((c) => () =>
+        _agent(refutePrompt(mode, c.dim, c.raw, ctx), {
+          // Unique per finding even if a finder emits an empty/duplicate id,
+          // so a colliding label can never misattribute a verdict.
+          label: 'refute:' + mode + ':' + (c.raw.id || c.dim.key + ':' + c.idx),
+          phase: 'Refute',
+          schema: VERDICT_SCHEMA,
+          model: verifyModel,
+        })
+          .then((verdict) => ({ finding: c.finding, verdict: verdict }))
+          // A refuter CRASH is not proof of refutation. Keep the finding as
+          // un-refuted (verdict=null ⇒ survives() retains it if confidence ≥
+          // floor) instead of silently dropping it as if it were refuted.
+          // Marked `refuterError: true` and NOT `unrefuted` — that marker means
+          // "deliberately never graded", and an act step must not treat a
+          // crashed gating finding as a mere observation. The two markers are
+          // mutually exclusive, which is what makes all four states tellable
+          // apart (see the four-state table in the spec prose above).
+          .catch(() => ({ finding: { ...c.finding, refuterError: true }, verdict: null }))
+      )
+    );
+
+    // NON-GATING PASS-THROUGH (unchanged path, now with an explicit reason).
+    const skippedNonGating = nonGating.map((c) => ({
+      finding: { ...c.finding, unrefuted: true, unrefutedReason: 'non-gating' },
+      verdict: null,
+      skipped: true,
+    }));
+    // BUDGET PASS-THROUGH. Exactly the same object shape as the non-gating skip
+    // — no second mechanism — differing only in the `unrefutedReason`
+    // discriminator, because one was cheap-by-design and the other was cut for
+    // cost and a consumer must be able to tell them apart.
+    //
+    // INVARIANT: the budget skips GRADING, never FILTERING. `verdict` stays
+    // null, so `survives()` applies the confidence floor to an over-budget
+    // finding exactly as it does to every other un-refuted one — an over-budget
+    // finding below 70 confidence is still dropped, and one at or above 70
+    // still counts toward `hasBlocking`. There is no budget-aware branch inside
+    // `survives`, and there must never be one.
+    const skippedBudget = overflow.map((c) => ({
+      finding: { ...c.finding, unrefuted: true, unrefutedReason: 'budget' },
+      verdict: null,
+      skipped: true,
+    }));
+
+    const graded = gradedGating.filter(Boolean).concat(skippedNonGating, skippedBudget);
     // A pass-through ALSO carries verdict === null, so it must be excluded here
-    // or a deliberate non-gating skip would be mis-reported as a refuter crash.
+    // or a deliberate skip would be mis-reported as a refuter crash.
     const refuterErrors = graded.filter((g) => g.verdict === null && !g.skipped).length;
-    const passedThrough = graded.filter((g) => g.skipped).length;
     const survivors = graded.filter((g) => survives(g.finding, g.verdict)).map((g) => g.finding);
+    // The budget accounting, logged AND returned AND threaded into the OUTCOME
+    // by every consumer, so a run transcript or a run summary can never read as
+    // complete coverage when it was bounded. NOTE: this describes the PIPELINE.
+    // A consumer that post-filters survivors (plan-review's
+    // stripNonPhaseUnitOfWork / suppressWontFixed) may drop a survivor that
+    // consumed budget — these counts do not track that.
+    const budget = {
+      max: maxRefutations,
+      produced: candidates.length,
+      gating: gating.length,
+      graded: toGrade.length,
+      passedThroughNonGating: nonGating.length,
+      passedThroughBudget: overflow.length,
+      refuterErrors: refuterErrors,
+      hit: overflow.length > 0,
+    };
     _log(
       mode +
         ' review: ' +
@@ -1178,9 +1512,22 @@ function buildReviewPipeline(mode, deps) {
         graded.length +
         ' finding(s) survived refutation' +
         (refuterErrors ? ' (' + refuterErrors + ' kept un-refuted after a refuter error)' : '') +
-        (passedThrough ? ' (' + passedThrough + ' non-gating passed through un-refuted)' : '')
+        (budget.passedThroughNonGating
+          ? ' (' + budget.passedThroughNonGating + ' non-gating passed through un-refuted)'
+          : '') +
+        (budget.hit
+          ? ' (BUDGET HIT: ' +
+            budget.produced +
+            ' finding(s) produced, ' +
+            budget.graded +
+            ' graded, ' +
+            budget.passedThroughBudget +
+            ' passed through for budget, cap ' +
+            budget.max +
+            ')'
+          : '')
     );
-    return { survivors: rankFindings(survivors), acTable: acTable };
+    return { survivors: rankFindings(survivors), acTable: acTable, budget: budget };
   };
 }
 // >>> review-refute-fix:end <<<
@@ -1207,6 +1554,14 @@ function buildReviewPipeline(mode, deps) {
 //|   if it is worth keeping (a low-severity security or correctness note is),
 //|   otherwise skip it and state why. An observation must never evaporate into
 //|   a skip reason just because no refuter graded it.
+//| - Read the `unrefutedReason` to tell WHY it went ungraded. `'non-gating'`
+//|   means its severity could not have changed the outcome, so grading it was
+//|   pointless. `'budget'` means the per-unit refutation budget was hit and it
+//|   was cut for COST — prefer FILING that one over skipping it.
+//| - A finding carrying `refuterError: true` is a THIRD case: a refuter was
+//|   dispatched for it and CRASHED. That is not proof of refutation and not a
+//|   deliberate skip, so it is never marked `unrefuted`; treat it as still
+//|   ungraded and say so.
 //|
 //| Never fix or file a finding that carries neither provenance.
 //|
@@ -1350,6 +1705,11 @@ export {
   AC_REVIEW_SCHEMA,
   survives,
   rankFindings,
+  DEFAULT_MAX_REFUTATIONS,
+  resolveRefutationBudget,
+  rankBudgetCandidates,
+  buildReviewBudget,
+  budgetSummaryClause,
   hasBlocking,
   acTableHasGap,
   summarizeFindings,
