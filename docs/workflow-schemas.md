@@ -877,10 +877,22 @@ post-filtering — plan-review's `stripNonPhaseUnitOfWork` / `suppressWontFixed`
 run afterwards and may drop a survivor that consumed budget. Consumers project
 it onto their own shape with the two shared helpers in the same stamped block:
 `buildReviewBudget(budgetRounds, planBudget)` yields the `reviewBudget` field
-(last round's counts, `rounds`, `everHit`, the last `hit` object, and the plan
-gate's own budget), and `budgetSummaryClause(reviewBudget)` yields the visible
-` [review budget hit: N produced, M graded, K ungraded]` marker — empty when the
-bound was never hit, so an unbounded run's summary is byte-unchanged.
+(last round's counts, `rounds`, `planRounds`, `everHit`, the last `hit` object,
+and the plan gate's own budget), and `budgetSummaryClause(reviewBudget)` yields
+the visible ` [review budget hit: N produced, M graded, K ungraded]` marker —
+empty when the bound was never hit, so an unbounded run's summary is
+byte-unchanged.
+
+**Both** of `buildReviewBudget`'s parameters take the gate's FULL per-round
+array. Passing only a last-round object silently drops an early round that hit
+its bound and was then resolved by a later revision/rework — precisely what
+`everHit` promises to keep visible — so `dispatch-phase` threads
+`planGate.budgetRounds`, not `planGate.budget`. (`planBudget` still accepts a
+single object, for a caller that predates the plan gate returning an array.) The
+two arrays are merged in **temporal** order, plan rounds first, because the plan
+gate runs to completion before the code gate starts; consequently, when both
+gates hit, `hit` — and therefore the summary clause — reports the later code
+round, not the earlier plan one.
 
 The standalone `review-refute-fix.js` consumer has three invocation shapes: (a)
 `mode: 'plan'`, and (b) `mode: 'code'` with no `roadmap`+`phase` or `task`
@@ -1230,7 +1242,7 @@ prose-only self-test of the distributed template).
 | `writesCompletion` | boolean                          | `writesCompletion(outcome)` — is this branch owed its land-time trailer? |
 | `summary` | string                                    | deterministic one-liner from outcome + top finding |
 | `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
-| `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `everHit`, the last `hit` object, and the plan gate's own `plan` budget. `null` when no review reported one. |
+| `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `planRounds`, `everHit`, the last `hit` object, and the plan gate's own `plan` budget. `null` when no review reported one. |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
 
 **Task mode** emits this structure keyed by `task` instead of `roadmap`/`phase`:
@@ -1243,7 +1255,7 @@ prose-only self-test of the distributed template).
 | `writesCompletion` | boolean                          | `writesCompletion(outcome)` — is this branch owed its land-time trailer? |
 | `summary` | string                                    | deterministic one-liner from outcome + top finding |
 | `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
-| `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `everHit`, the last `hit` object, and the plan gate's own `plan` budget. `null` when no review reported one. |
+| `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `planRounds`, `everHit`, the last `hit` object, and the plan gate's own `plan` budget. `null` when no review reported one. |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
 
 The `rdm-do --auto --task` wiring into this task-mode contract is regression-tested by `scripts/verify-workflow-do-auto-task.sh` (SKILL.md static invariants, the OUTCOME→status contract against the real binary, and a prose-only self-test of the distributed template).

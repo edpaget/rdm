@@ -906,31 +906,48 @@ function rankBudgetCandidates(candidates) {
 // Pure; returns null when nothing reported a budget (an older caller, or a
 // fetch-failure short circuit that never ran a review).
 //
+// BOTH parameters accept the gate's FULL per-round array. `planBudget` also
+// still accepts a single last-round object, for a caller that predates the
+// plan gate returning `budgetRounds` — but passing the array is what keeps
+// `everHit`'s promise honest, because a plan round that hit its bound and was
+// then resolved by a later revision is invisible in the last-round object.
+//
 //   max / produced / graded / passedThroughBudget — the LAST code round's
 //     counts (the plan gate's, when no code round ran at all), matching the rest
 //     of the OUTCOME, which also reports the last round.
-//   rounds   — how many code review rounds reported a budget.
+//   rounds     — how many code review rounds reported a budget.
+//   planRounds — how many plan review rounds reported one.
 //   everHit  — did ANY round (code or plan) hit its bound? This is the field a
 //              consumer keys on: a round-1 hit resolved by round 2 must still be
-//              visible.
-//   hit      — the LAST budget object that actually hit, so a summary clause
-//              never reports the degenerate zero-overflow counts of a later
-//              clean round.
+//              visible — for plan-revise rounds exactly as for code-rework ones.
+//   hit      — the CHRONOLOGICALLY LAST budget object that actually hit, so a
+//              summary clause never reports the degenerate zero-overflow counts
+//              of a later clean round. The plan gate runs to completion before
+//              the code gate starts, so the two arrays are merged plan-first;
+//              when both gates hit, the code round is the one reported.
 //   plan     — the plan gate's own last-round budget, kept separately because
 //              the two gates are counted independently.
 function buildReviewBudget(budgetRounds, planBudget) {
   const rounds = Array.isArray(budgetRounds) ? budgetRounds.filter(Boolean) : [];
-  const plan = planBudget && typeof planBudget === 'object' ? planBudget : null;
-  if (rounds.length === 0 && !plan) return null;
+  const planRounds = Array.isArray(planBudget)
+    ? planBudget.filter(Boolean)
+    : planBudget && typeof planBudget === 'object'
+      ? [planBudget]
+      : [];
+  const plan = planRounds.length ? planRounds[planRounds.length - 1] : null;
+  if (rounds.length === 0 && planRounds.length === 0) return null;
   const last = rounds.length ? rounds[rounds.length - 1] : plan;
-  const hits = rounds.filter((b) => b.hit === true);
-  if (plan && plan.hit === true) hits.push(plan);
+  // TEMPORAL order, not source order: dispatch runs the plan gate to completion
+  // before the code gate starts, so plan rounds precede code rounds and the
+  // last element of the merged hit list is the most recent hit.
+  const hits = planRounds.concat(rounds).filter((b) => b.hit === true);
   return {
     max: last.max,
     produced: last.produced,
     graded: last.graded,
     passedThroughBudget: last.passedThroughBudget,
     rounds: rounds.length,
+    planRounds: planRounds.length,
     everHit: hits.length > 0,
     hit: hits.length ? hits[hits.length - 1] : null,
     plan: plan,
@@ -2637,7 +2654,7 @@ const planFindings = planGate.findings
 // Plan gate: never implement on a blocking plan.
 if (hasBlocking(planFindings, tier)) {
   log('dispatch-phase: plan gate escalated for ' + itemLabel)
-  return itemOutcome({ planFindings: planFindings, tier: tier, planBudget: planGate.budget })
+  return itemOutcome({ planFindings: planFindings, tier: tier, planBudget: planGate.budgetRounds })
 }
 
 // --plan-only: the plan gate passed — stop before implementing and report the
@@ -2647,8 +2664,10 @@ if (hasBlocking(planFindings, tier)) {
 if (planOnly) {
   // The plan gate's own refutation budget rides along on this early return too,
   // so a plan-only run that hit the bound is still visible to autopilot's run
-  // summary (which tags a `noop-vetted` phase from exactly this OUTCOME).
-  const planOnlyBudget = buildReviewBudget([], planGate.budget)
+  // summary (which tags a `noop-vetted` phase from exactly this OUTCOME). The
+  // FULL per-round array is threaded, not the last round, so a bound hit on an
+  // early plan round that a later revision resolved is not silently dropped.
+  const planOnlyBudget = buildReviewBudget([], planGate.budgetRounds)
   const planOnlySummary = 'plan-only: plan gate passed' + budgetSummaryClause(planOnlyBudget)
   const o = isTask
     ? { task: taskSlug, outcome: 'reviewed', summary: planOnlySummary, reviewBudget: planOnlyBudget, findings: planFindings }
@@ -2763,7 +2782,7 @@ const outcome = itemOutcome({
   codeReviews: codeGate.rounds,
   acRounds: codeGate.acRounds,
   budgetRounds: codeGate.budgetRounds,
-  planBudget: planGate.budget,
+  planBudget: planGate.budgetRounds,
   maxRework: maxCodeRework,
   tier: tier,
   actResult: codeGate.actResult,

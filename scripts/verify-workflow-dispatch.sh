@@ -1106,6 +1106,68 @@ try {
   assert.ok(esc.summary.includes('[review budget hit:'), 'the escalated summary carries the clause');
   assert.ok(esc.reason.includes('[review budget hit:'), 'the persisted reason carries it too (outcomePolicy derives reason from summary)');
 
+  // MULTI-ROUND plan gate: a plan round that hit its bound and was then
+  // RESOLVED by a later revision must still set everHit. This is the plan-side
+  // analogue of the two-code-round case above; passing only the last plan round
+  // would silently report complete coverage for a run that passed over gating
+  // findings ungraded on round 1.
+  {
+    let pr = 0;
+    const mh = makePlanFakes({ reviewScript: [[B('plan-defect')], []] });
+    const baseReview = mh.deps.review;
+    mh.deps.review = async (doc) => ({ ...(await baseReview(doc)), budget: pr++ === 0 ? BUDGET_HIT : BUDGET_CLEAN });
+    const mpg = await runPlanGate({ maxRevise: 1, tier: 'medium' }, mh.deps);
+    assert.equal(mpg.budgetRounds.length, 2, 'runPlanGate records a budget entry PER plan-revise round');
+    assert.equal(mpg.budget.hit, false, 'the LAST plan round did not hit — the single-object shape would hide the round-1 hit');
+    const mOut = buildOutcome({
+      roadmap: 'rm',
+      phase: 'p',
+      planFindings: mpg.findings,
+      planBudget: mpg.budgetRounds,
+      codeReviews: [[]],
+      acRounds: [null],
+      budgetRounds: [BUDGET_CLEAN],
+      tier: 'medium',
+    });
+    assert.equal(mOut.outcome, 'reviewed', 'the plan revision resolved the blocker');
+    assert.equal(mOut.reviewBudget.planRounds, 2, 'reviewBudget reports how many PLAN rounds were budgeted');
+    assert.equal(
+      mOut.reviewBudget.everHit,
+      true,
+      'a plan round-1 budget hit resolved by round 2 is STILL visible on the OUTCOME'
+    );
+    assert.equal(mOut.reviewBudget.hit.produced, 13, 'the reported hit is the plan round that actually hit');
+    assert.ok(mOut.summary.includes('[review budget hit:'), 'the resolved plan-gate hit still carries the summary clause');
+  }
+
+  // ORDERING: when BOTH gates hit, `hit` must report the CHRONOLOGICALLY last
+  // one — the code round, which runs strictly after the plan gate completes.
+  {
+    const PLAN_HIT = { ...BUDGET_HIT, produced: 9, graded: 5, passedThroughBudget: 4 };
+    const both = buildOutcome({
+      roadmap: 'rm',
+      phase: 'p',
+      planFindings: [],
+      planBudget: [PLAN_HIT],
+      codeReviews: [[]],
+      acRounds: [null],
+      budgetRounds: [BUDGET_HIT],
+      tier: 'medium',
+    });
+    assert.equal(both.reviewBudget.everHit, true, 'both gates hit');
+    assert.equal(both.reviewBudget.hit.produced, 13, 'the CODE round (chronologically later) is the reported hit, not the plan gate');
+    assert.ok(
+      both.summary.includes('[review budget hit: 13 produced, 5 graded, 8 ungraded]'),
+      'the summary clause reports the later code round, not the earlier plan round'
+    );
+  }
+
+  // Backward compatibility: a caller still passing a single last-round plan
+  // budget object (rather than the array) keeps working.
+  const legacyPlan = buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], planBudget: BUDGET_HIT, tier: 'medium' });
+  assert.equal(legacyPlan.reviewBudget.everHit, true, 'a single plan-budget OBJECT is still accepted');
+  assert.equal(legacyPlan.reviewBudget.planRounds, 1, 'a single plan-budget object counts as one plan round');
+
   // The task-shaped OUTCOME behaves identically.
   const tOut = buildTaskOutcome({
     task: 't',

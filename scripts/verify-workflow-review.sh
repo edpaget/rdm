@@ -1933,8 +1933,8 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
 const mod = await import(pathToFileURL(process.argv[2]).href);
-const { parsePlanArgs, buildReviewUnits, runPlanReviewDriver } = mod;
-for (const name of ['parsePlanArgs', 'buildReviewUnits', 'runPlanReviewDriver']) {
+const { parsePlanArgs, buildReviewUnits, runPlanReviewDriver, formatUnitBudget } = mod;
+for (const name of ['parsePlanArgs', 'buildReviewUnits', 'runPlanReviewDriver', 'formatUnitBudget']) {
   assert.equal(typeof mod[name], 'function', name + ' must be exported from lib/plan-review.mjs');
 }
 
@@ -2000,8 +2000,17 @@ assert.equal(buildReviewUnits({ kind: 'phase', roadmap: 'r', phase: 'p' }, { bod
 // findingsByTarget maps a review-unit target substring to the survivors the fake
 // pipeline returns for it, so we can seed a rework on ONE phase and reviewed on
 // the rest and prove independent gating end-to-end through the real driver.
-function makeHarness(findingsByTarget, fetchResults) {
+// `budgetByTarget` (optional) maps the same target substrings to the per-unit
+// refutation-budget object the pipeline reports for that unit, so the driver's
+// budget threading is EXERCISED rather than assumed. Every review context the
+// driver builds is recorded in `reviewCtxs` (which is how the `maxRefutations`
+// thread from parsePlanArgs into runPlanReview is checked), and every log line
+// in `logs`.
+function makeHarness(findingsByTarget, fetchResults, budgetByTarget) {
   const calls = [];
+  const reviewCtxs = [];
+  const logs = [];
+  const budgets = budgetByTarget || {};
   const agent = async (prompt, opts) => {
     calls.push({ label: opts && opts.label, phase: opts && opts.phase, prompt });
     const label = (opts && opts.label) || '';
@@ -2011,16 +2020,26 @@ function makeHarness(findingsByTarget, fetchResults) {
   };
   const parallel = (thunks) => Promise.all(thunks.map((t) => t()));
   // runPlanReview is a `runReview` from the canonical review source and
-  // resolves { survivors, acTable } — acTable is always null in plan mode.
+  // resolves { survivors, acTable, budget } — acTable is always null in plan
+  // mode; `budget` is the per-unit refutation-budget accounting.
   const runPlanReview = async (ctx) => {
+    reviewCtxs.push(ctx);
     const target = (ctx && ctx.target) || '';
+    const budgetFor = () => {
+      for (const key of Object.keys(budgets)) {
+        if (target.indexOf(key) !== -1) return budgets[key];
+      }
+      return null;
+    };
     for (const key of Object.keys(findingsByTarget)) {
-      if (target.indexOf(key) !== -1) return { survivors: findingsByTarget[key], acTable: null };
+      if (target.indexOf(key) !== -1) {
+        return { survivors: findingsByTarget[key], acTable: null, budget: budgetFor() };
+      }
     }
-    return { survivors: [], acTable: null };
+    return { survivors: [], acTable: null, budget: budgetFor() };
   };
-  const log = () => {};
-  return { deps: { agent, parallel, runPlanReview, log }, calls };
+  const log = (line) => logs.push(String(line));
+  return { deps: { agent, parallel, runPlanReview, log }, calls, reviewCtxs, logs };
 }
 const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking', confidence: 90, what_fails: 'ambiguous' }];
 
@@ -2107,6 +2126,113 @@ const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking'
   assert.equal(calls.length, 0, 'impl-plan makes NO agent calls (no fetch, no act, no gate)');
 }
 
+// ---- (5) REFUTATION BUDGET threading through the plan-review driver ----------
+// The code-mode analogue (dispatch-phase's gates + the OUTCOME's reviewBudget)
+// is covered in verify-workflow-dispatch.sh; this is the plan-mode driver's own
+// wiring around the already-tested pipeline core: parsePlanArgs resolves the
+// budget, reviewUnit and the implementation-plan branch thread it into every
+// runPlanReview context, carry the reported `budget` on their result, and
+// append formatUnitBudget's clause to the per-unit log line ONLY on a hit.
+
+// (5a) formatUnitBudget itself: a clause on a hit, byte-nothing otherwise.
+const HIT_BUDGET = { max: 5, produced: 13, gating: 13, graded: 5, passedThroughNonGating: 0, passedThroughBudget: 8, refuterErrors: 0, hit: true };
+const CLEAN_BUDGET = { max: 5, produced: 3, gating: 3, graded: 3, passedThroughNonGating: 0, passedThroughBudget: 0, refuterErrors: 0, hit: false };
+assert.equal(formatUnitBudget(HIT_BUDGET), ' [review budget hit: 13 produced, 5 graded, 8 ungraded]',
+  'formatUnitBudget renders produced/graded/ungraded on a hit');
+assert.equal(formatUnitBudget(CLEAN_BUDGET), '', 'an under-budget unit logs a byte-unchanged line');
+assert.equal(formatUnitBudget(null), '', 'a budget-less unit logs a byte-unchanged line');
+
+// (5b) the resolved budget reaches EVERY runPlanReview context — default,
+//      caller override, and the 0-is-legal case (never conflated with unset).
+{
+  const h = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } });
+  await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  assert.equal(h.reviewCtxs.length, 1, 'one review context for a single task unit');
+  assert.equal(h.reviewCtxs[0].maxRefutations, parsePlanArgs({ task: 'fix-bug' }).maxRefutations,
+    'the context carries exactly the budget parsePlanArgs resolved');
+  assert.equal(h.reviewCtxs[0].maxRefutations, 5, 'and that default is the review core\'s 5');
+}
+{
+  const h = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } });
+  await runPlanReviewDriver({ task: 'fix-bug', maxRefutations: 2 }, h.deps);
+  assert.equal(h.reviewCtxs[0].maxRefutations, 2, 'a caller override is threaded into the review context');
+}
+{
+  const h = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } });
+  await runPlanReviewDriver({ task: 'fix-bug', maxRefutations: 0 }, h.deps);
+  assert.strictEqual(h.reviewCtxs[0].maxRefutations, 0,
+    '0 is legal and distinct from unset — a falsy check must NOT fall back to the default');
+}
+
+// (5c) a roadmap run: EVERY unit's context carries the budget, the per-unit
+//      result carries the reported `budget`, and only the budget-hit unit's log
+//      line gains the clause.
+{
+  const h = makeHarness(
+    { 'phase-1-a': blockingCoherence },
+    {
+      'fetch:roadmap': {
+        body: 'RB', tags: ['needs-plan-review'],
+        phases: [
+          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] },
+          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review'] },
+        ],
+      },
+    },
+    { 'phase-1-a': HIT_BUDGET, 'phase-2-b': CLEAN_BUDGET }
+  );
+  const res = await runPlanReviewDriver({ roadmap: 'big-thing', maxRefutations: 4 }, h.deps);
+  assert.equal(h.reviewCtxs.length, 3, 'one review context per unit (roadmap body + two phases)');
+  assert.ok(h.reviewCtxs.every((c) => c.maxRefutations === 4),
+    'EVERY unit is reviewed under the same resolved budget');
+  const byIdent = Object.fromEntries(res.units.map((u) => [u.ident, u]));
+  assert.ok(byIdent['phase-1-a'].budget, 'the budget-hit unit carries a budget field on its result');
+  assert.equal(byIdent['phase-1-a'].budget.hit, true, 'and it reports the hit');
+  assert.equal(byIdent['phase-1-a'].budget.passedThroughBudget, 8, 'with the ungraded count intact');
+  assert.ok(byIdent['phase-2-b'].budget, 'an under-budget unit still carries a budget field');
+  assert.equal(byIdent['phase-2-b'].budget.hit, false, 'reporting no hit');
+  assert.equal(byIdent['big-thing'].budget, null, 'a unit whose pipeline reported no budget carries null, never undefined');
+  const hitLine = h.logs.find((l) => l.indexOf('phase/phase-1-a') !== -1);
+  const cleanLine = h.logs.find((l) => l.indexOf('phase/phase-2-b') !== -1);
+  assert.ok(hitLine && hitLine.indexOf('[review budget hit: 13 produced, 5 graded, 8 ungraded]') !== -1,
+    'the budget-hit unit is VISIBLY distinguishable in its log line');
+  assert.ok(cleanLine && cleanLine.indexOf('review budget hit') === -1,
+    'an under-budget unit logs no clause — a bounded run can never read as complete coverage, nor the reverse');
+}
+
+// (5d) the single-target flatten carries `budget` onto the top level too.
+{
+  const h = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } }, { 'TB': HIT_BUDGET });
+  const res = await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  assert.ok(res.budget, 'a flattened single-target result carries the unit budget on the top level');
+  assert.equal(res.budget.hit, true, 'and it reports the hit');
+  assert.ok(res.units[0].budget && res.units[0].budget.hit === true, 'and the unit itself carries it too');
+}
+
+// (5e) the --implementation-plan branch threads and reports the budget too,
+//      even though it has no persisted item to gate.
+{
+  const h = makeHarness({ 'PLAN TEXT': blockingCoherence }, {}, { 'PLAN TEXT': HIT_BUDGET });
+  const res = await runPlanReviewDriver(
+    { implementationPlan: true, planText: 'PLAN TEXT here', maxRefutations: 3 },
+    h.deps
+  );
+  assert.equal(h.reviewCtxs.length, 1, 'the impl-plan branch runs exactly one review');
+  assert.equal(h.reviewCtxs[0].maxRefutations, 3, 'the impl-plan branch threads the resolved budget');
+  assert.ok(res.budget, 'the impl-plan result carries the budget');
+  assert.equal(res.budget.hit, true, 'and it reports the hit');
+  const line = h.logs.find((l) => l.indexOf('implementation-plan') !== -1);
+  assert.ok(line && line.indexOf('[review budget hit: 13 produced, 5 graded, 8 ungraded]') !== -1,
+    'the impl-plan log line carries the clause on a hit');
+}
+{
+  const h = makeHarness({ 'PLAN TEXT': blockingCoherence }, {}, {});
+  const res = await runPlanReviewDriver({ implementationPlan: true, planText: 'PLAN TEXT here' }, h.deps);
+  assert.equal(res.budget, null, 'a budget-less impl-plan run reports null, never undefined');
+  const line = h.logs.find((l) => l.indexOf('implementation-plan') !== -1);
+  assert.ok(line && line.indexOf('review budget hit') === -1, 'and logs a byte-unchanged line');
+}
+
 console.log('plan-review driver execution assertions passed');
 NODE_DRIVER_TEST
 if run_node "$TMP/plan-driver-test.mjs" "$PLAN_LIB"; then
@@ -2114,6 +2240,75 @@ if run_node "$TMP/plan-driver-test.mjs" "$PLAN_LIB"; then
 else
     fail "plan-review driver execution assertions failed"
 fi
+
+# --- 5b-mut. PLANTED-MUTATION SELF-TESTS FOR THE PLAN-REVIEW DRIVER -----------
+# Section 5b-exec's budget assertions (5a–5e) are only worth having if they
+# actually fire. Four independent mutations of the DRIVER — each one a regression
+# a maintainer could plausibly introduce while editing the budget threading —
+# must flip a 5b-exec assertion, plus a control run against the real file that
+# must pass. The mutated copy needs its sibling review.mjs alongside it, since
+# lib/plan-review.mjs imports the core from './review.mjs'.
+say "5b-mut. plan-review driver budget-threading mutation self-tests (prove 5b-exec is not vacuous)"
+PMUT="$TMP/plan-mut/.claude/workflows/lib"
+mkdir -p "$PMUT"
+
+reset_pmut() {
+    cp "$PLAN_LIB" "$PMUT/plan-review.mjs"
+    cp "$LIB" "$PMUT/review.mjs"
+}
+
+reset_pmut
+if run_node "$TMP/plan-driver-test.mjs" "$PMUT/plan-review.mjs" >/dev/null 2>&1; then
+    pass "5b-mut(control): 5b-exec passes against an unmutated copy — the mutations below are discriminating"
+else
+    fail "5b-mut(control): 5b-exec FAILED against an unmutated copy — the mutation self-tests would be meaningless"
+fi
+
+plan_mutate_and_expect_fail() {
+    label="$1"
+    desc="$2"
+    reset_pmut
+    shift 2
+    "$@" || fail "5b-mut($label): mutation setup failed"
+    if run_node "$TMP/plan-driver-test.mjs" "$PMUT/plan-review.mjs" >/dev/null 2>&1; then
+        fail "5b-mut($label): $desc did NOT flip a 5b-exec assertion — the check is vacuous"
+    fi
+    pass "5b-mut($label): $desc flips a 5b-exec assertion"
+}
+
+# (i) Stop threading maxRefutations into the per-unit review context: every unit
+#     silently falls back to the pipeline default and a caller override is lost.
+pmut_thread_unit() {
+    perl -0pi -e "s/(target: unit\.target,\n)(\s*)maxRefutations: maxRefutations,\n/\$1/" "$PMUT/plan-review.mjs"
+    ! grep -A2 'target: unit.target,' "$PMUT/plan-review.mjs" | grep -q 'maxRefutations'
+}
+plan_mutate_and_expect_fail i 'dropping the maxRefutations thread into reviewUnit' pmut_thread_unit
+
+# (ii) Same, on the --implementation-plan branch.
+pmut_thread_impl() {
+    perl -0pi -e "s/(target: planText,\n)(\s*)maxRefutations: maxRefutations,\n/\$1/" "$PMUT/plan-review.mjs"
+    ! grep -A2 'target: planText,' "$PMUT/plan-review.mjs" | grep -q 'maxRefutations'
+}
+plan_mutate_and_expect_fail ii 'dropping the maxRefutations thread into the implementation-plan branch' pmut_thread_impl
+
+# (iii) Drop the `budget` field from the reported per-unit result: a consumer can
+#       no longer see the bound was hit on any unit.
+pmut_result_field() {
+    perl -0pi -e "s/\n(\s*)budget: r\.budget \|\| null,//" "$PMUT/plan-review.mjs"
+    ! grep -q 'budget: r.budget || null,' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail iii 'dropping the budget field from the per-unit result' pmut_result_field
+
+# (iv) Make formatUnitBudget always return '': the per-unit log line reads as
+#      complete coverage even when the unit passed findings over ungraded.
+pmut_format() {
+    perl -0pi -e "s/  if \(!budget \|\| budget\.hit !== true\) return ''/  if (true) return '' \/\/ MUTANT/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail iv 'silencing formatUnitBudget so a budget hit never shows in the log' pmut_format
+
+pass "5b-mut: all four driver mutations flip a 5b-exec assertion, and the control passes"
 
 # --- 5c. SKILL SHIM (AC-5) ---------------------------------------------------
 # The local dogfood SKILL.md is a thin shim over plan-review.js. Its hand-authored

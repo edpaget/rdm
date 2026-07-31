@@ -235,7 +235,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (and therefore to the reason recorded on a parked or blocked item, visible in
   `rdm review blocked`); and an autopilot run summary suffixes a `[budget]` tag
   onto that phase's entry in its `phases completed (...)` line. A review that
-  stayed under budget reads exactly as it did before.
+  stayed under budget reads exactly as it did before. A bound hit on an *early*
+  round stays reported even after a later revision resolves it — for plan-revise
+  rounds exactly as for code-rework rounds — and when both gates hit, the clause
+  reports the later (code) round's counts, not the earlier plan gate's.
 - Review findings now carry an explicit provenance marker, so a report can tell
   four cases apart that used to blur together: graded-and-survived (no marker),
   deliberately skipped as non-gating (`unrefutedReason: 'non-gating'`), cut for
