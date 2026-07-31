@@ -1129,6 +1129,225 @@
       ]
     }
   },
+  "determiningFindingRank": {
+    "description": "Where in a severity-then-confidence ranking does the finding that actually DETERMINED the outcome sit? A refutation budget that grades only the top N candidates is free iff that finding is almost always near the top, and sheds real signal iff the rank is spread out. Nothing else in the bound-review-fan-out roadmap answers this, and phase 4 may not choose an N without it. Measured by replaying the live pipeline's own rule (rankFindings / survives / hasBlocking, IMPORTED from .claude/workflows/lib/review.mjs, never reimplemented) over the historical sidecar corpus, reusing the SAME prompt-derived review-unit key refuterFanout above established.",
+    "instrument": "scripts/measure-refuter-severity.mjs (over scripts/lib/token-report.mjs)",
+    "regenerateCommand": "node scripts/measure-refuter-severity.mjs --until 2026-07-29T00:00:00Z --format json",
+    "method": "RANKED OVER THE CANDIDATE LIST, NOT THE SURVIVOR LIST. Ranking among survivors is degenerate: SEVERITY_RANK orders blocking(0) < concern(1) < suggestion(2), so the top-ranked SURVIVOR is by construction the one that makes hasBlocking true and the rank would be a constant 1 for every determining unit — a tautology, not a measurement. A refutation budget truncates the CANDIDATE list (what the finders emitted) before any of it is graded, so the candidate list is the ranking a cap would actually apply. Each unit's candidate list is assembled from its finders' OWN StructuredOutput `findings` arrays; each candidate's disposition comes from joining the refuter that graded it by (unit, prompt-derived dimension, finding id), falling back to a structural deep-equal of the finding JSON. The walk then takes rankFindings(candidates) in order and reports the 1-based index of the first candidate that both `survives` and `hasBlocking`. The review-unit key is phase 1's, unchanged — the target embedded in each agent's own prompt, read on the refuter side by extractRefuterContext and on the FINDER side by a second reader, extractFinderContext, of the identical context.target that findPrompt writes as `Review target: <target>.`. Nothing anywhere in this measurement reads phaseTitle/phaseIndex.",
+    "measurementWindow": {
+      "until": "2026-07-29T00:00:00Z",
+      "why": "Pins the run set so a later lane run cannot silently re-baseline these committed figures. Derived from measure()'s already-filtered runFiles — the SAME filtered corpus refuterFanout and nonGatingRefutationSkip are built from — so all three sections describe one identical window and this one cannot re-baseline while the others stay pinned. --check re-applies the window recorded in nonGatingRefutationSkip unless --until overrides it.",
+      "runCount": 48,
+      "agentRecordCount": 2208,
+      "laneWorkflows": [
+        "autopilot",
+        "dispatch-phase",
+        "plan-review",
+        "backlog",
+        "estimate",
+        "document"
+      ],
+      "note": "Identical to refuterFanout's window (all three sections are regenerated in one pass), and WIDER than the runSet section above (40 runs / 1943 agent records, measured 2026-07-26): the corpus grew between measurements. These figures are therefore NOT subtractable against byAgentClass. Compare only within this section."
+    },
+    "units": {
+      "total": 84,
+      "determining": 29,
+      "nonDetermining": 40,
+      "unrecoverable": 15,
+      "recoverable": 69,
+      "recoverableSharePercent": 82.1
+    },
+    "unrecoverableByReason": [
+      {
+        "reason": "unknown-disposition-above-determining",
+        "count": 3
+      },
+      {
+        "reason": "unreadable-finder-transcript",
+        "count": 1
+      },
+      {
+        "reason": "multi-round-unit",
+        "count": 11
+      }
+    ],
+    "unrecoverableVocabulary": [
+      "unknown-disposition-above-determining",
+      "unreadable-finder-transcript",
+      "dimension-coverage-gap",
+      "multi-round-unit",
+      "ambiguous-finding-join"
+    ],
+    "recoverabilityScoping": "CONTAMINATION IS PER UNIT, NEVER RUN-WIDE. Every reason in the closed vocabulary above is decidable from the unit's OWN records. An agent whose unit identity does not resolve — chiefly the --implementation-plan target, which is itself pretty-printed JSON and is rejected by construction rather than captured as a fake identity — is attributable to NO unit, so it marks no unit unrecoverable; it is counted in orphanAgents below and reported. This is exactly the precedent refuterFanout already sets (an unresolved refuter goes to unrecoverableRefuterCount and is never bucketed into a unit, while the units that DID resolve in that run stay valid). A run-wide rule would not be conservative but destructive: real runs mix many named units with an occasional orphan (a 9-unit run is cited in refuterFanout.method), so one bad target could zero out the recoverable share and manufacture a verdict out of a corpus artefact. The missing-candidate hazard such a rule reaches for is caught locally instead, by dimension-coverage-gap: the unit's own finder set fails to cover the dimensions that were always-on for the whole window (code: ac + correctness; plan: coherence + architectural-fit — restraint is always-on today but shipped part-way through this window, so requiring it would flag pre-restraint units for an artefact of release timing), or the unit has a refuter for a dimension it has no finder for. The missing-VERDICT half is caught locally by unknown-disposition-above-determining. Neither guesses which unit an orphan belonged to.",
+    "orphanAgents": {
+      "finders": 252,
+      "refuters": 350,
+      "runsAffected": 26
+    },
+    "orphanResidualRisk": "The risk per-unit scoping accepts, stated rather than imputed: an orphan FINDER could in principle have belonged to a named unit whose dimension coverage nonetheless looks complete (e.g. an unlabeled retry), leaving that unit's candidate list silently short and its rank understated. orphanAgents.finders is the explicit UPPER BOUND on how many units could be understated that way. It is bounded and reported; it is never imputed, and it never invalidates a unit that did resolve. (orphanAgents.refuters reconciles exactly with refuterFanout.refuterCountsByUnit.unrecoverableRefuterCount above — the same 350 refuters, counted the same way.)",
+    "rankHistogram": [
+      {
+        "rank": 1,
+        "count": 23
+      },
+      {
+        "rank": 2,
+        "count": 6
+      }
+    ],
+    "rankSummary": {
+      "n": 29,
+      "min": 1,
+      "p50": 1,
+      "p90": 2,
+      "max": 2
+    },
+    "withinTop": [
+      {
+        "n": 3,
+        "count": 29,
+        "percentOfDetermining": 100,
+        "percentOfRecoverable": 42
+      },
+      {
+        "n": 5,
+        "count": 29,
+        "percentOfDetermining": 100,
+        "percentOfRecoverable": 42
+      }
+    ],
+    "candidateSetSize": {
+      "n": 69,
+      "min": 0,
+      "p50": 9,
+      "p90": 13,
+      "max": 15
+    },
+    "largeTier": {
+      "units": {
+        "total": 84,
+        "determining": 55,
+        "nonDetermining": 15,
+        "unrecoverable": 14,
+        "recoverable": 70,
+        "recoverableSharePercent": 83.3
+      },
+      "rankHistogram": [
+        {
+          "rank": 1,
+          "count": 37
+        },
+        {
+          "rank": 2,
+          "count": 14
+        },
+        {
+          "rank": 3,
+          "count": 1
+        },
+        {
+          "rank": 4,
+          "count": 2
+        },
+        {
+          "rank": 7,
+          "count": 1
+        }
+      ],
+      "rankSummary": {
+        "n": 55,
+        "min": 1,
+        "p50": 1,
+        "p90": 2,
+        "max": 7
+      },
+      "withinTop": [
+        {
+          "n": 3,
+          "count": 52,
+          "percentOfDetermining": 94.5,
+          "percentOfRecoverable": 74.3
+        },
+        {
+          "n": 5,
+          "count": 54,
+          "percentOfDetermining": 98.2,
+          "percentOfRecoverable": 77.1
+        }
+      ]
+    },
+    "tierCaveat": "The tier is threaded through `context` at runtime and is embedded in NEITHER prompt, so it is NOT recoverable per unit. The headline figures use the DEFAULT blocker set (['blocking']); largeTier re-runs the identical walk with hasBlocking(findings,'large'), which widens blockers to ['blocking','concern']. Both are reported rather than a tier being guessed from an agent's model id. Widening the blocker set can only move a determining finding EARLIER in the same ranking, so largeTier's determining count and within-top counts are monotone above the default tier's — auditRankDoc asserts that directly.",
+    "acTableGapUnits": 3,
+    "acTableCaveat": "A SECOND outcome channel this measurement deliberately does not score. In code mode classifyOutcome routes a FAIL/PARTIAL AC table through acTableHasGap directly, never through finding severity or refutation, so a unit can have been `rework` with no gating finding at all. Counted here as its own diagnostic row; such units are NOT folded into nonDetermining. This phase's question is scoped to hasBlocking.",
+    "capVerdict": {
+      "verdict": "supports-cap",
+      "rule": {
+        "supportsCapAtOrAbovePercent": 95,
+        "killsCapBelowPercent": 80,
+        "minRecoverableSharePercent": 50,
+        "minDeterminingUnits": 20,
+        "basis": "withinTop n=5, as a percentage of DETERMINING units; a cap is only supported when enough units were recoverable to speak to it at all."
+      },
+      "inputs": {
+        "determining": 29,
+        "recoverable": 69,
+        "total": 84,
+        "recoverableSharePercent": 82.1,
+        "withinTop5PercentOfDetermining": 100
+      }
+    },
+    "caveat": "Every headline above is computed over RECOVERABLE units only, and the recoverable share is stated beside it: unrecoverable units contribute to no within-top-N numerator and to no percentOfDetermining / percentOfRecoverable denominator, and nothing is imputed for them (no default rank, no 'assume unrefuted', no 'assume the missing refuter agreed'). Phase 1's own bound carries forward: refuterFanout recovered a unit for only 64.6 % of refuters over this same window, which bounds how much of the corpus this section can speak to. Two further limits on the disposition half: the corpus cannot distinguish a refuter that crashed (which the live pipeline keeps as un-refuted) from one whose transcript is absent, so both are treated as `unknown` — conservative, and possibly divergent from what the pipeline actually did; and the run mix spans workflow-token-reduction phase 6, before which `suggestion` findings WERE refuted and after which they pass through ungraded, so a missing refuter for a suggestion is legitimate while a missing refuter for a gating finding is unknown. As with every other section here, no post-change corpus exists: this is an exact accounting of what the historical lane did, not a forecast.",
+    "gating": {
+      "checkGated": [
+        "units.total",
+        "units.determining",
+        "units.nonDetermining",
+        "units.unrecoverable",
+        "units.recoverable",
+        "units.recoverableSharePercent",
+        "unrecoverableByReason[].reason",
+        "unrecoverableByReason[].count",
+        "orphanAgents.finders",
+        "orphanAgents.refuters",
+        "orphanAgents.runsAffected",
+        "rankHistogram[].rank",
+        "rankHistogram[].count",
+        "rankSummary.n",
+        "rankSummary.min",
+        "rankSummary.p50",
+        "rankSummary.p90",
+        "rankSummary.max",
+        "withinTop[].count",
+        "withinTop[].percentOfDetermining",
+        "withinTop[].percentOfRecoverable",
+        "candidateSetSize.n",
+        "candidateSetSize.min",
+        "candidateSetSize.p50",
+        "candidateSetSize.p90",
+        "candidateSetSize.max",
+        "largeTier.units",
+        "largeTier.rankHistogram",
+        "largeTier.rankSummary",
+        "largeTier.withinTop",
+        "acTableGapUnits",
+        "capVerdict.verdict"
+      ],
+      "checkGatedBy": "node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json (recomputes over the real corpus; requires the sidecars, so it is run by hand, not by the harness)",
+      "auditGatedBy": "node scripts/measure-refuter-severity.mjs --audit docs/token-baseline.json, run by scripts/verify-token-report.sh section 7 — corpus-free arithmetic audit (determining + nonDetermining + unrecoverable === total; unrecoverableByReason sums to units.unrecoverable and every reason is in the closed vocabulary, with no run-wide reason admitted; rankHistogram sums to units.determining; withinTop is monotone in n and bounded by determining; every percentage re-derives from the doc's own counts; largeTier is monotone above the default tier; and capVerdict.verdict is RE-DERIVED via deriveCapVerdict/CAP_VERDICT_RULE), so the committed figures and the supports/kills conclusion are gated on any machine.",
+      "provenanceOnly": [
+        "description",
+        "method",
+        "measurementWindow.why",
+        "measurementWindow.note",
+        "unrecoverableVocabulary",
+        "recoverabilityScoping",
+        "orphanResidualRisk",
+        "tierCaveat",
+        "acTableCaveat",
+        "caveat"
+      ]
+    }
+  },
   "refuterModelTiering": {
     "question": "Must the autonomous lane's refuters stay on Opus? Measured against an adjudicated finding corpus with false-negative and false-positive rates reported separately.",
     "doc": "docs/refuter-model-tiering.md",

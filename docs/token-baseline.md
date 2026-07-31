@@ -702,6 +702,166 @@ and, corpus-free, `--audit`-gated by `scripts/verify-token-report.sh` on any
 machine. The prose framing (this section's caveats and method paragraph) is
 provenance-only.
 
+## Phase 2: rank of the determining finding
+
+Phase 1 sized the fan-out. This section answers the single question a
+refutation cap lives or dies on: **where in a ranked list does the finding
+that actually determined the outcome sit?** A cap that grades only the top N
+candidates is free if that finding is almost always near the top, and sheds
+real signal if the rank is spread out.
+
+A **determining finding** is the highest-ranked candidate that both survives
+its refutation (`survives`) and makes `hasBlocking` true — the one finding
+that carried the unit's outcome. The ranking and the gating rule are not
+reimplemented here: `scripts/measure-refuter-severity.mjs` **imports**
+`rankFindings` / `survives` / `hasBlocking` directly from
+[`.claude/workflows/lib/review.mjs`](../.claude/workflows/lib/review.mjs), so
+the measurement cannot drift from the behavior it is predicting. Same window
+as § "Phase 1: review fanout" and § "Phase 6": **48 runs ending
+2026-07-29T00:00:00Z, 2,208 agent records** — all three sections are
+regenerated in one pass over one filtered corpus.
+
+**Ranked over the candidate list, not the survivor list.** This choice is the
+whole measurement. Ranking among *survivors* is degenerate: `SEVERITY_RANK`
+orders `blocking`(0) before `concern`(1) before `suggestion`(2), so the
+top-ranked survivor **is** by construction the one that makes `hasBlocking`
+true, and the answer would be a constant 1 for every determining unit — a
+tautology dressed up as a finding. A refutation budget truncates the
+**candidate** list, which is what the finders emitted before anything is
+graded, so that is the ranking a cap would actually apply and the one measured
+here.
+
+**Rank distribution** (determining units only):
+
+| rank | units |
+|---:|---:|
+| 1 | 23 |
+| 2 | 6 |
+
+Of the **84** review units in the window, **69 were recoverable (82.1 %)** —
+29 determining, 40 non-determining — and 15 were not. Against that recoverable
+share of 82.1 %:
+
+| within top N | units | % of determining (29) | % of recoverable (69) |
+|---:|---:|---:|---:|
+| 3 | 29 | 100 % | 42 % |
+| 5 | 29 | 100 % | 42 % |
+
+Both denominators are labelled deliberately: the second is smaller because 40
+recoverable units had **no** gating finding at all, and those are
+non-determining, not rank-absent. Nothing is imputed for the 15 unrecoverable
+units — they appear in no numerator and in no denominator.
+
+The cap is not vacuous at either N: candidate lists over the same recoverable
+units run **n 69, min 0, p50 9, p90 13, max 15**, so a top-3 or top-5 budget
+would genuinely truncate the median unit rather than never binding.
+
+**Unrecoverable units, by reason:**
+
+| reason | units |
+|---|---:|
+| unknown-disposition-above-determining | 3 |
+| unreadable-finder-transcript | 1 |
+| multi-round-unit | 11 |
+
+`unknown-disposition-above-determining` is the recoverability rule itself: the
+walk stops at the first candidate whose disposition cannot be read, because an
+ungraded finding ranked **above** the determining one could itself have been
+the determining finding at a better rank. An ungraded finding ranked strictly
+**below** it cannot change the answer and is harmless — that asymmetry is what
+makes 82.1 % recoverable rather than far less.
+
+**Recoverability scoping: contamination is per unit, never run-wide.** Every
+reason above is decidable from the unit's own records. An agent whose unit
+identity does not resolve — chiefly the `--implementation-plan` target, which
+is itself pretty-printed JSON and is rejected by construction rather than
+captured as a fake identity — is attributable to **no** unit, so it marks no
+unit unrecoverable. It is counted separately: **252 orphan finders and 350
+orphan refuters across 26 runs** (that refuter figure reconciles exactly with
+§ Phase 1's `unrecoverableRefuterCount`, the same 350 counted the same way).
+This is phase 1's own precedent applied to units — it already sends an
+unresolved refuter to its own bucket and never lets it invalidate the units
+that *did* resolve in the same run. A run-wide rule would not be conservative
+but destructive: real runs mix many named units with an occasional orphan
+(phase 1's method note cites a 9-unit run), so a single bad target could zero
+out the recoverable share and manufacture a verdict out of a corpus artefact
+rather than out of the data. The missing-candidate hazard such a rule reaches
+for is caught locally instead, by `dimension-coverage-gap` — the unit's own
+finder set failing to cover the dimensions that were always-on for the whole
+window (code: `ac` + `correctness`; plan: `coherence` +
+`architectural-fit` — `restraint` is always-on today but shipped part-way
+through this window, so requiring it would flag pre-`restraint` units for an
+artefact of release timing), or the unit holding a refuter for a dimension it
+has no finder for. The residual risk this accepts is stated rather than
+imputed: an orphan **finder** could in principle have belonged to a named unit
+whose coverage nonetheless looks complete (an unlabeled retry, say), leaving
+that unit's candidate list short and its rank understated. The 252 orphan
+finders are the explicit upper bound on how many units could be understated
+that way; it is bounded and reported, never repaired by guesswork, and it
+never invalidates a unit that did resolve.
+
+**Tier is not recoverable.** It is threaded through `context` at runtime and
+embedded in neither prompt, so no unit can be attributed to one. The headline
+uses the default blocker set (`['blocking']`); the `largeTier` variant re-runs
+the identical walk with the set widened to `['blocking','concern']` rather
+than guessing a tier from an agent's model id. It yields 55 determining units
+with ranks 1 (37), 2 (14), 3 (1), 4 (2) and 7 (1) — **52 within top 3
+(94.5 %)** and **54 within top 5 (98.2 %)**. Widening the blocker set can only
+move a determining finding earlier in the same ranking, so both counts are
+monotone above the default tier's; `--audit` asserts that directly.
+
+**The `ac`-table side channel** is a second outcome path this measurement
+deliberately does not score. In code mode `classifyOutcome` routes a
+FAIL/PARTIAL AC table through `acTableHasGap` directly, never through finding
+severity or refutation, so a unit can have been `rework` with no gating finding
+at all. **3** units carried such a table; they are reported as their own
+diagnostic and are *not* folded into the non-determining count. This phase's
+question is scoped to `hasBlocking`.
+
+**Verdict: the evidence SUPPORTS a cap.** Phase 4 should cap refutation, and
+should choose **N = 5**. The threshold rule that produces this — exported as
+`CAP_VERDICT_RULE` and re-derived from the committed figures by `--audit`, so
+the conclusion cannot drift from the data it reads — is: `supports-cap` iff the
+top-5 share is ≥ 95 % of determining units **and** the recoverable share is
+≥ 50 % **and** there are ≥ 20 determining units; `kills-cap` iff the top-5
+share is below 80 %; `inconclusive` otherwise, explicitly including "too few
+recoverable units to speak to it". Here: 100 %, 82.1 %, and 29 units. N = 3 is
+supported at the default blocker set (100 %) but slips to 94.5 % at the `large`
+tier, which the corpus cannot rule out per unit; N = 5 clears the bar at both
+(100 % and 98.2 %), so N = 5 is the choice the evidence actually backs.
+
+Had the distribution not concentrated, recording that would have been this
+phase's terminal finding and the evidence for phase 4 to conclude "do not cap";
+`kills-cap` and `inconclusive` are first-class outcomes of the same derived
+rule, not failure modes.
+
+Two caveats carried forward:
+
+- **Not subtractable against § "Per-agent-class token breakdown" or § "Phase
+  6"** — the corpus has grown since the run-set measurement (40 runs / 1,943
+  agent records vs 48 / 2,208 here). Compare only within this section.
+- **Phase 1's recovery rate bounds this one.** Phase 1 recovered a unit for
+  64.6 % of refuters over this same window, which bounds how much of the corpus
+  this section can speak to; 82.1 % of *units* resolved within that bound. Two
+  further limits on the disposition half: the corpus cannot distinguish a
+  refuter that crashed (which the live pipeline keeps as un-refuted) from one
+  whose transcript is simply absent, so both are read as `unknown` —
+  conservative, and possibly divergent from what the pipeline actually did; and
+  the window straddles `workflow-token-reduction` phase 6, before which
+  `suggestion` findings were refuted and after which they pass through
+  ungraded, so a missing refuter for a suggestion is legitimate while a missing
+  refuter for a gating finding is unknown.
+
+**This phase changes no lane behavior.** Nothing under `.claude/workflows/`,
+`.claude/skills/` or `rdm-core/src/templates/` is modified — `review.mjs` is
+imported read-only. The cap this measurement informs is phase 4's to build.
+
+Gating: every figure above is `--check`-gated against the real corpus
+(`node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json`)
+and, corpus-free, `--audit`-gated by `scripts/verify-token-report.sh` section 7
+on any machine — including the supports/kills verdict, which `--audit`
+re-derives from the doc's own numbers. The prose framing is provenance-only.
+
 ## Refuter model tiering
 
 Refuters run on the most expensive tier everywhere (`review-verify` resolves to

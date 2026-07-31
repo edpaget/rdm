@@ -40,12 +40,15 @@
 //                      re-baseline a committed figure.
 //   --format text|json Output format (default: text).
 //   --check <doc>      Recompute over the corpus and assert the figures match
-//                      <doc>'s `nonGatingRefutationSkip` section exactly.
-//                      Applies the window recorded in that section unless
-//                      --until overrides it.
+//                      <doc>'s `nonGatingRefutationSkip`, `refuterFanout` and
+//                      `determiningFindingRank` sections exactly. Applies the
+//                      window recorded in the first section unless --until
+//                      overrides it.
 //   --audit <doc>      Corpus-FREE arithmetic audit of <doc>'s own
-//                      `nonGatingRefutationSkip` numbers (rows vs totals,
-//                      projected drop vs the non-gating row, percentages).
+//                      `nonGatingRefutationSkip` / `refuterFanout` /
+//                      `determiningFindingRank` numbers (rows vs totals,
+//                      projected drop vs the non-gating row, percentages, the
+//                      unit-status partition, and the re-derived cap verdict).
 //                      Reads no sidecars, so it gates the committed figures on
 //                      any machine.
 //   --help             Print this help and exit.
@@ -65,6 +68,30 @@ import {
   transcriptPathFor,
   percentile,
 } from './lib/token-report.mjs';
+// THE RANKING AND GATING RULE IS IMPORTED, NEVER REIMPLEMENTED.
+//
+// This phase's whole question is "where in the ranking does the finding that
+// determined the outcome sit?", and its answer is only worth anything if the
+// ranking it replays is the SAME ranking the live pipeline applies. A copy of
+// `rankFindings`/`survives`/`hasBlocking` — even a faithful one — could drift
+// from `.claude/workflows/lib/review.mjs` silently, and the measurement would
+// then be predicting the behavior of code that no longer exists. So the three
+// decision functions, the dimension table and the non-gating severity set are
+// all taken from the canonical review source, read-only. Nothing under
+// `.claude/workflows/` is modified by this instrument; it only imports.
+//
+// This import is safe from Node: review.mjs's top level is pure consts and
+// function declarations plus a Node-only `export {}` block, and the Workflow
+// globals (`agent()`/`pipeline()`/`parallel()`) are only touched INSIDE
+// `buildReviewPipeline`'s body, which this file never calls.
+import {
+  survives,
+  rankFindings,
+  hasBlocking,
+  acTableHasGap,
+  DIMENSIONS,
+  NON_GATING_SEVERITIES as LIB_NON_GATING_SEVERITIES,
+} from '../.claude/workflows/lib/review.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..');
@@ -83,6 +110,19 @@ const SEVERITY_ORDER = ['blocking', 'concern', 'suggestion'];
 // scripts/verify-token-report.sh, which greps the lib rather than trusting this
 // copy — the two live in different runtimes and cannot import each other.
 const NON_GATING_SEVERITIES = ['suggestion'];
+
+// ...and now that the canonical source is importable from here, pin the copy to
+// it at module load as well, so the duplicate can never drift even between
+// harness runs. (The grep-based pin in scripts/verify-token-report.sh stays: it
+// catches the drift without executing anything.)
+if (JSON.stringify(NON_GATING_SEVERITIES) !== JSON.stringify(LIB_NON_GATING_SEVERITIES)) {
+  throw new Error(
+    'NON_GATING_SEVERITIES drifted from .claude/workflows/lib/review.mjs: ' +
+      JSON.stringify(NON_GATING_SEVERITIES) +
+      ' vs ' +
+      JSON.stringify(LIB_NON_GATING_SEVERITIES)
+  );
+}
 
 // Buckets for refuters whose severity could not be recovered. Reported
 // separately and NEVER counted toward the projected drop: an unrecoverable
@@ -267,6 +307,89 @@ export function extractRefuterContext(prompt) {
   return { dimKey, unitIdent: isPlausibleUnitIdent(candidate) ? candidate : null };
 }
 
+// The fixed markers `findPrompt` always writes, and the two literal `diffHint`
+// lines that terminate the target it interpolates. All three are verbatim
+// substrings of the prompt built in .claude/workflows/lib/review.mjs's
+// `findPrompt` — see that function for the exact template.
+const FIND_TARGET_MARKER = 'Review target: ';
+const FIND_DIFF_HINTS = [
+  '\nInspect the implementation diff (use git log / git diff in the worktree).',
+  '\nInspect the plan document text.',
+];
+const FIND_DIMENSION_MARKER = 'Your single dimension is ';
+const FIND_DIMENSION_KEY = /^[^\n]*?\(([^()\n]+)\)/;
+
+// The Workflow runtime suffixes a retried dispatch's label with " (retry N)".
+// That suffix names the ATTEMPT, not the dimension (see buildRefuterFanout).
+const RETRY_LABEL_SUFFIX = / \(retry \d+\)$/;
+
+/**
+ * Recover the review-unit identity and dimension a FINDER was pointed at, from
+ * its own initiating prompt.
+ *
+ * This is a SECOND READER OF THE SAME KEY `extractRefuterContext` reads, not a
+ * new key. `findPrompt` writes `'Review target: ' + context.target + '.'` from
+ * the identical `context.target` that `refutePrompt` interpolates into its
+ * `... finding against <target>:` header, so both recover the same identity for
+ * the same unit — which is exactly what lets a finder's findings and a
+ * refuter's verdict be joined into one review unit.
+ *
+ * Nothing here (and nothing anywhere in the determining-rank measurement) reads
+ * `phaseTitle`/`phaseIndex`. Those are the workflow's own pipeline stages and
+ * are identical across every review unit of a plan-review run — see
+ * `buildRefuterFanout` for the measured evidence.
+ *
+ * The trailing-punctuation asymmetry mirrors `extractRefuterContext` exactly:
+ *
+ *   - **plan mode**: `target` is MULTI-line (`'phase <roadmap>/<stem>\n\n<body>'`),
+ *     so its first line already IS the identity and the `.` `findPrompt`
+ *     appends sits many lines later, on the body's last line. Never strip it.
+ *   - **code mode**: `target` is a single-line bare `task/<slug>` or
+ *     `<roadmap>/<stem>`, so the appended `.` sits on the SAME line and is
+ *     stripped instead.
+ *
+ * The target's extent is bounded by the `diffHint` line `findPrompt` always
+ * writes immediately after it — the finder-side equivalent of the finding-JSON
+ * span that bounds the refuter-side header.
+ *
+ * @param {string} prompt
+ * @returns {{ dimKey: string|null, unitIdent: string|null }}
+ */
+export function extractFinderContext(prompt) {
+  if (typeof prompt !== 'string') return { dimKey: null, unitIdent: null };
+  const markerAt = prompt.indexOf(FIND_TARGET_MARKER);
+  if (markerAt === -1) return { dimKey: null, unitIdent: null };
+  const rest = prompt.slice(markerAt + FIND_TARGET_MARKER.length);
+  let end = -1;
+  for (const hint of FIND_DIFF_HINTS) {
+    const at = rest.indexOf(hint);
+    if (at !== -1 && (end === -1 || at < end)) end = at;
+  }
+  if (end === -1) return { dimKey: null, unitIdent: null };
+  const targetPlusDot = rest.slice(0, end);
+  const newlineAt = targetPlusDot.indexOf('\n');
+  const candidate =
+    newlineAt !== -1
+      ? targetPlusDot.slice(0, newlineAt)
+      : targetPlusDot.endsWith('.')
+        ? targetPlusDot.slice(0, -1)
+        : targetPlusDot;
+
+  // The dimension key is the parenthesised `dim.key` on the "Your single
+  // dimension is <title> (<key>)." line. Read from the prompt rather than the
+  // label so both sides of the finder↔refuter join use a prompt-derived
+  // dimension (a refuter's label displaces its dimension whenever the finder
+  // supplied `f.id`), and so a retry-suffixed label can never leak in.
+  let dimKey = null;
+  const dimAt = prompt.indexOf(FIND_DIMENSION_MARKER, markerAt);
+  if (dimAt !== -1) {
+    const m = FIND_DIMENSION_KEY.exec(prompt.slice(dimAt + FIND_DIMENSION_MARKER.length));
+    if (m) dimKey = m[1];
+  }
+
+  return { dimKey, unitIdent: isPlausibleUnitIdent(candidate) ? candidate : null };
+}
+
 /**
  * Read one refuter transcript and recover BOTH halves of what it did: the
  * severity of the finding it was handed (from its initiating user turn) and the
@@ -278,21 +401,27 @@ export function extractRefuterContext(prompt) {
  * `dimKey`/`unitIdent` are pulled from the SAME initiating turn's prompt text
  * via `extractRefuterContext` — one read, one scan, no second transcript pass.
  *
+ * `finding` is the WHOLE parsed finding object (not just its severity) — the
+ * determining-rank measurement joins each refuter back to the candidate finding
+ * it graded, and needs the finding's `id` (or, when that is missing or
+ * duplicated, its full structure) to do so.
+ *
  * @param {string} filePath
- * @returns {{ severity: string|null, refuted: boolean|null, dimKey: string|null, unitIdent: string|null }}
+ * @returns {{ severity: string|null, refuted: boolean|null, dimKey: string|null, unitIdent: string|null, finding: object|null }}
  */
 export function readRefuterTranscript(filePath) {
   let raw;
   try {
     raw = fs.readFileSync(filePath, 'utf8');
   } catch {
-    return { severity: null, refuted: null, dimKey: null, unitIdent: null };
+    return { severity: null, refuted: null, dimKey: null, unitIdent: null, finding: null };
   }
   let severity = null;
   let severitySeen = false;
   let refuted = null;
   let dimKey = null;
   let unitIdent = null;
+  let finding = null;
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -308,7 +437,7 @@ export function readRefuterTranscript(filePath) {
       // turns are tool_result arrays, which this type check skips.
       if (typeof content !== 'string') continue;
       severitySeen = true;
-      const finding = extractFinding(content);
+      finding = extractFinding(content);
       severity = finding && typeof finding.severity === 'string' ? finding.severity : null;
       const ctx = extractRefuterContext(content);
       dimKey = ctx.dimKey;
@@ -328,7 +457,7 @@ export function readRefuterTranscript(filePath) {
       }
     }
   }
-  return { severity, refuted, dimKey, unitIdent };
+  return { severity, refuted, dimKey, unitIdent, finding };
 }
 
 /**
@@ -343,18 +472,38 @@ export function readRefuterTranscript(filePath) {
  * yields `0`, not `null`, so it is never conflated with an unreadable
  * transcript.
  *
+ * The determining-rank measurement needs three more things from the same single
+ * read, so they ride alongside without disturbing `findingsCount`'s semantics
+ * (phase 1's `refuterFanout` figures depend on those being unchanged):
+ *
+ *   - `findings` — the WHOLE array, not just its length: it is this unit's
+ *     candidate list, the thing a refutation budget would truncate.
+ *   - `acTable`  — the `ac` dimension's structured code-mode table, for the
+ *     `acTableHasGap` side-channel diagnostic.
+ *   - `dimKey`/`unitIdent` — from the initiating prompt, via
+ *     `extractFinderContext`.
+ *
+ * `findings` is `null` under exactly the same condition as `findingsCount`
+ * (no StructuredOutput ever seen), so "unknown findings" and "zero findings"
+ * stay distinguishable on both.
+ *
  * @param {string} filePath
- * @returns {{ findingsCount: number|null }}
+ * @returns {{ findingsCount: number|null, findings: object[]|null, acTable: object[]|null, dimKey: string|null, unitIdent: string|null }}
  */
 export function readFinderTranscript(filePath) {
   let raw;
   try {
     raw = fs.readFileSync(filePath, 'utf8');
   } catch {
-    return { findingsCount: null };
+    return { findingsCount: null, findings: null, acTable: null, dimKey: null, unitIdent: null };
   }
   let sawStructuredOutput = false;
   let findingsCount = null;
+  let findings = null;
+  let acTable = null;
+  let promptSeen = false;
+  let dimKey = null;
+  let unitIdent = null;
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -362,6 +511,17 @@ export function readFinderTranscript(filePath) {
     try {
       entry = JSON.parse(trimmed);
     } catch {
+      continue;
+    }
+    if (!promptSeen && entry.type === 'user') {
+      const content = entry.message && entry.message.content;
+      // The INITIATING turn carries the prompt as a bare string; later user
+      // turns are tool_result arrays, which this type check skips.
+      if (typeof content !== 'string') continue;
+      promptSeen = true;
+      const ctx = extractFinderContext(content);
+      dimKey = ctx.dimKey;
+      unitIdent = ctx.unitIdent;
       continue;
     }
     if (entry.type !== 'assistant') continue;
@@ -373,11 +533,19 @@ export function readFinderTranscript(filePath) {
         // last-write-wins convention.
         sawStructuredOutput = true;
         const input = block.input || {};
-        findingsCount = Array.isArray(input.findings) ? input.findings.length : 0;
+        findings = Array.isArray(input.findings) ? input.findings : [];
+        findingsCount = findings.length;
+        acTable = Array.isArray(input.ac) ? input.ac : null;
       }
     }
   }
-  return { findingsCount: sawStructuredOutput ? findingsCount : null };
+  return {
+    findingsCount: sawStructuredOutput ? findingsCount : null,
+    findings: sawStructuredOutput ? findings : null,
+    acTable,
+    dimKey,
+    unitIdent,
+  };
 }
 
 /**
@@ -436,6 +604,7 @@ export function measure(options = {}) {
     r.refuted = null;
     r.dimKey = null;
     r.unitIdent = null;
+    r.finding = null;
     const sessionDir = sessionDirOf.get(`${r.projectSlug}|${r.sessionId}|${r.runId}`);
     if (!sessionDir || !r.agentId) {
       r.severity = NO_TRANSCRIPT;
@@ -455,6 +624,7 @@ export function measure(options = {}) {
     if (r.severity !== UNPARSEABLE) {
       r.dimKey = recovered.dimKey;
       r.unitIdent = recovered.unitIdent;
+      r.finding = recovered.finding;
     }
   }
 
@@ -475,6 +645,11 @@ export function measure(options = {}) {
     laneTotals: stripKey(laneTotals),
     projected: projectDrop(bySeverity, refuteTotals, laneTotals),
     refuterFanout: buildRefuterFanout(finders, refuters, sessionDirOf),
+    // Built from the SAME `records`/`sessionDirOf` — and therefore the same
+    // already-filtered `runFiles` — so `--until` applies identically here and
+    // a committed rank figure cannot silently re-baseline while the phase-1
+    // figures stay pinned.
+    determiningFindingRank: buildDeterminingFindingRank(finders, refuters, sessionDirOf),
   };
 }
 
@@ -600,6 +775,465 @@ function buildRefuterFanout(finders, refuters, sessionDirOf) {
       unrecoverableRefuterCount,
       recoveryRatePercent: pct(recoveredRefuters, totalRefuters),
     },
+  };
+}
+
+// --- Determining-finding rank ---------------------------------------------
+//
+// THE QUESTION: where in a ranked list does the finding that actually
+// determined the outcome sit? A refutation budget that grades only the top N
+// candidates is free iff that finding is almost always near the top, and sheds
+// real signal iff the rank is spread out.
+//
+// RANKED OVER THE CANDIDATE LIST, NOT THE SURVIVOR LIST. Ranking among
+// SURVIVORS is degenerate: `SEVERITY_RANK` orders blocking(0) < concern(1) <
+// suggestion(2), so the top-ranked survivor IS by construction the one that
+// makes `hasBlocking` true, and the answer would be a constant 1 for every
+// determining unit — a tautology, not a measurement. A refutation budget
+// truncates the CANDIDATE list (what the finders emitted) before any of it is
+// graded, so the candidate list is the ranking a cap would actually apply, and
+// it is the one measured here.
+
+// The closed reason vocabulary for a unit whose rank cannot be reconstructed,
+// in fixed report order. Every reason is decidable from the unit's OWN records.
+// There is deliberately NO run-wide reason (e.g. "an orphan agent shared this
+// unit's run") — see `buildUnitCandidates` for why.
+const RANK_UNRECOVERABLE_REASONS = [
+  'unknown-disposition-above-determining',
+  'unreadable-finder-transcript',
+  'dimension-coverage-gap',
+  'multi-round-unit',
+  'ambiguous-finding-join',
+];
+
+// The dimensions whose ABSENCE from a unit's own finder set is positive local
+// evidence that its candidate list is incomplete.
+//
+// This is deliberately a CORPUS-STABLE SUBSET of review.mjs's always-on
+// dimensions, not the whole set: `restraint` is always-on in `plan` mode TODAY
+// but was added part-way through the measured window (§ refuterFanout:
+// plan:restraint n=26 against plan:coherence n=118), so requiring it would
+// mark every pre-restraint plan unit incomplete for a reason that is an artefact
+// of when the dimension shipped rather than of the corpus. The four listed here
+// have been always-on for the whole window. `assertCoverageDimensions` below
+// pins them to review.mjs so this can only ever be a subset of the real
+// always-on set, never a divergent list.
+const COVERAGE_REQUIRED_DIMENSIONS = {
+  code: ['ac', 'correctness'],
+  plan: ['coherence', 'architectural-fit'],
+};
+
+function assertCoverageDimensions() {
+  for (const [mode, keys] of Object.entries(COVERAGE_REQUIRED_DIMENSIONS)) {
+    const alwaysOn = (DIMENSIONS[mode] || []).filter((d) => !d.when).map((d) => d.key);
+    for (const k of keys) {
+      if (alwaysOn.indexOf(k) === -1) {
+        throw new Error(
+          `COVERAGE_REQUIRED_DIMENSIONS.${mode} names "${k}", which is not an always-on dimension in ` +
+            '.claude/workflows/lib/review.mjs — the coverage check must stay a subset of the real always-on set'
+        );
+      }
+    }
+  }
+}
+assertCoverageDimensions();
+
+/** Stable structural key for a finding, used when an `id` join is unusable. */
+function structuralKey(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value === undefined ? null : value);
+  if (Array.isArray(value)) return '[' + value.map(structuralKey).join(',') + ']';
+  const keys = Object.keys(value).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + structuralKey(value[k])).join(',') + '}';
+}
+
+function runKeyOf(r) {
+  return `${r.projectSlug}|${r.sessionId}|${r.runId}`;
+}
+
+/**
+ * Group every finder and refuter into review units keyed by phase 1's
+ * prompt-derived key (`projectSlug|sessionId|runId|unitIdent`), assemble each
+ * unit's candidate finding list from its finders' own StructuredOutput output,
+ * attach each candidate's refuter disposition, and record any TIER-INDEPENDENT
+ * structural reason the unit cannot be reconstructed.
+ *
+ * ORPHAN CONTAMINATION IS PER UNIT, NEVER RUN-WIDE. An agent whose `unitIdent`
+ * does not resolve — chiefly the `--implementation-plan` target, which is itself
+ * pretty-printed JSON and is rejected by `isPlausibleUnitIdent` by construction
+ * — cannot be attributed to ANY unit, so it marks no unit unrecoverable. It is
+ * counted in the `orphanAgents` diagnostic and reported. This is exactly phase
+ * 1's own precedent (an unresolved refuter goes to `unrecoverableRefuterCount`
+ * and is never bucketed into a unit, while the units that DID resolve in that
+ * run stay valid). A run-wide rule would not be conservative but destructive:
+ * real runs mix many named units with an occasional orphan (a 9-unit run is
+ * cited in `buildRefuterFanout`), so it could zero out the recoverable share on
+ * one bad target and manufacture a verdict out of a corpus artefact. The
+ * missing-candidate hazard such a rule reaches for is caught locally instead, by
+ * `dimension-coverage-gap`.
+ *
+ * @param {ReturnType<typeof buildRecords>} finders
+ * @param {ReturnType<typeof buildRecords>} refuters - already annotated with
+ *   `dimKey`/`unitIdent`/`refuted`/`finding` by measure()'s loop.
+ * @param {Map<string, string>} sessionDirOf
+ */
+export function buildUnitCandidates(finders, refuters, sessionDirOf) {
+  const units = new Map();
+  const orphan = { finders: 0, refuters: 0, runs: new Set() };
+
+  function unitFor(rec, unitIdent, mode) {
+    const key = `${runKeyOf(rec)}|${unitIdent}`;
+    let u = units.get(key);
+    if (!u) {
+      u = { key, mode: mode || null, finders: [], refuters: [] };
+      units.set(key, u);
+    }
+    if (!u.mode && mode) u.mode = mode;
+    return u;
+  }
+
+  for (const f of finders) {
+    const parts = typeof f.label === 'string' ? f.label.split(':') : [];
+    const mode = parts.length === 3 && parts[0] === 'find' ? parts[1] : null;
+    const labelDim = parts.length === 3 ? parts[2].replace(RETRY_LABEL_SUFFIX, '') : null;
+    const isRetry = parts.length === 3 && RETRY_LABEL_SUFFIX.test(parts[2]);
+
+    const sessionDir = sessionDirOf.get(runKeyOf(f));
+    let t = null;
+    if (sessionDir && f.agentId) {
+      const transcriptPath = transcriptPathFor(sessionDir, f.runId, f.agentId);
+      if (fs.existsSync(transcriptPath)) t = readFinderTranscript(transcriptPath);
+    }
+    // No transcript at all, or a transcript whose prompt does not yield a
+    // plausible unit identity: not attributable to any unit, so it invalidates
+    // none. Counted and reported, never imputed.
+    if (!t || !t.unitIdent) {
+      orphan.finders += 1;
+      orphan.runs.add(runKeyOf(f));
+      continue;
+    }
+    const u = unitFor(f, t.unitIdent, mode);
+    u.finders.push({
+      dim: t.dimKey || labelDim,
+      isRetry,
+      findings: t.findings,
+      acTable: t.acTable,
+    });
+  }
+
+  for (const r of refuters) {
+    if (!r.unitIdent) {
+      orphan.refuters += 1;
+      orphan.runs.add(runKeyOf(r));
+      continue;
+    }
+    const parts = typeof r.label === 'string' ? r.label.split(':') : [];
+    const mode = parts.length >= 2 && parts[0] === 'refute' ? parts[1] : null;
+    const u = unitFor(r, r.unitIdent, mode);
+    u.refuters.push({ dim: r.dimKey, finding: r.finding, refuted: r.refuted });
+  }
+
+  const prepared = [...units.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  for (const u of prepared) prepareUnit(u);
+  return { units: prepared, orphan };
+}
+
+/**
+ * Resolve one unit's candidate list, dispositions and structural
+ * recoverability. Everything decided here is TIER-INDEPENDENT, so both the
+ * default-blocker-set and `largeTier` walks reuse it.
+ */
+function prepareUnit(u) {
+  // Retry supersession: a ` (retry N)` dispatch replaces the previous attempt at
+  // that dimension rather than adding a second candidate set. Two NON-retry
+  // finders at the same dimension are a different thing entirely — a second
+  // review round over the same target (`codeReviewRounds`), which collapses into
+  // one `unitIdent` and would silently inflate the candidate list. That unit is
+  // marked unrecoverable rather than guessed at.
+  const byDim = new Map();
+  for (const f of u.finders) {
+    const k = f.dim || '';
+    if (!byDim.has(k)) byDim.set(k, []);
+    byDim.get(k).push(f);
+  }
+  let multiRound = false;
+  const selected = [];
+  for (const [, group] of byDim) {
+    if (group.filter((f) => !f.isRetry).length > 1) multiRound = true;
+    selected.push(group[group.length - 1]);
+  }
+
+  u.candidates = [];
+  let unreadable = false;
+  for (const f of selected) {
+    // `findings === null` means no StructuredOutput was ever seen. A findings
+    // array carrying a non-object entry is agent-authored garbage that
+    // `rankFindings` would throw on; treat it the same way — the finder's
+    // output could not be read, so this unit's candidate list is incomplete —
+    // rather than crashing the whole measurement on one bad transcript.
+    if (f.findings === null || f.findings.some((x) => !x || typeof x !== 'object' || Array.isArray(x))) {
+      unreadable = true;
+      continue;
+    }
+    for (const finding of f.findings) {
+      u.candidates.push({ finding, dim: f.dim, verdict: null, disposition: 'unknown' });
+    }
+  }
+
+  const ambiguous = attachDispositions(u);
+
+  // dimension-coverage-gap: the unit's OWN evidence shows its candidate list is
+  // incomplete — either its finder set does not cover the always-on dimensions
+  // for its mode, or it has a refuter for a dimension it has no finder for.
+  const finderDims = new Set(selected.map((f) => f.dim));
+  let coverageGap = (COVERAGE_REQUIRED_DIMENSIONS[u.mode] || []).some((d) => !finderDims.has(d));
+  if (!coverageGap) {
+    for (const r of u.refuters) {
+      if (r.dim && !finderDims.has(r.dim)) {
+        coverageGap = true;
+        break;
+      }
+    }
+  }
+
+  u.acTableGap = u.finders.some((f) => acTableHasGap(f.acTable));
+
+  // Precedence: the reasons that invalidate the candidate list itself come
+  // first, because a walk over a wrong list can produce a plausible wrong rank.
+  u.structuralReason = multiRound
+    ? 'multi-round-unit'
+    : ambiguous
+      ? 'ambiguous-finding-join'
+      : unreadable
+        ? 'unreadable-finder-transcript'
+        : coverageGap
+          ? 'dimension-coverage-gap'
+          : null;
+}
+
+/**
+ * Join each candidate finding to the refuter that graded it and record the
+ * resulting disposition. Returns true if any join was ambiguous.
+ *
+ * A candidate with NO matching refuter is a legitimate post-phase-6 pass-through
+ * when its severity is non-gating (`unrefuted: true`, verdict stays null); with
+ * a gating severity it is `unknown`, because the corpus cannot tell a refuter
+ * that was never dispatched from one whose transcript is missing. A refuter
+ * whose own verdict could not be read is `unknown` for the same reason. Nothing
+ * is imputed either way.
+ */
+function attachDispositions(u) {
+  const byDim = new Map();
+  for (const r of u.refuters) {
+    const k = r.dim || '';
+    if (!byDim.has(k)) byDim.set(k, []);
+    byDim.get(k).push(r);
+  }
+  let ambiguous = false;
+  for (const c of u.candidates) {
+    const pool = byDim.get(c.dim || '') || [];
+    const id = c.finding && c.finding.id;
+    let match = null;
+    const byId = id == null ? [] : pool.filter((r) => r.finding && r.finding.id === id);
+    if (byId.length === 1) {
+      match = byId[0];
+    } else {
+      // Missing or duplicated `id`: fall back to a structural deep-equal of the
+      // finding JSON the refuter was actually handed.
+      const wanted = structuralKey(c.finding);
+      const deep = pool.filter((r) => r.finding && structuralKey(r.finding) === wanted);
+      if (deep.length === 1) match = deep[0];
+      else if (deep.length > 1 || byId.length > 1) ambiguous = true;
+    }
+    if (match) {
+      if (typeof match.refuted === 'boolean') {
+        c.verdict = { refuted: match.refuted };
+        c.disposition = 'resolved';
+      } else {
+        c.verdict = null;
+        c.disposition = 'unknown';
+      }
+      continue;
+    }
+    const severity = c.finding && c.finding.severity;
+    if (NON_GATING_SEVERITIES.indexOf(severity) !== -1) {
+      c.verdict = null;
+      c.disposition = 'resolved';
+    } else {
+      c.verdict = null;
+      c.disposition = 'unknown';
+    }
+  }
+  return ambiguous;
+}
+
+/**
+ * Reconstruct the rank of the outcome-determining finding for ONE unit.
+ *
+ * UNIT STATUSES ARE DECIDED PER UNIT, FROM EVIDENCE LOCAL TO THAT UNIT — never
+ * run-wide. No condition observed on a sibling unit, and no agent that could not
+ * be attributed to any unit, may change this unit's status.
+ *
+ * The walk stops at the FIRST candidate whose disposition is `unknown`: an
+ * ungraded finding ranked ABOVE the determining one could itself have been the
+ * determining finding, at a better rank. An unknown ranked strictly BELOW the
+ * determining finding cannot change the answer and is therefore harmless —
+ * that asymmetry is the recoverability rule.
+ *
+ * @returns {{ status: 'determining', rank: number } | { status: 'non-determining' } | { status: 'unrecoverable', reason: string }}
+ */
+export function determineRankForUnit(unit, tier) {
+  if (unit.structuralReason) return { status: 'unrecoverable', reason: unit.structuralReason };
+  const byFinding = new Map();
+  for (const c of unit.candidates) if (!byFinding.has(c.finding)) byFinding.set(c.finding, c);
+  const ranked = rankFindings(unit.candidates.map((c) => c.finding));
+  for (let i = 0; i < ranked.length; i++) {
+    const c = byFinding.get(ranked[i]);
+    if (!c || c.disposition === 'unknown') {
+      return { status: 'unrecoverable', reason: 'unknown-disposition-above-determining' };
+    }
+    if (survives(c.finding, c.verdict) && hasBlocking([c.finding], tier)) {
+      return { status: 'determining', rank: i + 1 };
+    }
+  }
+  return { status: 'non-determining' };
+}
+
+/** The N values phase 4 will choose between, in fixed report order. */
+const WITHIN_TOP_N = [3, 5];
+
+function summarizeTier(units, tier) {
+  const reasons = new Map();
+  const ranks = [];
+  let determining = 0;
+  let nonDetermining = 0;
+  let unrecoverable = 0;
+  const candidateSizes = [];
+
+  for (const u of units) {
+    const outcome = determineRankForUnit(u, tier);
+    if (outcome.status === 'determining') {
+      determining += 1;
+      ranks.push(outcome.rank);
+      candidateSizes.push(u.candidates.length);
+    } else if (outcome.status === 'non-determining') {
+      nonDetermining += 1;
+      candidateSizes.push(u.candidates.length);
+    } else {
+      unrecoverable += 1;
+      reasons.set(outcome.reason, (reasons.get(outcome.reason) || 0) + 1);
+    }
+  }
+
+  const total = units.length;
+  const recoverable = determining + nonDetermining;
+  const histogram = new Map();
+  for (const r of ranks) histogram.set(r, (histogram.get(r) || 0) + 1);
+
+  return {
+    units: {
+      total,
+      determining,
+      nonDetermining,
+      unrecoverable,
+      recoverable,
+      recoverableSharePercent: pct(recoverable, total),
+    },
+    unrecoverableByReason: RANK_UNRECOVERABLE_REASONS.filter((r) => reasons.has(r)).map((reason) => ({
+      reason,
+      count: reasons.get(reason),
+    })),
+    rankHistogram: [...histogram.keys()].sort((a, b) => a - b).map((rank) => ({ rank, count: histogram.get(rank) })),
+    rankSummary: ranks.length > 0 ? summarizeCounts(ranks) : null,
+    withinTop: WITHIN_TOP_N.map((n) => {
+      const count = ranks.filter((r) => r <= n).length;
+      return { n, count, percentOfDetermining: pct(count, determining), percentOfRecoverable: pct(count, recoverable) };
+    }),
+    candidateSetSize: candidateSizes.length > 0 ? summarizeCounts(candidateSizes) : null,
+  };
+}
+
+/**
+ * The thresholds that turn the measured distribution into a supports/kills
+ * answer. Named and exported so the conclusion is DERIVED from the figures and
+ * re-derivable by `auditRankDoc`, never a hand-written sentence that can drift
+ * from the data it claims to read.
+ */
+export const CAP_VERDICT_RULE = {
+  supportsCapAtOrAbovePercent: 95,
+  killsCapBelowPercent: 80,
+  minRecoverableSharePercent: 50,
+  minDeterminingUnits: 20,
+  basis:
+    'withinTop n=5, as a percentage of DETERMINING units; a cap is only supported when enough units were ' +
+    'recoverable to speak to it at all.',
+};
+
+/**
+ * `supports-cap` | `kills-cap` | `inconclusive` — a non-concentrating
+ * distribution, or too few recoverable units to speak to one, is a first-class
+ * recordable answer, not a measurement failure.
+ */
+export function deriveCapVerdict(inputs) {
+  const determining = inputs.determining || 0;
+  const share = inputs.recoverableSharePercent || 0;
+  const top5 = inputs.withinTop5PercentOfDetermining || 0;
+  if (determining < CAP_VERDICT_RULE.minDeterminingUnits) return 'inconclusive';
+  if (top5 < CAP_VERDICT_RULE.killsCapBelowPercent) return 'kills-cap';
+  if (top5 >= CAP_VERDICT_RULE.supportsCapAtOrAbovePercent && share >= CAP_VERDICT_RULE.minRecoverableSharePercent) {
+    return 'supports-cap';
+  }
+  return 'inconclusive';
+}
+
+function capVerdictInputs(base) {
+  const top5 = base.withinTop.find((w) => w.n === 5);
+  return {
+    determining: base.units.determining,
+    recoverable: base.units.recoverable,
+    total: base.units.total,
+    recoverableSharePercent: base.units.recoverableSharePercent,
+    withinTop5PercentOfDetermining: top5 ? top5.percentOfDetermining : 0,
+  };
+}
+
+/**
+ * Build the `determiningFindingRank` report block: the headline distribution at
+ * the default blocker set, a `largeTier` sensitivity variant, the orphan-agent
+ * diagnostic, the `ac`-table side-channel diagnostic, and the derived cap
+ * verdict.
+ */
+export function buildDeterminingFindingRank(finders, refuters, sessionDirOf) {
+  const { units, orphan } = buildUnitCandidates(finders, refuters, sessionDirOf);
+  const base = summarizeTier(units, undefined);
+  // The tier is threaded through `context` at runtime and is embedded in NEITHER
+  // prompt, so it is not recoverable per unit. The headline uses the default
+  // blocker set (['blocking']); this variant widens it to ['blocking','concern']
+  // so a reader can see how much the answer moves rather than guessing a tier.
+  const large = summarizeTier(units, 'large');
+  const inputs = capVerdictInputs(base);
+
+  return {
+    units: base.units,
+    unrecoverableByReason: base.unrecoverableByReason,
+    orphanAgents: { finders: orphan.finders, refuters: orphan.refuters, runsAffected: orphan.runs.size },
+    rankHistogram: base.rankHistogram,
+    ...(base.rankSummary ? { rankSummary: base.rankSummary } : {}),
+    withinTop: base.withinTop,
+    ...(base.candidateSetSize ? { candidateSetSize: base.candidateSetSize } : {}),
+    largeTier: {
+      units: large.units,
+      rankHistogram: large.rankHistogram,
+      ...(large.rankSummary ? { rankSummary: large.rankSummary } : {}),
+      withinTop: large.withinTop,
+    },
+    // The `ac` dimension is a SECOND outcome channel: in code mode
+    // `classifyOutcome` routes a FAIL/PARTIAL AC table through `acTableHasGap`
+    // directly, never through finding severity, so a unit can have been
+    // `rework` with no gating finding at all. Reported as its own diagnostic —
+    // this phase's question is scoped to `hasBlocking`, and such a unit is NOT
+    // folded into `non-determining`.
+    acTableGapUnits: units.filter((u) => u.acTableGap).length,
+    capVerdict: { verdict: deriveCapVerdict(inputs), rule: CAP_VERDICT_RULE, inputs },
   };
 }
 
@@ -763,7 +1397,7 @@ function renderText(report) {
   );
   out.push('');
 
-  const u = report.refuterCountsByUnit;
+  const u = report.refuterFanout.refuterCountsByUnit;
   out.push('Refuters dispatched per review unit (unit identity from each refuter\'s own prompt):');
   out.push('');
   out.push('| units | min | p50 | p90 | max |');
@@ -774,6 +1408,61 @@ function renderText(report) {
     'Unit recovered for ' + u.recoveredRefuters + '/' + u.totalRefuters + ' refuters (' + u.recoveryRatePercent +
       '%); ' + u.unrecoverableRefuterCount + ' unrecoverable (never bucketed into any unit).'
   );
+  out.push('');
+
+  const d = report.determiningFindingRank;
+  out.push('Rank of the outcome-determining finding, over each unit\'s full CANDIDATE list');
+  out.push('(ranking among survivors is degenerate — severity sorts first, so it is always 1):');
+  out.push('');
+  out.push('| rank | units |');
+  out.push('|---:|---:|');
+  for (const row of d.rankHistogram) out.push('| ' + row.rank + ' | ' + row.count + ' |');
+  if (d.rankHistogram.length === 0) out.push('| _(no determining units)_ | 0 |');
+  out.push('');
+  out.push('| units | determining | non-determining | unrecoverable | recoverable | recoverable share |');
+  out.push('|---:|---:|---:|---:|---:|---:|');
+  out.push(
+    '| ' +
+      [
+        d.units.total,
+        d.units.determining,
+        d.units.nonDetermining,
+        d.units.unrecoverable,
+        d.units.recoverable,
+        d.units.recoverableSharePercent + '%',
+      ].join(' | ') +
+      ' |'
+  );
+  out.push('');
+  for (const w of d.withinTop) {
+    out.push(
+      'Determining finding within top ' + w.n + ': ' + w.count + ' unit(s) — ' + w.percentOfDetermining +
+        '% of determining units, ' + w.percentOfRecoverable + '% of recoverable units, over a recoverable share of ' +
+        d.units.recoverableSharePercent + '% (' + d.units.recoverable + '/' + d.units.total + ' units).'
+    );
+  }
+  out.push('');
+  if (d.unrecoverableByReason.length > 0) {
+    out.push('| unrecoverable reason | units |');
+    out.push('|---|---:|');
+    for (const row of d.unrecoverableByReason) out.push('| ' + row.reason + ' | ' + row.count + ' |');
+    out.push('');
+  }
+  out.push(
+    'Orphan agents (unit identity unresolvable, attributable to no unit and therefore invalidating none): ' +
+      d.orphanAgents.finders + ' finder(s), ' + d.orphanAgents.refuters + ' refuter(s), across ' +
+      d.orphanAgents.runsAffected + ' run(s).'
+  );
+  out.push(
+    'Units whose `ac` table carried a FAIL/PARTIAL (a second outcome channel this measurement does not score): ' +
+      d.acTableGapUnits + '.'
+  );
+  out.push(
+    'Tier is not recoverable from either prompt; at the `large` blocker set (blocking+concern) the same corpus ' +
+      'yields ' + d.largeTier.units.determining + ' determining unit(s), ' +
+      d.largeTier.withinTop.map((w) => w.count + ' within top ' + w.n).join(', ') + '.'
+  );
+  out.push('Cap verdict (derived, not asserted): ' + d.capVerdict.verdict + '.');
   return out.join('\n');
 }
 
@@ -792,7 +1481,9 @@ function readDoc(docArg) {
   if (!section) throw new Error(`${docArg} has no "nonGatingRefutationSkip" section`);
   const fanoutSection = parsed.refuterFanout;
   if (!fanoutSection) throw new Error(`${docArg} has no "refuterFanout" section`);
-  return { docPath, section, fanoutSection };
+  const rankSection = parsed.determiningFindingRank;
+  if (!rankSection) throw new Error(`${docArg} has no "determiningFindingRank" section`);
+  return { docPath, section, fanoutSection, rankSection };
 }
 
 /** Compare a computed report against the doc's recorded figures. */
@@ -953,6 +1644,264 @@ export function auditFanoutDoc(fanoutSection) {
   return problems;
 }
 
+const RANK_SUMMARY_FIELDS = ['n', 'min', 'p50', 'p90', 'max'];
+
+/**
+ * Compare a computed report's `determiningFindingRank` against the doc's
+ * recorded figures, field by field.
+ */
+export function checkRankDoc(report, rankSection) {
+  const missing = [];
+  const got = report.determiningFindingRank;
+  const exp = rankSection || {};
+
+  function cmpUnits(gotU, expU, prefix) {
+    for (const f of ['total', 'determining', 'nonDetermining', 'unrecoverable', 'recoverable', 'recoverableSharePercent']) {
+      if ((expU || {})[f] !== gotU[f]) missing.push(`${prefix}.${f}: doc ${(expU || {})[f]} vs corpus ${gotU[f]}`);
+    }
+  }
+  function cmpHistogram(gotH, expH, prefix) {
+    const e = Array.isArray(expH) ? expH : [];
+    if (e.length !== gotH.length) {
+      missing.push(`${prefix} row count: doc has ${e.length}, corpus yields ${gotH.length}`);
+    }
+    const byRank = new Map(gotH.map((r) => [r.rank, r.count]));
+    for (const row of e) {
+      if (byRank.get(row.rank) !== row.count) {
+        missing.push(`${prefix}[rank ${row.rank}]: doc ${row.count} vs corpus ${byRank.get(row.rank)}`);
+      }
+    }
+  }
+  function cmpWithinTop(gotW, expW, prefix) {
+    const e = Array.isArray(expW) ? expW : [];
+    const byN = new Map(gotW.map((w) => [w.n, w]));
+    for (const w of e) {
+      const g = byN.get(w.n);
+      if (!g) {
+        missing.push(`${prefix}[n=${w.n}] is in the doc but not in the corpus`);
+        continue;
+      }
+      for (const f of ['count', 'percentOfDetermining', 'percentOfRecoverable']) {
+        if (w[f] !== g[f]) missing.push(`${prefix}[n=${w.n}].${f}: doc ${w[f]} vs corpus ${g[f]}`);
+      }
+    }
+  }
+  function cmpSummary(gotS, expS, prefix) {
+    if (!gotS && !expS) return;
+    if (!gotS || !expS) {
+      missing.push(`${prefix}: doc ${expS ? 'has' : 'omits'} it, corpus ${gotS ? 'has' : 'omits'} it`);
+      return;
+    }
+    for (const f of RANK_SUMMARY_FIELDS) {
+      if (expS[f] !== gotS[f]) missing.push(`${prefix}.${f}: doc ${expS[f]} vs corpus ${gotS[f]}`);
+    }
+  }
+
+  cmpUnits(got.units, exp.units, 'units');
+  const expReasons = Array.isArray(exp.unrecoverableByReason) ? exp.unrecoverableByReason : [];
+  if (expReasons.length !== got.unrecoverableByReason.length) {
+    missing.push(
+      `unrecoverableByReason row count: doc has ${expReasons.length}, corpus yields ${got.unrecoverableByReason.length}`
+    );
+  }
+  const gotReasons = new Map(got.unrecoverableByReason.map((r) => [r.reason, r.count]));
+  for (const row of expReasons) {
+    if (gotReasons.get(row.reason) !== row.count) {
+      missing.push(`unrecoverableByReason[${row.reason}]: doc ${row.count} vs corpus ${gotReasons.get(row.reason)}`);
+    }
+  }
+  for (const f of ['finders', 'refuters', 'runsAffected']) {
+    if ((exp.orphanAgents || {})[f] !== got.orphanAgents[f]) {
+      missing.push(`orphanAgents.${f}: doc ${(exp.orphanAgents || {})[f]} vs corpus ${got.orphanAgents[f]}`);
+    }
+  }
+  cmpHistogram(got.rankHistogram, exp.rankHistogram, 'rankHistogram');
+  cmpSummary(got.rankSummary, exp.rankSummary, 'rankSummary');
+  cmpWithinTop(got.withinTop, exp.withinTop, 'withinTop');
+  cmpSummary(got.candidateSetSize, exp.candidateSetSize, 'candidateSetSize');
+  if (exp.acTableGapUnits !== got.acTableGapUnits) {
+    missing.push(`acTableGapUnits: doc ${exp.acTableGapUnits} vs corpus ${got.acTableGapUnits}`);
+  }
+  const expLarge = exp.largeTier || {};
+  cmpUnits(got.largeTier.units, expLarge.units, 'largeTier.units');
+  cmpHistogram(got.largeTier.rankHistogram, expLarge.rankHistogram, 'largeTier.rankHistogram');
+  cmpSummary(got.largeTier.rankSummary, expLarge.rankSummary, 'largeTier.rankSummary');
+  cmpWithinTop(got.largeTier.withinTop, expLarge.withinTop, 'largeTier.withinTop');
+  if ((exp.capVerdict || {}).verdict !== got.capVerdict.verdict) {
+    missing.push(`capVerdict.verdict: doc ${(exp.capVerdict || {}).verdict} vs corpus ${got.capVerdict.verdict}`);
+  }
+  return missing;
+}
+
+/**
+ * Corpus-free audit of a doc's `determiningFindingRank`: is the unit partition
+ * exact, is every unrecoverable reason in the closed vocabulary, do the
+ * histogram and top-N counts reconcile against `determining`, do all the
+ * percentages re-derive from the doc's own counts, and does the recorded cap
+ * verdict re-derive from `deriveCapVerdict`?
+ *
+ * The verdict re-derivation is what makes the supports/kills claim machine-
+ * gated rather than asserted: a hand-written conclusion cannot drift from the
+ * numbers it reads without this failing.
+ */
+export function auditRankDoc(rankSection) {
+  const problems = [];
+  const s = rankSection || {};
+
+  function auditBlock(block, prefix, opts) {
+    const u = (block && block.units) || {};
+    const total = u.total || 0;
+    const determining = u.determining || 0;
+    const nonDetermining = u.nonDetermining || 0;
+    const unrecoverable = u.unrecoverable || 0;
+    const recoverable = u.recoverable || 0;
+    if (determining + nonDetermining + unrecoverable !== total) {
+      problems.push(
+        `${prefix}.units: determining + nonDetermining + unrecoverable (${determining + nonDetermining + unrecoverable}) !== total (${total})`
+      );
+    }
+    if (determining + nonDetermining !== recoverable) {
+      problems.push(`${prefix}.units.recoverable: doc ${recoverable}, derived ${determining + nonDetermining}`);
+    }
+    const derivedShare = pct(recoverable, total);
+    if (u.recoverableSharePercent !== derivedShare) {
+      problems.push(`${prefix}.units.recoverableSharePercent: doc ${u.recoverableSharePercent}, derived ${derivedShare}`);
+    }
+
+    const hist = Array.isArray(block && block.rankHistogram) ? block.rankHistogram : [];
+    const histSum = hist.reduce((n, r) => n + (r.count || 0), 0);
+    if (histSum !== determining) {
+      problems.push(`${prefix}.rankHistogram counts sum to ${histSum}, units.determining says ${determining}`);
+    }
+    for (let i = 1; i < hist.length; i++) {
+      if (!(hist[i - 1].rank < hist[i].rank)) {
+        problems.push(`${prefix}.rankHistogram is not in strictly ascending rank order`);
+        break;
+      }
+    }
+    const summary = block && block.rankSummary;
+    if (determining === 0 && summary) problems.push(`${prefix}.rankSummary is present with zero determining units`);
+    if (determining > 0) {
+      if (!summary) problems.push(`${prefix}.rankSummary is missing with ${determining} determining units`);
+      else {
+        if (summary.n !== determining) problems.push(`${prefix}.rankSummary.n: doc ${summary.n}, determining ${determining}`);
+        if (!(summary.min <= summary.p50 && summary.p50 <= summary.p90 && summary.p90 <= summary.max)) {
+          problems.push(
+            `${prefix}.rankSummary: min/p50/p90/max not monotonic (${summary.min}/${summary.p50}/${summary.p90}/${summary.max})`
+          );
+        }
+      }
+    }
+
+    const within = Array.isArray(block && block.withinTop) ? block.withinTop : [];
+    if (within.map((w) => w.n).join(',') !== WITHIN_TOP_N.join(',')) {
+      problems.push(`${prefix}.withinTop must carry exactly n=${WITHIN_TOP_N.join(' and n=')}, in that order`);
+    }
+    let previous = 0;
+    for (const w of within) {
+      const count = w.count || 0;
+      if (count < previous) problems.push(`${prefix}.withinTop[n=${w.n}].count (${count}) is below a smaller n's count`);
+      previous = count;
+      if (count > determining) {
+        problems.push(`${prefix}.withinTop[n=${w.n}].count (${count}) exceeds units.determining (${determining})`);
+      }
+      const dPct = pct(count, determining);
+      const rPct = pct(count, recoverable);
+      if (w.percentOfDetermining !== dPct) {
+        problems.push(`${prefix}.withinTop[n=${w.n}].percentOfDetermining: doc ${w.percentOfDetermining}, derived ${dPct}`);
+      }
+      if (w.percentOfRecoverable !== rPct) {
+        problems.push(`${prefix}.withinTop[n=${w.n}].percentOfRecoverable: doc ${w.percentOfRecoverable}, derived ${rPct}`);
+      }
+    }
+
+    if (opts && opts.withReasons) {
+      const reasons = Array.isArray(block && block.unrecoverableByReason) ? block.unrecoverableByReason : [];
+      const reasonSum = reasons.reduce((n, r) => n + (r.count || 0), 0);
+      if (reasonSum !== unrecoverable) {
+        problems.push(`${prefix}.unrecoverableByReason counts sum to ${reasonSum}, units.unrecoverable says ${unrecoverable}`);
+      }
+      let lastIdx = -1;
+      for (const r of reasons) {
+        const idx = RANK_UNRECOVERABLE_REASONS.indexOf(r.reason);
+        if (idx === -1) {
+          problems.push(
+            `${prefix}.unrecoverableByReason: "${r.reason}" is not in the closed vocabulary ` +
+              `[${RANK_UNRECOVERABLE_REASONS.join(', ')}] — unit statuses are decided PER UNIT, so there is no run-wide reason`
+          );
+        } else if (idx <= lastIdx) {
+          problems.push(`${prefix}.unrecoverableByReason is not in the fixed report order`);
+        } else {
+          lastIdx = idx;
+        }
+      }
+    }
+  }
+
+  auditBlock(s, 'determiningFindingRank', { withReasons: true });
+  auditBlock(s.largeTier || {}, 'determiningFindingRank.largeTier', { withReasons: false });
+
+  // The largeTier blocker set is a strict superset of the default one, and the
+  // walk order is identical, so a unit that gated at the default set gates no
+  // later at `large`: the determining set can only grow and every within-top
+  // count can only rise.
+  const baseWithin = new Map((Array.isArray(s.withinTop) ? s.withinTop : []).map((w) => [w.n, w.count || 0]));
+  for (const w of Array.isArray((s.largeTier || {}).withinTop) ? s.largeTier.withinTop : []) {
+    if ((w.count || 0) < (baseWithin.get(w.n) || 0)) {
+      problems.push(
+        `largeTier.withinTop[n=${w.n}].count (${w.count}) is below the default tier's (${baseWithin.get(w.n)}) — ` +
+          'widening the blocker set can only move a determining finding earlier, never later'
+      );
+    }
+  }
+  if (((s.largeTier || {}).units || {}).determining < (s.units || {}).determining) {
+    problems.push('largeTier.units.determining is below the default tier\'s — widening the blocker set cannot un-determine a unit');
+  }
+
+  const cap = s.capVerdict || {};
+  const inputs = cap.inputs || {};
+  for (const [field, expected] of [
+    ['determining', (s.units || {}).determining],
+    ['recoverable', (s.units || {}).recoverable],
+    ['total', (s.units || {}).total],
+    ['recoverableSharePercent', (s.units || {}).recoverableSharePercent],
+  ]) {
+    if (inputs[field] !== expected) {
+      problems.push(`capVerdict.inputs.${field}: doc ${inputs[field]}, units block says ${expected}`);
+    }
+  }
+  const top5 = (Array.isArray(s.withinTop) ? s.withinTop : []).find((w) => w.n === 5);
+  const top5Pct = top5 ? top5.percentOfDetermining : 0;
+  if (inputs.withinTop5PercentOfDetermining !== top5Pct) {
+    problems.push(
+      `capVerdict.inputs.withinTop5PercentOfDetermining: doc ${inputs.withinTop5PercentOfDetermining}, withinTop says ${top5Pct}`
+    );
+  }
+  const derivedVerdict = deriveCapVerdict(inputs);
+  if (cap.verdict !== derivedVerdict) {
+    problems.push(
+      `capVerdict.verdict: doc "${cap.verdict}", re-derived from the doc's own figures "${derivedVerdict}" ` +
+        '— the supports/kills conclusion must follow from the numbers, not be asserted beside them'
+    );
+  }
+  for (const key of Object.keys(CAP_VERDICT_RULE)) {
+    if ((cap.rule || {})[key] !== CAP_VERDICT_RULE[key]) {
+      problems.push(`capVerdict.rule.${key}: doc ${(cap.rule || {})[key]}, instrument ${CAP_VERDICT_RULE[key]}`);
+    }
+  }
+
+  const orphans = s.orphanAgents || {};
+  for (const f of ['finders', 'refuters', 'runsAffected']) {
+    if (typeof orphans[f] !== 'number' || orphans[f] < 0) {
+      problems.push(`orphanAgents.${f} must be a non-negative number, got ${orphans[f]}`);
+    }
+  }
+  if (typeof s.acTableGapUnits !== 'number' || s.acTableGapUnits < 0) {
+    problems.push(`acTableGapUnits must be a non-negative number, got ${s.acTableGapUnits}`);
+  }
+  return problems;
+}
+
 // --- CLI ------------------------------------------------------------------
 
 export function parseArgs(argv) {
@@ -1002,7 +1951,8 @@ Options:
   --until <iso-date> Ignore runs starting after this instant.
   --format text|json Output format (default: text).
   --check <doc>      Recompute over the corpus and assert <doc>'s
-                     nonGatingRefutationSkip figures match exactly.
+                     nonGatingRefutationSkip / refuterFanout /
+                     determiningFindingRank figures match exactly.
   --audit <doc>      Corpus-free arithmetic audit of <doc>'s own figures.
   --help             Print this help and exit.
 `;
@@ -1017,8 +1967,8 @@ if (invokedDirectly) {
   }
 
   if (args.audit) {
-    const { section, fanoutSection } = readDoc(args.audit);
-    const problems = auditDoc(section).concat(auditFanoutDoc(fanoutSection));
+    const { section, fanoutSection, rankSection } = readDoc(args.audit);
+    const problems = auditDoc(section).concat(auditFanoutDoc(fanoutSection), auditRankDoc(rankSection));
     if (problems.length) {
       console.error('measure-refuter-severity --audit FAILED against ' + args.audit + ':');
       for (const m of problems) console.error('  ' + m);
@@ -1029,12 +1979,15 @@ if (invokedDirectly) {
   }
 
   if (args.check) {
-    const { section, fanoutSection } = readDoc(args.check);
+    const { section, fanoutSection, rankSection } = readDoc(args.check);
     // The doc's own recorded window is what makes a committed figure stable as
     // the corpus grows; --until overrides it for an ad hoc re-measurement.
     const until = args.until || (section.measurementWindow && section.measurementWindow.until) || undefined;
     const report = measure({ root: args.root, until });
-    const missing = checkDoc(report, section).concat(checkFanoutDoc(report, fanoutSection));
+    const missing = checkDoc(report, section).concat(
+      checkFanoutDoc(report, fanoutSection),
+      checkRankDoc(report, rankSection)
+    );
     if (missing.length) {
       console.error('measure-refuter-severity --check FAILED against ' + args.check + ':');
       for (const m of missing) console.error('  ' + m);

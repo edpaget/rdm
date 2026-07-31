@@ -76,7 +76,38 @@
 #      of the prompt-derived dimension) proving the dimension-shadow case —
 #      where a finder-supplied `f.id` names a DIFFERENT real dimension than
 #      the finding's own — is resolved from the prompt, not the label.
-#   7. CHANGELOG HYGIENE — the same commit that touches
+#   7. DETERMINING-FINDING RANK RECONSTRUCTION — the instrument's third
+#      distribution, and the one phase 4's refutation cap lives or dies on:
+#      where in a severity-then-confidence ranking does the finding that
+#      actually determined the outcome sit? Gated over its own purpose-built
+#      fixture tree (tests/fixtures/token-determining-rank — three sidecar
+#      runs holding SEVEN attributable review units plus ONE orphan agent
+#      that is deliberately not a unit), with static checks that the ranking
+#      and gating rule are IMPORTED from .claude/workflows/lib/review.mjs
+#      rather than reimplemented (and that no local SEVERITY_RANK /
+#      CONFIDENCE_FLOOR / rankFindings / hasBlocking / survives exists), that
+#      no phaseTitle/phaseIndex is read in any code path, and that no lane
+#      file was modified. Behavior: a whole-block deep compare plus targeted
+#      assertions that top-3 and top-5 are genuinely different figures, that
+#      a non-determining unit is a distinct row from an unrecoverable one and
+#      contributes to no within-top-N numerator, that each unrecoverable unit
+#      carries its own exact per-unit reason without spilling onto its run
+#      sibling, that a unit sharing a run with an unattributable orphan agent
+#      is entirely unaffected by it (contamination is PER UNIT — there is no
+#      run-wide reason, and the closed vocabulary refuses one), and that a
+#      finder and a refuter on the same unit resolve to a byte-identical
+#      prompt-derived unitIdent in both the code-mode and plan-mode
+#      trailing-punctuation shapes. Plus --check/--audit against the fixture,
+#      a corpus-free --audit of the COMMITTED figures (including the
+#      supports/kills verdict, which auditRankDoc RE-DERIVES rather than
+#      trusts), a prose-twin check that docs/token-baseline.md § Phase 2
+#      states the window, record count, unit partition, recoverable share,
+#      orphan bound, scoping rule and verdict, and SIX planted mutations —
+#      an edited figure, a neutered ranking, an imputed disposition, a
+#      mutated cap-verdict threshold, a removed orphan guard, and a
+#      re-introduced run-wide contamination reason — each proven to flip its
+#      check to FAIL.
+#   8. CHANGELOG HYGIENE — the same commit that touches
 #      scripts/lib/token-report.mjs / scripts/measure-lane-tokens.mjs /
 #      scripts/measure-refuter-severity.mjs also touches CHANGELOG.md, so a
 #      user-facing change is never landed without its changelog entry.
@@ -129,6 +160,18 @@ run_node() {
 }
 
 TMP=$(mktemp -d)
+# Resolve symlinks in the scratch root. On macOS `mktemp -d` hands back a path
+# under the /var -> /private/var symlink, and every instrument here gates its
+# CLI on `path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)`.
+# Node realpaths `import.meta.url` but NOT `process.argv[1]`, so a script copied
+# into an unresolved $TMP and run from there compares /var/... against
+# /private/var/..., decides it was imported rather than invoked, and silently
+# does NOTHING. Every planted-mutation self-test below would then "pass"
+# vacuously: the fixture comparison fails because the mutant emitted no report
+# at all, not because the mutation was caught. Resolve it once, here — and the
+# self-tests in section 7 additionally assert their mutant produced a non-empty
+# report, so vacuity cannot come back silently.
+TMP=$(cd "$TMP" && pwd -P)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 
 # ==============================================================================
@@ -800,8 +843,13 @@ pass "--until pins the run set at both edges, fails loudly on a bad date, and co
 # Planted mutation: invert the window comparison. The section above must flip.
 # The mutant scratch tree carries a pristine token-report.mjs beside it, since
 # the instrument imports ./lib/token-report.mjs relative to its own path.
-mkdir -p "$TMP/refsev-mut/lib"
+mkdir -p "$TMP/refsev-mut/lib" "$TMP/.claude/workflows/lib"
 cp "$LIB" "$TMP/refsev-mut/lib/token-report.mjs"
+# The instrument also imports the canonical ranking/gating rule from
+# ../.claude/workflows/lib/review.mjs (relative to its own path), so a mutant
+# living at $TMP/refsev-mut/ needs a pristine copy at $TMP/.claude/... . Copied,
+# never mutated: review.mjs is read-only to this whole measurement.
+cp "$REVIEW_LIB" "$TMP/.claude/workflows/lib/review.mjs"
 sed 's/rf.run.startTimeMs <= untilMs/rf.run.startTimeMs >= untilMs/' \
     "$REFSEV" >"$TMP/refsev-mut/measure-refuter-severity-window.mjs"
 if diff -q "$REFSEV" "$TMP/refsev-mut/measure-refuter-severity-window.mjs" >/dev/null 2>&1; then
@@ -876,7 +924,357 @@ fi
 pass "planted-mutation self-test: joining refutersDispatched on the label (not the prompt-derived dimension) flips the dimension-shadow assertion to FAIL"
 
 # ==============================================================================
-say "7. Changelog hygiene: the code change is staged/committed alongside CHANGELOG.md"
+say "7. Determining-finding rank reconstruction (determiningFindingRank)"
+# ==============================================================================
+# Phase 4's refutation cap lives or dies on WHERE in a ranked candidate list the
+# finding that determined the outcome sits. This section gates that
+# reconstruction the same way section 6 gates the fanout distributions, over a
+# PURPOSE-BUILT fixture tree (tests/fixtures/token-determining-rank) rather than
+# section 6's — whose per-severity and fanout numbers are hand-checked and must
+# not be perturbed by new agents.
+#
+# The tree seeds EIGHT entities across THREE wf_*.json sidecars: SEVEN
+# attributable review units plus ONE orphan agent that is deliberately NOT a
+# unit. wf_rank001 (clean): A determining at rank 1, B determining at rank 4
+# with its findings emitted OUT of ranked order, C non-determining, F a
+# plan-mode multi-line target proving finder/refuter unit-key agreement.
+# wf_rank002 (mixed): G determining at rank 2, sharing its run with orphan agent
+# E. wf_rank003 (unrecoverable): D via unknown-disposition-above-determining and
+# H via dimension-coverage-gap, siblings so neither reason spills onto the other.
+# Multiple runs are the only way to exercise run-boundary behavior at all, since
+# a sidecar's runId is its own filename stem.
+
+RANK_FIXTURE="$REPO_ROOT/tests/fixtures/token-determining-rank"
+RANK_EXPECTED="$RANK_FIXTURE/expected-determiningFindingRank.json"
+BASELINE_MD="$REPO_ROOT/docs/token-baseline.md"
+
+[ -d "$RANK_FIXTURE" ] || fail "determining-rank fixture not found: $RANK_FIXTURE"
+[ -f "$RANK_EXPECTED" ] || fail "determining-rank expected-figures fixture not found: $RANK_EXPECTED"
+[ -f "$BASELINE_MD" ] || fail "token baseline prose doc not found: $BASELINE_MD"
+
+# --- static checks: the rule is IMPORTED, and no forbidden key is read --------
+# AC2: the ranking and gating rule must come from the canonical review source.
+grep -q "from '\.\./\.claude/workflows/lib/review\.mjs'" "$REFSEV" ||
+    fail "$REFSEV must import the ranking/gating rule from .claude/workflows/lib/review.mjs, not reimplement it"
+for sym in survives rankFindings hasBlocking; do
+    grep -qE "^[[:space:]]*$sym,?\$" "$REFSEV" ||
+        fail "$REFSEV must import \`$sym\` from .claude/workflows/lib/review.mjs"
+done
+# ...and must define no local copy of any of it. Comment lines are stripped
+# first: the module header DOCUMENTS why the import is mandatory, and a naive
+# grep would fire on that documentation instead of on real code.
+REFSEV_CODE="$TMP/refsev-code-only.txt"
+grep -vE '^[[:space:]]*(//|\*|/\*)' "$REFSEV" >"$REFSEV_CODE"
+if grep -qE 'function (rankFindings|hasBlocking|survives)\b' "$REFSEV_CODE"; then
+    fail "$REFSEV defines a local rankFindings/hasBlocking/survives — the imported rule must be the only one"
+fi
+if grep -qE '\b(SEVERITY_RANK|CONFIDENCE_FLOOR)\b' "$REFSEV_CODE"; then
+    fail "$REFSEV must not carry a local severity table or confidence floor — both live in review.mjs"
+fi
+# AC3: the review-unit key is prompt-derived. phaseTitle/phaseIndex collapse a
+# whole plan-review run into one unit and must not appear in any code path.
+if grep -qE '\b(phaseTitle|phaseIndex)\b' "$REFSEV_CODE"; then
+    fail "$REFSEV reads phaseTitle/phaseIndex outside a comment — the unit key must come from the prompt-embedded target only"
+fi
+# AC9: this measurement imports review.mjs read-only. A modified lane file would
+# be a behavior change, which this phase must not make.
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    DIRTY_LANE=$(git -C "$REPO_ROOT" status --porcelain -- .claude/workflows .claude/skills rdm-core/src/templates 2>/dev/null || true)
+    [ -z "$DIRTY_LANE" ] ||
+        fail "the determining-rank measurement must not modify any lane file, but these are dirty:
+$DIRTY_LANE"
+fi
+pass "the rule is imported from review.mjs (no local ranking/gating/severity copy), no phaseTitle/phaseIndex is read, and no lane file is modified"
+
+# --- fixture comparison: the whole determiningFindingRank block ---------------
+RANK_SCRATCH="$TMP/rank-fixture"
+cp -R "$RANK_FIXTURE" "$RANK_SCRATCH"
+rm -f "$RANK_SCRATCH/expected-determiningFindingRank.json"
+
+run_node "$REFSEV" --root "$RANK_SCRATCH" --format json >"$TMP/rank-report.json" ||
+    fail "measure-refuter-severity.mjs failed against the determining-rank fixture"
+
+cat >"$TMP/rank-compare.mjs" <<'NODE_RANK_COMPARE'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const [, , reportPath, expectedPath] = process.argv;
+const raw = readFileSync(reportPath, 'utf8');
+// Non-vacuity floor: a mutant that silently produces NOTHING must not be
+// mistaken for a mutant whose figures were caught by the comparison below.
+assert.ok(raw.trim().length > 0, 'the instrument produced no report at all');
+const got = JSON.parse(raw).determiningFindingRank;
+const exp = JSON.parse(readFileSync(expectedPath, 'utf8')).determiningFindingRank;
+assert.ok(got, 'the report carries no determiningFindingRank block');
+
+// Whole-block deep compare — every figure, not a sampled few.
+assert.deepEqual(got, exp, 'the determiningFindingRank block must match the hand-checked fixture exactly');
+
+// --- targeted assertions beyond the deep compare --------------------------
+// Seven attributable units (A, B, C, D, F, G, H); orphan agent E is NOT one.
+assert.equal(got.units.total, 7, 'exactly the seven attributable units, and no phantom unit for orphan agent E');
+assert.equal(got.units.determining, 3, 'A (rank 1), G (rank 2), B (rank 4)');
+assert.equal(got.units.nonDetermining, 2, 'C and F resolved fully with nothing gating');
+assert.equal(got.units.unrecoverable, 2, 'D and H');
+assert.equal(got.units.recoverable, got.units.determining + got.units.nonDetermining, 'recoverable is the partition');
+assert.equal(
+  got.units.determining + got.units.nonDetermining + got.units.unrecoverable,
+  got.units.total,
+  'the three statuses partition the units exactly'
+);
+assert.equal(got.units.recoverableSharePercent, Math.round((5 / 7) * 1000) / 10, 'recoverable share is 5/7');
+
+// AC1: the rank distribution, and top-3 vs top-5 as genuinely different numbers.
+assert.deepEqual(
+  got.rankHistogram,
+  [{ rank: 1, count: 1 }, { rank: 2, count: 1 }, { rank: 4, count: 1 }],
+  'ranks 1, 2 and 4, one unit each'
+);
+assert.equal(got.rankHistogram.reduce((n, r) => n + r.count, 0), got.units.determining, 'the histogram sums to determining');
+const top = Object.fromEntries(got.withinTop.map((w) => [w.n, w]));
+assert.equal(top[3].count, 2, 'A and G are within top 3');
+assert.equal(top[5].count, 3, 'B (rank 4) joins them within top 5');
+assert.ok(top[3].count < top[5].count, 'top-3 and top-5 must be different figures, not the same number printed twice');
+for (const w of got.withinTop) {
+  assert.equal(w.percentOfDetermining, Math.round((w.count / got.units.determining) * 1000) / 10, `withinTop[${w.n}] % of determining`);
+  assert.equal(w.percentOfRecoverable, Math.round((w.count / got.units.recoverable) * 1000) / 10, `withinTop[${w.n}] % of recoverable`);
+}
+
+// AC4: non-determining (C, F) is a distinct row from unrecoverable, and
+// contributes to no within-top-N numerator.
+assert.ok(got.units.nonDetermining > 0, 'the non-determining row is populated');
+assert.equal(
+  top[5].count + got.units.nonDetermining + got.units.unrecoverable,
+  got.units.total,
+  'non-determining and unrecoverable units are outside every within-top-N numerator'
+);
+
+// AC5: each unrecoverable unit carries its own exact, per-unit reason, and the
+// two reasons in this run do not spill onto each other.
+const reasons = Object.fromEntries(got.unrecoverableByReason.map((r) => [r.reason, r.count]));
+assert.equal(reasons['unknown-disposition-above-determining'], 1, 'unit D: a gating candidate with no refuter, ranked above the would-be determining one');
+assert.equal(reasons['dimension-coverage-gap'], 1, 'unit H: a correctness refuter with no correctness finder');
+assert.equal(Object.keys(reasons).length, 2, 'exactly those two reasons');
+assert.equal(
+  got.unrecoverableByReason.reduce((n, r) => n + r.count, 0),
+  got.units.unrecoverable,
+  'the reason rows sum to units.unrecoverable'
+);
+// The run-wide rule is REJECTED: no such reason may exist at all.
+assert.ok(!('orphan-agent-in-run' in reasons), 'contamination is per unit — there is no run-wide orphan reason');
+
+// AC5 regression for the orphan finding: unit G shares wf_rank002 with orphan
+// agent E and must be entirely unaffected by it.
+assert.ok(
+  got.rankHistogram.some((r) => r.rank === 2 && r.count === 1),
+  'unit G stayed determining at rank 2 despite sharing its run with an unattributable orphan agent'
+);
+assert.ok(got.orphanAgents.finders + got.orphanAgents.refuters >= 1, 'orphan agent E is counted as an orphan');
+assert.equal(got.orphanAgents.finders, 1, 'exactly one orphan finder (E)');
+assert.equal(got.orphanAgents.runsAffected, 1, 'the orphan sits in exactly one run');
+
+// candidateSetSize is what tells phase 4 whether a top-N cap would even bind.
+assert.equal(got.candidateSetSize.n, got.units.recoverable, 'candidate sizes are reported over recoverable units');
+assert.ok(got.candidateSetSize.max >= 1, 'at least one unit has candidates');
+
+// acTableGapUnits is its own diagnostic, never folded into non-determining.
+assert.equal(got.acTableGapUnits, 1, 'unit B seeds a FAIL row in its ac table');
+
+// largeTier: widening the blocker set can only move a determining finding
+// EARLIER in the same ranking, so it is monotone against the default tier.
+assert.ok(got.largeTier.units.determining >= got.units.determining, 'largeTier determines at least as many units');
+const largeTop = Object.fromEntries(got.largeTier.withinTop.map((w) => [w.n, w]));
+for (const n of [3, 5]) {
+  assert.ok(largeTop[n].count >= top[n].count, `largeTier within-top-${n} is never below the default tier's`);
+}
+assert.ok(
+  got.largeTier.rankSummary.max <= Math.max(...got.largeTier.rankHistogram.map((r) => r.rank)),
+  'largeTier rank summary agrees with its own histogram'
+);
+
+// AC7: the verdict is DERIVED from the figures, not asserted beside them.
+assert.ok(['supports-cap', 'kills-cap', 'inconclusive'].includes(got.capVerdict.verdict), 'the verdict is in the closed vocabulary');
+assert.equal(got.capVerdict.inputs.determining, got.units.determining, 'the verdict reads the same determining count');
+assert.equal(got.capVerdict.inputs.recoverableSharePercent, got.units.recoverableSharePercent, 'and the same recoverable share');
+
+console.log('determining-rank fixture comparison MATCH');
+NODE_RANK_COMPARE
+
+run_node "$TMP/rank-compare.mjs" "$TMP/rank-report.json" "$RANK_EXPECTED" ||
+    fail "the determining-rank report did not match the hand-checked fixture figures"
+pass "the rank reconstruction matches the fixture exactly, including the non-determining, unrecoverable and orphan-non-contamination cases"
+
+# --format text is the default the instrument is invoked with by hand, and it
+# reaches fields --format json never touches — a renderer that indexes a moved
+# key throws only here. Render it and require the new tables to be present.
+run_node "$REFSEV" --root "$RANK_SCRATCH" --format text >"$TMP/rank-report.txt" ||
+    fail "--format text crashed against the determining-rank fixture"
+for needle in 'CANDIDATE list' 'recoverable share' 'unrecoverable reason' 'Orphan agents' 'Cap verdict'; do
+    grep -qF "$needle" "$TMP/rank-report.txt" ||
+        fail "--format text is missing the \"$needle\" section of the determining-rank report"
+done
+pass "--format text renders the rank histogram, unit partition, unrecoverable reasons, orphan diagnostic and verdict without throwing"
+
+# --- AC3: finder and refuter must resolve to the BYTE-IDENTICAL unit key ------
+cat >"$TMP/rank-unitkey.mjs" <<'NODE_RANK_UNITKEY'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const [, , dir, instrument] = process.argv;
+const { readFinderTranscript, readRefuterTranscript } = await import(pathToFileURL(instrument).href);
+// Unit F: plan mode, MULTI-line target — the identity is its first line and the
+// `.` findPrompt appends sits on the body's last line, so it must NOT be
+// stripped. Unit A: code mode, single-line target — the `.` sits on the SAME
+// line and IS stripped. Both must round-trip identically on both sides.
+const f = readFinderTranscript(dir + '/wf_rank001/agent-ff-coh.jsonl');
+const rf = readRefuterTranscript(dir + '/wf_rank001/agent-rf-c1.jsonl');
+assert.equal(f.unitIdent, 'phase widget/phase-6-zeta', 'plan-mode finder identity is the first line, un-stripped');
+assert.equal(rf.unitIdent, f.unitIdent, 'the plan-mode finder and refuter resolve to a byte-identical unitIdent');
+
+const a = readFinderTranscript(dir + '/wf_rank001/agent-fa-corr.jsonl');
+const ra = readRefuterTranscript(dir + '/wf_rank001/agent-ra-b1.jsonl');
+assert.equal(a.unitIdent, 'widget/phase-1-alpha', 'code-mode finder identity has its trailing `.` stripped');
+assert.equal(ra.unitIdent, a.unitIdent, 'the code-mode finder and refuter resolve to a byte-identical unitIdent');
+
+// The orphan: an --implementation-plan-shaped pretty-printed-JSON target is
+// REJECTED rather than captured as a fake identity.
+const e = readFinderTranscript(dir + '/wf_rank002/agent-fe-orphan.jsonl');
+assert.equal(e.unitIdent, null, 'a JSON-shaped target yields no unit identity at all');
+
+console.log('finder/refuter unit-key agreement OK');
+NODE_RANK_UNITKEY
+run_node "$TMP/rank-unitkey.mjs" \
+    "$RANK_SCRATCH/-Users-edward-Projects-rdm/sess-rank/subagents/workflows" "$REFSEV" ||
+    fail "the finder and refuter did not resolve to the same prompt-derived unit key"
+pass "a finder and a refuter on the same unit resolve to a byte-identical unitIdent (both the code-mode and plan-mode trailing-punctuation shapes), and a JSON target resolves to none"
+
+# --- the --check and --audit paths -------------------------------------------
+run_node "$REFSEV" --root "$RANK_SCRATCH" --check "$RANK_EXPECTED" >/dev/null ||
+    fail "--check failed against the determining-rank fixture's own recorded figures"
+run_node "$REFSEV" --audit "$RANK_EXPECTED" >/dev/null ||
+    fail "--audit failed against the determining-rank fixture's own recorded figures"
+# The COMMITTED figures, gated corpus-free so this holds on any machine —
+# including capVerdict, which auditRankDoc RE-DERIVES from the doc's own numbers.
+run_node "$REFSEV" --audit "$BASELINE_DOC" >/dev/null ||
+    fail "docs/token-baseline.json's determiningFindingRank figures are not internally consistent — re-run the instrument and update the doc"
+pass "--check matches the fixture and --audit passes corpus-free on both the fixture and the COMMITTED baseline figures"
+
+# --- AC6: the prose twin actually reads the committed figures -----------------
+grep -q '^## Phase 2: rank of the determining finding' "$BASELINE_MD" ||
+    fail "$BASELINE_MD has no '## Phase 2: rank of the determining finding' section"
+run_node -e '
+const fs = require("node:fs");
+const doc = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).determiningFindingRank;
+const md = fs.readFileSync(process.argv[2], "utf8");
+const start = md.indexOf("## Phase 2: rank of the determining finding");
+const rest = md.slice(start);
+const section = rest.slice(0, rest.indexOf("\n## ", 1) === -1 ? undefined : rest.indexOf("\n## ", 1));
+const need = [
+  doc.measurementWindow.until,
+  String(doc.measurementWindow.runCount),
+  doc.measurementWindow.agentRecordCount.toLocaleString("en-US"),
+  String(doc.units.total),
+  String(doc.units.recoverable),
+  String(doc.units.determining),
+  String(doc.units.unrecoverable),
+  doc.units.recoverableSharePercent + " %",
+  doc.capVerdict.verdict === "supports-cap" ? "SUPPORTS a cap" : doc.capVerdict.verdict,
+  "contamination is per unit, never run-wide",
+  String(doc.orphanAgents.finders),
+];
+const missing = need.filter((s) => section.indexOf(s) === -1);
+if (missing.length) {
+  console.error("docs/token-baseline.md § Phase 2 does not read the committed figures. Missing: " + JSON.stringify(missing));
+  process.exit(1);
+}
+' "$BASELINE_DOC" "$BASELINE_MD" ||
+    fail "the prose section must state the corpus window, record count, unit counts, recoverable share, orphan bound, the per-unit scoping rule, and the verdict"
+pass "docs/token-baseline.md § Phase 2 states the window, record count, unit partition, recoverable share, scoping rule and verdict from the JSON twin"
+
+# --- planted mutations: no part of this section may be vacuous ----------------
+# Each follows the section-5/6 idiom: mutate a scratch copy, PROVE the mutation
+# changed the file, then require the corresponding check to flip to FAIL. The
+# comparer additionally refuses an empty report, so a mutant that fails to run
+# can never masquerade as a mutant that was caught.
+rank_mutant() {
+    # $1 = name, $2 = sed expression
+    sed "$2" "$REFSEV" >"$TMP/refsev-mut/rank-$1.mjs"
+    if diff -q "$REFSEV" "$TMP/refsev-mut/rank-$1.mjs" >/dev/null 2>&1; then
+        fail "self-test setup: the $1 mutation did not change the source — sed pattern did not match"
+    fi
+    run_node "$TMP/refsev-mut/rank-$1.mjs" --root "$RANK_SCRATCH" --format json >"$TMP/rank-mutant-$1.json" 2>/dev/null || true
+    [ -s "$TMP/rank-mutant-$1.json" ] ||
+        fail "self-test setup: the $1 mutant produced NO report, so the comparison below would flip for the wrong reason"
+    if run_node "$TMP/rank-compare.mjs" "$TMP/rank-mutant-$1.json" "$RANK_EXPECTED" >/dev/null 2>&1; then
+        fail "planted-mutation self-test FAILED TO CATCH: the $1 mutation still matched the fixture figures"
+    fi
+}
+
+# (a) A hand-edited committed figure must fail BOTH --check and --audit.
+sed 's/"determining": 3,/"determining": 4,/' "$RANK_EXPECTED" >"$TMP/rank-doc-mutant.json"
+if diff -q "$RANK_EXPECTED" "$TMP/rank-doc-mutant.json" >/dev/null 2>&1; then
+    fail "self-test setup: the doc mutation did not change the fixture figures"
+fi
+if run_node "$REFSEV" --root "$RANK_SCRATCH" --check "$TMP/rank-doc-mutant.json" >/dev/null 2>&1; then
+    fail "planted-mutation self-test FAILED TO CATCH: --check accepted a hand-edited units.determining"
+fi
+if run_node "$REFSEV" --audit "$TMP/rank-doc-mutant.json" >/dev/null 2>&1; then
+    fail "planted-mutation self-test FAILED TO CATCH: --audit accepted a units.determining its own partition does not add up to"
+fi
+pass "planted-mutation self-test (a): an edited determining-rank figure flips both --check and --audit to FAIL"
+
+# (b) Neuter the IMPORTED ranking. Unit B's findings are emitted out of ranked
+# order, so an identity ordering reports it at rank 1 instead of rank 4 —
+# proving the imported rankFindings is load-bearing, not decorative.
+rank_mutant ranking 's/const ranked = rankFindings(/const ranked = ((x) => x)(/'
+pass "planted-mutation self-test (b): replacing the imported rankFindings with an identity ordering flips unit B's rank-4 to FAIL"
+
+# (c) Impute "not refuted" for an unknown disposition instead of marking the
+# unit unrecoverable. Unit D then reports a rank rather than a reason.
+rank_mutant impute "s/c.disposition === 'unknown'/false/"
+pass "planted-mutation self-test (c): imputing a verdict for an unknown disposition flips unit D's unrecoverable row to FAIL"
+
+# (d) Mutate a CAP_VERDICT_RULE threshold. The COMMITTED verdict must flip,
+# proving the supports/kills conclusion is re-derived rather than asserted.
+sed 's/minDeterminingUnits: 20,/minDeterminingUnits: 2000,/' "$REFSEV" >"$TMP/refsev-mut/rank-capverdict.mjs"
+if diff -q "$REFSEV" "$TMP/refsev-mut/rank-capverdict.mjs" >/dev/null 2>&1; then
+    fail "self-test setup: the cap-verdict threshold mutation did not change the source — sed pattern did not match"
+fi
+if run_node "$TMP/refsev-mut/rank-capverdict.mjs" --audit "$BASELINE_DOC" >/dev/null 2>&1; then
+    fail "planted-mutation self-test FAILED TO CATCH: --audit accepted the committed verdict under a mutated threshold, so the verdict is not derived"
+fi
+pass "planted-mutation self-test (d): mutating a CAP_VERDICT_RULE threshold flips the committed --audit to FAIL"
+
+# (e) Remove the orphan guard, so an --implementation-plan-shaped JSON target is
+# captured as a fake unit identity instead of being counted as an orphan. Unit
+# count goes to 8 and orphanAgents.finders to 0 — the direct regression for
+# "an unattributable agent must produce NO unit row".
+rank_mutant orphan 's/isPlausibleUnitIdent(candidate) ? candidate : null/candidate/'
+pass "planted-mutation self-test (e): capturing an unresolvable JSON target as a fake unit identity flips the orphan/unit-count assertions to FAIL"
+
+# (f) Re-introduce the REJECTED run-wide contamination reason in the doc. The
+# closed vocabulary must refuse it outright, so the scoping decision is
+# harness-enforced rather than merely documented.
+run_node -e '
+const fs = require("node:fs");
+const doc = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const s = doc.determiningFindingRank;
+s.unrecoverableByReason = [...s.unrecoverableByReason, { reason: "orphan-agent-in-run", count: 1 }];
+s.units.unrecoverable += 1;
+s.units.total += 1;
+s.units.recoverableSharePercent = Math.round((s.units.recoverable / s.units.total) * 1000) / 10;
+fs.writeFileSync(process.argv[2], JSON.stringify(doc, null, 2));
+' "$RANK_EXPECTED" "$TMP/rank-runwide-doc.json"
+if diff -q "$RANK_EXPECTED" "$TMP/rank-runwide-doc.json" >/dev/null 2>&1; then
+    fail "self-test setup: the run-wide-reason mutation did not change the doc"
+fi
+if run_node "$REFSEV" --audit "$TMP/rank-runwide-doc.json" >/dev/null 2>&1; then
+    fail "planted-mutation self-test FAILED TO CATCH: --audit accepted an 'orphan-agent-in-run' reason — the run-wide rule is REJECTED and must not be representable"
+fi
+pass "planted-mutation self-test (f): a run-wide 'orphan-agent-in-run' reason is refused by the closed vocabulary"
+
+# ==============================================================================
+say "8. Changelog hygiene: the code change is staged/committed alongside CHANGELOG.md"
 # ==============================================================================
 
 if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

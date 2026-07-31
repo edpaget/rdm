@@ -123,5 +123,85 @@
       "unrecoverableRefuterCount": 2,
       "recoveryRatePercent": 66.7
     }
-  }
+  },
+  "determiningFindingRank": {
+    "units": {
+      "total": 3,
+      "determining": 0,
+      "nonDetermining": 0,
+      "unrecoverable": 3,
+      "recoverable": 0,
+      "recoverableSharePercent": 0
+    },
+    "unrecoverableByReason": [
+      {
+        "reason": "dimension-coverage-gap",
+        "count": 3
+      }
+    ],
+    "orphanAgents": {
+      "finders": 5,
+      "refuters": 2,
+      "runsAffected": 1
+    },
+    "rankHistogram": [],
+    "withinTop": [
+      {
+        "n": 3,
+        "count": 0,
+        "percentOfDetermining": 0,
+        "percentOfRecoverable": 0
+      },
+      {
+        "n": 5,
+        "count": 0,
+        "percentOfDetermining": 0,
+        "percentOfRecoverable": 0
+      }
+    ],
+    "largeTier": {
+      "units": {
+        "total": 3,
+        "determining": 0,
+        "nonDetermining": 0,
+        "unrecoverable": 3,
+        "recoverable": 0,
+        "recoverableSharePercent": 0
+      },
+      "rankHistogram": [],
+      "withinTop": [
+        {
+          "n": 3,
+          "count": 0,
+          "percentOfDetermining": 0,
+          "percentOfRecoverable": 0
+        },
+        {
+          "n": 5,
+          "count": 0,
+          "percentOfDetermining": 0,
+          "percentOfRecoverable": 0
+        }
+      ]
+    },
+    "acTableGapUnits": 0,
+    "capVerdict": {
+      "verdict": "inconclusive",
+      "rule": {
+        "supportsCapAtOrAbovePercent": 95,
+        "killsCapBelowPercent": 80,
+        "minRecoverableSharePercent": 50,
+        "minDeterminingUnits": 20,
+        "basis": "withinTop n=5, as a percentage of DETERMINING units; a cap is only supported when enough units were recoverable to speak to it at all."
+      },
+      "inputs": {
+        "determining": 0,
+        "recoverable": 0,
+        "total": 3,
+        "recoverableSharePercent": 0,
+        "withinTop5PercentOfDetermining": 0
+      }
+    }
+  },
+  "_determiningFindingRankComment": "This tree predates the determining-rank measurement: its finder transcripts carry no `Review target:` header at all, so every finder is an unattributable ORPHAN and the only units that form are refuter-only ones — which their own local evidence (no finder for any dimension they refuted) marks `dimension-coverage-gap`. The all-unrecoverable/zero-determining block below is therefore the correct answer for this tree, not a defect; the hand-checked determining-rank ground truth lives in tests/fixtures/token-determining-rank/. It is recorded here only because readDoc now requires all three sections."
 }

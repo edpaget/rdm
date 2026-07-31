@@ -77,6 +77,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refuter whose `f.id` names a different real dimension than its finding's
   own — proving dimension resolution reads the prompt, not the label) and two
   more planted-mutation self-tests.
+- `scripts/measure-refuter-severity.mjs` gained a third distribution —
+  **determining-finding rank** — which answers the one question a refutation
+  cap lives or dies on: where in a ranked candidate list does the finding that
+  actually determined the outcome sit? It replays the live pipeline's own rule
+  by **importing** `rankFindings` / `survives` / `hasBlocking` from
+  `.claude/workflows/lib/review.mjs` (read-only; no lane file is modified and
+  no local severity table or confidence floor is kept), so the measurement
+  cannot drift from the behavior it predicts. Ranking is over each unit's full
+  **candidate** list, not its survivor list: severity sorts first, so
+  rank-among-survivors would be a constant 1, whereas a cap truncates the
+  candidate list. The review-unit key is phase 1's, unchanged — a new
+  `extractFinderContext()` reads the identical prompt-embedded `context.target`
+  from the finder side (`Review target: <target>.`), with no `phaseTitle` /
+  `phaseIndex` anywhere. Each unit resolves to exactly one of `determining`
+  (with a rank), `non-determining` (fully resolved, nothing gated — a distinct
+  row) or `unrecoverable` under a closed, strictly **per-unit** reason
+  vocabulary; an agent whose unit identity cannot be resolved is attributable
+  to no unit, so it invalidates none and is instead counted as an
+  `orphanAgents` diagnostic with a stated residual-risk bound. Nothing is
+  imputed, unrecoverable units are excluded from every within-top-N numerator
+  and denominator, and the recoverable share is restated beside every headline.
+  Also reports candidate-set sizes, a `largeTier` sensitivity variant (the tier
+  is embedded in neither prompt and is therefore not recoverable), and an
+  `acTableGapUnits` diagnostic for the AC-table side channel. The
+  supports/kills conclusion is **derived**, not asserted: an exported
+  `CAP_VERDICT_RULE` + `deriveCapVerdict()` produce `supports-cap` /
+  `kills-cap` / `inconclusive`, and `--audit` re-derives the verdict from the
+  doc's own numbers. Over the same 48-run window ending 2026-07-29 (2,208
+  agent records) the result is recorded in `docs/token-baseline.json` §
+  `determiningFindingRank` and read in prose in a new
+  `docs/token-baseline.md` § "Phase 2: rank of the determining finding":
+  **the evidence supports a cap at N = 5**. `scripts/verify-token-report.sh`
+  gained a new section 7 over a purpose-built fixture tree
+  (`tests/fixtures/token-determining-rank`), with six planted-mutation
+  self-tests.
+
 - `rdm task create` gained a `--no-plan-review` flag: it skips the automatic
   `needs-plan-review` stamp even when the `plan_review` config flag is
   enabled. Intended for tasks filed from a plan-review finding itself, so the
@@ -114,6 +150,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   each agent class only one record.
 
 ### Fixed
+
+- `scripts/verify-token-report.sh` resolves symlinks in its scratch directory.
+  On macOS `mktemp -d` returns a path under the `/var` → `/private/var`
+  symlink, and every instrument it exercises gates its CLI on
+  `path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)`; Node
+  realpaths `import.meta.url` but not `process.argv[1]`, so a script copied
+  into that scratch directory silently did nothing when run. Every
+  planted-mutation self-test in sections 5 and 6 was therefore passing
+  vacuously — the fixture comparison failed because the mutant emitted no
+  report at all, not because the mutation was caught. The new section 7 also
+  asserts each mutant produced a non-empty report before requiring its check
+  to flip, so vacuity cannot return silently.
 
 - `autopilot`'s `fetch:next` interpretation (`interpretNext`) no longer silently
   reports a malformed or double-wrapped `rdm next` result as a completed run.

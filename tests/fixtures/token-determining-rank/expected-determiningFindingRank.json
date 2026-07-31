@@ -1,0 +1,255 @@
+{
+  "_comment": "Hand-checked ground truth for scripts/verify-token-report.sh section 7. Shaped exactly like docs/token-baseline.json so the SAME --check/--audit code paths run against a hermetic fixture. The tree seeds EIGHT entities across THREE wf_*.json sidecars: SEVEN attributable review units plus ONE orphan agent that is deliberately NOT a unit. wf_rank001 (clean): A determining at rank 1; B determining at rank 4, with its findings emitted OUT of ranked order so the imported rankFindings is load-bearing; C non-determining (its candidates are refuted, below the confidence floor, or non-gating suggestions); F a plan-mode multi-line target whose finder and refuter must resolve to a byte-identical unitIdent, seeded as a second non-determining unit. wf_rank002 (mixed): G determining at rank 2, sharing the run with orphan agent E, whose --implementation-plan-shaped pretty-printed-JSON target resolves to no unit at all. G must stay determining and E must produce no eighth unit row: contamination is PER UNIT, never run-wide. wf_rank003 (unrecoverable): D via unknown-disposition-above-determining (a gating candidate with no refuter, ranked above a would-be determining finding) and H via dimension-coverage-gap (a code-mode unit with a correctness refuter but no correctness finder) — siblings, so each is proven not to spill onto the other. Derived by hand: units.total 7; determining 3 (ranks 1, 2, 4); nonDetermining 2 (C, F); unrecoverable 2 (D, H); recoverable 5; recoverableSharePercent 5/7 = 71.4; withinTop n=3 count 2 (A, G) and n=5 count 3 (A, G, B); orphanAgents.finders 1 and runsAffected 1; acTableGapUnits 1 (unit B seeds a FAIL row in its ac table). The nonGatingRefutationSkip and refuterFanout blocks below are this tree own figures, present only so --check/--audit exercise all three sections in one pass; tests/fixtures/token-refuter-severity remains the hand-checked ground truth for those two.",
+  "nonGatingRefutationSkip": {
+    "refuteBySeverity": [
+      {
+        "key": "blocking",
+        "agentCount": 10,
+        "dedupedRequestCount": 10,
+        "output": 184,
+        "uncachedInput": 234,
+        "cacheWrite": 1134,
+        "cacheRead": 10134,
+        "graded": 10,
+        "refuted": 5,
+        "refutedRate": 50
+      },
+      {
+        "key": "concern",
+        "agentCount": 2,
+        "dedupedRequestCount": 2,
+        "output": 39,
+        "uncachedInput": 49,
+        "cacheWrite": 229,
+        "cacheRead": 2029,
+        "graded": 2,
+        "refuted": 0,
+        "refutedRate": 0
+      }
+    ],
+    "refuteTotals": {
+      "agentCount": 12,
+      "dedupedRequestCount": 12,
+      "output": 223,
+      "uncachedInput": 283,
+      "cacheWrite": 1363,
+      "cacheRead": 12163
+    },
+    "laneTotals": {
+      "agentCount": 26,
+      "dedupedRequestCount": 26,
+      "output": 481,
+      "uncachedInput": 611,
+      "cacheWrite": 2951,
+      "cacheRead": 26351
+    },
+    "projected": {
+      "severities": [
+        "suggestion"
+      ],
+      "agentsNotSpawned": 0,
+      "output": 0,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0,
+      "allTokens": 0,
+      "freshTokens": 0,
+      "percentOfRefuteAgents": 0,
+      "percentOfRefuteTokens": 0,
+      "percentOfLaneTokens": 0
+    }
+  },
+  "refuterFanout": {
+    "findingsPerFinder": {
+      "rows": [
+        {
+          "mode": "code",
+          "dim": "ac",
+          "key": "code:ac",
+          "n": 6,
+          "min": 0,
+          "p50": 0,
+          "p90": 1,
+          "max": 1,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "correctness",
+          "key": "code:correctness",
+          "n": 5,
+          "min": 1,
+          "p50": 2,
+          "p90": 3.2,
+          "max": 4,
+          "refutersDispatched": 11
+        },
+        {
+          "mode": "plan",
+          "dim": "architectural-fit",
+          "key": "plan:architectural-fit",
+          "n": 1,
+          "min": 0,
+          "p50": 0,
+          "p90": 0,
+          "max": 0,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "plan",
+          "dim": "coherence",
+          "key": "plan:coherence",
+          "n": 2,
+          "min": 1,
+          "p50": 1,
+          "p90": 1,
+          "max": 1,
+          "refutersDispatched": 1
+        }
+      ],
+      "unreadableFinderCount": 0,
+      "unresolvedLabelCount": 0
+    },
+    "refuterCountsByUnit": {
+      "n": 7,
+      "min": 1,
+      "p50": 1,
+      "p90": 2.8000000000000007,
+      "max": 4,
+      "totalRefuters": 12,
+      "recoveredRefuters": 12,
+      "unrecoverableRefuterCount": 0,
+      "recoveryRatePercent": 100
+    }
+  },
+  "determiningFindingRank": {
+    "units": {
+      "total": 7,
+      "determining": 3,
+      "nonDetermining": 2,
+      "unrecoverable": 2,
+      "recoverable": 5,
+      "recoverableSharePercent": 71.4
+    },
+    "unrecoverableByReason": [
+      {
+        "reason": "unknown-disposition-above-determining",
+        "count": 1
+      },
+      {
+        "reason": "dimension-coverage-gap",
+        "count": 1
+      }
+    ],
+    "orphanAgents": {
+      "finders": 1,
+      "refuters": 0,
+      "runsAffected": 1
+    },
+    "rankHistogram": [
+      {
+        "rank": 1,
+        "count": 1
+      },
+      {
+        "rank": 2,
+        "count": 1
+      },
+      {
+        "rank": 4,
+        "count": 1
+      }
+    ],
+    "rankSummary": {
+      "n": 3,
+      "min": 1,
+      "p50": 2,
+      "p90": 3.6,
+      "max": 4
+    },
+    "withinTop": [
+      {
+        "n": 3,
+        "count": 2,
+        "percentOfDetermining": 66.7,
+        "percentOfRecoverable": 40
+      },
+      {
+        "n": 5,
+        "count": 3,
+        "percentOfDetermining": 100,
+        "percentOfRecoverable": 60
+      }
+    ],
+    "candidateSetSize": {
+      "n": 5,
+      "min": 1,
+      "p50": 2,
+      "p90": 3.6,
+      "max": 4
+    },
+    "largeTier": {
+      "units": {
+        "total": 7,
+        "determining": 5,
+        "nonDetermining": 0,
+        "unrecoverable": 2,
+        "recoverable": 5,
+        "recoverableSharePercent": 71.4
+      },
+      "rankHistogram": [
+        {
+          "rank": 1,
+          "count": 2
+        },
+        {
+          "rank": 2,
+          "count": 2
+        },
+        {
+          "rank": 4,
+          "count": 1
+        }
+      ],
+      "rankSummary": {
+        "n": 5,
+        "min": 1,
+        "p50": 2,
+        "p90": 3.2,
+        "max": 4
+      },
+      "withinTop": [
+        {
+          "n": 3,
+          "count": 4,
+          "percentOfDetermining": 80,
+          "percentOfRecoverable": 80
+        },
+        {
+          "n": 5,
+          "count": 5,
+          "percentOfDetermining": 100,
+          "percentOfRecoverable": 100
+        }
+      ]
+    },
+    "acTableGapUnits": 1,
+    "capVerdict": {
+      "verdict": "inconclusive",
+      "rule": {
+        "supportsCapAtOrAbovePercent": 95,
+        "killsCapBelowPercent": 80,
+        "minRecoverableSharePercent": 50,
+        "minDeterminingUnits": 20,
+        "basis": "withinTop n=5, as a percentage of DETERMINING units; a cap is only supported when enough units were recoverable to speak to it at all."
+      },
+      "inputs": {
+        "determining": 3,
+        "recoverable": 5,
+        "total": 7,
+        "recoverableSharePercent": 71.4,
+        "withinTop5PercentOfDetermining": 100
+      }
+    }
+  }
+}

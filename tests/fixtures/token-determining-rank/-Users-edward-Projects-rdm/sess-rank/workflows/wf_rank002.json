@@ -1,0 +1,104 @@
+{
+  "runId": "wf_rank002",
+  "timestamp": "2026-07-25T09:00:00.000Z",
+  "script": "dispatch-phase",
+  "scriptPath": ".claude/workflows/dispatch-phase.js",
+  "args": {
+    "roadmap": "bound-review-fan-out",
+    "phase": "phase-2-rank-of-determining-finding"
+  },
+  "result": "ok",
+  "agentCount": 5,
+  "logs": [],
+  "durationMs": 60000,
+  "summary": "fixture run for scripts/verify-token-report.sh section 7 — mixed run: unit G plus orphan agent E",
+  "workflowName": "dispatch-phase",
+  "status": "completed",
+  "startTime": 1784970000000,
+  "phases": [
+    {
+      "index": 1,
+      "title": "Review"
+    }
+  ],
+  "defaultModel": "claude-opus-5[1m]",
+  "totalTokens": 5955,
+  "totalToolCalls": 5,
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Review"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "find:code:ac",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "fg-ac",
+      "model": "claude-sonnet-5",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 1,
+      "durationMs": 4000,
+      "tokens": 1183
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "find:code:correctness",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "fg-corr",
+      "model": "claude-sonnet-5",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 1,
+      "durationMs": 4000,
+      "tokens": 1187
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "refute:code:g-b1",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "rg-b1",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 1,
+      "durationMs": 4000,
+      "tokens": 1191
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "refute:code:g-b2",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "rg-b2",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 1,
+      "durationMs": 4000,
+      "tokens": 1195
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "find:plan:coherence",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "fe-orphan",
+      "model": "claude-sonnet-5",
+      "state": "done",
+      "attempt": 1,
+      "toolCalls": 1,
+      "durationMs": 4000,
+      "tokens": 1199
+    }
+  ]
+}
