@@ -6,7 +6,7 @@ allowed-tools:
   - Workflow
 ---
 
-Drive **one** rdm roadmap from `not-started` to `reviewed` with no per-phase human approval, by invoking the **`autopilot` Workflow** (`.claude/workflows/autopilot.js`, provisioned automatically by `rdm agent-config claude --skills`). This skill is a **thin shim**: it parses the invocation, hands off to the workflow, and prints the batched summary the workflow returns. All the loop logic — the estimate pre-pass, the `rdm next` drive loop, per-phase dispatch via the `dispatch-phase` workflow, outcome interpretation, status persistence, budgets, and the summary — lives in the workflow, not in this prose.
+Drive **one** rdm roadmap from `not-started` to `reviewed` with no per-phase human approval. This skill drives one named roadmap phase-by-phase; full prose-parity documentation lands in a follow-up phase.
 
 Decisions and blockers are **batched, not raised mid-run**: a phase that cannot be advanced is parked `blocked` and the run keeps making progress on the rest, so the user answers the whole queue at once at the end rather than being interrupted per phase.
 {principles}

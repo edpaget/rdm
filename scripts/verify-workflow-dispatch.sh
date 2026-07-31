@@ -1930,24 +1930,34 @@ fi
 say "5. docs/escalation-protocol.md § Budgets states the same numbers the code uses"
 
 DOC="$REPO_ROOT/docs/escalation-protocol.md"
-AUTOPILOT_LIB="$REPO_ROOT/.claude/workflows/lib/autopilot.mjs"
+# autopilot is a prose skill now (workflow-orchestration roadmap phase 3): there
+# is no lib/autopilot.mjs to read a `const` out of anymore. Its two budgets
+# (DEFAULT_MAX_REWORK, DEFAULT_GLOBAL_BUDGET) are read straight out of the
+# skill's own prose, which states them literally as `` `NAME = N` `` for exactly
+# this purpose — see .claude/skills/rdm-autopilot/SKILL.md.
+AUTOPILOT_SKILL="$REPO_ROOT/.claude/skills/rdm-autopilot/SKILL.md"
 # DEFAULT_MAX_CODE_REWORK was lifted into the canonical review source alongside
 # classifyOutcome; the plan-revise budget stays with the dispatch decision core.
 REVIEW_LIB="$REPO_ROOT/.claude/workflows/lib/review.mjs"
 [ -f "$DOC" ] || fail "escalation protocol doc not found: $DOC"
-[ -f "$AUTOPILOT_LIB" ] || fail "autopilot lib not found: $AUTOPILOT_LIB"
+[ -f "$AUTOPILOT_SKILL" ] || fail "autopilot skill not found: $AUTOPILOT_SKILL"
 [ -f "$REVIEW_LIB" ] || fail "canonical review lib not found: $REVIEW_LIB"
 
 const_value() {
     grep -oE "const $2 = [0-9]+" "$1" | head -1 | grep -oE '[0-9]+$'
 }
 
+# The skill states its budgets in prose (`` `NAME = N` ``), not as a JS `const`.
+skill_const_value() {
+    grep -oE "$2 = [0-9]+" "$1" | head -1 | grep -oE '[0-9]+$'
+}
+
 assert_doc_agrees() {
     doc=$1
     pr=$(const_value "$LIB" DEFAULT_MAX_PLAN_REVISE)
     cr=$(const_value "$REVIEW_LIB" DEFAULT_MAX_CODE_REWORK)
-    ar=$(const_value "$AUTOPILOT_LIB" DEFAULT_MAX_REWORK)
-    gb=$(const_value "$AUTOPILOT_LIB" DEFAULT_GLOBAL_BUDGET)
+    ar=$(skill_const_value "$AUTOPILOT_SKILL" DEFAULT_MAX_REWORK)
+    gb=$(skill_const_value "$AUTOPILOT_SKILL" DEFAULT_GLOBAL_BUDGET)
     [ -n "$pr" ] && [ -n "$cr" ] && [ -n "$ar" ] && [ -n "$gb" ] || return 1
     grep -qF "Plan-revise budget = $pr" "$doc" || {
         printf 'doc does not state: Plan-revise budget = %s\n' "$pr" >&2
@@ -1969,8 +1979,8 @@ assert_doc_agrees() {
 }
 
 assert_doc_agrees "$DOC" ||
-    fail "docs/escalation-protocol.md § Budgets disagrees with the constants in lib/dispatch-phase.mjs / lib/review.mjs / lib/autopilot.mjs"
-pass "all four budgets are named in the doc with exactly the values the code declares"
+    fail "docs/escalation-protocol.md § Budgets disagrees with the constants in lib/dispatch-phase.mjs / lib/review.mjs / the rdm-autopilot SKILL.md"
+pass "all four budgets are named in the doc with exactly the values the code/skill declare"
 
 # The doc must also spell out the attempt sequence, the independence of the two
 # in-run budgets, the per-run override names, and the which-lane divergence note.

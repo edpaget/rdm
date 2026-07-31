@@ -92,15 +92,16 @@ global step budget below.
 
 ### 3. Autopilot rework re-dispatch budget = 1 — roadmap-level
 
-`DEFAULT_MAX_REWORK` in `.claude/workflows/lib/autopilot.mjs`: how many times a
-`rework` OUTCOME is re-dispatched before the phase is parked `blocked [code]`.
-**Unchanged** by the in-run budget raise.
+`DEFAULT_MAX_REWORK = 1`, stated in `.claude/skills/rdm-autopilot/SKILL.md` (the
+prose autopilot loop's own internal constant — there is no `lib/autopilot.mjs`
+anymore): how many times a `rework` OUTCOME is re-dispatched before the phase is
+parked `blocked [code]`. **Unchanged** by the in-run budget raise.
 
 ### 4. Autopilot global step budget = 50 — roadmap-level
 
-`DEFAULT_GLOBAL_BUDGET` in `.claude/workflows/lib/autopilot.mjs`: the maximum
-total phase dispatches per autopilot run, so a pathological roadmap can never
-loop forever. **Unchanged.**
+`DEFAULT_GLOBAL_BUDGET = 50`, stated in the same skill: the maximum total phase
+dispatches per autopilot run, so a pathological roadmap can never loop forever.
+**Unchanged.**
 
 ### Composed worst case
 
@@ -114,8 +115,9 @@ rates rather than silently inherited.
 ### Which lane these numbers describe
 
 **2 / independent / per-run-overridable describes the workflow lane**
-(`.claude/workflows/`: `dispatch-phase.js`, `autopilot.js` and their libs). The
-shipped prose skill templates under `rdm-core/src/templates/`
+(`.claude/workflows/`: `dispatch-phase.js` and its lib; autopilot itself is now
+the prose `rdm-autopilot` skill, not a workflow file). The shipped prose skill
+templates under `rdm-core/src/templates/`
 (`skill-dispatch-phase-cli.md` and its MCP twin, which hardcode "at most one
 revise round") **remain at 1** pending the distribution follow-up, so
 `agent-config` consumers still get 1/1 until those templates are updated.

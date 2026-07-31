@@ -14,20 +14,22 @@
 #      own dogfood project ("rdm"), and asserts the whole run never touches
 #      this repo's working tree (`git status --porcelain` before/after).
 #   2. STRUCTURAL: asserts all 11 skills land at their conventional paths
-#      with minimally-valid frontmatter, and all 3 workflow scripts land
+#      with minimally-valid frontmatter, and both workflow scripts land
 #      under `.claude/workflows/`.
-#   3. BYTE-IDENTITY: asserts the 3 emitted workflow scripts are byte-for-byte
+#   3. BYTE-IDENTITY: asserts the 2 emitted workflow scripts are byte-for-byte
 #      identical to this repo's own `.claude/workflows/*.js` — the one
 #      surface `generate_workflows` promises to emit verbatim (see its doc
 #      comment in `rdm-core/src/agent_config.rs`).
 #   4. SEMANTIC: asserts every literal `.claude/workflows/<name>.js`
 #      reference inside an emitted skill resolves to a real file in the SAME
 #      emitted tree — a shim can never ship pointing at an absent workflow.
-#      This is checked with an explicit `>= 4` occurrence floor (so the check
+#      This is checked with an explicit occurrence floor (so the check
 #      cannot pass vacuously on zero matches) and per-file exact-reference
-#      assertions for the 3 skills known to carry a reference
-#      (rdm-autopilot -> autopilot.js; rdm-dispatch-phase and rdm-do ->
-#      dispatch-phase.js), in BOTH the cli and mcp variants.
+#      assertions for the 2 skills known to carry a reference
+#      (rdm-dispatch-phase and rdm-do -> dispatch-phase.js). rdm-autopilot is
+#      now the prose `rdm-autopilot` skill (workflow-orchestration roadmap,
+#      phase 3) and carries no `.claude/workflows/<name>.js` reference at
+#      all, in BOTH the cli and mcp variants.
 #   5. PLANTED-MUTATION SELF-TESTS: corrupts a scratch copy of the emission
 #      (one byte appended to a workflow script; one shim reference
 #      rewritten to a typo'd filename) and asserts both checks above turn
@@ -71,14 +73,14 @@ pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 [ -x "$RDM_BIN" ] || fail "$RDM_BIN not found or not executable — run 'cargo build' first."
 
 SKILLS="rdm-roadmap rdm-do rdm-document rdm-review rdm-estimate rdm-dispatch-phase rdm-autopilot rdm-land rdm-revise rdm-backlog rdm-plan-review"
-WORKFLOWS="autopilot.js dispatch-phase.js review-refute-fix.js"
+WORKFLOWS="dispatch-phase.js review-refute-fix.js"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 
 # --- helpers -------------------------------------------------------------
 
-# Asserts <emitted_dir>/.claude/workflows/{autopilot,dispatch-phase,review-refute-fix}.js
+# Asserts <emitted_dir>/.claude/workflows/{dispatch-phase,review-refute-fix}.js
 # are byte-identical to this repo's own .claude/workflows/*.js. Prints a
 # diagnostic per drifted file and returns nonzero if any differ.
 check_workflows_byte_identical() {
@@ -163,7 +165,7 @@ say "1. Emitting 'agent-config claude --skills' (cli and --mcp variants)"
 pass "emitted into $TMP/cli and $TMP/mcp"
 
 # --- 2. structural: skills + workflows land at conventional paths ----------
-say "2. Structural: all 11 skills + 3 workflow scripts present with valid frontmatter"
+say "2. Structural: all 11 skills + 2 workflow scripts present with valid frontmatter"
 for variant in cli mcp; do
     for skill in $SKILLS; do
         md="$TMP/$variant/.claude/skills/$skill/SKILL.md"
@@ -173,7 +175,7 @@ for variant in cli mcp; do
     for wf in $WORKFLOWS; do
         [ -f "$TMP/$variant/.claude/workflows/$wf" ] || fail "$variant: missing .claude/workflows/$wf"
     done
-    pass "$variant: 11 skills (valid frontmatter) + 3 workflow scripts present"
+    pass "$variant: 11 skills (valid frontmatter) + 2 workflow scripts present"
 done
 
 # --- 2b. every {t_*} tool placeholder is substituted in the emitted skills --
@@ -206,16 +208,14 @@ for variant in cli mcp; do
     else
         fail "$variant: $SHIM_REF_UNRESOLVED unresolved shim reference(s) (see lines above)"
     fi
-    [ "$SHIM_REF_COUNT" -ge 4 ] ||
-        fail "$variant: expected >= 4 total shim references (autopilot x1, dispatch-phase skill x1, do skill x2), found $SHIM_REF_COUNT — check is not vacuous only if this floor holds"
+    [ "$SHIM_REF_COUNT" -ge 3 ] ||
+        fail "$variant: expected >= 3 total shim references (dispatch-phase skill x1, do skill x2), found $SHIM_REF_COUNT — check is not vacuous only if this floor holds"
 
-    grep -qF '.claude/workflows/autopilot.js' "$skills_dir/rdm-autopilot/SKILL.md" ||
-        fail "$variant: rdm-autopilot/SKILL.md must reference .claude/workflows/autopilot.js"
     grep -qF '.claude/workflows/dispatch-phase.js' "$skills_dir/rdm-dispatch-phase/SKILL.md" ||
         fail "$variant: rdm-dispatch-phase/SKILL.md must reference .claude/workflows/dispatch-phase.js"
     grep -qF '.claude/workflows/dispatch-phase.js' "$skills_dir/rdm-do/SKILL.md" ||
         fail "$variant: rdm-do/SKILL.md must reference .claude/workflows/dispatch-phase.js"
-    pass "$variant: rdm-autopilot/rdm-dispatch-phase/rdm-do carry their expected exact references"
+    pass "$variant: rdm-dispatch-phase/rdm-do carry their expected exact references"
 done
 
 # --- 5. planted-mutation self-tests: prove neither gate above is vacuous ---

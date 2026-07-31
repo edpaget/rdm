@@ -346,6 +346,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   escalated. A finding already resolved `wont-fix` on a prior pass is dropped
   from both the report and the outcome, and is never re-raised.
 
+### Changed
+
+- `rdm agent-config claude --skills`/`--mcp` no longer emits
+  `.claude/workflows/autopilot.js`: the autopilot loop is now the prose
+  `rdm-autopilot` skill, which orchestrates the `dispatch-phase` and
+  `estimate` Workflows directly instead of nesting through a stamped
+  `autopilot.js`/`lib/autopilot.mjs` copy. The emitted workflow-file count
+  drops from 3 to 2 (`dispatch-phase.js`, `review-refute-fix.js`).
+
 ### Fixed
 
 - The autonomous code review (`rdm-dispatch-phase`, `rdm-autopilot`, the

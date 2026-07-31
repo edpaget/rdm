@@ -21,25 +21,31 @@ accepts), [`docs/autonomous-loop.md`](autonomous-loop.md).
 grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 ```
 
-**44 labelled `agent()` call sites** across the seven workflow scripts:
+**37 labelled `agent()` call sites** across the six workflow scripts:
 
 | file | call sites |
 |---|---|
-| `autopilot.js` | 7 |
 | `backlog.js` | 3 |
 | `dispatch-phase.js` | 11 |
 | `document.js` | 5 |
 | `estimate.js` | 5 |
 | `plan-review.js` | 9 |
 | `review-refute-fix.js` | 4 |
-| **total** | **44** |
+| **total** | **37** |
 
-Adding `.claude/workflows/lib/*.mjs` to the glob raises the count to **53**. That is *not* nine
+(`autopilot.js` carried 7 of the original 44 call sites; it was retired in favor of the prose
+`rdm-autopilot` skill by the `workflow-orchestration` roadmap's phase 3 — see
+[`docs/workflow-vs-prose-boundary.md`](workflow-vs-prose-boundary.md). The historical rows below
+that still cite `autopilot.js`/`advance:*`/`park:*`/`fetch:next` describe the measurements taken
+while it was still a workflow script and are left as a dated record rather than rewritten; they
+are not live-checked the way the totals above are.)
+
+Adding `.claude/workflows/lib/*.mjs` to the glob raises the count to **46**. That is *not* nine
 extra call sites: the libs hold the single-source originals of blocks that are stamped or
-byte-copied into the `.js` consumers, so the same site is counted twice. **The seven `.js`
+byte-copied into the `.js` consumers, so the same site is counted twice. **The six `.js`
 files are the authoritative surface** — they are what the Workflow runtime executes.
 
-Of the 44, **28 are mechanical** and **16 are judgment** agents. The judgment set is out of
+Of the 37, **22 are mechanical** and **15 are judgment** agents. The judgment set is out of
 scope for this phase and is listed here only so the split is checkable: `find:*`, `refute:*`,
 `plan:author`, `plan:revise`, `implement:worktree`, `implement:rework`, `act:code`,
 `act:<kind>:<ident>`, `estimate:<stem>` / `estimate:rate:*`, `analyze:*`, `synthesize:draft`.
@@ -69,8 +75,8 @@ Where a call site lives determines how it is edited. Three routes exist:
 
 | route | blocks | how to edit |
 |---|---|---|
-| **stamped** | `review-refute-fix` (in `dispatch-phase.js`, `plan-review.js`, `review-refute-fix.js`), `estimate-core` (in `estimate.js`, `autopilot.js`) | edit the lib (`lib/review.mjs` / `lib/estimate.mjs`), re-run `scripts/gen-workflow-review.sh` / `gen-workflow-estimate.sh`; `--check` gates drift |
-| **byte-copied** | `dispatch-outcome` (`lib/dispatch-phase.mjs`), `autopilot-loop` (`lib/autopilot.mjs`), `plan-review-driver` (`lib/plan-review.mjs`) | edit the lib **first**, then copy the block verbatim into the consumer; `verify-workflow-dispatch.sh` §2 / `verify-workflow-autopilot.sh` / `verify-workflow-review.sh` §5b-drift gate byte-equality |
+| **stamped** | `review-refute-fix` (in `dispatch-phase.js`, `plan-review.js`, `review-refute-fix.js`), `estimate-core` (in `estimate.js`) | edit the lib (`lib/review.mjs` / `lib/estimate.mjs`), re-run `scripts/gen-workflow-review.sh` / `gen-workflow-estimate.sh`; `--check` gates drift |
+| **byte-copied** | `dispatch-outcome` (`lib/dispatch-phase.mjs`), `plan-review-driver` (`lib/plan-review.mjs`) | edit the lib **first**, then copy the block verbatim into the consumer; `verify-workflow-dispatch.sh` §2 / `verify-workflow-review.sh` §5b-drift gate byte-equality |
 | **unprojected** | everything below a `:end` marker (the driver regions), plus `document-core`/`backlog-groom` consumers | edit in place |
 
 **Every mechanical call site sits in an unprojected DRIVER region**, *except* plan-review's

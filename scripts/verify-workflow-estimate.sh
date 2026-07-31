@@ -9,12 +9,14 @@
 # It NEVER passes `--model` and NEVER reimplements the difficulty->tier mapping —
 # rdm-core (Difficulty::model_tier) owns that. Its pure estimate core lives once
 # in `.claude/workflows/lib/estimate.mjs` (the `estimate-core` marker region) and
-# is copied BYTE-IDENTICAL into three consumers — estimate.js, autopilot.js, and
-# lib/autopilot.mjs — by scripts/gen-workflow-estimate.sh (the Workflow runtime
-# cannot import a helper module; see docs/workflow-schemas.md § "Import spike").
-# autopilot's estimate pre-pass reuses selectUnestimated /
-# buildEstimateWritebackPrompt from the same block, so the note-appending
-# behavior is identical in both surfaces. This harness gates all of that:
+# is copied BYTE-IDENTICAL into a single consumer — estimate.js — by
+# scripts/gen-workflow-estimate.sh (the Workflow runtime cannot import a helper
+# module; see docs/workflow-schemas.md § "Import spike"). The prose
+# `rdm-autopilot` skill's estimate pre-pass invokes this same `estimate`
+# Workflow directly via the Workflow tool rather than reusing a stamped copy of
+# this block (workflow-orchestration roadmap, phase 3 retired the earlier
+# `autopilot.js`/`lib/autopilot.mjs` stamped copy). This harness gates all of
+# that:
 #
 #   1. BEHAVIOR   — the pure helpers, driven in Node (zero LLM calls): arg
 #                   parsing, phase selection, the estimator/writeback/list/tier
@@ -508,7 +510,7 @@ fi
 say "2. Drift: gen-workflow-estimate.sh --check passes on the committed tree"
 
 if "$GEN" --check >/dev/null 2>&1; then
-    pass "estimate-core is in sync across estimate.js / autopilot.js / lib/autopilot.mjs"
+    pass "estimate-core is in sync in estimate.js"
 else
     "$GEN" --check >&2 || true
     fail "estimate-core DRIFTED — run scripts/gen-workflow-estimate.sh"

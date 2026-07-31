@@ -325,8 +325,8 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
 /// Claude Code skills.
 ///
 /// These are the already-stamped `.claude/workflows/*.js` consumers from this
-/// repo's own dogfood setup (`autopilot.js`, `dispatch-phase.js`,
-/// `review-refute-fix.js`), embedded verbatim via `include_str!` and returned
+/// repo's own dogfood setup (`dispatch-phase.js`, `review-refute-fix.js`),
+/// embedded verbatim via `include_str!` and returned
 /// unmodified — there is no project/principles substitution, unlike
 /// [`generate_skills`]'s `render_skill` pass. This is a separate emission
 /// surface from `generate_skills`/`SkillFile`, not folded into it: the two
@@ -345,15 +345,12 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
 /// use rdm_core::agent_config::generate_workflows;
 ///
 /// let workflows = generate_workflows();
-/// assert_eq!(workflows.len(), 3);
-/// assert_eq!(workflows[0].relative_path, "autopilot.js");
+/// assert_eq!(workflows.len(), 2);
+/// assert_eq!(workflows[0].relative_path, "dispatch-phase.js");
+/// assert_eq!(workflows[1].relative_path, "review-refute-fix.js");
 /// ```
 pub fn generate_workflows() -> Vec<WorkflowFile> {
     vec![
-        WorkflowFile {
-            relative_path: "autopilot.js",
-            content: include_str!("templates/workflows/autopilot.js"),
-        },
         WorkflowFile {
             relative_path: "dispatch-phase.js",
             content: include_str!("templates/workflows/dispatch-phase.js"),
@@ -1247,12 +1244,11 @@ mod tests {
     // --- Workflow generation tests ---
 
     #[test]
-    fn generate_workflows_returns_three_files() {
+    fn generate_workflows_returns_two_files() {
         let workflows = generate_workflows();
-        assert_eq!(workflows.len(), 3);
-        assert_eq!(workflows[0].relative_path, "autopilot.js");
-        assert_eq!(workflows[1].relative_path, "dispatch-phase.js");
-        assert_eq!(workflows[2].relative_path, "review-refute-fix.js");
+        assert_eq!(workflows.len(), 2);
+        assert_eq!(workflows[0].relative_path, "dispatch-phase.js");
+        assert_eq!(workflows[1].relative_path, "review-refute-fix.js");
     }
 
     #[test]
@@ -2056,10 +2052,11 @@ mod tests {
         // Drives one named roadmap; the slug is required and the loop never roams.
         assert!(content.contains("required roadmap slug"));
         assert!(content.contains("never roams to another roadmap"));
-        // It is a thin shim invoking the Workflow tool, not a prose loop.
-        assert!(content.contains("thin shim"));
+        // Full prose-parity documentation is a follow-up phase's job; the
+        // placeholder claims neither "thin shim" nor a literal
+        // .claude/workflows/autopilot.js path (that file no longer exists).
+        assert!(content.contains("full prose-parity documentation lands in a follow-up phase"));
         assert!(content.contains("Workflow"));
-        assert!(content.contains(".claude/workflows/autopilot.js"));
         assert!(content.contains("rdm next --roadmap <slug> --format json"));
         // Composes the per-phase dispatch workflow rather than re-implementing it.
         assert!(content.contains("dispatch-phase"));
@@ -3145,10 +3142,12 @@ mod tests {
         // Drives one named roadmap; the slug is required and the loop never roams.
         assert!(content.contains("required roadmap slug"));
         assert!(content.contains("never roams to another roadmap"));
-        // Thin shim invoking the Workflow tool; the MCP `rdm_next` tool is
-        // named in the body wherever the loop driver is described.
-        assert!(content.contains("thin shim"));
-        assert!(content.contains(".claude/workflows/autopilot.js"));
+        // Full prose-parity documentation is a follow-up phase's job; the
+        // placeholder claims neither "thin shim" nor a literal
+        // .claude/workflows/autopilot.js path (that file no longer exists).
+        // The MCP `rdm_next` tool is named in the body wherever the loop
+        // driver is described.
+        assert!(content.contains("full prose-parity documentation lands in a follow-up phase"));
         assert!(content.contains("rdm_next"));
         // Composes the per-phase dispatch workflow.
         assert!(content.contains("dispatch-phase"));

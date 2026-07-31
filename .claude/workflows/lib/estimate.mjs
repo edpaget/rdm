@@ -8,8 +8,10 @@
 //!
 //!   * the standalone `.claude/workflows/estimate.js` workflow (a human running
 //!     it directly, or the `rdm-estimate` skill shim);
-//!   * the `.claude/workflows/autopilot.js` estimate pre-pass, which reuses
-//!     `selectUnestimated` / `buildEstimateWritebackPrompt` from the same block.
+//!   * the prose `rdm-autopilot` skill's estimate pre-pass, which invokes this
+//!     same `estimate` Workflow directly via the Workflow tool (a real call,
+//!     not a stamped copy of this block — see
+//!     `.claude/skills/rdm-autopilot/SKILL.md`).
 //!
 //! Because the Claude Code Workflow runtime cannot `import`/`require` (proven by
 //! the P1 import spike — see docs/workflow-schemas.md § "Import spike"), the
@@ -34,8 +36,7 @@
 //
 // This block is the single source of truth in
 // .claude/workflows/lib/estimate.mjs and is copied BYTE-IDENTICAL into
-// .claude/workflows/estimate.js, .claude/workflows/autopilot.js, and
-// .claude/workflows/lib/autopilot.mjs by scripts/gen-workflow-estimate.sh (the
+// .claude/workflows/estimate.js by scripts/gen-workflow-estimate.sh (the
 // Workflow runtime cannot load modules at run time).
 // scripts/verify-workflow-estimate.sh gates the copies for drift. No Date.now /
 // Math.random — pure array/string ops only. The block names NO ambient runtime
