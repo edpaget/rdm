@@ -939,6 +939,339 @@
     },
     "decision": "`concern` keeps its refuter. Over this window a concern is overturned MORE often than a blocking finding (50.4% of 522 graded vs 38.1% of 197), and it gates outright at the `large` tier, so its refuter is buying something. `suggestion` is overturned 74.2% of the time and gates nothing either way — the verdict changes no outcome, so the agent is pure cost. The pass-through set is therefore ['suggestion'] and is tier-independent, which is why no tier has to be threaded into the pipeline."
   },
+  "refuterFanout": {
+    "description": "Two descriptive distributions over the SAME refuter/finder corpus nonGatingRefutationSkip measures, extending scripts/measure-refuter-severity.mjs rather than adding a sibling instrument: (1) findings-per-finder, split by mode and dimension, sourced from each finder's OWN transcript output (its last StructuredOutput `findings` array), never inferred from how many refuters were dispatched — since workflow-token-reduction phase 6, a `suggestion` finding is never dispatched to a refuter at all, so refuter count is strictly less than finding count and cannot stand in for it; and (2) how many refuters a single review unit (one dispatch-phase code-review stage, one plan-review phase unit) dispatched, keyed by the unit identity embedded in each refuter's own initiating prompt turn.",
+    "instrument": "scripts/measure-refuter-severity.mjs (over scripts/lib/token-report.mjs)",
+    "regenerateCommand": "node scripts/measure-refuter-severity.mjs --until 2026-07-29T00:00:00Z --format json",
+    "method": "Both a refuter's dimension and its review-unit identity are resolved from the SAME header line of its prompt that nonGatingRefutationSkip already parses for severity (`A prior reviewer raised this <dim> finding against <target>:`), via a new extractRefuterContext() parser — never from the refuter's own `refute:<mode>:(f.id|dim.key:idx)` label, which a finder-supplied `f.id` (the common case) displaces the dimension out of entirely. The review-unit boundary is deliberately NOT `phaseTitle`/`phaseIndex`: those are the workflow's own declared pipeline stages, and in a plan-review run they are IDENTICAL across every review unit in the run — measured directly on run wf_55af7324-87c (`--roadmap project-agnostic-lane`): 152 agents, all 96 refuters sitting at the SAME phaseIndex across 9 distinct review units, which would silently collapse to \"one unit with 96 refuters\" under that key. `context.target` supplies the real boundary instead — a single-line bare `task/<slug>`/`<roadmap>/<stem>` in code mode (identity ends at the trailing `:` on the same line), or a multi-line `phase <roadmap>/<stem>\\n\\n<body>` in plan mode (identity is the first line, well before the `:` trailing the whole body). A target that is itself pretty-printed JSON (the --implementation-plan shape) or implausibly long is rejected rather than captured as a fake identity, and is reported as unrecoverable, never bucketed into an existing unit.",
+    "measurementWindow": {
+      "until": "2026-07-29T00:00:00Z",
+      "why": "Pins the run set so a later lane run cannot silently re-baseline these committed figures. --check re-applies this window unless --until overrides it. Regenerated in the SAME pass as nonGatingRefutationSkip above, over the identical window.",
+      "runCount": 48,
+      "agentRecordCount": 2208,
+      "laneWorkflows": [
+        "autopilot",
+        "dispatch-phase",
+        "plan-review",
+        "backlog",
+        "estimate",
+        "document"
+      ],
+      "note": "This window is the SAME as nonGatingRefutationSkip's (both regenerated together), but is WIDER than the runSet section above (40 runs / 1943 agent records, measured 2026-07-26): the corpus grew between the two measurements. These rows are therefore NOT subtractable against byAgentClass above, and are a DIFFERENT measurement from nonGatingRefutationSkip's per-severity breakdown even though the windows happen to coincide here — a future regeneration of either section is not required to keep them aligned. Compare figures only within this section."
+    },
+    "findingsPerFinder": {
+      "rows": [
+        {
+          "mode": "code",
+          "dim": "ac",
+          "key": "code:ac",
+          "n": 47,
+          "min": 0,
+          "p50": 0,
+          "p90": 2,
+          "max": 2,
+          "refutersDispatched": 28
+        },
+        {
+          "mode": "code",
+          "dim": "ac (retry 1)",
+          "key": "code:ac (retry 1)",
+          "n": 3,
+          "min": 0,
+          "p50": 0,
+          "p90": 0,
+          "max": 0,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "ac (retry 3)",
+          "key": "code:ac (retry 3)",
+          "n": 1,
+          "min": 1,
+          "p50": 1,
+          "p90": 1,
+          "max": 1,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "api-docs",
+          "key": "code:api-docs",
+          "n": 4,
+          "min": 0,
+          "p50": 0,
+          "p90": 0,
+          "max": 0,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "architecture",
+          "key": "code:architecture",
+          "n": 50,
+          "min": 0,
+          "p50": 0,
+          "p90": 2,
+          "max": 2,
+          "refutersDispatched": 25
+        },
+        {
+          "mode": "code",
+          "dim": "architecture (retry 1)",
+          "key": "code:architecture (retry 1)",
+          "n": 3,
+          "min": 0,
+          "p50": 0,
+          "p90": 0,
+          "max": 0,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "changelog",
+          "key": "code:changelog",
+          "n": 17,
+          "min": 0,
+          "p50": 0,
+          "p90": 1,
+          "max": 1,
+          "refutersDispatched": 4
+        },
+        {
+          "mode": "code",
+          "dim": "correctness",
+          "key": "code:correctness",
+          "n": 45,
+          "min": 0,
+          "p50": 1,
+          "p90": 2,
+          "max": 3,
+          "refutersDispatched": 52
+        },
+        {
+          "mode": "code",
+          "dim": "correctness (retry 1)",
+          "key": "code:correctness (retry 1)",
+          "n": 3,
+          "min": 0,
+          "p50": 1,
+          "p90": 2.6,
+          "max": 3,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "correctness (retry 2)",
+          "key": "code:correctness (retry 2)",
+          "n": 3,
+          "min": 1,
+          "p50": 1,
+          "p90": 1.8,
+          "max": 2,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "security",
+          "key": "code:security",
+          "n": 16,
+          "min": 0,
+          "p50": 0,
+          "p90": 1,
+          "max": 1,
+          "refutersDispatched": 5
+        },
+        {
+          "mode": "code",
+          "dim": "security (retry 1)",
+          "key": "code:security (retry 1)",
+          "n": 1,
+          "min": 0,
+          "p50": 0,
+          "p90": 0,
+          "max": 0,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "security (retry 2)",
+          "key": "code:security (retry 2)",
+          "n": 1,
+          "min": 0,
+          "p50": 0,
+          "p90": 0,
+          "max": 0,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "security (retry 4)",
+          "key": "code:security (retry 4)",
+          "n": 1,
+          "min": 0,
+          "p50": 0,
+          "p90": 0,
+          "max": 0,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "tests",
+          "key": "code:tests",
+          "n": 48,
+          "min": 0,
+          "p50": 1,
+          "p90": 2,
+          "max": 3,
+          "refutersDispatched": 57
+        },
+        {
+          "mode": "code",
+          "dim": "tests (retry 2)",
+          "key": "code:tests (retry 2)",
+          "n": 1,
+          "min": 1,
+          "p50": 1,
+          "p90": 1,
+          "max": 1,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "tests (retry 4)",
+          "key": "code:tests (retry 4)",
+          "n": 1,
+          "min": 1,
+          "p50": 1,
+          "p90": 1,
+          "max": 1,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "code",
+          "dim": "tests (retry 5)",
+          "key": "code:tests (retry 5)",
+          "n": 1,
+          "min": 0,
+          "p50": 0,
+          "p90": 0,
+          "max": 0,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "plan",
+          "dim": "architectural-fit",
+          "key": "plan:architectural-fit",
+          "n": 117,
+          "min": 0,
+          "p50": 2,
+          "p90": 4.400000000000006,
+          "max": 6,
+          "refutersDispatched": 266
+        },
+        {
+          "mode": "plan",
+          "dim": "coherence",
+          "key": "plan:coherence",
+          "n": 116,
+          "min": 0,
+          "p50": 2,
+          "p90": 5,
+          "max": 7,
+          "refutersDispatched": 301
+        },
+        {
+          "mode": "plan",
+          "dim": "coherence (retry 1)",
+          "key": "plan:coherence (retry 1)",
+          "n": 1,
+          "min": 2,
+          "p50": 2,
+          "p90": 2,
+          "max": 2,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "plan",
+          "dim": "coherence (retry 2)",
+          "key": "plan:coherence (retry 2)",
+          "n": 1,
+          "min": 1,
+          "p50": 1,
+          "p90": 1,
+          "max": 1,
+          "refutersDispatched": 0
+        },
+        {
+          "mode": "plan",
+          "dim": "restraint",
+          "key": "plan:restraint",
+          "n": 26,
+          "min": 0,
+          "p50": 2,
+          "p90": 3,
+          "max": 4,
+          "refutersDispatched": 53
+        },
+        {
+          "mode": "plan",
+          "dim": "unit-of-work",
+          "key": "plan:unit-of-work",
+          "n": 118,
+          "min": 0,
+          "p50": 1,
+          "p90": 3,
+          "max": 4,
+          "refutersDispatched": 172
+        }
+      ],
+      "unreadableFinderCount": 35,
+      "unresolvedLabelCount": 0
+    },
+    "refuterCountsByUnit": {
+      "n": 80,
+      "min": 1,
+      "p50": 8.5,
+      "p90": 13,
+      "max": 21,
+      "totalRefuters": 989,
+      "recoveredRefuters": 639,
+      "unrecoverableRefuterCount": 350,
+      "recoveryRatePercent": 64.6
+    },
+    "caveat": "No post-change lane corpus exists for the findings-per-finder distribution either — it reports what finders actually emitted over the historical corpus, not a forecast. The per-unit refuter-count distribution only recovers 64.6% of refuters to a unit (639/989); the remainder (chiefly --implementation-plan's raw-JSON-shaped target, and refuters with no transcript at all) are reported as unrecoverable and are never bucketed into any unit's count, so the distribution is a lower bound on true per-unit fan-out, not an exact accounting.",
+    "gating": {
+      "checkGated": [
+        "findingsPerFinder.rows[].n",
+        "findingsPerFinder.rows[].min",
+        "findingsPerFinder.rows[].p50",
+        "findingsPerFinder.rows[].p90",
+        "findingsPerFinder.rows[].max",
+        "findingsPerFinder.rows[].refutersDispatched",
+        "findingsPerFinder.unreadableFinderCount",
+        "findingsPerFinder.unresolvedLabelCount",
+        "refuterCountsByUnit.n",
+        "refuterCountsByUnit.min",
+        "refuterCountsByUnit.p50",
+        "refuterCountsByUnit.p90",
+        "refuterCountsByUnit.max",
+        "refuterCountsByUnit.totalRefuters",
+        "refuterCountsByUnit.recoveredRefuters",
+        "refuterCountsByUnit.unrecoverableRefuterCount",
+        "refuterCountsByUnit.recoveryRatePercent"
+      ],
+      "checkGatedBy": "node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json (recomputes over the real corpus; requires the sidecars, so it is run by hand, not by the harness)",
+      "auditGatedBy": "node scripts/measure-refuter-severity.mjs --audit docs/token-baseline.json, run by scripts/verify-token-report.sh section 6 — corpus-free arithmetic audit (every row’s min <= p50 <= p90 <= max, recoveredRefuters + unrecoverableRefuterCount === totalRefuters, recoveryRatePercent re-derives), so the committed figures are gated on any machine.",
+      "provenanceOnly": [
+        "description",
+        "method",
+        "measurementWindow.why",
+        "measurementWindow.note",
+        "caveat"
+      ]
+    }
+  },
   "refuterModelTiering": {
     "question": "Must the autonomous lane's refuters stay on Opus? Measured against an adjudicated finding corpus with false-negative and false-positive rates reported separately.",
     "doc": "docs/refuter-model-tiering.md",

@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-checked ground truth for scripts/verify-token-report.sh section 6. Shaped exactly like docs/token-baseline.json is nonGatingRefutationSkip section so the SAME --check/--audit code paths are exercised against a hermetic fixture. Every number here is derivable by hand from the fixture transcripts.",
+  "_comment": "Hand-checked ground truth for scripts/verify-token-report.sh section 6. Shaped exactly like docs/token-baseline.json's nonGatingRefutationSkip + refuterFanout sections so the SAME --check/--audit code paths are exercised against a hermetic fixture. Every number here is derivable by hand from the fixture transcripts. The two new refuters added for the refuterFanout distributions (refute-c2, refute-shadow) are both severity `concern`, chosen specifically so the blocking/suggestion/unrecoverable:no-transcript rows below are untouched by that extension.",
   "nonGatingRefutationSkip": {
     "refuteBySeverity": [
       {
@@ -16,15 +16,15 @@
       },
       {
         "key": "concern",
-        "agentCount": 1,
-        "dedupedRequestCount": 1,
-        "output": 7,
-        "uncachedInput": 20,
-        "cacheWrite": 200,
-        "cacheRead": 2000,
-        "graded": 1,
-        "refuted": 1,
-        "refutedRate": 100
+        "agentCount": 3,
+        "dedupedRequestCount": 3,
+        "output": 21,
+        "uncachedInput": 60,
+        "cacheWrite": 600,
+        "cacheRead": 6000,
+        "graded": 3,
+        "refuted": 2,
+        "refutedRate": 66.7
       },
       {
         "key": "suggestion",
@@ -52,20 +52,20 @@
       }
     ],
     "refuteTotals": {
-      "agentCount": 4,
-      "dedupedRequestCount": 3,
-      "output": 521,
-      "uncachedInput": 60,
-      "cacheWrite": 600,
-      "cacheRead": 6000
-    },
-    "laneTotals": {
-      "agentCount": 5,
-      "dedupedRequestCount": 4,
-      "output": 532,
+      "agentCount": 6,
+      "dedupedRequestCount": 5,
+      "output": 535,
       "uncachedInput": 100,
       "cacheWrite": 1000,
       "cacheRead": 10000
+    },
+    "laneTotals": {
+      "agentCount": 10,
+      "dedupedRequestCount": 9,
+      "output": 585,
+      "uncachedInput": 266,
+      "cacheWrite": 2660,
+      "cacheRead": 26600
     },
     "projected": {
       "severities": [
@@ -78,9 +78,50 @@
       "cacheRead": 3000,
       "allTokens": 3339,
       "freshTokens": 339,
-      "percentOfRefuteAgents": 25,
-      "percentOfRefuteTokens": 46.5,
-      "percentOfLaneTokens": 28.7
+      "percentOfRefuteAgents": 16.7,
+      "percentOfRefuteTokens": 28.7,
+      "percentOfLaneTokens": 11.1
+    }
+  },
+  "refuterFanout": {
+    "findingsPerFinder": {
+      "rows": [
+        {
+          "mode": "code",
+          "dim": "correctness",
+          "key": "code:correctness",
+          "n": 2,
+          "min": 3,
+          "p50": 4,
+          "p90": 4.8,
+          "max": 5,
+          "refutersDispatched": 2
+        },
+        {
+          "mode": "plan",
+          "dim": "unit-of-work",
+          "key": "plan:unit-of-work",
+          "n": 1,
+          "min": 1,
+          "p50": 1,
+          "p90": 1,
+          "max": 1,
+          "refutersDispatched": 1
+        }
+      ],
+      "unreadableFinderCount": 1,
+      "unresolvedLabelCount": 0
+    },
+    "refuterCountsByUnit": {
+      "n": 3,
+      "min": 1,
+      "p50": 1,
+      "p90": 1.8,
+      "max": 2,
+      "totalRefuters": 6,
+      "recoveredRefuters": 4,
+      "unrecoverableRefuterCount": 2,
+      "recoveryRatePercent": 66.7
     }
   }
 }

@@ -61,7 +61,21 @@
 #      non-gating), its --check path, a corpus-free --audit of the COMMITTED
 #      figures in docs/token-baseline.json, a pin of its NON_GATING_SEVERITIES
 #      to the canonical review source, and two planted mutations (an edited doc
-#      figure; a broken extractor) proving neither check is vacuous.
+#      figure; a broken extractor) proving neither check is vacuous. This
+#      section also gates the instrument's two REVIEW-FANOUT distributions:
+#      findings-per-finder (n/min/p50/p90/max, split by mode + dimension,
+#      sourced from each finder's own StructuredOutput output, never inferred
+#      from refuter counts) and refuters-dispatched-per-review-unit
+#      (n/min/p50/p90/max plus a recovery rate), where the unit identity is
+#      parsed from the target embedded in each refuter's own prompt — never
+#      `phaseTitle`/`phaseIndex`, which collapse an entire plan-review run's
+#      review units into one bucket. Gated the same way: fixture comparison,
+#      --check/--audit over the extended `refuterFanout` doc section, and two
+#      more planted mutations (a broken unit/dimension extractor; the
+#      `refutersDispatched` join falling back to the unreliable label instead
+#      of the prompt-derived dimension) proving the dimension-shadow case —
+#      where a finder-supplied `f.id` names a DIFFERENT real dimension than
+#      the finding's own — is resolved from the prompt, not the label.
 #   7. CHANGELOG HYGIENE — the same commit that touches
 #      scripts/lib/token-report.mjs / scripts/measure-lane-tokens.mjs /
 #      scripts/measure-refuter-severity.mjs also touches CHANGELOG.md, so a
@@ -640,17 +654,80 @@ run_node "$TMP/refsev-compare.mjs" "$TMP/refsev-report.json" "$REFSEV_EXPECTED" 
     fail "the refuter-severity report did not match the hand-checked fixture figures"
 pass "per-severity agent counts, verdict tallies and all four token classes match the fixture exactly"
 
+# --- fixture comparison: the two review-fanout distributions -----------------
+cat >"$TMP/refsev-fanout-compare.mjs" <<'NODE_REFSEV_FANOUT_COMPARE'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const [, , reportPath, expectedPath] = process.argv;
+const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+const expected = JSON.parse(readFileSync(expectedPath, 'utf8')).refuterFanout;
+
+const fp = report.refuterFanout.findingsPerFinder;
+const expFp = expected.findingsPerFinder;
+const ROW_FIELDS = ['n', 'min', 'p50', 'p90', 'max', 'refutersDispatched'];
+const byKey = Object.fromEntries(fp.rows.map((r) => [r.key, r]));
+
+assert.deepEqual(
+  fp.rows.map((r) => r.key),
+  expFp.rows.map((r) => r.key),
+  'findingsPerFinder yields exactly the expected rows, in the expected order'
+);
+for (const exp of expFp.rows) {
+  const act = byKey[exp.key];
+  assert.ok(act, `missing findingsPerFinder row "${exp.key}"`);
+  for (const f of ROW_FIELDS) {
+    assert.equal(act[f], exp[f], `findingsPerFinder.${exp.key}.${f}: expected ${exp[f]}, got ${act[f]}`);
+  }
+}
+assert.equal(fp.unreadableFinderCount, expFp.unreadableFinderCount, 'findingsPerFinder.unreadableFinderCount');
+assert.equal(fp.unresolvedLabelCount, expFp.unresolvedLabelCount, 'findingsPerFinder.unresolvedLabelCount');
+
+// AC3: the dimension-shadow refuter (finding.id = 'coherence', giving label
+// refute:plan:coherence, but a prompt-embedded dim.key of 'unit-of-work')
+// must land its refutersDispatched contribution on plan:unit-of-work, the
+// PROMPT-resolved dimension — never on plan:coherence (which naive
+// label-splitting would produce, and which has no finder row at all in this
+// fixture, so under the broken behavior this count would silently drop to 0
+// rather than move somewhere visibly wrong).
+assert.equal(
+  byKey['plan:unit-of-work'].refutersDispatched,
+  1,
+  'plan:unit-of-work.refutersDispatched must count the dimension-shadow refuter via its PROMPT-resolved dim (unit-of-work), not its label-derived one (coherence)'
+);
+assert.ok(
+  !('plan:coherence' in byKey),
+  'no plan:coherence finder row exists in the fixture, so the shadow refuter must not spuriously create one'
+);
+
+const unit = report.refuterFanout.refuterCountsByUnit;
+const expUnit = expected.refuterCountsByUnit;
+for (const f of ['n', 'min', 'p50', 'p90', 'max', 'totalRefuters', 'recoveredRefuters', 'unrecoverableRefuterCount', 'recoveryRatePercent']) {
+  assert.equal(unit[f], expUnit[f], `refuterCountsByUnit.${f}: expected ${expUnit[f]}, got ${unit[f]}`);
+}
+
+console.log('refuter-fanout fixture comparison MATCH');
+NODE_REFSEV_FANOUT_COMPARE
+
+run_node "$TMP/refsev-fanout-compare.mjs" "$TMP/refsev-report.json" "$REFSEV_EXPECTED" ||
+    fail "the refuter-fanout report did not match the hand-checked fixture figures"
+pass "findings-per-finder and per-unit refuter-count distributions match the fixture exactly, including the dimension-shadow row"
+
 # --- the --check and --audit paths -------------------------------------------
+# readDoc/checkDoc+checkFanoutDoc/auditDoc+auditFanoutDoc now require AND
+# validate BOTH doc sections (nonGatingRefutationSkip and refuterFanout) in
+# one pass — these calls exercise both; the planted-mutation self-tests below
+# prove the refuterFanout half specifically is not a vacuous pass-through.
 run_node "$REFSEV" --root "$REFSEV_SCRATCH" --check "$REFSEV_EXPECTED" >/dev/null ||
     fail "--check failed against the fixture's own recorded figures"
 run_node "$REFSEV" --audit "$REFSEV_EXPECTED" >/dev/null ||
     fail "--audit failed against the fixture's own recorded figures"
-# The COMMITTED baseline figures are gated corpus-free, so this holds on any
-# machine — the sidecar-reading --check is run by hand (see the doc's
-# gating.checkGatedBy).
+# The COMMITTED baseline figures (both nonGatingRefutationSkip AND
+# refuterFanout) are gated corpus-free, so this holds on any machine — the
+# sidecar-reading --check is run by hand (see the doc's gating.checkGatedBy).
 run_node "$REFSEV" --audit "$BASELINE_DOC" >/dev/null ||
-    fail "docs/token-baseline.json's nonGatingRefutationSkip figures are not internally consistent — re-run the instrument and update the doc"
-pass "--check matches the fixture, and the committed baseline figures pass the corpus-free --audit"
+    fail "docs/token-baseline.json's nonGatingRefutationSkip/refuterFanout figures are not internally consistent — re-run the instrument and update the doc"
+pass "--check matches the fixture, and the committed baseline figures (both sections) pass the corpus-free --audit"
 
 # --- the --until measurement window ------------------------------------------
 # `--until` is the mechanism that PINS every committed figure in
@@ -683,7 +760,7 @@ assert.equal(before.projected.agentsNotSpawned, 0, 'nothing is projected away fr
 // A window that ends AFTER it keeps everything — same figures as no window at
 // all, so the filter cannot be silently dropping records inside its range.
 assert.equal(after.corpus.runCount, 1, '--until after the run includes it');
-assert.equal(after.corpus.agentRecordCount, 5, 'the whole run is included');
+assert.equal(after.corpus.agentRecordCount, 10, 'the whole run is included');
 assert.deepEqual(
   after.refuteBySeverity.map((r) => [r.key, r.agentCount, r.output]),
   expected.refuteBySeverity.map((r) => [r.key, r.agentCount, r.output]),
@@ -766,6 +843,37 @@ if run_node "$TMP/refsev-mut/measure-refuter-severity.mjs" --root "$REFSEV_SCRAT
     fi
 fi
 pass "planted-mutation self-test: a broken severity extractor flips the fixture comparison to FAIL"
+
+# (c) A broken unit/dimension extractor must flip the review-fanout comparison.
+# Force the header-marker search to miss, so extractRefuterContext can never
+# resolve a dimension or unit identity for any refuter.
+sed "s/const HEADER_MARKER = 'A prior reviewer raised this ';/const HEADER_MARKER = 'NEVER MATCHES THIS MARKER';/" \
+    "$REFSEV" >"$TMP/refsev-mut/measure-refuter-severity-context.mjs"
+if diff -q "$REFSEV" "$TMP/refsev-mut/measure-refuter-severity-context.mjs" >/dev/null 2>&1; then
+    fail "self-test setup: the context-extractor mutation did not change the source — sed pattern did not match"
+fi
+if run_node "$TMP/refsev-mut/measure-refuter-severity-context.mjs" --root "$REFSEV_SCRATCH" --format json >"$TMP/refsev-mutant-fanout-report.json" 2>/dev/null; then
+    if run_node "$TMP/refsev-fanout-compare.mjs" "$TMP/refsev-mutant-fanout-report.json" "$REFSEV_EXPECTED" >/dev/null 2>&1; then
+        fail "planted-mutation self-test FAILED TO CATCH: a broken unit/dimension extractor still matched the fixture's refuterFanout figures"
+    fi
+fi
+pass "planted-mutation self-test: a broken unit/dimension extractor flips the refuter-fanout comparison to FAIL"
+
+# (d) AC3: the refutersDispatched join must use the refuter's PROMPT-derived
+# dimension (r.dimKey), never its unreliable label segment. Mutate the join to
+# fall back to label-splitting and confirm the dimension-shadow refuter lands
+# on the wrong (nonexistent) row instead of plan:unit-of-work.
+sed "s/mode + ':' + r.dimKey/mode + ':' + labelParts[2]/" \
+    "$REFSEV" >"$TMP/refsev-mut/measure-refuter-severity-labeljoin.mjs"
+if diff -q "$REFSEV" "$TMP/refsev-mut/measure-refuter-severity-labeljoin.mjs" >/dev/null 2>&1; then
+    fail "self-test setup: the label-join mutation did not change the source — sed pattern did not match"
+fi
+if run_node "$TMP/refsev-mut/measure-refuter-severity-labeljoin.mjs" --root "$REFSEV_SCRATCH" --format json >"$TMP/refsev-mutant-labeljoin-report.json" 2>/dev/null; then
+    if run_node "$TMP/refsev-fanout-compare.mjs" "$TMP/refsev-mutant-labeljoin-report.json" "$REFSEV_EXPECTED" >/dev/null 2>&1; then
+        fail "planted-mutation self-test FAILED TO CATCH: joining refutersDispatched on the label instead of the prompt-derived dimension still matched the fixture (the dimension-shadow row should have flipped to the wrong bucket)"
+    fi
+fi
+pass "planted-mutation self-test: joining refutersDispatched on the label (not the prompt-derived dimension) flips the dimension-shadow assertion to FAIL"
 
 # ==============================================================================
 say "7. Changelog hygiene: the code change is staged/committed alongside CHANGELOG.md"

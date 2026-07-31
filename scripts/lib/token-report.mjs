@@ -485,11 +485,15 @@ export function aggregateByWorkflow(records) {
  * is why the fixture (every class n=1) cannot distinguish between
  * interpolation methods and this is documented here instead.
  *
+ * Exported so a sibling instrument (`scripts/measure-refuter-severity.mjs`'s
+ * findings-per-finder / per-unit refuter-count distributions) can reuse the
+ * same interpolation math instead of duplicating it.
+ *
  * @param {number[]} values - need not be pre-sorted.
  * @param {number} p - in `[0, 1]`.
  * @returns {number}
  */
-function percentile(values, p) {
+export function percentile(values, p) {
   const sorted = [...values].sort((a, b) => a - b);
   const n = sorted.length;
   if (n === 1) return sorted[0];

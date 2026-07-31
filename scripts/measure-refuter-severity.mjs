@@ -63,6 +63,7 @@ import {
   buildRecords,
   aggregate,
   transcriptPathFor,
+  percentile,
 } from './lib/token-report.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -124,7 +125,7 @@ export function matchBrace(text, start) {
 }
 
 /**
- * Pull the finding object out of a refuter prompt.
+ * Locate the finding object embedded in a refuter prompt, without parsing it.
  *
  * `refutePrompt` builds exactly:
  *
@@ -140,10 +141,16 @@ export function matchBrace(text, start) {
  * start of a line and whose closing brace sits immediately before the
  * `Start from the stance:` sentinel. That pins it unambiguously.
  *
+ * Exported (rather than folded into `extractFinding`) so `extractRefuterContext`
+ * can reuse the same span to read the HEADER text that precedes the finding —
+ * the dimension and target this refuter was told about — without re-deriving
+ * it from a second scan.
+ *
  * @param {string} prompt
- * @returns {object|null} the parsed finding, or null if it cannot be recovered
+ * @returns {{ start: number, end: number }|null} indices of the finding's
+ *   opening and closing braces (inclusive), or null if it cannot be located.
  */
-export function extractFinding(prompt) {
+export function locateFindingSpan(prompt) {
   if (typeof prompt !== 'string') return null;
   const sentinel = '\nStart from the stance:';
   const sentinelAt = prompt.indexOf(sentinel);
@@ -159,12 +166,105 @@ export function extractFinding(prompt) {
     if (matchBrace(prompt, i) !== closeAt) continue;
     try {
       const parsed = JSON.parse(prompt.slice(i, closeAt + 1));
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { start: i, end: closeAt };
     } catch {
       // Not the finding after all — keep scanning.
     }
   }
   return null;
+}
+
+/**
+ * Pull the finding object out of a refuter prompt. Thin wrapper over
+ * `locateFindingSpan` — kept as its own export so existing callers/tests are
+ * unaffected by the span/parse split.
+ *
+ * @param {string} prompt
+ * @returns {object|null} the parsed finding, or null if it cannot be recovered
+ */
+export function extractFinding(prompt) {
+  const span = locateFindingSpan(prompt);
+  if (!span) return null;
+  try {
+    return JSON.parse(prompt.slice(span.start, span.end + 1));
+  } catch {
+    return null;
+  }
+}
+
+// --- Review-unit recovery -------------------------------------------------
+
+// The fixed header marker `refutePrompt` always writes, and the separator
+// between the dimension key and the target it names. Both are literal
+// substrings of the prompt built in .claude/workflows/lib/review.mjs's
+// `refutePrompt` — see that function for the exact template.
+const HEADER_MARKER = 'A prior reviewer raised this ';
+const FINDING_AGAINST = ' finding against ';
+
+// A pathologically long single-line plan document with no early newline
+// should not be captured as a fake unit identity — cap the candidate length.
+const MAX_UNIT_IDENT_LENGTH = 200;
+
+/**
+ * Reject a candidate unit identity that is empty, contains raw JSON structure
+ * (a `{` or `"` — the `--implementation-plan` shape, where the target itself
+ * is pretty-printed JSON and the "first line" heuristic below lands on its
+ * opening brace), or is implausibly long (a single-line plan doc with no
+ * early newline).
+ *
+ * @param {string} s
+ * @returns {boolean}
+ */
+export function isPlausibleUnitIdent(s) {
+  if (typeof s !== 'string' || s.length === 0) return false;
+  if (s.indexOf('{') !== -1 || s.indexOf('"') !== -1) return false;
+  if (s.length > MAX_UNIT_IDENT_LENGTH) return false;
+  return true;
+}
+
+/**
+ * Recover the review-unit identity and dimension a refuter's finding was
+ * raised against, from the SAME header line `readRefuterTranscript` already
+ * scans for severity — one file read, one pass.
+ *
+ * The unit identity comes from `context.target`, embedded inline in the
+ * header (`refutePrompt` in .claude/workflows/lib/review.mjs):
+ *
+ *   - **plan mode**: `target` is `'phase ' + roadmap + '/' + stem + '\n\n' +
+ *     body` (or the roadmap/implementation-plan equivalents) — MULTI-line, so
+ *     its first line (before the `\n\n`) already IS the identity, well
+ *     before the trailing `:` that trails the entire body many lines later.
+ *   - **code mode**: `target` is a single-line bare `task/<slug>` or
+ *     `<roadmap>/<stem>` — the trailing `:` sits on the SAME line, so it is
+ *     stripped instead.
+ *
+ * A target that is itself pretty-printed JSON (the `--implementation-plan`
+ * shape) or an implausibly long single-line target is rejected by
+ * `isPlausibleUnitIdent` rather than captured as a fake identity.
+ *
+ * @param {string} prompt
+ * @returns {{ dimKey: string|null, unitIdent: string|null }}
+ */
+export function extractRefuterContext(prompt) {
+  const span = locateFindingSpan(prompt);
+  if (!span) return { dimKey: null, unitIdent: null };
+  let header = prompt.slice(0, span.start);
+  if (header.endsWith('\n')) header = header.slice(0, -1);
+  const markerAt = header.indexOf(HEADER_MARKER);
+  if (markerAt === -1) return { dimKey: null, unitIdent: null };
+  const afterMarker = header.slice(markerAt + HEADER_MARKER.length);
+  const sepAt = afterMarker.indexOf(FINDING_AGAINST);
+  if (sepAt === -1) return { dimKey: null, unitIdent: null };
+  const dimKey = afterMarker.slice(0, sepAt) || null;
+  const targetPlusColon = afterMarker.slice(sepAt + FINDING_AGAINST.length);
+  const newlineAt = targetPlusColon.indexOf('\n');
+  const candidate =
+    newlineAt !== -1
+      ? targetPlusColon.slice(0, newlineAt)
+      : targetPlusColon.endsWith(':')
+        ? targetPlusColon.slice(0, -1)
+        : targetPlusColon;
+  return { dimKey, unitIdent: isPlausibleUnitIdent(candidate) ? candidate : null };
 }
 
 /**
@@ -175,19 +275,24 @@ export function extractFinding(prompt) {
  * The verdict half is what settles which severities are worth refuting at all —
  * a severity whose refuters mostly say "refuted" is earning its cost.
  *
+ * `dimKey`/`unitIdent` are pulled from the SAME initiating turn's prompt text
+ * via `extractRefuterContext` — one read, one scan, no second transcript pass.
+ *
  * @param {string} filePath
- * @returns {{ severity: string|null, refuted: boolean|null }}
+ * @returns {{ severity: string|null, refuted: boolean|null, dimKey: string|null, unitIdent: string|null }}
  */
 export function readRefuterTranscript(filePath) {
   let raw;
   try {
     raw = fs.readFileSync(filePath, 'utf8');
   } catch {
-    return { severity: null, refuted: null };
+    return { severity: null, refuted: null, dimKey: null, unitIdent: null };
   }
   let severity = null;
   let severitySeen = false;
   let refuted = null;
+  let dimKey = null;
+  let unitIdent = null;
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -205,6 +310,9 @@ export function readRefuterTranscript(filePath) {
       severitySeen = true;
       const finding = extractFinding(content);
       severity = finding && typeof finding.severity === 'string' ? finding.severity : null;
+      const ctx = extractRefuterContext(content);
+      dimKey = ctx.dimKey;
+      unitIdent = ctx.unitIdent;
       continue;
     }
     if (entry.type === 'assistant') {
@@ -220,7 +328,77 @@ export function readRefuterTranscript(filePath) {
       }
     }
   }
-  return { severity, refuted };
+  return { severity, refuted, dimKey, unitIdent };
+}
+
+/**
+ * Read one finder transcript and recover how many findings it reported, from
+ * its own forced `StructuredOutput` call — never inferred from how many
+ * refuters were later dispatched against it.
+ *
+ * `findingsCount` is `null` ONLY when no `StructuredOutput` tool call was ever
+ * seen (an unreadable transcript, or an agent that never returned one) — a
+ * finder that legitimately reports zero narrative findings (e.g. the `ac`
+ * dimension in code mode, which returns only a structured AC table) still
+ * yields `0`, not `null`, so it is never conflated with an unreadable
+ * transcript.
+ *
+ * @param {string} filePath
+ * @returns {{ findingsCount: number|null }}
+ */
+export function readFinderTranscript(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return { findingsCount: null };
+  }
+  let sawStructuredOutput = false;
+  let findingsCount = null;
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let entry;
+    try {
+      entry = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (entry.type !== 'assistant') continue;
+    const content = (entry.message && entry.message.content) || [];
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block && block.type === 'tool_use' && block.name === 'StructuredOutput') {
+        // Last StructuredOutput wins, matching readRefuterTranscript's own
+        // last-write-wins convention.
+        sawStructuredOutput = true;
+        const input = block.input || {};
+        findingsCount = Array.isArray(input.findings) ? input.findings.length : 0;
+      }
+    }
+  }
+  return { findingsCount: sawStructuredOutput ? findingsCount : null };
+}
+
+/**
+ * Summarize a numeric array as n/min/p50/p90/max, reusing `percentile` from
+ * `token-report.mjs`. Callers must never call this on an empty array — a
+ * finder/unit group with zero eligible values is omitted from its output
+ * entirely (mirroring `floorByAgentClass`'s "omit empty classes" convention)
+ * rather than reported with a synthetic `n: 0` row.
+ *
+ * @param {number[]} values - non-empty.
+ * @returns {{ n: number, min: number, p50: number, p90: number, max: number }}
+ */
+export function summarizeCounts(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return {
+    n: sorted.length,
+    min: sorted[0],
+    p50: percentile(sorted, 0.5),
+    p90: percentile(sorted, 0.9),
+    max: sorted[sorted.length - 1],
+  };
 }
 
 // --- Measurement ---------------------------------------------------------
@@ -252,9 +430,12 @@ export function measure(options = {}) {
 
   const records = buildRecords(runFiles);
   const refuters = records.filter((r) => r.agentClass === 'refute');
+  const finders = records.filter((r) => r.agentClass === 'find');
 
   for (const r of refuters) {
     r.refuted = null;
+    r.dimKey = null;
+    r.unitIdent = null;
     const sessionDir = sessionDirOf.get(`${r.projectSlug}|${r.sessionId}|${r.runId}`);
     if (!sessionDir || !r.agentId) {
       r.severity = NO_TRANSCRIPT;
@@ -268,6 +449,13 @@ export function measure(options = {}) {
     const recovered = readRefuterTranscript(transcriptPath);
     r.severity = recovered.severity === null ? UNPARSEABLE : recovered.severity;
     r.refuted = recovered.refuted;
+    // No transcript ⇒ no context either. A severity that could not be
+    // recovered means the header line could not be trusted, so neither can
+    // its dimension or unit identity.
+    if (r.severity !== UNPARSEABLE) {
+      r.dimKey = recovered.dimKey;
+      r.unitIdent = recovered.unitIdent;
+    }
   }
 
   const bySeverity = withVerdictRates(aggregate(refuters, (r) => r.severity), refuters);
@@ -286,6 +474,123 @@ export function measure(options = {}) {
     refuteTotals: stripKey(refuteTotals),
     laneTotals: stripKey(laneTotals),
     projected: projectDrop(bySeverity, refuteTotals, laneTotals),
+    refuterFanout: buildRefuterFanout(finders, refuters, sessionDirOf),
+  };
+}
+
+/**
+ * Build the two descriptive distributions this phase adds: findings-per-finder
+ * (split by mode + dimension, sourced from each finder's OWN transcript
+ * output) and per-review-unit refuter counts (keyed by the unit identity
+ * embedded in each refuter's own prompt).
+ *
+ * NEITHER distribution keys anything on `phaseTitle`/`phaseIndex`. Those are
+ * the workflow's own declared pipeline stages, and in a `plan-review` run they
+ * are IDENTICAL across every rdm review unit dispatched in that run — measured
+ * directly on run `wf_55af7324-87c` (`--roadmap project-agnostic-lane`): 152
+ * agents, all 96 refuters sitting at the SAME `phaseIndex 3` across 9 distinct
+ * review units. Grouping by that key would silently yield "one unit with 96
+ * refuters" instead of nine, inflating exactly the tail a future cap would
+ * size against — with no error, just a plausible-looking wrong number.
+ * `phaseTitle` IS a valid grouping key elsewhere (autopilot's own nested
+ * `▸ dispatch-phase #N` markers, per `autopilot-run-accounting`), but that is
+ * a different, narrower case this script does not use. The unit key here
+ * comes exclusively from `extractRefuterContext`'s parse of the refuter's own
+ * initiating prompt.
+ *
+ * @param {ReturnType<typeof buildRecords>} finders
+ * @param {ReturnType<typeof buildRecords>} refuters - already annotated with
+ *   `severity`/`refuted`/`dimKey`/`unitIdent` by the caller's loop.
+ * @param {Map<string, string>} sessionDirOf
+ */
+function buildRefuterFanout(finders, refuters, sessionDirOf) {
+  // --- findings-per-finder, split by mode + dimension ---------------------
+  let unreadableFinderCount = 0;
+  let unresolvedLabelCount = 0;
+  const finderGroups = new Map();
+
+  for (const f of finders) {
+    const parts = typeof f.label === 'string' ? f.label.split(':') : [];
+    if (parts.length !== 3 || parts[0] !== 'find') {
+      unresolvedLabelCount += 1;
+      continue;
+    }
+    const [, mode, dim] = parts;
+
+    const sessionDir = sessionDirOf.get(`${f.projectSlug}|${f.sessionId}|${f.runId}`);
+    let findingsCount = null;
+    if (sessionDir && f.agentId) {
+      const transcriptPath = transcriptPathFor(sessionDir, f.runId, f.agentId);
+      if (fs.existsSync(transcriptPath)) {
+        findingsCount = readFinderTranscript(transcriptPath).findingsCount;
+      }
+    }
+    if (findingsCount === null) {
+      unreadableFinderCount += 1;
+      continue;
+    }
+
+    const key = mode + ':' + dim;
+    let group = finderGroups.get(key);
+    if (!group) {
+      group = { mode, dim, key, values: [] };
+      finderGroups.set(key, group);
+    }
+    group.values.push(findingsCount);
+  }
+
+  const findingsPerFinderRows = [...finderGroups.values()]
+    .map((g) => ({ mode: g.mode, dim: g.dim, key: g.key, ...summarizeCounts(g.values), refutersDispatched: 0 }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const rowByKey = new Map(findingsPerFinderRows.map((r) => [r.key, r]));
+
+  // A refuter's dimension is resolved from its OWN prompt (`r.dimKey`), never
+  // from its label — `refute:mode:(f.id|dim.key:idx)` displaces the dimension
+  // whenever the finder supplied `f.id` (agent-authored free text, the common
+  // case). Mode alone is trusted from the label: it is not user-influenced.
+  for (const r of refuters) {
+    if (!r.dimKey) continue;
+    const labelParts = typeof r.label === 'string' ? r.label.split(':') : [];
+    const mode = labelParts[1];
+    if (!mode) continue;
+    const row = rowByKey.get(mode + ':' + r.dimKey);
+    // A refuter whose resolved dimension has no matching finder row in this
+    // corpus window is counted in refuterCountsByUnit below but intentionally
+    // NOT represented in any findingsPerFinder.refutersDispatched figure.
+    if (row) row.refutersDispatched += 1;
+  }
+
+  // --- per-review-unit refuter counts --------------------------------------
+  let recoveredRefuters = 0;
+  let unrecoverableRefuterCount = 0;
+  const unitCounts = new Map();
+  for (const r of refuters) {
+    if (r.unitIdent) {
+      recoveredRefuters += 1;
+      const unitKey = `${r.projectSlug}|${r.sessionId}|${r.runId}|${r.unitIdent}`;
+      unitCounts.set(unitKey, (unitCounts.get(unitKey) || 0) + 1);
+    } else {
+      unrecoverableRefuterCount += 1;
+    }
+  }
+  const totalRefuters = refuters.length;
+  const unitCountValues = [...unitCounts.values()];
+  const unitSummary =
+    unitCountValues.length > 0 ? summarizeCounts(unitCountValues) : { n: 0, min: 0, p50: 0, p90: 0, max: 0 };
+
+  return {
+    findingsPerFinder: {
+      rows: findingsPerFinderRows,
+      unreadableFinderCount,
+      unresolvedLabelCount,
+    },
+    refuterCountsByUnit: {
+      ...unitSummary,
+      totalRefuters,
+      recoveredRefuters,
+      unrecoverableRefuterCount,
+      recoveryRatePercent: pct(recoveredRefuters, totalRefuters),
+    },
   };
 }
 
@@ -430,6 +735,36 @@ function renderText(report) {
   out.push('');
   out.push('No post-change lane corpus exists: every run above executed pre-change code. This is an');
   out.push('exact accounting of what non-gating refutation actually cost, not a forecast.');
+  out.push('');
+
+  const fp = report.refuterFanout.findingsPerFinder;
+  out.push('Findings per finder, by mode and dimension:');
+  out.push('');
+  out.push('| mode | dim | n | min | p50 | p90 | max | refuters dispatched |');
+  out.push('|---|---|---:|---:|---:|---:|---:|---:|');
+  for (const row of fp.rows) {
+    out.push(
+      '| ' + [row.mode, row.dim, row.n, row.min, row.p50, row.p90, row.max, row.refutersDispatched].join(' | ') + ' |'
+    );
+  }
+  out.push('');
+  out.push(
+    'Unreadable finder transcripts: ' + fp.unreadableFinderCount + '. Finders with an unresolved label: ' +
+      fp.unresolvedLabelCount + '. Neither contributes to any row above.'
+  );
+  out.push('');
+
+  const u = report.refuterCountsByUnit;
+  out.push('Refuters dispatched per review unit (unit identity from each refuter\'s own prompt):');
+  out.push('');
+  out.push('| units | min | p50 | p90 | max |');
+  out.push('|---:|---:|---:|---:|---:|');
+  out.push('| ' + [u.n, u.min, u.p50, u.p90, u.max].join(' | ') + ' |');
+  out.push('');
+  out.push(
+    'Unit recovered for ' + u.recoveredRefuters + '/' + u.totalRefuters + ' refuters (' + u.recoveryRatePercent +
+      '%); ' + u.unrecoverableRefuterCount + ' unrecoverable (never bucketed into any unit).'
+  );
   return out.join('\n');
 }
 
@@ -446,7 +781,9 @@ function readDoc(docArg) {
   }
   const section = parsed.nonGatingRefutationSkip;
   if (!section) throw new Error(`${docArg} has no "nonGatingRefutationSkip" section`);
-  return { docPath, section };
+  const fanoutSection = parsed.refuterFanout;
+  if (!fanoutSection) throw new Error(`${docArg} has no "refuterFanout" section`);
+  return { docPath, section, fanoutSection };
 }
 
 /** Compare a computed report against the doc's recorded figures. */
@@ -522,6 +859,91 @@ export function auditDoc(section) {
   return problems;
 }
 
+/**
+ * Compare a computed report's `refuterFanout` against the doc's recorded
+ * figures — the same shape of comparison `checkDoc` runs for
+ * `nonGatingRefutationSkip`, over the two new distributions instead.
+ */
+export function checkFanoutDoc(report, fanoutSection) {
+  const missing = [];
+  const got = report.refuterFanout;
+  const expectFP = (fanoutSection && fanoutSection.findingsPerFinder) || {};
+  const expectRows = Array.isArray(expectFP.rows) ? expectFP.rows : [];
+  const gotRowByKey = new Map(got.findingsPerFinder.rows.map((r) => [r.key, r]));
+  if (expectRows.length !== got.findingsPerFinder.rows.length) {
+    missing.push(
+      `findingsPerFinder row count: doc has ${expectRows.length}, corpus yields ${got.findingsPerFinder.rows.length}`
+    );
+  }
+  for (const row of expectRows) {
+    const gotRow = gotRowByKey.get(row.key);
+    if (!gotRow) {
+      missing.push(`findingsPerFinder row "${row.key}" is in the doc but not in the corpus`);
+      continue;
+    }
+    for (const field of ['n', 'min', 'p50', 'p90', 'max', 'refutersDispatched']) {
+      if (row[field] !== gotRow[field]) {
+        missing.push(`findingsPerFinder.${row.key}.${field}: doc ${row[field]} vs corpus ${gotRow[field]}`);
+      }
+    }
+  }
+  for (const field of ['unreadableFinderCount', 'unresolvedLabelCount']) {
+    if (expectFP[field] !== got.findingsPerFinder[field]) {
+      missing.push(`findingsPerFinder.${field}: doc ${expectFP[field]} vs corpus ${got.findingsPerFinder[field]}`);
+    }
+  }
+
+  const expectUnit = (fanoutSection && fanoutSection.refuterCountsByUnit) || {};
+  const gotUnit = got.refuterCountsByUnit;
+  for (const field of [
+    'n',
+    'min',
+    'p50',
+    'p90',
+    'max',
+    'totalRefuters',
+    'recoveredRefuters',
+    'unrecoverableRefuterCount',
+    'recoveryRatePercent',
+  ]) {
+    if (expectUnit[field] !== gotUnit[field]) {
+      missing.push(`refuterCountsByUnit.${field}: doc ${expectUnit[field]} vs corpus ${gotUnit[field]}`);
+    }
+  }
+  return missing;
+}
+
+/**
+ * Corpus-free audit of a doc's `refuterFanout` section: are its own numbers
+ * internally consistent? Mirrors `auditDoc`'s arithmetic-only checks.
+ */
+export function auditFanoutDoc(fanoutSection) {
+  const problems = [];
+  const fp = (fanoutSection && fanoutSection.findingsPerFinder) || {};
+  const rows = Array.isArray(fp.rows) ? fp.rows : [];
+  for (const r of rows) {
+    if (!(r.min <= r.p50 && r.p50 <= r.p90 && r.p90 <= r.max)) {
+      problems.push(`findingsPerFinder.${r.key}: min/p50/p90/max not monotonic (${r.min}/${r.p50}/${r.p90}/${r.max})`);
+    }
+  }
+
+  const u = (fanoutSection && fanoutSection.refuterCountsByUnit) || {};
+  if ((u.n || 0) > 0 && !(u.min <= u.p50 && u.p50 <= u.p90 && u.p90 <= u.max)) {
+    problems.push(`refuterCountsByUnit: min/p50/p90/max not monotonic (${u.min}/${u.p50}/${u.p90}/${u.max})`);
+  }
+  const recSum = (u.recoveredRefuters || 0) + (u.unrecoverableRefuterCount || 0);
+  if (recSum !== u.totalRefuters) {
+    problems.push(
+      `refuterCountsByUnit: recoveredRefuters + unrecoverableRefuterCount (${recSum}) !== totalRefuters (${u.totalRefuters})`
+    );
+  }
+  const derivedRate = pct(u.recoveredRefuters || 0, u.totalRefuters || 0);
+  if (u.recoveryRatePercent !== derivedRate) {
+    problems.push(`refuterCountsByUnit.recoveryRatePercent: doc ${u.recoveryRatePercent}, derived ${derivedRate}`);
+  }
+  return problems;
+}
+
 // --- CLI ------------------------------------------------------------------
 
 export function parseArgs(argv) {
@@ -586,8 +1008,8 @@ if (invokedDirectly) {
   }
 
   if (args.audit) {
-    const { section } = readDoc(args.audit);
-    const problems = auditDoc(section);
+    const { section, fanoutSection } = readDoc(args.audit);
+    const problems = auditDoc(section).concat(auditFanoutDoc(fanoutSection));
     if (problems.length) {
       console.error('measure-refuter-severity --audit FAILED against ' + args.audit + ':');
       for (const m of problems) console.error('  ' + m);
@@ -598,12 +1020,12 @@ if (invokedDirectly) {
   }
 
   if (args.check) {
-    const { section } = readDoc(args.check);
+    const { section, fanoutSection } = readDoc(args.check);
     // The doc's own recorded window is what makes a committed figure stable as
     // the corpus grows; --until overrides it for an ad hoc re-measurement.
     const until = args.until || (section.measurementWindow && section.measurementWindow.until) || undefined;
     const report = measure({ root: args.root, until });
-    const missing = checkDoc(report, section);
+    const missing = checkDoc(report, section).concat(checkFanoutDoc(report, fanoutSection));
     if (missing.length) {
       console.error('measure-refuter-severity --check FAILED against ' + args.check + ':');
       for (const m of missing) console.error('  ' + m);

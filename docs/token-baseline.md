@@ -605,6 +605,99 @@ run by hand since it needs the sidecars) and, corpus-free, `--audit`-gated by
 `scripts/verify-token-report.sh` on any machine. The prose framing (the caveats,
 the decision rationale) is provenance-only.
 
+## Phase 1: review fanout
+
+A cap on refuter spend cannot be sized honestly without knowing how many
+findings a finder actually emits, or how many refuters a single review unit
+dispatches — the single `refute` agent-class bucket, and even the
+per-severity breakdown directly above, cannot see either. This section
+extends the SAME instrument (`scripts/measure-refuter-severity.mjs`) with two
+more descriptive distributions, over the SAME 48-run window ending
+2026-07-29 (2,208 agent records) as § "Phase 6: non-gating refutation" above
+— the two sections were regenerated together, though a future regeneration
+of either one is not required to keep the windows aligned; check each
+section's own `measurementWindow` before comparing them.
+
+**Findings per finder**, split by mode and dimension, read from each
+finder's own transcript output (never inferred from refuter counts — since
+phase 6 a `suggestion` is never dispatched to a refuter, so refuter count is
+strictly less than finding count). Retried agents (`dim (retry N)`) are
+folded out of this headline table for readability; the full per-label
+breakdown — 24 rows, including every retry variant — is in
+[`docs/token-baseline.json`](token-baseline.json) § `refuterFanout.findingsPerFinder`.
+
+| mode | dim | n | min | p50 | p90 | max | refuters dispatched |
+|---|---|---:|---:|---:|---:|---:|---:|
+| code | ac | 47 | 0 | 0 | 2 | 2 | 28 |
+| code | api-docs | 4 | 0 | 0 | 0 | 0 | 0 |
+| code | architecture | 50 | 0 | 0 | 2 | 2 | 25 |
+| code | changelog | 17 | 0 | 0 | 1 | 1 | 4 |
+| code | correctness | 45 | 0 | 1 | 2 | 3 | 52 |
+| code | security | 16 | 0 | 0 | 1 | 1 | 5 |
+| code | tests | 48 | 0 | 1 | 2 | 3 | 57 |
+| plan | architectural-fit | 117 | 0 | 2 | 4.4 | 6 | 266 |
+| plan | coherence | 116 | 0 | 2 | 5 | 7 | 301 |
+| plan | restraint | 26 | 0 | 2 | 3 | 4 | 53 |
+| plan | unit-of-work | 118 | 0 | 1 | 3 | 4 | 172 |
+
+35 finder transcripts were unreadable (no `StructuredOutput` call ever seen)
+and are excluded from every row's `n` rather than counted as zero findings;
+no finder label failed to resolve to a `(mode, dim)` pair.
+`refutersDispatched` counts only refuters whose OWN prompt-derived dimension
+matches the row — never the refuter's label, which a finder-supplied `f.id`
+routinely displaces (see Method below) — so it can undercount against `n`
+where a dimension's refuters fell outside this window or its identity could
+not be resolved.
+
+**Refuters dispatched per review unit** — one `dispatch-phase` code-review
+stage or one `plan-review` phase unit, keyed by the unit identity embedded in
+each refuter's own initiating prompt turn, NEVER by `phaseTitle`/`phaseIndex`
+(see Method below for why that key silently collapses a whole plan-review
+run into one unit):
+
+| units | min | p50 | p90 | max |
+|---:|---:|---:|---:|
+| 80 | 1 | 8.5 | 13 | 21 |
+
+The unit was recovered for **639 of 989 refuters (64.6 %)**; the remaining
+350 are reported as `unrecoverableRefuterCount` and are never bucketed into
+any unit's count. Unrecovered cases are chiefly the `--implementation-plan`
+target, which is itself pretty-printed JSON and is rejected by construction
+rather than captured as a fake identity, plus refuters with no transcript at
+all.
+
+**Method.** Both a refuter's dimension and its unit identity are parsed from
+the same header line § "Phase 6" already reads for severity (`A prior
+reviewer raised this <dim> finding against <target>:`), never from the
+refuter's `refute:<mode>:(f.id|dim.key:idx)` label — a finder-supplied `f.id`
+(the common case) displaces the dimension out of the label entirely. The
+review-unit boundary is deliberately not `phaseTitle`/`phaseIndex`: those are
+the workflow's own declared pipeline stages, and in a plan-review run they
+are IDENTICAL across every review unit in the run — measured directly on run
+`wf_55af7324-87c` (`--roadmap project-agnostic-lane`): 152 agents, all 96
+refuters sitting at the SAME `phaseIndex` across 9 distinct review units,
+which that key would silently collapse into "one unit with 96 refuters".
+`context.target`, embedded inline in the prompt, supplies the real boundary
+instead.
+
+Two caveats:
+
+- **These rows are not subtractable against § "Per-agent-class token
+  breakdown" or § "Phase 6" above** — the corpus has grown since the run-set
+  measurement (40 runs / 1,943 agent records vs 48 / 2,208 here), the same
+  caveat phases 3 and 6 of the `workflow-token-reduction` roadmap already
+  carry. Compare figures only within this section.
+- **The per-unit distribution is a lower bound, not an exact accounting.**
+  Only 64.6 % of refuters resolved to a unit; the rest are excluded from
+  every unit's count rather than guessed at, so the true per-unit fan-out is
+  at least as high as reported here.
+
+Gating: every figure above is `--check`-gated against the real corpus
+(`node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json`)
+and, corpus-free, `--audit`-gated by `scripts/verify-token-report.sh` on any
+machine. The prose framing (this section's caveats and method paragraph) is
+provenance-only.
+
 ## Refuter model tiering
 
 Refuters run on the most expensive tier everywhere (`review-verify` resolves to

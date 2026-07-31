@@ -45,6 +45,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   against a hermetic fixture with two planted-mutation self-tests. The measured
   result is recorded in `docs/token-baseline.json` §
   `nonGatingRefutationSkip` and summarized in `docs/token-baseline.md`.
+- `scripts/measure-refuter-severity.mjs` gained two more descriptive
+  distributions — **review fanout** — over the same corpus: findings-per-finder
+  (n/min/p50/p90/max, split by mode and dimension, read from each finder's own
+  `StructuredOutput` output rather than inferred from refuter counts, since a
+  `suggestion` finding is never dispatched to a refuter at all) and
+  refuters-dispatched-per-review-unit (n/min/p50/p90/max plus a recovery
+  rate). Both a refuter's dimension and its review-unit identity are parsed
+  from the same prompt header line the severity extractor already reads
+  (`A prior reviewer raised this <dim> finding against <target>:`) via a new
+  `extractRefuterContext()`, never from the refuter's own
+  `refute:<mode>:(f.id|dim.key:idx)` label, which a finder-supplied `f.id`
+  routinely displaces the dimension out of. The review-unit boundary is
+  deliberately **not** `phaseTitle`/`phaseIndex` — those are the workflow's
+  own declared pipeline stages and collapse an entire plan-review run's
+  distinct review units into one bucket (measured directly: 96 refuters at one
+  `phaseIndex` across 9 real units on a reference run) — so the unit key comes
+  exclusively from the target embedded in each refuter's own prompt, with a
+  target that is itself pretty-printed JSON (the `--implementation-plan`
+  shape) rejected rather than captured as a fake identity. Recorded in
+  `docs/token-baseline.json` § `refuterFanout` (48-run window ending
+  2026-07-29, 2,208 agent records, not subtractable against the per-agent-class
+  baseline above — the corpus grew between measurements) and summarized in a
+  new `docs/token-baseline.md` § "Phase 1: review fanout". Both `--check` and
+  `--audit` now validate this section alongside `nonGatingRefutationSkip` in
+  one pass. `scripts/verify-token-report.sh` section 6 gained a fixture
+  extension (two finders and two refuters, including a dimension-shadow
+  refuter whose `f.id` names a different real dimension than its finding's
+  own — proving dimension resolution reads the prompt, not the label) and two
+  more planted-mutation self-tests.
 - `rdm task create` gained a `--no-plan-review` flag: it skips the automatic
   `needs-plan-review` stamp even when the `plan_review` config flag is
   enabled. Intended for tasks filed from a plan-review finding itself, so the
