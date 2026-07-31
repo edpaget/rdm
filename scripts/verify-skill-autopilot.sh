@@ -254,6 +254,22 @@ grep -qF 'reviewed work is left on the roadmap/<slug> branch; main is never touc
     fail "missing the summary's closing 'main is never touched' line"
 pass "summary template block present verbatim"
 
+# escalated -> park mapping (one of the six loop policies the header claims
+# are pinned as literal text in this section).
+grep -qF 'outcome: "escalated"' "$SKILL" || fail "missing the outcome: \"escalated\" branch"
+grep -qF '**park**' "$SKILL" || fail "missing the escalated -> park mapping"
+pass "outcome: \"escalated\" -> park mapping present"
+
+# estimate pre-pass always runs (unconditional, not gated on anything else).
+grep -qF 'estimate pre-pass' "$SKILL" || fail "missing the estimate pre-pass section"
+grep -qF 'one Workflow call, always' "$SKILL" || fail "missing the 'one Workflow call, always' unconditional framing"
+pass "estimate pre-pass documented as unconditional (one Workflow call, always)"
+
+# --plan-only dedup via an in-context set (planOnlySeen).
+grep -qF 'planOnlySeen' "$SKILL" || fail "missing the planOnlySeen in-context dedup set"
+grep -qF 'plan-only-exhausted' "$SKILL" || fail "missing the plan-only-exhausted stop reason"
+pass "--plan-only dedup-via-in-context-set (planOnlySeen) present"
+
 # --- 2. DYNAMIC OUTCOME CONTRACT ----------------------------------------------
 say "2. Dynamic advance/park write+read-back contract against the real binary"
 
