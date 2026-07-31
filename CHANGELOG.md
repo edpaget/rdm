@@ -100,7 +100,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   phase stem is known at that point, it is summary-only and does not appear in
   `rdm review blocked`; the summary now says so explicitly right next to the
   `rdm review blocked` pointer, so a reader isn't misled into expecting the
-  queue to list it.
+  queue to list it. Making it queue-visible would require an rdm-core
+  schema/status-model change (`blocked_phases` is phase-only by design), which
+  is out of scope here; tracked as follow-up task
+  `surface-fetch-next-escalations-in-blocked-queue`.
 - The plan-review round-note reader (`parseRoundNotes`) accepted only
   `blocking` and `concern` bullets while the writer emitted every severity, so
   the first `suggestion` bullet in a previous round's note truncated the rest

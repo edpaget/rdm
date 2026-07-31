@@ -596,7 +596,11 @@ function buildAutopilot(deps) {
           // Summary-only: no phase stem is known at fetch:next time, so
           // nothing is parked via d.park and this entry will NOT appear in
           // rdm's persisted `rdm review blocked` queue — only in the printed
-          // run summary. This is an intentional, scoped limitation.
+          // run summary. This is an intentional, scoped limitation: closing
+          // it requires an rdm-core schema/status-model change (blocked_phases
+          // is phase-only by design), which is out of scope for a
+          // workflow-script fix. Tracked as follow-up task
+          // surface-fetch-next-escalations-in-blocked-queue.
           escalations.push({
             stem: '(fetch:next)',
             reason: buildParkReason('fetch', 'unparseable rdm-next payload: ' + (next.raw || '')),
