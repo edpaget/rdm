@@ -395,6 +395,16 @@ assert_shim_hoists() {
         # MCP has no `rdm phase show` CLI command to read a write back with, so
         # the advance/park confirmation step needs its own dedicated tool.
         _need "$ap" 'mcp__rdm__rdm_phase_show' || return 1
+        # The advance/park read-back calls must use the same project/roadmap/
+        # phase argument shape every other MCP template uses (server-side
+        # PhaseUpdateParams/PhaseParams both require `project` and `phase`,
+        # never a `stem` field) — a prior regression sent `stem:` with no
+        # `project:` and would have failed against the real MCP server.
+        _need "$ap" 'project: "distro-check", roadmap: "<slug>", phase: S' || return 1
+        if grep -qF 'with `stem: S,' "$ap"; then
+            HOIST_FAILURE="$variant: rdm-autopilot regressed to the wrong 'stem:' MCP arg shape"
+            return 1
+        fi
     fi
 
     # rdm-dispatch-phase: alreadyInProgress on both; phaseMeta/taskMeta CLI only.
@@ -425,15 +435,18 @@ for variant in cli mcp; do
         fail "$HOIST_FAILURE"
     fi
     # Occurrence floor, so the check can never pass vacuously: CLI asserts
-    # >= 15 references, MCP >= 6 (the extra one is the rdm_phase_show
-    # read-back hoist, added alongside the {t_phase_show} placeholder). A drop
-    # below the floor means a shim silently stopped gathering.
+    # >= 15 references, MCP >= 7 (one is the rdm_phase_show read-back hoist,
+    # added alongside the {t_phase_show} placeholder; a second is the
+    # project/roadmap/phase argument-shape check on the advance/park
+    # read-back calls, added after those calls were found using the wrong
+    # `stem`-keyed, `project`-less argument shape). A drop below the floor
+    # means a shim silently stopped gathering.
     if [ "$variant" = cli ]; then
         [ "$HOIST_REF_COUNT" -ge 15 ] ||
             fail "cli: expected >= 15 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
     else
-        [ "$HOIST_REF_COUNT" -ge 6 ] ||
-            fail "mcp: expected >= 6 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
+        [ "$HOIST_REF_COUNT" -ge 7 ] ||
+            fail "mcp: expected >= 7 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
     fi
 done
 pass "hoist-arg occurrence floors hold for both variants"

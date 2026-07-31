@@ -371,6 +371,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The MCP variant of the shipped `rdm-autopilot` skill template
+  (`rdm agent-config claude --skills --mcp`) called its own new
+  advance/park read-back steps with the wrong argument shape: `stem: S` and
+  no `project` field at all, on both the `rdm_phase_update` and
+  `rdm_phase_show` calls. The real MCP server's `PhaseUpdateParams`/
+  `PhaseParams` require `phase` (not `stem`) plus a mandatory `project`,
+  matching every other MCP skill template in this repo — so every phase
+  the loop tried to advance to `reviewed` or park as `blocked` would have
+  failed at exactly the read-back confirmation mechanism this same phase
+  introduced. Both call sites now pass
+  `project: {proj_param}, roadmap: "<slug>", phase: S`, and both the
+  generated-skill unit tests and `scripts/verify-agent-config-distribution.sh`
+  gained a regression assertion pinning the correct argument shape at those
+  two call sites and rejecting a reintroduced `stem:`-keyed call.
 - The shipped `rdm-autopilot` skill templates (`rdm agent-config claude
   --skills`/`--mcp`) no longer instruct invoking a Workflow literally named
   `autopilot`. The same change that dropped `.claude/workflows/autopilot.js`

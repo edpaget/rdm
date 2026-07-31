@@ -3180,6 +3180,23 @@ mod tests {
         ));
         assert!(content.contains("mcp__rdm__rdm_phase_show"));
         assert!(content.contains("up to **2** times total"));
+        // Regression: the advance and park call sites must use the same
+        // `project`/`roadmap`/`phase` argument shape every other MCP template
+        // uses (PhaseUpdateParams/PhaseParams on the server side), never the
+        // wrong `stem` field name or a missing `project`.
+        assert!(content.contains(
+            "call `mcp__rdm__rdm_phase_update` with `project: \"<PROJECT>\", roadmap: \"<slug>\", phase: S, status: <OUTCOME.status || \"reviewed\">`"
+        ));
+        assert!(content.contains(
+            "call `mcp__rdm__rdm_phase_show` with `project: \"<PROJECT>\", roadmap: \"<slug>\", phase: S` and confirm `status` matches"
+        ));
+        assert!(content.contains(
+            "call `mcp__rdm__rdm_phase_update` with `project: \"<PROJECT>\", roadmap: \"<slug>\", phase: S, status: \"blocked\", reason: \"<reason>\"`"
+        ));
+        assert!(content.contains(
+            "call `mcp__rdm__rdm_phase_show` with `project: \"<PROJECT>\", roadmap: \"<slug>\", phase: S` and confirm `status: \"blocked\"`"
+        ));
+        assert!(!content.contains("with `stem: S,"));
         // No --land flag; dry-run / bounded modes including the two
         // dispatch-phase budget overrides.
         assert!(!content.contains("- `--land`"));
