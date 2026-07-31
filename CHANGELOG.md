@@ -83,6 +83,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `autopilot`'s `fetch:next` interpretation (`interpretNext`) no longer silently
+  reports a malformed or double-wrapped `rdm next` result as a completed run.
+  An agent transcribing `rdm next`'s JSON output was observed re-encoding the
+  whole payload as a string inside its own `result` field; that shape fell
+  through the old catch-all and was misclassified as "nothing to do", so a run
+  with actionable phases remaining stopped early and reported a clean finish.
+  `interpretNext` now defensively unwraps a string-encoded `result` (bounded,
+  applied uniformly to all three `rdm next` shapes), and any genuinely
+  malformed/unrecognized/empty return is classified as a distinct `unparseable`
+  stop reason instead of `nothing`. The run summary flags any non-well-known
+  stop reason with a loud `*** ABNORMAL TERMINATION` marker (via a new
+  allowlist, `isAbnormalStop`, so a future unrecognized reason is fail-safe
+  flagged too), and an `unparseable` `fetch:next` failure is also recorded in
+  the summary's escalations section (tagged `[fetch]`) — though, since no
+  phase stem is known at that point, it is summary-only and does not appear in
+  `rdm review blocked`.
 - The plan-review round-note reader (`parseRoundNotes`) accepted only
   `blocking` and `concern` bullets while the writer emitted every severity, so
   the first `suggestion` bullet in a previous round's note truncated the rest

@@ -23,7 +23,15 @@
 #                   parsing, phase selection, outcome interpretation, tier
 #                   resolution, prompt contents (including
 #                   buildMechanicalModelPrompt), the batched summary, and
-#                   determinism.
+#                   determinism. Also covers interpretNext's defensive unwrap of
+#                   a string-encoded `result` field (double- and triple-wrapped
+#                   'phase'/'nothing'/'blocked-on-dependencies' payloads, and a
+#                   chain wrapped past MAX_NEXT_UNWRAP_DEPTH stopping
+#                   deterministically), the generalized 'unparseable' reason for
+#                   any malformed/unrecognized/empty return (never folded into
+#                   'nothing' — including the updated null-input expectation),
+#                   and the isAbnormalStop allowlist plus buildSummary's abnormal-
+#                   termination marker and generalized [tag] escalation regex.
 #   1b. DRIVEN LOOP — buildAutopilot fed state-backed fakes (a mutable status
 #                   Map): drive-to-reviewed, rework->park, escalated, budget
 #                   stops, the estimate pre-pass, --plan-only, mid-tier
@@ -32,7 +40,11 @@
 #                   mechanical-model-unresolved fail-fast, advance-null treated
 #                   as failure (parked, absent from completed[]), and
 #                   park-null-on-every-attempt still summarizing — asserting the
-#                   loop advances off PERSISTED status.
+#                   loop advances off PERSISTED status. Also: a double-wrapped
+#                   fetch:next payload dispatches correctly end to end through
+#                   the real loop, and a garbage fetch:next payload stops with
+#                   zero dispatch/park calls, an abnormal-flagged summary, and a
+#                   '(fetch:next)'-stemmed [fetch] escalation entry.
 #   2. BLOCK DRIFT — the `autopilot-loop` region is byte-identical between the lib
 #                   source of truth and the stamped workflow script (with a
 #                   planted-mutation self-test proving the gate is not a no-op).
@@ -169,6 +181,7 @@ const {
   buildAdvancePrompt,
   buildParkPrompt,
   buildSummary,
+  isAbnormalStop,
 } = m;
 // NOTE: selectUnestimated / buildEstimateListPrompt / buildEstimatorPrompt /
 // buildEstimateWritebackPrompt moved to lib/estimate.mjs (estimate-core) and are
@@ -236,7 +249,60 @@ assert.deepEqual(
   { kind: 'stop', reason: 'blocked-on-dependencies', unmet: ['x'] },
   'blocked-on-dependencies result'
 );
-assert.equal(interpretNext(null).reason, 'nothing', 'null defaults to stop-nothing');
+// A null/undefined fetch:next result is not a well-formed rdm-next answer and
+// must not read as a clean finish (this is a deliberate behavior CHANGE from
+// the old catch-all, which used to fold it into 'nothing').
+assert.equal(interpretNext(null).reason, 'unparseable', 'null is unparseable, not a clean finish');
+assert.equal(interpretNext(undefined).reason, 'unparseable', 'undefined is unparseable, not a clean finish');
+
+// --- interpretNext: defensive unwrap of a double-wrapped (string-encoded)
+// `result` field, generalized across all three rdm-next shapes ------------
+assert.deepEqual(
+  interpretNext({ result: JSON.stringify({ result: 'phase', stem: 's', number: 2, model: 'large' }) }),
+  { kind: 'phase', stem: 's', number: 2, model: 'large' },
+  'double-wrapped phase result unwraps correctly'
+);
+assert.deepEqual(
+  interpretNext({ result: JSON.stringify({ result: 'nothing' }) }),
+  { kind: 'stop', reason: 'nothing' },
+  'double-wrapped nothing result unwraps correctly'
+);
+assert.deepEqual(
+  interpretNext({ result: JSON.stringify({ result: 'blocked-on-dependencies', unmet: ['x'] }) }),
+  { kind: 'stop', reason: 'blocked-on-dependencies', unmet: ['x'] },
+  'double-wrapped blocked-on-dependencies result unwraps correctly'
+);
+
+// --- interpretNext: a genuinely malformed/unrecognized return is NEVER
+// classified as 'nothing' -----------------------------------------------------
+assert.equal(interpretNext({ result: 'garbled' }).reason, 'unparseable', 'a non-JSON string result is unparseable');
+assert.notEqual(interpretNext({ result: 'garbled' }).reason, 'nothing', 'garbage must not read as a clean finish');
+assert.equal(interpretNext({}).reason, 'unparseable', 'an empty object is unparseable');
+assert.equal(
+  interpretNext({ result: 'phase' }).reason,
+  'unparseable',
+  "a 'phase' result missing stem is unparseable, not dispatched with an undefined stem"
+);
+// A wrap chain deeper than MAX_NEXT_UNWRAP_DEPTH must terminate deterministically
+// as 'unparseable' rather than looping or throwing. Build a chain wrapped one
+// level DEEPER than the harness knows the loop tolerates (3 levels unwrap
+// cleanly — see the double-wrap assertions above), by nesting a fourth
+// JSON.stringify layer around an otherwise-valid phase payload.
+function wrapNTimes(obj, n) {
+  let cur = obj;
+  for (let i = 0; i < n; i++) cur = { result: JSON.stringify(cur) };
+  return cur;
+}
+const overDepth = wrapNTimes({ result: 'phase', stem: 's', number: 2, model: 'large' }, 4);
+assert.equal(interpretNext(overDepth).reason, 'unparseable', 'a chain wrapped deeper than MAX_NEXT_UNWRAP_DEPTH stops unparseable');
+assert.equal(
+  interpretNext(wrapNTimes({ result: 'phase', stem: 's', number: 2, model: 'large' }, 3)).kind,
+  'phase',
+  'a chain wrapped exactly to the unwrap budget still resolves to a phase'
+);
+// A string `result` that parses as valid JSON but to a non-object must not throw.
+assert.equal(interpretNext({ result: '42' }).reason, 'unparseable', "a numeric-JSON result string doesn't throw");
+assert.equal(interpretNext({ result: 'null' }).reason, 'unparseable', "a JSON 'null' result string doesn't throw");
 
 // --- buildParkReason ---------------------------------------------------------
 assert.equal(buildParkReason('plan', 'why'), '[plan] why');
@@ -387,6 +453,47 @@ assert.ok(cleanSummary.includes('main is never touched'), 'clean summary still s
 // Determinism — two identical buildSummary calls are byte-equal.
 const st = { roadmap: 'rm', completed: ['a', 'b'], escalations: [{ stem: 'c', reason: '[code] x' }], stopReason: 'nothing' };
 assert.equal(buildSummary(st), buildSummary(st), 'buildSummary is deterministic');
+
+// A [fetch]-tagged escalation (the new fetch:next-stage entry) must be labeled
+// by the generalized bracket-tag regex, not mislabeled 'code' by the old
+// binary plan/code check.
+const fetchTagSummary = buildSummary({
+  roadmap: 'rm',
+  completed: [],
+  escalations: [{ stem: '(fetch:next)', reason: '[fetch] unparseable rdm-next payload: {}' }],
+  stopReason: 'unparseable',
+});
+assert.ok(fetchTagSummary.includes('(fetch:next) [fetch]'), 'a [fetch]-tagged escalation is labeled fetch, not code');
+// An untagged legacy reason (no leading bracket) still falls back to 'code',
+// preserving today's output for the existing [plan]/[code] tags.
+const untaggedSummary = buildSummary({
+  roadmap: 'rm',
+  completed: [],
+  escalations: [{ stem: 'phase-x', reason: 'no bracket tag here' }],
+  stopReason: 'nothing',
+});
+assert.ok(untaggedSummary.includes('phase-x [code]'), 'an untagged reason still defaults to the [code] label');
+
+// --- isAbnormalStop / buildSummary abnormal-termination marker ---------------
+const KNOWN_GOOD_STOP_REASONS = ['nothing', 'blocked-on-dependencies', 'budget', 'plan-only-exhausted', 'mechanical-model-unresolved'];
+for (const reason of KNOWN_GOOD_STOP_REASONS) {
+  assert.equal(isAbnormalStop(reason), false, 'isAbnormalStop(' + reason + ') is false (known-good)');
+  const s = buildSummary({ roadmap: 'rm', completed: [], escalations: [], stopReason: reason });
+  assert.ok(!s.includes('ABNORMAL TERMINATION'), 'a known-good stop reason (' + reason + ') is never flagged abnormal');
+  assert.ok(s.includes('stop reason: ' + reason), 'a known-good stop reason (' + reason + ') keeps the plain summary line');
+}
+assert.equal(isAbnormalStop('unparseable'), true, 'isAbnormalStop(unparseable) is true');
+assert.equal(isAbnormalStop('some-future-unseen-reason'), true, 'isAbnormalStop is a fail-safe allowlist, not a denylist keyed on unparseable');
+const abnormalSummary = buildSummary({ roadmap: 'rm', completed: [], escalations: [], stopReason: 'unparseable' });
+assert.ok(abnormalSummary.includes('ABNORMAL TERMINATION'), 'an unparseable stop reason is flagged with the abnormal marker');
+assert.ok(abnormalSummary.includes('unparseable'), 'the abnormal marker includes the actual stop reason');
+// The marker line itself parenthetically names the reason ("... (stop reason:
+// unparseable) ..."), so assert against the exact PLAIN line form (as its own
+// line, unprefixed) to prove that line was replaced rather than duplicated.
+assert.ok(
+  !abnormalSummary.split('\n').includes('stop reason: unparseable'),
+  'the abnormal marker line replaces (not duplicates) the plain stop-reason line'
+);
 
 console.log('all autopilot behavior assertions passed');
 NODE_TEST
@@ -1033,6 +1140,53 @@ const THREE_PHASES = [
   );
 }
 console.log('autopilot hoist assertions passed');
+
+// === double-wrap: fetchNext returns a double-wrapped ('result' re-encoded as a
+// JSON string) phase payload on its ONE call — the unwrap must flow through the
+// REAL drive loop end to end, not just the pure interpretNext function: dispatch
+// is invoked with the correct stem/roadmap and the stem lands in completed[]. ===
+{
+  const h = makeFakes({ phases: [{ stem: 'phase-1-a', status: 'not-started' }] });
+  const originalFetchNext = h.fakes.fetchNext;
+  let doubleWrapCalls = 0;
+  h.fakes.fetchNext = async (roadmap, model) => {
+    // Double-wrap ONLY the first call (the real behavior this reproduces is a
+    // one-off agent-formatting quirk, not a persistent shape); later calls
+    // (the terminating 'nothing' read) go through the ordinary fake so the run
+    // can actually finish.
+    const real = await originalFetchNext(roadmap, model);
+    doubleWrapCalls++;
+    if (doubleWrapCalls === 1 && real.result === 'phase') {
+      return { result: JSON.stringify(real) };
+    }
+    return real;
+  };
+  const summary = await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  assert.equal(h.dispatchCalls.length, 1, 'the double-wrapped payload still dispatches exactly once');
+  assert.equal(h.dispatchCalls[0].stem, 'phase-1-a', 'dispatch invoked with the correctly-unwrapped stem');
+  assert.equal(h.dispatchCalls[0].slug, 'rm', 'dispatch invoked with the correct roadmap');
+  assert.ok(summary.includes('phases completed (1): phase-1-a'), 'the unwrapped phase lands in completed[]');
+}
+
+// === garbage fetch:next: a genuinely malformed return must stop the run with a
+// reason that is NOT 'nothing', with zero dispatch/park calls, a summary flagged
+// abnormal, and the failure recorded in the escalations section. ===============
+{
+  const h = makeFakes({ phases: [{ stem: 'phase-1-a', status: 'not-started' }] });
+  h.fakes.fetchNext = async (roadmap, model) => {
+    h.callLog.push('fetchNext');
+    h.modelCalls.fetchNext.push(model);
+    return { result: 'bogus' };
+  };
+  const summary = await buildAutopilot(h.fakes)({ roadmap: 'rm', globalBudget: 20 });
+  assert.equal(h.dispatchCalls.length, 0, 'a garbage fetch:next payload never reaches dispatch');
+  assert.equal(h.parkCalls.length, 0, 'a garbage fetch:next payload never reaches park (no phase stem is known yet)');
+  assert.ok(summary.includes('ABNORMAL TERMINATION'), 'the summary flags the abnormal stop');
+  assert.ok(!summary.includes('stop reason: nothing'), 'a garbage payload must never read as a clean finish');
+  assert.ok(summary.includes('escalations awaiting review (1)'), 'the fetch failure is recorded as an escalation');
+  assert.ok(summary.includes('(fetch:next)'), 'the escalation entry names the fetch:next stage, not a phase stem');
+  assert.ok(summary.includes('[fetch]'), 'the escalation entry is tagged [fetch]');
+}
 
 console.log('all autopilot driven-loop assertions passed');
 NODE_TEST

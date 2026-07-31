@@ -153,22 +153,82 @@ function resolveTier(model) {
   return 'medium';
 }
 
+// MAX_NEXT_UNWRAP_DEPTH — bounds how many times interpretNext will unwrap a
+// string-encoded `result` field before giving up. Guards against a
+// pathological/nested chain of JSON-encoded `result` strings looping
+// indefinitely or throwing on a cyclic/malicious payload.
+const MAX_NEXT_UNWRAP_DEPTH = 3;
+
+// describeRaw(value) — a bounded, safe string rendering of an arbitrary
+// fetch:next payload for logging/escalation. Falls back to String(value) if
+// JSON.stringify throws (e.g. a cyclic object), and truncates so a huge or
+// cyclic payload can never bloat logs or the summary.
+function describeRaw(value) {
+  let s;
+  try {
+    s = JSON.stringify(value);
+  } catch (e) {
+    s = String(value);
+  }
+  if (typeof s !== 'string') s = String(s);
+  const LIMIT = 200;
+  if (s.length > LIMIT) return s.slice(0, LIMIT) + '…(truncated)';
+  return s;
+}
+
 // interpretNext(nextResult) — classify the parsed `rdm next` JSON into a loop
 // decision: a `phase` to work, or a `stop` with its reason.
+//
+// Defensive unwrap: an agent transcribing `rdm next`'s JSON output has been
+// observed to double-wrap it — the whole payload re-encoded as a JSON STRING
+// inside `result`. This unwraps up to MAX_NEXT_UNWRAP_DEPTH times, applied
+// uniformly across all three rdm-next shapes ('phase' | 'nothing' |
+// 'blocked-on-dependencies') — the same agent-formatting variance can wrap
+// any of them, not just 'phase'.
+//
+// A malformed/unrecognized/empty result is NEVER classified as 'nothing' —
+// that reason is reserved for a genuinely well-formed "no actionable phase"
+// answer from `rdm next`. Anything else (non-object input, an unrecognized
+// `result` value, a 'phase' result missing `stem`, or an unwrap chain that
+// exhausts MAX_NEXT_UNWRAP_DEPTH without bottoming out) stops with the single
+// canonical reason 'unparseable' — not fragmented into multiple literals for
+// this defect class — carrying a bounded description of the ORIGINAL input
+// (before any unwrapping) for the summary/escalation.
 function interpretNext(nextResult) {
-  const r = nextResult || {};
+  let candidate = nextResult;
+  for (let depth = 0; depth < MAX_NEXT_UNWRAP_DEPTH; depth++) {
+    if (!candidate || typeof candidate !== 'object') break;
+    if (candidate.result === 'phase' || candidate.result === 'nothing' || candidate.result === 'blocked-on-dependencies') {
+      break;
+    }
+    if (typeof candidate.result !== 'string') break;
+    let parsed;
+    try {
+      parsed = JSON.parse(candidate.result);
+    } catch (e) {
+      break;
+    }
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.result !== 'string') break;
+    candidate = parsed;
+  }
+
+  const r = candidate && typeof candidate === 'object' ? candidate : {};
   if (r.result === 'phase') {
+    if (!r.stem) return { kind: 'stop', reason: 'unparseable', raw: describeRaw(nextResult) };
     return { kind: 'phase', stem: r.stem, number: r.number, model: r.model };
   }
   if (r.result === 'blocked-on-dependencies') {
     return { kind: 'stop', reason: 'blocked-on-dependencies', unmet: r.unmet || [] };
   }
-  return { kind: 'stop', reason: 'nothing' };
+  if (r.result === 'nothing') {
+    return { kind: 'stop', reason: 'nothing' };
+  }
+  return { kind: 'stop', reason: 'unparseable', raw: describeRaw(nextResult) };
 }
 
 // buildParkReason(stage, note) — a tagged escalation reason string. `stage` is
-// 'plan' or 'code'; the tag lets the summary and `rdm review blocked` group
-// escalations by which gate produced them.
+// 'plan', 'code', or 'fetch'; the tag lets the summary and `rdm review
+// blocked` group escalations by which gate produced them.
 function buildParkReason(stage, note) {
   return '[' + stage + '] ' + note;
 }
@@ -312,9 +372,23 @@ function buildParkPrompt(stem, reason, slug) {
   ].join('\n');
 }
 
+// KNOWN_GOOD_STOP_REASONS — every stop reason that represents a legitimate,
+// well-formed run termination. This is an ALLOWLIST (not a denylist keyed on
+// 'unparseable') so any FUTURE unrecognized stop reason is also flagged by
+// isAbnormalStop rather than silently trusted as a clean finish — mirroring
+// the fail-safe-on-unknown convention already used in lib/review.mjs.
+const KNOWN_GOOD_STOP_REASONS = ['nothing', 'blocked-on-dependencies', 'budget', 'plan-only-exhausted', 'mechanical-model-unresolved'];
+
+// isAbnormalStop(reason) — true when `reason` is not one of the known-good
+// stop reasons above (including any reason this loop has never seen before).
+function isAbnormalStop(reason) {
+  return KNOWN_GOOD_STOP_REASONS.indexOf(reason) === -1;
+}
+
 // buildSummary(state) — the always-on batched run summary. Lists the phases
-// completed in order, the escalations tagged plan/code with their reasons and a
-// pointer at the `rdm review blocked` queue, the stop reason, and a note that
+// completed in order, the escalations tagged plan/code/fetch with their
+// reasons and a pointer at the `rdm review blocked` queue, the stop reason
+// (loudly flagged when abnormal — see isAbnormalStop), and a note that
 // reviewed work is left on the roadmap branch and main is never touched.
 function buildSummary(state) {
   const s = state || {};
@@ -324,12 +398,21 @@ function buildSummary(state) {
   const stopReason = s.stopReason || 'unknown';
   const lines = [];
   lines.push('autopilot summary for roadmap/' + roadmap);
-  lines.push('stop reason: ' + stopReason);
+  if (isAbnormalStop(stopReason)) {
+    lines.push(
+      '*** ABNORMAL TERMINATION (stop reason: ' +
+        stopReason +
+        ') — the roadmap was NOT driven to exhaustion; do not read this as a completed run.'
+    );
+  } else {
+    lines.push('stop reason: ' + stopReason);
+  }
   lines.push('phases completed (' + completed.length + '): ' + (completed.length ? completed.join(', ') : 'none'));
   if (escalations.length) {
     lines.push('escalations awaiting review (' + escalations.length + '):');
     for (const e of escalations) {
-      const stage = String((e && e.reason) || '').indexOf('[plan]') === 0 ? 'plan' : 'code';
+      const m = /^\[(\w+)\]/.exec(String((e && e.reason) || ''));
+      const stage = m ? m[1] : 'code';
       lines.push('  - ' + (e && e.stem) + ' [' + stage + ']: ' + ((e && e.reason) || ''));
     }
     lines.push('review the queue: ./target/debug/rdm review blocked --project rdm');
@@ -479,6 +562,17 @@ function buildAutopilot(deps) {
       const next = interpretNext(rawNext);
       if (next.kind === 'stop') {
         stopReason = next.reason;
+        if (next.reason === 'unparseable') {
+          log('autopilot: fetch:next returned an unparseable payload — raw: ' + (next.raw || ''));
+          // Summary-only: no phase stem is known at fetch:next time, so
+          // nothing is parked via d.park and this entry will NOT appear in
+          // rdm's persisted `rdm review blocked` queue — only in the printed
+          // run summary. This is an intentional, scoped limitation.
+          escalations.push({
+            stem: '(fetch:next)',
+            reason: buildParkReason('fetch', 'unparseable rdm-next payload: ' + (next.raw || '')),
+          });
+        }
         break;
       }
       const stem = next.stem;
@@ -872,5 +966,6 @@ export {
   buildAdvancePrompt,
   buildParkPrompt,
   buildSummary,
+  isAbnormalStop,
   buildAutopilot,
 };
