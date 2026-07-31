@@ -702,6 +702,13 @@ and, corpus-free, `--audit`-gated by `scripts/verify-token-report.sh` on any
 machine. The prose framing (this section's caveats and method paragraph) is
 provenance-only.
 
+**Continued in § "Phase 2: rank of the determining finding"**, immediately
+below. That section is the second half of this one and is kept adjacent rather
+than nested: it reuses this section's prompt-derived review-unit key verbatim,
+reports over this same 48-run window, and is bounded by the 64.6 % recovery
+rate stated just above. Read the two together; neither restates the other's
+figures.
+
 ## Phase 2: rank of the determining finding
 
 Phase 1 sized the fan-out. This section answers the single question a
