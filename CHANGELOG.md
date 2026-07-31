@@ -110,8 +110,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/token-baseline.md` § "Phase 2: rank of the determining finding":
   **the evidence supports a cap at N = 5**. `scripts/verify-token-report.sh`
   gained a new section 7 over a purpose-built fixture tree
-  (`tests/fixtures/token-determining-rank`), with six planted-mutation
-  self-tests.
+  (`tests/fixtures/token-determining-rank`), plus a direct drive of the
+  reason-resolution logic covering the whole closed vocabulary — including the
+  three reasons the corpus fixture cannot reach (`multi-round-unit`,
+  `ambiguous-finding-join`, `unreadable-finder-transcript`), the load-bearing
+  precedence order between them and `dimension-coverage-gap`, and the
+  retry-supersession rule that keeps a re-dispatched dimension from being read
+  as a second review round — with ten planted-mutation self-tests.
 
 - `rdm task create` gained a `--no-plan-review` flag: it skips the automatic
   `needs-plan-review` stamp even when the `plan_review` config flag is

@@ -1148,6 +1148,182 @@ run_node "$TMP/rank-unitkey.mjs" \
     fail "the finder and refuter did not resolve to the same prompt-derived unit key"
 pass "a finder and a refuter on the same unit resolve to a byte-identical unitIdent (both the code-mode and plan-mode trailing-punctuation shapes), and a JSON target resolves to none"
 
+# --- AC4/AC5: the CLOSED reason vocabulary and its PRECEDENCE -----------------
+# The fixture tree above exercises two of the five closed unrecoverable reasons
+# (unknown-disposition-above-determining, dimension-coverage-gap). The other
+# three are corpus-rare, and seeding a whole sidecar run per reason would churn
+# every hand-checked figure in expected-determiningFindingRank.json for no extra
+# signal. Drive `prepareUnit` directly instead — it is the one function that
+# decides all of them, and the ORDER it decides them in is load-bearing: a
+# reason that invalidates the candidate LIST must win over one that merely
+# reports it incomplete, because a walk over a wrong list yields a plausible
+# WRONG rank rather than an honest "unrecoverable".
+cat >"$TMP/rank-reasons.mjs" <<'NODE_RANK_REASONS'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const [, , instrument] = process.argv;
+const { prepareUnit, determineRankForUnit } = await import(pathToFileURL(instrument).href);
+
+const F = (id, severity = 'blocking', confidence = 90) => ({ id, severity, confidence, summary: 'seeded' });
+const finder = (dim, findings, isRetry = false) => ({ dim, isRetry, findings, acTable: null });
+const unit = (mode, finders, refuters = []) => ({ key: 'k', mode, finders, refuters });
+const reasonOf = (u) => {
+  prepareUnit(u);
+  return u.structuralReason;
+};
+
+// --- multi-round-unit: two NON-retry finders at the same dimension are a
+// second review round (codeReviewRounds) collapsing into one unitIdent, which
+// would silently inflate the candidate list.
+const multiRound = unit('code', [finder('ac', [F('a1')]), finder('ac', [F('a2')]), finder('correctness', [])]);
+assert.equal(reasonOf(multiRound), 'multi-round-unit', 'two non-retry finders at one dimension are a second round');
+
+// ...but a ` (retry N)` dispatch SUPERSEDES the prior attempt rather than adding
+// a second candidate set, and must never be misread as a second round.
+const retried = unit(
+  'code',
+  [finder('ac', [F('stale')]), finder('ac', [F('fresh')], true), finder('correctness', [])],
+  [{ dim: 'ac', finding: F('fresh'), refuted: false }]
+);
+assert.equal(reasonOf(retried), null, 'a retry supersedes its prior attempt and is not a multi-round unit');
+assert.deepEqual(
+  retried.candidates.map((c) => c.finding.id),
+  ['fresh'],
+  'the superseded attempt contributes no candidate'
+);
+assert.deepEqual(determineRankForUnit(retried, undefined), { status: 'determining', rank: 1 });
+
+// --- ambiguous-finding-join: two refuters carrying the SAME finding id, whose
+// findings are also structurally identical, so neither join can be resolved.
+const ambiguous = unit(
+  'code',
+  [finder('ac', [F('dup')]), finder('correctness', [])],
+  [
+    { dim: 'ac', finding: F('dup'), refuted: true },
+    { dim: 'ac', finding: F('dup'), refuted: false },
+  ]
+);
+assert.equal(reasonOf(ambiguous), 'ambiguous-finding-join', 'a duplicated finding id with no structural tiebreak');
+
+// ...while an id-LESS finding with exactly one structural match joins cleanly.
+const structural = unit(
+  'code',
+  [finder('ac', [{ severity: 'blocking', confidence: 90, summary: 'no id here' }]), finder('correctness', [])],
+  [
+    { dim: 'ac', finding: { severity: 'blocking', confidence: 90, summary: 'no id here' }, refuted: true },
+    { dim: 'ac', finding: { severity: 'blocking', confidence: 90, summary: 'something else' }, refuted: false },
+  ]
+);
+assert.equal(reasonOf(structural), null, 'an id-less finding with ONE structural match is not ambiguous');
+assert.equal(structural.candidates[0].disposition, 'resolved');
+assert.deepEqual(structural.candidates[0].verdict, { refuted: true }, 'the structural join carried the real verdict');
+assert.deepEqual(determineRankForUnit(structural, undefined), { status: 'non-determining' });
+
+// --- unreadable-finder-transcript: no StructuredOutput at all, or a findings
+// array carrying agent-authored garbage `rankFindings` would throw on.
+assert.equal(
+  reasonOf(unit('code', [finder('ac', null), finder('correctness', [F('c1')])])),
+  'unreadable-finder-transcript',
+  'a finder with no StructuredOutput leaves the candidate list incomplete'
+);
+for (const garbage of [['not-an-object'], [null], [[]]]) {
+  assert.equal(
+    reasonOf(unit('code', [finder('ac', garbage), finder('correctness', [])])),
+    'unreadable-finder-transcript',
+    'a non-object findings entry is unreadable, not a crash: ' + JSON.stringify(garbage)
+  );
+}
+
+// --- dimension-coverage-gap, both halves, each from the unit's OWN evidence.
+const gapMissingDim = unit('code', [finder('ac', [])]);
+assert.equal(reasonOf(gapMissingDim), 'dimension-coverage-gap', 'code mode requires both ac and correctness');
+assert.equal(
+  reasonOf(unit('plan', [finder('coherence', [])])),
+  'dimension-coverage-gap',
+  'plan mode requires both coherence and architectural-fit'
+);
+const gapOrphanRefuter = unit(
+  'code',
+  [finder('ac', []), finder('correctness', [])],
+  [{ dim: 'security', finding: F('s1'), refuted: false }]
+);
+assert.equal(reasonOf(gapOrphanRefuter), 'dimension-coverage-gap', 'a refuter for a dimension with no finder');
+
+// --- PRECEDENCE. Each unit below satisfies TWO reasons at once; the reason that
+// invalidates the candidate list must win. Every pair is asserted, so swapping
+// any two arms of the chain flips at least one of these.
+assert.equal(
+  reasonOf(unit('code', [finder('ac', [F('x')]), finder('ac', [F('y')])])),
+  'multi-round-unit',
+  'multi-round beats dimension-coverage-gap (no correctness finder here)'
+);
+assert.equal(
+  reasonOf(
+    unit(
+      'code',
+      [finder('ac', [F('d')]), finder('ac', [F('d')]), finder('correctness', [])],
+      [
+        { dim: 'ac', finding: F('d'), refuted: true },
+        { dim: 'ac', finding: F('d'), refuted: false },
+      ]
+    )
+  ),
+  'multi-round-unit',
+  'multi-round beats ambiguous-finding-join'
+);
+assert.equal(
+  reasonOf(
+    unit(
+      'code',
+      [finder('ac', null), finder('correctness', [F('d')])],
+      [
+        { dim: 'correctness', finding: F('d'), refuted: true },
+        { dim: 'correctness', finding: F('d'), refuted: false },
+      ]
+    )
+  ),
+  'ambiguous-finding-join',
+  'ambiguous-finding-join beats unreadable-finder-transcript'
+);
+assert.equal(
+  reasonOf(
+    unit(
+      'code',
+      [finder('ac', [F('d')])],
+      [
+        { dim: 'ac', finding: F('d'), refuted: true },
+        { dim: 'ac', finding: F('d'), refuted: false },
+      ]
+    )
+  ),
+  'ambiguous-finding-join',
+  'ambiguous-finding-join beats dimension-coverage-gap'
+);
+assert.equal(
+  reasonOf(unit('code', [finder('ac', null)])),
+  'unreadable-finder-transcript',
+  'unreadable-finder-transcript beats dimension-coverage-gap'
+);
+
+// --- every structural reason is TIER-INDEPENDENT and is what the walk reports.
+for (const [u, reason] of [
+  [multiRound, 'multi-round-unit'],
+  [ambiguous, 'ambiguous-finding-join'],
+  [gapOrphanRefuter, 'dimension-coverage-gap'],
+]) {
+  for (const tier of [undefined, 'large']) {
+    assert.deepEqual(determineRankForUnit(u, tier), { status: 'unrecoverable', reason });
+  }
+}
+
+console.log('unrecoverable-reason vocabulary and precedence OK');
+NODE_RANK_REASONS
+
+run_node "$TMP/rank-reasons.mjs" "$REFSEV" ||
+    fail "the closed unrecoverable-reason vocabulary or its precedence order did not behave as specified"
+pass "multi-round-unit, ambiguous-finding-join and unreadable-finder-transcript each resolve from local evidence, a retry is not misread as a second round, an id-less finding joins structurally, and the precedence order over dimension-coverage-gap holds"
+
 # --- the --check and --audit paths -------------------------------------------
 run_node "$REFSEV" --root "$RANK_SCRATCH" --check "$RANK_EXPECTED" >/dev/null ||
     fail "--check failed against the determining-rank fixture's own recorded figures"
@@ -1272,6 +1448,44 @@ if run_node "$REFSEV" --audit "$TMP/rank-runwide-doc.json" >/dev/null 2>&1; then
     fail "planted-mutation self-test FAILED TO CATCH: --audit accepted an 'orphan-agent-in-run' reason — the run-wide rule is REJECTED and must not be representable"
 fi
 pass "planted-mutation self-test (f): a run-wide 'orphan-agent-in-run' reason is refused by the closed vocabulary"
+
+# (g)-(j) The reason vocabulary and its precedence. Same idiom, but the check
+# that must flip is the direct `prepareUnit` drive above rather than the fixture
+# comparison — none of these three reasons occurs in the fixture tree, which is
+# exactly why they need their own non-vacuity proof.
+rank_reason_mutant() {
+    # $1 = name, $2 = sed expression
+    sed "$2" "$REFSEV" >"$TMP/refsev-mut/rank-$1.mjs"
+    if diff -q "$REFSEV" "$TMP/refsev-mut/rank-$1.mjs" >/dev/null 2>&1; then
+        fail "self-test setup: the $1 mutation did not change the source — sed pattern did not match"
+    fi
+    if run_node "$TMP/rank-reasons.mjs" "$TMP/refsev-mut/rank-$1.mjs" >/dev/null 2>&1; then
+        fail "planted-mutation self-test FAILED TO CATCH: the $1 mutation still satisfied the unrecoverable-reason assertions"
+    fi
+}
+
+# (g) Invert the precedence chain so a coverage gap outranks an invalidated
+# candidate list. A unit that is BOTH multi-round and coverage-gapped then
+# reports the weaker reason — and would, in the walk, be indistinguishable from
+# a unit whose list is merely short rather than doubled.
+rank_reason_mutant precedence \
+    "s/u.structuralReason = multiRound/u.structuralReason = coverageGap ? 'dimension-coverage-gap' : multiRound/"
+pass "planted-mutation self-test (g): reordering the structural-reason precedence chain flips the precedence assertions to FAIL"
+
+# (h) Neuter the ambiguous-join detection, so an unresolvable duplicate-id join
+# degrades to a silent `unknown` disposition instead of naming its own reason.
+rank_reason_mutant ambiguous 's/else if (deep.length > 1 || byId.length > 1) ambiguous = true;/else if (false) ambiguous = true;/'
+pass "planted-mutation self-test (h): dropping the ambiguous-finding-join detection flips the duplicate-id assertion to FAIL"
+
+# (i) Accept an unreadable finder transcript as if it were simply empty.
+rank_reason_mutant unreadable 's/      unreadable = true;/      unreadable = false;/'
+pass "planted-mutation self-test (i): treating an unreadable finder transcript as empty flips its assertion to FAIL"
+
+# (j) Count a ` (retry N)` dispatch as a second review round. The retry
+# supersession is what keeps a re-dispatched dimension from being read as an
+# inflated candidate list.
+rank_reason_mutant retry 's/if (group.filter((f) => !f.isRetry).length > 1) multiRound = true;/if (group.length > 1) multiRound = true;/'
+pass "planted-mutation self-test (j): counting a retry as a second review round flips the retry-supersession assertion to FAIL"
 
 # ==============================================================================
 say "8. Changelog hygiene: the code change is staged/committed alongside CHANGELOG.md"

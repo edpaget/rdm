@@ -941,8 +941,16 @@ export function buildUnitCandidates(finders, refuters, sessionDirOf) {
  * Resolve one unit's candidate list, dispositions and structural
  * recoverability. Everything decided here is TIER-INDEPENDENT, so both the
  * default-blocker-set and `largeTier` walks reuse it.
+ *
+ * Exported so the harness can drive the closed reason vocabulary and its
+ * PRECEDENCE directly, without having to seed a whole sidecar run per reason:
+ * three of the five reasons (`multi-round-unit`, `ambiguous-finding-join`,
+ * `unreadable-finder-transcript`) are corpus-rare, and the order they resolve
+ * in is load-bearing — see the precedence comment at the foot of this function.
+ *
+ * @param {{ mode: string|null, finders: Array<{dim: string|null, isRetry: boolean, findings: object[]|null, acTable?: unknown}>, refuters: Array<{dim: string|null, finding: object|null, refuted: boolean|null}> }} u
  */
-function prepareUnit(u) {
+export function prepareUnit(u) {
   // Retry supersession: a ` (retry N)` dispatch replaces the previous attempt at
   // that dimension rather than adding a second candidate set. Two NON-retry
   // finders at the same dimension are a different thing entirely — a second
