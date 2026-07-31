@@ -1714,6 +1714,7 @@ export {
   writesCompletion,
   selectDimensions,
   deriveSignals,
+  PLAN_SEVERITY_CALIBRATION,
   findPrompt,
   refutePrompt,
   FINDINGS_SCHEMA,
