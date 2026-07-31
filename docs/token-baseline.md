@@ -731,6 +731,18 @@ tautology dressed up as a finding. A refutation budget truncates the
 graded, so that is the ranking a cap would actually apply and the one measured
 here.
 
+**Severity is checked before disposition**, and that order is load-bearing. A
+candidate whose severity sits outside `hasBlocking`'s blocker set for the tier
+being walked — a `suggestion` at either tier, a `concern` at the default tier —
+can never be the determining finding *whatever its verdict turns out to be*, so
+the walk skips it outright and neither its verdict nor a **missing** verdict can
+decide the unit. Reading the disposition first would silently reclassify a
+genuinely non-determining unit (one blocking candidate that *was* refuted, plus
+a suggestion whose refuter transcript is unparseable) as unrecoverable,
+collapsing the very distinction this section exists to keep — and this window
+predates `workflow-token-reduction` phase 6, when suggestions were still
+dispatched to refuters, so such units really occur in it.
+
 **Rank distribution** (determining units only):
 
 | rank | units |
@@ -738,38 +750,42 @@ here.
 | 1 | 23 |
 | 2 | 6 |
 
-Of the **84** review units in the window, **69 were recoverable (82.1 %)** —
-29 determining, 40 non-determining — and 15 were not. Against that recoverable
-share of 82.1 %:
+Of the **84** review units in the window, **72 were recoverable (85.7 %)** —
+29 determining, 43 non-determining — and 12 were not. Against that recoverable
+share of 85.7 %:
 
-| within top N | units | % of determining (29) | % of recoverable (69) |
+| within top N | units | % of determining (29) | % of recoverable (72) |
 |---:|---:|---:|---:|
-| 3 | 29 | 100 % | 42 % |
-| 5 | 29 | 100 % | 42 % |
+| 3 | 29 | 100 % | 40.3 % |
+| 5 | 29 | 100 % | 40.3 % |
 
-Both denominators are labelled deliberately: the second is smaller because 40
+Both denominators are labelled deliberately: the second is smaller because 43
 recoverable units had **no** gating finding at all, and those are
-non-determining, not rank-absent. Nothing is imputed for the 15 unrecoverable
+non-determining, not rank-absent. Nothing is imputed for the 12 unrecoverable
 units — they appear in no numerator and in no denominator.
 
 The cap is not vacuous at either N: candidate lists over the same recoverable
-units run **n 69, min 0, p50 9, p90 13, max 15**, so a top-3 or top-5 budget
+units run **n 72, min 0, p50 8.5, p90 13, max 15**, so a top-3 or top-5 budget
 would genuinely truncate the median unit rather than never binding.
 
 **Unrecoverable units, by reason:**
 
 | reason | units |
 |---|---:|
-| unknown-disposition-above-determining | 3 |
 | unreadable-finder-transcript | 1 |
 | multi-round-unit | 11 |
 
-`unknown-disposition-above-determining` is the recoverability rule itself: the
-walk stops at the first candidate whose disposition cannot be read, because an
-ungraded finding ranked **above** the determining one could itself have been
-the determining finding at a better rank. An ungraded finding ranked strictly
-**below** it cannot change the answer and is harmless — that asymmetry is what
-makes 82.1 % recoverable rather than far less.
+`unknown-disposition-above-determining` does not appear at the default blocker
+set, and that absence is the recoverability rule doing its job rather than a
+gap in the corpus. The rule is: the walk stops at the first *blocking-eligible*
+candidate whose disposition cannot be read, because an ungraded finding ranked
+**above** the determining one could itself have been the determining finding at
+a better rank. An ungraded finding ranked strictly **below** it, or one that
+could never have gated at all, cannot change the answer and is harmless — that
+double asymmetry is what makes 85.7 % of units recoverable rather than far
+fewer. (At the `large` tier, where `concern` joins the blocker set, two units
+*do* land under this reason, taking that variant's unrecoverable count to 14;
+see the tier variant below.)
 
 **Recoverability scoping: contamination is per unit, never run-wide.** Every
 reason above is decidable from the unit's own records. An agent whose unit
@@ -825,7 +841,7 @@ the conclusion cannot drift from the data it reads — is: `supports-cap` iff th
 top-5 share is ≥ 95 % of determining units **and** the recoverable share is
 ≥ 50 % **and** there are ≥ 20 determining units; `kills-cap` iff the top-5
 share is below 80 %; `inconclusive` otherwise, explicitly including "too few
-recoverable units to speak to it". Here: 100 %, 82.1 %, and 29 units. N = 3 is
+recoverable units to speak to it". Here: 100 %, 85.7 %, and 29 units. N = 3 is
 supported at the default blocker set (100 %) but slips to 94.5 % at the `large`
 tier, which the corpus cannot rule out per unit; N = 5 clears the bar at both
 (100 % and 98.2 %), so N = 5 is the choice the evidence actually backs.
@@ -842,7 +858,7 @@ Two caveats carried forward:
   agent records vs 48 / 2,208 here). Compare only within this section.
 - **Phase 1's recovery rate bounds this one.** Phase 1 recovered a unit for
   64.6 % of refuters over this same window, which bounds how much of the corpus
-  this section can speak to; 82.1 % of *units* resolved within that bound. Two
+  this section can speak to; 85.7 % of *units* resolved within that bound. Two
   further limits on the disposition half: the corpus cannot distinguish a
   refuter that crashed (which the live pipeline keeps as un-refuted) from one
   whose transcript is simply absent, so both are read as `unknown` —

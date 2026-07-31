@@ -97,16 +97,32 @@
 #      run-wide reason, and the closed vocabulary refuses one), and that a
 #      finder and a refuter on the same unit resolve to a byte-identical
 #      prompt-derived unitIdent in both the code-mode and plan-mode
-#      trailing-punctuation shapes. Plus --check/--audit against the fixture,
-#      a corpus-free --audit of the COMMITTED figures (including the
+#      trailing-punctuation shapes. Three further Node comparers drive the
+#      instrument's own exports directly, for behavior the fixture tree
+#      cannot reach: the closed unrecoverable-reason vocabulary and the
+#      PRECEDENCE order between its five reasons; the walk's
+#      severity-eligibility rule (a candidate outside hasBlocking's blocker
+#      set for the tier is INERT, so an unreadable verdict on it leaves the
+#      unit non-determining rather than poisoning it to unrecoverable, while
+#      an ungraded blocking-eligible candidate still does poison it, and a
+#      skipped candidate does not renumber the reported rank); and a
+#      synthetic branch table over deriveCapVerdict, so the kills-cap outcome
+#      — which the phase body calls a legitimate terminal finding, and which
+#      neither the fixture nor the real corpus ever produces — is verified
+#      rather than merely reachable. Plus --check/--audit against the
+#      fixture, a corpus-free --audit of the COMMITTED figures (including the
 #      supports/kills verdict, which auditRankDoc RE-DERIVES rather than
 #      trusts), a prose-twin check that docs/token-baseline.md § Phase 2
 #      states the window, record count, unit partition, recoverable share,
-#      orphan bound, scoping rule and verdict, and SIX planted mutations —
-#      an edited figure, a neutered ranking, an imputed disposition, a
-#      mutated cap-verdict threshold, a removed orphan guard, and a
-#      re-introduced run-wide contamination reason — each proven to flip its
-#      check to FAIL.
+#      orphan bound, scoping rule and verdict, and TWELVE planted mutations
+#      (a)-(l) — an edited figure, a neutered ranking, an imputed
+#      disposition, a mutated cap-verdict threshold, a removed orphan guard,
+#      a re-introduced run-wide contamination reason, a reordered
+#      structural-reason precedence chain, a dropped ambiguous-join
+#      detection, an unreadable finder transcript read as empty, a retry
+#      counted as a second review round, disposition read BEFORE
+#      severity-eligibility, and an inverted kills-cap comparison — each
+#      proven to flip its check to FAIL.
 #   8. CHANGELOG HYGIENE — the same commit that touches
 #      scripts/lib/token-report.mjs / scripts/measure-lane-tokens.mjs /
 #      scripts/measure-refuter-severity.mjs also touches CHANGELOG.md, so a
@@ -1324,6 +1340,153 @@ run_node "$TMP/rank-reasons.mjs" "$REFSEV" ||
     fail "the closed unrecoverable-reason vocabulary or its precedence order did not behave as specified"
 pass "multi-round-unit, ambiguous-finding-join and unreadable-finder-transcript each resolve from local evidence, a retry is not misread as a second round, an id-less finding joins structurally, and the precedence order over dimension-coverage-gap holds"
 
+# --- AC4: an INERT candidate's disposition may not decide the unit ------------
+# The walk checks SEVERITY-ELIGIBILITY before disposition. A candidate outside
+# hasBlocking's blocker set for the tier can never be the determining finding
+# whatever its verdict turns out to be, so an unreadable verdict on it must
+# leave the unit `non-determining` rather than poisoning it to `unrecoverable`.
+# Reading the disposition first collapses exactly the distinction AC4 demands,
+# and does so on real corpus units: this window predates the phase-6
+# pass-through, so `suggestion` findings really were dispatched to refuters and
+# some of those verdicts really are unparseable.
+cat >"$TMP/rank-eligibility.mjs" <<'NODE_RANK_ELIGIBILITY'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const [, , instrument] = process.argv;
+const { determineRankForUnit } = await import(pathToFileURL(instrument).href);
+
+const F = (id, severity, confidence = 90) => ({ id, severity, confidence, summary: 'seeded' });
+// candidates are ALREADY dispositioned here — this drives the walk, not the join.
+const walkUnit = (candidates) => ({ key: 'k', mode: 'code', structuralReason: null, candidates });
+const resolved = (finding, refuted) => ({ finding, dim: 'ac', disposition: 'resolved', verdict: { refuted } });
+const unknown = (finding) => ({ finding, dim: 'ac', disposition: 'unknown', verdict: null });
+
+// The textbook "nothing gated" unit: the one blocking candidate WAS refuted,
+// and the only ungraded candidate is a suggestion, which gates at no tier.
+const inertUnknown = walkUnit([resolved(F('b1', 'blocking'), true), unknown(F('s1', 'suggestion'))]);
+for (const tier of [undefined, 'large']) {
+  assert.deepEqual(
+    determineRankForUnit(inertUnknown, tier),
+    { status: 'non-determining' },
+    `an ungraded SUGGESTION cannot decide the unit at tier ${String(tier)} — it is non-determining, not unrecoverable`
+  );
+}
+
+// A `concern` is inert at the DEFAULT tier and eligible at `large`, so the same
+// unit must answer differently per tier — proving the check reads the tier's
+// blocker set rather than a fixed severity list.
+const concernUnknown = walkUnit([resolved(F('b2', 'blocking'), true), unknown(F('c2', 'concern'))]);
+assert.deepEqual(
+  determineRankForUnit(concernUnknown, undefined),
+  { status: 'non-determining' },
+  'an ungraded CONCERN is inert at the default blocker set'
+);
+assert.deepEqual(
+  determineRankForUnit(concernUnknown, 'large'),
+  { status: 'unrecoverable', reason: 'unknown-disposition-above-determining' },
+  'the same ungraded CONCERN IS eligible at the large tier, so there it does poison the unit'
+);
+
+// The converse must still hold: an ungraded BLOCKING candidate is eligible, so
+// it makes the unit unrecoverable at every tier. Skipping is about eligibility,
+// never about ignoring unknown dispositions wholesale.
+const gatingUnknown = walkUnit([unknown(F('b3', 'blocking')), resolved(F('b4', 'blocking'), false)]);
+for (const tier of [undefined, 'large']) {
+  assert.deepEqual(determineRankForUnit(gatingUnknown, tier), {
+    status: 'unrecoverable',
+    reason: 'unknown-disposition-above-determining',
+  });
+}
+
+// And an inert candidate ranked ABOVE nothing must not shift the reported rank:
+// ranks index the FULL candidate list, skipped entries included.
+const skipThenGate = walkUnit([
+  resolved(F('b5', 'blocking'), true),
+  unknown(F('s2', 'suggestion')),
+  resolved(F('b6', 'blocking'), false),
+]);
+assert.deepEqual(
+  determineRankForUnit(skipThenGate, undefined),
+  { status: 'determining', rank: 2 },
+  'the surviving blocking candidate sorts second in the FULL ranked list, and the skipped suggestion does not renumber it'
+);
+
+console.log('inert-candidate eligibility rule OK');
+NODE_RANK_ELIGIBILITY
+
+run_node "$TMP/rank-eligibility.mjs" "$REFSEV" ||
+    fail "an inert (non-blocking-eligible) candidate's disposition wrongly decided a unit's status"
+pass "a candidate that cannot gate at the walked tier is inert — its unreadable verdict leaves the unit non-determining, while an ungraded blocking-eligible candidate still makes it unrecoverable"
+
+# --- AC7: deriveCapVerdict's FOUR branches, over synthetic inputs -------------
+# The verdict is the phase's whole deliverable and is a pure function of three
+# figures, but the fixture and the real corpus between them only ever land in
+# two of its branches. Drive it directly so kills-cap — which the phase body
+# explicitly calls a legitimate terminal finding — is verified rather than
+# merely reachable by inspection.
+cat >"$TMP/rank-capverdict.mjs" <<'NODE_RANK_CAPVERDICT'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const [, , instrument] = process.argv;
+const { deriveCapVerdict, CAP_VERDICT_RULE } = await import(pathToFileURL(instrument).href);
+
+const R = CAP_VERDICT_RULE;
+// Every case is expressed RELATIVE to the rule's own thresholds, so a threshold
+// change moves the cases with it and only a change to the LOGIC can fail here.
+const at = (determining, share, top5) => ({
+  determining,
+  recoverableSharePercent: share,
+  withinTop5PercentOfDetermining: top5,
+});
+
+const cases = [
+  // (1) too few determining units short-circuits, whatever the distribution says
+  [at(R.minDeterminingUnits - 1, 100, 100), 'inconclusive', 'too few determining units to speak to a cap'],
+  [at(0, 0, 0), 'inconclusive', 'no determining units at all'],
+  // (2) a non-concentrating distribution KILLS the cap — the phase body's
+  //     explicitly legitimate terminal finding
+  [at(R.minDeterminingUnits, 100, R.killsCapBelowPercent - 0.1), 'kills-cap', 'top-5 share below the kill threshold'],
+  [at(R.minDeterminingUnits * 10, 100, 0), 'kills-cap', 'nothing concentrates at all'],
+  // (3) a concentrating distribution over a big enough recoverable share
+  //     SUPPORTS it
+  [at(R.minDeterminingUnits, R.minRecoverableSharePercent, R.supportsCapAtOrAbovePercent), 'supports-cap', 'exactly at every threshold'],
+  [at(R.minDeterminingUnits * 2, 100, 100), 'supports-cap', 'comfortably past every threshold'],
+  // (4) the middle band, and a concentrated distribution over too thin a
+  //     recoverable share, are both INCONCLUSIVE rather than either extreme
+  [at(R.minDeterminingUnits, 100, R.killsCapBelowPercent), 'inconclusive', 'at the kill threshold, not below it'],
+  [
+    at(R.minDeterminingUnits, 100, R.supportsCapAtOrAbovePercent - 0.1),
+    'inconclusive',
+    'between the kill and support thresholds',
+  ],
+  [
+    at(R.minDeterminingUnits, R.minRecoverableSharePercent - 0.1, 100),
+    'inconclusive',
+    'concentrated, but over too thin a recoverable share to speak to',
+  ],
+];
+
+const seen = new Set();
+for (const [inputs, expected, why] of cases) {
+  assert.equal(deriveCapVerdict(inputs), expected, `${why}: ${JSON.stringify(inputs)}`);
+  seen.add(expected);
+}
+// Non-vacuity: the table must actually reach all three outcomes.
+assert.deepEqual([...seen].sort(), ['inconclusive', 'kills-cap', 'supports-cap'], 'every verdict in the closed vocabulary is exercised');
+
+// Missing fields are treated as zero, never as "assume the best" — an absent
+// figure must not be able to talk the rule into supporting a cap.
+assert.equal(deriveCapVerdict({}), 'inconclusive', 'an empty inputs object cannot support a cap');
+
+console.log('deriveCapVerdict branch table OK');
+NODE_RANK_CAPVERDICT
+
+run_node "$TMP/rank-capverdict.mjs" "$REFSEV" ||
+    fail "deriveCapVerdict did not classify one of its four branches as specified"
+pass "deriveCapVerdict's four branches (too-few-units, kills-cap, supports-cap, and the middle/thin-share inconclusive band) each classify correctly over synthetic inputs"
+
 # --- the --check and --audit paths -------------------------------------------
 run_node "$REFSEV" --root "$RANK_SCRATCH" --check "$RANK_EXPECTED" >/dev/null ||
     fail "--check failed against the determining-rank fixture's own recorded figures"
@@ -1486,6 +1649,37 @@ pass "planted-mutation self-test (i): treating an unreadable finder transcript a
 # inflated candidate list.
 rank_reason_mutant retry 's/if (group.filter((f) => !f.isRetry).length > 1) multiRound = true;/if (group.length > 1) multiRound = true;/'
 pass "planted-mutation self-test (j): counting a retry as a second review round flips the retry-supersession assertion to FAIL"
+
+# (k)-(l) The walk's eligibility ordering and the cap verdict's own branch
+# logic. Same idiom again, but each drives its own dedicated Node comparer.
+rank_driver_mutant() {
+    # $1 = name, $2 = sed expression, $3 = driver script, $4 = what it proves
+    sed "$2" "$REFSEV" >"$TMP/refsev-mut/rank-$1.mjs"
+    if diff -q "$REFSEV" "$TMP/refsev-mut/rank-$1.mjs" >/dev/null 2>&1; then
+        fail "self-test setup: the $1 mutation did not change the source — sed pattern did not match"
+    fi
+    if run_node "$3" "$TMP/refsev-mut/rank-$1.mjs" >/dev/null 2>&1; then
+        fail "planted-mutation self-test FAILED TO CATCH: the $1 mutation still satisfied $4"
+    fi
+}
+
+# (k) Read the disposition BEFORE severity-eligibility, the ordering the walk
+# deliberately rejects. An ungraded suggestion then poisons a unit that nothing
+# gated, turning a genuinely `non-determining` unit into an `unrecoverable` one
+# — the exact conflation AC4 forbids, and one that really occurs in this
+# pre-phase-6 corpus.
+rank_driver_mutant eligibility \
+    "s/if (eligible \&\& (!c || c.disposition/if ((!c || c.disposition/" \
+    "$TMP/rank-eligibility.mjs" "the inert-candidate eligibility assertions"
+pass "planted-mutation self-test (k): checking disposition before severity-eligibility flips the non-determining-vs-unrecoverable assertions to FAIL"
+
+# (l) Invert the kills-cap comparison. The corpus and the fixture both land in
+# other branches, so only the synthetic branch table can catch this — which is
+# precisely why the table exists.
+rank_driver_mutant capverdict-logic \
+    's/if (top5 < CAP_VERDICT_RULE.killsCapBelowPercent) return/if (top5 > CAP_VERDICT_RULE.killsCapBelowPercent) return/' \
+    "$TMP/rank-capverdict.mjs" "the deriveCapVerdict branch table"
+pass "planted-mutation self-test (l): inverting the kills-cap comparison flips the synthetic branch table to FAIL"
 
 # ==============================================================================
 say "8. Changelog hygiene: the code change is staged/committed alongside CHANGELOG.md"

@@ -116,7 +116,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ambiguous-finding-join`, `unreadable-finder-transcript`), the load-bearing
   precedence order between them and `dimension-coverage-gap`, and the
   retry-supersession rule that keeps a re-dispatched dimension from being read
-  as a second review round — with ten planted-mutation self-tests.
+  as a second review round — with twelve planted-mutation self-tests.
+  The walk checks **severity-eligibility before disposition**: a candidate
+  outside `hasBlocking`'s blocker set for the tier being walked (a
+  `suggestion` at either tier, a `concern` at the default tier) can never be
+  the determining finding whatever its verdict turns out to be, so an
+  unreadable verdict on it leaves the unit `non-determining` instead of
+  poisoning it to `unrecoverable` — the distinction the section exists to
+  keep, and one that really bites on this pre-phase-6 window where
+  suggestions were still dispatched to refuters. This moves three units out
+  of `unrecoverable`, raising the recoverable share from 82.1 % to
+  **85.7 %**; the `supports-cap` verdict at N = 5 is unchanged.
+  `deriveCapVerdict` is additionally driven over a synthetic branch table so
+  the `kills-cap` outcome — which neither the fixture nor the real corpus
+  produces, and which the measurement explicitly treats as a legitimate
+  terminal finding — is verified rather than merely reachable.
 
 - `rdm task create` gained a `--no-plan-review` flag: it skips the automatic
   `needs-plan-review` stamp even when the `plan_review` config flag is

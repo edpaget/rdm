@@ -1081,11 +1081,23 @@ function attachDispositions(u) {
  * run-wide. No condition observed on a sibling unit, and no agent that could not
  * be attributed to any unit, may change this unit's status.
  *
- * The walk stops at the FIRST candidate whose disposition is `unknown`: an
- * ungraded finding ranked ABOVE the determining one could itself have been the
- * determining finding, at a better rank. An unknown ranked strictly BELOW the
- * determining finding cannot change the answer and is therefore harmless —
- * that asymmetry is the recoverability rule.
+ * The walk stops at the FIRST BLOCKING-ELIGIBLE candidate whose disposition is
+ * `unknown`: an ungraded finding ranked ABOVE the determining one could itself
+ * have been the determining finding, at a better rank. An unknown ranked
+ * strictly BELOW the determining finding cannot change the answer and is
+ * therefore harmless — that asymmetry is the recoverability rule.
+ *
+ * BLOCKING-ELIGIBILITY IS CHECKED BEFORE THE DISPOSITION, and that order is
+ * load-bearing. A candidate whose severity is outside `hasBlocking`'s blocker
+ * set for this tier (a `suggestion` at either tier; a `concern` at the default
+ * tier) can NEVER be the determining finding whatever its verdict turns out to
+ * be, so an unreadable verdict on it is not evidence of anything and must not
+ * poison the unit. Checking the disposition first silently reclassifies a
+ * genuinely `non-determining` unit — one blocking candidate that WAS refuted,
+ * plus a suggestion whose refuter transcript is unparseable — as
+ * `unrecoverable`, which is exactly the distinction this phase exists to keep.
+ * (The corpus is pre-phase-6, when suggestions WERE dispatched to refuters, so
+ * such units really occur in it.)
  *
  * @returns {{ status: 'determining', rank: number } | { status: 'non-determining' } | { status: 'unrecoverable', reason: string }}
  */
@@ -1095,11 +1107,17 @@ export function determineRankForUnit(unit, tier) {
   for (const c of unit.candidates) if (!byFinding.has(c.finding)) byFinding.set(c.finding, c);
   const ranked = rankFindings(unit.candidates.map((c) => c.finding));
   for (let i = 0; i < ranked.length; i++) {
-    const c = byFinding.get(ranked[i]);
-    if (!c || c.disposition === 'unknown') {
+    const finding = ranked[i];
+    const c = byFinding.get(finding);
+    // Severity FIRST. A candidate that cannot gate at this tier is inert: it
+    // decides nothing, so neither its verdict nor a missing verdict may decide
+    // the unit. Ranking is severity-first, so an inert candidate always sorts
+    // after every blocking-eligible one and skipping it hides no earlier answer.
+    const eligible = hasBlocking([finding], tier);
+    if (eligible && (!c || c.disposition === 'unknown')) {
       return { status: 'unrecoverable', reason: 'unknown-disposition-above-determining' };
     }
-    if (survives(c.finding, c.verdict) && hasBlocking([c.finding], tier)) {
+    if (eligible && survives(finding, c.verdict)) {
       return { status: 'determining', rank: i + 1 };
     }
   }
