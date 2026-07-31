@@ -32,6 +32,11 @@
 #                   'nothing' — including the updated null-input expectation),
 #                   and the isAbnormalStop allowlist plus buildSummary's abnormal-
 #                   termination marker and generalized [tag] escalation regex.
+#                   Also covers describeRaw's two defensive branches indirectly
+#                   via interpretNext's `.raw` field: a >200-char payload is
+#                   sliced to the LIMIT plus a truncation suffix, and a cyclic
+#                   payload (JSON.stringify throws) falls back to String(value)
+#                   instead of throwing out of interpretNext.
 #   1b. DRIVEN LOOP — buildAutopilot fed state-backed fakes (a mutable status
 #                   Map): drive-to-reviewed, rework->park, escalated, budget
 #                   stops, the estimate pre-pass, --plan-only, mid-tier
@@ -304,6 +309,30 @@ assert.equal(
 assert.equal(interpretNext({ result: '42' }).reason, 'unparseable', "a numeric-JSON result string doesn't throw");
 assert.equal(interpretNext({ result: 'null' }).reason, 'unparseable', "a JSON 'null' result string doesn't throw");
 
+// --- interpretNext: describeRaw's two defensive branches (not exported, so
+// exercised indirectly through the `.raw` field an unparseable stop carries)
+// -----------------------------------------------------------------------------
+// (1) truncation: a payload whose JSON.stringify exceeds describeRaw's 200-char
+// LIMIT must be sliced to exactly LIMIT chars plus the '…(truncated)' suffix,
+// never left full-length (which could bloat logs/summary) and never off-by-one.
+const oversized = { result: 'garbled', padding: 'x'.repeat(400) };
+const oversizedRaw = interpretNext(oversized).raw;
+const fullStringified = JSON.stringify(oversized);
+assert.ok(fullStringified.length > 200, 'sanity: the oversized payload really does exceed the 200-char LIMIT');
+assert.equal(oversizedRaw.length, 200 + '…(truncated)'.length, 'oversized raw is sliced to exactly LIMIT plus the truncation suffix');
+assert.ok(oversizedRaw.endsWith('…(truncated)'), 'oversized raw carries the truncation suffix');
+assert.equal(oversizedRaw.slice(0, 200), fullStringified.slice(0, 200), 'oversized raw preserves the first LIMIT chars verbatim');
+// (2) cyclic fallback: a payload JSON.stringify cannot serialize (throws) must
+// fall back to String(value) rather than throwing out of interpretNext.
+const cyclic = {};
+cyclic.self = cyclic;
+let cyclicResult;
+assert.doesNotThrow(() => {
+  cyclicResult = interpretNext(cyclic);
+}, 'a cyclic fetch:next payload must not throw out of interpretNext');
+assert.equal(cyclicResult.reason, 'unparseable', 'a cyclic payload is unparseable');
+assert.equal(cyclicResult.raw, String(cyclic), 'a cyclic payload falls back to String(value) instead of throwing');
+
 // --- buildParkReason ---------------------------------------------------------
 assert.equal(buildParkReason('plan', 'why'), '[plan] why');
 assert.equal(buildParkReason('code', 'boom'), '[code] boom');
@@ -473,6 +502,24 @@ const untaggedSummary = buildSummary({
   stopReason: 'nothing',
 });
 assert.ok(untaggedSummary.includes('phase-x [code]'), 'an untagged reason still defaults to the [code] label');
+
+// A [fetch]-tagged escalation gets a loud, dedicated caveat that it is
+// summary-only and will never show up in `rdm review blocked` (unlike
+// [plan]/[code] entries, which DO reach that queue via d.park).
+assert.ok(
+  fetchTagSummary.includes("will NOT appear in the `rdm review blocked` queue"),
+  'a [fetch]-tagged escalation gets the summary-only caveat'
+);
+// A run with ONLY [plan]/[code] escalations (which are genuinely parked) must
+// not carry the [fetch]-specific caveat — it would be misleading noise.
+assert.ok(
+  !summary.includes("will NOT appear in the `rdm review blocked`"),
+  'a run with no [fetch]-tagged escalation carries no fetch-only caveat'
+);
+assert.ok(
+  !untaggedSummary.includes("will NOT appear in the `rdm review blocked`"),
+  'an untagged (defaults-to-code) escalation carries no fetch-only caveat either'
+);
 
 // --- isAbnormalStop / buildSummary abnormal-termination marker ---------------
 const KNOWN_GOOD_STOP_REASONS = ['nothing', 'blocked-on-dependencies', 'budget', 'plan-only-exhausted', 'mechanical-model-unresolved'];
@@ -1186,6 +1233,10 @@ console.log('autopilot hoist assertions passed');
   assert.ok(summary.includes('escalations awaiting review (1)'), 'the fetch failure is recorded as an escalation');
   assert.ok(summary.includes('(fetch:next)'), 'the escalation entry names the fetch:next stage, not a phase stem');
   assert.ok(summary.includes('[fetch]'), 'the escalation entry is tagged [fetch]');
+  assert.ok(
+    summary.includes("will NOT appear in the `rdm review blocked` queue"),
+    'a [fetch]-tagged escalation gets a loud caveat that it is summary-only, next to the review-blocked pointer'
+  );
 }
 
 console.log('all autopilot driven-loop assertions passed');

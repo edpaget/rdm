@@ -98,7 +98,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flagged too), and an `unparseable` `fetch:next` failure is also recorded in
   the summary's escalations section (tagged `[fetch]`) — though, since no
   phase stem is known at that point, it is summary-only and does not appear in
-  `rdm review blocked`.
+  `rdm review blocked`; the summary now says so explicitly right next to the
+  `rdm review blocked` pointer, so a reader isn't misled into expecting the
+  queue to list it.
 - The plan-review round-note reader (`parseRoundNotes`) accepted only
   `blocking` and `concern` bullets while the writer emitted every severity, so
   the first `suggestion` bullet in a previous round's note truncated the rest

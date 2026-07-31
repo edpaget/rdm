@@ -387,9 +387,11 @@ function isAbnormalStop(reason) {
 
 // buildSummary(state) — the always-on batched run summary. Lists the phases
 // completed in order, the escalations tagged plan/code/fetch with their
-// reasons and a pointer at the `rdm review blocked` queue, the stop reason
-// (loudly flagged when abnormal — see isAbnormalStop), and a note that
-// reviewed work is left on the roadmap branch and main is never touched.
+// reasons and a pointer at the `rdm review blocked` queue (plus a loud caveat
+// when a [fetch]-tagged entry is present, since those never reach that queue —
+// see the fetch-stage handling in runAutopilot), the stop reason (loudly
+// flagged when abnormal — see isAbnormalStop), and a note that reviewed work
+// is left on the roadmap branch and main is never touched.
 function buildSummary(state) {
   const s = state || {};
   const roadmap = s.roadmap || '';
@@ -410,12 +412,24 @@ function buildSummary(state) {
   lines.push('phases completed (' + completed.length + '): ' + (completed.length ? completed.join(', ') : 'none'));
   if (escalations.length) {
     lines.push('escalations awaiting review (' + escalations.length + '):');
+    let hasFetchEscalation = false;
     for (const e of escalations) {
       const m = /^\[(\w+)\]/.exec(String((e && e.reason) || ''));
       const stage = m ? m[1] : 'code';
+      if (stage === 'fetch') hasFetchEscalation = true;
       lines.push('  - ' + (e && e.stem) + ' [' + stage + ']: ' + ((e && e.reason) || ''));
     }
     lines.push('review the queue: ./target/debug/rdm review blocked --project rdm');
+    // [fetch]-tagged entries have no phase stem to park against, so unlike
+    // [plan]/[code] entries they are NEVER written to rdm's persisted queue —
+    // call this out loudly here (not just in a code comment) so a caller
+    // skimming this summary isn't misled by the line above into expecting
+    // `rdm review blocked` to list them.
+    if (hasFetchEscalation) {
+      lines.push(
+        'note: [fetch]-tagged entries above are summary-only — no phase is known to park against, so they will NOT appear in the `rdm review blocked` queue; act on them directly from this summary.'
+      );
+    }
   } else {
     lines.push('escalations awaiting review (0): none');
   }
