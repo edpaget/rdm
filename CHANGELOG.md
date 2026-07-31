@@ -357,6 +357,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The shipped `rdm-autopilot` skill templates (`rdm agent-config claude
+  --skills`/`--mcp`) no longer instruct invoking a Workflow literally named
+  `autopilot`. The same change that dropped `.claude/workflows/autopilot.js`
+  from `generate_workflows()`'s emitted output left the templates'
+  "What to do" steps still telling a downstream agent to invoke it — a
+  contradiction that would have broken the very first dispatch of the
+  emitted skill in any repo that ran `rdm agent-config claude --skills`.
+  The steps now describe driving the loop directly and composing the two
+  real Workflows it still relies on (`estimate`, `dispatch-phase`), and both
+  `rdm-core`'s generated-skill tests and
+  `scripts/verify-agent-config-distribution.sh` gained a planted-mutation-backed
+  assertion that the emitted template can never again claim to invoke a
+  Workflow named `autopilot`.
 - The autonomous code review (`rdm-dispatch-phase`, `rdm-autopilot`, the
   standalone `review-refute-fix` workflow) now mechanically forces `rework`
   whenever the acceptance-criteria table it reports carries a FAIL or PARTIAL

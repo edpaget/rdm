@@ -29,11 +29,17 @@
 #      (rdm-dispatch-phase and rdm-do -> dispatch-phase.js). rdm-autopilot is
 #      now the prose `rdm-autopilot` skill (workflow-orchestration roadmap,
 #      phase 3) and carries no `.claude/workflows/<name>.js` reference at
-#      all, in BOTH the cli and mcp variants.
+#      all, in BOTH the cli and mcp variants — and this same section also
+#      asserts rdm-autopilot's template never instructs invoking a Workflow
+#      literally named "autopilot" (that Workflow was retired in this same
+#      roadmap's phase 3; only `estimate` and `dispatch-phase` remain real
+#      Workflow calls it may name).
 #   5. PLANTED-MUTATION SELF-TESTS: corrupts a scratch copy of the emission
 #      (one byte appended to a workflow script; one shim reference
-#      rewritten to a typo'd filename) and asserts both checks above turn
-#      red on the corrupted copy — proving neither gate is vacuous.
+#      rewritten to a typo'd filename; an "invoke the autopilot workflow"
+#      sentence appended to rdm-autopilot/SKILL.md) and asserts every check
+#      above turns red on the corrupted copy — proving none of the gates is
+#      vacuous.
 #   6. NEGATIVE / PLAN-REPO INDEPENDENCE: Pi emission never writes
 #      `.claude/workflows` (no Workflow-tool runtime); `--user` emission
 #      never writes `.claude/workflows` either (the scripts hardcode a
@@ -142,6 +148,25 @@ check_no_unsubstituted_placeholders() {
     [ "$leaked" -eq 0 ]
 }
 
+# Asserts <skills_dir>/rdm-autopilot/SKILL.md never instructs invoking a
+# Workflow literally named "autopilot" -- $WORKFLOWS ships no autopilot.js at
+# all (the drive loop is a prose skill now), so a surviving instruction to
+# invoke it would point at a file this generator does not emit. Returns
+# nonzero (and prints a diagnostic) if any such instruction is found.
+check_autopilot_no_workflow_invocation() {
+    skills_dir=$1
+    ap_md="$skills_dir/rdm-autopilot/SKILL.md"
+    [ -f "$ap_md" ] || return 0
+    # shellcheck disable=SC2016
+    if grep -qF '.claude/workflows/autopilot.js' "$ap_md" ||
+        grep -qF 'Invoke the `autopilot`' "$ap_md" ||
+        grep -qF 'the `autopilot` workflow' "$ap_md"; then
+        echo "  $ap_md instructs invoking a Workflow named 'autopilot' -- generate_workflows() does not emit .claude/workflows/autopilot.js" >&2
+        return 1
+    fi
+    return 0
+}
+
 # Minimal frontmatter validity: starts with a `---` fence, has a closing
 # `---` fence, and declares a `name:` field.
 assert_valid_frontmatter() {
@@ -216,6 +241,18 @@ for variant in cli mcp; do
     grep -qF '.claude/workflows/dispatch-phase.js' "$skills_dir/rdm-do/SKILL.md" ||
         fail "$variant: rdm-do/SKILL.md must reference .claude/workflows/dispatch-phase.js"
     pass "$variant: rdm-dispatch-phase/rdm-do carry their expected exact references"
+
+    # rdm-autopilot is the prose skill: $WORKFLOWS (above) ships no autopilot.js
+    # at all, so this template must never instruct invoking a Workflow
+    # literally named "autopilot" -- that call would target a file this same
+    # generator does not emit and would fail at the exact point the skill's
+    # contract depends on. It may still name the two real Workflows it
+    # composes (`estimate`, `dispatch-phase`).
+    if check_autopilot_no_workflow_invocation "$skills_dir"; then
+        pass "$variant: rdm-autopilot/SKILL.md never instructs invoking a nonexistent 'autopilot' Workflow"
+    else
+        fail "$variant: rdm-autopilot/SKILL.md instructs invoking a Workflow named 'autopilot', but generate_workflows() does not emit .claude/workflows/autopilot.js"
+    fi
 done
 
 # --- 5. planted-mutation self-tests: prove neither gate above is vacuous ---
@@ -257,6 +294,18 @@ if check_no_unsubstituted_placeholders "$SCRATCH_PH/.claude/skills" >/dev/null 2
     fail "self-test C: planted {t_phase_list} placeholder was NOT detected — the substitution gate is vacuous"
 fi
 pass "self-test C: planted {t_phase_list} placeholder correctly turned the substitution gate red"
+
+say "5d. Self-test: planted 'invoke the autopilot workflow' instruction in rdm-autopilot/SKILL.md"
+SCRATCH_AP="$TMP/scratch-autopilot-workflow-invocation"
+rm -rf "$SCRATCH_AP"
+cp -R "$TMP/cli" "$SCRATCH_AP"
+# shellcheck disable=SC2016
+printf '\nInvoke the `autopilot` workflow via the Workflow tool. Planted for verify-agent-config-distribution.sh self-test D.\n' \
+    >>"$SCRATCH_AP/.claude/skills/rdm-autopilot/SKILL.md"
+if check_autopilot_no_workflow_invocation "$SCRATCH_AP/.claude/skills" >/dev/null 2>&1; then
+    fail "self-test D: planted 'autopilot' workflow-invocation instruction was NOT detected — the check is vacuous"
+fi
+pass "self-test D: planted 'autopilot' workflow-invocation instruction correctly turned the check red"
 
 # --- 6. negative checks: platform/scope boundaries + plan-repo independence -
 say "6a. Negative: Pi emission never writes .claude/workflows"

@@ -28,17 +28,19 @@ This skill is **non-interactive**. Launch unattended runs with `--permission-mod
    - `planOnly` — `true` when `--plan-only` is present (omit otherwise).
    - `maxPlanRevise` — the non-negative integer following `--max-plan-revise`, when present (omit otherwise).
    - `maxCodeRework` — the non-negative integer following `--max-code-rework`, when present (omit otherwise).
-2. **Gather what your tool surface can supply and hand it to the workflow.** You are already a running agent with the repo in context; the workflow is not, so each of these otherwise costs it a whole dedicated subagent. Both are **optional** — the workflow falls back to its own in-workflow fetch for anything you omit or get wrong:
-   - `phaseList` — the parsed phase array from `{t_phase_list}` (`project: {proj_param}, roadmap: "<slug>"`), passed through verbatim (never summarized). It feeds the estimate pre-pass's unestimated filter.
-   - `next` — the parsed object from `{t_next}` (`project: {proj_param}, roadmap: "<slug>"`). The workflow consumes this **one-shot, on the first loop iteration only**; every later iteration re-reads live state, because `{t_next}` is what steps the cursor forward once a phase's status is persisted. Fetch it fresh at invocation time and never cache it across runs.
+2. **Gather what your tool surface can supply**, before entering the loop below. You are already a running agent with the repo in context, so gathering these directly is free — no dedicated subagent is spent on it. Both are **optional**; a partial gather is safe:
+   - `phaseList` — the parsed phase array from `{t_phase_list}` (`project: {proj_param}, roadmap: "<slug>"`), passed through verbatim (never summarized). Forward it into the `estimate` Workflow call below — it feeds that pass's unestimated filter.
+   - `next` — the parsed object from `{t_next}` (`project: {proj_param}, roadmap: "<slug>"`). This loop consumes this **one-shot, on the first loop iteration only**; every later iteration re-reads live state via the same tool, because `{t_next}` is what steps the cursor forward once a phase's status is persisted. Fetch it fresh at invocation time and never cache it across runs.
 
-   `mechanicalModel` is **deliberately omitted here**: there is no MCP model-resolve tool, so this shim cannot produce it and must never invent one. The workflow's own `model:mechanical` bootstrap agent remains the path on MCP.
-3. **Invoke the `autopilot` workflow** via the Workflow tool with `{ roadmap, maxPhases, planOnly, maxPlanRevise, maxCodeRework, phaseList, next }` (omit any of `maxPhases`/`planOnly`/`maxPlanRevise`/`maxCodeRework`/`phaseList`/`next` when not supplied). Pass `args` as a JSON object, never a stringified value. The workflow:
-   - runs the **estimate pre-pass** over the roadmap's unestimated phases in one parallel fan-out, persisting each difficulty (the model tier derives automatically);
-   - loops the `{t_next}` MCP tool (`project: {proj_param}, roadmap: "<slug>"`) → the `dispatch-phase` workflow (via the one allowed level of `workflow()` nesting) → interpret the OUTCOME;
-   - **advances** a `reviewed` phase (`{t_phase_update}` with `status: "reviewed"`, so `{t_next}` steps past it), **re-dispatches** a `rework` phase against a per-phase budget and **parks** it `blocked [code]` when the budget is spent, and **parks** an `escalated` phase `blocked [plan]`;
-   - bounds the run with a **global step budget** and **`--max-phases`**, and under **`--plan-only`** stops each dispatch after its plan gate (no implementation), guarding against re-vetting the same phase.
-4. **Print the returned summary verbatim.** It lists the phases completed this run (in order), the escalations awaiting review (each tagged `plan` vs `code`) pointing at the `rdm review blocked` command, the stop reason, and the note that reviewed work is left on the `roadmap/<slug>` branch with `main` untouched.
+   `mechanicalModel` is **deliberately omitted here**: there is no MCP model-resolve tool, so this shim cannot produce it and must never invent one. The `estimate` Workflow's own `model:mechanical` bootstrap agent remains the path on MCP.
+3. **Run the estimate pre-pass, then drive the loop yourself.** There is no single `autopilot` Workflow to invoke — you run this loop directly, in your own context, composing two narrower Workflow calls along the way:
+   - Invoke the **`estimate`** Workflow via the Workflow tool with `{ roadmap, phaseList }` (omit `phaseList` when you couldn't gather it) to rate every unestimated phase in one parallel fan-out and persist each difficulty (the model tier derives automatically).
+   - Then loop: fetch the next actionable phase (`{t_next}` with `project: {proj_param}, roadmap: "<slug>"`, or the hoisted `next` value on the very first iteration only), dispatch it via the **`dispatch-phase`** Workflow with `{ roadmap, phase: <stem>, planOnly, maxPlanRevise, maxCodeRework }`, and interpret its returned OUTCOME:
+     - `reviewed` → **advance** it (`{t_phase_update}` with `status: "reviewed"`, so the next `{t_next}` call steps past it).
+     - `rework` → re-dispatch the same phase against a per-phase retry budget; once the budget is spent, **park** it `blocked [code]`.
+     - `escalated` → **park** it `blocked [plan]`.
+   - Bound the run with a **global step budget** and **`--max-phases`**; under **`--plan-only`**, stop each dispatch after its plan gate (no implementation), tracking which stems you've already vetted this run so none is re-vetted.
+4. **Print a summary of the whole run.** List the phases completed this run (in order), the escalations awaiting review (each tagged `plan` vs `code`) pointing at the `rdm review blocked` command, the stop reason, and the note that reviewed work is left on the `roadmap/<slug>` branch with `main` untouched.
 
 ## Run modes
 

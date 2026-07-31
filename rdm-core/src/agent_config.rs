@@ -2085,6 +2085,15 @@ mod tests {
         // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
         assert!(!content.contains("Mandatory dispatch"));
         assert!(!content.contains("inline-collapse"));
+        // generate_workflows() no longer ships an `autopilot.js` (2 files
+        // remain: dispatch-phase.js, review-refute-fix.js), so this template
+        // must never instruct invoking a Workflow literally named
+        // "autopilot" — that call would target a file this same generator
+        // does not emit. It may still name the two real Workflows it
+        // composes (`estimate`, `dispatch-phase`).
+        assert!(!content.contains("Invoke the `autopilot`"));
+        assert!(!content.contains("the `autopilot` workflow"));
+        assert!(!content.contains(".claude/workflows/autopilot.js"));
     }
 
     #[test]
@@ -3177,6 +3186,15 @@ mod tests {
         // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
         assert!(!content.contains("Mandatory dispatch"));
         assert!(!content.contains("inline-collapse"));
+        // generate_workflows() no longer ships an `autopilot.js` (2 files
+        // remain: dispatch-phase.js, review-refute-fix.js), so this template
+        // must never instruct invoking a Workflow literally named
+        // "autopilot" — that call would target a file this same generator
+        // does not emit. It may still name the two real Workflows it
+        // composes (`estimate`, `dispatch-phase`).
+        assert!(!content.contains("Invoke the `autopilot`"));
+        assert!(!content.contains("the `autopilot` workflow"));
+        assert!(!content.contains(".claude/workflows/autopilot.js"));
     }
 
     #[test]
