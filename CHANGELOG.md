@@ -63,7 +63,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `phaseIndex` across 9 real units on a reference run) — so the unit key comes
   exclusively from the target embedded in each refuter's own prompt, with a
   target that is itself pretty-printed JSON (the `--implementation-plan`
-  shape) rejected rather than captured as a fake identity. Recorded in
+  shape) rejected rather than captured as a fake identity. A retried
+  dispatch's Workflow-runtime-suffixed label (`dim (retry N)`) is normalized
+  before grouping so a retry pools into its non-retried siblings' row instead
+  of fragmenting into its own zero-`refutersDispatched` row. Recorded in
   `docs/token-baseline.json` § `refuterFanout` (48-run window ending
   2026-07-29, 2,208 agent records, not subtractable against the per-agent-class
   baseline above — the corpus grew between measurements) and summarized in a

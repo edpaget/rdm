@@ -515,7 +515,16 @@ function buildRefuterFanout(finders, refuters, sessionDirOf) {
       unresolvedLabelCount += 1;
       continue;
     }
-    const [, mode, dim] = parts;
+    const [, mode, rawDim] = parts;
+    // The Workflow runtime suffixes a retried dispatch's label with
+    // " (retry N)" (e.g. `find:code:ac (retry 1)`). That suffix names the
+    // ATTEMPT, not the dimension, so it must be stripped before grouping —
+    // otherwise a single logical dimension fragments into one row per retry
+    // count, each with its own n/min/p50/p90/max, and `refutersDispatched`
+    // permanently reads 0 on every such row because a refuter's own
+    // `dimKey` (parsed from ITS prompt) is never retry-suffixed and so can
+    // never match a retry-suffixed key.
+    const dim = rawDim.replace(/ \(retry \d+\)$/, '');
 
     const sessionDir = sessionDirOf.get(`${f.projectSlug}|${f.sessionId}|${f.runId}`);
     let findingsCount = null;

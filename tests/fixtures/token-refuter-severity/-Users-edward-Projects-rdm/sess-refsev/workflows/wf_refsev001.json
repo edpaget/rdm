@@ -5,7 +5,7 @@
   "scriptPath": ".claude/workflows/dispatch-phase.js",
   "args": { "roadmap": "workflow-token-reduction", "phase": "phase-6-skip-non-gating-refutation" },
   "result": "ok",
-  "agentCount": 10,
+  "agentCount": 11,
   "logs": [],
   "durationMs": 60000,
   "summary": "fixture run for scripts/verify-token-report.sh section 6 (refuter severity + refuter fanout)",
@@ -14,7 +14,7 @@
   "startTime": 1784970000000,
   "phases": [{ "index": 1, "title": "Review" }],
   "defaultModel": "claude-opus-5[1m]",
-  "totalTokens": 14700,
+  "totalTokens": 19375,
   "totalToolCalls": 9,
   "workflowProgress": [
     { "type": "workflow_phase", "index": 1, "title": "Review" },
@@ -157,6 +157,20 @@
       "toolCalls": 1,
       "durationMs": 4000,
       "tokens": 171
+    },
+    {
+      "type": "workflow_agent",
+      "index": 11,
+      "label": "find:code:correctness (retry 1)",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "find-c4",
+      "model": "claude-sonnet-5",
+      "state": "done",
+      "attempt": 2,
+      "toolCalls": 2,
+      "durationMs": 5000,
+      "tokens": 4675
     }
   ]
 }

@@ -621,22 +621,26 @@ section's own `measurementWindow` before comparing them.
 **Findings per finder**, split by mode and dimension, read from each
 finder's own transcript output (never inferred from refuter counts — since
 phase 6 a `suggestion` is never dispatched to a refuter, so refuter count is
-strictly less than finding count). Retried agents (`dim (retry N)`) are
-folded out of this headline table for readability; the full per-label
-breakdown — 24 rows, including every retry variant — is in
+strictly less than finding count). The Workflow runtime suffixes a retried
+dispatch's label with `(retry N)` (e.g. `code:ac (retry 1)`); that suffix
+names the attempt, not the dimension, so it is stripped before grouping and
+retried dispatches pool into their non-retried siblings' row rather than
+fragmenting into their own — the table below is therefore the complete,
+un-split breakdown (11 rows), not a readability trim of a larger one. The
+same rows, keyed identically, are in
 [`docs/token-baseline.json`](token-baseline.json) § `refuterFanout.findingsPerFinder`.
 
 | mode | dim | n | min | p50 | p90 | max | refuters dispatched |
 |---|---|---:|---:|---:|---:|---:|---:|
-| code | ac | 47 | 0 | 0 | 2 | 2 | 28 |
+| code | ac | 51 | 0 | 0 | 2 | 2 | 28 |
 | code | api-docs | 4 | 0 | 0 | 0 | 0 | 0 |
-| code | architecture | 50 | 0 | 0 | 2 | 2 | 25 |
+| code | architecture | 53 | 0 | 0 | 1.8 | 2 | 25 |
 | code | changelog | 17 | 0 | 0 | 1 | 1 | 4 |
-| code | correctness | 45 | 0 | 1 | 2 | 3 | 52 |
-| code | security | 16 | 0 | 0 | 1 | 1 | 5 |
-| code | tests | 48 | 0 | 1 | 2 | 3 | 57 |
+| code | correctness | 51 | 0 | 1 | 2 | 3 | 52 |
+| code | security | 19 | 0 | 0 | 1 | 1 | 5 |
+| code | tests | 51 | 0 | 1 | 2 | 3 | 57 |
 | plan | architectural-fit | 117 | 0 | 2 | 4.4 | 6 | 266 |
-| plan | coherence | 116 | 0 | 2 | 5 | 7 | 301 |
+| plan | coherence | 118 | 0 | 2 | 5 | 7 | 301 |
 | plan | restraint | 26 | 0 | 2 | 3 | 4 | 53 |
 | plan | unit-of-work | 118 | 0 | 1 | 3 | 4 | 172 |
 

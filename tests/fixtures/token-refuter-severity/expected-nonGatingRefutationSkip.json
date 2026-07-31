@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-checked ground truth for scripts/verify-token-report.sh section 6. Shaped exactly like docs/token-baseline.json's nonGatingRefutationSkip + refuterFanout sections so the SAME --check/--audit code paths are exercised against a hermetic fixture. Every number here is derivable by hand from the fixture transcripts. The two new refuters added for the refuterFanout distributions (refute-c2, refute-shadow) are both severity `concern`, chosen specifically so the blocking/suggestion/unrecoverable:no-transcript rows below are untouched by that extension.",
+  "_comment": "Hand-checked ground truth for scripts/verify-token-report.sh section 6. Shaped exactly like docs/token-baseline.json's nonGatingRefutationSkip + refuterFanout sections so the SAME --check/--audit code paths are exercised against a hermetic fixture. Every number here is derivable by hand from the fixture transcripts. The two new refuters added for the refuterFanout distributions (refute-c2, refute-shadow) are both severity `concern`, chosen specifically so the blocking/suggestion/unrecoverable:no-transcript rows below are untouched by that extension. A third finder (find-c4, label `find:code:correctness (retry 1)`, 4 findings) was added to prove a retry-suffixed dispatch POOLS into its non-retried siblings' row (code:correctness: n 2 -> 3) instead of fragmenting into its own `code:correctness (retry 1)` row with refutersDispatched permanently 0.",
   "nonGatingRefutationSkip": {
     "refuteBySeverity": [
       {
@@ -60,12 +60,12 @@
       "cacheRead": 10000
     },
     "laneTotals": {
-      "agentCount": 10,
-      "dedupedRequestCount": 9,
-      "output": 585,
-      "uncachedInput": 266,
-      "cacheWrite": 2660,
-      "cacheRead": 26600
+      "agentCount": 11,
+      "dedupedRequestCount": 10,
+      "output": 598,
+      "uncachedInput": 308,
+      "cacheWrite": 3080,
+      "cacheRead": 30800
     },
     "projected": {
       "severities": [
@@ -80,7 +80,7 @@
       "freshTokens": 339,
       "percentOfRefuteAgents": 16.7,
       "percentOfRefuteTokens": 28.7,
-      "percentOfLaneTokens": 11.1
+      "percentOfLaneTokens": 9.6
     }
   },
   "refuterFanout": {
@@ -90,7 +90,7 @@
           "mode": "code",
           "dim": "correctness",
           "key": "code:correctness",
-          "n": 2,
+          "n": 3,
           "min": 3,
           "p50": 4,
           "p90": 4.8,

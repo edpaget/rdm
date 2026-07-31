@@ -760,7 +760,7 @@ assert.equal(before.projected.agentsNotSpawned, 0, 'nothing is projected away fr
 // A window that ends AFTER it keeps everything — same figures as no window at
 // all, so the filter cannot be silently dropping records inside its range.
 assert.equal(after.corpus.runCount, 1, '--until after the run includes it');
-assert.equal(after.corpus.agentRecordCount, 10, 'the whole run is included');
+assert.equal(after.corpus.agentRecordCount, 11, 'the whole run is included');
 assert.deepEqual(
   after.refuteBySeverity.map((r) => [r.key, r.agentCount, r.output]),
   expected.refuteBySeverity.map((r) => [r.key, r.agentCount, r.output]),
