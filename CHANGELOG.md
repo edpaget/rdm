@@ -251,6 +251,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   budget (`unrefutedReason: 'budget'`), and **grading crashed**
   (`refuterError: true`) — the last of which previously carried no marker at all
   and was indistinguishable from a verified survivor.
+- `rdm-autopilot` no longer delegates the roadmap-driving loop to
+  `.claude/workflows/autopilot.js`. Per the `prose-autopilot-orchestration`
+  roadmap's phase 2, the skill now drives the loop itself in prose: it invokes
+  `estimate` and `dispatch-phase` as `Workflow`-tool calls and runs every other
+  step (`rdm next`, `rdm phase update`, `rdm phase show` read-backs, `rdm model
+  resolve mechanical`) as direct Bash commands in its own context instead of
+  dispatched mechanical `agent()` subagents — those subagents existed only
+  because the headless workflow runtime cannot run Bash itself, a limitation a
+  live prose skill does not have. The estimate pre-pass now runs through a real
+  `workflow('estimate', …)` call for the first time; previously `autopilot.js`
+  reached the same fan-out only via a stamped `estimate-core` copy embedded in
+  `lib/autopilot.mjs`, never a genuine `estimate` invocation. `autopilot.js`,
+  `lib/autopilot.mjs`, and their `scripts/verify-workflow-autopilot.sh` harness
+  are left in place and unexecuted by this skill, pending a later phase's
+  retirement decision.
 
 - The review pipeline no longer spawns a refuter for a **`suggestion`**
   finding. Severity is the only thing that turns a finding into an outcome, and
