@@ -4,6 +4,13 @@
 # WHAT THIS GATES
 #   1  Hygiene: determinism, no hot-path coupling, --help surface, docs present.
 #   2  Corpus validation: schema, floors, class/authority/provenance shares.
+#  2c  Batch-group POWER under the UNIT-SCOPED key (runId|unitIdent|mode|dim):
+#      two review units never merge into one group, the committed histogram and
+#      all three exclusion counts, the size-1 exclusion, and the zero-spend
+#      --batch-power verdict. Plus 2c-equivalence (the deliberately duplicated
+#      unit-identity predicate cannot drift from phase 1's canonical rule) and
+#      2c-guard (an underpowered batched arm THROWS, and --allow-underpowered
+#      forces a NO MEASUREMENT banner with no decision line).
 #   3  Prompt fidelity: every item regenerates through the REAL refutePrompt,
 #      and every MINED prompt exceeds 401 chars (proving the transcript, not the
 #      sidecar's truncated promptPreview, was the source).
@@ -18,6 +25,11 @@
 #   5  Scorer behavior against trials-sample.json: FN/FP separation, distinct
 #      denominators, ungraded bucketing, flip rate, per-class and
 #      authoritative-only splits, token + tool-call columns on the FN row.
+#  5c  Batched scoring: the batched prompt as a minimal delta from the real
+#      refutePrompt, expansion (unknown ids dropped, omissions and crashes left
+#      ungraded, dispatch cost on the first row), independent arm buckets,
+#      dispatches counted by unique dispatch id, and anchoring over qualifying
+#      groups only.
 #   6  The no-blended-accuracy negative assertion (recursive, JSON and text).
 #   7  --dry-run dispatches NOTHING; --dispatch-stub drives the full path.
 #  7b  The REAL paid-dispatch parsing path, driven with zero spend:
@@ -26,9 +38,15 @@
 #      PATH-shadowed fake `claude` binaries. These branches produce the verdicts
 #      and token/tool-call figures the DECISION was computed from, so a
 #      regression in them would silently corrupt the numbers.
+#  7c  parseClaudeBatchResult, the batched sibling of that parser: unknown ids
+#      dropped, non-boolean verdicts left ungraded, a missing `verdicts` array
+#      read as a CRASH rather than as a clean grade.
 #   8  --audit docs/token-baseline.json arithmetic.
-#   9  Planted-mutation self-tests proving 2, 3, 4, 4b, 5, 6, and 7b are not
-#      vacuous.
+#  8b  --audit-section refuterBatching: the corpus-power arithmetic, including
+#      the closed decision vocabulary and the rule that an underpowered arm can
+#      only ever carry decision "no-measurement".
+#   9  Planted-mutation self-tests proving 2, 2c, 3, 4, 4b, 5, 5c, 6, and 7b are
+#      not vacuous.
 #  10  CHANGELOG hygiene, mirroring scripts/verify-token-report.sh.
 #  11  The AC9 XOR: either a changed model binding is reflected in a new
 #      verify-workflow-review.sh criterion, or the unchanged binding carries the
@@ -64,6 +82,7 @@ CORPUS="tests/fixtures/refuter-agreement/corpus.jsonl"
 TRIALS="tests/fixtures/refuter-agreement/trials-sample.json"
 SIDECARS="tests/fixtures/refuter-agreement/mine-sidecars"
 DOC="docs/refuter-model-tiering.md"
+BATCH_DOC="docs/refuter-batching.md"
 BASELINE_JSON="docs/token-baseline.json"
 REVIEW_LIB=".claude/workflows/lib/review.mjs"
 
@@ -75,6 +94,25 @@ for f in "$MODULE" "$MINER" "$RUNNER"; do
     node --check "$f" >/dev/null 2>&1 || fail "$f does not parse under node --check"
 done
 pass "all three scripts parse"
+
+# GREP LIVENESS. Almost every hygiene assertion below is a grep, and grep treats
+# a file containing a NUL byte as BINARY: it reports no match and exits 1,
+# silently turning each of those assertions into a vacuous pass. A stray NUL is
+# easy to introduce inside a template literal and `node --check` accepts it, so
+# assert the scripts are real text before trusting a single grep result.
+BEFORE="$FAILURES"
+for f in "$MODULE" "$MINER" "$RUNNER"; do
+    node -e '
+const b = require("fs").readFileSync(process.argv[1]);
+if (b.includes(0)) {
+  console.error(process.argv[1] + " contains a NUL byte at offset " + b.indexOf(0) +
+    " — grep would treat it as binary and every grep-based check in this gate would pass vacuously");
+  process.exit(1);
+}
+' "$f" || fail "$f is not grep-readable text"
+    grep -q 'export' "$f" || fail "$f: a control grep for 'export' found nothing — grep cannot read this file"
+done
+[ "$FAILURES" = "$BEFORE" ] && pass "all three scripts are grep-readable text (no NUL byte), so the greps below are not vacuous"
 
 # Determinism: the report must be a pure function of its inputs. A clock or an
 # RNG anywhere makes two runs over the same corpus incomparable.
@@ -106,7 +144,8 @@ grep -q "workflows/lib/review.mjs" "$RUNNER" || fail "the runner must import the
 pass "the runner imports the real refutePrompt from the canonical review source"
 
 node "$RUNNER" --help >"$TMP/help.txt" 2>&1 || fail "--help exited non-zero"
-for flag in -- --corpus --tiers --replicates --dry-run --dispatch-stub --audit; do
+for flag in -- --corpus --tiers --replicates --dry-run --dispatch-stub --audit \
+    --audit-section --shape --batch-power --min-batch-group --allow-underpowered; do
     [ "$flag" = "--" ] && continue
     grep -q -- "$flag" "$TMP/help.txt" || fail "--help does not document $flag"
 done
@@ -168,6 +207,55 @@ else
 fi
 grep -q "refuter-model-tiering.md" docs/token-baseline.md || fail "docs/token-baseline.md must link to the decision doc"
 pass "docs/token-baseline.md links to the decision doc"
+
+# The SHAPE decision doc: same structural + cross-artifact discipline as the
+# model one above. It must state its corpus-power analysis (the pre-registered
+# step 1) and the correction of the superseded naive grouping key, or a reader
+# cannot tell a no-measurement outcome from a missing one.
+[ -f "$BATCH_DOC" ] || die "missing $BATCH_DOC"
+BEFORE_BATCH_HEADINGS="$FAILURES"
+for h in '^## The question' '^## Method' '^### Corpus power' '^## Decision rule' '^## Results' \
+    '^### False negatives' '^### False positives' '^### Self-consistency' '^### Anchoring' \
+    '^### Token volume' '^## DECISION' '^## Limitations'; do
+    grep -q "$h" "$BATCH_DOC" || fail "$BATCH_DOC is missing a required section matching $h"
+done
+grep -qi 'superseded' "$BATCH_DOC" ||
+    fail "$BATCH_DOC must record the superseded naive grouping key and why it is void"
+grep -q 'runId | unitIdent | mode | dim.key' "$BATCH_DOC" ||
+    fail "$BATCH_DOC must state the UNIT-SCOPED grouping key"
+grep -q 'POWER: INSUFFICIENT\|POWER: SUFFICIENT' "$BATCH_DOC" ||
+    fail "$BATCH_DOC must paste the verbatim --batch-power verdict line"
+[ "$FAILURES" = "$BEFORE_BATCH_HEADINGS" ] && pass "$BATCH_DOC carries every required section, the unit-scoped key, and the power verdict"
+
+BATCH_DOC_DECISION="$(grep -oE 'ship-batched|no-ship-worse-fn|no-ship-anchoring|no-measurement' "$BATCH_DOC" | head -1 || true)"
+[ -n "$BATCH_DOC_DECISION" ] || fail "$BATCH_DOC's DECISION section carries no recognized decision token"
+BATCH_JSON_DECISION="$(node -e 'const j=require("./'"$BASELINE_JSON"'");process.stdout.write(String(j.refuterBatching&&j.refuterBatching.decision))')"
+if [ -n "$BATCH_DOC_DECISION" ] && [ "$BATCH_DOC_DECISION" = "$BATCH_JSON_DECISION" ]; then
+    pass "the batching doc and $BASELINE_JSON agree on the decision token ($BATCH_DOC_DECISION)"
+else
+    fail "batching decision token disagrees: $BATCH_DOC says '$BATCH_DOC_DECISION', $BASELINE_JSON says '$BATCH_JSON_DECISION'"
+fi
+grep -q "refuter-batching.md" docs/token-baseline.md || fail "docs/token-baseline.md must link to the batching decision doc"
+grep -q "refuter-batching.md" docs/workflow-schemas.md || fail "docs/workflow-schemas.md must cross-reference the batching decision doc"
+grep -q "refuter-batching.md" "$DOC" || fail "$DOC must cross-reference its sibling shape A/B"
+grep -q 'refuter-batching.md' CLAUDE.md || fail "CLAUDE.md must point at the batching decision doc"
+pass "the batching doc is cross-referenced from token-baseline.md, workflow-schemas.md, the sibling doc, and CLAUDE.md"
+
+# THE SHIP/NO-SHIP XOR. A half-landed pipeline change must not be able to
+# coexist with a no-ship decision, or vice versa. The batched prompt/schema live
+# in the EXPERIMENT until the pre-registered rule passes.
+if [ "$BATCH_JSON_DECISION" = "ship-batched" ]; then
+    grep -q 'batchRefutePrompt' "$REVIEW_LIB" ||
+        fail "decision is ship-batched but $REVIEW_LIB has no batchRefutePrompt"
+    grep -q 'BATCH_VERDICT_SCHEMA' "$REVIEW_LIB" ||
+        fail "decision is ship-batched but $REVIEW_LIB has no BATCH_VERDICT_SCHEMA"
+    pass "decision is ship-batched and the pipeline carries both batched symbols"
+else
+    if grep -qE 'batchRefutePrompt|BATCH_VERDICT_SCHEMA' "$REVIEW_LIB" >&2; then
+        fail "decision is '$BATCH_JSON_DECISION' but $REVIEW_LIB already carries a batched symbol — a half-landed pipeline change cannot coexist with a no-ship decision"
+    fi
+    pass "decision is '$BATCH_JSON_DECISION' and the pipeline carries no batched symbol"
+fi
 
 # ---------------------------------------------------------------------------
 say "2. Corpus validation and composition floors"
@@ -238,6 +326,193 @@ node "$TMP/check-corpus.mjs" "$REPO_ROOT/$MODULE" "$CORPUS" >"$TMP/corpus-summar
 if [ -s "$TMP/corpus-summary.json" ]; then
     pass "corpus validates: $(node -e 'const s=require("'"$TMP"'/corpus-summary.json");console.log(s.size+" items, divergence "+s.divergenceClassShare+"%, mined "+s.minedShare+"%, authoritative "+s.authoritativeShare+"%")')"
 fi
+
+# ---------------------------------------------------------------------------
+say "2c. Batch-group power under the UNIT-SCOPED key"
+
+cat >"$TMP/check-batch-power.mjs" <<'EOF'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const {
+  loadCorpus, groupCorpusForBatching, batchGroupKeyFor, unitIdentOf, formatBatchPower,
+  MIN_BATCH_GROUP_SIZE, MIN_QUALIFYING_BATCH_GROUPS, MIN_QUALIFYING_BATCH_ITEMS,
+} = await import(pathToFileURL(process.argv[2]).href);
+
+// --- THE REGRESSION THIS SECTION EXISTS FOR ----------------------------
+// buildReviewPipeline runs ONCE PER REVIEW UNIT, so a real batch is one unit's
+// findings for one dimension. Two findings from the same run, mode and
+// dimension but DIFFERENT review units could never be dispatched together and
+// must form TWO groups. A key without the unit identity merges them into one.
+function synth(id, target, extra = {}) {
+  return {
+    id,
+    schemaVersion: 1,
+    mode: 'code',
+    dim: { key: 'correctness' },
+    target,
+    finding: { id: 'f', concern: 'correctness', location: 'x', severity: 'concern', confidence: 90, what_fails: 'y' },
+    promptSha256: '0'.repeat(64),
+    promptDrift: false,
+    provenance: { kind: 'mined', runId: 'wf_same', projectSlug: 'p', sessionId: 's', agentId: 'a' + id, workflow: 'w', ...extra },
+    groundTruth: { defect: false, class: 'stale-fact', authority: 'judgement-call', evidence: 'e', adjudicatedAgainstCommit: 'abcdef1' },
+  };
+}
+const twoUnits = [synth('u1', 'roadmap-a/phase-1'), synth('u2', 'roadmap-a/phase-2')];
+const split = groupCorpusForBatching(twoUnits, { minGroupSize: 2 });
+assert.equal(split.groupCount, 2,
+  'two items sharing runId/mode/dim but differing in target MERGED into one group — the grouping key has lost the review-unit identity');
+assert.notEqual(batchGroupKeyFor(twoUnits[0]), batchGroupKeyFor(twoUnits[1]), 'batchGroupKeyFor does not distinguish review units');
+for (const k of [batchGroupKeyFor(twoUnits[0]), batchGroupKeyFor(twoUnits[1])]) {
+  assert.equal(k.split('|').length, 4, `the batch key must be four-part runId|unitIdent|mode|dim, got "${k}"`);
+}
+// Same unit ⇒ one group, so the split above is a real discrimination and not a
+// key that simply never merges anything.
+const sameUnit = [synth('s1', 'roadmap-a/phase-1'), synth('s2', 'roadmap-a/phase-1')];
+assert.equal(groupCorpusForBatching(sameUnit, { minGroupSize: 2 }).groupCount, 1, 'two findings on the SAME unit did not group together');
+
+// --- unit identity: first line, phase 1's plausibility rule -------------
+assert.equal(unitIdentOf({ target: 'phase r/p-1\n\nbody with { braces }' }), 'phase r/p-1', 'plan-mode identity is the FIRST LINE');
+assert.equal(unitIdentOf({ target: '{\n "steps": []\n}' }), null, 'a JSON-shaped target must be rejected, not captured as a fake identity');
+assert.equal(unitIdentOf({ target: 'a "quoted" thing' }), null, 'a double-quote-bearing identity must be rejected');
+assert.equal(unitIdentOf({ target: 'x'.repeat(201) }), null, 'an implausibly long identity must be rejected');
+assert.equal(unitIdentOf({ target: '' }), null, 'an empty target must be rejected');
+
+// --- the committed corpus's actual power -------------------------------
+const { items } = loadCorpus(fs.readFileSync(process.argv[3], 'utf8'));
+const s = groupCorpusForBatching(items);
+const expected = JSON.parse(fs.readFileSync(process.argv[4], 'utf8')).refuterBatching.corpusPower;
+assert.equal(s.totalItems, expected.totalItems);
+assert.equal(s.constructedExcluded, expected.constructedExcluded, 'constructed exclusion count drifted');
+assert.equal(s.nonGatingExcluded, expected.nonGatingExcluded, 'non-gating exclusion count drifted');
+assert.equal(s.unrecoverableUnitExcluded, expected.unrecoverableUnitExcluded, 'unrecoverable-unit exclusion count drifted');
+assert.equal(s.groupableItems, expected.groupableItems);
+assert.equal(s.groupCount, expected.groupCount);
+assert.deepEqual(s.sizeHistogram, Object.fromEntries(Object.entries(expected.sizeHistogram).map(([k, v]) => [k, v])),
+  'the committed size histogram no longer matches docs/token-baseline.json');
+assert.equal(s.qualifyingGroups, expected.qualifyingGroups, 'qualifying group count drifted');
+assert.equal(s.qualifyingItems, expected.qualifyingItems, 'qualifying item count drifted');
+assert.equal(s.meetsMinimum, expected.meetsMinimum);
+
+// Every exclusion plus the groupable items must account for the whole corpus —
+// no silent drops.
+assert.equal(s.constructedExcluded + s.nonGatingExcluded + s.unrecoverableUnitExcluded + s.groupableItems, s.totalItems,
+  'the three exclusions and the groupable items do not account for every corpus item');
+
+// The minimum, and that a size-1 group NEVER counts toward it.
+assert.equal(s.minGroupSize, MIN_BATCH_GROUP_SIZE);
+assert.ok(MIN_BATCH_GROUP_SIZE >= 3, 'the anchoring minimum must be at least 3');
+const qualifying = s.groups.filter((g) => g.size >= s.minGroupSize);
+assert.ok(qualifying.every((g) => g.size > 1), 'a size-1 group qualified');
+assert.equal(qualifying.reduce((a, g) => a + g.size, 0), s.qualifyingItems, 'qualifyingItems does not match the qualifying groups');
+assert.equal(s.minQualifyingGroups, MIN_QUALIFYING_BATCH_GROUPS);
+assert.equal(s.minQualifyingItems, MIN_QUALIFYING_BATCH_ITEMS);
+
+// The rendered verdict line must exist and agree with meetsMinimum.
+const text = formatBatchPower(s);
+assert.ok(/^POWER: (SUFFICIENT|INSUFFICIENT)$/m.test(text), 'formatBatchPower prints no POWER: verdict line');
+assert.ok(text.includes('POWER: ' + (s.meetsMinimum ? 'SUFFICIENT' : 'INSUFFICIENT')), 'the POWER verdict contradicts meetsMinimum');
+
+// Round splitting: with agentIndex on every member, a discontinuity splits.
+const rounds = groupCorpusForBatching(
+  [synth('r1', 'roadmap-a/phase-1', { agentIndex: 3 }), synth('r2', 'roadmap-a/phase-1', { agentIndex: 4 }), synth('r3', 'roadmap-a/phase-1', { agentIndex: 90 })],
+  { minGroupSize: 2 }
+);
+assert.equal(rounds.groupCount, 2, 'a rework re-review far from the first round was not split off');
+assert.equal(rounds.roundSplits, 1, 'the round split was not counted');
+
+console.log(`unit-scoped grouping holds: ${s.groupCount} groups, ${s.qualifyingGroups} qualifying / ${s.qualifyingItems} items, POWER ${s.meetsMinimum ? 'SUFFICIENT' : 'INSUFFICIENT'}`);
+EOF
+node "$TMP/check-batch-power.mjs" "$REPO_ROOT/$MODULE" "$CORPUS" "$REPO_ROOT/$BASELINE_JSON" >"$TMP/batchpower.txt" ||
+    fail "batch-group power check failed"
+[ -s "$TMP/batchpower.txt" ] && pass "$(cat "$TMP/batchpower.txt")"
+
+# --batch-power must exit 0, print the verdict, and DISPATCH NOTHING.
+cat >"$TMP/exploding-power-stub.mjs" <<'EOF'
+export function dispatch() {
+  throw new Error('DISPATCHED-UNDER-BATCH-POWER');
+}
+EOF
+node "$RUNNER" --batch-power --dispatch-stub "$TMP/exploding-power-stub.mjs" >"$TMP/power.txt" 2>&1 || {
+    cat "$TMP/power.txt" >&2
+    fail "--batch-power exited non-zero"
+}
+grep -qE '^POWER: (SUFFICIENT|INSUFFICIENT)$' "$TMP/power.txt" || fail "--batch-power printed no POWER: verdict line"
+grep -q 'DISPATCHED-UNDER-BATCH-POWER' "$TMP/power.txt" && fail "--batch-power CALLED the dispatcher"
+pass "--batch-power exits 0, prints a POWER: verdict, and provably dispatches nothing"
+
+# --- 2c-equivalence: the deliberately duplicated unit-identity predicate ----
+# refuter-agreement.mjs restates measure-refuter-severity.mjs's
+# isPlausibleUnitIdent rather than importing it (that module is a CLI and
+# importing it would invert the dependency). The two copies must never drift.
+cat >"$TMP/check-unit-equivalence.mjs" <<'EOF'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const { loadCorpus, unitIdentOf } = await import(pathToFileURL(process.argv[2]).href);
+const { isPlausibleUnitIdent } = await import(pathToFileURL(process.argv[3]).href);
+
+const { items } = loadCorpus(fs.readFileSync(process.argv[4], 'utf8'));
+let checked = 0;
+let rejected = 0;
+for (const i of items) {
+  const target = String(i.target || '');
+  const nl = target.indexOf('\n');
+  const first = nl === -1 ? target : target.slice(0, nl);
+  const mine = unitIdentOf(i) !== null;
+  const canonical = isPlausibleUnitIdent(first);
+  assert.equal(mine, canonical, `${i.id}: unitIdentOf says ${mine} but isPlausibleUnitIdent says ${canonical} for first line ${JSON.stringify(first.slice(0, 60))}`);
+  checked += 1;
+  if (!canonical) rejected += 1;
+}
+// The check must not pass vacuously: some committed item really is rejected.
+assert.ok(rejected > 0, 'no committed item exercises the rejection branch — the equivalence check is vacuous');
+for (const probe of ['', '{ "a": 1 }', 'has "quotes"', 'x'.repeat(201), 'roadmap/phase-1', 'task/some-slug']) {
+  assert.equal(unitIdentOf({ target: probe }) !== null, isPlausibleUnitIdent(probe), `predicates disagree on ${JSON.stringify(probe.slice(0, 40))}`);
+}
+console.log(`unitIdentOf and isPlausibleUnitIdent agree on all ${checked} committed targets (${rejected} rejected) and 6 probes`);
+EOF
+node "$TMP/check-unit-equivalence.mjs" "$REPO_ROOT/$MODULE" "$REPO_ROOT/scripts/measure-refuter-severity.mjs" "$CORPUS" \
+    >"$TMP/uniteq.txt" || fail "the duplicated unit-identity predicate has drifted from phase 1's canonical rule"
+[ -s "$TMP/uniteq.txt" ] && pass "$(cat "$TMP/uniteq.txt")"
+
+# --- 2c-guard: an underpowered batched arm can never be a passing gate ------
+cat >"$TMP/check-underpowered.mjs" <<'EOF'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const { groupCorpusForBatching, buildBatchTrials, scoreTrials, formatReport } = await import(pathToFileURL(process.argv[2]).href);
+
+function synth(id, target) {
+  return {
+    id, schemaVersion: 1, mode: 'code', dim: { key: 'correctness' }, target,
+    finding: { id: 'f', concern: 'correctness', location: 'x', severity: 'concern', confidence: 90, what_fails: 'y' },
+    promptSha256: '0'.repeat(64), promptDrift: false,
+    provenance: { kind: 'mined', runId: 'wf_' + id, projectSlug: 'p', sessionId: 's', agentId: 'a' + id, workflow: 'w' },
+    groundTruth: { defect: false, class: 'stale-fact', authority: 'judgement-call', evidence: 'e', adjudicatedAgainstCommit: 'abcdef1' },
+  };
+}
+const singletons = Array.from({ length: 20 }, (_, i) => synth('s' + i, 'roadmap/phase-' + i));
+const summary = groupCorpusForBatching(singletons);
+assert.equal(summary.qualifyingGroups, 0, 'an all-singleton corpus reported a qualifying group');
+assert.equal(summary.meetsMinimum, false, 'an all-singleton corpus reported SUFFICIENT power');
+
+// THROWS by default — the mechanical form of "never a passing gate".
+assert.throws(() => buildBatchTrials(summary, { tiers: ['opus'], replicates: 2 }), /UNDERPOWERED/,
+  'buildBatchTrials built a batched arm from an all-singleton corpus without complaint');
+
+// --allow-underpowered builds it, but stamps noMeasurement and forces the banner.
+const plan = buildBatchTrials(summary, { tiers: ['opus'], replicates: 2, allowUnderpowered: true });
+assert.equal(plan.noMeasurement, true, 'allowUnderpowered did not stamp noMeasurement');
+assert.equal(plan.underpowered, true, 'allowUnderpowered did not stamp underpowered');
+const report = scoreTrials(singletons, [], { baselineTier: 'opus', noMeasurement: plan.noMeasurement, decision: 'ship-batched' });
+const text = formatReport(report, 'text');
+assert.ok(/^NO MEASUREMENT — batched arm was underpowered$/m.test(text), 'the NO MEASUREMENT banner is missing');
+assert.ok(!/^DECISION:/m.test(text), 'a decision line was printed for a no-measurement report');
+console.log('an underpowered batched arm throws by default, and --allow-underpowered forces a NO MEASUREMENT banner with no decision line');
+EOF
+node "$TMP/check-underpowered.mjs" "$REPO_ROOT/$MODULE" >"$TMP/underpowered.txt" ||
+    fail "the underpowered-arm guard failed"
+[ -s "$TMP/underpowered.txt" ] && pass "$(cat "$TMP/underpowered.txt")"
 
 # ---------------------------------------------------------------------------
 say "3. Prompt fidelity: regeneration through the REAL refutePrompt"
@@ -344,7 +619,9 @@ node "$TMP/check-miner.mjs" "$TMP/mined.json" >"$TMP/miner.txt" || fail "miner b
 # The slug filter is a POSITIVE gate, not an accident of the fixture: opening it
 # up must surface the foreign item.
 node "$MINER" --root "$SIDECARS" --project-slug '-Users-edward-Projects-' --format json >"$TMP/mined-open.json" 2>/dev/null
-FOREIGN="$(node -e 'const m=require("'"$TMP"'/mined-open.json");console.log(m.items.filter(i=>i.provenance.projectSlug.includes("bowling")).length)')"
+# String(): node colorizes a bare numeric console.log argument, and the escape
+# codes would make the comparison below fail for the wrong reason.
+FOREIGN="$(node -e 'const m=require("'"$TMP"'/mined-open.json");console.log(String(m.items.filter(i=>i.provenance.projectSlug.includes("bowling")).length))')"
 [ "$FOREIGN" = "1" ] || fail "widening --project-slug did not surface the out-of-scope item (got $FOREIGN); the filter may be vacuous"
 pass "widening --project-slug surfaces the out-of-scope item — the default filter is load-bearing"
 
@@ -423,12 +700,60 @@ pass "--out writes parseable JSONL to disk and nothing to stdout"
 # --help exits 0 and names every documented flag, so the help text cannot drift
 # away from parseArgs.
 node "$MINER" --help >"$TMP/miner-help.txt" 2>&1 || fail "$MINER --help exited non-zero"
-for flag in --root --project-slug --until --severity --limit --out --format; do
+for flag in --root --project-slug --until --severity --limit --out --format --min-group-size --exclude-corpus; do
     grep -q -- "$flag" "$TMP/miner-help.txt" || fail "$MINER --help does not document $flag"
 done
 grep -q "groundTruth: null" "$TMP/miner-help.txt" ||
     fail "$MINER --help no longer states that it assigns no ground truth"
 pass "--help exits 0, documents every flag, and restates the no-ground-truth contract"
+
+# --min-group-size buys only power-ADDING candidates. The three fixture refuters
+# sit in three DIFFERENT unit-scoped groups, so a floor of 2 must empty the
+# output and bucket all three — proving the filter is real, not decorative.
+node "$MINER" --root "$SIDECARS" --min-group-size 2 --format json >"$TMP/mined-group.json" 2>/dev/null
+node -e '
+const fs = require("fs"), assert = require("assert");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+assert.equal(m.recovered, 0, "--min-group-size 2 kept " + m.recovered + " candidate(s) from an all-singleton fixture");
+assert.equal(m.skips["below-min-group-size"], 3, "the filtered candidates were not bucketed");
+// No silent drops: the accounting identity still holds with the new bucket.
+const skipTotal = Object.values(m.skips).reduce((a, b) => a + b, 0);
+assert.equal(m.recovered + skipTotal, m.refuterRecordCount, "--min-group-size introduced a silent drop");
+assert.equal(m.batchGrouping.minGroupSize, 2);
+assert.equal(m.batchGrouping.qualifyingGroups, 0, "an all-singleton fixture reported a qualifying group");
+' "$TMP/mined-group.json" || fail "--min-group-size did not filter to unit-scoped groups"
+pass "--min-group-size emits only unit-scoped groups at or above the floor, bucketing the rest with no silent drop"
+
+# --exclude-corpus makes a re-mine APPEND rather than duplicate.
+node -e '
+const fs = require("fs");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+fs.writeFileSync(process.argv[2], JSON.stringify({ id: m.items[0].id }) + "\n");
+' "$TMP/mined.json" "$TMP/already.jsonl"
+node "$MINER" --root "$SIDECARS" --exclude-corpus "$TMP/already.jsonl" --format json >"$TMP/mined-excl.json" 2>/dev/null
+node -e '
+const fs = require("fs"), assert = require("assert");
+const all = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const excl = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+assert.equal(excl.recovered, all.recovered - 1, "--exclude-corpus dropped " + (all.recovered - excl.recovered) + " candidate(s), expected 1");
+assert.equal(excl.skips["already-adjudicated"], 1, "the excluded candidate was not bucketed as already-adjudicated");
+assert.ok(!excl.items.some((i) => i.id === all.items[0].id), "the already-adjudicated id was still emitted");
+const skipTotal = Object.values(excl.skips).reduce((a, b) => a + b, 0);
+assert.equal(excl.recovered + skipTotal, excl.refuterRecordCount, "--exclude-corpus introduced a silent drop");
+' "$TMP/mined.json" "$TMP/mined-excl.json" || fail "--exclude-corpus did not drop an already-adjudicated id"
+pass "--exclude-corpus drops an already-adjudicated id into its own counted bucket"
+
+# provenance.agentIndex is what lets a REWORK re-review be split off a
+# first-round batch instead of silently inflating its apparent size.
+node -e '
+const fs = require("fs"), assert = require("assert");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+for (const i of m.items) {
+  assert.ok(Number.isInteger(i.provenance.agentIndex),
+    i.id + ": newly mined items must carry provenance.agentIndex so a rework round can be split from a first-round batch");
+}
+' "$TMP/mined.json" || fail "newly mined items carry no provenance.agentIndex"
+pass "newly mined items carry provenance.agentIndex"
 
 # Every argument-validation failure must be an ACTIONABLE named message, not a
 # stack trace — the miner is run by hand and a raw throw is unreadable.
@@ -557,6 +882,152 @@ node "$TMP/check-scorer.mjs" "$REPO_ROOT/$MODULE" "$CORPUS" "$TRIALS" >"$TMP/sco
 [ -s "$TMP/scorer.txt" ] && pass "$(cat "$TMP/scorer.txt")"
 
 # ---------------------------------------------------------------------------
+say "5c. Batched scoring: expansion, arm buckets, token attribution, anchoring"
+
+cat >"$TMP/check-batch-scoring.mjs" <<'EOF'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const {
+  loadCorpus, groupCorpusForBatching, buildBatchTrials, expandBatchResults, buildBatchPrompt,
+  scoreTrials, scoreAnchoring, formatReport, findBlendedAccuracyKeys, bucketKeyFor,
+} = await import(pathToFileURL(process.argv[2]).href);
+const { refutePrompt } = await import(pathToFileURL(process.argv[3]).href);
+
+const { items } = loadCorpus(fs.readFileSync(process.argv[4], 'utf8'));
+const power = groupCorpusForBatching(items);
+// The committed corpus is underpowered by design; this section is about the
+// SCORING mechanics, so it builds the arm explicitly under the guard.
+const plan = buildBatchTrials(power, { tiers: ['opus'], replicates: 2, allowUnderpowered: true });
+assert.ok(plan.trials.length > 0, 'no batched trials were built from the qualifying group');
+const group = plan.groups[0];
+assert.ok(group.size >= power.minGroupSize, 'the batched arm was built from a below-floor group');
+
+// --- the batched prompt is a MINIMAL delta from the real refutePrompt ---
+const members = group.ids.map((id) => items.find((i) => i.id === id));
+const keyed = members.map((m) => ({ refute_id: m.id, ...m.finding }));
+const batchPrompt = buildBatchPrompt(members[0].mode, { key: group.dim }, keyed, { target: members[0].target });
+const single = refutePrompt(members[0].mode, { key: group.dim }, members[0].finding, { target: members[0].target });
+assert.ok(batchPrompt.startsWith('You are a READ-ONLY refuter. Do not edit any files.'), 'the batched prompt changed the READ-ONLY stance');
+assert.ok(batchPrompt.includes('this is NOT a real issue unless the ' + (members[0].mode === 'code' ? 'code' : 'plan') + ' proves otherwise'),
+  'the batched prompt changed the stance sentence — that is a confound, not a shape change');
+assert.ok(single.includes('this is NOT a real issue unless the ' + (members[0].mode === 'code' ? 'code' : 'plan') + ' proves otherwise'),
+  'the single-finding stance sentence moved; the two prompts are no longer a minimal delta');
+for (const m of members) assert.ok(batchPrompt.includes(JSON.stringify(m.id)), `the batch prompt omits refute_id ${m.id}`);
+assert.ok(/verdicts/.test(batchPrompt), 'the batched prompt does not ask for a verdicts array');
+
+// --- expansion: unknown ids dropped, omissions ungraded, cost on row 1 --
+const ids = group.ids;
+const dispatched = [
+  {
+    dispatchId: 'd1', groupKey: group.key, tier: 'opus', replicate: 1, corpusIds: ids,
+    verdicts: [
+      { id: ids[0], refuted: true, confidence: 90 },
+      { id: 'zz-not-in-this-batch', refuted: true, confidence: 90 },
+      // ids[1] deliberately OMITTED
+      { id: ids[2], refuted: false, confidence: 80 },
+    ],
+    usage: { output: 100, uncachedInput: 200, cacheWrite: 300, cacheRead: 400 },
+    toolCalls: 11,
+  },
+  // A CRASHED dispatch: no verdicts array at all.
+  { dispatchId: 'd2', groupKey: group.key, tier: 'opus', replicate: 2, corpusIds: ids, verdicts: null, error: 'boom', usage: {}, toolCalls: 0 },
+];
+const expanded = expandBatchResults(dispatched);
+assert.equal(expanded.rows.length, ids.length * 2, 'expansion did not produce one row per id per dispatch');
+assert.deepEqual(expanded.unknownVerdictIds, ['d1:zz-not-in-this-batch'], 'the unknown-id verdict was not dropped and recorded');
+assert.ok(expanded.omittedIds.includes('d1:' + ids[1]), 'the omitted id was not recorded');
+const r0 = expanded.rows.find((r) => r.dispatchId === 'd1' && r.corpusId === ids[0]);
+const r1 = expanded.rows.find((r) => r.dispatchId === 'd1' && r.corpusId === ids[1]);
+const r2 = expanded.rows.find((r) => r.dispatchId === 'd1' && r.corpusId === ids[2]);
+assert.equal(r0.verdict.refuted, true);
+assert.equal(r1.verdict, null, 'an OMITTED id must stay ungraded — never coerced to refuted:false, which would inflate the FP rate');
+assert.equal(r2.verdict.refuted, false);
+for (const r of expanded.rows.filter((x) => x.dispatchId === 'd2')) {
+  assert.equal(r.verdict, null, 'a crashed batch must leave every id ungraded');
+}
+// Cost lands entirely on the FIRST row, so totalTokens stays exact while
+// dispatches stay countable.
+assert.equal(r0.usage.output, 100);
+assert.equal(r0.toolCalls, 11);
+assert.deepEqual(r1.usage, {});
+assert.equal(r2.toolCalls, 0);
+assert.equal(r0.positionInBatch, 1);
+assert.equal(r2.positionInBatch, 3);
+
+// --- arm bucketing: two shapes, one report, independent denominators ---
+assert.equal(bucketKeyFor({ tier: 'opus' }), 'opus', 'a trial with no arm must bucket under its bare tier');
+assert.equal(bucketKeyFor({ tier: 'opus', arm: 'batched' }), 'opus|batched');
+const perFindingRows = ids.flatMap((id, i) =>
+  [1, 2].map((rep) => ({
+    trialId: id + '|opus|' + rep, corpusId: id, tier: 'opus', replicate: rep,
+    verdict: { refuted: i === 0, confidence: 90 },
+    usage: { output: 100, uncachedInput: 200, cacheWrite: 300, cacheRead: 400 }, toolCalls: 11,
+  }))
+);
+const report = scoreTrials(items, perFindingRows.concat(expanded.rows), { baselineTier: 'opus' });
+const byBucket = Object.fromEntries(report.tiers.map((t) => [t.bucket, t]));
+assert.ok(byBucket.opus, 'the per-finding arm did not bucket under "opus"');
+assert.ok(byBucket['opus|batched'], 'the batched arm did not bucket under "opus|batched"');
+assert.equal(byBucket.opus.arm, null);
+assert.equal(byBucket['opus|batched'].arm, 'batched');
+
+// DISPATCHES counted by unique dispatchId, NOT by expanded rows.
+assert.equal(byBucket['opus|batched'].cost.dispatches, 2, 'expanded rows were counted as separate dispatches, diluting the per-dispatch figure');
+assert.equal(byBucket.opus.cost.dispatches, perFindingRows.length, 'the per-finding arm should count one dispatch per row');
+assert.equal(byBucket['opus|batched'].cost.totalTokens, 1000, 'batched totalTokens must equal the one dispatch that reported usage');
+assert.equal(byBucket['opus|batched'].cost.meanTokensPerDispatch, 500);
+assert.equal(
+  byBucket['opus|batched'].cost.meanTokensPerGradedFinding,
+  Math.round((1000 / byBucket['opus|batched'].cost.gradedFindings) * 10) / 10,
+  'meanTokensPerGradedFinding must divide by graded findings, not by dispatches'
+);
+assert.ok(byBucket['opus|batched'].cost.gradedFindings > byBucket['opus|batched'].cost.dispatches,
+  'the batched arm must grade more findings than it makes dispatches, or the token argument is untested');
+
+// FN and FP stay on their own denominators, per arm, and are never blended.
+for (const b of [byBucket.opus, byBucket['opus|batched']]) {
+  assert.equal(b.all.defectTrials + b.all.nonDefectTrials + b.all.ungraded, b.all.trials, 'ungraded leaked into a rate denominator');
+  for (const f of ['trials', 'ungraded', 'defectTrials', 'nonDefectTrials', 'falseNegatives', 'falsePositives']) {
+    assert.equal(b.authoritativeOnly[f] + b.judgementCallOnly[f], b.all[f], `${b.bucket}.${f}: authority split must partition all`);
+  }
+  assert.equal(typeof b.selfConsistency.replicatePairs, 'number');
+}
+// An OMITTED id is ungraded, never a false positive.
+assert.ok(byBucket['opus|batched'].all.ungraded > 0, 'the omitted and crashed ids did not land in the ungraded bucket');
+
+// --- anchoring, over qualifying groups only ----------------------------
+const anchoring = scoreAnchoring(plan.groups, { 'per-finding': perFindingRows, batched: expanded.rows }, { minGroupSize: power.minGroupSize });
+assert.equal(anchoring.minGroupSize, power.minGroupSize);
+assert.equal(anchoring.qualifyingGroups, plan.groups.length, 'the anchoring denominators are not visible');
+assert.equal(anchoring.arms.length, 2, 'anchoring must report BOTH arms over the same group set');
+for (const a of anchoring.arms) {
+  assert.equal(typeof a.allSameVerdictShare === 'number' || a.allSameVerdictShare === null, true);
+  assert.ok(a.refutationRateByPosition.byPosition.every((p) => p.position >= 1));
+  assert.equal(typeof a.refutationRateByPosition.risesAfterFirst, 'boolean');
+}
+// A size-1 group can exhibit no anchoring and must be excluded entirely.
+const singletonOnly = scoreAnchoring([{ key: 'k', size: 1, ids: ['x'] }], { batched: [] }, { minGroupSize: 3 });
+assert.equal(singletonOnly.qualifyingGroups, 0, 'a size-1 group reached the anchoring measurement');
+
+// --- still no blended accuracy, including inside the anchoring block ---
+const withAnchoring = scoreTrials(items, perFindingRows.concat(expanded.rows), { baselineTier: 'opus', anchoring });
+assert.deepEqual(findBlendedAccuracyKeys(withAnchoring), [], 'a blended-accuracy key entered the report');
+assert.deepEqual(findBlendedAccuracyKeys(JSON.parse(formatReport(withAnchoring, 'json'))), []);
+const text = formatReport(withAnchoring, 'text');
+assert.ok(/## ANCHORING/.test(text), 'the ANCHORING block is not rendered');
+assert.ok(/TOKENS PER GRADED FINDING/.test(text), 'the tokens-per-graded-finding table is not rendered for a two-arm report');
+for (const line of text.split('\n')) {
+  assert.ok(!/(accuracy|overall correct|combined rate)[^.\n]*\d/i.test(line), `the text report prints a blended figure: ${line}`);
+}
+
+console.log('batched scoring: unknown ids dropped, omissions ungraded, crash ungraded, cost on the first row, arms bucketed independently, anchoring over qualifying groups only');
+EOF
+node "$TMP/check-batch-scoring.mjs" "$REPO_ROOT/$MODULE" "$REPO_ROOT/$REVIEW_LIB" "$CORPUS" >"$TMP/batchscoring.txt" ||
+    fail "batched scoring check failed"
+[ -s "$TMP/batchscoring.txt" ] && pass "$(cat "$TMP/batchscoring.txt")"
+
+# ---------------------------------------------------------------------------
 say "6. No blended accuracy anywhere — the mechanical form of 'never averaged'"
 
 cat >"$TMP/check-blended.mjs" <<'EOF'
@@ -646,6 +1117,79 @@ if node "$RUNNER" --tiers not-a-real-tier --dry-run >"$TMP/badtier.txt" 2>&1; th
 fi
 grep -q 'not a tier alias' "$TMP/badtier.txt" || fail "the unknown-tier error is not actionable"
 pass "an unknown --tiers value fails at plan time with an actionable error"
+
+# --shape batched must refuse an underpowered corpus AT PLAN TIME, before any
+# dispatch — the prohibition is mechanical, not advisory prose.
+if node "$RUNNER" --shape batched --tiers opus --dry-run \
+    --dispatch-stub "$TMP/exploding-stub.mjs" >"$TMP/shape-underpowered.txt" 2>&1; then
+    fail "--shape batched built an arm from the underpowered committed corpus without --allow-underpowered"
+fi
+grep -q 'UNDERPOWERED' "$TMP/shape-underpowered.txt" || fail "the underpowered refusal is not actionable"
+grep -q 'DISPATCHED-UNDER-DRY-RUN' "$TMP/shape-underpowered.txt" && fail "the underpowered refusal still dispatched"
+pass "--shape batched refuses an underpowered corpus at plan time, before any dispatch"
+
+# --shape both, driven end to end through injected dispatchers: two arms, one
+# report, over the SAME item set, with the NO MEASUREMENT banner in place.
+cat >"$TMP/two-arm-stub.mjs" <<'EOF'
+// Deterministic fakes: the per-finding arm keeps everything; the batched arm
+// refutes the first id of each batch and OMITS the last, so the expansion and
+// omission paths are both exercised. No clock, no RNG, no network.
+export function dispatch(trial, prompt) {
+  if (typeof prompt !== 'string' || prompt.length === 0) throw new Error('per-finding dispatcher got no prompt');
+  return {
+    verdict: { refuted: false, confidence: 88, rationale: 'fake' },
+    usage: { output: 10, uncachedInput: 20, cacheWrite: 5, cacheRead: 100 },
+    toolCalls: 9,
+  };
+}
+export function dispatchBatch(trial, prompt) {
+  if (typeof prompt !== 'string' || prompt.length === 0) throw new Error('batched dispatcher got no prompt');
+  for (const id of trial.corpusIds) {
+    if (!prompt.includes(id)) throw new Error('the batched prompt omits refute_id ' + id);
+  }
+  const graded = trial.corpusIds.slice(0, -1);
+  return {
+    verdicts: graded.map((id, i) => ({ id, refuted: i === 0, confidence: 88, rationale: 'fake' })),
+    unknownVerdictIds: [],
+    usage: { output: 30, uncachedInput: 60, cacheWrite: 15, cacheRead: 300 },
+    toolCalls: 12,
+  };
+}
+EOF
+node "$RUNNER" --shape both --tiers opus --replicates 2 --allow-underpowered --label two-arm \
+    --dispatch-stub "$TMP/two-arm-stub.mjs" --out "$TMP/two-arm.json" --format text \
+    >"$TMP/two-arm.txt" 2>"$TMP/two-arm.err" || {
+    cat "$TMP/two-arm.err" >&2
+    fail "--shape both exited non-zero under injected dispatchers"
+}
+grep -q 'NO MEASUREMENT — batched arm was underpowered' "$TMP/two-arm.txt" ||
+    fail "--allow-underpowered did not force the NO MEASUREMENT banner"
+grep -qE '^DECISION:' "$TMP/two-arm.txt" && fail "a no-measurement report printed a decision line"
+node -e '
+const fs = require("fs"), assert = require("node:assert/strict");
+const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+assert.equal(r.shape, "both");
+assert.equal(r.noMeasurement, true, "the results payload was not stamped noMeasurement");
+const buckets = Object.fromEntries(r.report.tiers.map((t) => [t.bucket, t]));
+assert.ok(buckets.opus, "no per-finding arm bucket");
+assert.ok(buckets["opus|batched"], "no batched arm bucket");
+// The per-finding arm is scored over EXACTLY the items the batched arm covers.
+const perFindingIds = new Set(r.trials.filter((t) => !t.arm).map((t) => t.corpusId));
+const batchedIds = new Set(r.trials.filter((t) => t.arm === "batched").map((t) => t.corpusId));
+assert.deepEqual([...perFindingIds].sort(), [...batchedIds].sort(),
+  "the two arms were scored over different item sets — they are not comparable");
+assert.ok(batchedIds.size >= 3, "the batched arm covered fewer than the minimum group size");
+// Dispatches, not rows.
+assert.ok(buckets["opus|batched"].cost.dispatches < buckets["opus|batched"].cost.gradedFindings + buckets["opus|batched"].historicalOnlyTrials,
+  "the batched arm made as many dispatches as it graded findings — the shape did not batch");
+// The deliberately omitted id is ungraded, never a false positive.
+assert.ok(buckets["opus|batched"].all.ungraded > 0, "the omitted id did not land in the ungraded bucket");
+assert.ok(r.omittedVerdictIds.length > 0, "omitted ids were not recorded");
+// Anchoring is present and scoped to qualifying groups.
+assert.ok(r.report.anchoring && r.report.anchoring.arms.length === 2, "the anchoring block is missing an arm");
+assert.equal(r.report.anchoring.minGroupSize, 3);
+' "$TMP/two-arm.json" || fail "--shape both produced an unusable two-arm results file"
+pass "--shape both drives two arms over the same item set into one report, stamped NO MEASUREMENT with no decision line"
 
 # ---------------------------------------------------------------------------
 say "7b. The REAL paid-dispatch parsing path, driven with zero spend"
@@ -922,6 +1466,62 @@ node "$TMP/check-dispatch.mjs" "$REPO_ROOT/$RUNNER" "$REPO_ROOT/$MODULE" "$TMP" 
     }
 [ -s "$TMP/dispatch.txt" ] && pass "$(tail -1 "$TMP/dispatch.txt")"
 
+# 7c. parseClaudeBatchResult — the batched sibling of the parser above, and the
+# branch that would decide a batched A/B's verdicts. Pure function of a response
+# body, so it needs no subprocess and no spend.
+cat >"$TMP/check-batch-parse.mjs" <<'EOF'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const { parseClaudeBatchResult } = await import(pathToFileURL(process.argv[2]).href);
+
+const usage = { output_tokens: 7, input_tokens: 8, cache_creation_input_tokens: 9, cache_read_input_tokens: 10 };
+const so = (verdicts) => ({
+  usage,
+  messages: [{ message: { content: [{ type: 'tool_use', name: 'StructuredOutput', input: { verdicts } }] } }],
+});
+
+// A. Happy path: token classes mapped, tool calls counted, verdicts normalized.
+const a = parseClaudeBatchResult(so([{ id: 'x', refuted: true, confidence: 90, rationale: 'r' }]), ['x', 'y']);
+assert.deepEqual(a.usage, { output: 7, uncachedInput: 8, cacheWrite: 9, cacheRead: 10 });
+assert.equal(a.toolCalls, 1);
+assert.deepEqual(a.verdicts, [{ id: 'x', refuted: true, confidence: 90, rationale: 'r' }]);
+assert.deepEqual(a.unknownVerdictIds, []);
+assert.equal(a.error, null);
+
+// B. An UNKNOWN id is dropped and recorded — never applied to any finding.
+const b = parseClaudeBatchResult(so([{ id: 'zz', refuted: true, confidence: 90 }]), ['x']);
+assert.deepEqual(b.verdicts, [], 'a verdict for an id outside the dispatch reached the output');
+assert.deepEqual(b.unknownVerdictIds, ['zz']);
+
+// C. A NON-BOOLEAN refuted stays ungraded rather than being coerced to false,
+// which would silently inflate the false-positive rate.
+const c = parseClaudeBatchResult(so([{ id: 'x', refuted: 'yes', confidence: 90 }]), ['x']);
+assert.equal(c.verdicts[0].refuted, null, 'a non-boolean `refuted` was coerced');
+
+// D. NO verdicts array at all is a CRASH, not "every finding omitted".
+for (const body of [{ usage, messages: [] }, { usage, result: 'I could not decide.' }, {}]) {
+  const d = parseClaudeBatchResult(body, ['x']);
+  assert.equal(d.verdicts, null, 'a response with no verdicts array was not treated as a crash');
+  assert.ok(d.error, 'the crash carries no error string');
+}
+
+// E. The `result`-string shape, bare and prose-wrapped.
+const e1 = parseClaudeBatchResult({ usage, result: JSON.stringify({ verdicts: [{ id: 'x', refuted: false, confidence: 50 }] }) }, ['x']);
+assert.equal(e1.verdicts[0].refuted, false);
+const e2 = parseClaudeBatchResult({ usage, result: 'Here you go:\n```json\n{"verdicts":[{"id":"x","refuted":true,"confidence":60}]}\n```' }, ['x']);
+assert.equal(e2.verdicts[0].refuted, true, 'a fenced verdicts array did not parse');
+
+// F. num_tool_uses fallback, matching the single-finding parser.
+assert.equal(parseClaudeBatchResult({ usage, num_tool_uses: 5, result: '{"verdicts":[]}' }, ['x']).toolCalls, 5);
+
+console.log('parseClaudeBatchResult: unknown ids dropped, non-boolean verdicts left ungraded, a missing verdicts array read as a crash, both result-string shapes parsed');
+EOF
+node "$TMP/check-batch-parse.mjs" "$REPO_ROOT/$RUNNER" >"$TMP/batchparse.txt" 2>&1 || {
+    cat "$TMP/batchparse.txt" >&2
+    fail "the batched paid-dispatch parsing path failed its unit checks"
+}
+[ -s "$TMP/batchparse.txt" ] && pass "$(tail -1 "$TMP/batchparse.txt")"
+
 # ---------------------------------------------------------------------------
 say "8. --audit: corpus-free arithmetic audit of the committed figures"
 
@@ -942,6 +1542,47 @@ if node "$RUNNER" --audit "$TMP/baseline-mutant.json" >/dev/null 2>&1; then
     fail "--audit missed a planted off-by-one in cost.totalTokens"
 fi
 pass "--audit fires on a planted off-by-one (the gate is not vacuous)"
+
+# ---------------------------------------------------------------------------
+say "8b. --audit-section refuterBatching: the corpus-power arithmetic"
+
+node "$RUNNER" --audit "$BASELINE_JSON" --audit-section refuterBatching >"$TMP/audit-batch.txt" 2>&1 || {
+    cat "$TMP/audit-batch.txt" >&2
+    fail "--audit-section refuterBatching failed against $BASELINE_JSON"
+}
+grep -q 'OK' "$TMP/audit-batch.txt" && pass "$BASELINE_JSON § refuterBatching is internally consistent"
+
+# The audit must fire on each way the power figures can be made to lie.
+batch_audit_mutation() {
+    local label="$1"
+    local mutate="$2"
+    node -e "
+const fs = require('fs');
+const j = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const s = j.refuterBatching;
+$mutate
+fs.writeFileSync(process.argv[2], JSON.stringify(j, null, 2));
+" "$BASELINE_JSON" "$TMP/batch-mutant.json"
+    if node "$RUNNER" --audit "$TMP/batch-mutant.json" --audit-section refuterBatching >/dev/null 2>&1; then
+        fail "--audit-section refuterBatching missed: $label"
+    else
+        pass "--audit-section refuterBatching fires on: $label"
+    fi
+}
+batch_audit_mutation "an exclusion count that no longer accounts for the corpus" \
+    's.corpusPower.unrecoverableUnitExcluded += 1;'
+batch_audit_mutation "a qualifying count that disagrees with the size histogram" \
+    's.corpusPower.qualifyingGroups += 1;'
+batch_audit_mutation "folding a size-1 group into the qualifying items" \
+    's.corpusPower.qualifyingItems += 24;'
+batch_audit_mutation "a meetsMinimum flag that contradicts the derived population" \
+    's.corpusPower.meetsMinimum = true;'
+batch_audit_mutation "an underpowered arm carrying a real decision token" \
+    "s.decision = 'ship-batched';"
+batch_audit_mutation "a decision token outside the closed set" \
+    "s.decision = 'looks-fine';"
+batch_audit_mutation "a per-mode histogram that no longer partitions the overall one" \
+    "s.corpusPower.sizeHistogramByMode.plan['3'] = 1;"
 
 # ---------------------------------------------------------------------------
 say "9. Planted-mutation self-tests (sections 2, 3, 4, 4b, 5, 6, 7b are not vacuous)"
@@ -1121,6 +1762,90 @@ else
     fi
 fi
 
+# 9m-9r. Sections 2c, 5c and 6 must fire on the batching regressions they exist
+# to catch. Each mutation is applied to a COPY of the module, never the real one.
+batching_mutation() {
+    local label="$1"
+    local checker="$2"
+    local mutant="$3"
+    shift 3
+    if diff -q "$MODULE" "$mutant" >/dev/null; then
+        fail "the $label mutation did not apply — the self-test is vacuous"
+        return 0
+    fi
+    if node "$checker" "$mutant" "$@" >/dev/null 2>&1; then
+        fail "the batching gate missed: $label"
+    else
+        pass "the batching gate fires on: $label"
+    fi
+}
+
+# 9m. Dropping the UNIT IDENTITY from the grouping key — the exact regression
+# section 2c exists for. It must collapse two review units into one group.
+# (`@` delimiter: the key template is full of `|`.)
+sed 's@const unitIdent = unitIdentOf(item);@const unitIdent = unitIdentOf(item) === null ? null : "";@' \
+    "$MODULE" >"$TMP/module-run-scoped.mjs"
+batching_mutation "a grouping key that has lost the review-unit identity" \
+    "$TMP/check-batch-power.mjs" "$TMP/module-run-scoped.mjs" "$CORPUS" "$REPO_ROOT/$BASELINE_JSON"
+
+# 9n. Letting a singleton-dominated population report SUFFICIENT.
+sed 's/meetsMinimum: qualifyingGroups >= minQualifyingGroups && qualifyingItems >= minQualifyingItems,/meetsMinimum: true,/' \
+    "$MODULE" >"$TMP/module-always-sufficient.mjs"
+batching_mutation "a size-1-dominated population reporting SUFFICIENT" \
+    "$TMP/check-batch-power.mjs" "$TMP/module-always-sufficient.mjs" "$CORPUS" "$REPO_ROOT/$BASELINE_JSON"
+
+# 9o. Folding the excluded (constructed / unrecoverable-unit) items back into
+# the grouped population instead of counting them out.
+sed 's/if (item \&\& item.provenance \&\& item.provenance.kind === .constructed.) {/if (false) {/' \
+    "$MODULE" >"$TMP/module-keeps-constructed.mjs"
+batching_mutation "constructed items folded back into the grouped population" \
+    "$TMP/check-batch-power.mjs" "$TMP/module-keeps-constructed.mjs" "$CORPUS" "$REPO_ROOT/$BASELINE_JSON"
+
+# 9p. Coercing an OMITTED id to `refuted: false` — silently inflates the FP rate.
+sed 's/      const verdict = byId.get(String(corpusId)) || null;/      const verdict = byId.get(String(corpusId)) || { refuted: false, confidence: null, rationale: null };/' \
+    "$MODULE" >"$TMP/module-omit-as-kept.mjs"
+batching_mutation "an omitted id coerced to refuted:false" \
+    "$TMP/check-batch-scoring.mjs" "$TMP/module-omit-as-kept.mjs" "$REPO_ROOT/$REVIEW_LIB" "$CORPUS"
+
+# 9q. Counting expanded ROWS as dispatches — understates the per-dispatch tokens
+# that the whole batching token argument rests on.
+sed 's/    b.dispatchIds.add(t.dispatchId === undefined || t.dispatchId === null ? t.trialId : t.dispatchId);/    b.dispatchIds.add(t.trialId);/' \
+    "$MODULE" >"$TMP/module-row-dispatches.mjs"
+batching_mutation "expanded rows counted as separate dispatches" \
+    "$TMP/check-batch-scoring.mjs" "$TMP/module-row-dispatches.mjs" "$REPO_ROOT/$REVIEW_LIB" "$CORPUS"
+
+# 9r. Blending FN and FP into one number inside the ANCHORING block — section 6's
+# recursive key scan covers the whole report object, including that block.
+sed 's@^        dispatchesConsidered: considered,@        combinedRate: 0.5,\
+        dispatchesConsidered: considered,@' "$MODULE" >"$TMP/module-anchor-blended.mjs"
+batching_mutation "a blended accuracy field inside the ANCHORING block" \
+    "$TMP/check-batch-scoring.mjs" "$TMP/module-anchor-blended.mjs" "$REPO_ROOT/$REVIEW_LIB" "$CORPUS"
+
+# 9s-9t. Section 7c must fire on the two ways the batched parser can lie.
+# 9s. Accepting a verdict for an id the dispatch never contained MISATTRIBUTES
+# it to whatever finding happens to share that position.
+sed 's@    if (expected.size \&\& !expected.has(id)) {@    if (false) {@' \
+    "$RUNNER" >"$TMP/mutscripts/runner-accepts-unknown.mjs"
+if diff -q "$RUNNER" "$TMP/mutscripts/runner-accepts-unknown.mjs" >/dev/null; then
+    fail "the unknown-id-acceptance mutation did not apply — the self-test is vacuous"
+elif node "$TMP/check-batch-parse.mjs" "$TMP/mutscripts/runner-accepts-unknown.mjs" >/dev/null 2>&1; then
+    fail "section 7c missed a batched parser that accepts a verdict for an unknown id"
+else
+    pass "section 7c fires when the batched parser accepts an unknown-id verdict"
+fi
+
+# 9t. Reading a missing `verdicts` array as an empty one turns a model
+# misconfiguration into a silently clean grade.
+sed 's@^    return { verdicts: null, unknownVerdictIds: .*$@    return { verdicts: [], unknownVerdictIds: [], usage, toolCalls, error: null };@' \
+    "$RUNNER" >"$TMP/mutscripts/runner-empty-verdicts.mjs"
+if diff -q "$RUNNER" "$TMP/mutscripts/runner-empty-verdicts.mjs" >/dev/null; then
+    fail "the missing-verdicts-array mutation did not apply — the self-test is vacuous"
+elif node "$TMP/check-batch-parse.mjs" "$TMP/mutscripts/runner-empty-verdicts.mjs" >/dev/null 2>&1; then
+    fail "section 7c missed a batched parser that reads a missing verdicts array as a clean grade"
+else
+    pass "section 7c fires when a missing verdicts array is read as a clean grade rather than a crash"
+fi
+
 # ---------------------------------------------------------------------------
 say "10. CHANGELOG hygiene"
 
@@ -1130,7 +1855,9 @@ printf '%s' "$UNREL" | grep -q 'refuter-agreement' ||
     fail "CHANGELOG.md's [Unreleased] section does not mention the refuter-agreement harness"
 printf '%s' "$UNREL" | grep -q "$DOC" ||
     fail "CHANGELOG.md's [Unreleased] section does not point at $DOC"
-pass "CHANGELOG.md's [Unreleased] section describes the harness and names the decision doc"
+printf '%s' "$UNREL" | grep -q "$BATCH_DOC" ||
+    fail "CHANGELOG.md's [Unreleased] section does not point at $BATCH_DOC"
+pass "CHANGELOG.md's [Unreleased] section describes the harness and names both decision docs"
 
 # ---------------------------------------------------------------------------
 say "11. AC9 XOR: a changed binding is gated, or the unchanged one is recorded"

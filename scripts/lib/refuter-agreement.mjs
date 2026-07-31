@@ -429,6 +429,474 @@ export function buildTrials(corpus, opts = {}) {
   return trials;
 }
 
+// --- Batch power: can this corpus answer the batching question at all? -----
+//
+// THE GROUPING KEY MUST CARRY THE REVIEW-UNIT IDENTITY.
+//
+// `buildReviewPipeline` is invoked ONCE PER REVIEW UNIT (one dispatch-phase
+// code-review stage, one plan-review phase unit), never once per workflow run.
+// A batched refuter dispatch is therefore exactly "one review unit's gating
+// findings for ONE dimension". Grouping the corpus by `(runId, mode, dim)`
+// merges findings raised against DIFFERENT review units inside the same run —
+// a shape the pipeline can never produce — and inflates the apparent batch
+// size. That coarse key is the same one phase 1 measured and rejected for
+// `refuterFanout` (run wf_55af7324-87c: 96 refuters at one `phaseIndex` across
+// 9 distinct review units). See docs/refuter-batching.md § Corpus power for the
+// superseded figures and why they are void.
+
+/** Minimum group size at which a batched dispatch can exhibit anchoring at all. */
+export const MIN_BATCH_GROUP_SIZE = 3;
+
+/**
+ * Pre-registered floors for the batched arm. Derivation (recorded so they read
+ * as pre-registered rather than post-hoc): at the floor the bounded run is
+ * 6 batched dispatches × 2 replicates (12) + 18 per-finding dispatches × 2
+ * replicates (36) = 48 dispatches, just under the ~55 ceiling the recorded
+ * 533k-tokens-per-Opus-dispatch mean allows.
+ */
+export const MIN_QUALIFYING_BATCH_GROUPS = 6;
+/** @see MIN_QUALIFYING_BATCH_GROUPS */
+export const MIN_QUALIFYING_BATCH_ITEMS = 18;
+
+/**
+ * Agent-index gap above which two members of one (runId, unit, mode, dim) group
+ * are treated as belonging to SEPARATE dispatches (a REWORK re-review is a
+ * second find→refute chain the four-part key would otherwise silently merge).
+ * A heuristic, deliberately loose: `refuterFanout.refuterCountsByUnit` puts p50
+ * at 8.5 refuters per unit, so one round's members sit within a couple of dozen
+ * agent slots while a re-review lands far beyond that.
+ */
+export const ROUND_SPLIT_GAP = 24;
+
+const MAX_UNIT_IDENT_LENGTH = 200;
+
+/**
+ * Review-unit identity for a corpus item, from its already-extracted `target`.
+ *
+ * The rule is phase 1's, applied to the same structure: plan-mode targets are
+ * `phase <roadmap>/<stem>` + a blank line + the body, so the FIRST LINE is the
+ * identity; code-mode targets are a single bare line. A target that is itself
+ * pretty-printed JSON (the `--implementation-plan` shape) or an implausibly
+ * long single line is REJECTED rather than captured as a fake identity, and its
+ * item is excluded from grouping entirely.
+ *
+ * NOTE — DELIBERATE LOCAL RESTATEMENT. The canonical predicate is
+ * `isPlausibleUnitIdent` in `scripts/measure-refuter-severity.mjs`. It is not
+ * imported here because that module is a CLI and importing it would invert the
+ * dependency (that instrument imports from this one). The two copies cannot
+ * drift: `scripts/verify-refuter-agreement.sh` § 2c-equivalence imports BOTH and
+ * asserts they agree on every committed corpus item's target first line.
+ *
+ * @param {object} item
+ * @returns {string|null}
+ */
+export function unitIdentOf(item) {
+  if (!isPlainObject(item)) return null;
+  const target = typeof item.target === 'string' ? item.target : '';
+  const newlineAt = target.indexOf('\n');
+  const first = newlineAt === -1 ? target : target.slice(0, newlineAt);
+  if (first.length === 0) return null;
+  if (first.indexOf('{') !== -1 || first.indexOf('"') !== -1) return null;
+  if (first.length > MAX_UNIT_IDENT_LENGTH) return null;
+  return first;
+}
+
+/**
+ * The four-part batch-group key: `runId|unitIdent|mode|dim.key`.
+ * Returns null when the item cannot be placed in a real dispatch — no run id
+ * (a `constructed` item) or no recoverable unit identity.
+ *
+ * @param {object} item
+ * @returns {string|null}
+ */
+export function batchGroupKeyFor(item) {
+  if (!isPlainObject(item)) return null;
+  const runId = item.provenance && item.provenance.runId;
+  if (!nonEmptyString(runId)) return null;
+  const unitIdent = unitIdentOf(item);
+  if (unitIdent === null) return null;
+  if (!nonEmptyString(item.mode)) return null;
+  const dimKey = item.dim && item.dim.key;
+  if (!nonEmptyString(dimKey)) return null;
+  return `${runId}|${unitIdent}|${item.mode}|${dimKey}`;
+}
+
+function splitGroupByRound(members, gap) {
+  // Every member must carry an agentIndex, or the group's real round structure
+  // is unknown and the group size stands as an UPPER BOUND.
+  if (!members.every((m) => Number.isInteger(m.provenance && m.provenance.agentIndex))) return null;
+  const sorted = members.slice().sort((a, b) => a.provenance.agentIndex - b.provenance.agentIndex);
+  const rounds = [[sorted[0]]];
+  for (let i = 1; i < sorted.length; i++) {
+    const delta = sorted[i].provenance.agentIndex - sorted[i - 1].provenance.agentIndex;
+    if (delta > gap) rounds.push([]);
+    rounds[rounds.length - 1].push(sorted[i]);
+  }
+  return rounds;
+}
+
+/**
+ * Group a corpus (or a set of mined CANDIDATES — this function never reads
+ * `groundTruth`) into the batches a real dispatch could form, and report whether
+ * the resulting population has the power to answer the anchoring question.
+ *
+ * THREE EXCLUSIONS, each separately counted, applied before grouping:
+ *
+ *  - `constructed` items — no run id and no real review unit, so they cannot
+ *    belong to any dispatch a production run could produce.
+ *  - `HISTORICAL_ONLY_SEVERITIES` (`suggestion`) — never dispatched to a refuter
+ *    since `workflow-token-reduction` phase 6, so never a batch member.
+ *  - items whose unit identity is unrecoverable — excluded, never bucketed into
+ *    a fake unit (the identical policy `refuterFanout.refuterCountsByUnit` used,
+ *    so the two measurements stay comparable).
+ *
+ * @param {object[]} corpus
+ * @param {{ minGroupSize?: number, roundSplitGap?: number,
+ *   minQualifyingGroups?: number, minQualifyingItems?: number }} [opts]
+ */
+export function groupCorpusForBatching(corpus, opts = {}) {
+  const minGroupSize = opts.minGroupSize === undefined ? MIN_BATCH_GROUP_SIZE : opts.minGroupSize;
+  if (!Number.isInteger(minGroupSize) || minGroupSize < 2) {
+    throw new Error(`minGroupSize must be an integer >= 2, got ${JSON.stringify(opts.minGroupSize)}`);
+  }
+  const roundSplitGap = opts.roundSplitGap === undefined ? ROUND_SPLIT_GAP : opts.roundSplitGap;
+  const minQualifyingGroups =
+    opts.minQualifyingGroups === undefined ? MIN_QUALIFYING_BATCH_GROUPS : opts.minQualifyingGroups;
+  const minQualifyingItems =
+    opts.minQualifyingItems === undefined ? MIN_QUALIFYING_BATCH_ITEMS : opts.minQualifyingItems;
+
+  const items = Array.isArray(corpus) ? corpus : [];
+  let constructedExcluded = 0;
+  let nonGatingExcluded = 0;
+  let unrecoverableUnitExcluded = 0;
+
+  const buckets = new Map();
+  for (const item of items) {
+    if (item && item.provenance && item.provenance.kind === 'constructed') {
+      constructedExcluded += 1;
+      continue;
+    }
+    const severity = item && item.finding && item.finding.severity;
+    if (HISTORICAL_ONLY_SEVERITIES.indexOf(severity) !== -1) {
+      nonGatingExcluded += 1;
+      continue;
+    }
+    const key = batchGroupKeyFor(item);
+    if (key === null) {
+      unrecoverableUnitExcluded += 1;
+      continue;
+    }
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(key, bucket);
+    }
+    bucket.push(item);
+  }
+
+  // Stable key sort — no clock, no insertion-order dependence.
+  const keys = [...buckets.keys()].sort();
+  const groups = [];
+  let roundSplits = 0;
+  let agentIndexedGroups = 0;
+  for (const key of keys) {
+    const members = buckets.get(key);
+    const parts = key.split('|');
+    const runId = parts[0];
+    const dimKey = parts[parts.length - 1];
+    const mode = parts[parts.length - 2];
+    const unitIdent = parts.slice(1, parts.length - 2).join('|');
+    const rounds = splitGroupByRound(members, roundSplitGap);
+    if (rounds) {
+      agentIndexedGroups += 1;
+      if (rounds.length > 1) roundSplits += rounds.length - 1;
+    }
+    const emit = rounds || [members];
+    emit.forEach((round, roundIndex) => {
+      groups.push({
+        key: emit.length > 1 ? `${key}#r${roundIndex + 1}` : key,
+        runId,
+        unitIdent,
+        mode,
+        dim: dimKey,
+        // Stable corpus order within the group.
+        ids: round.map((m) => m.id),
+        size: round.length,
+        agentIndexed: Boolean(rounds),
+      });
+    });
+  }
+
+  const groupableItems = groups.reduce((s, g) => s + g.size, 0);
+  const sizeHistogram = {};
+  const sizeHistogramByMode = {};
+  let singletonItems = 0;
+  let qualifyingGroups = 0;
+  let qualifyingItems = 0;
+  for (const g of groups) {
+    sizeHistogram[g.size] = (sizeHistogram[g.size] || 0) + 1;
+    if (!sizeHistogramByMode[g.mode]) sizeHistogramByMode[g.mode] = {};
+    sizeHistogramByMode[g.mode][g.size] = (sizeHistogramByMode[g.mode][g.size] || 0) + 1;
+    if (g.size === 1) singletonItems += g.size;
+    if (g.size >= minGroupSize) {
+      qualifyingGroups += 1;
+      qualifyingItems += g.size;
+    }
+  }
+
+  return {
+    minGroupSize,
+    minQualifyingGroups,
+    minQualifyingItems,
+    totalItems: items.length,
+    constructedExcluded,
+    nonGatingExcluded,
+    unrecoverableUnitExcluded,
+    groupableItems,
+    groups,
+    groupCount: groups.length,
+    sizeHistogram,
+    sizeHistogramByMode,
+    singletonItems,
+    qualifyingGroups,
+    qualifyingItems,
+    roundSplits,
+    agentIndexedGroups,
+    meetsMinimum: qualifyingGroups >= minQualifyingGroups && qualifyingItems >= minQualifyingItems,
+  };
+}
+
+function histogramLine(hist) {
+  const sizes = Object.keys(hist)
+    .map(Number)
+    .sort((a, b) => a - b);
+  return sizes.length ? sizes.map((s) => `${s}:${hist[s]}`).join(', ') : '(none)';
+}
+
+/**
+ * Render the batch-power analysis, ending in an explicit
+ * `POWER: SUFFICIENT | INSUFFICIENT` verdict line. This output is the
+ * PRE-REGISTERED step 1 of the phase: it is pasted verbatim into
+ * `docs/refuter-batching.md` § Corpus power BEFORE any dispatch.
+ *
+ * @param {object} summary - a `groupCorpusForBatching` result
+ * @returns {string}
+ */
+export function formatBatchPower(summary) {
+  const out = [];
+  out.push('Batch-size distribution the corpus can actually form (UNIT-SCOPED key: runId|unitIdent|mode|dim)');
+  out.push('');
+  out.push(`  corpus items                 ${summary.totalItems}`);
+  out.push(`- constructed (no run/unit)    ${summary.constructedExcluded}`);
+  out.push(`- non-gating (${HISTORICAL_ONLY_SEVERITIES.join(', ')})       ${summary.nonGatingExcluded}`);
+  out.push(`- unrecoverable unit identity  ${summary.unrecoverableUnitExcluded}`);
+  out.push(`= groupable items              ${summary.groupableItems}  in ${summary.groupCount} group(s)`);
+  out.push('');
+  out.push(`Size histogram (size:groups)   ${histogramLine(summary.sizeHistogram)}`);
+  for (const mode of MODES) {
+    const hist = summary.sizeHistogramByMode[mode];
+    out.push(`  ${mode.padEnd(4)}                        ${hist ? histogramLine(hist) : '(none)'}`);
+  }
+  out.push('');
+  out.push(`Minimum group size for the anchoring measurement: ${summary.minGroupSize}`);
+  out.push(`Size-1 groups are EXCLUDED from it (${summary.singletonItems} item(s) in singleton groups).`);
+  out.push(
+    `Qualifying population: ${summary.qualifyingGroups} group(s) / ${summary.qualifyingItems} item(s) ` +
+      `against floors of ${summary.minQualifyingGroups} group(s) / ${summary.minQualifyingItems} item(s).`
+  );
+  if (summary.agentIndexedGroups === 0) {
+    out.push(
+      'No group carries provenance.agentIndex, so every size below is an UPPER BOUND: a REWORK re-review is a ' +
+        'second dispatch this key cannot yet split apart.'
+    );
+  } else {
+    out.push(`Round splitting applied to ${summary.agentIndexedGroups} group(s); ${summary.roundSplits} split(s) made.`);
+  }
+  out.push('');
+  out.push('POWER: ' + (summary.meetsMinimum ? 'SUFFICIENT' : 'INSUFFICIENT'));
+  if (!summary.meetsMinimum) {
+    out.push(
+      'A batched arm built from this population is byte-for-byte a per-finding arm across most of its items, ' +
+        'so the anchoring effect would be unobservable. This is a NO-MEASUREMENT outcome, not a passing gate.'
+    );
+  }
+  return out.join('\n');
+}
+
+// --- The batched experiment shape -----------------------------------------
+
+/**
+ * The batched refuter prompt — a MINIMAL DELTA from `refutePrompt`.
+ *
+ * Same READ-ONLY stance, same "NOT a real issue unless the code/plan proves
+ * otherwise" sentence. The only change is that the dimension's whole gating
+ * finding set is rendered AS ONE UNIT — a JSON array with an explicit
+ * `refute_id` per entry — and the closing instruction asks for one verdict per
+ * `refute_id`. Any wording change beyond that would be a confound: the A/B
+ * varies SHAPE, and shape only.
+ *
+ * This lives here, in the experiment, and NOT in
+ * `.claude/workflows/lib/review.mjs`: the lane stays byte-unchanged until the
+ * pre-registered decision rule passes.
+ *
+ * @param {string} mode
+ * @param {{ key: string }} dim
+ * @param {object[]} findings - each carrying a `refute_id`
+ * @param {{ target?: string }} [context]
+ * @returns {string}
+ */
+export function buildBatchPrompt(mode, dim, findings, context) {
+  const target = (context && context.target) || '(the target described in your working directory)';
+  return [
+    'You are a READ-ONLY refuter. Do not edit any files.',
+    'A prior reviewer raised these ' + dim.key + ' findings against ' + target + ':',
+    JSON.stringify(findings, null, 2),
+    'Start from the stance: this is NOT a real issue unless the ' +
+      (mode === 'code' ? 'code' : 'plan') +
+      ' proves otherwise. Read the actual cited location and its surrounding context before deciding.',
+    'Return JSON matching the BATCH_VERDICT schema: verdicts, an array with ONE entry per refute_id above, ' +
+      'each { id (the refute_id), refuted (boolean — true if that finding does not hold up), ' +
+      'confidence (0-100 in your verdict), rationale }.',
+  ].join('\n');
+}
+
+/**
+ * Build the batched trial plan from a `groupCorpusForBatching` summary.
+ *
+ * Batched trials are built ONLY from unit-scoped groups at or above the minimum
+ * size, so every batched dispatch is a shape production can actually produce.
+ *
+ * THROWS on an underpowered population. This is the MECHANICAL form of the
+ * phase's own prohibition — "a batched arm dominated by size-1 batches is not
+ * evidence and may not be reported as a passing gate" — rather than advisory
+ * prose. `allowUnderpowered: true` builds it anyway, but stamps
+ * `noMeasurement: true`, which forces the report's NO MEASUREMENT banner and
+ * suppresses any decision line.
+ *
+ * @param {object} summary
+ * @param {{ tiers: string[], replicates?: number, allowUnderpowered?: boolean }} opts
+ */
+export function buildBatchTrials(summary, opts = {}) {
+  if (!isPlainObject(summary) || !Array.isArray(summary.groups)) {
+    throw new Error('buildBatchTrials requires a groupCorpusForBatching summary (with .groups and .meetsMinimum)');
+  }
+  const tiers = Array.isArray(opts.tiers) ? opts.tiers : [];
+  const replicates = opts.replicates === undefined ? 2 : opts.replicates;
+  if (tiers.length === 0) throw new Error('buildBatchTrials requires at least one tier');
+  if (!Number.isInteger(replicates) || replicates < 1) {
+    throw new Error(`replicates must be a positive integer, got ${JSON.stringify(opts.replicates)}`);
+  }
+  if (!summary.meetsMinimum && !opts.allowUnderpowered) {
+    throw new Error(
+      'buildBatchTrials refuses to build an UNDERPOWERED batched arm: ' +
+        `${summary.qualifyingGroups} qualifying group(s) / ${summary.qualifyingItems} item(s) at ` +
+        `minGroupSize ${summary.minGroupSize}, against floors of ${summary.minQualifyingGroups} / ` +
+        `${summary.minQualifyingItems}. A batched arm dominated by size-1 batches is not evidence and may not ` +
+        'be reported as a passing gate — mine more adjudicated findings, or report a no-measurement outcome. ' +
+        'Pass allowUnderpowered: true to build it anyway; the result is stamped noMeasurement and can never ' +
+        'carry a decision.'
+    );
+  }
+
+  const qualifying = summary.groups.filter((g) => g.size >= summary.minGroupSize);
+  const trials = [];
+  for (const g of qualifying) {
+    for (const tier of tiers) {
+      for (let r = 1; r <= replicates; r++) {
+        const trialId = `${g.key}|${tier}|${r}`;
+        trials.push({
+          trialId,
+          dispatchId: trialId,
+          arm: 'batched',
+          groupKey: g.key,
+          unitIdent: g.unitIdent,
+          mode: g.mode,
+          dim: g.dim,
+          tier,
+          replicate: r,
+          corpusIds: g.ids.slice(),
+          dispatchSize: g.size,
+        });
+      }
+    }
+  }
+  return {
+    trials,
+    groups: qualifying,
+    corpusIds: [...new Set(qualifying.flatMap((g) => g.ids))],
+    underpowered: !summary.meetsMinimum,
+    noMeasurement: !summary.meetsMinimum,
+  };
+}
+
+/**
+ * Flatten completed BATCHED dispatches into per-finding scoring rows.
+ *
+ * Three resilience rules, mirroring the ones a shipped pipeline would have to
+ * honor:
+ *
+ *  - a verdict for an id the dispatch did NOT contain is DROPPED and recorded
+ *    under `unknownVerdictIds` — it never reaches any finding;
+ *  - an id the response OMITS keeps `verdict: null` (ungraded) — never coerced
+ *    to `refuted: false`, which would silently inflate the false-positive rate;
+ *  - a crashed/malformed dispatch leaves every one of its ids ungraded.
+ *
+ * COST ATTRIBUTION: the dispatch's FULL usage/toolCalls is attributed to its
+ * FIRST row and zeros to the rest, so `cost.totalTokens` stays exact while
+ * `cost.dispatches` (counted by unique `dispatchId`) is not diluted by the
+ * expansion.
+ *
+ * @param {Array<object>} batchResults
+ * @returns {{ rows: object[], unknownVerdictIds: string[], omittedIds: string[] }}
+ */
+export function expandBatchResults(batchResults) {
+  const rows = [];
+  const unknownVerdictIds = [];
+  const omittedIds = [];
+  for (const res of Array.isArray(batchResults) ? batchResults : []) {
+    const corpusIds = Array.isArray(res.corpusIds) ? res.corpusIds : [];
+    const expected = new Set(corpusIds.map(String));
+    const byId = new Map();
+    const verdicts = res && res.verdicts;
+    if (Array.isArray(verdicts)) {
+      for (const v of verdicts) {
+        if (!isPlainObject(v)) continue;
+        const id = String(v.id);
+        if (!expected.has(id)) {
+          unknownVerdictIds.push(`${res.dispatchId}:${id}`);
+          continue;
+        }
+        byId.set(id, {
+          refuted: typeof v.refuted === 'boolean' ? v.refuted : null,
+          confidence: typeof v.confidence === 'number' ? v.confidence : null,
+          rationale: typeof v.rationale === 'string' ? v.rationale : null,
+        });
+      }
+    }
+    corpusIds.forEach((corpusId, index) => {
+      const verdict = byId.get(String(corpusId)) || null;
+      if (verdict === null) omittedIds.push(`${res.dispatchId}:${corpusId}`);
+      rows.push({
+        trialId: `${res.dispatchId}|${corpusId}`,
+        corpusId,
+        tier: res.tier,
+        replicate: res.replicate,
+        arm: 'batched',
+        dispatchId: res.dispatchId,
+        groupKey: res.groupKey,
+        dispatchSize: corpusIds.length,
+        positionInBatch: index + 1,
+        verdict: verdict && typeof verdict.refuted === 'boolean' ? verdict : null,
+        error: (res && res.error) || null,
+        // The dispatch's whole cost lands on its FIRST row.
+        usage: index === 0 ? res.usage || {} : {},
+        toolCalls: index === 0 ? res.toolCalls || 0 : 0,
+      });
+    });
+  }
+  return { rows, unknownVerdictIds, omittedIds };
+}
+
 // --- Scoring --------------------------------------------------------------
 //
 // THE TWO RATES, DEFINED PRECISELY. They are not interchangeable and this
@@ -509,6 +977,22 @@ function mean(total, n) {
 }
 
 /**
+ * The report bucket a trial belongs to.
+ *
+ * A trial with no `arm` buckets under its bare tier, exactly as before — the
+ * per-finding arm's report shape is unchanged. A trial carrying an `arm`
+ * buckets under `tier|arm`, so the two SHAPES are scored side by side over the
+ * same corpus without either denominator contaminating the other.
+ *
+ * @param {{ tier: string, arm?: string }} trial
+ * @returns {string}
+ */
+export function bucketKeyFor(trial) {
+  if (!trial) return '';
+  return trial.arm ? `${trial.tier}|${trial.arm}` : String(trial.tier);
+}
+
+/**
  * Score a completed trial set against the corpus.
  *
  * Returns, per tier:
@@ -541,24 +1025,28 @@ export function scoreTrials(corpus, trials, opts = {}) {
 
   let historicalOnlyTrials = 0;
 
-  function tierBucket(tier) {
-    let b = perTier.get(tier);
+  function tierBucket(bucket, trial) {
+    let b = perTier.get(bucket);
     if (!b) {
       b = {
-        tier,
+        bucket,
+        tier: trial.tier,
+        arm: trial.arm || null,
         authoritativeOnly: emptyRateSet(),
         judgementCallOnly: emptyRateSet(),
         all: emptyRateSet(),
         byClass: new Map(),
         usage: emptyUsage(),
         gradedTrials: 0,
+        gradedFindings: 0,
+        dispatchIds: new Set(),
         replicatePairs: 0,
         replicateFlips: 0,
         flipRate: null,
         historicalOnlyTrials: 0,
       };
-      perTier.set(tier, b);
-      tierOrder.push(tier);
+      perTier.set(bucket, b);
+      tierOrder.push(bucket);
     }
     return b;
   }
@@ -572,7 +1060,7 @@ export function scoreTrials(corpus, trials, opts = {}) {
       unknownIds.push(t.corpusId);
       continue;
     }
-    const b = tierBucket(t.tier);
+    const b = tierBucket(bucketKeyFor(t), t);
 
     // Cost is recorded for EVERY dispatched trial, including historical-only
     // and ungraded ones — the tokens were really spent.
@@ -580,12 +1068,16 @@ export function scoreTrials(corpus, trials, opts = {}) {
     for (const c of TOKEN_CLASSES) b.usage[c] += Number(u[c] || 0);
     b.usage.toolCalls += Number(t.toolCalls || 0);
     b.gradedTrials += 1;
+    // Unique DISPATCHES, so an expanded batched row set does not read as N
+    // separate dispatches and dilute the per-dispatch token figure.
+    b.dispatchIds.add(t.dispatchId === undefined || t.dispatchId === null ? t.trialId : t.dispatchId);
 
     if (HISTORICAL_ONLY_SEVERITIES.indexOf(item.finding.severity) !== -1) {
       b.historicalOnlyTrials += 1;
       historicalOnlyTrials += 1;
       continue;
     }
+    b.gradedFindings += 1;
 
     const refuted = t.verdict && typeof t.verdict.refuted === 'boolean' ? t.verdict.refuted : null;
     const defect = item.groundTruth.defect;
@@ -600,26 +1092,27 @@ export function scoreTrials(corpus, trials, opts = {}) {
     }
     tallyInto(cls, defect, refuted);
 
-    const key = `${t.corpusId}|${t.tier}`;
-    let list = replicateVerdicts.get(key);
-    if (!list) {
-      list = [];
-      replicateVerdicts.set(key, list);
+    // Keyed on the BUCKET, not the bare tier: with two arms in one report,
+    // `opus` and `opus|batched` must keep independent self-consistency figures.
+    const key = `${t.corpusId} ${b.bucket}`;
+    let entry = replicateVerdicts.get(key);
+    if (!entry) {
+      entry = { bucket: b.bucket, list: [] };
+      replicateVerdicts.set(key, entry);
     }
-    list.push(refuted);
+    entry.list.push(refuted);
   }
 
-  for (const [key, list] of replicateVerdicts) {
-    const tier = key.slice(key.lastIndexOf('|') + 1);
-    const graded = list.filter((v) => typeof v === 'boolean');
+  for (const entry of replicateVerdicts.values()) {
+    const graded = entry.list.filter((v) => typeof v === 'boolean');
     if (graded.length < 2) continue;
-    const b = perTier.get(tier);
+    const b = perTier.get(entry.bucket);
     b.replicatePairs += 1;
     if (!graded.every((v) => v === graded[0])) b.replicateFlips += 1;
   }
 
-  const tiers = tierOrder.map((tier) => {
-    const b = perTier.get(tier);
+  const tiers = tierOrder.map((bucketKey) => {
+    const b = perTier.get(bucketKey);
     finalizeRateSet(b.authoritativeOnly);
     finalizeRateSet(b.judgementCallOnly);
     finalizeRateSet(b.all);
@@ -628,8 +1121,11 @@ export function scoreTrials(corpus, trials, opts = {}) {
       .sort((a, c) => (a[0] < c[0] ? -1 : a[0] > c[0] ? 1 : 0))
       .map(([className, set]) => ({ class: className, ...finalizeRateSet(set) }));
     const totalTokens = sumTokens(b.usage);
+    const dispatches = b.dispatchIds.size;
     return {
-      tier,
+      bucket: b.bucket,
+      tier: b.tier,
+      arm: b.arm,
       authoritativeOnly: b.authoritativeOnly,
       judgementCallOnly: b.judgementCallOnly,
       all: b.all,
@@ -638,19 +1134,31 @@ export function scoreTrials(corpus, trials, opts = {}) {
       historicalOnlyTrials: b.historicalOnlyTrials,
       cost: {
         dispatchedTrials: b.gradedTrials,
+        // DISPATCHES vs GRADED FINDINGS: identical for the per-finding arm, and
+        // deliberately different for the batched one — that ratio IS the token
+        // argument this phase is testing.
+        dispatches,
+        gradedFindings: b.gradedFindings,
         ...Object.fromEntries(TOKEN_CLASSES.map((c) => [c, b.usage[c]])),
         totalTokens,
         meanTokensPerTrial: mean(totalTokens, b.gradedTrials),
+        meanTokensPerDispatch: mean(totalTokens, dispatches),
+        meanTokensPerGradedFinding: mean(totalTokens, b.gradedFindings),
         toolCalls: b.usage.toolCalls,
         meanToolCallsPerTrial: mean(b.usage.toolCalls, b.gradedTrials),
       },
     };
   });
 
-  const baselineTier = opts.baselineTier || (tiers.length ? tiers[0].tier : null);
-  const baseline = tiers.find((t) => t.tier === baselineTier) || null;
+  const baselineTier = opts.baselineTier || (tiers.length ? tiers[0].bucket : null);
+  const baseline = tiers.find((t) => t.bucket === baselineTier) || tiers.find((t) => t.tier === baselineTier) || null;
   for (const t of tiers) {
-    if (!baseline || t.tier === baselineTier || baseline.cost.meanTokensPerTrial === null || t.cost.meanTokensPerTrial === null) {
+    if (
+      !baseline ||
+      t.bucket === baseline.bucket ||
+      baseline.cost.meanTokensPerTrial === null ||
+      t.cost.meanTokensPerTrial === null
+    ) {
       t.tokenDelta = null;
       continue;
     }
@@ -664,13 +1172,133 @@ export function scoreTrials(corpus, trials, opts = {}) {
     };
   }
 
-  return {
+  const report = {
     corpus: summarizeCorpus(corpus),
     baselineTier,
     tiers,
     historicalOnlyTrials,
     unknownCorpusIds: [...new Set(unknownIds)].sort(),
     caveats: CAVEATS,
+  };
+  // A batched arm built from an underpowered population can never carry a
+  // decision — `formatReport` prints a NO MEASUREMENT banner and no decision
+  // line whenever this is set.
+  if (opts.noMeasurement) report.noMeasurement = true;
+  if (opts.anchoring) report.anchoring = opts.anchoring;
+  if (opts.decision) report.decision = opts.decision;
+  if (opts.batchPower) report.batchPower = opts.batchPower;
+  return report;
+}
+
+/**
+ * The ANCHORING measurement: does batching CORRELATE verdicts?
+ *
+ * Reported over QUALIFYING groups only (`size >= minGroupSize`) — a size-1
+ * "batch" is byte-for-byte a per-finding dispatch and can exhibit no anchoring,
+ * so including it would dilute the effect this function exists to detect.
+ *
+ * Two signals, both per arm over the SAME group set:
+ *
+ *  - `allSameVerdictShare` — the share of (group × tier × replicate) dispatches
+ *    whose graded verdicts were all identical. A batched refuter that anchors on
+ *    its first verdict posts a HIGHER share than the per-finding arm.
+ *  - `refutationRateByPosition` — the refutation rate at position 1 versus
+ *    positions 2..n in the group's stable id order. A rise after position 1 is
+ *    the anchoring signature.
+ *
+ * FN and FP are NOT combined here — this block reports refutation rates and
+ * agreement shares, never an accuracy.
+ *
+ * @param {Array<object>} groups - qualifying groups from `groupCorpusForBatching`
+ * @param {{ [arm: string]: Array<object> }} rowsByArm - scoring rows per arm
+ * @param {{ minGroupSize?: number }} [opts]
+ */
+export function scoreAnchoring(groups, rowsByArm, opts = {}) {
+  const minGroupSize = opts.minGroupSize === undefined ? MIN_BATCH_GROUP_SIZE : opts.minGroupSize;
+  const qualifying = (Array.isArray(groups) ? groups : []).filter((g) => g.size >= minGroupSize);
+  const groupOf = new Map();
+  const positionOf = new Map();
+  for (const g of qualifying) {
+    g.ids.forEach((id, i) => {
+      groupOf.set(id, g.key);
+      positionOf.set(id, i + 1);
+    });
+  }
+
+  const arms = Object.keys(rowsByArm)
+    .sort()
+    .map((arm) => {
+      const dispatches = new Map();
+      const byPosition = new Map();
+      for (const row of rowsByArm[arm] || []) {
+        const groupKey = groupOf.get(row.corpusId);
+        if (groupKey === undefined) continue;
+        const refuted = row.verdict && typeof row.verdict.refuted === 'boolean' ? row.verdict.refuted : null;
+        const dkey = `${groupKey} ${row.tier} ${row.replicate}`;
+        let d = dispatches.get(dkey);
+        if (!d) {
+          d = [];
+          dispatches.set(dkey, d);
+        }
+        d.push(refuted);
+
+        const pos = positionOf.get(row.corpusId);
+        let p = byPosition.get(pos);
+        if (!p) {
+          p = { position: pos, graded: 0, refuted: 0, refutedRate: null };
+          byPosition.set(pos, p);
+        }
+        if (typeof refuted === 'boolean') {
+          p.graded += 1;
+          if (refuted) p.refuted += 1;
+        }
+      }
+
+      let considered = 0;
+      let allSame = 0;
+      for (const list of dispatches.values()) {
+        const graded = list.filter((v) => typeof v === 'boolean');
+        if (graded.length < 2) continue;
+        considered += 1;
+        if (graded.every((v) => v === graded[0])) allSame += 1;
+      }
+
+      const positions = [...byPosition.values()].sort((a, b) => a.position - b.position);
+      for (const p of positions) p.refutedRate = rate(p.refuted, p.graded);
+      const first = positions.find((p) => p.position === 1) || { graded: 0, refuted: 0 };
+      const later = positions
+        .filter((p) => p.position > 1)
+        .reduce((acc, p) => ({ graded: acc.graded + p.graded, refuted: acc.refuted + p.refuted }), { graded: 0, refuted: 0 });
+      const laterRates = positions.filter((p) => p.position > 1 && p.graded > 0).map((p) => p.refutedRate);
+      const risesAfterFirst =
+        laterRates.length > 0 &&
+        first.graded > 0 &&
+        laterRates.every((r, i) => (i === 0 ? r > rate(first.refuted, first.graded) : r >= laterRates[i - 1])) &&
+        laterRates[laterRates.length - 1] > rate(first.refuted, first.graded);
+
+      return {
+        arm,
+        dispatchesConsidered: considered,
+        allSameVerdict: allSame,
+        allSameVerdictShare: rate(allSame, considered),
+        refutationRateByPosition: {
+          firstPosition: { graded: first.graded, refuted: first.refuted, refutedRate: rate(first.refuted, first.graded) },
+          laterPositions: { graded: later.graded, refuted: later.refuted, refutedRate: rate(later.refuted, later.graded) },
+          byPosition: positions,
+          risesAfterFirst,
+        },
+      };
+    });
+
+  return {
+    minGroupSize,
+    qualifyingGroups: qualifying.length,
+    qualifyingItems: qualifying.reduce((s, g) => s + g.size, 0),
+    arms,
+    note:
+      'A HIGHER all-same-verdict share for the batched arm plus a refutation rate that RISES after position 1 is ' +
+      'the anchoring signature this phase exists to detect. Reported over qualifying groups only — a size-1 ' +
+      'group is byte-for-byte a per-finding dispatch and can exhibit no anchoring.',
   };
 }
 
@@ -749,6 +1377,16 @@ export function formatReport(report, format = 'text') {
   if (format === 'json') return JSON.stringify(report, null, 2);
   const out = [];
   const c = report.corpus;
+  if (report.noMeasurement) {
+    out.push('NO MEASUREMENT — batched arm was underpowered');
+    out.push(
+      'The qualifying (size >= ' +
+        MIN_BATCH_GROUP_SIZE +
+        ') unit-scoped batch population did not clear the pre-registered floor, so the figures below describe ' +
+        'a batched arm dominated by size-1 batches. That is not evidence and carries NO decision.'
+    );
+    out.push('');
+  }
   out.push('Refuter agreement by model tier — ' + c.size + ' corpus item(s), baseline tier "' + report.baselineTier + '"');
   out.push(
     'Composition: ' + Object.entries(c.byClass).map(([k, v]) => k + ' ' + v).join(', ') +
@@ -765,7 +1403,7 @@ export function formatReport(report, format = 'text') {
     out.push(
       '| ' +
         [
-          t.tier,
+          t.bucket,
           t.authoritativeOnly.falseNegatives + '/' + t.authoritativeOnly.defectTrials + ' (' + pctStr(t.authoritativeOnly.falseNegativeRate) + ')',
           t.judgementCallOnly.falseNegatives + '/' + t.judgementCallOnly.defectTrials + ' (' + pctStr(t.judgementCallOnly.falseNegativeRate) + ')',
           t.all.falseNegatives + '/' + t.all.defectTrials + ' (' + pctStr(t.all.falseNegativeRate) + ')',
@@ -789,7 +1427,7 @@ export function formatReport(report, format = 'text') {
     out.push(
       '| ' +
         [
-          t.tier,
+          t.bucket,
           t.authoritativeOnly.falsePositives + '/' + t.authoritativeOnly.nonDefectTrials + ' (' + pctStr(t.authoritativeOnly.falsePositiveRate) + ')',
           t.judgementCallOnly.falsePositives + '/' + t.judgementCallOnly.nonDefectTrials + ' (' + pctStr(t.judgementCallOnly.falsePositiveRate) + ')',
           t.all.falsePositives + '/' + t.all.nonDefectTrials + ' (' + pctStr(t.all.falsePositiveRate) + ')',
@@ -806,14 +1444,14 @@ export function formatReport(report, format = 'text') {
   out.push('| tier | replicate pairs | flips | flip rate |');
   out.push('|---|---:|---:|---:|');
   for (const t of report.tiers) {
-    out.push('| ' + [t.tier, t.selfConsistency.replicatePairs, t.selfConsistency.replicateFlips, pctStr(t.selfConsistency.flipRate)].join(' | ') + ' |');
+    out.push('| ' + [t.bucket, t.selfConsistency.replicatePairs, t.selfConsistency.replicateFlips, pctStr(t.selfConsistency.flipRate)].join(' | ') + ' |');
   }
   out.push('A tier with a low FN rate but a high flip rate is not safer — it is lucky.');
   out.push('');
 
   out.push('## PER-CLASS (the aggregate above is over a deliberately weighted corpus)');
   for (const t of report.tiers) {
-    out.push('### ' + t.tier);
+    out.push('### ' + t.bucket);
     out.push('| class | FN (defect-truth trials) | FP (non-defect-truth trials) | ungraded |');
     out.push('|---|---:|---:|---:|');
     for (const row of t.byClass) {
@@ -834,17 +1472,72 @@ export function formatReport(report, format = 'text') {
   out.push('## TOKEN VOLUME vs BASELINE');
   for (const t of report.tiers) {
     if (!t.tokenDelta) {
-      out.push('- ' + t.tier + ': baseline (' + num(t.cost.meanTokensPerTrial) + ' mean tokens/trial, ' + num(t.cost.meanToolCallsPerTrial) + ' mean tool calls/trial).');
+      out.push('- ' + t.bucket + ': baseline (' + num(t.cost.meanTokensPerTrial) + ' mean tokens/trial, ' + num(t.cost.meanToolCallsPerTrial) + ' mean tool calls/trial).');
       continue;
     }
     const d = t.tokenDelta;
     out.push(
-      '- ' + t.tier + ': ' + num(d.meanTokensPerTrial) + ' mean tokens/trial vs ' + num(d.baselineMeanTokensPerTrial) +
+      '- ' + t.bucket + ': ' + num(d.meanTokensPerTrial) + ' mean tokens/trial vs ' + num(d.baselineMeanTokensPerTrial) +
         ' for ' + d.baselineTier + ' — a delta of ' + num(d.delta) + ' (' + pctStr(d.percent) + ').'
     );
   }
   out.push('Re-tiering changes PRICE-PER-TOKEN, not token VOLUME. These are volume figures only.');
   out.push('');
+
+  if (report.tiers.some((t) => t.arm)) {
+    out.push('## TOKENS PER GRADED FINDING (the shape comparison — dispatches vs findings graded)');
+    out.push('| bucket | dispatches | graded findings | total tokens | mean tokens/dispatch | mean tokens/graded finding |');
+    out.push('|---|---:|---:|---:|---:|---:|');
+    for (const t of report.tiers) {
+      out.push(
+        '| ' +
+          [
+            t.bucket,
+            t.cost.dispatches,
+            t.cost.gradedFindings,
+            num(t.cost.totalTokens),
+            num(t.cost.meanTokensPerDispatch),
+            num(t.cost.meanTokensPerGradedFinding),
+          ].join(' | ') +
+          ' |'
+      );
+    }
+    out.push('');
+  }
+
+  if (report.anchoring) {
+    const a = report.anchoring;
+    out.push('## ANCHORING — does batching CORRELATE verdicts?');
+    out.push(
+      'Over qualifying groups only (size >= ' + a.minGroupSize + '): ' + a.qualifyingGroups + ' group(s) / ' +
+        a.qualifyingItems + ' item(s).'
+    );
+    out.push('| arm | dispatches considered | all-same verdict | all-same share | refuted @pos1 | refuted @pos2..n | rises after pos1 |');
+    out.push('|---|---:|---:|---:|---:|---:|---|');
+    for (const arm of a.arms) {
+      const p = arm.refutationRateByPosition;
+      out.push(
+        '| ' +
+          [
+            arm.arm,
+            arm.dispatchesConsidered,
+            arm.allSameVerdict,
+            pctStr(arm.allSameVerdictShare),
+            p.firstPosition.refuted + '/' + p.firstPosition.graded + ' (' + pctStr(p.firstPosition.refutedRate) + ')',
+            p.laterPositions.refuted + '/' + p.laterPositions.graded + ' (' + pctStr(p.laterPositions.refutedRate) + ')',
+            p.risesAfterFirst ? 'YES' : 'no',
+          ].join(' | ') +
+          ' |'
+      );
+    }
+    out.push(a.note);
+    out.push('');
+  }
+
+  if (report.decision && !report.noMeasurement) {
+    out.push('DECISION: ' + report.decision);
+    out.push('');
+  }
 
   if (report.historicalOnlyTrials) {
     out.push('Excluded from every rate above: ' + report.historicalOnlyTrials + ' trial(s) on historical-only severities (' +
@@ -982,6 +1675,168 @@ export function auditTieringSection(section) {
   if (!nonEmptyString(section.doc)) problems.push('doc pointer must be a non-empty string');
   if (!isPlainObject(section.measurementWindow) || !nonEmptyString(section.measurementWindow.until)) {
     problems.push('measurementWindow.until must be recorded');
+  }
+
+  return problems;
+}
+
+// --- docs/token-baseline.json § refuterBatching audit ---------------------
+
+/** The closed decision vocabulary for the batching question. */
+export const BATCHING_DECISIONS = ['ship-batched', 'no-ship-worse-fn', 'no-ship-anchoring', 'no-measurement'];
+
+/**
+ * Corpus-FREE arithmetic audit of a `refuterBatching` section.
+ *
+ * Re-derives every rate, asserts the authoritative+judgement partition, checks
+ * the token sums and `meanTokensPerGradedFinding`, and — the part specific to
+ * this phase — re-derives the corpus-power counts: all three exclusions plus
+ * the groupable items must sum to the corpus size, the qualifying population
+ * must agree with the size histogram, and it must never count a size-1 group.
+ *
+ * @param {object} section
+ * @returns {string[]} problems, empty when consistent
+ */
+export function auditBatchingSection(section) {
+  const problems = [];
+  if (!isPlainObject(section)) return ['refuterBatching section is not an object'];
+
+  if (BATCHING_DECISIONS.indexOf(section.decision) === -1) {
+    problems.push(
+      `decision must be one of ${BATCHING_DECISIONS.join('|')}, got ${JSON.stringify(section.decision)}`
+    );
+  }
+  if (!nonEmptyString(section.doc)) problems.push('doc pointer must be a non-empty string');
+  if (!isPlainObject(section.measurementWindow) || !nonEmptyString(section.measurementWindow.until)) {
+    problems.push('measurementWindow.until must be recorded');
+  }
+
+  const power = section.corpusPower;
+  if (!isPlainObject(power)) {
+    problems.push('corpusPower is missing');
+  } else {
+    const accounted =
+      (Number(power.constructedExcluded) || 0) +
+      (Number(power.nonGatingExcluded) || 0) +
+      (Number(power.unrecoverableUnitExcluded) || 0) +
+      (Number(power.groupableItems) || 0);
+    if (accounted !== Number(power.totalItems)) {
+      problems.push(
+        `corpusPower: constructed + nonGating + unrecoverableUnit + groupable (${accounted}) != totalItems ${power.totalItems}`
+      );
+    }
+    const hist = isPlainObject(power.sizeHistogram) ? power.sizeHistogram : {};
+    let groupsFromHist = 0;
+    let itemsFromHist = 0;
+    let qualifyingGroups = 0;
+    let qualifyingItems = 0;
+    const minGroupSize = Number(power.minGroupSize);
+    if (!Number.isInteger(minGroupSize) || minGroupSize < MIN_BATCH_GROUP_SIZE) {
+      problems.push(`corpusPower.minGroupSize must be an integer >= ${MIN_BATCH_GROUP_SIZE}, got ${JSON.stringify(power.minGroupSize)}`);
+    }
+    for (const [sizeKey, count] of Object.entries(hist)) {
+      const size = Number(sizeKey);
+      const n = Number(count) || 0;
+      groupsFromHist += n;
+      itemsFromHist += size * n;
+      if (size >= minGroupSize) {
+        qualifyingGroups += n;
+        qualifyingItems += size * n;
+      }
+      if (size === 1 && size >= minGroupSize) problems.push('corpusPower: a size-1 group may never qualify');
+    }
+    if (groupsFromHist !== Number(power.groupCount)) {
+      problems.push(`corpusPower.groupCount: doc ${power.groupCount}, histogram sums to ${groupsFromHist}`);
+    }
+    if (itemsFromHist !== Number(power.groupableItems)) {
+      problems.push(`corpusPower.groupableItems: doc ${power.groupableItems}, histogram sums to ${itemsFromHist}`);
+    }
+    if (qualifyingGroups !== Number(power.qualifyingGroups)) {
+      problems.push(`corpusPower.qualifyingGroups: doc ${power.qualifyingGroups}, derived ${qualifyingGroups}`);
+    }
+    if (qualifyingItems !== Number(power.qualifyingItems)) {
+      problems.push(`corpusPower.qualifyingItems: doc ${power.qualifyingItems}, derived ${qualifyingItems}`);
+    }
+    const meets =
+      qualifyingGroups >= Number(power.minQualifyingGroups) && qualifyingItems >= Number(power.minQualifyingItems);
+    if (power.meetsMinimum !== meets) {
+      problems.push(`corpusPower.meetsMinimum: doc ${power.meetsMinimum}, derived ${meets}`);
+    }
+    if (!meets && section.decision !== 'no-measurement') {
+      problems.push(
+        `corpusPower says the batched arm is underpowered, but decision is "${section.decision}" — an ` +
+          'underpowered arm can only carry decision "no-measurement"'
+      );
+    }
+    // Per-mode histograms must partition the overall one.
+    if (isPlainObject(power.sizeHistogramByMode)) {
+      const merged = {};
+      for (const modeHist of Object.values(power.sizeHistogramByMode)) {
+        for (const [size, n] of Object.entries(modeHist || {})) merged[size] = (merged[size] || 0) + Number(n || 0);
+      }
+      for (const size of new Set([...Object.keys(hist), ...Object.keys(merged)])) {
+        if ((Number(hist[size]) || 0) !== (merged[size] || 0)) {
+          problems.push(`corpusPower.sizeHistogramByMode does not partition sizeHistogram at size ${size}`);
+        }
+      }
+    }
+  }
+
+  const arms = Array.isArray(section.arms) ? section.arms : [];
+  if (section.decision !== 'no-measurement' && arms.length < 2) {
+    problems.push('a decision other than "no-measurement" requires both arms to be recorded');
+  }
+  for (const a of arms) {
+    if (!nonEmptyString(a.arm)) problems.push('an arm row carries no arm label');
+    for (const setName of ['authoritativeOnly', 'judgementCallOnly', 'all']) {
+      const s = a[setName];
+      if (!isPlainObject(s)) {
+        problems.push(`${a.arm}.${setName} is missing`);
+        continue;
+      }
+      const fn = rate(s.falseNegatives || 0, s.defectTrials || 0);
+      if (s.falseNegativeRate !== fn) problems.push(`${a.arm}.${setName}.falseNegativeRate: doc ${s.falseNegativeRate}, derived ${fn}`);
+      const fp = rate(s.falsePositives || 0, s.nonDefectTrials || 0);
+      if (s.falsePositiveRate !== fp) problems.push(`${a.arm}.${setName}.falsePositiveRate: doc ${s.falsePositiveRate}, derived ${fp}`);
+      if ((s.defectTrials || 0) + (s.nonDefectTrials || 0) + (s.ungraded || 0) !== (s.trials || 0)) {
+        problems.push(`${a.arm}.${setName}: defectTrials + nonDefectTrials + ungraded != trials ${s.trials}`);
+      }
+    }
+    const au = a.authoritativeOnly || {};
+    const ju = a.judgementCallOnly || {};
+    const all = a.all || {};
+    for (const f of ['trials', 'ungraded', 'defectTrials', 'nonDefectTrials', 'falseNegatives', 'falsePositives']) {
+      if ((au[f] || 0) + (ju[f] || 0) !== (all[f] || 0)) {
+        problems.push(`${a.arm}.all.${f} ${all[f]} != authoritativeOnly ${au[f]} + judgementCallOnly ${ju[f]}`);
+      }
+    }
+    const cost = a.cost || {};
+    const summed = TOKEN_CLASSES.reduce((s, cl) => s + (Number(cost[cl]) || 0), 0);
+    if (cost.totalTokens !== summed) problems.push(`${a.arm}.cost.totalTokens: doc ${cost.totalTokens}, four classes sum to ${summed}`);
+    const perFinding = mean(summed, cost.gradedFindings || 0);
+    if (cost.meanTokensPerGradedFinding !== perFinding) {
+      problems.push(`${a.arm}.cost.meanTokensPerGradedFinding: doc ${cost.meanTokensPerGradedFinding}, derived ${perFinding}`);
+    }
+    const perDispatch = mean(summed, cost.dispatches || 0);
+    if (cost.meanTokensPerDispatch !== perDispatch) {
+      problems.push(`${a.arm}.cost.meanTokensPerDispatch: doc ${cost.meanTokensPerDispatch}, derived ${perDispatch}`);
+    }
+    const sc = a.selfConsistency || {};
+    const fr = rate(sc.replicateFlips || 0, sc.replicatePairs || 0);
+    if (sc.flipRate !== fr) problems.push(`${a.arm}.selfConsistency.flipRate: doc ${sc.flipRate}, derived ${fr}`);
+  }
+
+  const anchoring = section.anchoring;
+  if (isPlainObject(anchoring)) {
+    if (Number(anchoring.minGroupSize) < MIN_BATCH_GROUP_SIZE) {
+      problems.push(`anchoring.minGroupSize ${anchoring.minGroupSize} is below the ${MIN_BATCH_GROUP_SIZE} floor`);
+    }
+    for (const a of Array.isArray(anchoring.arms) ? anchoring.arms : []) {
+      const derived = rate(a.allSameVerdict || 0, a.dispatchesConsidered || 0);
+      if (a.allSameVerdictShare !== derived) {
+        problems.push(`anchoring.${a.arm}.allSameVerdictShare: doc ${a.allSameVerdictShare}, derived ${derived}`);
+      }
+    }
   }
 
   return problems;

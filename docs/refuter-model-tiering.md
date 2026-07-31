@@ -474,6 +474,20 @@ the configured `[models]` policy (which would move its *finders* to Sonnet, sinc
 decision says nothing against it.
 <!-- DECISION-END -->
 
+## Sibling question: refuter *shape*
+
+This document A/Bs the refuter's **model**. Its sibling,
+[`refuter-batching.md`](refuter-batching.md), A/Bs the refuter's **shape** — one
+refuter per gating finding versus one per dimension over that review unit's
+gating findings — on the same instrument, the same corpus, and the same
+never-blend-FN-and-FP discipline. Its outcome is `no-measurement`: grouped by the
+key a real dispatch actually forms (`runId | unitIdent | mode | dim.key`), this
+corpus yields exactly 1 qualifying group of 3 items against a pre-registered
+floor of 6 groups / 18 items, so no A/B was run and the pipeline is unchanged.
+Growing this corpus is what unblocks it — see that document's § Mining headroom,
+and note that any growth also invalidates the Composition figures above and the
+composition floors in `scripts/verify-refuter-agreement.sh` § 2.
+
 ## Refuter-agreement harness
 
 The harness is **on-demand only**. It lives entirely under `scripts/` and

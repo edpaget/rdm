@@ -907,3 +907,36 @@ model-omission question, and the decision itself are in
 live in `docs/token-baseline.json` § `refuterModelTiering` and are audited
 corpus-free by `node scripts/run-refuter-agreement.mjs --audit
 docs/token-baseline.json`. Tables are not restated here.
+
+## Refuter batching — one refuter per dimension, or one per finding?
+
+The sibling **shape** question to the model question above, on the same
+instrument and the same adjudicated corpus:
+[`refuter-batching.md`](refuter-batching.md).
+
+The answer is **`no-measurement`**, and the pipeline is unchanged. Grouped by the
+key a real dispatch actually forms — `runId | unitIdent | mode | dim.key`,
+because `buildReviewPipeline` runs once per *review unit* — the committed 56-item
+corpus yields 35 groupable items in 29 groups: **24 singletons, 4 pairs and 1
+triple**, i.e. exactly **1 qualifying (size ≥ 3) group / 3 items** against
+pre-registered floors of 6 groups / 18 items. A batched arm built from that is
+byte-for-byte a per-finding arm across most of its items, so the anchoring effect
+the phase exists to detect would be unobservable and any A/B would report
+dilution rather than evidence. `POWER: INSUFFICIENT`, no dispatch, no decision.
+
+The earlier `(runId, mode, dim.key)` framing reported 36 groups with four of size
+≥ 3; those figures are void (two are an artifact of the 12 `constructed` items
+collapsing into one pseudo-run, and the only non-constructed triple spans two
+different review units). See the doc's § Corpus power for the correction.
+
+Reproduce the power analysis with zero spend:
+
+```bash
+node scripts/run-refuter-agreement.mjs --batch-power
+```
+
+Machine-readable figures live in `docs/token-baseline.json` § `refuterBatching`
+(including the superseded naive-key histogram and the mining headroom a future
+attempt must buy) and are audited corpus-free by `node
+scripts/run-refuter-agreement.mjs --audit docs/token-baseline.json
+--audit-section refuterBatching`. Tables are not restated here.

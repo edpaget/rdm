@@ -823,6 +823,21 @@ finding — the finder never grades its own work.
 | `confidence` | integer 0–100 (required) | the refuter's confidence in **its verdict** (advisory) |
 | `rationale`  | string                   | why the finding was or was not refuted                 |
 
+`VERDICT` is the **single-finding** contract, and it is the contract the shipped
+pipeline uses. A batched sibling — one refuter per dimension over that review
+unit's gating findings, with verdicts attributed by an explicit per-finding id —
+was measured and **not shipped**: grouped by the key a real dispatch actually
+forms (`runId | unitIdent | mode | dim.key`, because `buildReviewPipeline` runs
+once per review unit), the adjudicated corpus yields only 1 qualifying batch of 3
+findings against a pre-registered floor of 6 batches / 18 findings, so the A/B
+returned `no-measurement` rather than a decision. Method, figures, decision rule
+and limitations: [`docs/refuter-batching.md`](refuter-batching.md). The
+experiment's batched prompt, verdict parsing and anchoring scorer live in
+`scripts/lib/refuter-agreement.mjs`, deliberately **not** in
+`.claude/workflows/lib/review.mjs` — `scripts/verify-refuter-agreement.sh`
+asserts the pipeline carries no batched symbols while the recorded decision is
+anything other than `ship-batched`.
+
 ### `OUTCOME` (review pipeline)
 
 The value `buildReviewPipeline(mode)(context)` resolves to

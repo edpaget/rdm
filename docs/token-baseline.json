@@ -1650,5 +1650,105 @@
       "followUpTask": "thread-plan-review-judgment-models"
     },
     "decision": "keep-opus"
+  },
+  "refuterBatching": {
+    "question": "Should stage 2 of buildReviewPipeline dispatch ONE refuter per dimension over that review unit's gating findings, instead of one refuter per finding? Measured for false negatives, false positives, self-consistency, anchoring and tokens per graded finding — never on the token argument alone.",
+    "doc": "docs/refuter-batching.md",
+    "instrument": "scripts/run-refuter-agreement.mjs --batch-power / --shape both (over scripts/lib/refuter-agreement.mjs)",
+    "regenerateCommand": "node scripts/run-refuter-agreement.mjs --batch-power",
+    "measurementWindow": {
+      "until": "2026-07-29T00:00:00Z",
+      "why": "The same pinned window refuterModelTiering and refuterFanout use, so the mining-headroom figures below are comparable with them."
+    },
+    "measuredAgainstCommit": "03f55f0",
+    "corpusPower": {
+      "path": "tests/fixtures/refuter-agreement/corpus.jsonl",
+      "key": "runId|unitIdent|mode|dim.key",
+      "keyRationale": "buildReviewPipeline runs ONCE PER REVIEW UNIT, so a real batched dispatch is one unit's gating findings for one dimension. A key without the unit identity merges findings from separate reviews that could never be dispatched together — the same coarse key phase 1 measured and rejected for refuterFanout.",
+      "totalItems": 56,
+      "constructedExcluded": 12,
+      "nonGatingExcluded": 4,
+      "unrecoverableUnitExcluded": 5,
+      "groupableItems": 35,
+      "groupCount": 29,
+      "sizeHistogram": {
+        "1": 24,
+        "2": 4,
+        "3": 1
+      },
+      "sizeHistogramByMode": {
+        "code": {
+          "1": 16,
+          "2": 4,
+          "3": 1
+        },
+        "plan": {
+          "1": 8
+        }
+      },
+      "singletonItems": 24,
+      "minGroupSize": 3,
+      "minQualifyingGroups": 6,
+      "minQualifyingItems": 18,
+      "qualifyingGroups": 1,
+      "qualifyingItems": 3,
+      "qualifyingGroupKeys": [
+        "wf_c8d0fac2-6d9|workflow-token-reduction/phase-1-token-measurement-harness|code|correctness"
+      ],
+      "meetsMinimum": false,
+      "agentIndexedGroups": 0,
+      "roundSplits": 0,
+      "upperBoundNote": "No committed item carries provenance.agentIndex, so every group size is an UPPER BOUND: a REWORK re-review is a second dispatch this key cannot yet split apart.",
+      "supersededNaiveKey": {
+        "key": "runId|mode|dim.key",
+        "groupCount": 36,
+        "sizeHistogram": {
+          "1": 24,
+          "2": 8,
+          "3": 1,
+          "4": 2,
+          "5": 1
+        },
+        "whyVoid": "Two of its four size->=3 groups are an artifact of the 12 constructed items, which carry no runId and collapse into one pseudo-run. Its only non-constructed size-3 group (wf_ff29f56e-da1|code|tests) is 2 items on unify-code-review/phase-4-workflow-lane-omits-done-trailer plus 1 on phase-5-rdm-review-standalone-shim, i.e. a pair plus a singleton once unit-scoped. 4 of the corpus 19 mined runIds span more than one target.",
+        "qualifyingGroupsClaimed": 2,
+        "qualifyingGroupsActual": 1
+      }
+    },
+    "miningHeadroom": {
+      "why": "The shortfall is a CORPUS shortfall, not a source-data shortfall — this records exactly what a future adjudication pass must buy.",
+      "command": "node scripts/mine-refuter-corpus.mjs --until 2026-07-29T00:00:00Z --min-group-size 3 --exclude-corpus tests/fixtures/refuter-agreement/corpus.jsonl --format json",
+      "refuterRecordsSeen": 987,
+      "recovered": 953,
+      "qualifyingGroupsAvailable": 82,
+      "qualifyingItemsAvailable": 298,
+      "qualifyingPlanGroupsAvailable": 69,
+      "qualifyingPlanItemsAvailable": 253,
+      "groupsAlreadySeededWithAdjudicatedItems": 13,
+      "adjudicatedItemsInsideThoseGroups": 18,
+      "furtherAdjudicationsToClearTheFloor": 8,
+      "note": "Mining must target PLAN mode: plan finders emit p50 2 / p90 4.4-5 / max 7 findings per finder versus code finders at p50 0-1 / max 3, so multi-finding per-dimension groups exist in volume only there — and that is exactly where the committed corpus is emptiest (8 groupable plan items, all singletons)."
+    },
+    "run": {
+      "bounded": true,
+      "boundedRationale": "A full pass is unaffordable at the recorded 533k-tokens-per-Opus-dispatch mean, so the pre-registered plan was ONE tier (opus, the production tier — shape is the only varying factor) x 2 replicates over the qualifying groups, budgeting <= ~55 dispatches across both arms (at the 6-group/18-item floor: 12 batched + 36 per-finding = 48).",
+      "dispatched": 0,
+      "dispatchedRationale": "Criterion 1 of the decision rule (POWER: SUFFICIENT) failed against the committed corpus, so nothing was dispatched. An A/B over an underpowered population is not a result."
+    },
+    "arms": [],
+    "anchoring": null,
+    "decision": "no-measurement",
+    "decisionRule": "SHIP iff (1) POWER: SUFFICIENT under the unit-scoped key, AND (2) the batched arm authoritative-only FN count exceeds the per-finding arm by at most 1 and its FN rate by at most 10 points, AND (3) allSameVerdictShare is at most 25 points above the per-finding arm over the same qualifying groups with no monotone rise in refutationRateByPosition after position 1, AND (4) meanTokensPerGradedFinding is materially lower. FP is reported and weighed but is the softer criterion. A pass on (4) alone is NOT a ship.",
+    "pipelineUnchanged": true,
+    "pipelineUnchangedNote": ".claude/workflows/lib/review.mjs still dispatches one refuter per gating finding; refutePrompt and VERDICT_SCHEMA are byte-unchanged and the phase-6 non-gating pass-through is untouched. verify-refuter-agreement.sh enforces the XOR: while decision !== ship-batched, review.mjs must contain neither batchRefutePrompt nor BATCH_VERDICT_SCHEMA.",
+    "followUpTasks": [
+      {
+        "task": "complete-refuter-batching-ab",
+        "why": "Adjudicate the 8 further findings the unit-scoped floor needs, regenerate every figure the grown corpus invalidates, then run the bounded two-arm A/B against the decision rule already fixed in docs/refuter-batching.md."
+      },
+      {
+        "task": "batched-refuters-break-corpus-mining",
+        "why": "A PRE-CONDITION on shipping: measure-refuter-severity.mjs and mine-refuter-corpus.mjs parse a SINGLE-finding prompt header, so a batched prompt would make new runs unminable and stop nonGatingRefutationSkip, refuterFanout and the corpus itself from growing."
+      }
+    ]
   }
 }

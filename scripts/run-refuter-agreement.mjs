@@ -63,6 +63,14 @@ import {
   GROUND_TRUTH_CLASSES,
   TOKEN_CLASSES,
   auditTieringSection,
+  auditBatchingSection,
+  groupCorpusForBatching,
+  formatBatchPower,
+  buildBatchPrompt,
+  buildBatchTrials,
+  expandBatchResults,
+  scoreAnchoring,
+  MIN_BATCH_GROUP_SIZE,
 } from './lib/refuter-agreement.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -249,6 +257,72 @@ export function parseClaudeResult(body) {
   return { verdict, usage, toolCalls, error: verdict === null ? 'no boolean `refuted` in the response' : null };
 }
 
+/**
+ * Pull `{ verdicts, usage, toolCalls }` out of a BATCHED dispatch's response
+ * body — the batched sibling of `parseClaudeResult`.
+ *
+ * A verdict entry whose `id` was not in the dispatch is DROPPED and recorded
+ * under `unknownVerdictIds`; an id the response omits is simply absent, and
+ * `expandBatchResults` leaves it `verdict: null`. Neither is ever coerced to
+ * `refuted: false`, which would silently inflate the false-positive rate.
+ *
+ * @param {object} body
+ * @param {string[]} expectedIds
+ */
+export function parseClaudeBatchResult(body, expectedIds = []) {
+  const usage = {};
+  for (const c of TOKEN_CLASSES) usage[c] = 0;
+  const u = (body && body.usage) || {};
+  usage.output = Number(u.output_tokens || 0);
+  usage.uncachedInput = Number(u.input_tokens || 0);
+  usage.cacheWrite = Number(u.cache_creation_input_tokens || 0);
+  usage.cacheRead = Number(u.cache_read_input_tokens || 0);
+
+  const expected = new Set(expectedIds.map(String));
+  let toolCalls = 0;
+  let raw = null;
+  const messages = Array.isArray(body && body.messages) ? body.messages : [];
+  for (const m of messages) {
+    const content = m && m.message && Array.isArray(m.message.content) ? m.message.content : [];
+    for (const block of content) {
+      if (block && block.type === 'tool_use') {
+        toolCalls += 1;
+        if (block.name === 'StructuredOutput' && block.input && Array.isArray(block.input.verdicts)) {
+          raw = block.input.verdicts;
+        }
+      }
+    }
+  }
+  if (raw === null) {
+    const parsed = tryParseJson(body && body.result) || tryParseEmbeddedJson(body && body.result);
+    if (parsed && Array.isArray(parsed.verdicts)) raw = parsed.verdicts;
+  }
+  if (typeof (body && body.num_tool_uses) === 'number' && toolCalls === 0) toolCalls = body.num_tool_uses;
+
+  // A response with NO `verdicts` array at all is treated exactly like a crash:
+  // every id stays ungraded. It is never read as "every finding omitted".
+  if (raw === null) {
+    return { verdicts: null, unknownVerdictIds: [], usage, toolCalls, error: 'no `verdicts` array in the response' };
+  }
+  const verdicts = [];
+  const unknownVerdictIds = [];
+  for (const v of raw) {
+    if (!v || typeof v !== 'object') continue;
+    const id = String(v.id);
+    if (expected.size && !expected.has(id)) {
+      unknownVerdictIds.push(id);
+      continue;
+    }
+    verdicts.push({
+      id,
+      refuted: typeof v.refuted === 'boolean' ? v.refuted : null,
+      confidence: typeof v.confidence === 'number' ? v.confidence : null,
+      rationale: typeof v.rationale === 'string' ? v.rationale : null,
+    });
+  }
+  return { verdicts, unknownVerdictIds, usage, toolCalls, error: null };
+}
+
 function tryParseJson(text) {
   if (typeof text !== 'string') return null;
   try {
@@ -327,6 +401,83 @@ export async function runTrials(items, trials, prompts, dispatch, opts = {}) {
   return results;
 }
 
+/**
+ * Dispatch one BATCHED trial through `claude -p`. The batched sibling of
+ * `claudeDispatch`; same never-throw-for-a-per-trial-failure contract.
+ */
+export async function claudeBatchDispatch(trial, prompt, opts = {}) {
+  const res = await runProcess('claude', ['-p', '--model', trial.tier, '--output-format', 'json'], {
+    input: prompt,
+    cwd: opts.cwd || REPO_ROOT,
+  });
+  if (res.error && res.error.code === 'ENOENT') {
+    throw new Error(
+      'the `claude` binary was not found on PATH. The refuter-agreement runner dispatches real agents ' +
+        'through `claude -p`; install/authenticate the CLI, or use --dry-run / --dispatch-stub / --score-only.'
+    );
+  }
+  if (res.error || res.status !== 0) {
+    return {
+      verdicts: null,
+      unknownVerdictIds: [],
+      error: res.error ? `claude failed to start: ${res.error.message}` : `claude exited ${res.status}`,
+      usage: {},
+      toolCalls: 0,
+    };
+  }
+  let body;
+  try {
+    body = JSON.parse(res.stdout);
+  } catch (err) {
+    return { verdicts: null, unknownVerdictIds: [], error: `claude returned a non-JSON body: ${err.message}`, usage: {}, toolCalls: 0 };
+  }
+  const parsed = parseClaudeBatchResult(body, trial.corpusIds);
+  if (parsed.toolCalls === 0 && typeof body.session_id === 'string') {
+    const counted = countSessionToolUses(body.session_id, opts.cwd || REPO_ROOT);
+    if (counted !== null) parsed.toolCalls = counted;
+  }
+  return parsed;
+}
+
+/**
+ * Execute the BATCHED trial plan. Dependency-injected exactly like `runTrials`,
+ * and likewise writes into indexed slots so completion order never changes the
+ * recorded order.
+ */
+export async function runBatchTrials(trials, prompts, dispatch, opts = {}) {
+  const log = opts.log || (() => {});
+  const concurrency = Math.max(1, opts.concurrency || 1);
+  const results = new Array(trials.length);
+  let next = 0;
+
+  async function worker() {
+    for (;;) {
+      const i = next++;
+      if (i >= trials.length) return;
+      const t = trials[i];
+      const outcome = await dispatch(t, prompts.get(t.trialId));
+      results[i] = {
+        trialId: t.trialId,
+        dispatchId: t.dispatchId,
+        groupKey: t.groupKey,
+        tier: t.tier,
+        replicate: t.replicate,
+        corpusIds: t.corpusIds,
+        verdicts: (outcome && outcome.verdicts) || null,
+        unknownVerdictIds: (outcome && outcome.unknownVerdictIds) || [],
+        error: (outcome && outcome.error) || null,
+        usage: (outcome && outcome.usage) || {},
+        toolCalls: (outcome && outcome.toolCalls) || 0,
+      };
+      const graded = results[i].verdicts ? results[i].verdicts.length : 0;
+      log(`batch ${t.trialId}: ${graded}/${t.corpusIds.length} graded`);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, trials.length) }, worker));
+  return results;
+}
+
 // --- CLI -------------------------------------------------------------------
 
 export function parseArgs(argv) {
@@ -346,6 +497,11 @@ export function parseArgs(argv) {
     concurrency: 1,
     scoreOnly: null,
     audit: null,
+    auditSection: 'refuterModelTiering',
+    shape: 'per-finding',
+    batchPower: false,
+    minBatchGroup: MIN_BATCH_GROUP_SIZE,
+    allowUnderpowered: false,
     help: false,
   };
   let i;
@@ -415,6 +571,25 @@ export function parseArgs(argv) {
       case '--audit':
         args.audit = takeValue('--audit');
         break;
+      case '--audit-section':
+        args.auditSection = takeValue('--audit-section');
+        break;
+      case '--shape':
+        args.shape = takeValue('--shape');
+        break;
+      case '--batch-power':
+        args.batchPower = true;
+        break;
+      case '--min-batch-group': {
+        const raw = takeValue('--min-batch-group');
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 2) throw new Error(`--min-batch-group must be an integer >= 2, got "${raw}"`);
+        args.minBatchGroup = n;
+        break;
+      }
+      case '--allow-underpowered':
+        args.allowUnderpowered = true;
+        break;
       case '--help':
       case '-h':
         args.help = true;
@@ -425,6 +600,12 @@ export function parseArgs(argv) {
   }
   if (args.format !== 'text' && args.format !== 'json') {
     throw new Error(`--format must be "text" or "json", got "${args.format}"`);
+  }
+  if (['per-finding', 'batched', 'both'].indexOf(args.shape) === -1) {
+    throw new Error(`--shape must be "per-finding", "batched", or "both", got "${args.shape}"`);
+  }
+  if (['refuterModelTiering', 'refuterBatching'].indexOf(args.auditSection) === -1) {
+    throw new Error(`--audit-section must be "refuterModelTiering" or "refuterBatching", got "${args.auditSection}"`);
   }
   for (const c of args.filterClass) {
     if (GROUND_TRUTH_CLASSES.indexOf(c) === -1) {
@@ -466,7 +647,16 @@ Options:
   --dispatch-stub <mod>  Inject a dispatcher module instead of \`claude\`.
   --concurrency <n>      Dispatch n trials at a time (default 1). Output order is unaffected.
   --score-only <path>    Score a saved results JSON; dispatch nothing.
-  --audit <doc>          Corpus-free arithmetic audit of refuterModelTiering.
+  --audit <doc>          Corpus-free arithmetic audit of a docs/token-baseline.json section.
+  --audit-section <s>    Which section --audit checks: refuterModelTiering (default)
+                         or refuterBatching.
+  --shape <s>            Refutation shape to drive: per-finding (default), batched, or both.
+  --batch-power          Report the batch-size distribution the corpus can form under the
+                         UNIT-SCOPED key and a POWER: SUFFICIENT|INSUFFICIENT verdict.
+                         Dispatches NOTHING. Run this BEFORE any batched A/B.
+  --min-batch-group <n>  Minimum unit-scoped group size for the anchoring measurement (default ${MIN_BATCH_GROUP_SIZE}).
+  --allow-underpowered   Build a batched arm below the pre-registered floor anyway. The
+                         result is stamped NO MEASUREMENT and can never carry a decision.
   --help                 Print this help and exit.
 `;
 
@@ -490,18 +680,21 @@ async function main(argv) {
       console.error(`${args.audit} is not parseable JSON (--audit expects docs/token-baseline.json): ${err.message}`);
       return 1;
     }
-    const section = parsed.refuterModelTiering;
+    const section = parsed[args.auditSection];
     if (!section) {
-      console.error(`${args.audit} has no "refuterModelTiering" section`);
+      console.error(`${args.audit} has no "${args.auditSection}" section`);
       return 1;
     }
-    const problems = auditTieringSection(section);
+    const problems =
+      args.auditSection === 'refuterBatching' ? auditBatchingSection(section) : auditTieringSection(section);
     if (problems.length) {
       console.error('run-refuter-agreement --audit FAILED against ' + args.audit + ':');
       for (const p of problems) console.error('  ' + p);
       return 1;
     }
-    console.log("run-refuter-agreement --audit OK: " + args.audit + "'s refuterModelTiering figures are internally consistent");
+    console.log(
+      'run-refuter-agreement --audit OK: ' + args.audit + "'s " + args.auditSection + ' figures are internally consistent'
+    );
     return 0;
   }
 
@@ -531,6 +724,15 @@ async function main(argv) {
   }
   if (args.limit !== undefined) items = items.slice(0, args.limit);
 
+  // STEP 1 OF THE PHASE, and it dispatches NOTHING: does this corpus have the
+  // power to answer the batching question at all? A batched arm dominated by
+  // size-1 batches is not evidence.
+  if (args.batchPower) {
+    const summary = groupCorpusForBatching(items, { minGroupSize: args.minBatchGroup });
+    console.log(formatBatchPower(summary));
+    return 0;
+  }
+
   if (args.scoreOnly) {
     const saved = JSON.parse(fs.readFileSync(resolveRepoPath(args.scoreOnly), 'utf8'));
     const report = scoreTrials(items, saved.trials || [], { baselineTier: saved.baselineTier });
@@ -557,41 +759,107 @@ async function main(argv) {
   }
 
   if (args.tiers.length === 0) throw new Error('--tiers is required (e.g. --tiers opus,sonnet)');
-  const trials = buildTrials(items, { tiers: args.tiers, replicates: args.replicates });
+
+  // BATCHED ARM. Built only from UNIT-SCOPED groups at or above the minimum
+  // size, so every batched dispatch is a shape production can actually produce.
+  const wantsBatched = args.shape === 'batched' || args.shape === 'both';
+  const wantsPerFinding = args.shape === 'per-finding' || args.shape === 'both';
+  let batchPower = null;
+  let batchPlan = null;
+  const batchPrompts = new Map();
+  if (wantsBatched) {
+    batchPower = groupCorpusForBatching(items, { minGroupSize: args.minBatchGroup });
+    batchPlan = buildBatchTrials(batchPower, {
+      tiers: args.tiers,
+      replicates: args.replicates,
+      allowUnderpowered: args.allowUnderpowered,
+    });
+    const itemById = new Map(items.map((i) => [i.id, i]));
+    const promptByGroup = new Map();
+    for (const g of batchPlan.groups) {
+      const members = g.ids.map((id) => itemById.get(id));
+      // The batch-local grading key. Corpus ids are unique, so they double as
+      // the `refute_id` a verdict must carry back.
+      const keyed = members.map((m) => ({ refute_id: m.id, ...m.finding }));
+      promptByGroup.set(g.key, buildBatchPrompt(members[0].mode, { key: g.dim }, keyed, { target: members[0].target }));
+    }
+    for (const t of batchPlan.trials) batchPrompts.set(t.trialId, promptByGroup.get(t.groupKey));
+  }
+
+  // With both arms in play the per-finding arm is scored over EXACTLY the items
+  // the batched arm covers, so the two shapes are compared on identical ground
+  // truth rather than on different slices of the corpus.
+  const perFindingItems =
+    args.shape === 'both' && batchPlan ? items.filter((i) => batchPlan.corpusIds.indexOf(i.id) !== -1) : items;
+  const trials = wantsPerFinding ? buildTrials(perFindingItems, { tiers: args.tiers, replicates: args.replicates }) : [];
+  const batchTrials = batchPlan ? batchPlan.trials : [];
+
   // The run label is operator-supplied or derived from the corpus — NEVER
   // generated from the clock, so two runs over the same corpus are comparable.
   const label = args.label || sha256(corpusText).slice(0, 12);
 
   if (args.dryRun) {
-    console.log(`DRY RUN — label ${label}: ${items.length} item(s) x ${args.tiers.length} tier(s) x ${args.replicates} replicate(s) = ${trials.length} trial(s). Nothing dispatched.`);
+    console.log(
+      `DRY RUN — label ${label}, shape ${args.shape}: ${perFindingItems.length} item(s) x ${args.tiers.length} tier(s) x ` +
+        `${args.replicates} replicate(s) = ${trials.length} trial(s), plus ${batchTrials.length} batched dispatch(es). Nothing dispatched.`
+    );
     for (const t of trials) console.log(`  ${t.trialId}  (${prompts.get(t.corpusId).length} prompt chars)`);
+    for (const t of batchTrials) {
+      console.log(`  ${t.trialId}  [batched x${t.dispatchSize}]  (${batchPrompts.get(t.trialId).length} prompt chars)`);
+    }
     return 0;
   }
 
   let dispatch = claudeDispatch;
+  let dispatchBatch = claudeBatchDispatch;
   if (args.dispatchStub) {
     const mod = await import(pathToFileURL(resolveRepoPath(args.dispatchStub)).href);
     dispatch = mod.dispatch || mod.default;
     if (typeof dispatch !== 'function') {
       throw new Error(`--dispatch-stub module "${args.dispatchStub}" exports neither \`dispatch\` nor a default function`);
     }
+    if (typeof mod.dispatchBatch === 'function') dispatchBatch = mod.dispatchBatch;
   }
 
-  const results = await runTrials(items, trials, prompts, dispatch, {
-    log: (m) => console.error(m),
-    concurrency: args.concurrency,
+  const results = wantsPerFinding
+    ? await runTrials(perFindingItems, trials, prompts, dispatch, {
+        log: (m) => console.error(m),
+        concurrency: args.concurrency,
+      })
+    : [];
+  const batchResults = batchTrials.length
+    ? await runBatchTrials(batchTrials, batchPrompts, dispatchBatch, {
+        log: (m) => console.error(m),
+        concurrency: args.concurrency,
+      })
+    : [];
+  const expanded = expandBatchResults(batchResults);
+  const allRows = results.concat(expanded.rows);
+  const anchoring = batchPlan
+    ? scoreAnchoring(batchPlan.groups, { 'per-finding': results, batched: expanded.rows }, { minGroupSize: args.minBatchGroup })
+    : null;
+  const report = scoreTrials(items, allRows, {
+    baselineTier: args.tiers[0],
+    noMeasurement: batchPlan ? batchPlan.noMeasurement : false,
+    anchoring,
+    batchPower,
   });
-  const report = scoreTrials(items, results, { baselineTier: args.tiers[0] });
   const payload = {
     instrument: 'scripts/run-refuter-agreement.mjs',
     label,
+    shape: args.shape,
     corpusPath: args.corpus,
     corpusSha256: sha256(corpusText),
     tiers: args.tiers,
     replicates: args.replicates,
     baselineTier: args.tiers[0],
     promptDrift: drifted,
-    trials: results,
+    underpowered: batchPlan ? batchPlan.underpowered : false,
+    noMeasurement: batchPlan ? batchPlan.noMeasurement : false,
+    unknownVerdictIds: expanded.unknownVerdictIds,
+    omittedVerdictIds: expanded.omittedIds,
+    trials: allRows,
+    batchDispatches: batchResults,
     report,
   };
   if (args.out) fs.writeFileSync(resolveRepoPath(args.out), JSON.stringify(payload, null, 2) + '\n');

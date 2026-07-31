@@ -60,7 +60,18 @@ import {
 // a naive `indexOf('{')` finds the TARGET, not the finding. Importing the two
 // symbols keeps this instrument and measure-refuter-severity.mjs from drifting.
 import { matchBrace, extractFinding } from './measure-refuter-severity.mjs';
-import { sha256, reconstructRefuteInputs, CORPUS_SCHEMA_VERSION } from './lib/refuter-agreement.mjs';
+import {
+  sha256,
+  reconstructRefuteInputs,
+  CORPUS_SCHEMA_VERSION,
+  groupCorpusForBatching,
+  batchGroupKeyFor,
+  unitIdentOf,
+} from './lib/refuter-agreement.mjs';
+
+// Re-exported so the harness can drive the same unit-scoped grouping the
+// --min-group-size filter uses, without importing two modules.
+export { batchGroupKeyFor, unitIdentOf };
 
 // Silence the unused-import lint concern: matchBrace is re-exported so a
 // consumer (and the harness) can reach the shared implementation through this
@@ -139,8 +150,13 @@ export function readRefuterRecord(filePath) {
  * @param {object} record - an agent record from `buildRecords`
  * @param {string} prompt
  * @param {object|null} verdict
+ * @param {number} [agentIndex] - the agent's position in the run sidecar's agent
+ *   array. Recorded so a REWORK re-review (a SECOND find→refute chain against
+ *   the same unit and dimension) can be split off from a first-round batch
+ *   instead of silently inflating its apparent size — see
+ *   `groupCorpusForBatching`'s round splitting.
  */
-export function buildCandidate(record, prompt, verdict) {
+export function buildCandidate(record, prompt, verdict, agentIndex) {
   const inputs = reconstructRefuteInputs(prompt, { extractFinding, matchBrace });
   if (!inputs.finding) return { ok: false, reason: 'unparseable-finding' };
   if (!inputs.mode) return { ok: false, reason: 'unrecoverable-mode' };
@@ -169,6 +185,7 @@ export function buildCandidate(record, prompt, verdict) {
         // past verdicts is circular.
         historicalVerdict: verdict,
         historicalModel: record.model,
+        ...(Number.isInteger(agentIndex) ? { agentIndex } : {}),
       },
       // The miner NEVER assigns ground truth. Adjudication is a separate,
       // human, evidence-citing pass against the repo at the recorded commit.
@@ -182,7 +199,8 @@ export function buildCandidate(record, prompt, verdict) {
  * Mine candidate corpus records from a sidecar tree.
  *
  * @param {{ root?: string, projectSlugPrefixes?: string[], until?: string,
- *   severities?: string[], limit?: number }} [options]
+ *   severities?: string[], limit?: number, minGroupSize?: number,
+ *   excludeIds?: Set<string>|string[] }} [options]
  */
 export function mine(options = {}) {
   const projectsRoot = options.root || defaultProjectsRoot();
@@ -203,8 +221,17 @@ export function mine(options = {}) {
   }
 
   const sessionDirOf = new Map();
+  // The agent's ordinal position within its run's own agent array. A REWORK
+  // re-review is a SECOND dispatch against the same (run, unit, mode, dim), and
+  // without an ordering field the four-part batch key silently merges the two.
+  const agentIndexOf = new Map();
   for (const rf of runFiles) {
     sessionDirOf.set(`${rf.projectSlug}|${rf.sessionId}|${rf.run.runId}`, rf.sessionDir);
+    (rf.run.agents || []).forEach((agent, index) => {
+      if (agent && agent.agentId) {
+        agentIndexOf.set(`${rf.projectSlug}|${rf.sessionId}|${rf.run.runId}|${agent.agentId}`, index);
+      }
+    });
   }
 
   const records = buildRecords(runFiles).filter((r) => r.agentClass === 'refute');
@@ -223,6 +250,9 @@ export function mine(options = {}) {
     skips[reason] = (skips[reason] || 0) + 1;
   };
 
+  const excludeIds =
+    options.excludeIds instanceof Set ? options.excludeIds : new Set(options.excludeIds || []);
+
   for (const r of records) {
     if (options.limit !== undefined && items.length >= options.limit) break;
     const sessionDir = sessionDirOf.get(`${r.projectSlug}|${r.sessionId}|${r.runId}`);
@@ -236,7 +266,12 @@ export function mine(options = {}) {
       bump(read.reason);
       continue;
     }
-    const built = buildCandidate(r, read.prompt, read.verdict);
+    const built = buildCandidate(
+      r,
+      read.prompt,
+      read.verdict,
+      agentIndexOf.get(`${r.projectSlug}|${r.sessionId}|${r.runId}|${r.agentId}`)
+    );
     if (!built.ok) {
       bump(built.reason);
       continue;
@@ -251,6 +286,50 @@ export function mine(options = {}) {
     items.push(built.item);
   }
 
+  // --min-group-size: emit only candidates whose UNIT-SCOPED batch group has at
+  // least n members, so a costly hand-adjudication pass buys only
+  // power-ADDING candidates. Candidates whose unit identity is unrecoverable are
+  // never grouped — they go to the same counted skip bucket everything else does.
+  //
+  // ORDER MATTERS: grouping runs over EVERY recovered candidate, INCLUDING ones
+  // already adjudicated into the checked-in corpus. An already-adjudicated item
+  // still occupies its slot in the real dispatch, so dropping it first would
+  // shrink partially-adjudicated groups below the floor and hide exactly the
+  // cheapest candidates to complete.
+  let batchGrouping = null;
+  if (options.minGroupSize !== undefined) {
+    const summary = groupCorpusForBatching(items, { minGroupSize: options.minGroupSize });
+    const keep = new Set();
+    for (const g of summary.groups) {
+      if (g.size >= options.minGroupSize) for (const id of g.ids) keep.add(id);
+    }
+    const before = items.length;
+    const kept = items.filter((i) => keep.has(i.id));
+    items.length = 0;
+    items.push(...kept);
+    skips['below-min-group-size'] = (skips['below-min-group-size'] || 0) + (before - kept.length);
+    batchGrouping = {
+      minGroupSize: options.minGroupSize,
+      groupCount: summary.groupCount,
+      sizeHistogram: summary.sizeHistogram,
+      sizeHistogramByMode: summary.sizeHistogramByMode,
+      qualifyingGroups: summary.qualifyingGroups,
+      qualifyingItems: summary.qualifyingItems,
+      unrecoverableUnitExcluded: summary.unrecoverableUnitExcluded,
+      nonGatingExcluded: summary.nonGatingExcluded,
+    };
+  }
+
+  // --exclude-corpus, applied LAST: an already-adjudicated item counted toward
+  // its group's size above, but must not be emitted again as a candidate.
+  if (excludeIds.size) {
+    const before = items.length;
+    const kept = items.filter((i) => !excludeIds.has(i.id));
+    items.length = 0;
+    items.push(...kept);
+    if (before - kept.length) skips['already-adjudicated'] = (skips['already-adjudicated'] || 0) + (before - kept.length);
+  }
+
   return {
     corpusRoot: projectsRoot,
     projectSlugPrefixes: prefixes,
@@ -258,8 +337,39 @@ export function mine(options = {}) {
     refuterRecordCount: records.length,
     recovered: items.length,
     skips,
+    batchGrouping,
     items,
   };
+}
+
+/**
+ * Read the ids already present in a checked-in corpus, so `--exclude-corpus`
+ * can make a re-mine APPEND rather than duplicate. A missing file is an
+ * actionable error, never a silent empty set.
+ *
+ * @param {string} filePath
+ * @returns {Set<string>}
+ */
+export function readCorpusIds(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    throw new Error(`--exclude-corpus could not read "${filePath}": ${err.message}`);
+  }
+  const ids = new Set();
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const item = JSON.parse(trimmed);
+      if (item && typeof item.id === 'string') ids.add(item.id);
+    } catch {
+      // A corpus line that does not parse cannot contribute an id to exclude;
+      // loadCorpus is the gate that reports it.
+    }
+  }
+  return ids;
 }
 
 // --- CLI ------------------------------------------------------------------
@@ -271,6 +381,8 @@ export function parseArgs(argv) {
     until: undefined,
     severities: [],
     limit: undefined,
+    minGroupSize: undefined,
+    excludeCorpus: null,
     out: null,
     format: 'jsonl',
     help: false,
@@ -303,6 +415,16 @@ export function parseArgs(argv) {
         args.limit = n;
         break;
       }
+      case '--min-group-size': {
+        const raw = takeValue('--min-group-size');
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 2) throw new Error(`--min-group-size must be an integer >= 2, got "${raw}"`);
+        args.minGroupSize = n;
+        break;
+      }
+      case '--exclude-corpus':
+        args.excludeCorpus = takeValue('--exclude-corpus');
+        break;
       case '--out':
         args.out = takeValue('--out');
         break;
@@ -337,6 +459,11 @@ Options:
   --until <iso-date>    Ignore runs starting after this instant.
   --severity <s>        Repeatable/comma-separated finding-severity filter.
   --limit <n>           Stop after n recovered records.
+  --min-group-size <n>  Emit only candidates whose UNIT-SCOPED batch group
+                        (runId, unit identity, mode, dimension) has >= n members,
+                        so a hand-adjudication pass buys only power-adding items.
+  --exclude-corpus <p>  Skip candidates whose id is already in this checked-in
+                        corpus JSONL, so a re-mine appends rather than duplicates.
   --out <path>          Write JSONL here instead of stdout.
   --format jsonl|json   Output format (default: jsonl).
   --help                Print this help and exit.
@@ -362,6 +489,8 @@ export function main(argv) {
     until: args.until,
     severities: args.severities,
     limit: args.limit,
+    minGroupSize: args.minGroupSize,
+    excludeIds: args.excludeCorpus ? readCorpusIds(path.resolve(args.excludeCorpus)) : undefined,
   });
 
   const body =
