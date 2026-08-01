@@ -1,10 +1,12 @@
 # Workflow vs. prose: where the autonomous lane's boundary goes
 
-**Status:** Decided. The rule and the per-script dispositions below are settled; the
-migration they describe is tracked by the `prose-autopilot-orchestration` roadmap, whose
-phases 2–5 are still in flight. Until phase 3 lands, `.claude/workflows/autopilot.js`
-still exists and still runs — this document records where the loop is *going*, not where
-it already is.
+**Status:** Decided, and the migration is done. The rule and the per-script dispositions
+below are settled; the migration they described was carried out by the
+`prose-autopilot-orchestration` roadmap. Phase 3 retired `.claude/workflows/autopilot.js`
+and `lib/autopilot.mjs` in favor of the prose `rdm-autopilot` skill (see
+`docs/autonomous-loop.md`) — this document now records where the loop went and why, and
+the `autopilot.js` row in the Dispositions table below is kept as a historical record of
+the reasoning, not a live inventory entry.
 
 The autonomous lane has two surfaces: deterministic **Workflow-tool scripts** under
 `.claude/workflows/`, and **prose skills** under `.claude/skills/`. The decision that
@@ -57,22 +59,24 @@ and it is why the loop moves to prose while everything it drives stays a workflo
 
 ## Dispositions
 
-Moving the drive loop to prose leaves the other seven scripts in place as workflows, but
-it is not a pure surface swap, and the table should not be read as claiming one.
-`autopilot.js` makes exactly **one** `workflow()` call today — `workflow('dispatch-phase',
-…)` — and reaches the estimate fan-out through a stamped `estimate-core` copy of its own,
-not by invoking `estimate`. The prose orchestrator will call `dispatch-phase` as autopilot
-does today **and additionally call `estimate` as a workflow**, which is a new call path
-rather than a preserved one, and which drops `gen-workflow-estimate.sh`'s stamped
+Moving the drive loop to prose left the other seven scripts in place as workflows, but
+it was not a pure surface swap, and the table should not be read as claiming one.
+`autopilot.js` made exactly **one** `workflow()` call — `workflow('dispatch-phase',
+…)` — and reached the estimate fan-out through a stamped `estimate-core` copy of its own,
+not by invoking `estimate`. The prose orchestrator calls `dispatch-phase` as autopilot
+did **and additionally calls `estimate` as a workflow**, which was a new call path
+rather than a preserved one, and which dropped `gen-workflow-estimate.sh`'s stamped
 consumers from three to one.
 
-Criterion 4 (determinism) is not tabulated because it holds by construction for all eight:
-the `Date.now(` / `Math.random(` bans are already grepped by the verify harnesses, so no
-script can violate it and stay green.
+Criterion 4 (determinism) is not tabulated because it held by construction for all eight
+while `autopilot.js` still existed, and continues to hold for the seven live scripts
+today: the `Date.now(` / `Math.random(` bans are already grepped by the verify harnesses,
+so no script can violate it and stay green.
 
-**Distribution is a separate axis from disposition.** Only `autopilot.js`,
-`dispatch-phase.js`, and `review-refute-fix.js` are emitted downstream by
-`generate_workflows`; `plan-review.js`, `estimate.js`, `backlog.js`, `document.js`, and
+**Distribution is a separate axis from disposition.** Only `dispatch-phase.js` and
+`review-refute-fix.js` are emitted downstream by `generate_workflows` (`autopilot.js` was
+too, until phase 3 retired it in favor of the prose `rdm-autopilot` skill); `plan-review.js`,
+`estimate.js`, `backlog.js`, `document.js`, and
 `spike-agent-type.js` are local-only, and every one of the local-only five references
 `agentType: 'rdm-mechanical'`, which a downstream tree has no definition for and which
 *raises* rather than degrading silently. So the phase 4 rewrite of the **distributed**
@@ -90,11 +94,11 @@ unaffected and still invokes the real `estimate` Workflow.
 
 | Script | Fan-out | Shape | Mid-run gate | Disposition |
 |---|---|---|---|---|
-| `autopilot.js` | only its estimate pre-pass — and that is a stamped `estimate-core` copy (single-sourced in `lib/estimate.mjs`), not a call to `estimate.js` | policy: advance/park, retry budgets, stop conditions, operator summary; sequential `while` loop, ~5 iterations | no | **MOVE to prose** (`rdm-autopilot` skill) — fails criteria 1 and 2, and is the anti-criterion exactly |
+| `autopilot.js` | only its estimate pre-pass — and that was a stamped `estimate-core` copy (single-sourced in `lib/estimate.mjs`), not a call to `estimate.js` | policy: advance/park, retry budgets, stop conditions, operator summary; sequential `while` loop, ~5 iterations | no | **MOVED to prose** (`rdm-autopilot` skill) — failed criteria 1 and 2, and was the anti-criterion exactly *(historical row — retired to prose in phase 3 of `prose-autopilot-orchestration`; the file no longer exists)* |
 | `dispatch-phase.js` | two review stages — plan (4 dimensions) then code (up to 7, narrowed by diff signals) — each fanning `parallel()` over its findings | mechanism: fixed 4-stage plan → plan-review → implement → code-review | no | **STAY** — real fan-out over a fixed procedure |
 | `review-refute-fix.js` | same review core: dimensions → findings | mechanism: find → refute → filter → verdict | no | **STAY** — the canonical review pipeline, already single-sourced in `lib/review.mjs` |
 | `plan-review.js` | the review core **plus** an outer `parallel()` over phase units | mechanism | no | **STAY** — two nested levels of genuine fan-out |
-| `estimate.js` | `parallel()` rate over unestimated phases | mechanism | no | **STAY** — the pre-pass fan-out, which the prose loop will now depend on *newly*, as a real `workflow()` call rather than autopilot's stamped copy |
+| `estimate.js` | `parallel()` rate over unestimated phases | mechanism | no | **STAY** — the pre-pass fan-out, which the prose loop now depends on *newly* (in the local dogfood skill only — the distributed template drops the pre-pass, see "Decided (phase 4)" above), as a real `workflow()` call rather than autopilot's former stamped copy |
 | `backlog.js` | `parallel()` over ≤4 signal categories | mechanism; propose-only, zero mutation | no — the handoff to a human is terminal | **STAY** |
 | `document.js` | `parallel()` git-gather over completed phases | mechanism; zero rdm mutation | no — approval is terminal | **STAY** |
 | `spike-agent-type.js` | none (its cases are dispatched sequentially on purpose) | neither — it is a spike artifact that exercises the Workflow runtime itself, not a lane | n/a | **STAY, exempt** — kept as the executable record of the spike; it would not be authored as a lane workflow today |
@@ -122,21 +126,26 @@ set aside, and neither should be reintroduced as justification for it.
 
 ## Known cost
 
-`scripts/verify-workflow-autopilot.sh` currently gates the drive loop hermetically —
+`scripts/verify-workflow-autopilot.sh` used to gate the drive loop hermetically —
 drive-to-reviewed, rework/park, escalation, budget stops, the estimate pre-pass, and
 `--plan-only` — plus a byte-identity drift gate against `lib/autopilot.mjs`. Prose cannot
-be gated that way. Retiring the JS loop therefore **loses real regression coverage**, and
-deciding what of that coverage survives (and in what form) is a first-class phase of
+be gated that way. Retiring the JS loop therefore **lost real regression coverage**, and
+deciding what of that coverage survived (and in what form) was a first-class phase of
 `prose-autopilot-orchestration` — phase 3 — not a cleanup afterthought. Criterion 5 above
-cuts both ways: the loop is a poor fit for a hermetic harness, but "poor fit" is not
-"zero value", and what it does catch has to be replaced or consciously given up.
+cuts both ways: the loop was a poor fit for a hermetic harness, but "poor fit" is not
+"zero value", so what it caught was replaced rather than dropped: phase 3 landed
+`scripts/verify-skill-autopilot.sh`, which gates the surviving loop policies (static text
+invariants for drive-to-reviewed, rework-retry-once-then-park, escalated→park, budget
+stops, estimate-pre-pass-always-runs, `--plan-only` dedup) plus a dynamic advance/park
+write+read-back contract against the real binary — there is no `lib/autopilot.mjs`
+anymore, so there is no byte-identical-copy drift gate to run.
 
 ## Coupling
 
-`autopilot.js` has eight touchpoints, which is why this is a roadmap rather than a task:
-the two verify harnesses that drive it, the generator that stamps `estimate-core` into
+`autopilot.js` had eight touchpoints, which is why this was a roadmap rather than a task:
+the two verify harnesses that drove it, the generator that stamped `estimate-core` into
 it, the distribution byte-identity gate, `agent_config.rs`'s emission, both
-`skill-autopilot-{cli,mcp}.md` shims, and the distributed template copy. They are
+`skill-autopilot-{cli,mcp}.md` shims, and the distributed template copy. They were
 enumerated in full under "Coupling to be unwound" in the roadmap body
 (`rdm roadmap show prose-autopilot-orchestration --project rdm`); that enumeration is
 canonical and is not duplicated here.

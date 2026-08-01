@@ -43,7 +43,7 @@ This skill is **non-interactive**.
 
 Invoke the **`estimate` Workflow** via the Workflow tool with `{ roadmap, mechanicalModel, phaseList }` (omit `phase` — autopilot always estimates the whole roadmap, never a single phase number). Run this call **unconditionally**, even if `phaseList` shows zero unestimated phases — it is a cheap no-op fan-out in that case, the same always-invoke-and-let-it-no-op design the `rdm-estimate` skill itself uses; do not skip it as an optimization.
 
-This is a **genuinely new call path**, not a relocation: today's `autopilot.js` reaches the same rating fan-out only through a stamped `estimate-core` copy embedded in `lib/autopilot.mjs`, never a real `workflow('estimate', …)` call. This skill is the first caller to invoke `estimate` for real from the autopilot lane.
+This is a **genuinely new call path**, not a relocation: the retired `autopilot.js` reached the same rating fan-out only through a stamped `estimate-core` copy embedded in `lib/autopilot.mjs`, never a real `workflow('estimate', …)` call. This skill is the first caller to invoke `estimate` for real from the autopilot lane.
 
 Do not reimplement any part of the estimate pass in prose here — the filtering, the per-phase rating fan-out, and the persistence step all stay entirely inside `estimate.js`'s own pipeline, untouched by this skill.
 

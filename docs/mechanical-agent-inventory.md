@@ -84,7 +84,7 @@ Where a call site lives determines how it is edited. Three routes exist:
 which sit inside the byte-copied `plan-review-driver` block. No mechanical site sits inside a
 generator-**stamped** block, so no generator had to learn anything new for this phase.
 
-Independently: `autopilot.js`, `dispatch-phase.js` and `review-refute-fix.js` carry
+Independently: `dispatch-phase.js` and `review-refute-fix.js` carry
 hand-maintained **byte-identical copies** under `rdm-core/src/templates/workflows/`, embedded
 by `rdm-core/src/agent_config.rs` via `include_str!`. **No generator writes those copies** —
 they are re-synced by `cp`, and `scripts/verify-agent-config-distribution.sh` plus
@@ -460,11 +460,11 @@ both directions with planted-mutation self-tests.
 |---|---|---|
 | `document.js` | `model:mechanical`, `fetch:roadmap-meta`, `gather:<stem>`, `write:draft` | unprojected driver (all below `document-core:end`) — edit in place |
 | `backlog.js` | `model:mechanical`, `fetch:report` | unprojected driver — edit in place |
-| `estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver (below `estimate-core:end`) — edit in place. **Verified NOT stamped**: the generator projects only the `estimate-core` block, so these do not propagate into the distributed `autopilot.js`, which carries its own duplicate driver copies of the same labels |
+| `estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver (below `estimate-core:end`) — edit in place. **Verified NOT stamped**: the generator projects only the `estimate-core` block, so these do not propagate into any distributed workflow (`autopilot.js` formerly carried its own duplicate driver copies of the same labels, before its retirement to prose) |
 | `plan-review.js` | `fetch:roadmap`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | **byte-copied** — inside the `plan-review-driver` block; edit `lib/plan-review.mjs` first, then copy verbatim. `verify-workflow-review.sh` §5b-drift gates the pair |
 | `plan-review.js` | `model:mechanical` | unprojected driver (below `plan-review-driver:end`) — edit in place |
 
-15 sites, three maintenance routes, all threaded. **Off-limits regardless:** `autopilot.js`,
+15 sites, three maintenance routes, all threaded. **Off-limits regardless:**
 `dispatch-phase.js`, `review-refute-fix.js` (byte-identical to the distributed templates, gated
 by `verify-agent-config-distribution.sh`), anything stamped from `lib/review.mjs` or
 `lib/estimate.mjs`, and every judgment site — `find:*`, `refute:*`, `plan:*`, `implement:*`,

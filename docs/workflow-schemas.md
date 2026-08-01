@@ -5,8 +5,8 @@ scripts** under `.claude/workflows/`, a sibling of `.claude/skills/` and
 `.claude/hooks/`. This document defines the conventions those scripts follow and
 the canonical schema contracts they exchange.
 
-> **Scope:** mostly dogfood-only, with one emitted exception. The three workflow
-> scripts — `autopilot.js`, `dispatch-phase.js`, `review-refute-fix.js` — ARE now
+> **Scope:** mostly dogfood-only, with one emitted exception. The two workflow
+> scripts — `dispatch-phase.js`, `review-refute-fix.js` — ARE now
 > emitted by `rdm agent-config claude --skills --out <dir>`, byte-identical to
 > this repo's own `.claude/workflows/` copies, under `<dir>/.claude/workflows/`
 > (Claude-only, `--out`-only — see `CHANGELOG.md`). Everything else stays
@@ -17,10 +17,15 @@ the canonical schema contracts they exchange.
 > arbitrary target repo). rdm's shipped autonomous skills
 > (`rdm-core/src/templates/skill-{autopilot,dispatch-phase}-{cli,mcp}.md`, and the
 > `--auto` section of `skill-do-{cli,mcp}.md`) are the user-facing autonomous
-> lane and are now thin shims that invoke the three workflow scripts above via
-> the `Workflow` tool, instead of re-narrating the orchestration in prose.
-> Distributing the still-unshipped pieces (parameterization, `lib/`, a
-> downstream regeneration story) remains a follow-up roadmap.
+> lane: `skill-autopilot-{cli,mcp}.md` is now a **prose** skill that itself
+> drives the roadmap loop, invoking `dispatch-phase` (and, locally, `estimate`)
+> as ordinary `Workflow` calls rather than being a thin shim over a workflow
+> script of its own — see `docs/workflow-vs-prose-boundary.md` for why autopilot
+> was retired from `.claude/workflows/` in favor of prose. `skill-dispatch-phase-{cli,mcp}.md`
+> remains a thin shim that invokes `dispatch-phase.js` via the `Workflow` tool,
+> instead of re-narrating the orchestration in prose. Distributing the
+> still-unshipped pieces (parameterization, `lib/`, a downstream regeneration
+> story) remains a follow-up roadmap.
 
 ## The `.claude/workflows/` convention
 
@@ -634,7 +639,7 @@ the same repo at the path the runtime searches.
 The consequence is material. `rdm-core/src/agent_config.rs` exposes exactly
 `generate_skills` and `generate_workflows`; there is **no** emission surface for
 `.claude/agents/`, and adding one is out of scope for this phase by decision. Had
-`agentType: 'mechanical'` been threaded into `autopilot.js`, `dispatch-phase.js`
+`agentType: 'mechanical'` been threaded into `dispatch-phase.js`
 and `review-refute-fix.js` and re-synced into
 `rdm-core/src/templates/workflows/`, every downstream repo running
 `rdm agent-config claude --skills --out <dir>` would receive workflows that
@@ -681,7 +686,7 @@ source of `plan-review.js`'s `plan-review-driver` block):
 |---|---|---|
 | `document.js` | `model:mechanical`, `fetch:roadmap-meta`, `gather:<stem>`, `write:draft` | unprojected driver |
 | `backlog.js` | `model:mechanical`, `fetch:report` | unprojected driver |
-| `estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver, below `estimate-core:end` — verified not to propagate into the distributed `autopilot.js` |
+| `estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver, below `estimate-core:end` — not distributed to any downstream workflow (`autopilot.js` formerly carried its own duplicate `estimate-core` copy before its retirement to prose) |
 | `plan-review.js` + `lib/plan-review.mjs` | `fetch:roadmap`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | byte-copied block — both halves edited, gated by §5b-drift |
 | `plan-review.js` | `model:mechanical` | unprojected driver, below `plan-review-driver:end` |
 
@@ -1424,16 +1429,11 @@ fail-open contract). `verify-workflow-dispatch.sh` pins both halves: exactly one
 
 ## autopilot contract
 
-`autopilot` (`.claude/workflows/autopilot.js`) is the **active driver**: given one
-roadmap slug it drives every actionable phase to `reviewed` by calling
-`dispatch-phase` via `workflow()` — the one allowed level of nesting (no deeper
-`workflow()` call lives inside `dispatch-phase`). Its pure control core lives once
-in `lib/autopilot.mjs` between `autopilot-loop:begin` / `autopilot-loop:end`
-markers and is copied byte-identical into the workflow script (gated by
-`scripts/verify-workflow-autopilot.sh`). The block names **no** ambient runtime
-global — every side effect is reached through an injected `deps` object — so the
-module imports cleanly in Node for unit testing and the harness drives the whole
-loop with state-backed fakes.
+Autopilot is now the prose `rdm-autopilot` skill
+([`docs/autonomous-loop.md`](./autonomous-loop.md)); it consumes the same
+dispatch-phase OUTCOME contract below (`statusFor`/`writesCompletion`) rather
+than defining its own, and its own advance/park Bash steps are what persist the
+terminal status per "The core fix" below — dispatch-phase itself never does.
 
 ### The core fix: the loop advances off PERSISTED status
 
@@ -1441,109 +1441,27 @@ loop with state-backed fakes.
 phase (or task) `in-progress` itself, best-effort, right after Stage 0 (metadata
 + model resolution) and before it starts working the item; a `--plan-only` run
 skips that stamp, since it never implements — and `rdm next` returns only
-`not-started`/`in-progress` phases (it skips `reviewed`/`blocked`/…). So the loop
-persists the terminal status **itself**, which is what makes `rdm next` step
-forward and eventually return `nothing`:
+`not-started`/`in-progress` phases (it skips `reviewed`/`blocked`/…). So the
+driving loop persists the terminal status **itself** (its own advance/park
+steps), which is what makes `rdm next` step forward and eventually return
+`nothing`:
 
-- a `reviewed` OUTCOME (normal mode) → `advance` dep runs
+- a `reviewed` OUTCOME (normal mode) → advance runs
   `rdm phase update <stem> --status reviewed`;
-- a rework-exhausted or `escalated` OUTCOME → `park` dep runs
+- a rework-exhausted or `escalated` OUTCOME → park runs
   `rdm phase update <stem> --status blocked --reason "[code|plan] …"`.
 
 There is **no** normal-mode in-memory `seen` Set; progress is driven entirely by
 the persisted status the selector reads back.
 
-### Config (`parseAutopilotArgs`)
-
-| field         | type               | notes                                                   |
-| ------------- | ------------------ | ------------------------------------------------------- |
-| `roadmap`     | string (required)  | the single roadmap slug; the loop never roams elsewhere |
-| `maxPhases`   | positive int \| null | the `--max-phases` bound (null = unbounded by count)  |
-| `planOnly`    | boolean            | `--plan-only`: each dispatch stops after its plan gate  |
-| `globalBudget`| int                | total-dispatch cap per run (defaults to a sane constant)|
-
-It never yields a `--land` flag — landing is the separate `rdm-land` skill.
-
-### Dep interface (`buildAutopilot(deps)` → `runAutopilot(config)`)
-
-The block reaches the runtime only through these injected deps; the real ones
-(built outside the block) close over `agent()`/`parallel()`/`workflow()`/`log()`:
-
-| dep                                   | effect                                                                                  |
-| ------------------------------------- | --------------------------------------------------------------------------------------- |
-| `estimateList(slug)`                  | Bash agent: `rdm phase list … --format json`                                            |
-| `parallelEstimate(unestimated)`       | one `parallel()` fan-out of estimator agents → `{ stem, difficulty }[]`                  |
-| `estimateWriteback(stem, diff, slug)` | Bash agent: `rdm phase update <stem> --difficulty <diff>` (tier auto-derives)           |
-| `fetchNext(slug)`                     | Bash agent: `rdm next … --format json` → parsed JSON                                     |
-| `dispatch(slug, stem, planOnly)`      | `workflow('dispatch-phase', { roadmap, phase, planOnly })` → the dispatch-phase OUTCOME  |
-| `advance(stem, slug, status)`         | Bash agent: `rdm phase update <stem> --status <status>` (status from the OUTCOME)        |
-| `park(stem, reason, slug)`            | Bash agent: `rdm phase update <stem> --status blocked --reason "<reason>"`               |
-| `log(msg)`                            | progress line                                                                            |
-
-### OUTCOME-driven transitions (`interpretOutcome`)
-
-The whole `dispatch-phase` OUTCOME **object** drives the next loop action.
-`interpretOutcome` reads `status` and `reason` off it rather than restating the
-mapping (a bare outcome string is still accepted, and falls back to the legacy
-literals):
-
-| OUTCOME      | mode        | action                                                          |
-| ------------ | ----------- | -------------------------------------------------------------- |
-| `reviewed`   | normal      | `advance` → `--status <outcome.status>`; record completed      |
-| `reviewed`   | `--plan-only` | `noop-vetted` → record vetted, do NOT advance                |
-| `rework`     | under budget| `retry` → re-dispatch the same phase                           |
-| `rework`     | budget spent| `park` → `--status blocked --reason "[code] …"`                |
-| `escalated`  | —           | `park` → `--status blocked --reason "[plan] …"`                |
-
-Retained loop state is bounded: the latest `fetchNext` result, the current
-OUTCOME, per-phase rework/advance counters, the running dispatch count, the
-ordered `completed[]` and `escalations[]` arrays, and (only under `--plan-only`) a
-`planOnlySeen` Set. The rework-budget park stays autopilot's **own** decision:
-dispatch's `rework` status (`in-progress`) describes a single dispatch, whereas a
-phase whose roadmap-level retry budget is spent belongs in the `blocked`
-escalation queue. A mid-tier default (`resolveTier(model || 'medium')`) covers
-any unset tier at dispatch. The run stops on `nothing` /
-`blocked-on-dependencies`, on the global step budget or `--max-phases`, or (under
-`--plan-only`) when a vetted phase is re-returned.
-
-### Summary (`buildSummary`, always emitted)
-
-Every run — whatever stopped it — returns a deterministic summary string: the
-phases completed in order, the escalations each tagged `plan`/`code` with their
-reason and a pointer at `./target/debug/rdm review blocked --project rdm`, the
-stop reason, and a note that reviewed work is left on the `roadmap/<slug>` branch
-and `main` is **never** touched.
-
-### Harness invariant: the completion trailer (INVERTED)
-
-`scripts/verify-workflow-autopilot.sh` used to assert the land-time completion
-trailer was absent from `autopilot.js` **anywhere** — an absolute whole-file rule,
-written when nothing wrote the trailer at all. Now that the write happens at land
-time, the rule is deliberately **scoped**, and paired with a positive assertion:
-
-- still absolutely forbidden in every **built prompt** (the Node `FORBIDDEN`
-  sweep) — autopilot must never ask an agent to write the trailer itself;
-- still forbidden in autopilot's own **code** — the whole-file grep is now scoped
-  to non-comment lines;
-- now **allowed in explanatory comments**, so the file may name `rdm-land` as the
-  land-time writer;
-- **new positive regression** (`verify-workflow-autopilot.sh` § 6, hermetic,
-  against the real binary): a trailer-less commit on `roadmap/rm` — exactly the
-  state an autopilot run leaves — gains `Done: rm/phase-1-x` from
-  `rdm hook done-line` + `git commit --amend` with **no rebase**, and
-  `rdm hook post-commit` then flips the phase to `done` with the landed SHA.
-
-`verify-workflow-dispatch.sh` keeps the complementary absence assertion (AC-1:
-no trailer literal inside a stamped region; no OUTCOME JSON contains one) so both
-directions stay pinned.
-
 ### `dispatch-phase` `planOnly`
 
 `dispatch-phase` accepts an optional `planOnly` arg. When set, once the plan gate
 passes it returns early — `{ outcome: 'reviewed', summary: 'plan-only: plan gate
-passed', findings: <planFindings> }` — before implementing, so autopilot can vet
-the plan half cheaply. This early return lives in the driver, outside the copied
-`dispatch-outcome` block, and adds no new nested `workflow()` call.
+passed', findings: <planFindings> }` — before implementing, so a caller such as
+the prose `rdm-autopilot` loop can vet the plan half cheaply. This early return
+lives in the driver, outside the copied `dispatch-outcome` block, and adds no
+new nested `workflow()` call.
 
 ## Testing convention
 
@@ -1572,9 +1490,6 @@ classification rule behind them, and the measured delta live in
 | `dispatch-phase` | `phaseMeta` | `fetch:phase-meta` | **all-or-nothing** — see below |
 | `dispatch-phase` | `taskMeta` | `fetch:task-meta` | **all-or-nothing** — see below |
 | `dispatch-phase` | `alreadyInProgress` | `stamp:in-progress` | boolean; the caller must already have written the status |
-| `autopilot` | `mechanicalModel` | `model:mechanical` | non-empty string |
-| `autopilot` | `phaseList` | `estimate:list` | array |
-| `autopilot` | `next` | `fetch:next` | object — **one-shot**, see below |
 | `estimate` | `mechanicalModel` | `model:mechanical` | non-empty string |
 | `estimate` | `phaseList` | `estimate:list` | array |
 | `plan-review` | `fetched` | `fetch:roadmap` / `fetch:<kind>` | object with a non-empty `body` **and** a `tags` array of strings (roadmap kind additionally: an array `phases` whose every entry carries a non-empty `stem`, a string `body`, and its own `tags` array) |
@@ -1630,13 +1545,6 @@ negative cases (absent / empty / blank / non-string tier) fall back to the agent
 and a positive pair proves a hoisted `large` and a hoisted `medium` produce
 *different* outcomes from one identical concern seed.
 
-### `autopilot`'s `next` is one-shot
-
-`rdm next` is what *advances the cursor* once `advance`/`park` has persisted a
-status. A caller-supplied `next` is therefore consumed on the **first loop
-iteration only**; iterations 2..N always re-read live state. A non-one-shot
-implementation would re-dispatch the same phase forever after a rework.
-
 ### `plan-review`'s `fetched` is structured-keys-only
 
 `parsePlanArgs` reads `fetched` / `wontFixedTexts` / `mechanicalModel` from
@@ -1676,8 +1584,8 @@ the item from `not-started` straight to `blocked` with no in-progress signal.
 
 ### Which caller surfaces supply them today
 
-- **`dispatch-phase`, `autopilot`, `rdm-do --auto`** — supplied by the *distributed*
-  skill shims (`rdm-core/src/templates/skill-{autopilot,dispatch-phase,do}-{cli,mcp}.md`)
+- **`dispatch-phase`, `rdm-do --auto`** — supplied by the *distributed*
+  skill shims (`rdm-core/src/templates/skill-{dispatch-phase,do}-{cli,mcp}.md`)
   and their local copies.
 - **`plan-review`, `backlog`, `document`, `review-refute-fix`, `estimate`** — supplied
   only by this repo's **local** `.claude/skills/*/SKILL.md` dogfood copies. Their
