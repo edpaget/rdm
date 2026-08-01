@@ -415,8 +415,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "What to do" steps still telling a downstream agent to invoke it — a
   contradiction that would have broken the very first dispatch of the
   emitted skill in any repo that ran `rdm agent-config claude --skills`.
-  The steps now describe driving the loop directly and composing the two
-  real Workflows it still relies on (`estimate`, `dispatch-phase`), and both
+  The steps now describe driving the loop directly and composing the real
+  `dispatch-phase` Workflow it still relies on, and both
   `rdm-core`'s generated-skill tests and
   `scripts/verify-agent-config-distribution.sh` gained a planted-mutation-backed
   assertion that the emitted template can never again claim to invoke a
