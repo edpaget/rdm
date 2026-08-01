@@ -184,6 +184,7 @@ Every commit follows the [Conventional Commits](https://www.conventionalcommits.
 
 - **Commit format: `type(scope): description`.** Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`. Scopes: `core`, `cli`, `server`, or omit for cross-cutting.
 - **Changelog follows Keep a Changelog.** An `[Unreleased]` section collects pending changes. Categories: Added, Changed, Deprecated, Removed, Fixed, Security. Entries move to a versioned section on release.
+- **The entry lands in the same commit as the change.** A user-facing change and its changelog entry are one commit — entries are never deferred to a follow-up or batched at release time.
 - **Commits tell *why*, not *what*.** The diff shows what changed. The commit message explains the motivation.
 
 ### Why

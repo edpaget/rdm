@@ -1049,9 +1049,18 @@ assert.equal(JSON.stringify(poutA), JSON.stringify(poutB), 'plan review output i
 assert.throws(() => buildReviewPipeline('bogus', deps(spy)), /unknown review mode/, 'unknown mode throws');
 
 // ============================================================================
-// AC2 — code-mode findPrompt output is byte-exact against a baseline captured
-// BEFORE the plan-severity-calibration change. Any difference (including a
-// single stray byte) means the calibration work leaked into code-mode prompts.
+// AC2 — code-mode findPrompt output is byte-exact against a pinned baseline.
+// The pin serves two purposes at once:
+//   1. Leak detection. The baseline was first captured BEFORE the
+//      plan-severity-calibration change; any difference (including a single
+//      stray byte) means plan-mode work leaked into code-mode prompts.
+//   2. Project-agnostic prose. The baseline was re-fixtured when the code
+//      dimensions stopped hardcoding this project's own language and crate
+//      conventions and started directing the finder agent at the consuming
+//      project's principles document. Re-pinning at the new neutral strings
+//      keeps a project-specific convention from creeping back in.
+// Both purposes depend on the comparison staying BYTE-EXACT — never relax it
+// to a substring, regex, or normalized match.
 // ============================================================================
 const CODE_PROMPT_BASELINE = {
   // `ac` intentionally diverges from the FINDINGS-schema baseline shape below —
@@ -1059,21 +1068,111 @@ const CODE_PROMPT_BASELINE = {
   // the AC-table-channel change) — so its baseline is the AC_REVIEW prompt, not
   // the shared FINDINGS-schema wording every other dimension shares.
   ac: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is AC compliance (ac). For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the AC_REVIEW schema: an `ac` array with ONE entry per acceptance criterion — criterion, status (PASS|FAIL|PARTIAL), and evidence (file:line, test name) — plus an OPTIONAL `findings` array (same shape as the FINDINGS schema) for narrative notes that do not reduce to a single criterion\'s status.\nOnly leave `ac` empty if the target states no acceptance criteria at all — report that itself as a `findings` entry.',
-  correctness: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Correctness & error handling (correctness). Logic bugs, edge cases, race conditions, and error paths. In rdm-core, errors must be hand-written matchable enums (no anyhow / type erasure); in rdm-cli / rdm-server, anyhow with .context(). User-facing CLI errors must be actionable.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
+  correctness: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Correctness & error handling (correctness). Logic bugs, edge cases, race conditions, and error paths. Judge error handling against the conventions the project states in its principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md in the project root) — which error type each layer must use, and where context may be added. User-facing errors must be actionable: what went wrong and what the reader can do about it.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
   tests: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Tests (tests). Do tests exist and cover the key behaviors and edge cases? Was TDD followed? Are there untested branches or newly added logic with no test?\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
-  architecture: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Architecture (architecture). Does logic live in rdm-core with cli/server as thin layers? No duplicated logic across interfaces? Correct core/cli/server separation and conventional-commit scope discipline.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
+  architecture: 'You are a READ-ONLY reviewer. Do not edit any files.\nReview target: phase widget/phase-1-foo.\nInspect the implementation diff (use git log / git diff in the worktree).\nYour single dimension is Architecture (architecture). Does logic live where the project\'s stated layering contract puts it, with the interaction layers on top staying thin? No duplicated logic across interfaces? Read the project\'s principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the layering contract and the commit-scope convention, and flag any change that violates one.\nReport only findings you can back with concrete evidence. One strong finding beats five weak ones.\nReturn JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.\nReturn an empty `findings` array if the dimension is clean.',
 };
-// Scoped to the dimensions that existed when the baseline was captured; the
-// dimensions added later (api-docs, changelog, security) are covered by the
-// coverage-parity assertion below instead.
+// Scoped to the dimensions that existed when the baseline was captured. The
+// dimensions added later (api-docs, changelog, security) have NO byte-exact
+// entry here on purpose — widening the fixture would pin prose the baseline was
+// never meant to guard. Do NOT read that as "covered elsewhere": the
+// coverage-parity assertion further down compares only DIMENSIONS.code's KEY
+// SET and `when`-trigger wiring, never prompt text. The project-agnostic
+// property of api-docs' and changelog's prose is asserted by AC2b below.
 for (const dim of DIMENSIONS.code.filter((d) => CODE_PROMPT_BASELINE[d.key])) {
   assert.equal(
     findPrompt('code', dim, CTX),
     CODE_PROMPT_BASELINE[dim.key],
-    'code-mode findPrompt("' + dim.key + '") must stay byte-identical to the pre-calibration baseline'
+    'code-mode findPrompt("' + dim.key + '") must stay byte-identical to the pinned baseline'
   );
 }
-console.log('AC2: code-mode findPrompt output is byte-exact against the pre-calibration baseline');
+console.log('AC2: code-mode findPrompt output is byte-exact against the pinned baseline');
+
+// ============================================================================
+// AC2b — the five code dimensions rewritten for project-agnosticism
+// (correctness, architecture, api-docs, changelog, security) must state generic
+// intent and route the concrete conventions through the consuming project's
+// principles document. `correctness` and `architecture` are additionally
+// byte-pinned above; `api-docs`, `changelog` and `security` are NOT (see the
+// note on the baseline's scope), so without this block the dimensions whose
+// rdm-specific hardcoding was the whole point of the rewrite would have no
+// content-level coverage at all. Asserted in BOTH directions so a regression
+// fails either way:
+//   - negative: no crate name, language name, language-specific doc-section
+//     name, or hardcoded changelog filename may appear in the dimension's
+//     title or focus;
+//   - positive: the focus must still name the principles document and its
+//     CLAUDE.md / AGENTS.md fallback, so genericity cannot be "achieved" by
+//     deleting the convention pointer outright.
+// The scope is deliberately these five keys; `ac` / `tests` were already
+// neutral. `security` keeps its threat taxonomy (injection, path traversal,
+// secret leakage, authorization) — rebuilding THAT on a language-neutral
+// threat-model vocabulary is the sibling phase's unit — but its
+// safety-escape-hatch clause no longer names a specific language's construct
+// or comment convention, so it belongs here.
+// ============================================================================
+{
+  const REWRITTEN_CODE_DIMS = ['correctness', 'architecture', 'api-docs', 'changelog', 'security'];
+  const forbiddenCodeTokens = [
+    'rdm-core',
+    'rdm-cli',
+    'rdm-server',
+    'rdm-mcp',
+    'anyhow',
+    'rustdoc',
+    'Rust',
+    'cargo',
+    'Cargo',
+    'crate',
+    'missing_docs',
+    '# Errors',
+    '# Panics',
+    '# Safety',
+    'CHANGELOG.md',
+  ];
+  for (const key of REWRITTEN_CODE_DIMS) {
+    const dim = DIMENSIONS.code.find((d) => d.key === key);
+    assert.ok(dim, 'the ' + key + ' dimension must exist in DIMENSIONS.code');
+    const scopedText = [dim.title, dim.focus].join('\n');
+    for (const tok of forbiddenCodeTokens) {
+      assert.ok(
+        scopedText.indexOf(tok) === -1,
+        'the ' + key + ' dimension prose must be project-agnostic — found forbidden token: ' + tok
+      );
+    }
+    assert.ok(
+      dim.focus.includes('principles document'),
+      'the ' + key + " dimension focus must direct the finder at the project's principles document"
+    );
+    assert.ok(
+      dim.focus.includes('docs/principles.md') &&
+        dim.focus.includes('CLAUDE.md') &&
+        dim.focus.includes('AGENTS.md'),
+      'the ' + key + ' dimension focus must name docs/principles.md and its CLAUDE.md / AGENTS.md fallback'
+    );
+  }
+
+  // CARVE-OUT LEDGER — now EMPTY. This used to permit exactly one carve-out
+  // (`security`, for its `unsafe` / `// SAFETY:` wording). That wording is gone,
+  // so the permitted set is the empty set: NO code dimension's title or focus
+  // may name a language-specific construct or comment convention. Keeping the
+  // assertion (rather than deleting it) is what stops the carve-out from
+  // silently re-opening — a language-specific idiom reintroduced into ANY code
+  // dimension fails here.
+  const LANGUAGE_SPECIFIC_IDIOMS = ['`unsafe`', '// SAFETY:'];
+  const stillLanguageSpecific = DIMENSIONS.code
+    .filter((d) => LANGUAGE_SPECIFIC_IDIOMS.some((tok) => [d.title, d.focus].join('\n').includes(tok)))
+    .map((d) => d.key);
+  assert.deepEqual(
+    stillLanguageSpecific,
+    [],
+    'no code dimension may carry a language-specific idiom — the carve-out is closed ' +
+      'and must not re-open; got: ' +
+      JSON.stringify(stillLanguageSpecific)
+  );
+}
+console.log('AC2b: the rewritten code dimensions are project-agnostic and point at the principles document');
+console.log('AC2b: no code dimension carries a language-specific idiom — the carve-out is closed');
 
 // ============================================================================
 // AC1 — every plan-mode findPrompt output carries the plan-stage severity
@@ -1666,6 +1765,176 @@ if run_node "$TMP/mutation-test.mjs" "$SCRATCH/.claude/workflows/lib/review.mjs"
     pass "calibration presence check fires on planted removal (self-test proves it is not vacuous)"
 else
     fail "mutation self-test did not behave as expected — either the mutated file failed to import, or the presence check did not fail on stripped calibration text"
+fi
+
+# --- 4a. PROJECT-AGNOSTIC DIMENSION PROSE MUTATION SELF-TESTS -----------------
+# Prove AC2b (embedded in section 3's test.mjs) is not vacuous, in ALL THREE of
+# the directions it asserts. Three independent hermetic scratch copies of the lib:
+#   M1 re-introduces a project-specific token into a rewritten dimension's title
+#      (the negative half — a regression back to rdm's own conventions);
+#   M2 renames the principles-document pointer away (the positive half — a
+#      "genericity" achieved by deleting the convention channel instead of
+#      redirecting it);
+#   M3 leaks a language-specific idiom into a code dimension (the ledger half —
+#      proving the now-EMPTY carve-out cannot silently re-open).
+# All three mutations are literal string substitutions inside existing string
+# literals, so the mutated file always stays importable JS and a parse error
+# cannot masquerade as a passing self-test.
+say "4a. Project-agnostic dimension prose mutation self-tests (proves AC2b is not vacuous)"
+
+cat >"$TMP/agnostic-mut-test.mjs" <<'NODE_AGNOSTIC_MUT'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const mutatedLibPath = process.argv[2];
+const half = process.argv[3]; // 'negative' | 'positive' | 'ledger'
+const mod = await import(pathToFileURL(mutatedLibPath).href); // must still parse/import cleanly
+
+const REWRITTEN_CODE_DIMS = ['correctness', 'architecture', 'api-docs', 'changelog', 'security'];
+const forbiddenCodeTokens = [
+  'rdm-core',
+  'rdm-cli',
+  'rdm-server',
+  'rdm-mcp',
+  'anyhow',
+  'rustdoc',
+  'Rust',
+  'cargo',
+  'Cargo',
+  'crate',
+  'missing_docs',
+  '# Errors',
+  '# Panics',
+  '# Safety',
+  'CHANGELOG.md',
+];
+
+function assertNoForbiddenToken(m) {
+  for (const key of REWRITTEN_CODE_DIMS) {
+    const dim = m.DIMENSIONS.code.find((d) => d.key === key);
+    assert.ok(dim, 'missing dimension ' + key);
+    const scopedText = [dim.title, dim.focus].join('\n');
+    for (const tok of forbiddenCodeTokens) {
+      assert.ok(scopedText.indexOf(tok) === -1, 'forbidden token in ' + key + ': ' + tok);
+    }
+  }
+}
+
+function assertPrinciplesPointer(m) {
+  for (const key of REWRITTEN_CODE_DIMS) {
+    const dim = m.DIMENSIONS.code.find((d) => d.key === key);
+    assert.ok(dim, 'missing dimension ' + key);
+    assert.ok(dim.focus.includes('principles document'), 'no principles pointer in ' + key);
+    assert.ok(
+      dim.focus.includes('docs/principles.md') &&
+        dim.focus.includes('CLAUDE.md') &&
+        dim.focus.includes('AGENTS.md'),
+      'no principles fallback chain in ' + key
+    );
+  }
+}
+
+function assertCarveOutLedger(m) {
+  const LANGUAGE_SPECIFIC_IDIOMS = ['`unsafe`', '// SAFETY:'];
+  const stillLanguageSpecific = m.DIMENSIONS.code
+    .filter((d) => LANGUAGE_SPECIFIC_IDIOMS.some((tok) => [d.title, d.focus].join('\n').includes(tok)))
+    .map((d) => d.key);
+  assert.deepEqual(stillLanguageSpecific, [], 'carve-out re-opened: ' + JSON.stringify(stillLanguageSpecific));
+}
+
+if (half === 'negative') {
+  assert.throws(
+    () => assertNoForbiddenToken(mod),
+    'the forbidden-token check must FAIL once a project-specific token is planted back into a rewritten dimension'
+  );
+} else if (half === 'ledger') {
+  assert.throws(
+    () => assertCarveOutLedger(mod),
+    'the carve-out ledger must FAIL once a language-specific idiom leaks into any code dimension'
+  );
+} else {
+  assert.throws(
+    () => assertPrinciplesPointer(mod),
+    'the principles-pointer check must FAIL once the pointer is renamed away'
+  );
+}
+
+console.log('agnostic mutation self-test (' + half + ') passed');
+NODE_AGNOSTIC_MUT
+
+AGMUT="$TMP/agnostic-mut"
+mkdir -p "$AGMUT"
+
+# CONTROL: all three halves must PASS against the real, unmutated file —
+# otherwise every mutation below would "fail correctly" for the wrong reason.
+cat >"$TMP/agnostic-control.mjs" <<'NODE_AGNOSTIC_CONTROL'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const mod = await import(pathToFileURL(process.argv[2]).href);
+const REWRITTEN_CODE_DIMS = ['correctness', 'architecture', 'api-docs', 'changelog', 'security'];
+for (const key of REWRITTEN_CODE_DIMS) {
+  const dim = mod.DIMENSIONS.code.find((d) => d.key === key);
+  assert.ok(dim, 'missing dimension ' + key);
+  const scopedText = [dim.title, dim.focus].join('\n');
+  for (const tok of ['rdm-core', 'rustdoc', 'missing_docs', 'CHANGELOG.md', 'anyhow']) {
+    assert.ok(scopedText.indexOf(tok) === -1, 'control: forbidden token in ' + key + ': ' + tok);
+  }
+  assert.ok(dim.focus.includes('principles document'), 'control: no principles pointer in ' + key);
+}
+const LANGUAGE_SPECIFIC_IDIOMS = ['`unsafe`', '// SAFETY:'];
+const stillLanguageSpecific = mod.DIMENSIONS.code
+  .filter((d) => LANGUAGE_SPECIFIC_IDIOMS.some((tok) => [d.title, d.focus].join('\n').includes(tok)))
+  .map((d) => d.key);
+assert.deepEqual(
+  stillLanguageSpecific,
+  [],
+  'control: the carve-out ledger does not hold on the real lib: ' + JSON.stringify(stillLanguageSpecific)
+);
+console.log('agnostic control passed');
+NODE_AGNOSTIC_CONTROL
+
+if run_node "$TMP/agnostic-control.mjs" "$LIB" >/dev/null 2>&1; then
+    pass "4a-control: the unmutated lib satisfies all three halves of AC2b"
+else
+    fail "4a-control: the unmutated lib FAILS AC2b — every mutation below is vacuous"
+fi
+
+# M1 (negative half): plant a project-specific token back into api-docs' title.
+sed "s/title: 'Public API docs',/title: 'Public API docs (rdm-core rustdoc)',/" \
+    "$LIB" >"$AGMUT/m1.mjs"
+if diff -q "$LIB" "$AGMUT/m1.mjs" >/dev/null 2>&1; then
+    fail "4a-M1: the planted-token mutation did not apply — the anchor text moved"
+fi
+if run_node "$TMP/agnostic-mut-test.mjs" "$AGMUT/m1.mjs" negative >/dev/null 2>&1; then
+    pass "4a-M1: the forbidden-token check fires on a planted project-specific token"
+else
+    fail "4a-M1: AC2b's forbidden-token check did NOT fire on a planted rdm-core/rustdoc token"
+fi
+
+# M2 (positive half): rename the principles-document pointer away.
+sed 's/principles document/design notes/g' "$LIB" >"$AGMUT/m2.mjs"
+if diff -q "$LIB" "$AGMUT/m2.mjs" >/dev/null 2>&1; then
+    fail "4a-M2: the pointer-removal mutation did not apply — the anchor text moved"
+fi
+if run_node "$TMP/agnostic-mut-test.mjs" "$AGMUT/m2.mjs" positive >/dev/null 2>&1; then
+    pass "4a-M2: the principles-pointer check fires when the pointer is renamed away"
+else
+    fail "4a-M2: AC2b's principles-pointer check did NOT fire on a removed pointer"
+fi
+
+# M3 (ledger half): leak a language-specific idiom into `correctness`, i.e. into
+# a code dimension. The now-empty exact-set assertion must fire.
+# shellcheck disable=SC2016  # the backticks are literal prose in the planted idiom
+sed 's/User-facing errors must be actionable/Every `unsafe` block must be justified; user-facing errors must be actionable/' \
+    "$LIB" >"$AGMUT/m3.mjs"
+if diff -q "$LIB" "$AGMUT/m3.mjs" >/dev/null 2>&1; then
+    fail "4a-M3: the leaked-idiom mutation did not apply — the anchor text moved"
+fi
+if run_node "$TMP/agnostic-mut-test.mjs" "$AGMUT/m3.mjs" ledger >/dev/null 2>&1; then
+    pass "4a-M3: the carve-out ledger fires when a language-specific idiom leaks into a code dimension"
+else
+    fail "4a-M3: AC2b's carve-out ledger did NOT fire on an idiom leaked into correctness"
 fi
 
 # --- 5. PLAN-STANDALONE PATH -------------------------------------------------
@@ -4270,6 +4539,67 @@ for doc in $PLAN_RENDERS; do
     done
 done
 pass "10g: the non-merge rationale renders into the three CODE skills and into no PLAN skill"
+
+# --- 10h. PROJECT-AGNOSTIC PROSE ON THE RENDERED SURFACES --------------------
+# AC2b (section 3) guards the runtime projection — the `focus` strings a finder
+# agent actually receives. This guards the DOCUMENTATION projection: the `//|`
+# spec prose gen-skill-review.sh renders into the four SHIPPED skill templates
+# and the two dogfood copies. The two projections are independent (a `//|` line
+# is inert at runtime; a `focus` string never reaches a template), so a
+# regression could land in either one alone. `unsafe` is absent from the
+# WHOLE-FILE token list only because each code skill's own hand-written
+# step-2/step-3 prose (outside the `rdm:review-spec` markers) still names it as
+# a diff trigger signal; that prose is not dimension prose and is owned
+# elsewhere. The dimension prose itself is checked for it separately below.
+say "10h: rendered review skills carry no project-specific convention prose"
+AGNOSTIC_TOKENS='rdm-core|rdm-cli|rdm-server|anyhow|rustdoc|missing_docs|# Panics|# Safety|# Errors'
+for doc in $CODE_RENDERS $PLAN_RENDERS; do
+    if grep -nE "$AGNOSTIC_TOKENS" "$doc" >&2; then
+        fail "10h: $doc carries project-specific convention prose (see the hits above)"
+    fi
+done
+
+# Region-scoped half: inside the `rdm:review-spec` markers — the rendered
+# dimension prose and nothing else — the language-specific idioms the security
+# dimension used to carry must be gone too. This is the documentation-side
+# mirror of AC2b's now-empty carve-out ledger.
+# shellcheck disable=SC2016  # the backticks are literal prose in the searched idiom
+REGION_TOKENS='`unsafe`|// SAFETY:'
+for doc in $CODE_RENDERS $PLAN_RENDERS; do
+    if awk '/rdm:review-spec:begin/{f=1} f; /rdm:review-spec:end/{f=0}' "$doc" |
+        grep -nE "$REGION_TOKENS" >&2; then
+        fail "10h: $doc's review-spec region carries a language-specific idiom (see the hits above)"
+    fi
+done
+# Non-vacuity for the region-scoped half: plant the retired idiom back inside
+# the region and prove the detector fires.
+mkdir -p "$TMP/agnostic-region"
+# shellcheck disable=SC2016  # the backticks are literal prose in the planted regression
+sed 's/Injection, path traversal/Every `unsafe` block needs a `\/\/ SAFETY:` comment. Injection, path traversal/' \
+    "$TEMPLATES/skill-review-cli.md" >"$TMP/agnostic-region/planted.md"
+if diff -q "$TEMPLATES/skill-review-cli.md" "$TMP/agnostic-region/planted.md" >/dev/null 2>&1; then
+    fail "10h: the planted region-idiom mutation did not apply — the anchor text moved"
+fi
+if awk '/rdm:review-spec:begin/{f=1} f; /rdm:review-spec:end/{f=0}' "$TMP/agnostic-region/planted.md" |
+    grep -qE "$REGION_TOKENS"; then
+    pass "10h: rendered dimension prose carries no language-specific idiom; the detector fires on a planted one"
+else
+    fail "10h: the region-scoped detector did NOT fire on a planted \`unsafe\`/SAFETY regression — the check is vacuous"
+fi
+# Non-vacuity: the same grep MUST fire on a planted copy.
+AGDOC="$TMP/agnostic-doc"
+mkdir -p "$AGDOC"
+# shellcheck disable=SC2016  # the backticks are literal prose in the planted regression
+sed 's/documentation the project/rustdoc `# Panics` documentation the project/' \
+    "$TEMPLATES/skill-review-cli.md" >"$AGDOC/planted.md"
+if diff -q "$TEMPLATES/skill-review-cli.md" "$AGDOC/planted.md" >/dev/null 2>&1; then
+    fail "10h: the planted-prose mutation did not apply — the anchor text moved"
+fi
+if grep -qE "$AGNOSTIC_TOKENS" "$AGDOC/planted.md"; then
+    pass "10h: rendered skills are project-agnostic; the detector fires on a planted regression"
+else
+    fail "10h: the detector did NOT fire on a planted rustdoc/# Panics regression — the check is vacuous"
+fi
 
 # --- 10f. PLANTED-MUTATION SELF-TESTS (non-vacuity for 10c/10d/10e) ----------
 say "10f. Dimension-invariant mutation self-tests (prove 10c/10d/10e are not vacuous)"

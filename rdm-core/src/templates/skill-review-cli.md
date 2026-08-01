@@ -131,32 +131,47 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   unmet, ambiguous, or untestable. The per-criterion table is the contract
   and is reported intact.
 - **correctness** — *always.* Logic bugs, edge cases, race conditions, and
-  error paths, judged against the project's error-handling conventions
-  (CLAUDE.md / AGENTS.md). User-facing errors must be actionable.
+  error paths, judged against the error-handling conventions the project
+  states in its principles document (`docs/principles.md` if present,
+  otherwise `CLAUDE.md` / `AGENTS.md` in the project root) — which error
+  type each layer must use, and where context may be added. User-facing
+  errors must be actionable.
 - **tests** — *trigger: the diff adds or changes non-trivial logic, or adds
   no test files.* Do tests exist and cover the key behaviors and edge
   cases? Was a test-first discipline followed? Are there untested branches?
 - **architecture** — *trigger: the diff touches more than one module/layer,
   or moves logic between layers.* Does logic live where the project's
-  architecture says it should, with thin layers on top? No duplicated logic
-  across interfaces?
-- **api-docs** — *trigger: the diff changes a public `rdm-core` item.* Are
-  public items documented per the project's conventions
-  (`#![warn(missing_docs)]`)? Are `# Errors`, `# Panics`, and `# Safety`
-  sections present where the project requires them?
+  stated layering contract puts it, with the interaction layers on top
+  staying thin? No duplicated logic across interfaces? Read the project's
+  principles document (`docs/principles.md` if present, otherwise
+  `CLAUDE.md` / `AGENTS.md`) for the layering contract and the commit-scope
+  convention, and flag any change that violates one.
+- **api-docs** — *trigger: the diff changes a public API item.* Do public
+  items carry the documentation the project's principles document requires
+  (`docs/principles.md` if present, otherwise `CLAUDE.md` / `AGENTS.md`)?
+  Read it for which items are in scope and which sections each kind of item
+  must carry — failure modes, abort conditions, safety invariants,
+  examples.
 - **changelog** — *trigger: the diff makes a user-facing change (CLI
   commands, API endpoints, MCP tools, config options, observable
-  behavior).* A user-facing change MUST carry a `CHANGELOG.md` entry in the
-  same commit; a missing entry is **blocking**, per the project's
-  conventions. The entry must read from a user's perspective, not describe
+  behavior).* A user-facing change MUST carry a changelog entry in the
+  same commit; a missing entry is **blocking**. Read the project's
+  principles document (`docs/principles.md` if present, otherwise
+  `CLAUDE.md` / `AGENTS.md`) for the changelog file, its format, and its
+  categories. The entry must read from a user's perspective, not describe
   internals.
 - **security** — *trigger: the diff touches auth, input parsing or
   validation, path/file handling, subprocess or shell invocation, secrets
-  and credentials, deserialization, network code, or `unsafe` blocks.*
+  and credentials, deserialization, network code, or a construct that
+  opts out of the language's memory- or type-safety guarantees.*
   Injection, path traversal, secret leakage, missing authorization, and
-  unsafe-invariant violations. Every `unsafe` block needs a `// SAFETY:`
-  comment stating the invariant it upholds; an unjustified or risky
-  construct is a finding.
+  violated safety invariants. Where the language offers an escape hatch
+  out of its own safety guarantees, every use must be justified in the
+  form the project requires and must state the invariant the caller
+  upholds — read the project's principles document
+  (`docs/principles.md` if present, otherwise `CLAUDE.md` /
+  `AGENTS.md`) for that requirement. An unjustified or
+  invariant-violating use is a finding.
 
 **Why `ac` and `correctness` are NOT merged into one always-on finder.**
 Plan mode's always-on lenses all resolve the SAME findings schema, which is

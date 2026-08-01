@@ -221,6 +221,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The shipped code-review dimensions no longer hardcode rdm's own Rust
+  conventions. `correctness`, `architecture`, `api-docs`, `changelog` and
+  `security` now state generic intent — the error-handling conventions the
+  project states, its layering contract, the documentation its public API
+  requires, its changelog rule, and how it requires a use of the language's
+  safety escape hatch to be justified — and direct the reviewing agent to read
+  the consuming project's own principles document (`docs/principles.md`,
+  falling back to `CLAUDE.md` / `AGENTS.md` in the project root) for the
+  specifics. A repo in any language now gets a reviewer that enforces that
+  repo's rules instead of applying rustdoc, crate-layout and `// SAFETY:` rules
+  to it. This is a prose change only: no config key, CLI
+  flag, or pipeline input changed, and pointing the reviewer at a different
+  project still requires no code change.
 - The shipped review pipeline now grades **at most 5 findings per review unit**
   by default. It ranks a unit's gating findings by severity, then confidence,
   and dispatches a refuter only for the top 5; the rest are still reported, but

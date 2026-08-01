@@ -151,13 +151,16 @@ const DIMENSIONS = {
         'For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable.',
     },
     //|code| - **correctness** — *always.* Logic bugs, edge cases, race conditions, and
-    //|code|   error paths, judged against the project's error-handling conventions
-    //|code|   (CLAUDE.md / AGENTS.md). User-facing errors must be actionable.
+    //|code|   error paths, judged against the error-handling conventions the project
+    //|code|   states in its principles document (`docs/principles.md` if present,
+    //|code|   otherwise `CLAUDE.md` / `AGENTS.md` in the project root) — which error
+    //|code|   type each layer must use, and where context may be added. User-facing
+    //|code|   errors must be actionable.
     {
       key: 'correctness',
       title: 'Correctness & error handling',
       focus:
-        'Logic bugs, edge cases, race conditions, and error paths. In rdm-core, errors must be hand-written matchable enums (no anyhow / type erasure); in rdm-cli / rdm-server, anyhow with .context(). User-facing CLI errors must be actionable.',
+        "Logic bugs, edge cases, race conditions, and error paths. Judge error handling against the conventions the project states in its principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md in the project root) — which error type each layer must use, and where context may be added. User-facing errors must be actionable: what went wrong and what the reader can do about it.",
     },
     //|code| - **tests** — *trigger: the diff adds or changes non-trivial logic, or adds
     //|code|   no test files.* Do tests exist and cover the key behaviors and edge
@@ -171,51 +174,63 @@ const DIMENSIONS = {
     },
     //|code| - **architecture** — *trigger: the diff touches more than one module/layer,
     //|code|   or moves logic between layers.* Does logic live where the project's
-    //|code|   architecture says it should, with thin layers on top? No duplicated logic
-    //|code|   across interfaces?
+    //|code|   stated layering contract puts it, with the interaction layers on top
+    //|code|   staying thin? No duplicated logic across interfaces? Read the project's
+    //|code|   principles document (`docs/principles.md` if present, otherwise
+    //|code|   `CLAUDE.md` / `AGENTS.md`) for the layering contract and the commit-scope
+    //|code|   convention, and flag any change that violates one.
     {
       key: 'architecture',
       title: 'Architecture',
       focus:
-        'Does logic live in rdm-core with cli/server as thin layers? No duplicated logic across interfaces? Correct core/cli/server separation and conventional-commit scope discipline.',
+        "Does logic live where the project's stated layering contract puts it, with the interaction layers on top staying thin? No duplicated logic across interfaces? Read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the layering contract and the commit-scope convention, and flag any change that violates one.",
       when: (s) => !!s.multiModule,
     },
-    //|code| - **api-docs** — *trigger: the diff changes a public `rdm-core` item.* Are
-    //|code|   public items documented per the project's conventions
-    //|code|   (`#![warn(missing_docs)]`)? Are `# Errors`, `# Panics`, and `# Safety`
-    //|code|   sections present where the project requires them?
+    //|code| - **api-docs** — *trigger: the diff changes a public API item.* Do public
+    //|code|   items carry the documentation the project's principles document requires
+    //|code|   (`docs/principles.md` if present, otherwise `CLAUDE.md` / `AGENTS.md`)?
+    //|code|   Read it for which items are in scope and which sections each kind of item
+    //|code|   must carry — failure modes, abort conditions, safety invariants,
+    //|code|   examples.
     {
       key: 'api-docs',
       title: 'Public API docs',
       focus:
-        'Public items in rdm-core must carry doc comments (#![warn(missing_docs)]). A function returning Result needs a `# Errors` section; one that can panic needs `# Panics`; an `unsafe fn` needs `# Safety`. Flag any public item added or changed by this diff that is missing a required section.',
+        "Public API items must carry the documentation the project's principles document requires (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) — read it for which items are in scope and which sections each kind of item must carry (failure modes, abort conditions, safety invariants, examples). Flag any public item added or changed by this diff that is missing a required section.",
       when: (s) => !!s.publicApiChanged,
     },
     //|code| - **changelog** — *trigger: the diff makes a user-facing change (CLI
     //|code|   commands, API endpoints, MCP tools, config options, observable
-    //|code|   behavior).* A user-facing change MUST carry a `CHANGELOG.md` entry in the
-    //|code|   same commit; a missing entry is **blocking**, per the project's
-    //|code|   conventions. The entry must read from a user's perspective, not describe
+    //|code|   behavior).* A user-facing change MUST carry a changelog entry in the
+    //|code|   same commit; a missing entry is **blocking**. Read the project's
+    //|code|   principles document (`docs/principles.md` if present, otherwise
+    //|code|   `CLAUDE.md` / `AGENTS.md`) for the changelog file, its format, and its
+    //|code|   categories. The entry must read from a user's perspective, not describe
     //|code|   internals.
     {
       key: 'changelog',
       title: 'Changelog',
       focus:
-        "A user-facing change (CLI command, API endpoint, MCP tool, config option, or observable behavior) MUST carry a CHANGELOG.md entry under [Unreleased] in the SAME commit — a missing entry is a `blocking` finding per CLAUDE.md. The entry must describe the change from a user's perspective, not internal implementation details.",
+        "A user-facing change (CLI command, API endpoint, MCP tool, config option, or observable behavior) MUST carry a changelog entry in the SAME commit — a missing entry is a `blocking` finding. Read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the changelog file, its format, and its categories. The entry must describe the change from a user's perspective, not internal implementation details.",
       when: (s) => !!s.userFacing,
     },
     //|code| - **security** — *trigger: the diff touches auth, input parsing or
     //|code|   validation, path/file handling, subprocess or shell invocation, secrets
-    //|code|   and credentials, deserialization, network code, or `unsafe` blocks.*
+    //|code|   and credentials, deserialization, network code, or a construct that
+    //|code|   opts out of the language's memory- or type-safety guarantees.*
     //|code|   Injection, path traversal, secret leakage, missing authorization, and
-    //|code|   unsafe-invariant violations. Every `unsafe` block needs a `// SAFETY:`
-    //|code|   comment stating the invariant it upholds; an unjustified or risky
-    //|code|   construct is a finding.
+    //|code|   violated safety invariants. Where the language offers an escape hatch
+    //|code|   out of its own safety guarantees, every use must be justified in the
+    //|code|   form the project requires and must state the invariant the caller
+    //|code|   upholds — read the project's principles document
+    //|code|   (`docs/principles.md` if present, otherwise `CLAUDE.md` /
+    //|code|   `AGENTS.md`) for that requirement. An unjustified or
+    //|code|   invariant-violating use is a finding.
     {
       key: 'security',
       title: 'Security',
       focus:
-        'Injection (shell/command/SQL), path traversal, secret or credential leakage into logs/errors/commits, missing or incorrect authorization, unsafe deserialization, and untrusted-input validation gaps. Every `unsafe` block must carry a `// SAFETY:` comment that states the invariant the caller upholds — an unjustified or invariant-violating `unsafe` is a finding. Judge subprocess and file-path handling against the project conventions.',
+        "Injection (shell/command/SQL), path traversal, secret or credential leakage into logs/errors/commits, missing or incorrect authorization, unsafe deserialization, and untrusted-input validation gaps. Where the language offers an escape hatch out of its own memory- or type-safety guarantees, every use must be justified in the form the project requires and must state the invariant the caller upholds — read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for that requirement, and treat an unjustified or invariant-violating use as a finding. Judge subprocess and file-path handling against the same conventions.",
       when: (s) => !!(s.securitySurface || s.hasUnsafe),
     },
     //|code|

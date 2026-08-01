@@ -1038,6 +1038,56 @@ the target's type).
 `unit-of-work` triggers on `signals.targetType === 'phase'`, which is why target
 type is a first-class signal rather than diff shape alone.
 
+#### Dimension prose states intent; the project's principles document states the conventions
+
+A dimension's `focus` string (and the `//|` spec prose rendered beside it) states
+**generic intent** — what the lens is looking for — and then directs the finder
+agent to read the consuming project's principles document for the concrete
+conventions: `docs/principles.md` if present, otherwise `CLAUDE.md` / `AGENTS.md`
+in the project root. `code`'s `correctness`, `architecture`, `api-docs`,
+`changelog` and `security` follow the pattern `plan`'s `architectural-fit`
+established. So
+`api-docs` triggers on "the diff changes a public API item" and asks whether the
+documentation sections the project requires are present, without naming any one
+language's doc-section headings; `changelog` requires a same-commit entry without
+fixing the changelog file or its format; `architecture` asks whether logic lives
+where the project's stated layering contract puts it, rather than naming this
+repo's own modules; and `security` asks whether each use of the language's
+escape hatch out of its own safety guarantees is justified in the form the
+project requires, without naming one language's keyword or comment convention.
+The pipeline is the same reviewer in every repo; the rules it enforces come from
+the repo it is pointed at.
+
+**The channel is prose only.** The finder agent reads the file itself — agents
+can read files, so the JS does not have to. There is deliberately **no
+`principles` pipeline input, no substitution pass or template placeholder, and no
+per-dimension convention override**. A placeholder is not even available here:
+`.claude/workflows/*.js` is both the template and the executed file, so an
+unsubstituted token would sit in the file the runtime actually runs, and any
+emit-time substitution would break the byte-identity gates. Retargeting the
+reviewer at a different project therefore requires no code change at all.
+
+**No carve-out remains, and the empty set is enforced.**
+`scripts/verify-workflow-review.sh` § AC2b asserts that the set of code
+dimensions whose title or focus still carries a language-specific idiom is
+**exactly `[]`** — the assertion is kept rather than deleted precisely so the
+carve-out cannot silently re-open. The same section asserts both halves of the
+property for `correctness`, `architecture`, `api-docs`, `changelog` and
+`security`: no crate/language/doc-section token in their prose, **and** a
+surviving pointer to the principles document, so genericity cannot be "achieved"
+by deleting the convention channel outright. Three planted-mutation self-tests
+(§ 4a) prove all three assertions fire, and § 10h applies the same zero-grep to
+the rendered skill surfaces — whole-file for the crate/doc-section tokens, and
+scoped to the `rdm:review-spec` region for the retired idioms, since each code
+skill's own hand-written diff-signal prose (outside the markers, owned
+elsewhere) still names them. A `//|` spec line and a `focus` string are
+independent projections, so a regression could land in either alone.
+
+What `security` deliberately does **not** do is restructure its threat taxonomy:
+it still enumerates injection, path traversal, secret leakage, authorization and
+deserialization by name. Rebuilding that half on a language-neutral threat-model
+vocabulary is a separate unit.
+
 #### Why the always-on sets are not collapsed into one finder per mode
 
 Each always-on dimension is its own agent, paying its own agent context floor.
@@ -1094,6 +1144,12 @@ load-bearing:
 - an **explicit** signals object — even `{}` — → the always-on dimensions plus
   exactly those whose `when` fires. `{}` means "computed, nothing triggered".
 - an unknown `mode` → throw.
+
+The `context` contract carries **no** project-conventions key. Making the
+dimension prose project-agnostic (above) added no pipeline input: the finder
+agent is told in prose to read the project's principles document, so `context`
+still holds only `target`, the optional `signals`, `maxRefutations`, and whatever
+else a caller threads into the prompts.
 
 Do **not** write `d.when(signals || {})`. Substituting `{}` for omitted signals
 makes every conditional predicate read falsy and silently drops the triggered
