@@ -46,7 +46,7 @@ consumers by a `gen-workflow-*.sh` generator under a byte-identity gate. And `wo
 nesting is capped at **one level** — a workflow may call another, but that one may not.
 A candidate that needs to compose two existing workflows therefore cannot simply nest
 them; it either spends the single level, carries a stamped copy (which is why
-`autopilot.js` holds its own `estimate-core` copy rather than calling `estimate`), or
+`autopilot.js` held its own `estimate-core` copy rather than calling `estimate`), or
 belongs at the prose layer, where no such cap applies. Both constraints are recorded in
 `docs/workflow-schemas.md`.
 

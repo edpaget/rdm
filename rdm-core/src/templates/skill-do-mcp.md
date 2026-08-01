@@ -121,7 +121,7 @@ The task-flow twin of the phase dispatch above. A task belongs to no roadmap, ca
 
 Tasks always dispatch at the fixed `medium` tier (there is no task estimate), so the `large`-tier gate tightening never applies. Task bodies often carry no formal acceptance criteria; the plan/review gates tolerate their absence.
 
-**Single-item scope:** unlike the `autopilot` workflow's advance/park loop, this single-item entry point parks on the first `rework`/`escalated` OUTCOME rather than re-dispatching against a rework budget — re-run `rdm-do --auto <roadmap> <phase>` (or `--auto --task <slug>`) by hand to retry. Skipping the outer rework-retry here is intentional, not an oversight.
+**Single-item scope:** unlike the prose `rdm-autopilot` skill's advance/park loop, this single-item entry point parks on the first `rework`/`escalated` OUTCOME rather than re-dispatching against a rework budget — re-run `rdm-do --auto <roadmap> <phase>` (or `--auto --task <slug>`) by hand to retry. Skipping the outer rework-retry here is intentional, not an oversight.
 
 ## Side-work
 
