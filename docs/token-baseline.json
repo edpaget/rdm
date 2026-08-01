@@ -1750,5 +1750,275 @@
         "why": "A PRE-CONDITION on shipping: measure-refuter-severity.mjs and mine-refuter-corpus.mjs parse a SINGLE-finding prompt header, so a batched prompt would make new runs unminable and stop nonGatingRefutationSkip, refuterFanout and the corpus itself from growing."
       }
     ]
+  },
+  "planFinderCollapse": {
+    "question": "Can plan mode's THREE always-on finders (coherence, architectural-fit, restraint) be collapsed into ONE agent holding three lenses, without losing findings per lens?",
+    "doc": "docs/finder-collapse.md",
+    "instrument": [
+      "scripts/lib/finder-collapse.mjs",
+      "scripts/run-finder-collapse.mjs",
+      "scripts/mine-plan-finder-corpus.mjs",
+      "scripts/verify-finder-collapse.sh"
+    ],
+    "regenerateCommand": "node scripts/run-finder-collapse.mjs --score tests/fixtures/finder-collapse/trials-opus-r2.json --format json",
+    "preRegistrationCommit": "65baf92",
+    "window": {
+      "until": "2026-07-31T00:00:00Z",
+      "projectSlugPrefixes": [
+        "-Users-edward-Projects-rdm"
+      ],
+      "minPlanDocChars": 500,
+      "note": "The pinned mining window. Independent of, and not subtractable against, nonGatingRefutationSkip / refuterFanout / determiningFindingRank / refuterModelTiering / refuterBatching, each of which carries its own window."
+    },
+    "corpus": {
+      "file": "tests/fixtures/finder-collapse/corpus.jsonl",
+      "reviewUnits": 16,
+      "planFinderRecords": 424,
+      "unitsByTargetType": {
+        "phase": 15,
+        "task": 1,
+        "roadmap": 0
+      },
+      "roadmapBodyUnitsExcluded": 5,
+      "roadmapBodyExclusionReason": "Every roadmap-body unit in the window was dispatched with a fetch-status line (36-102 chars) in place of the roadmap body, so all five fall below minPlanDocChars. Filed as rdm task plan-review-roadmap-body-fetch-status-line."
+    },
+    "power": {
+      "verdict": "SUFFICIENT",
+      "floors": {
+        "minUnits": 8,
+        "minReplicates": 2,
+        "minTargetTypes": 2,
+        "requiredLenses": [
+          "coherence",
+          "architectural-fit",
+          "restraint"
+        ]
+      },
+      "runUnits": 8,
+      "replicates": 2,
+      "targetTypesPresent": [
+        "phase",
+        "task"
+      ]
+    },
+    "run": {
+      "trialsFile": "tests/fixtures/finder-collapse/trials-opus-r2.json",
+      "model": "opus",
+      "dispatches": {
+        "A": 48,
+        "B": 16
+      },
+      "dispatchErrors": {
+        "A": 2,
+        "B": 1
+      },
+      "dispatchErrorNote": "Three trials returned no findings array and are excluded from their lens's observation count. Two are arm A (one of them the architectural-fit finder on phase-7), so the error bias runs AGAINST arm B's case being overstated."
+    },
+    "perLens": {
+      "coherence": {
+        "armA": {
+          "findings": 43,
+          "observations": 16,
+          "meanPerObservation": 2.6875,
+          "severity": {
+            "blocking": 14,
+            "concern": 23,
+            "suggestion": 6,
+            "other": 0
+          }
+        },
+        "armB": {
+          "findings": 36,
+          "observations": 15,
+          "meanPerObservation": 2.4,
+          "severity": {
+            "blocking": 15,
+            "concern": 17,
+            "suggestion": 4,
+            "other": 0
+          }
+        }
+      },
+      "architectural-fit": {
+        "armA": {
+          "findings": 35,
+          "observations": 15,
+          "meanPerObservation": 2.3333,
+          "severity": {
+            "blocking": 22,
+            "concern": 13,
+            "suggestion": 0,
+            "other": 0
+          }
+        },
+        "armB": {
+          "findings": 8,
+          "observations": 15,
+          "meanPerObservation": 0.5333,
+          "severity": {
+            "blocking": 4,
+            "concern": 4,
+            "suggestion": 0,
+            "other": 0
+          }
+        }
+      },
+      "restraint": {
+        "armA": {
+          "findings": 32,
+          "observations": 15,
+          "meanPerObservation": 2.1333,
+          "severity": {
+            "blocking": 2,
+            "concern": 19,
+            "suggestion": 11,
+            "other": 0
+          }
+        },
+        "armB": {
+          "findings": 13,
+          "observations": 15,
+          "meanPerObservation": 0.8667,
+          "severity": {
+            "blocking": 0,
+            "concern": 11,
+            "suggestion": 2,
+            "other": 0
+          }
+        }
+      }
+    },
+    "material": {
+      "coherence": {
+        "armA": 22,
+        "armB": 18,
+        "armABlocking": 8,
+        "armBBlocking": 8,
+        "armAMatched": 14,
+        "armBMatched": 14
+      },
+      "architectural-fit": {
+        "armA": 15,
+        "armB": 4,
+        "armABlocking": 10,
+        "armBBlocking": 2,
+        "armAMatched": 9,
+        "armBMatched": 2
+      },
+      "restraint": {
+        "armA": 17,
+        "armB": 7,
+        "armABlocking": 1,
+        "armBBlocking": 0,
+        "armAMatched": 8,
+        "armBMatched": 6
+      }
+    },
+    "adjudication": {
+      "file": "tests/fixtures/finder-collapse/adjudication.jsonl",
+      "replicate": 1,
+      "rows": 83,
+      "adjudicatedAgainstCommit": "65baf92",
+      "materialityRate": {
+        "note": "Every adjudicated finding in BOTH arms was judged material: each cited a checkable location and named a defect the plan document actually exhibits. The discriminator between the arms is COUNT, not precision."
+      }
+    },
+    "adjudicationCoverage": {
+      "expected": 83,
+      "adjudicated": 83,
+      "complete": true,
+      "note": "Criteria 2-4 are computed from hand-adjudicated material findings and CANNOT pass while coverage is incomplete — an empty adjudication would otherwise make them pass vacuously at 0 vs 0."
+    },
+    "attribution": {
+      "total": 57,
+      "valid": 57,
+      "validity": 1,
+      "claimedUnitOfWork": 0,
+      "note": "Both replicates. Attribution is not what fails here: the explicit concern-enum instruction held on every arm-B finding."
+    },
+    "tokens": {
+      "byArm": {
+        "A": {
+          "output": 531608,
+          "uncachedInput": 747,
+          "cacheWrite": 2258183,
+          "cacheRead": 24343964
+        },
+        "B": {
+          "output": 259486,
+          "uncachedInput": 1753,
+          "cacheWrite": 935627,
+          "cacheRead": 10995190
+        }
+      },
+      "dispatches": {
+        "A": 48,
+        "B": 16
+      },
+      "unitObservations": 16,
+      "meanPerUnitObservation": {
+        "A": 1695906,
+        "B": 762004
+      },
+      "meanInputPerDispatch": {
+        "A": 554227,
+        "B": 745786
+      },
+      "reduction": 0.5507,
+      "note": "Normalized to a unit-observation (one unit x one replicate) — the thing a production run pays for. Per-dispatch would flatter arm B by construction, since it makes one dispatch where arm A makes three. Arm B mean INPUT per dispatch is 34.6 % HIGHER than arm A per-finder: the saving is the two eliminated agent context floors, not a shorter prompt."
+    },
+    "criteria": [
+      {
+        "id": 1,
+        "name": "power",
+        "detail": "the run population clears the pre-registered floors",
+        "pass": true
+      },
+      {
+        "id": 2,
+        "name": "per-lens material recall",
+        "detail": "every lens loses at most 1 adjudicated material finding and at most 15 percentage points",
+        "pass": false
+      },
+      {
+        "id": 3,
+        "name": "no lens extinction",
+        "detail": "no lens goes to zero material findings in arm B where arm A produced at least 2",
+        "pass": true
+      },
+      {
+        "id": 4,
+        "name": "no severity downgrade",
+        "detail": "arm B's adjudicated material blocking count is within 1 of arm A's",
+        "pass": false
+      },
+      {
+        "id": 5,
+        "name": "concern attribution validity",
+        "detail": "at least 95 % of arm-B findings carry a valid lens key",
+        "pass": true
+      },
+      {
+        "id": 6,
+        "name": "tokens materially lower",
+        "detail": "mean tokens per unit-observation fall by at least 20 % — NEVER a ship on its own",
+        "pass": true
+      }
+    ],
+    "decisionRule": {
+      "maxPerLensMaterialLoss": 1,
+      "maxPerLensMaterialLossShare": 0.15,
+      "extinctionArmAFloor": 2,
+      "maxBlockingShortfall": 1,
+      "minAttributionValidity": 0.95,
+      "minTokenReduction": 0.2,
+      "adjudicatedReplicate": 1
+    },
+    "decision": "no-ship",
+    "pipelineUnchanged": true,
+    "pipelineUnchangedNote": ".claude/workflows/lib/review.mjs still runs three always-on plan finders; DIMENSIONS.plan still holds coherence, architectural-fit, unit-of-work, restraint. scripts/verify-finder-collapse.sh section 9 enforces the decision/pipeline XOR in both directions.",
+    "followUpTasks": [
+      "plan-review-roadmap-body-fetch-status-line"
+    ]
   }
 }

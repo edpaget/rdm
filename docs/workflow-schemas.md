@@ -1028,10 +1028,49 @@ the target's type).
 | mode | always-on | triggered |
 | --- | --- | --- |
 | `code` | `ac`, `correctness` | `tests`, `architecture`, `api-docs`, `changelog`, `security` |
-| `plan` | `coherence`, `architectural-fit` | `unit-of-work` (phases only) |
+| `plan` | `coherence`, `architectural-fit`, `restraint` | `unit-of-work` (phases only) |
 
 `unit-of-work` triggers on `signals.targetType === 'phase'`, which is why target
 type is a first-class signal rather than diff shape alone.
+
+#### Why the always-on sets are not collapsed into one finder per mode
+
+Each always-on dimension is its own agent, paying its own agent context floor.
+Collapsing them is an obvious token target, and both halves of the answer are
+recorded rather than assumed.
+
+**`plan` — measured, and rejected.** The three always-on plan dimensions all
+resolve the same `FINDINGS_SCHEMA`, so merging them into one agent holding three
+lenses needs no schema change and was a live candidate. It was A/B'd against the
+current three-finder shape over real mined plan documents; the collapsed finder
+lost a material share of findings in **every** lens. The pre-registered decision
+rule, the run, the per-lens figures and the `no-ship` DECISION are in
+[`finder-collapse.md`](finder-collapse.md), with the machine-checkable figures in
+[`token-baseline.json`](token-baseline.json) § `planFinderCollapse`. A
+decision/pipeline XOR in `scripts/verify-finder-collapse.sh` keeps a half-landed
+merge from ever coexisting with that figure.
+
+**`code` — not a candidate at all, and this is the canonical statement of why.**
+`ac` and `correctness` are not symmetric with plan mode's lenses:
+
+- `ac` is the ONE dimension that resolves `AC_REVIEW_SCHEMA` rather than
+  `FINDINGS_SCHEMA`. Merging it would force a union schema on the merged agent.
+- Its per-criterion `ac` table is the structured side-channel `classifyOutcome`
+  step 2 consumes **directly**, via `acTableHasGap`. That channel never reads a
+  finding's severity, is never refuted, and never consumes refutation budget —
+  three properties deliberately chosen so the acceptance-criteria guarantee
+  cannot be silently defeated by a refuter or by the 70-point confidence floor.
+  Folding `ac` into a shared findings stream would route the acceptance-criteria
+  contract through exactly the path it was kept out of.
+
+A short form of this rationale lives in the `//|code|` spec prose in
+`.claude/workflows/lib/review.mjs`, so it renders into the shipped code-review
+skill templates and travels with the lane rather than staying tribal knowledge.
+
+`unit-of-work` likewise stays a separate triggered dimension in either scenario:
+it is scoped to phase units CONSUMER-SIDE by `stripNonPhaseUnitOfWork` in
+`plan-review.js`, which filters on `f.concern === 'unit-of-work'`, and folding a
+conditionally-scoped lens into an unconditional agent would defeat that scoping.
 
 ### `context.signals` and `selectDimensions(mode, signals)`
 

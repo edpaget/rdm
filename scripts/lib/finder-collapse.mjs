@@ -79,13 +79,14 @@ export const MAX_UNIT_IDENT_LENGTH = 200;
  *
  * Some recorded plan-review units were dispatched with a FETCH-STATUS LINE in
  * place of the plan body ("Successfully fetched roadmap X ... from the rdm
- * project", 74–147 chars). That is not a plan document: an arm-B agent asked to
- * hold three lenses over it would find nothing in either arm, and the unit would
- * dilute the very effect being measured while inflating the apparent corpus.
- * Such units are EXCLUDED AND COUNTED, never padded in.
+ * project", 36-102 chars in the pinned window). That is not a plan document: an
+ * agent asked to hold three lenses over it would find nothing in either arm, and
+ * the unit would dilute the very effect being measured while inflating the
+ * apparent corpus. Such units are EXCLUDED AND COUNTED, never padded in.
  *
- * 500 chars sits in the empty band between those degenerate targets (max 147)
- * and the smallest real plan document in the window (841).
+ * 500 chars sits in the EMPTY BAND between those degenerate targets (max 102)
+ * and the smallest real plan document in the window (783) — no unit falls
+ * between them, so the threshold is not a tuned parameter.
  */
 export const MIN_PLAN_DOC_CHARS = 500;
 
@@ -945,6 +946,25 @@ export function scoreCollapse(run, adjudication, opts = {}) {
     for (const f of t.findings) severityOf.set(`${t.unitId}|${t.arm}|${t.replicate}|${(f && f.id) || ''}`, f);
   }
 
+  // ADJUDICATION COVERAGE. Criteria 2-4 are computed from hand-adjudicated
+  // material findings, so an EMPTY or PARTIAL adjudication makes them pass
+  // VACUOUSLY (0 material in both arms is "no loss"). That would let a run with
+  // no adjudication at all emit `ship-collapsed`, which is exactly the
+  // false-pass this instrument exists to prevent. Coverage is therefore
+  // computed first and gates those three criteria outright.
+  const adjudicatedIds = new Set(adjRows.map((r) => `${r.unitId}|${r.arm}|${r.replicate}|${r.findingId}`));
+  const coverage = { expected: 0, adjudicated: 0, missing: [] };
+  for (const t of trials) {
+    if (t.replicate !== rule.adjudicatedReplicate || t.findings === null) continue;
+    for (const f of t.findings) {
+      coverage.expected += 1;
+      const key = `${t.unitId}|${t.arm}|${t.replicate}|${(f && f.id) || ''}`;
+      if (adjudicatedIds.has(key)) coverage.adjudicated += 1;
+      else if (coverage.missing.length < 20) coverage.missing.push(key);
+    }
+  }
+  coverage.complete = coverage.expected > 0 && coverage.adjudicated === coverage.expected;
+
   const material = {};
   for (const lens of ALWAYS_ON_PLAN_LENSES) {
     material[lens] = { A: { count: 0, blocking: 0, matched: 0 }, B: { count: 0, blocking: 0, matched: 0 } };
@@ -1000,13 +1020,13 @@ export function scoreCollapse(run, adjudication, opts = {}) {
     const b = material[lens].B.count;
     const loss = a - b;
     const share = a === 0 ? 0 : loss / a;
-    const ok = loss <= rule.maxPerLensMaterialLoss && share <= rule.maxPerLensMaterialLossShare;
+    const ok = coverage.complete && loss <= rule.maxPerLensMaterialLoss && share <= rule.maxPerLensMaterialLossShare;
     perLensLoss[lens] = { armA: a, armB: b, loss, lossShare: share, pass: ok };
     if (!ok) c2 = false;
   }
   criteria.push({
     id: 2,
-    name: 'per-lens material recall',
+    name: coverage.complete ? 'per-lens material recall' : 'per-lens material recall (NOT ADJUDICATED)',
     detail: `every lens loses at most ${rule.maxPerLensMaterialLoss} adjudicated material finding and at most ${Math.round(
       rule.maxPerLensMaterialLossShare * 100
     )} percentage points`,
@@ -1021,7 +1041,7 @@ export function scoreCollapse(run, adjudication, opts = {}) {
     const b = material[lens].B.count;
     const extinct = a >= rule.extinctionArmAFloor && b === 0;
     extinction[lens] = { armA: a, armB: b, extinct };
-    if (extinct) c3 = false;
+    if (extinct || !coverage.complete) c3 = false;
   }
   criteria.push({
     id: 3,
@@ -1037,7 +1057,7 @@ export function scoreCollapse(run, adjudication, opts = {}) {
     blockingA += material[lens].A.blocking;
     blockingB += material[lens].B.blocking;
   }
-  const c4 = blockingB >= blockingA - rule.maxBlockingShortfall;
+  const c4 = coverage.complete && blockingB >= blockingA - rule.maxBlockingShortfall;
   criteria.push({
     id: 4,
     name: 'no severity downgrade',
@@ -1084,6 +1104,7 @@ export function scoreCollapse(run, adjudication, opts = {}) {
     replicates: replicates.length,
     adjudicatedReplicate: rule.adjudicatedReplicate,
     adjudicatedRows: adjRows.length,
+    adjudicationCoverage: coverage,
     dispatchErrors: errors,
     perLens,
     material,
@@ -1121,17 +1142,22 @@ export function scoreCollapse(run, adjudication, opts = {}) {
  */
 export function findBlendedLensKeys(value, pathPrefix = '$') {
   const RATE_KEY = /(recall|accuracy|materialShare|lossShare)/i;
+  // A THRESHOLD is not an observation. `decisionRule` / `rule` hold the
+  // pre-registered constants, and criterion 2 applies its threshold PER LENS by
+  // construction, so a rate-shaped key there is not a blended measurement.
+  // Everything else is measured output and must be lens-scoped.
+  const THRESHOLD_PARENTS = ['decisionRule', 'rule'];
   const offenders = [];
-  const walk = (node, p, underLens) => {
+  const walk = (node, p, exempt) => {
     if (Array.isArray(node)) {
-      node.forEach((v, i) => walk(v, `${p}[${i}]`, underLens));
+      node.forEach((v, i) => walk(v, `${p}[${i}]`, exempt));
       return;
     }
     if (!isPlainObject(node)) return;
     for (const [k, v] of Object.entries(node)) {
-      const childUnderLens = underLens || ALWAYS_ON_PLAN_LENSES.indexOf(k) !== -1;
-      if (RATE_KEY.test(k) && !childUnderLens) offenders.push(`${p}.${k}`);
-      walk(v, `${p}.${k}`, childUnderLens);
+      const childExempt = exempt || ALWAYS_ON_PLAN_LENSES.indexOf(k) !== -1 || THRESHOLD_PARENTS.indexOf(k) !== -1;
+      if (RATE_KEY.test(k) && !childExempt) offenders.push(`${p}.${k}`);
+      walk(v, `${p}.${k}`, childExempt);
     }
   };
   walk(value, pathPrefix, false);
@@ -1180,7 +1206,17 @@ export function formatReport(report, format = 'text') {
     );
   }
   out.push('');
-  out.push('Adjudicated MATERIAL findings (replicate ' + report.adjudicatedReplicate + ')');
+  const cov = report.adjudicationCoverage || { expected: 0, adjudicated: 0, complete: false };
+  out.push(
+    'Adjudicated MATERIAL findings (replicate ' +
+      report.adjudicatedReplicate +
+      '; coverage ' +
+      cov.adjudicated +
+      '/' +
+      cov.expected +
+      (cov.complete ? '' : ' — INCOMPLETE, criteria 2-4 cannot pass') +
+      ')'
+  );
   out.push('  lens                  armA    armB    loss   loss%');
   for (const lens of ALWAYS_ON_PLAN_LENSES) {
     const m = report.material[lens];
@@ -1339,6 +1375,21 @@ export function auditCollapseDoc(section) {
       errors.push('a ship decision resting on criterion 6 alone is forbidden by the pre-registered rule');
     }
     checks.push(`criteria table holds six entries; decision agrees with it`);
+  }
+
+  const cov = section.adjudicationCoverage;
+  if (!isPlainObject(cov)) {
+    errors.push('adjudicationCoverage must be recorded — criteria 2-4 pass vacuously without it');
+  } else {
+    if (cov.adjudicated > cov.expected) errors.push('adjudicationCoverage.adjudicated exceeds expected');
+    const complete = cov.expected > 0 && cov.adjudicated === cov.expected;
+    if (complete !== cov.complete) {
+      errors.push(`adjudicationCoverage.complete (${cov.complete}) disagrees with ${cov.adjudicated}/${cov.expected}`);
+    }
+    if (section.decision === 'ship-collapsed' && !cov.complete) {
+      errors.push('a ship decision requires a COMPLETE adjudication — criteria 2-4 are vacuous otherwise');
+    }
+    checks.push(`adjudication coverage ${cov.adjudicated}/${cov.expected}`);
   }
 
   const blended = findBlendedLensKeys(section);

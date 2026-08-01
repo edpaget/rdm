@@ -135,6 +135,19 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   comment stating the invariant it upholds; an unjustified or risky
   construct is a finding.
 
+**Why `ac` and `correctness` are NOT merged into one always-on finder.**
+Plan mode's always-on lenses all resolve the SAME findings schema, which is
+what makes merging them into one agent even conceivable. Code mode's two are
+not symmetric with them. `ac` is the ONE dimension that resolves the
+AC-review schema instead of the findings schema, and its per-criterion `ac`
+table is the structured side-channel the verdict consumes **directly** — a
+channel that never reads a finding's severity, is never refuted, and never
+consumes refutation budget. Folding `ac` into a shared findings stream would
+route the acceptance-criteria contract through exactly the path it was
+deliberately kept out of, and would force a union schema on the merged
+agent. So the two stay separate agents, and this is a decision rather than
+an oversight.
+
 ### Find — one read-only agent per applicable dimension, in parallel
 
 Each finder agent is told: you are a READ-ONLY reviewer, do not edit any

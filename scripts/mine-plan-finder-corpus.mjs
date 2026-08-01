@@ -277,12 +277,23 @@ export function mine(options = {}) {
     u.agentIds[lens] = r.agentId;
   }
 
-  // Pass 2: qualify. Each rejection is counted; nothing is silently dropped.
+  // Pass 2: qualify. Each rejection is counted IN RECORDS, not in units, so the
+  // accounting identity below closes exactly:
+  //
+  //   recovered always-on lens records + every skip bucket === finderRecordCount
+  //
+  // Counting a rejected unit as ONE skip would silently lose its other finders,
+  // which is precisely the "unknown contributing to no bucket" this instrument
+  // must not do.
   const units = [];
   for (const [, u] of [...byUnit.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+    const lensCount = Object.keys(u.byLens).length;
+    const bumpUnit = (reason) => {
+      for (let i = 0; i < lensCount; i++) bump(reason);
+    };
     const targetType = targetTypeOf(u.ident);
     if (targetType === null) {
-      bump('unrecognized-target-type');
+      bumpUnit('unrecognized-target-type');
       continue;
     }
     const planDoc = planDocOf(u.target);
@@ -291,13 +302,18 @@ export function mine(options = {}) {
       // roadmap X ...") is NOT a plan document. Reviewing it measures nothing
       // about lens dilution, so it is excluded and counted rather than padding
       // the corpus. The floor is pre-registered in scripts/lib/finder-collapse.mjs.
-      bump('plan-doc-below-floor');
+      bumpUnit('plan-doc-below-floor');
       continue;
     }
     const missing = ALWAYS_ON_PLAN_LENSES.filter((l) => !Array.isArray(u.byLens[l]));
     if (missing.length) {
-      bump('incomplete-always-on-lenses');
+      bumpUnit('incomplete-always-on-lenses');
       continue;
+    }
+    // A qualifying unit's TRIGGERED finders (unit-of-work) are recovered by
+    // neither arm: they are counted here so the identity still closes.
+    for (const lens of Object.keys(u.byLens)) {
+      if (ALWAYS_ON_PLAN_LENSES.indexOf(lens) === -1) bump('not-an-always-on-lens');
     }
     if (options.limit !== undefined && units.length >= options.limit) break;
     const byLens = {};

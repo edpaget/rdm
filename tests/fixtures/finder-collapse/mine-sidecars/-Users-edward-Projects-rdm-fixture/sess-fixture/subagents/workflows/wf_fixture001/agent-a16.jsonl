@@ -1,0 +1,2 @@
+{"type":"user","message":{"content":"You are a READ-ONLY refuter."}}
+{"type":"assistant","requestId":"req-a16","message":{"model":"claude-opus-fixture","usage":{"output_tokens":10,"input_tokens":1,"cache_creation_input_tokens":10,"cache_read_input_tokens":100},"content":[{"type":"tool_use","name":"StructuredOutput","input":{"findings":[]}}]}}

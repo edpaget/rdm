@@ -1613,14 +1613,17 @@ cp "$LIB" "$SCRATCH/.claude/workflows/lib/review.mjs"
 
 # Remove the `const PLAN_SEVERITY_CALIBRATION = ... ;` declaration (spans the
 # `const NAME =` line through the line ending in `;`) and the one line that
-# pushes it into the prompt. Both are whole-statement removals, so the mutated
-# file stays syntactically valid — leaves the block-comment prose above it in
-# place, which is harmless.
+# pushes it into the prompt, plus its entry in the Node-only export list (which
+# would otherwise reference a now-undefined name and turn the strip into a parse
+# error rather than a behavioral mutation). All three are whole-statement
+# removals, so the mutated file stays syntactically valid — it leaves the
+# block-comment prose above the constant in place, which is harmless.
 awk '
     /^const PLAN_SEVERITY_CALIBRATION =$/ { skip = 1 }
     skip && /;$/ { skip = 0; next }
     skip { next }
     /lines\.push\(PLAN_SEVERITY_CALIBRATION\);/ { next }
+    /^  PLAN_SEVERITY_CALIBRATION,$/ { next }
     { print }
 ' "$SCRATCH/.claude/workflows/lib/review.mjs" >"$SCRATCH/mutated-lib.mjs"
 mv "$SCRATCH/mutated-lib.mjs" "$SCRATCH/.claude/workflows/lib/review.mjs"
@@ -4059,5 +4062,286 @@ mut_default() {
 mutate_and_expect_fail vii 'changing the default budget to 3' mut_default
 
 pass "9c: all seven mutations flip a section-9 assertion, and the control passes — section 9 is non-vacuous"
+
+# --- 10c. UNIT-OF-WORK SEPARATION AND PHASE SCOPING ---------------------------
+# --- 10d. CODE MODE'S ac/correctness ARE UNCHANGED, AND acTable IS SEVERITY-FREE
+# --- 10e. THE NON-EMPTY ALWAYS-ON INVARIANT -----------------------------------
+# (bound-review-fan-out phase 5.) The collapsed-plan-finder A/B measured whether
+# plan mode's three always-on lenses may run in ONE agent; its DECISION and the
+# decision/pipeline XOR live in scripts/verify-finder-collapse.sh. These three
+# sections gate the invariants that must hold EITHER WAY, so they are not
+# conditional on that decision: `unit-of-work` stays a separate, phase-scoped
+# TRIGGERED dimension; code mode's `ac` keeps its own schema and its structured
+# AC table keeps bypassing severity entirely; and the always-on set is never
+# empty in either mode.
+say "10c/10d/10e. unit-of-work separation, the unchanged ac/acTable path, and the non-empty always-on invariant"
+
+cat >"$TMP/dimensions-test.mjs" <<'NODE_DIM_TEST'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const [libPath] = process.argv.slice(2);
+const mod = await import(pathToFileURL(libPath).href);
+const {
+  DIMENSIONS,
+  selectDimensions,
+  buildReviewPipeline,
+  stripNonPhaseUnitOfWork,
+  classifyOutcome,
+  acTableHasGap,
+  AC_REVIEW_SCHEMA,
+  FINDINGS_SCHEMA,
+} = mod;
+
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item) => {
+      let acc = item;
+      for (const stage of stages) acc = await stage(acc);
+      return acc;
+    })
+  );
+}
+
+// --- 10c: unit-of-work is a SEPARATE, TRIGGERED dimension --------------------
+const uow = DIMENSIONS.plan.filter((d) => d.key === 'unit-of-work');
+assert.equal(uow.length, 1, 'unit-of-work must remain exactly one distinct DIMENSIONS.plan entry');
+assert.equal(typeof uow[0].when, 'function', 'unit-of-work must keep its `when` predicate (it is TRIGGERED)');
+assert.equal(uow[0].when({ targetType: 'phase' }), true);
+assert.equal(uow[0].when({ targetType: 'task' }), false);
+assert.equal(uow[0].when({}), false);
+
+// selectDimensions' three-way contract, restated for the plan mode specifically.
+const keysFor = (signals) => selectDimensions('plan', signals).map((d) => d.key);
+assert.ok(!keysFor({}).includes('unit-of-work'), 'explicit empty signals must NOT select unit-of-work');
+assert.ok(keysFor({ targetType: 'phase' }).includes('unit-of-work'), 'a phase target must select unit-of-work');
+assert.deepEqual(keysFor(null), DIMENSIONS.plan.map((d) => d.key), 'omitted signals must fail OPEN to every dimension');
+// plan-review.js threads NO signals, so the fail-open path is the one it takes.
+assert.ok(keysFor(null).includes('unit-of-work'), 'the fail-open path plan-review.js takes must include unit-of-work');
+
+// stripNonPhaseUnitOfWork is the CONSUMER-SIDE scoping that fail-open cannot do.
+const survivors = [
+  { id: 'a', concern: 'coherence', severity: 'blocking' },
+  { id: 'b', concern: 'architectural-fit', severity: 'concern' },
+  { id: 'c', concern: 'restraint', severity: 'suggestion' },
+  { id: 'd', concern: 'unit-of-work', severity: 'blocking' },
+];
+assert.deepEqual(stripNonPhaseUnitOfWork(survivors, 'task').map((f) => f.id), ['a', 'b', 'c'],
+  'on a non-phase unit ONLY the unit-of-work finding is removed');
+assert.deepEqual(stripNonPhaseUnitOfWork(survivors, 'roadmap').map((f) => f.id), ['a', 'b', 'c']);
+assert.deepEqual(stripNonPhaseUnitOfWork(survivors, 'phase').map((f) => f.id), ['a', 'b', 'c', 'd'],
+  'on a phase unit nothing is removed');
+// Idempotent, and never touches an always-on lens finding.
+assert.deepEqual(
+  stripNonPhaseUnitOfWork(stripNonPhaseUnitOfWork(survivors, 'task'), 'task').map((f) => f.id),
+  ['a', 'b', 'c']
+);
+
+// --- 10d: code mode is UNCHANGED, and the AC table bypasses severity ---------
+assert.deepEqual(
+  DIMENSIONS.code.map((d) => d.key),
+  ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'],
+  'DIMENSIONS.code must be exactly these seven, in this order — ac and correctness are NOT merged'
+);
+assert.deepEqual(
+  DIMENSIONS.code.filter((d) => !d.when).map((d) => d.key),
+  ['ac', 'correctness'],
+  'exactly ac and correctness are always-on in code mode'
+);
+assert.ok(!DIMENSIONS.code.some((d) => Array.isArray(d.lenses)), 'no code dimension may carry merged lenses');
+
+// Drive the real pipeline: the `ac` finder alone resolves AC_REVIEW_SCHEMA, its
+// table is captured, and attribution never touches it.
+const schemaByLabel = new Map();
+function schemaSpyAgent(findings, acTable) {
+  return async (prompt, opts) => {
+    schemaByLabel.set(opts.label, opts.schema);
+    if (opts.label === 'find:code:ac') return { ac: acTable, findings: findings.ac || [] };
+    if (opts.label.startsWith('find:')) return { findings: findings[opts.label.split(':')[2]] || [] };
+    return { refuted: false, confidence: 95 };
+  };
+}
+const acTable = [
+  { criterion: 'AC1', status: 'PASS', evidence: 'x' },
+  { criterion: 'AC2', status: 'FAIL', evidence: 'y' },
+];
+const codeRun = buildReviewPipeline('code', {
+  agent: schemaSpyAgent({}, acTable),
+  pipeline: refPipeline,
+  parallel: refParallel,
+  log: () => {},
+});
+const codeResult = await codeRun({ target: 'phase r/p', signals: null });
+assert.equal(schemaByLabel.get('find:code:ac'), AC_REVIEW_SCHEMA, 'the ac finder must resolve AC_REVIEW_SCHEMA');
+for (const [label, schema] of schemaByLabel) {
+  if (label === 'find:code:ac' || !label.startsWith('find:')) continue;
+  assert.equal(schema, FINDINGS_SCHEMA, label + ' must resolve FINDINGS_SCHEMA');
+}
+assert.deepEqual(codeResult.acTable, acTable, 'the ac table must be captured and returned');
+assert.ok(!codeResult.acTable.some((e) => 'concern' in e), 'the AC table must never acquire a `concern` field');
+
+// plan mode never sets one.
+const planRun = buildReviewPipeline('plan', {
+  agent: async (p, o) => (o.label.startsWith('find:') ? { findings: [] } : { refuted: false, confidence: 95 }),
+  pipeline: refPipeline,
+  parallel: refParallel,
+  log: () => {},
+});
+assert.equal((await planRun({ target: 'phase r/p', signals: null })).acTable, null, 'plan mode returns acTable: null');
+
+// THE STRUCTURAL POINT: the AC channel never reads a finding's severity. Zero
+// findings, one FAIL criterion, and the outcome is still rework.
+assert.equal(classifyOutcome({ acTable, codeReviews: [[]] }), 'rework',
+  'an AC-table FAIL must force rework with zero findings — the channel bypasses severity');
+assert.equal(classifyOutcome({ acTable: [{ criterion: 'AC1', status: 'PASS' }], codeReviews: [[]] }), 'reviewed');
+assert.equal(acTableHasGap(null), false, 'an absent table is not a gap');
+assert.equal(acTableHasGap([]), false, 'an empty table is not a gap');
+
+// --- 10e: the always-on set is never empty ----------------------------------
+for (const mode of ['code', 'plan']) {
+  assert.ok(
+    DIMENSIONS[mode].some((d) => !d.when),
+    'mode "' + mode + '" must keep at least one `when`-less (always-on) dimension — a structural check, so a ' +
+      'future refactor that gave every dimension a `when` fails HERE rather than at runtime'
+  );
+  assert.ok(selectDimensions(mode, {}).length > 0, 'explicit empty signals must still select the always-on set');
+}
+// The throw is REACHABLE: patch every plan dimension to be triggered-off and the
+// guard must fire rather than returning an empty selection.
+const savedPlan = DIMENSIONS.plan;
+try {
+  DIMENSIONS.plan = savedPlan.map((d) => ({ ...d, when: () => false }));
+  assert.throws(() => selectDimensions('plan', {}), /always-on set must never be empty/,
+    'selectDimensions must throw when nothing is selected');
+} finally {
+  DIMENSIONS.plan = savedPlan;
+}
+
+console.log('10c/10d/10e: unit-of-work separate + phase-scoped, ac/acTable unchanged, always-on never empty');
+NODE_DIM_TEST
+
+if run_node "$TMP/dimensions-test.mjs" "$LIB" >"$TMP/dim.out" 2>&1; then
+    pass "10c/10d/10e: $(tail -1 "$TMP/dim.out")"
+else
+    cat "$TMP/dim.out" >&2
+    fail "10c/10d/10e: the dimension invariants do not hold"
+fi
+
+# --- 10g. THE PROSE THE PHASE OWES ------------------------------------------
+# `restraint` is always-on and always has been; CLAUDE.md and the schemas doc
+# said otherwise for a while. And the reason code mode's ac+correctness are NOT
+# merged must render into the SHIPPED code-review skills (and only those).
+say "10g. restraint is listed as always-on, and the ac/correctness non-merge rationale renders code-side only"
+
+if grep -rnF 'coherence/architectural-fit always-on' "$REPO_ROOT" \
+    --include='*.md' --include='*.mjs' --include='*.js' >&2; then
+    fail "10g: the stale always-on plan dimension list survives somewhere in the repo"
+fi
+grep -qF 'coherence/architectural-fit/restraint always-on' "$REPO_ROOT/CLAUDE.md" ||
+    fail "10g: CLAUDE.md's review-pipeline bullet does not list restraint as always-on"
+grep -qF 'coherence, architectural fit, restraint, and (for phases) unit-of-work' "$REPO_ROOT/CLAUDE.md" ||
+    fail "10g: CLAUDE.md's Plan review section does not list restraint"
+# shellcheck disable=SC2016  # a literal markdown table cell, backticks included
+grep -qF '| `plan` | `coherence`, `architectural-fit`, `restraint` |' "$REPO_ROOT/docs/workflow-schemas.md" ||
+    fail "10g: the workflow-schemas dimension table's plan row does not list restraint"
+grep -qF 'scripts/verify-finder-collapse.sh' "$REPO_ROOT/CLAUDE.md" ||
+    fail "10g: CLAUDE.md does not list the finder-collapse harness"
+pass "10g: restraint is listed as always-on everywhere, and the stale string is gone"
+
+CODE_RENDERS="$TEMPLATES/skill-review-cli.md $TEMPLATES/skill-review-mcp.md $REPO_ROOT/.claude/skills/rdm-review/SKILL.md"
+PLAN_RENDERS="$TEMPLATES/skill-plan-review-cli.md $TEMPLATES/skill-plan-review-mcp.md $REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
+for doc in $CODE_RENDERS; do
+    grep -qF 'NOT merged into one always-on finder' "$doc" ||
+        fail "10g: $doc is missing the ac/correctness non-merge rationale"
+    grep -qF 'AC-review schema' "$doc" ||
+        fail "10g: $doc's non-merge rationale does not name the AC-review schema"
+done
+for doc in $PLAN_RENDERS; do
+    if grep -qF 'NOT merged into one always-on finder' "$doc"; then
+        fail "10g: $doc (a PLAN render) carries the code-only non-merge rationale — mode isolation is broken"
+    fi
+    grep -qF 'concern: <coherence|architectural-fit|restraint|unit-of-work>' "$doc" ||
+        fail "10g: $doc's finding template does not name all four plan concern keys"
+    for key in coherence architectural-fit restraint unit-of-work; do
+        grep -qF "$key" "$doc" || fail "10g: $doc never names the plan dimension key '$key'"
+    done
+done
+pass "10g: the non-merge rationale renders into the three CODE skills and into no PLAN skill"
+
+# --- 10f. PLANTED-MUTATION SELF-TESTS (non-vacuity for 10c/10d/10e) ----------
+say "10f. Dimension-invariant mutation self-tests (prove 10c/10d/10e are not vacuous)"
+DMUT="$TMP/dim-mut/.claude/workflows/lib"
+mkdir -p "$DMUT"
+
+# CONTROL: 10c/10d/10e must PASS against the real, unmutated file.
+cp "$LIB" "$DMUT/review.mjs"
+if run_node "$TMP/dimensions-test.mjs" "$DMUT/review.mjs" >/dev/null 2>&1; then
+    pass "10f-control: the unmutated copy passes 10c/10d/10e"
+else
+    fail "10f-control: the unmutated copy FAILS 10c/10d/10e — every mutation below is vacuous"
+fi
+
+dim_mutate_and_expect_fail() {
+    dtag="$1"
+    ddesc="$2"
+    dfn="$3"
+    cp "$LIB" "$DMUT/review.mjs"
+    "$dfn" || fail "10f-$dtag: could not plant the mutation ($ddesc)"
+    if run_node "$TMP/dimensions-test.mjs" "$DMUT/review.mjs" >/dev/null 2>&1; then
+        fail "10f-$dtag: 10c/10d/10e still passed after $ddesc — that assertion group is vacuous"
+    fi
+    pass "10f-$dtag: $ddesc flips a 10c/10d/10e assertion"
+    cp "$LIB" "$DMUT/review.mjs"
+}
+
+# (c) unit-of-work loses its `when` predicate: it would then run on every unit
+#     as an always-on dimension, and its findings would reach non-phase units.
+dmut_uow_when() {
+    sed "s|^      when: (s) => s.targetType === 'phase',\$|      // MUTANT: predicate removed|" \
+        "$LIB" >"$DMUT/review.mjs"
+    grep -q 'MUTANT' "$DMUT/review.mjs"
+}
+# shellcheck disable=SC2016  # `when` is prose, not a command substitution
+dim_mutate_and_expect_fail c 'giving unit-of-work no `when` predicate' dmut_uow_when
+
+# (c2) stripNonPhaseUnitOfWork stops filtering: a unit-of-work finding survives
+#      on a task/roadmap unit, which is the silent-scoping-loss failure mode.
+dmut_strip() {
+    sed "s|^  return list.filter((f) => !(f \&\& f.concern === 'unit-of-work'));\$|  return list.slice(); // MUTANT|" \
+        "$LIB" >"$DMUT/review.mjs"
+    grep -q 'MUTANT' "$DMUT/review.mjs"
+}
+dim_mutate_and_expect_fail c2 'disabling the consumer-side unit-of-work scoping' dmut_strip
+
+# (d) the ac dimension resolves FINDINGS_SCHEMA: the structured AC table would
+#     never be produced, and the acceptance-criteria channel would collapse into
+#     ordinary findings.
+dmut_ac_schema() {
+    sed 's|^          schema: isAcDimension ? AC_REVIEW_SCHEMA : FINDINGS_SCHEMA,$|          schema: FINDINGS_SCHEMA, // MUTANT|' \
+        "$LIB" >"$DMUT/review.mjs"
+    grep -q 'MUTANT' "$DMUT/review.mjs"
+}
+dim_mutate_and_expect_fail d 'making the ac dimension resolve FINDINGS_SCHEMA' dmut_ac_schema
+
+# (e) the acTable capture is dropped: classifyOutcome's step-2 channel goes dark
+#     and an unmet acceptance criterion stops forcing rework.
+dmut_ac_capture() {
+    sed 's|^            acTable = found.ac;$|            void found; // MUTANT|' "$LIB" >"$DMUT/review.mjs"
+    grep -q 'MUTANT' "$DMUT/review.mjs"
+}
+dim_mutate_and_expect_fail e 'dropping the acTable capture' dmut_ac_capture
+
+# (f) the empty-selection guard is removed: a mode whose dimensions all become
+#     triggered would silently review NOTHING and report a clean result.
+dmut_empty_guard() {
+    sed 's|^  if (sel.length === 0) {$|  if (false) { // MUTANT|' "$LIB" >"$DMUT/review.mjs"
+    grep -q 'MUTANT' "$DMUT/review.mjs"
+}
+dim_mutate_and_expect_fail f 'removing the non-empty always-on guard from selectDimensions' dmut_empty_guard
+
+pass "10f: all five mutations flip a 10c/10d/10e assertion, and the control passes"
 
 say "verify-workflow-review.sh: ALL GREEN"

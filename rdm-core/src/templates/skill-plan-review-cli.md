@@ -194,7 +194,7 @@ Each finding is reported as:
 
 ```
 - id: <short-slug>
-  concern: <coherence|architectural-fit|unit-of-work>
+  concern: <coherence|architectural-fit|restraint|unit-of-work>
   location: <section/heading or phase stem>
   severity: blocking | concern | suggestion
   confidence: 0-100

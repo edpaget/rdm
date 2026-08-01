@@ -253,6 +253,19 @@ const DIMENSIONS = {
         'Injection (shell/command/SQL), path traversal, secret or credential leakage into logs/errors/commits, missing or incorrect authorization, unsafe deserialization, and untrusted-input validation gaps. Every `unsafe` block must carry a `// SAFETY:` comment that states the invariant the caller upholds — an unjustified or invariant-violating `unsafe` is a finding. Judge subprocess and file-path handling against the project conventions.',
       when: (s) => !!(s.securitySurface || s.hasUnsafe),
     },
+    //|code|
+    //|code| **Why `ac` and `correctness` are NOT merged into one always-on finder.**
+    //|code| Plan mode's always-on lenses all resolve the SAME findings schema, which is
+    //|code| what makes merging them into one agent even conceivable. Code mode's two are
+    //|code| not symmetric with them. `ac` is the ONE dimension that resolves the
+    //|code| AC-review schema instead of the findings schema, and its per-criterion `ac`
+    //|code| table is the structured side-channel the verdict consumes **directly** — a
+    //|code| channel that never reads a finding's severity, is never refuted, and never
+    //|code| consumes refutation budget. Folding `ac` into a shared findings stream would
+    //|code| route the acceptance-criteria contract through exactly the path it was
+    //|code| deliberately kept out of, and would force a union schema on the merged
+    //|code| agent. So the two stay separate agents, and this is a decision rather than
+    //|code| an oversight.
   ],
   plan: [
     //|plan|
@@ -356,7 +369,7 @@ const PLAN_SEVERITY_CALIBRATION =
 //| ```
 //| - id: <short-slug>
 //|code|   concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
-//|plan|   concern: <coherence|architectural-fit|unit-of-work>
+//|plan|   concern: <coherence|architectural-fit|restraint|unit-of-work>
 //|code|   location: <path>:<line>
 //|plan|   location: <section/heading or phase stem>
 //|   severity: blocking | concern | suggestion

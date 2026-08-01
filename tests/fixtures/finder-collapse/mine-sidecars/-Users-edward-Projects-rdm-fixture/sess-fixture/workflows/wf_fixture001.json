@@ -1,0 +1,125 @@
+{
+  "runId": "wf_fixture001",
+  "workflowName": "plan-review",
+  "status": "completed",
+  "startTime": 1782907200000,
+  "agentCount": 16,
+  "totalTokens": 0,
+  "totalToolCalls": 0,
+  "durationMs": 1000,
+  "defaultModel": "claude-opus-fixture",
+  "workflowProgress": [
+    {
+      "type": "workflow_agent",
+      "agentId": "a01",
+      "label": "find:plan:coherence",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a02",
+      "label": "find:plan:architectural-fit",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a03",
+      "label": "find:plan:restraint",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a04",
+      "label": "find:plan:unit-of-work",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a05",
+      "label": "find:plan:coherence",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a06",
+      "label": "find:plan:architectural-fit",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a07",
+      "label": "find:plan:restraint",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a08",
+      "label": "find:plan:coherence",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a09",
+      "label": "find:plan:architectural-fit",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a10",
+      "label": "find:plan:restraint",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a11",
+      "label": "find:plan:coherence",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a12",
+      "label": "find:plan:architectural-fit",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a13",
+      "label": "find:plan:coherence",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a14",
+      "label": "find:plan:architectural-fit",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a15",
+      "label": "find:plan:restraint",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a16",
+      "label": "refute:plan:a-coherence-1",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    }
+  ]
+}
