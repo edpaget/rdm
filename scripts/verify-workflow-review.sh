@@ -565,6 +565,68 @@ if ! grep -nE 'Date\.now\(|Math\.random\(' "$SCRATCH/planted.js" >/dev/null 2>&1
 fi
 pass "no forbidden globals present; detector catches a planted one"
 
+# --- 2a. PROJECT-AGNOSTIC SIGNAL DERIVATION (region-scoped) ------------------
+# `deriveSignals` must carry NO repo-specific literal and NO language-specific
+# keyword clause. The grep is deliberately REGION-scoped: dispatch-phase.js's
+# hand-written side-task prose and the DIMENSIONS `//|` prose both mention
+# `rdm-core/src/...` legitimately, and a whole-file grep would flag them.
+say "2a. deriveSignals is project-agnostic and language-neutral (region-scoped grep)"
+
+# Extract the classification-const block through the end of deriveSignals.
+extract_signals_region() {
+    awk '
+      /^\/\/ File-CLASSIFICATION rules for deriveSignals/ { inr = 1 }
+      inr { print }
+      inr && /^function deriveSignals\(input\) \{/ { indf = 1 }
+      indf && /^\}$/ { exit }
+    ' "$1"
+}
+
+AGNOSTIC_SIGNAL_TOKENS='rdm-cli|rdm-server|rdm-core/src/|\\bpub\\b'
+SIGNAL_REGION_FILES="$LIB"
+for f in "$WF_DIR"/review-refute-fix.js "$WF_DIR"/dispatch-phase.js "$WF_DIR"/plan-review.js \
+    "$REPO_ROOT/rdm-core/src/templates/workflows/review-refute-fix.js" \
+    "$REPO_ROOT/rdm-core/src/templates/workflows/dispatch-phase.js"; do
+    SIGNAL_REGION_FILES="$SIGNAL_REGION_FILES $f"
+done
+for f in $SIGNAL_REGION_FILES; do
+    extract_signals_region "$f" >"$SCRATCH/signal-region.txt"
+    [ -s "$SCRATCH/signal-region.txt" ] ||
+        fail "2a: could not extract the deriveSignals region from $f — the extractor is broken, not the file"
+    grep -q '^function deriveSignals(input) {' "$SCRATCH/signal-region.txt" ||
+        fail "2a: the extracted region from $f does not contain deriveSignals — the extractor is broken"
+    if grep -nE "$AGNOSTIC_SIGNAL_TOKENS" "$SCRATCH/signal-region.txt" >&2; then
+        fail "2a: $f's deriveSignals region still carries a repo- or language-specific literal"
+    fi
+done
+
+# Self-test: the extractor + grep MUST catch a planted violation, or 2a is vacuous.
+{
+    printf '// File-CLASSIFICATION rules for deriveSignals\n'
+    printf 'const X = [/^rdm-cli\\//];\n'
+    printf 'function deriveSignals(input) {\n'
+    printf '  return { publicApiChanged: input.p.indexOf("rdm-core/src/") === 0 };\n'
+    printf '}\n'
+} >"$SCRATCH/planted-signals.js"
+extract_signals_region "$SCRATCH/planted-signals.js" >"$SCRATCH/planted-region.txt"
+if ! grep -qE "$AGNOSTIC_SIGNAL_TOKENS" "$SCRATCH/planted-region.txt"; then
+    fail "2a-self: the region extractor+grep did NOT catch a planted rdm literal — the check is vacuous"
+fi
+
+# The retired path lists must be GONE from every source and documentation
+# surface. `scripts/` is excluded because THIS check necessarily names them, and
+# the mined corpora under tests/fixtures/ are historical review text, not code.
+RETIRED_PATH_LISTS='SECURITY_PATH_PATTERNS|USER_FACING_PATH_PATTERNS'
+if grep -rnE "$RETIRED_PATH_LISTS" \
+    "$WF_DIR" "$REPO_ROOT/rdm-core/src" "$REPO_ROOT/docs" "$REPO_ROOT/CLAUDE.md" >&2; then
+    fail "2a: a retired path-pattern list is still referenced — the path-based trigger must be gone, not renamed"
+fi
+printf 'const SECURITY_PATH_PATTERNS = [];\n' >"$SCRATCH/planted-paths.js"
+if ! grep -qE "$RETIRED_PATH_LISTS" "$SCRATCH/planted-paths.js"; then
+    fail "2a-self: the retired-path-list grep did NOT catch a planted declaration — the check is vacuous"
+fi
+pass "2a: no repo/language literal in any deriveSignals region, the retired path lists are gone, and both greps catch planted violations"
+
 # --- 2b. AGENT-CONTEXT-TRIM GUARDS -------------------------------------------
 # Two guards recording decisions from the agentType/effort options spike
 # (docs/workflow-schemas.md § "agentType / effort options spike"). The spike has
@@ -1628,10 +1690,15 @@ assert.deepEqual(
 );
 
 // (f) deriveSignals is deterministic and FULLY populated (never a partial object).
+// The fixture is a SYNTHETIC NON-RDM project: no crate paths, no Rust. Every
+// conditional signal here is tripped by diff CONTENT, never by a path name.
 const derivedInput = {
   targetType: 'phase',
-  changedFiles: ['rdm-core/src/hook.rs', 'rdm-cli/src/commands/hook.rs', 'rdm-cli/tests/cli_hook.rs'],
-  diffText: '+pub fn format_done_directive() {}\n+    let out = std::process::Command::new("git");\n',
+  changedFiles: ['src/api/index.ts', 'src/cli/run.ts', 'tests/cli_run.test.ts'],
+  diffText:
+    '+export function formatDoneDirective() {}\n' +
+    '+const { exec } = require("child_process");\n' +
+    '+  console.log("ran");\n',
 };
 const d1 = deriveSignals(derivedInput);
 const d2 = deriveSignals(derivedInput);
@@ -1640,20 +1707,11 @@ for (const key of SIGNAL_KEYS) {
   assert.equal(typeof d1[key], 'boolean', 'deriveSignals must set ' + key + ' to an explicit boolean');
 }
 assert.equal(d1.targetType, 'phase', 'deriveSignals carries the target type through');
-assert.equal(d1.publicApiChanged, true, 'a `+pub` line under rdm-core/src trips publicApiChanged');
-assert.equal(d1.userFacing, true, 'an rdm-cli path trips userFacing');
+assert.equal(d1.publicApiChanged, true, 'an added exported symbol trips publicApiChanged');
+assert.equal(d1.userFacing, true, 'an added console.log trips userFacing');
+assert.equal(d1.securitySurface, true, 'a child_process require trips securitySurface');
 assert.equal(d1.multiModule, true, 'files in three directories trip multiModule');
 assert.equal(d1.missingTests, false, 'a changed test file clears missingTests');
-// securitySurface is PATH-based, and deliberately language-neutral: a non-Rust
-// file whose path matches a SECURITY_PATH_PATTERN (`token`) trips it with no
-// diffText supplied at all. The retired diff-content patterns were Rust-only, so
-// this assertion is self-contained rather than reading off `derivedInput` — whose
-// `hook.rs` PATH is what actually tripped the signal even under the old wording.
-assert.equal(
-  deriveSignals({ changedFiles: ['scripts/lib/token-report.mjs'] }).securitySurface,
-  true,
-  'a non-Rust path matching a SECURITY_PATH_PATTERN (`token`) trips securitySurface — path-based, not diff-content-based'
-);
 assert.deepEqual(deriveSignals(), {
   targetType: null,
   changedFiles: [],
@@ -1664,6 +1722,151 @@ assert.deepEqual(deriveSignals(), {
   userFacing: false,
   securitySurface: false,
 }, 'deriveSignals with no input is fully populated and all-false');
+
+// (f2) CONTENT-DERIVED SIGNALS. Every fixture below is a synthetic non-rdm
+//      project and NONE of them declares a path or a project config: the point
+//      is that a signal is decided by what the added lines SAY, not by what the
+//      file is called.
+const dimKeys = (s) => selectDimensions('code', s).map((d) => d.key);
+
+// -- publicApiChanged: an exported symbol in ANY language, no crate prefix.
+//    The fixture MUST supply a non-null diffText: a diffText-omitting fixture
+//    takes the value-level fail-open branch and reads `true` even if a
+//    Rust-only clause survived, i.e. it would be vacuous.
+{
+  const s = deriveSignals({ changedFiles: ['src/api/index.ts'], diffText: '+export function foo() {}\n' });
+  assert.equal(s.publicApiChanged, true, 'an added `export function` trips publicApiChanged with no crate path anywhere');
+  assert.ok(dimKeys(s).includes('api-docs'), 'a content-derived publicApiChanged selects api-docs');
+  const priv = deriveSignals({ changedFiles: ['src/api/index.ts'], diffText: '+function foo() {}\n' });
+  assert.equal(priv.publicApiChanged, false, 'a module-private `function foo()` under the SAME path does NOT trip publicApiChanged');
+  assert.ok(!dimKeys(priv).includes('api-docs'), 'the private-definition case does not select api-docs');
+}
+
+// -- userFacing: content, positive AND negative. Neither declares a path.
+{
+  const on = deriveSignals({
+    changedFiles: ['src/cli/run.js'],
+    diffText: '+  program.option("--verbose", "print more output");\n',
+  });
+  assert.equal(on.userFacing, true, 'an added CLI option registration trips userFacing');
+  assert.ok(dimKeys(on).includes('changelog'), 'a content-derived userFacing selects changelog');
+
+  const off = deriveSignals({ changedFiles: ['src/util/helper.js'], diffText: '+  const x = a + b;\n' });
+  assert.equal(off.userFacing, false, 'an internal refactor does NOT trip userFacing');
+  assert.ok(!dimKeys(off).includes('changelog'), 'the internal-refactor case does not select changelog');
+
+  // The negative is a real discriminator, not an accident of the path: the same
+  // neutral content under a CLI-SOUNDING path is still false.
+  const cliPathNeutral = deriveSignals({ changedFiles: ['src/cli/run.js'], diffText: '+  const x = a + b;\n' });
+  assert.equal(cliPathNeutral.userFacing, false, 'a cli-named path with non-user-facing content stays false — content only');
+
+  // CHANGELOG.md is a CONFIRMING term, never a sole trigger: with no code files
+  // it stays a genuine false.
+  const changelogOnly = deriveSignals({ changedFiles: ['CHANGELOG.md'], diffText: '+- did a thing\n' });
+  assert.equal(changelogOnly.userFacing, false, 'a CHANGELOG-only docs diff never trips userFacing on its own');
+}
+
+// -- securitySurface: content, not paths. A sink under a neutral path fires; a
+//    security-SOUNDING path with inert content does not.
+{
+  const sink = deriveSignals({
+    changedFiles: ['src/lib/runner.js'],
+    diffText: '+const { exec } = require("child_process");\n+exec(userInput);\n',
+  });
+  assert.equal(sink.securitySurface, true, 'a process-execution sink trips securitySurface under a neutral path');
+  assert.ok(dimKeys(sink).includes('security'), 'a content-derived securitySurface selects security');
+
+  const namedOnly = deriveSignals({ changedFiles: ['src/auth/session.js'], diffText: '+  const label = "session";\n' });
+  assert.equal(namedOnly.securitySurface, false, 'an auth-named path with no sink content does NOT trip securitySurface');
+  assert.ok(!dimKeys(namedOnly).includes('security'), 'the path-name-only case does not select security');
+}
+
+// -- UNDETERMINABLE fails open BY VALUE: code files changed, content unreadable.
+//    The keys are set to `true`, never omitted — an omitted key would read
+//    `undefined` through selectDimensions' populated-object branch and silently
+//    DROP the dimension.
+{
+  const u = deriveSignals({ changedFiles: ['src/util/helper.js'] });
+  assert.equal(u.publicApiChanged, true, 'unreadable content fails OPEN by value: publicApiChanged');
+  assert.equal(u.userFacing, true, 'unreadable content fails OPEN by value: userFacing');
+  assert.equal(u.securitySurface, true, 'unreadable content fails OPEN by value: securitySurface');
+  for (const k of SIGNAL_KEYS) {
+    assert.ok(Object.prototype.hasOwnProperty.call(u, k), 'fail-open must not OMIT the ' + k + ' key');
+    assert.equal(typeof u[k], 'boolean', 'fail-open must keep ' + k + ' an explicit boolean');
+  }
+  assert.equal(
+    Object.keys(u).length,
+    SIGNAL_KEYS.length + 2,
+    'the fail-open object is exactly SIGNAL_KEYS plus targetType and changedFiles — no omitted key, no extra key'
+  );
+  assert.notEqual(u, null, 'the value-level fail-open still returns a POPULATED object, not null');
+  const keys = dimKeys(u);
+  for (const d of ['api-docs', 'changelog', 'security']) {
+    assert.ok(keys.includes(d), 'value-level fail-open must still select ' + d);
+  }
+}
+
+// -- READ-BUT-NO-MATCH is a confident FALSE. This is what keeps the fail-open
+//    from widening into "run every dimension on every code diff".
+{
+  const r = deriveSignals({ changedFiles: ['src/util/helper.js'], diffText: '+  const x = 1;\n' });
+  assert.equal(r.publicApiChanged, false, 'read-but-no-match is a confident false: publicApiChanged');
+  assert.equal(r.userFacing, false, 'read-but-no-match is a confident false: userFacing');
+  assert.equal(r.securitySurface, false, 'read-but-no-match is a confident false: securitySurface');
+  // NOTE — the phase AC says this fixture should select only ['ac','correctness'].
+  // That is UNREACHABLE for any diff containing a code file: `helper.js` matches
+  // CODE_EXTENSIONS, so the deliberately-untouched `changesLogic`/`missingTests`
+  // signals are both true and the `tests` dimension (when: changesLogic ||
+  // missingTests) fires. Adding a test file to the fixture does not help —
+  // `changesLogic` stays true. Changing that would mean editing an out-of-scope
+  // signal, so the achievable assertion is pinned here and the discrepancy is
+  // reported rather than papered over.
+  assert.deepEqual(
+    dimKeys(r),
+    ['ac', 'correctness', 'tests'],
+    'a readable, non-matching code diff selects the always-on set plus tests (changesLogic is path-derived and out of scope)'
+  );
+  for (const d of ['api-docs', 'changelog', 'security']) {
+    assert.ok(!dimKeys(r).includes(d), 'read-but-no-match must NOT select ' + d);
+  }
+}
+
+// -- NO CONFIDENT-TRUE off an incidental path-name match. The retired
+//    config/mcp path patterns are what used to fire here.
+{
+  const neutral = '+  const x = a + b;\n';
+  const w = deriveSignals({ changedFiles: ['webpack.config.js'], diffText: neutral });
+  const h = deriveSignals({ changedFiles: ['src/util/helper.js'], diffText: neutral });
+  assert.equal(w.userFacing, false, 'a config-NAMED path with neutral content does not trip userFacing');
+  assert.equal(
+    w.userFacing,
+    h.userFacing,
+    'a config-named path is identical to a neutral path — the retired config/mcp patterns cannot be reintroduced'
+  );
+  const m = deriveSignals({ changedFiles: ['src/mcp/server.ts'], diffText: '+  const x = 1;\n' });
+  assert.equal(m.userFacing, false, 'an mcp-NAMED path with neutral content does not trip userFacing');
+}
+
+// -- NO new input channel. A fourth key is IGNORED, not read as a config source.
+{
+  const base = { targetType: 'phase', changedFiles: ['a.js'], diffText: '+x\n' };
+  const withExtra = deriveSignals({ ...base, projectConfig: { paths: ['x'] } });
+  assert.deepEqual(withExtra, deriveSignals(base), 'an extra input key is IGNORED — deriveSignals reads no config channel');
+  assert.deepEqual(
+    Object.keys(withExtra).sort(),
+    [...SIGNAL_KEYS, 'changedFiles', 'targetType'].sort(),
+    'deriveSignals output carries no channel-derived key'
+  );
+}
+
+// -- CODE_EXTENSIONS is untouched: the multi-language classification still holds.
+for (const ext of ['.rs', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.go', '.sh', '.pkl']) {
+  assert.equal(
+    deriveSignals({ changedFiles: ['a' + ext], diffText: '+x\n' }).changesLogic,
+    true,
+    'CODE_EXTENSIONS still classifies ' + ext + ' as a code file'
+  );
+}
 
 // (g) Unknown mode throws in both entry points; the always-on set makes an empty
 //     selection unreachable, but the guard is asserted structurally.
@@ -1853,6 +2056,93 @@ if run_node "$TMP/test.mjs" "$LIB"; then
 else
     fail "review-refute-fix behavior assertions failed"
 fi
+
+# --- 3b. CONTENT-SIGNAL MUTATION SELF-TESTS (non-vacuity) --------------------
+# Prove the content-derivation assertion groups in section 3 are not vacuous.
+# Each mutation targets exactly one branch of `contentSignal` or one vocabulary
+# entry on a hermetic SCRATCH copy of the lib, and section 3's assertions must go
+# RED. A CONTROL run comes first: without it every mutation below would be
+# meaningless. Whole-expression rewrites only, so a mutated copy still parses and
+# a syntax error can never masquerade as a caught defect.
+say "3b. Content-signal mutation self-tests (prove the deriveSignals groups are non-vacuous)"
+SMUT="$TMP/signal-mut"
+mkdir -p "$SMUT"
+
+cp "$LIB" "$SMUT/review.mjs"
+if run_node "$TMP/test.mjs" "$SMUT/review.mjs" >/dev/null 2>&1; then
+    pass "3b-control: the unmutated copy passes section 3"
+else
+    fail "3b-control: the unmutated copy FAILS section 3 — every mutation below is vacuous"
+fi
+
+signal_mutate_and_expect_fail() {
+    smtag="$1"
+    smdesc="$2"
+    smfn="$3"
+    cp "$LIB" "$SMUT/review.mjs"
+    "$smfn" || fail "3b-$smtag: could not plant the mutation ($smdesc)"
+    grep -q 'MUTANT' "$SMUT/review.mjs" || fail "3b-$smtag: the mutation did not apply ($smdesc)"
+    if run_node "$TMP/test.mjs" "$SMUT/review.mjs" >/dev/null 2>&1; then
+        fail "3b-$smtag: section 3 still passed after $smdesc — that assertion group is vacuous"
+    fi
+    pass "3b-$smtag: $smdesc flips a content-signal assertion"
+    cp "$LIB" "$SMUT/review.mjs"
+}
+
+# (a) Drop the no-code-files branch: a docs-only diff would stop being a genuine
+#     negative and would fail open on an unreadable body.
+smut_no_code_branch() {
+    sed 's|^  if (!hasCodeFiles) return false;$|  if (false) return false; // MUTANT|' "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail a 'deleting contentSignal(-s no-code-files branch' smut_no_code_branch
+
+# (b) Flip the undeterminable branch to a confident false: an unreadable diff
+#     would silently DROP api-docs/changelog/security instead of failing open.
+smut_fail_closed() {
+    sed 's|^  if (diffText === null) return true;$|  if (diffText === null) return false; // MUTANT|' "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail b 'making the undeterminable branch fail CLOSED' smut_fail_closed
+
+# (c) Make read-but-no-match return true: the fail-open widens into "run every
+#     dimension on every code diff".
+smut_always_true() {
+    sed 's|^  return matched === true;$|  return true; // MUTANT|' "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail c 'making read-but-no-match return TRUE' smut_always_true
+
+# (d) Re-add a path term to userFacing: the retired config/mcp coincidence
+#     returns and webpack.config.js trips changelog again.
+smut_path_term() {
+    sed 's#^    userFacing: contentSignal(#    userFacing: /* MUTANT */ lower.some((p) => /config/.test(p)) || contentSignal(#' \
+        "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail d 'restoring a path term on userFacing' smut_path_term
+
+# (e) Re-gate publicApiChanged behind a hard crate-path prefix: the defect this
+#     phase removes. Content still matches, but the path check is permanently
+#     false in any other repo, so api-docs never fires again.
+smut_path_gated_api() {
+    sed "s|publicApiChanged: contentSignal(matchesAny(added, EXPORT_CONTENT_PATTERNS), hasCode, diffText),|publicApiChanged: lower.some((p) => p.indexOf('crate/src/') === 0) \&\& contentSignal(matchesAny(added, EXPORT_CONTENT_PATTERNS), hasCode, diffText), // MUTANT|" \
+        "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail e 'restoring a hard crate-path gate on publicApiChanged' smut_path_gated_api
+
+# (e2) Drop the ES-module arm from the export vocabulary, leaving the other
+#      languages: an added `export function` reads false, proving the vocabulary
+#      is genuinely multi-language rather than one language carrying the rest.
+smut_drop_export_arm() {
+    sed 's|export\\s+(default\\b|MUTANT_never_matches(|' "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail e2 'deleting the ES-module arm of the export vocabulary' smut_drop_export_arm
+
+# (f) Neuter a process-execution regex in the security vocabulary: the
+#     child_process positive stops firing.
+smut_drop_security_regex() {
+    sed 's|child_process|MUTANT_never_matches|' "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail f 'neutering the child_process regex in the security vocabulary' smut_drop_security_regex
+
+pass "3b: all seven content-signal mutations flip an assertion, and the control passes"
 
 # --- 4. PLAN CALIBRATION MUTATION SELF-TEST -----------------------------------
 # Prove the AC1 presence check (embedded in section 3's test.mjs) is not

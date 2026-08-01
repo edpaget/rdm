@@ -291,7 +291,7 @@ function makeAgent(opts) {
 // 3a. Full OUTCOME shape — a clean seed (reviewed) and a blocking seed (rework).
 // ============================================================================
 {
-  const a = makeAgent({ diffResult: { changedFiles: ['rdm-core/src/foo.rs'], diffText: '+pub fn foo() {}' }, findings: CLEAN, verdicts: {} });
+  const a = makeAgent({ diffResult: { changedFiles: ['src/api/index.ts'], diffText: '+export function foo() {}' }, findings: CLEAN, verdicts: {} });
   const out = await run({ mode: 'code', roadmap: 'rm', phase: '1', gate: false }, a.agent, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
@@ -313,7 +313,7 @@ function makeAgent(opts) {
 {
   const findings = { ...CLEAN, ac: [{ id: 'ac1', concern: 'ac', severity: 'blocking', confidence: 90, what_fails: 'missing test' }] };
   const verdicts = { ac1: { refuted: false, confidence: 95 } };
-  const a = makeAgent({ diffResult: { changedFiles: ['rdm-cli/src/x.rs'], diffText: '' }, findings, verdicts });
+  const a = makeAgent({ diffResult: { changedFiles: ['src/cli/x.ts'], diffText: '' }, findings, verdicts });
   const out = await run({ mode: 'code', task: 'my-task', gate: false }, a.agent, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
@@ -339,7 +339,7 @@ function makeAgent(opts) {
       { id: 'g3', concern: 'correctness', severity: 'blocking', confidence: 85, what_fails: 'c' },
     ],
   };
-  const a = makeAgent({ diffResult: { changedFiles: ['rdm-core/src/foo.rs'], diffText: '' }, findings: many, verdicts: {} });
+  const a = makeAgent({ diffResult: { changedFiles: ['src/api/index.ts'], diffText: '' }, findings: many, verdicts: {} });
   const out = await run(
     { mode: 'code', roadmap: 'rm', phase: '1', gate: false, maxRefutations: 1 },
     a.agent,
@@ -380,9 +380,9 @@ console.log('3a OK: reviewed / rework OUTCOME shapes and the refutation budget v
   assert.equal(findLabels.length, ALL_CODE_DIMS.length, 'empty changedFiles -> fail-open -> every code dimension runs');
 }
 {
-  // A populated, non-triggering diff: only docs/tests touched, no rdm-core
-  // public item, no multi-module, no security/user-facing surface -> only the
-  // two always-on dimensions (ac, correctness) should fire.
+  // A populated, non-triggering diff: docs only — no code file at all, so every
+  // conditional signal is a confident false (content is never even consulted)
+  // -> only the two always-on dimensions (ac, correctness) should fire.
   const a = makeAgent({ diffResult: { changedFiles: ['docs/readme.md'], diffText: '' }, findings: CLEAN, verdicts: {} });
   await run({ mode: 'code', roadmap: 'rm', phase: '3', gate: false }, a.agent, refPipeline, refParallel, () => {});
   const findLabels = a.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label.split(':')[2]);
@@ -477,7 +477,7 @@ console.log('3e OK: gate defaults off, gate:true persists mapped status without 
 // ============================================================================
 {
   const a = makeAgent({
-    diffResult: { changedFiles: ['rdm-core/src/foo.rs'], diffText: '+pub fn foo() {}' },
+    diffResult: { changedFiles: ['src/api/index.ts'], diffText: '+export function foo() {}' },
     findings: CLEAN,
     acTable: [{ criterion: 'x', status: 'FAIL', evidence: 'y' }],
     verdicts: {},
@@ -498,7 +498,7 @@ console.log('3f OK: AC-only-gap summary names the real cause');
 // and is strictly optional: absent / malformed / empty all fall back to the
 // agent, which stays byte-unchanged.
 // ============================================================================
-const HOIST_DIFF = { changedFiles: ['rdm-core/src/foo.rs'], diffText: '+pub fn foo() {}' };
+const HOIST_DIFF = { changedFiles: ['src/api/index.ts'], diffText: '+export function foo() {}' };
 {
   // Supplied and shape-valid -> ZERO diff:signals calls.
   const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
@@ -520,11 +520,11 @@ const HOIST_DIFF = { changedFiles: ['rdm-core/src/foo.rs'], diffText: '+pub fn f
   assert.deepEqual(out, outNoHoist, 'OUTCOME is deep-equal with and without the hoisted diff');
 
   // ... and the dimension selection is identical: `api-docs` is triggered by the
-  // rdm-core path on both paths, `changelog` by neither.
+  // added exported symbol on both paths, `changelog` by neither.
   const dimsHoisted = a.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label).sort();
   const dimsFetched = b.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label).sort();
   assert.deepEqual(dimsHoisted, dimsFetched, 'hoisted diff threads the same deriveSignals output as the agent path');
-  assert.ok(dimsHoisted.includes('find:code:api-docs'), 'the rdm-core path triggers api-docs on the hoisted path too');
+  assert.ok(dimsHoisted.includes('find:code:api-docs'), 'the exported-symbol content triggers api-docs on the hoisted path too');
 }
 for (const [name, bad] of [
   ['absent', undefined],

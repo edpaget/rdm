@@ -221,6 +221,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The shipped code-review pipeline now decides **which conditional dimensions
+  run from the CONTENT of the diff rather than from rdm-specific file paths**, so
+  `api-docs`, `changelog` and `security` fire correctly in any repository and any
+  language. Previously these were derived from path lists that were either
+  hard-coded to this project's crate layout or matched on a spelling
+  coincidence — and because a review that skips a dimension still reports clean,
+  the failure was silent. Concretely: `api-docs` now fires when an added line
+  introduces an exported or public symbol in any language (`export` /
+  `export default`, `module.exports`, `pub` / `pub(crate)`, `public`, a
+  capitalized Go identifier, `__all__`) instead of only on a `+pub` line under a
+  specific crate path; `changelog` fires when an added line registers a CLI
+  subcommand/argument/flag, an attached help or usage string, an HTTP/RPC route
+  or tool, or user-visible printed output — instead of on any path merely spelled
+  `config` or `mcp`, so a change to `vite.config.ts` no longer trips it; and
+  `security` fires on sink-shaped content (process execution, filesystem access,
+  environment and secret reads, deserialization or `eval`, raw memory) instead of
+  on a security-sounding path name, so a `child_process` sink in
+  `src/lib/runner.js` is caught while `src/auth/session.js` with no sink content
+  is not. Only ADDED diff lines are scanned, so a *removed* line never trips a
+  signal.
+- Review coverage is never silently dropped when the diff cannot be read: if a
+  change touches code files but their content is unavailable, all three
+  conditional signals are set to `true` — an explicit value, never an omitted
+  key — so their dimensions still run. A docs-only change, or a readable diff
+  that matches nothing, remains a genuine negative and runs only the always-on
+  dimensions. The signal-derivation input shape is unchanged
+  (`{ targetType, changedFiles, diffText }`) and no configuration option was
+  added, so no downstream caller needs to change.
 - The `security` dimension of the review skills emitted by `rdm agent-config
   claude --skills` now reviews on a **threat-model** basis instead of matching
   language-specific API and keyword patterns. A finding is a claim that an

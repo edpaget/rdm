@@ -1103,52 +1103,210 @@ function selectDimensions(mode, signals) {
   return sel;
 }
 
-// Path/keyword rules for deriveSignals. Fixed lists anchored on path-segment
-// boundaries, so an incidental substring cannot trip a trigger.
+// File-CLASSIFICATION rules for deriveSignals. These two lists are the only
+// path-shaped rules that survive, and both answer "what KIND of file is this",
+// never "what surface does the change touch".
+//
+// PATTERN AUDIT (recorded so a later reader does not re-add what was removed):
+//   * TEST_PATH_PATTERNS — CONVENTION-based (`tests/`, `*_test.*`, `*.spec.*`).
+//     Portable across repos and languages; kept verbatim.
+//   * CODE_EXTENSIONS — already multi-language and correct; kept verbatim.
+//   * the security path list and the user-facing path list — both REMOVED, and
+//     deliberately not replaced. A path list is either repo-specific (a hard
+//     crate-name prefix) or fires on a spelling coincidence (a bundler config
+//     file matching a `config` segment), so it can be confidently WRONG in both
+//     directions. Both signals now derive from diff CONTENT (the three
+//     vocabularies below).
+//   * the crate-path prefix and the Rust-keyword content clause inside
+//     `publicApiChanged` — both REMOVED. The first was repo-specific
+//     (permanently false anywhere else, so `api-docs` never fired); the second
+//     was language-specific (an added `export function` read false).
 const TEST_PATH_PATTERNS = [/(^|\/)tests?(\/|$)/, /(^|[/_.-])test[_.-]/, /[_.-]test\.[a-z]+$/, /(^|[/_.-])spec[_.-]/];
 const CODE_EXTENSIONS = ['.rs', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.go', '.sh', '.pkl'];
-const SECURITY_PATH_PATTERNS = [
-  /(^|[/_.-])auth([/_.-]|$)/,
-  /(^|[/_.-])credential/,
-  /(^|[/_.-])secret/,
-  /(^|[/_.-])token/,
-  /(^|[/_.-])password/,
-  /(^|[/_.-])crypto/,
-  /(^|[/_.-])exec([/_.-]|$)/,
-  /(^|[/_.-])process([/_.-]|$)/,
-  /(^|[/_.-])shell([/_.-]|$)/,
-  /(^|[/_.-])subprocess/,
-  /(^|[/_.-])net(work)?([/_.-]|$)/,
-  /(^|[/_.-])http/,
-  /(^|[/_.-])serde/,
-  /(^|[/_.-])deserial/,
-  /(^|[/_.-])parse[rs]?([/_.-]|$)/,
-  /(^|[/_.-])path([/_.-]|$)/,
-  /(^|[/_.-])fs([/_.-]|$)/,
-  /(^|[/_.-])hook([/_.-]|$)/,
+
+// addedLines(diffText) — the ADDED lines of a unified diff, `+` prefix stripped.
+// Only added lines are ever scanned: a REMOVED `export`/`exec(` line must not
+// trip a signal, and a `+++ b/path` file header must not be read as content.
+// Context and `@@` hunk-header lines are excluded by the index-0 `+` anchor.
+function addedLines(diffText) {
+  if (typeof diffText !== 'string') return [];
+  const out = [];
+  const lines = diffText.split('\n');
+  for (const line of lines) {
+    if (line.charAt(0) !== '+') continue;
+    if (line.indexOf('+++') === 0) continue;
+    out.push(line.slice(1));
+  }
+  return out;
+}
+
+// matchesAny(lines, patterns) — does any added line match any pattern?
+// The pattern arrays below are module-level constants and deliberately carry NO
+// `g`/`y` flag: a global regex keeps `lastIndex` state across `.test()` calls,
+// which would make deriveSignals non-deterministic across invocations.
+function matchesAny(lines, patterns) {
+  return lines.some((line) => patterns.some((re) => re.test(line)));
+}
+
+// EXPORT_CONTENT_PATTERNS — an added line that introduces an EXPORTED or PUBLIC
+// symbol, across the languages CODE_EXTENSIONS covers. Language-neutral by
+// construction: no path term, no single language's keyword standing in for the
+// whole notion.
+//
+// A bare `function `/`def ` is DELIBERATELY EXCLUDED — a module-private
+// definition is not a public-API change, and including it would make `api-docs`
+// an always-on dimension in every JS/Python repo. Do not "fix" that.
+const EXPORT_CONTENT_PATTERNS = [
+  // JS/TS ES-module exports
+  /\bexport\s+(default\b|const\b|let\b|var\b|function\b|async\b|class\b|type\b|interface\b|enum\b|\*|\{)/,
+  // CommonJS
+  /\bmodule\.exports\b/,
+  /\bexports\.[A-Za-z_$]/,
+  // Rust visibility + item kind (never a bare keyword scan)
+  /(^|[^A-Za-z0-9_])pub(\(crate\)|\(super\))?\s+(fn|struct|enum|trait|mod|type|const|static|use)\b/,
+  // Java / C# / TypeScript member visibility
+  /\bpublic\s+(static\s+|async\s+)?[A-Za-z_$<]/,
+  // Go: an exported identifier is a Capitalized one
+  /^\s*func\s+(\([^)]*\)\s*)?[A-Z]/,
+  /^\s*(type|var|const)\s+[A-Z]/,
+  // Python re-export surface
+  /\b__all__\b/,
 ];
-const USER_FACING_PATH_PATTERNS = [
-  /^rdm-cli\//,
-  /^rdm-server\//,
-  /(^|[/_.-])mcp([/_.-]|$)/,
-  /(^|[/_.-])config([/_.-]|$)/,
+
+// USER_FACING_CONTENT_PATTERNS — an added line that registers or emits a
+// USER-VISIBLE surface: CLI subcommand/argument/flag registration, the help and
+// usage strings attached to those registrations, HTTP/RPC route or tool
+// registration, and printed or logged output.
+//
+// `Command::new(` is deliberately NOT here: it means clap (user-facing) in one
+// crate and `std::process::Command` (a security sink) in another, and the two
+// are textually identical. It is assigned to the SECURITY vocabulary only;
+// user-facing CLI detection uses `Arg::new(` / `.arg(` / `.about(` / `.help(`.
+const USER_FACING_CONTENT_PATTERNS = [
+  // (a) CLI surface: subcommand / argument / flag registration
+  /\badd_argument\s*\(/,
+  /\.addOption\s*\(/,
+  /\.option\s*\(/,
+  /\.arg\s*\(/,
+  /\.command\s*\(/,
+  /\.subcommand\s*\(/,
+  /\.flag\s*\(/,
+  /\bArg::new\s*\(/,
+  /\bArgumentParser\s*\(/,
+  /\bflag\.(String|Bool|Int)\s*\(/,
+  // (b) help / usage / description strings attached to those registrations
+  /\.help\s*\(/,
+  /\.about\s*\(/,
+  /\.long_about\s*\(/,
+  /\bhelp\s*=\s*['"]/,
+  /\busage:\s/,
+  // (c) HTTP or RPC surface: route, endpoint, handler, tool registration
+  /\b(app|router|server)\.(get|post|put|patch|delete|use)\s*\(/,
+  /@app\.route\b/,
+  /\.route\s*\(/,
+  /\baddTool\s*\(/,
+  /\bHandleFunc\s*\(/,
+  // (d) user-visible output: printed or logged messages and error strings
+  /\bconsole\.(log|error|warn|info)\s*\(/,
+  /(^|[^A-Za-z0-9_.])print\s*\(/,
+  /\b(println!|eprintln!|print!|eprint!)/,
+  /\bfmt\.(Print|Printf|Println|Errorf)\s*\(/,
 ];
+
+// SECURITY_CONTENT_PATTERNS — sink- and capability-shaped tokens across the
+// languages CODE_EXTENSIONS covers: process/command execution, filesystem
+// access, environment and secret reads, deserialization/eval, and raw memory.
+//
+// `JSON.parse(` is DELIBERATELY EXCLUDED — it is the single most common line in
+// any JS/TS diff, and including it would collapse `security` into an always-on
+// dimension for every JS repo: the mirror image of the defect this vocabulary
+// replaces. Do not "fix" that either.
+const SECURITY_CONTENT_PATTERNS = [
+  // process / command execution
+  /\bchild_process\b/,
+  /\b(execSync|execFileSync|spawnSync|spawn|execFile)\s*\(/,
+  /(^|[^A-Za-z0-9_.])exec\s*\(/,
+  /\bsubprocess\./,
+  /\bos\.system\s*\(/,
+  /\bstd::process\b/,
+  /\bCommand::new\s*\(/,
+  /\bexec\.Command\s*\(/,
+  /\bRuntime\.getRuntime\(\)\.exec/,
+  // filesystem
+  /\bstd::fs::/,
+  /\brequire\(['"](node:)?fs['"]\)/,
+  /\bfrom\s+['"](node:)?fs['"]/,
+  /\bfs\.(read|write|unlink|rm|chmod|open|createWriteStream)/,
+  /\bset_permissions\b/,
+  /\bos\.(remove|chmod|open)\s*\(/,
+  /\bioutil\.(ReadFile|WriteFile)\b/,
+  /\bos\.(Open|Create|Remove)\s*\(/,
+  // environment and secrets
+  /\bprocess\.env\b/,
+  /\bos\.environ\b/,
+  /\benv::var\b/,
+  /\bgetenv\s*\(/,
+  /\bos\.Getenv\s*\(/,
+  /\b(API_KEY|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_TOKEN)\b/,
+  // deserialization / eval
+  /\bpickle\.loads?\s*\(/,
+  /\byaml\.load\s*\(/,
+  /(^|[^A-Za-z0-9_.])eval\s*\(/,
+  /\bnew\s+Function\s*\(/,
+  /\bUnmarshal\s*\(/,
+  /\bserde_json::from_(str|slice|reader)\b/,
+  // raw memory
+  /\bunsafe\s*\{/,
+  /\bfrom_utf8_unchecked\b/,
+  /\btransmute\s*\(/,
+  /\bptr::(read|write|copy)/,
+  /\bmemcpy\s*\(/,
+];
+
+// contentSignal(matched, hasCodeFiles, diffText) — the ONE rule every
+// content-derived signal routes through. Never inline it per signal: a later
+// edit could then drift one of the three.
+//
+// Branch ORDER is load-bearing:
+//   1. NO code files changed → a confident `false`, whatever the diff body says.
+//      A docs-only diff is a genuine negative, not an unknown.
+//   2. code files changed but the content could NOT be read at all
+//      (`diffText === null`) → UNDETERMINABLE, so fail open BY VALUE: return
+//      `true` so the dimension still runs. Never omit the key —
+//      `selectDimensions`' `signals == null` test is a WHOLE-OBJECT check, so an
+//      omitted key reads `undefined`, coerces false, and SILENTLY DROPS the
+//      dimension.
+//   3. content was read and nothing matched → a confident `false`. Absence of a
+//      match in readable content is a real negative; this is what keeps the
+//      fail-open from widening into "run every dimension on every code diff".
+//
+// Reversing branches 1 and 2 would make a docs-only diff with an unreadable body
+// fail open and re-run every conditional dimension on prose.
+function contentSignal(matched, hasCodeFiles, diffText) {
+  if (!hasCodeFiles) return false;
+  if (diffText === null) return true;
+  return matched === true;
+}
 
 // deriveSignals(input) — map `{ targetType, changedFiles, diffText }` to a
 // FULLY-POPULATED signals object. Every boolean key in SIGNAL_KEYS is set
 // explicitly, never left undefined: a partially-populated object would make a
 // conditional dimension drop out on a MISSING key rather than on a real negative.
 //
-// Pure and deterministic — fixed path/keyword rules, no Date.now / Math.random,
-// no shell. A caller that cannot compute a diff must pass NO signals at all (see
-// selectDimensions' fail-open rule) rather than a partial object.
+// Pure and deterministic — fixed classification and content rules, no Date.now /
+// Math.random, no shell.
 //
-// INTERIM: `securitySurface` is currently PATH-based only (SECURITY_PATH_PATTERNS).
-// The language-specific diff-content triggers it used to carry were removed with
-// the threat-model rewrite of the `security` dimension. Language-agnostic
-// content-based triggering — and the removal of the path list itself — is owned by
-// the sibling phase. Do not read the path-only state as a durable contract, and do
-// not extend the path list to compensate.
+// EVERY conditional signal derives from diff CONTENT, not from declared or
+// conventional PATHS. There is no generic way to specify paths that works across
+// repos: a path list is either repo-specific or fires on a spelling coincidence.
+// The input shape is unchanged — content derivation reads `diffText` and
+// `changedFiles`, which every caller already supplies, so there is no
+// declared-path or project-config channel to thread.
+//
+// A caller that cannot compute a diff AT ALL still passes NO signals (see
+// selectDimensions' object-level fail-open). The value-level fail-open in
+// `contentSignal` is a DIFFERENT layer: it covers a caller that HAS changed files
+// but could not read their content.
 function deriveSignals(input) {
   const i = input || {};
   const targetType = i.targetType || null;
@@ -1168,16 +1326,25 @@ function deriveSignals(input) {
     dirs[idx === -1 ? '.' : p.slice(0, idx)] = true;
   }
 
+  // Content is scanned in its ORIGINAL case. Only PATHS are lowercased: Go's
+  // exported-identifier rule and the Rust/Java keywords are case-sensitive, so
+  // lowercasing the diff would make `func Foo` indistinguishable from `func foo`.
+  const added = addedLines(diffText);
+  const hasCode = codeFiles.length > 0;
+  // A CHANGELOG.md path CONFIRMS a user-facing change; it is never a SOLE
+  // trigger — a CHANGELOG-only diff has no code files, so contentSignal's first
+  // branch keeps it a genuine `false`.
+  const changelogTouched = lower.some((p) => p === 'changelog.md' || p.slice(-13) === '/changelog.md');
+
   return {
     targetType: targetType,
     changedFiles: files.slice(),
     changesLogic: codeFiles.length > 0,
     missingTests: codeFiles.length > 0 && testFiles.length === 0,
     multiModule: Object.keys(dirs).length > 1,
-    publicApiChanged:
-      lower.some((p) => p.indexOf('rdm-core/src/') === 0) && (diffText === null || /(^|\n)\+.*\bpub\b/.test(diffText)),
-    userFacing: lower.some((p) => USER_FACING_PATH_PATTERNS.some((re) => re.test(p))),
-    securitySurface: lower.some((p) => SECURITY_PATH_PATTERNS.some((re) => re.test(p))),
+    publicApiChanged: contentSignal(matchesAny(added, EXPORT_CONTENT_PATTERNS), hasCode, diffText),
+    userFacing: contentSignal(matchesAny(added, USER_FACING_CONTENT_PATTERNS) || changelogTouched, hasCode, diffText),
+    securitySurface: contentSignal(matchesAny(added, SECURITY_CONTENT_PATTERNS), hasCode, diffText),
   };
 }
 

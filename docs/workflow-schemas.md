@@ -1178,6 +1178,15 @@ dimensions — a strict coverage subset returned precisely when the caller had n
 information. Omitted signals and an empty signals object are deliberately
 different paths, and `verify-workflow-review.sh` asserts both.
 
+**Two fail-open layers, and they are different things.** The rule above is the
+**object-level** fail-open: a caller with no diff at all omits `signals`
+entirely, and every dimension runs. `deriveSignals` adds a **value-level**
+fail-open one layer down (below): a caller that HAS changed files but could not
+read their content still returns a fully-populated object, with the
+undeterminable signals set to `true`. Both remain live. "Callers that cannot
+compute a diff must pass no signals rather than a partial object" still governs
+the first case; the second case never produces a partial object at all.
+
 ### `deriveSignals(input)`
 
 Pure and deterministic (no `Date.now`/`Math.random`, no shell). Maps
@@ -1185,31 +1194,95 @@ Pure and deterministic (no `Date.now`/`Math.random`, no shell). Maps
 object — every boolean key in `SIGNAL_KEYS` (`changesLogic`, `missingTests`,
 `multiModule`, `publicApiChanged`, `userFacing`, `securitySurface`) is set
 explicitly. A partially-populated object would make a conditional
-dimension drop out on a *missing* key rather than a real negative, so callers
-that cannot compute a diff must pass **no** signals rather than a partial object.
+dimension drop out on a *missing* key rather than a real negative.
 
-**`securitySurface` is currently PATH-based only** (`SECURITY_PATH_PATTERNS`).
-The diff-content triggers it used to carry, and the sibling `hasUnsafe` signal,
-were both language-specific and were removed together with the threat-model
-rewrite of the `security` dimension — `hasUnsafe` left `SIGNAL_KEYS` and the
-`deriveSignals` return object in the same change, since a key present in one but
-not the other is exactly the missing-key fail-mode above. Language-agnostic
-content-based triggering — and the removal of the path list itself — is owned by
-a sibling phase, so **treat the path-only state as INTERIM**: do not read it as a
-durable contract and do not extend the path list to compensate.
+**Every conditional signal derives from diff CONTENT — the ADDED lines only —
+not from declared or conventional paths.** There is no generic way to specify
+paths that works across repos: a path list is either repo-specific (a hard crate
+prefix, permanently false everywhere else, so its dimension silently never
+fires) or fires on a spelling coincidence (a bundler config file matching a
+`config` segment, so its dimension fires on an unrelated change). Both failure
+modes are *confident* and both degrade silently, which is why neither is
+tolerated. Scanning only added lines means a *removed* `export`/`exec(` line
+never trips a signal, and a `+++ b/path` header is never read as content.
+
+Three named vocabularies, all literal regexes, all module-level constants with
+no `g`/`y` flag (a global regex carries `lastIndex` across `.test()` calls and
+would break determinism):
+
+| vocabulary | signal | covers |
+| --- | --- | --- |
+| `EXPORT_CONTENT_PATTERNS` | `publicApiChanged` | `export` / `export default`, `module.exports`, Rust `pub`/`pub(crate)` + item kind, Java/C#/TS `public`, a capitalized Go identifier, Python `__all__` |
+| `USER_FACING_CONTENT_PATTERNS` | `userFacing` | CLI subcommand/argument/flag registration, the help/usage strings attached to them, HTTP/RPC route/handler/tool registration, printed or logged output |
+| `SECURITY_CONTENT_PATTERNS` | `securitySurface` | process/command execution, filesystem access, environment and secret reads, deserialization/eval, raw memory |
+
+A `CHANGELOG.md` path in `changedFiles` is a positive-**confirming** term for
+`userFacing`, never a sole trigger — a CHANGELOG-only diff has no code files and
+stays a genuine `false`.
+
+Two exclusions are deliberate and must not be "fixed": a bare `function`/`def`
+is not in the export vocabulary (a module-private definition is not a public-API
+change, and including it would make `api-docs` always-on in every JS/Python
+repo), and `JSON.parse(` is not in the security vocabulary (it is the most
+common line in any JS/TS diff and would collapse `security` into an always-on
+dimension). `Command::new(` is ambiguous — clap in one crate, `std::process` in
+another — and is assigned to the security vocabulary only; user-facing CLI
+detection uses `Arg::new(` / `.arg(` / `.about(` / `.help(` instead.
+
+The two retired path lists — the security one and the user-facing one — **no
+longer exist** and are deliberately not replaced, for that same reason. Their
+identifiers are gone from the source, and `verify-workflow-review.sh` § 2a keeps
+them gone. Paths survive only in `TEST_PATH_PATTERNS` and
+`CODE_EXTENSIONS`, which answer *what kind of file is this* (test vs. code)
+rather than *what surface does this change touch*; both are convention-based and
+multi-language, and both are unchanged. Content is scanned in its ORIGINAL case
+(Go's exported-identifier rule and the Rust/Java keywords are case-sensitive);
+only paths are lowercased.
+
+**No declared-path or project-config channel was introduced.** `deriveSignals`'
+input shape is still exactly `{ targetType, changedFiles, diffText }` — content
+derivation reads inputs every caller already supplies — and both call sites are
+unchanged.
+
+**The four-branch rule** (one shared helper, `contentSignal`, that all three
+conditional signals route through; branch order is load-bearing):
+
+1. A **positive content match** → `true`.
+2. **`codeFiles.length === 0`** → a confident `false`, regardless of `diffText`.
+   A docs-only diff is a genuine negative. This branch is tested FIRST — reversed
+   with branch 3, a docs-only diff with an unreadable body would fail open and
+   re-run every conditional dimension on prose.
+3. Code files changed but the content could **not be read at all**
+   (`diffText === null`) → undeterminable, so the signal **fails open by VALUE:
+   it is set to `true`** so its dimension still runs. The key is **never
+   omitted** — `selectDimensions`' `signals == null` test is a *whole-object*
+   check, so an omitted key reads `undefined`, coerces false, and silently DROPS
+   the dimension.
+4. Content **was** read and nothing matched → a confident `false`. Absence of a
+   match in readable content is a real negative, not an unknown; this is what
+   keeps the fail-open from widening into "run every dimension on every code
+   diff". Note `diffText: ''` is a *string*, not `null`: an empty-but-present
+   diff takes this branch.
 
 **Who feeds it.** `dispatch-phase`'s code gate runs a mechanical `diff:signals`
 agent inside the item's worktree (`git diff --name-only main...HEAD` plus a
 truncated `git diff main...HEAD`) and threads the result through `deriveSignals`
 into `buildReviewPipeline('code')` — recomputed on **every** rework round, so a
-round-2 fix that newly touches a public `rdm-core` item turns `api-docs` on for
-that round. The three-dot base scopes to the branch's own changes; for a phase in
+round-2 fix that newly adds an exported symbol turns `api-docs` on for that
+round. The three-dot base scopes to the branch's own changes; for a phase in
 a shared per-roadmap worktree that is over-inclusive (earlier phases' files ride
 along) but never under-inclusive, which is the safe direction for a coverage
-gate. A very large diff is truncated in the prompt, which likewise only weakens
-trigger detection toward fail-open. **Signals-absent fail-open contract:** if the
-diff agent fails, returns null, or reports no changed files, the driver omits the
-`signals` key **entirely** — never `{}` — so every dimension runs.
+gate. **Truncation now cuts the other way.** A very large diff is truncated at
+40000 chars in the prompt; a truncated diff is still a non-null *string*, so it
+takes branch 4 (confident `false`) on content that was cut off. Under the old
+path rules truncation only weakened detection toward fail-open; under content
+derivation it weakens detection toward a false NEGATIVE. That is the one place
+where content derivation is strictly less safe than the path rules it replaced,
+and it is bounded by the same 40000-char window on both the `diff:signals` agent
+and the implementer prompt that absorbs it. **Signals-absent fail-open
+contract:** if the diff agent fails, returns null, or reports no changed files,
+the driver omits the `signals` key **entirely** — never `{}` — so every
+dimension runs.
 
 ### Verdict and status mapping
 

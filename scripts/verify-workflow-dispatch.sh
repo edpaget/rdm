@@ -784,26 +784,27 @@ try {
 // deriveSignals({targetType, changedFiles, diffText}) into the canonical
 // pipeline. Here that closure's contract is driven with a fake review dep and a
 // mutable diff, so the three load-bearing properties are pinned:
-//   1. a Rust-public-API + no-tests diff turns `api-docs` and `tests` ON;
-//   2. round 2 re-derives from the POST-rework tree (a fix that newly touches a
-//      public rdm-core item must turn `api-docs` on for round 2);
+//   1. an exported-symbol + no-tests diff turns `api-docs` and `tests` ON;
+//   2. round 2 re-derives from the POST-rework tree (a fix that newly adds an
+//      exported symbol must turn `api-docs` on for round 2);
 //   3. an empty/failed diff omits the `signals` KEY ENTIRELY (fail-open), never
 //      passing `{}` — selectDimensions treats those two cases differently.
 // ============================================================================
 {
   const { deriveSignals } = mod;
 
-  const RUST_PUBLIC = ['rdm-core/src/ops/task.rs'];
-  const s1 = deriveSignals({ targetType: 'phase', changedFiles: RUST_PUBLIC, diffText: '+pub fn foo() {}\n' });
-  assert.equal(s1.publicApiChanged, true, 'a new rdm-core pub item turns publicApiChanged on');
+  // A SYNTHETIC non-rdm project: the signal comes from diff CONTENT, not paths.
+  const EXPORTED_API = ['src/api/index.ts'];
+  const s1 = deriveSignals({ targetType: 'phase', changedFiles: EXPORTED_API, diffText: '+export function foo() {}\n' });
+  assert.equal(s1.publicApiChanged, true, 'an added exported symbol turns publicApiChanged on');
   assert.equal(s1.missingTests, true, 'a code-only diff with no test file turns missingTests on');
-  assert.equal(s1.changesLogic, true, 'a .rs change turns changesLogic on');
+  assert.equal(s1.changesLogic, true, 'a .ts change turns changesLogic on');
   assert.equal(s1.targetType, 'phase', 'the target type rides along for the plan-mode trigger');
 
-  // Round 1 touches no Rust; round 2's fix does. Re-derivation must notice.
+  // Round 1 is docs-only; round 2's fix adds an export. Re-derivation must notice.
   const roundDiffs = [
     { changedFiles: ['docs/workflow-schemas.md'], diffText: '+prose\n' },
-    { changedFiles: RUST_PUBLIC, diffText: '+pub fn bar() {}\n' },
+    { changedFiles: EXPORTED_API, diffText: '+export function bar() {}\n' },
   ];
   let roundIdx = 0;
   const seen = [];
@@ -2240,13 +2241,13 @@ console.log('6c OK: alreadyInProgress suppression, and the --plan-only guard is 
 // (g)/(h)/(i) diff ABSORPTION into the implementer, its fallback, and per-round
 // freshness (a one-shot pendingDiff — round 2 never inherits round 1's diff).
 // ============================================================================
-const ABSORBED = { changedFiles: ['rdm-core/src/foo.rs'], diffText: '+pub fn foo() {}' };
+const ABSORBED = { changedFiles: ['src/api/index.ts'], diffText: '+export function foo() {}' };
 {
   const a = makeAgent({ implementResult: ABSORBED });
   await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META }, a.agent, refPipeline, refParallel, nolog);
   assert.equal(count(a, 'diff:signals'), 0, '(g) an implementer-returned diff -> zero diff:signals calls');
   const dims = a.calls.filter((c) => c.label.startsWith('find:code:')).map((c) => c.label).sort();
-  assert.ok(dims.includes('find:code:api-docs'), '(g) the absorbed diff threads deriveSignals output (rdm-core path triggers api-docs)');
+  assert.ok(dims.includes('find:code:api-docs'), '(g) the absorbed diff threads deriveSignals output (the added export triggers api-docs)');
   assert.ok(!dims.includes('find:code:changelog'), '(g) a non-triggered dimension stays off — signals really were computed');
   // The implementer prompt must carry the same commands and truncation the
   // diff:signals prompt uses, or deriveSignals sees different input.
@@ -2268,12 +2269,14 @@ for (const [name, r] of [
 }
 {
   // (i) Two-round rework: each round's signals come from THAT round's own
-  // implementer return. Round 1 touches rdm-core/src (api-docs on via
-  // publicApiChanged, changelog off); round 2 touches rdm-cli/src instead
-  // (changelog on via userFacing, api-docs off).
+  // implementer return. Round 1 ADDS AN EXPORT (api-docs on via
+  // publicApiChanged, changelog off); round 2 adds user-visible OUTPUT instead
+  // (changelog on via userFacing, api-docs off). Both are content-derived — the
+  // round-2 diff text is load-bearing, since an empty-but-non-null diffText is
+  // "read, nothing matched" and would be a confident false.
   const blocking = { ac: [{ id: 'b1', concern: 'ac', severity: 'blocking', confidence: 95, what_fails: 'x' }] };
   const a = makeAgent({
-    implementResult: [ABSORBED, { changedFiles: ['rdm-cli/src/main.rs'], diffText: '' }],
+    implementResult: [ABSORBED, { changedFiles: ['src/cli/main.ts'], diffText: '+  console.log("done");\n' }],
     codeFindingsByRound: [blocking, {}],
   });
   await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META, maxCodeRework: 1 }, a.agent, refPipeline, refParallel, nolog);
