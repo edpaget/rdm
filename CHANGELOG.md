@@ -368,6 +368,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   placeholder) so it can read a phase back after an advance/park write,
   mirroring the CLI variant's `rdm phase show --format json` call — MCP has
   no equivalent of that command otherwise.
+- The shipped `rdm-autopilot` skill templates (`rdm agent-config claude
+  --skills`/`--mcp`) no longer run an `estimate` Workflow pre-pass before
+  dispatching phases downstream: every downstream phase now dispatches at
+  whatever tier `rdm next` already reports (default `medium`) rather than
+  being freshly rated first. `generate_workflows()` never emitted
+  `.claude/workflows/estimate.js` in the first place — it references
+  `agentType: 'rdm-mechanical'`, which a downstream repo's (nonexistent)
+  `.claude/agents/` registry has no definition for and which raises rather
+  than degrading silently — so the templates' prior instruction to invoke it
+  was a dangling reference the very first dispatch would have hit. The step
+  numbering shrinks accordingly (the phase-cursor fetch, drive loop, and
+  summary steps renumber down by one), the `mechanicalModel`/`phaseList`
+  hoists (and, on MCP, the `rdm_phase_list` tool) are dropped entirely, and
+  `mechanical-model-unresolved` is removed from the known-good stop-reason
+  allowlist. The local dogfood `.claude/skills/rdm-autopilot` copy is
+  unaffected and still invokes the real `estimate` Workflow — only the
+  shipped/downstream lane changes.
+  `scripts/verify-agent-config-distribution.sh`'s Workflow-invocation check
+  is also generalized from an autopilot-only literal-string check to
+  `check_workflow_invocations_resolve`, which asserts, across every emitted
+  skill, that any "Invoke(ing) the `<name>` Workflow" instruction names a
+  Workflow that actually resolves to a file in the same emitted
+  `.claude/workflows/` tree.
 
 ### Fixed
 

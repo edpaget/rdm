@@ -697,9 +697,6 @@ fn skill_autopilot_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
             principles_note,
             &[
                 ("t_next", "rdm_next"),
-                // The shim hoists the phase list into the workflow's estimate
-                // pre-pass so the workflow skips its own estimate:list subagent.
-                ("t_phase_list", "rdm_phase_list"),
                 ("t_phase_update", "rdm_phase_update"),
                 // Read-back confirmation after an advance/park write, mirroring
                 // the CLI variant's `rdm phase show --format json` call.
@@ -2067,9 +2064,11 @@ mod tests {
         // the advance/park read-back confirmation loop, mirroring the local
         // dogfood skill's depth (the earlier placeholder sentence is gone).
         assert!(!content.contains("full prose-parity documentation lands in a follow-up phase"));
-        assert!(content.contains(
-            "nothing`, `blocked-on-dependencies`, `budget`, `plan-only-exhausted`, `mechanical-model-unresolved`"
-        ));
+        assert!(
+            content
+                .contains("nothing`, `blocked-on-dependencies`, `budget`, `plan-only-exhausted`")
+        );
+        assert!(!content.contains("mechanical-model-unresolved"));
         assert!(content.contains("read it back"));
         assert!(content.contains("confirm `status` matches"));
         assert!(content.contains("up to **2** times total"));
@@ -2099,11 +2098,16 @@ mod tests {
         // remain: dispatch-phase.js, review-refute-fix.js), so this template
         // must never instruct invoking a Workflow literally named
         // "autopilot" — that call would target a file this same generator
-        // does not emit. It may still name the two real Workflows it
-        // composes (`estimate`, `dispatch-phase`).
+        // does not emit. It may still name the one real Workflow it composes
+        // downstream (`dispatch-phase`); the `estimate` pre-pass is
+        // intentionally dropped from this distributed template (see
+        // docs/workflow-vs-prose-boundary.md), so this template must never
+        // instruct invoking `estimate` either.
         assert!(!content.contains("Invoke the `autopilot`"));
         assert!(!content.contains("the `autopilot` workflow"));
         assert!(!content.contains(".claude/workflows/autopilot.js"));
+        assert!(!content.contains("Invoke the `estimate`"));
+        assert!(!content.contains("the `estimate` Workflow"));
     }
 
     #[test]
@@ -3175,9 +3179,11 @@ mod tests {
         // the advance/park read-back confirmation loop via the new
         // rdm_phase_show tool (the earlier placeholder sentence is gone).
         assert!(!content.contains("full prose-parity documentation lands in a follow-up phase"));
-        assert!(content.contains(
-            "nothing`, `blocked-on-dependencies`, `budget`, `plan-only-exhausted`, `mechanical-model-unresolved`"
-        ));
+        assert!(
+            content
+                .contains("nothing`, `blocked-on-dependencies`, `budget`, `plan-only-exhausted`")
+        );
+        assert!(!content.contains("mechanical-model-unresolved"));
         assert!(content.contains("mcp__rdm__rdm_phase_show"));
         assert!(content.contains("up to **2** times total"));
         // Regression: the advance and park call sites must use the same
@@ -3211,12 +3217,12 @@ mod tests {
         assert!(frontmatter.contains("mcp__rdm__rdm_next"));
         assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
         assert!(frontmatter.contains("mcp__rdm__rdm_phase_show"));
-        // The phase-list hoist: the shim gathers the phase list itself and
-        // passes it as `phaseList`, so the workflow skips its estimate:list
-        // subagent. Its tool must be both allowed and resolved.
-        assert!(frontmatter.contains("mcp__rdm__rdm_phase_list"));
-        assert!(content.contains("mcp__rdm__rdm_phase_list"));
-        assert!(content.contains("phaseList"));
+        // The distributed template no longer hoists a phase list: there is no
+        // `estimate` pre-pass downstream to feed it (see below), so the
+        // `rdm_phase_list` tool is neither allowed nor referenced.
+        assert!(!frontmatter.contains("mcp__rdm__rdm_phase_list"));
+        assert!(!content.contains("mcp__rdm__rdm_phase_list"));
+        assert!(!content.contains("phaseList"));
         // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
         assert!(!content.contains("Mandatory dispatch"));
         assert!(!content.contains("inline-collapse"));
@@ -3224,11 +3230,16 @@ mod tests {
         // remain: dispatch-phase.js, review-refute-fix.js), so this template
         // must never instruct invoking a Workflow literally named
         // "autopilot" — that call would target a file this same generator
-        // does not emit. It may still name the two real Workflows it
-        // composes (`estimate`, `dispatch-phase`).
+        // does not emit. It may still name the one real Workflow it composes
+        // downstream (`dispatch-phase`); the `estimate` pre-pass is
+        // intentionally dropped from this distributed template (see
+        // docs/workflow-vs-prose-boundary.md), so this template must never
+        // instruct invoking `estimate` either.
         assert!(!content.contains("Invoke the `autopilot`"));
         assert!(!content.contains("the `autopilot` workflow"));
         assert!(!content.contains(".claude/workflows/autopilot.js"));
+        assert!(!content.contains("Invoke the `estimate`"));
+        assert!(!content.contains("the `estimate` Workflow"));
     }
 
     #[test]

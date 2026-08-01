@@ -26,20 +26,27 @@
 #      This is checked with an explicit occurrence floor (so the check
 #      cannot pass vacuously on zero matches) and per-file exact-reference
 #      assertions for the 2 skills known to carry a reference
-#      (rdm-dispatch-phase and rdm-do -> dispatch-phase.js). rdm-autopilot is
-#      now the prose `rdm-autopilot` skill (workflow-orchestration roadmap,
-#      phase 3) and carries no `.claude/workflows/<name>.js` reference at
-#      all, in BOTH the cli and mcp variants — and this same section also
-#      asserts rdm-autopilot's template never instructs invoking a Workflow
-#      literally named "autopilot" (that Workflow was retired in this same
-#      roadmap's phase 3; only `estimate` and `dispatch-phase` remain real
-#      Workflow calls it may name).
+#      (rdm-dispatch-phase and rdm-do -> dispatch-phase.js). This section
+#      also asserts, name-generically and across EVERY emitted skill (not
+#      just rdm-autopilot), that no skill's prose instructs invoking a
+#      Workflow whose name does not resolve to a file in the same emitted
+#      `.claude/workflows/` tree. rdm-autopilot is the prose `rdm-autopilot`
+#      skill (workflow-orchestration roadmap, phase 3) and composes only
+#      `dispatch-phase` downstream; the `estimate` pre-pass it also runs
+#      locally is intentionally dropped from the distributed template (see
+#      docs/workflow-vs-prose-boundary.md), so no emitted skill's prose may
+#      instruct invoking a Workflow named `estimate` either — the same
+#      hazard that got `autopilot.js` itself retired from this surface.
 #   5. PLANTED-MUTATION SELF-TESTS: corrupts a scratch copy of the emission
 #      (one byte appended to a workflow script; one shim reference
 #      rewritten to a typo'd filename; an "invoke the autopilot workflow"
-#      sentence appended to rdm-autopilot/SKILL.md) and asserts every check
-#      above turns red on the corrupted copy — proving none of the gates is
-#      vacuous.
+#      sentence appended to rdm-autopilot/SKILL.md; an "invoke the
+#      `nonexistent-workflow` Workflow" sentence appended to a DIFFERENT
+#      skill, rdm-dispatch-phase/SKILL.md) and asserts every check above
+#      turns red on the corrupted copy — proving none of the gates is
+#      vacuous, including that the generalized invocation-resolution guard
+#      catches both an unfamiliar Workflow name and a skill other than
+#      rdm-autopilot.
 #   6. NEGATIVE / PLAN-REPO INDEPENDENCE: Pi emission never writes
 #      `.claude/workflows` (no Workflow-tool runtime); `--user` emission
 #      never writes `.claude/workflows` either (the scripts hardcode a
@@ -148,23 +155,48 @@ check_no_unsubstituted_placeholders() {
     [ "$leaked" -eq 0 ]
 }
 
-# Asserts <skills_dir>/rdm-autopilot/SKILL.md never instructs invoking a
-# Workflow literally named "autopilot" -- $WORKFLOWS ships no autopilot.js at
-# all (the drive loop is a prose skill now), so a surviving instruction to
-# invoke it would point at a file this generator does not emit. Returns
-# nonzero (and prints a diagnostic) if any such instruction is found.
-check_autopilot_no_workflow_invocation() {
+# Scans EVERY *.md under <skills_dir>/*/SKILL.md for the "Invoke(ing) the
+# `<name>` Workflow" phrasing every genuine invocation call site across all 11
+# templates already uses consistently (verified by grep against the real
+# templates), pulls out `<name>`, and asserts <workflows_dir>/<name>.js
+# exists. Name-generic and skill-generic: it is not specific to "autopilot"
+# or to the rdm-autopilot skill. Sets INVOCATION_COUNT/INVOCATION_UNRESOLVED
+# as globals for the caller to inspect, and returns nonzero if any invoked
+# name fails to resolve.
+#
+# The match requires "invok(e|ing) the" contiguous with the backtick-quoted
+# name immediately followed by "Workflow"/"workflow" (allowing surrounding
+# `**` bold markers) -- NOT just co-occurrence anywhere in the file. This
+# deliberately does not trip on purely descriptive, non-invoking mentions
+# like "unlike the `autopilot` workflow's advance/park loop" (skill-do), or
+# "never invokes an `estimate` Workflow" (rdm-autopilot's own "why no
+# estimate pre-pass" note) -- neither is followed immediately by the
+# backtick-quoted name after an "invok(e|ing) the" prefix.
+check_workflow_invocations_resolve() {
     skills_dir=$1
-    ap_md="$skills_dir/rdm-autopilot/SKILL.md"
-    [ -f "$ap_md" ] || return 0
-    # shellcheck disable=SC2016
-    if grep -qF '.claude/workflows/autopilot.js' "$ap_md" ||
-        grep -qF 'Invoke the `autopilot`' "$ap_md" ||
-        grep -qF 'the `autopilot` workflow' "$ap_md"; then
-        echo "  $ap_md instructs invoking a Workflow named 'autopilot' -- generate_workflows() does not emit .claude/workflows/autopilot.js" >&2
-        return 1
-    fi
-    return 0
+    workflows_dir=$2
+    matches_scratch="$TMP/.workflow-invocations-scratch.txt"
+    INVOCATION_COUNT=0
+    INVOCATION_UNRESOLVED=0
+    for md in "$skills_dir"/*/SKILL.md; do
+        [ -f "$md" ] || continue
+        # shellcheck disable=SC2016
+        grep -ioE '[a-z]nvok(e|ing) the \*{0,2}`[A-Za-z0-9_-]+`\*{0,2} workflow' "$md" \
+            >"$matches_scratch" 2>/dev/null || : >"$matches_scratch"
+        while IFS= read -r match; do
+            [ -n "$match" ] || continue
+            # shellcheck disable=SC2016
+            name=$(printf '%s\n' "$match" | grep -oE '`[A-Za-z0-9_-]+`' | tr -d '`')
+            [ -n "$name" ] || continue
+            INVOCATION_COUNT=$((INVOCATION_COUNT + 1))
+            if [ ! -f "$workflows_dir/$name.js" ]; then
+                echo "  unresolved: $md instructs invoking a Workflow named '$name' -> missing $workflows_dir/$name.js" >&2
+                INVOCATION_UNRESOLVED=$((INVOCATION_UNRESOLVED + 1))
+            fi
+        done <"$matches_scratch"
+    done
+    rm -f "$matches_scratch"
+    [ "$INVOCATION_UNRESOLVED" -eq 0 ]
 }
 
 # Minimal frontmatter validity: starts with a `---` fence, has a closing
@@ -242,17 +274,22 @@ for variant in cli mcp; do
         fail "$variant: rdm-do/SKILL.md must reference .claude/workflows/dispatch-phase.js"
     pass "$variant: rdm-dispatch-phase/rdm-do carry their expected exact references"
 
-    # rdm-autopilot is the prose skill: $WORKFLOWS (above) ships no autopilot.js
-    # at all, so this template must never instruct invoking a Workflow
-    # literally named "autopilot" -- that call would target a file this same
+    # Every emitted skill's prose (not just rdm-autopilot's) must never
+    # instruct invoking a Workflow whose name does not resolve to a file in
+    # this same emitted tree -- that call would target a file this
     # generator does not emit and would fail at the exact point the skill's
-    # contract depends on. It may still name the two real Workflows it
-    # composes (`estimate`, `dispatch-phase`).
-    if check_autopilot_no_workflow_invocation "$skills_dir"; then
-        pass "$variant: rdm-autopilot/SKILL.md never instructs invoking a nonexistent 'autopilot' Workflow"
+    # contract depends on. rdm-autopilot composes only `dispatch-phase`
+    # downstream; its `estimate` pre-pass is intentionally dropped from the
+    # distributed template (see docs/workflow-vs-prose-boundary.md), so it
+    # must never instruct invoking `estimate` either -- the same hazard that
+    # got `autopilot.js` itself retired from this surface.
+    if check_workflow_invocations_resolve "$skills_dir" "$workflows_dir"; then
+        pass "$variant: all $INVOCATION_COUNT Workflow-invocation instruction(s) across every emitted skill resolve"
     else
-        fail "$variant: rdm-autopilot/SKILL.md instructs invoking a Workflow named 'autopilot', but generate_workflows() does not emit .claude/workflows/autopilot.js"
+        fail "$variant: $INVOCATION_UNRESOLVED unresolved Workflow-invocation instruction(s) (see lines above)"
     fi
+    [ "$INVOCATION_COUNT" -ge 5 ] ||
+        fail "$variant: expected >= 5 total Workflow-invocation instructions across all skills, found $INVOCATION_COUNT — check is not vacuous only if this floor holds"
 done
 
 # --- 5. planted-mutation self-tests: prove neither gate above is vacuous ---
@@ -283,29 +320,45 @@ say "5c. Self-test: planted unsubstituted {t_*} placeholder in an emitted skill"
 SCRATCH_PH="$TMP/scratch-unsubstituted-placeholder"
 rm -rf "$SCRATCH_PH"
 cp -R "$TMP/mcp" "$SCRATCH_PH"
-# Mimic exactly what a dropped ("t_phase_list", "rdm_phase_list") tuple in
-# skill_autopilot_mcp produces: the literal placeholder survives rendering.
-sed 's/mcp__rdm__rdm_phase_list/{t_phase_list}/g' \
+# Mimic exactly what a dropped ("t_next", "rdm_next") tuple in
+# skill_autopilot_mcp would produce: the literal placeholder survives
+# rendering. (Not {t_phase_list}: that tuple — and the tool it named — was
+# removed from rdm-autopilot's MCP template entirely once the estimate
+# pre-pass was dropped downstream, so it no longer resolves anything here
+# and planting it would make this self-test vacuous.)
+sed 's/mcp__rdm__rdm_next/{t_next}/g' \
     "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md" >"$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md.new"
 mv "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md.new" "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md"
-grep -q '{t_phase_list}' "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md" ||
-    fail "self-test C: could not plant the placeholder — rdm-autopilot no longer resolves {t_phase_list}, so this self-test is vacuous"
+grep -q '{t_next}' "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md" ||
+    fail "self-test C: could not plant the placeholder — rdm-autopilot no longer resolves {t_next}, so this self-test is vacuous"
 if check_no_unsubstituted_placeholders "$SCRATCH_PH/.claude/skills" >/dev/null 2>&1; then
-    fail "self-test C: planted {t_phase_list} placeholder was NOT detected — the substitution gate is vacuous"
+    fail "self-test C: planted {t_next} placeholder was NOT detected — the substitution gate is vacuous"
 fi
-pass "self-test C: planted {t_phase_list} placeholder correctly turned the substitution gate red"
+pass "self-test C: planted {t_next} placeholder correctly turned the substitution gate red"
 
-say "5d. Self-test: planted 'invoke the autopilot workflow' instruction in rdm-autopilot/SKILL.md"
+say "5d. Self-test: planted invocation of a nonexistent Workflow name ('autopilot') in rdm-autopilot/SKILL.md"
 SCRATCH_AP="$TMP/scratch-autopilot-workflow-invocation"
 rm -rf "$SCRATCH_AP"
 cp -R "$TMP/cli" "$SCRATCH_AP"
 # shellcheck disable=SC2016
 printf '\nInvoke the `autopilot` workflow via the Workflow tool. Planted for verify-agent-config-distribution.sh self-test D.\n' \
     >>"$SCRATCH_AP/.claude/skills/rdm-autopilot/SKILL.md"
-if check_autopilot_no_workflow_invocation "$SCRATCH_AP/.claude/skills" >/dev/null 2>&1; then
+if check_workflow_invocations_resolve "$SCRATCH_AP/.claude/skills" "$SCRATCH_AP/.claude/workflows" >/dev/null 2>&1; then
     fail "self-test D: planted 'autopilot' workflow-invocation instruction was NOT detected — the check is vacuous"
 fi
 pass "self-test D: planted 'autopilot' workflow-invocation instruction correctly turned the check red"
+
+say "5e. Self-test: planted invocation of a nonexistent Workflow name ('nonexistent-workflow') in a DIFFERENT skill (rdm-dispatch-phase)"
+SCRATCH_DP="$TMP/scratch-dispatch-phase-workflow-invocation"
+rm -rf "$SCRATCH_DP"
+cp -R "$TMP/cli" "$SCRATCH_DP"
+# shellcheck disable=SC2016
+printf '\nInvoke the `nonexistent-workflow` Workflow via the Workflow tool. Planted for verify-agent-config-distribution.sh self-test E.\n' \
+    >>"$SCRATCH_DP/.claude/skills/rdm-dispatch-phase/SKILL.md"
+if check_workflow_invocations_resolve "$SCRATCH_DP/.claude/skills" "$SCRATCH_DP/.claude/workflows" >/dev/null 2>&1; then
+    fail "self-test E: planted 'nonexistent-workflow' invocation in rdm-dispatch-phase/SKILL.md was NOT detected — the generalized guard is vacuous outside rdm-autopilot and/or outside the literal name 'autopilot'"
+fi
+pass "self-test E: planted 'nonexistent-workflow' invocation in a non-autopilot skill correctly turned the generalized check red"
 
 # --- 6. negative checks: platform/scope boundaries + plan-repo independence -
 say "6a. Negative: Pi emission never writes .claude/workflows"
@@ -379,13 +432,12 @@ assert_shim_hoists() {
     dp="$root/.claude/skills/rdm-dispatch-phase/SKILL.md"
     do_="$root/.claude/skills/rdm-do/SKILL.md"
 
-    # rdm-autopilot: phaseList + next on both variants; mechanicalModel on CLI only.
-    _need "$ap" 'phaseList' || return 1
+    # rdm-autopilot: next on both variants. No mechanicalModel/phaseList hoist
+    # any longer on either variant — the distributed template's `estimate`
+    # pre-pass is intentionally dropped downstream (see
+    # docs/workflow-vs-prose-boundary.md), so there is nothing left to feed it.
     _need "$ap" 'next' || return 1
     if [ "$variant" = cli ]; then
-        _need "$ap" 'mechanicalModel' || return 1
-        _need "$ap" 'rdm model resolve mechanical' || return 1
-        _need "$ap" 'rdm phase list --roadmap <slug> --format json' || return 1
         _need "$ap" 'rdm next --roadmap <slug> --format json' || return 1
     fi
     # `next` must be documented as one-shot on both variants, or a caller could
@@ -435,18 +487,20 @@ for variant in cli mcp; do
         fail "$HOIST_FAILURE"
     fi
     # Occurrence floor, so the check can never pass vacuously: CLI asserts
-    # >= 15 references, MCP >= 7 (one is the rdm_phase_show read-back hoist,
-    # added alongside the {t_phase_show} placeholder; a second is the
-    # project/roadmap/phase argument-shape check on the advance/park
+    # >= 13 references, MCP >= 6 (recomputed after the `estimate` pre-pass —
+    # and its mechanicalModel/phaseList hoist — was dropped from the
+    # distributed rdm-autopilot template; MCP retains the rdm_phase_show
+    # read-back hoist, added alongside the {t_phase_show} placeholder, and
+    # the project/roadmap/phase argument-shape check on the advance/park
     # read-back calls, added after those calls were found using the wrong
     # `stem`-keyed, `project`-less argument shape). A drop below the floor
     # means a shim silently stopped gathering.
     if [ "$variant" = cli ]; then
-        [ "$HOIST_REF_COUNT" -ge 15 ] ||
-            fail "cli: expected >= 15 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
+        [ "$HOIST_REF_COUNT" -ge 13 ] ||
+            fail "cli: expected >= 13 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
     else
-        [ "$HOIST_REF_COUNT" -ge 7 ] ||
-            fail "mcp: expected >= 7 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
+        [ "$HOIST_REF_COUNT" -ge 6 ] ||
+            fail "mcp: expected >= 6 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
     fi
 done
 pass "hoist-arg occurrence floors hold for both variants"
@@ -477,7 +531,7 @@ pass "6e: hoist-arg check detects a typo'd arg key ($HOIST_FAILURE)"
 
 say "6f. Self-test: a shim that stops gathering must be caught"
 cp -R "$TMP/cli" "$TMP/cli-hoist-drop"
-sed 's/rdm model resolve mechanical/rdm model resolve mechanicl/g' \
+sed 's/rdm next --roadmap <slug> --format json/rdm next --roadmap <slug> --format jso/g' \
     "$TMP/cli/.claude/skills/rdm-autopilot/SKILL.md" \
     >"$TMP/cli-hoist-drop/.claude/skills/rdm-autopilot/SKILL.md"
 if assert_shim_hoists "$TMP/cli-hoist-drop" cli; then

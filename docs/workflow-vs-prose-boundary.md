@@ -79,7 +79,14 @@ script can violate it and stay green.
 `skill-autopilot-{cli,mcp}.md` cannot simply mirror the local prose skill by pointing at
 `estimate` — it needs an explicit answer (ship `estimate.js` with the `agentType`
 stripped, inline the pre-pass in the shipped prose, or drop the pre-pass downstream).
-That decision is phase 4's, and is recorded here so phase 4 does not have to rediscover it.
+**Decided (phase 4): drop the pre-pass downstream.** The distributed `rdm-autopilot`
+template dispatches every phase at whatever tier `next.model` (or `{t_next}` on the MCP
+variant) already reports, defaulting to `medium`, and never invokes `estimate` at all.
+Shipping `estimate.js` stays blocked on lifting the `agentType`-downstream rule (owned by
+`ship-mechanical-agent-type-downstream`, not this phase), and inlining the pre-pass in
+prose would duplicate `estimate.mjs`'s filtering/rating/writeback logic outside its
+single-sourced home and risk silent drift. The local dogfood `rdm-autopilot` skill is
+unaffected and still invokes the real `estimate` Workflow.
 
 | Script | Fan-out | Shape | Mid-run gate | Disposition |
 |---|---|---|---|---|

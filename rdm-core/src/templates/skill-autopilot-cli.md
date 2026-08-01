@@ -6,20 +6,20 @@ allowed-tools:
   - Workflow
 ---
 
-Drive **one** rdm roadmap from `not-started` to `reviewed` with no per-phase human approval. This skill drives the loop **itself**, in prose: the two Workflow-tool calls it makes are `estimate` (the difficulty pre-pass, a real parallel fan-out) and `dispatch-phase` (one phase's plan → plan-review → implement → code-review pipeline). Every other step — fetching `rdm next`, persisting an advance or a park, reading a write back to confirm it landed, resolving the mechanical model — is a plain Bash command this skill runs directly in its own context, because it is already a live agent with Bash access and the repo in context. See [`docs/workflow-vs-prose-boundary.md`](docs/workflow-vs-prose-boundary.md) for why the drive loop specifically (a low-iteration sequential policy driver) stays prose while `dispatch-phase` and `estimate` stay Workflow scripts (real fan-out over a fixed mechanism).
+Drive **one** rdm roadmap from `not-started` to `reviewed` with no per-phase human approval. This skill drives the loop **itself**, in prose: the one Workflow-tool call it makes is `dispatch-phase` (one phase's plan → plan-review → implement → code-review pipeline). Every other step — fetching `rdm next`, persisting an advance or a park, reading a write back to confirm it landed — is a plain Bash command this skill runs directly in its own context, because it is already a live agent with Bash access and the repo in context. See [`docs/workflow-vs-prose-boundary.md`](docs/workflow-vs-prose-boundary.md) for why the drive loop specifically (a low-iteration sequential policy driver) stays prose while `dispatch-phase` stays a Workflow script (real fan-out over a fixed mechanism).
 
 Decisions and blockers are **batched, not raised mid-run**: a phase that cannot be advanced is parked `blocked` and the run keeps making progress on the rest, so the user answers the whole queue at once at the end rather than being interrupted per phase.
 {principles}
 ## Contract
 
-**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--max-phases N`, `--plan-only`, `--max-plan-revise N`, and/or `--max-code-rework N`. The slug names the single roadmap this run drives. If no slug is given, stop before invoking anything and say so — do not attempt a partial estimate or drive-loop start.
+**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--max-phases N`, `--plan-only`, `--max-plan-revise N`, and/or `--max-code-rework N`. The slug names the single roadmap this run drives. If no slug is given, stop before invoking anything and say so — do not attempt a partial drive-loop start.
 
 **The four guardrails, together, in one place:**
 
 1. **Single roadmap.** The loop never roams to another roadmap — choosing which roadmap to advance stays a human decision. Every `rdm next` / `rdm phase update` / `rdm phase show` command below is scoped with the **same fixed** `--roadmap <slug>` throughout this run; nothing ever substitutes a different one.
 2. **`main` is never touched.** Autopilot leaves every reviewed phase on the `roadmap/<slug>` branch; landing to `main` is the separate **`rdm-land`** skill. There is no `--land` flag here, and no Bash command in this loop ever runs `git checkout`/`merge`/`rebase` against `main`.
 3. **No `Done:` trailer.** This skill never emits a `Done:` line: its advance step only persists the status the OUTCOME carries, directly via `rdm phase update --status <status> --no-edit` (a status-only write — it never stages or writes a commit message). **`rdm-land` is the land-time writer** — it reads the OUTCOME's `writesCompletion: true` and synthesizes the trailer from the item's identifiers via `rdm hook done-line`, amending it onto the branch tip before the rebase.
-4. **`--permission-mode auto` for unattended runs.** Launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so this skill's own Bash commands and the `estimate`/`dispatch-phase` Workflow calls don't block on a permission prompt.
+4. **`--permission-mode auto` for unattended runs.** Launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so this skill's own Bash commands and the `dispatch-phase` Workflow call don't block on a permission prompt.
 
 This skill is **non-interactive**.
 
@@ -32,38 +32,30 @@ This skill is **non-interactive**.
 - `planOnly` — `true` when `--plan-only` is present (omit otherwise).
 - `maxPlanRevise` — the non-negative integer following `--max-plan-revise`, when present (omit otherwise — `dispatch-phase` applies its own default of 2). `0` is legal and distinct from unset: it means "terminate on the first blocking plan review, no revise round at all".
 - `maxCodeRework` — the non-negative integer following `--max-code-rework`, when present (omit otherwise — same default of 2, same `0`-is-legal rule).
-- `globalBudget` — **not** a user-facing flag. It stays an internal constant, `DEFAULT_GLOBAL_BUDGET = 50`, hardcoded in this loop (see step 4).
+- `globalBudget` — **not** a user-facing flag. It stays an internal constant, `DEFAULT_GLOBAL_BUDGET = 50`, hardcoded in this loop (see step 3).
 
-### 2. Hoist the mechanical model and phase list
+### 2. Fetch the initial phase cursor
 
-- Run `rdm model resolve mechanical` and take its printed output verbatim as `mechanicalModel`. This is not needed to feed this loop's own fetch/advance/park steps (those are direct Bash — there is no subagent to hand a model id to); it is needed **only** to forward into the `estimate` Workflow call in step 3, mirroring `rdm-estimate`'s own contract. If the command fails or prints nothing, treat this as the fail-closed **`mechanical-model-unresolved`** stop: log it, print the summary (step 5) with `stopReason: mechanical-model-unresolved`, and stop before invoking either Workflow.
-- Run `rdm phase list --roadmap <slug> --format json {proj_flag}` and take the parsed array verbatim as `phaseList`. It feeds the `estimate` Workflow's unestimated-phase filter directly — do not filter or summarize it yourself.
 - Run `rdm next --roadmap <slug> --format json {proj_flag}` and take the parsed object verbatim as `next`. This loop consumes this **one-shot, on the first loop iteration only**; every later iteration re-reads live state via the same command directly, because `rdm next` is what steps the cursor forward once a phase's status is persisted. Fetch it fresh at invocation time and never cache it across runs.
 
-### 3. Run the estimate pre-pass — one Workflow call, always
+**Why no estimate pre-pass here:** unlike the local dogfood `rdm-autopilot` skill, this shipped template never invokes an `estimate` Workflow before dispatching phases. The generated workflow directory downstream never contains an `estimate` script: it references `agentType: 'rdm-mechanical'`, and a downstream repo receives no `.claude/agents/` registry at all, so an unresolved `agentType` there would raise rather than degrade silently — the same hazard `autopilot.js` itself was retired for. Lifting that is out of scope here; it belongs to the separate `ship-mechanical-agent-type-downstream` task. Every phase this loop dispatches therefore runs at whatever tier `next.model` already reports (default `medium`), never freshly rated first — a deliberate, permanent divergence from the local dogfood skill. See [`docs/workflow-vs-prose-boundary.md`](docs/workflow-vs-prose-boundary.md) for the full decision record.
 
-Invoke the **`estimate` Workflow** via the Workflow tool with `{ roadmap, mechanicalModel, phaseList }` (omit either key when you couldn't gather it). Run this call **unconditionally**, even if `phaseList` shows zero unestimated phases — it is a cheap no-op fan-out in that case, the same always-invoke-and-let-it-no-op design the `rdm-estimate` skill itself uses; do not skip it as an optimization.
-
-Do not reimplement any part of the estimate pass in prose here — the filtering, the per-phase rating fan-out, and the persistence step all stay entirely inside the `estimate` Workflow's own pipeline, untouched by this skill.
-
-If the `estimate` invocation itself errors or throws (e.g. it can't resolve its own model), log a warning and continue straight into the drive loop **non-fatally** — an unrated phase simply falls back to whatever tier `rdm next` reports (empty/medium) when it's dispatched. Do not let a failed pre-pass abort the run.
-
-### 4. Enter the drive loop
+### 3. Enter the drive loop
 
 Maintain, in this skill's own working context (nothing here is persisted by rdm): `dispatchCount = 0`, `completed = []` (ordered), `escalations = []` (ordered), and — **only when `planOnly` is set** — a `planOnlySeen` set of stems already plan-vetted this run. There is no "seen" tracking in normal mode; normal-mode progress is driven purely by the persisted phase status that an advance/park write changes, which `rdm next` reads to step forward.
 
 Loop:
 
-1. **Budget check.** If `dispatchCount >= 50` (the internal `DEFAULT_GLOBAL_BUDGET`) or (`maxPhases` is set and `dispatchCount >= maxPhases`), stop with `stopReason: budget` and go to step 5. **This one counter is shared** between the global cap and `--max-phases`, and it increments on every dispatch — including a `rework` re-dispatch of the *same* phase, not just on distinct phases. `--max-phases 3` can therefore stop the run after as few as **one** distinct phase if it reworks twice. This is genuinely surprising but is the preserved, existing semantic — do not smooth it over when explaining a run to the user.
+1. **Budget check.** If `dispatchCount >= 50` (the internal `DEFAULT_GLOBAL_BUDGET`) or (`maxPhases` is set and `dispatchCount >= maxPhases`), stop with `stopReason: budget` and go to step 4. **This one counter is shared** between the global cap and `--max-phases`, and it increments on every dispatch — including a `rework` re-dispatch of the *same* phase, not just on distinct phases. `--max-phases 3` can therefore stop the run after as few as **one** distinct phase if it reworks twice. This is genuinely surprising but is the preserved, existing semantic — do not smooth it over when explaining a run to the user.
 2. **Fetch the next phase.** Use the hoisted `next` value from step 2 on the very first iteration only; every later iteration, run `rdm next --roadmap <slug> --format json {proj_flag}` directly via Bash and read its JSON output yourself.
 3. **Classify the result** (mirrors `interpretNext`):
    - `result: "phase"` with a non-empty `stem` → work it (go to 4).
    - `result: "phase"` **missing** `stem` → this is malformed. Stop with `stopReason: unparseable` — **never** treat a malformed or unrecognized payload as `"nothing"` (that reason is reserved for a genuine, well-formed "no actionable phase" answer). Record a summary-only escalation `{ stem: "(fetch:next)", reason: "[fetch] unparseable rdm-next payload: <bounded description of the raw output>" }` — since no phase stem is known at this point, this entry is never parked via `rdm phase update` and will **not** appear in `rdm review blocked`; it only ever appears in this run's printed summary.
    - `result: "blocked-on-dependencies"` → stop with `stopReason: blocked-on-dependencies` (well-formed, known-good).
    - `result: "nothing"` → stop with `stopReason: nothing` (well-formed, known-good).
-   - Go to step 5 for any stop.
+   - Go to step 4 for any stop.
 4. **Work the phase**, stem `S`, tier `T` (`next.model`, defaulting to `medium` when unset):
-   - Under `--plan-only`, if `S` is already in `planOnlySeen`, stop with `stopReason: plan-only-exhausted` and go to step 5 — a plan-only pass never advances or persists a terminal status, so `rdm next` will keep returning the same stem forever; this in-memory check is what detects the repeat (there is no rdm-side marker to lean on).
+   - Under `--plan-only`, if `S` is already in `planOnlySeen`, stop with `stopReason: plan-only-exhausted` and go to step 4 — a plan-only pass never advances or persists a terminal status, so `rdm next` will keep returning the same stem forever; this in-memory check is what detects the repeat (there is no rdm-side marker to lean on).
    - Otherwise, invoke the **`dispatch-phase` Workflow** via the Workflow tool with exactly `{ roadmap: <slug>, phase: S, planOnly }`, plus `maxPlanRevise` and/or `maxCodeRework` **only when this run's `$ARGUMENTS` set them** — this is the exact payload shape `dispatch-phase` is invoked with today, preserved byte-for-shape.
    - Read the returned OUTCOME object's `outcome`, `status`, and `reason` fields.
    - **Interpret the outcome** (mirrors `interpretOutcome`):
@@ -75,7 +67,7 @@ Loop:
    - **Park**: run `rdm phase update S --status blocked --reason "<reason>" --no-edit --roadmap <slug> {proj_flag}`, then read it back with `rdm phase show S --roadmap <slug> --format json {proj_flag}` and confirm `status: blocked`. Retry up to **2** times total. Whether or not the read-back ever confirms, append `{ stem: S, reason }` to `escalations` and continue the loop from step 1 — an unconfirmed park write must never abort the run before it can print its summary; log a loud warning in that case instead (the plan-repo status may not reflect the park, but the escalation is still recorded here).
 5. **Stop.** Exit the loop and proceed to "Print the summary" below.
 
-### 5. Print the summary
+### 4. Print the summary
 
 Compose this yourself, in this exact structure (mirrors `buildSummary`), and print it verbatim as your final message — do not paraphrase or truncate it:
 
@@ -91,17 +83,17 @@ review the queue: rdm review blocked {proj_flag}
 reviewed work is left on the roadmap/<slug> branch; main is never touched.
 ```
 
-- The stop-reason line is either `stop reason: <reason>` (a known-good reason) or, for anything else, the loud `*** ABNORMAL TERMINATION (stop reason: <reason>) — the roadmap was NOT driven to exhaustion; do not read this as a completed run.` The **known-good allowlist** is exactly: `nothing`, `blocked-on-dependencies`, `budget`, `plan-only-exhausted`, `mechanical-model-unresolved`. Anything else — including a hypothetical future reason, or literally `unparseable` — gets the abnormal banner, never the plain line. Treat this as an allowlist, not a denylist keyed on one literal, so an unrecognized future reason is fail-safe flagged rather than silently trusted.
+- The stop-reason line is either `stop reason: <reason>` (a known-good reason) or, for anything else, the loud `*** ABNORMAL TERMINATION (stop reason: <reason>) — the roadmap was NOT driven to exhaustion; do not read this as a completed run.` The **known-good allowlist** is exactly: `nothing`, `blocked-on-dependencies`, `budget`, `plan-only-exhausted`. Anything else — including a hypothetical future reason, or literally `unparseable` — gets the abnormal banner, never the plain line. Treat this as an allowlist, not a denylist keyed on one literal, so an unrecognized future reason is fail-safe flagged rather than silently trusted.
 - `phases completed` lists stems in the order they completed (advance or noop-vetted), comma-joined, or `none`.
 - `escalations awaiting review` renders each entry as `<stem> [<stage>]: <reason>`, where `<stage>` is parsed from the reason's leading `[tag]` (defaulting to `code` if unparseable), followed by the `rdm review blocked` pointer line.
-- If **any** escalation is tagged `[fetch]`, add the loud note: `note: [fetch]-tagged entries above are summary-only — no phase is known to park against, so they will NOT appear in the` `rdm review blocked` `queue; act on them directly from this summary.` (Only a fetch-stage escalation, from step 4.3 above, is ever fetch-tagged — `[plan]`/`[code]` escalations always have a real stem and are genuinely queued.)
+- If **any** escalation is tagged `[fetch]`, add the loud note: `note: [fetch]-tagged entries above are summary-only — no phase is known to park against, so they will NOT appear in the` `rdm review blocked` `queue; act on them directly from this summary.` (Only a fetch-stage escalation, from step 3.3 above, is ever fetch-tagged — `[plan]`/`[code]` escalations always have a real stem and are genuinely queued.)
 - The closing line is always present, regardless of outcome.
 
 ## Run modes
 
 - `--max-phases N` — bounded run: dispatch at most `N` phases this pass, then stop and summarize. Use it to take a roadmap a few phases at a time.
 - `--plan-only` — dry-run the planning half: each dispatch stops after its plan gate, so you get cheap plan vetting without writing any code.
-- `--max-plan-revise N` / `--max-code-rework N` — override `dispatch-phase`'s two **in-run** retry budgets, which are counted **independently** of each other and default to **2** each (budget N = N reworks after the original attempt, i.e. N + 1 attempts). `0` is legal and means "terminate on the first blocking review" — no revise/rework agent runs at all. These are distinct from autopilot's own roadmap-level rework re-dispatch budget (step 4, capped at 1 retry per phase) and its global step budget (step 4.1, default 50); see [`docs/escalation-protocol.md`](docs/escalation-protocol.md) § Budgets for all four.
+- `--max-plan-revise N` / `--max-code-rework N` — override `dispatch-phase`'s two **in-run** retry budgets, which are counted **independently** of each other and default to **2** each (budget N = N reworks after the original attempt, i.e. N + 1 attempts). `0` is legal and means "terminate on the first blocking review" — no revise/rework agent runs at all. These are distinct from autopilot's own roadmap-level rework re-dispatch budget (step 3, capped at 1 retry per phase) and its global step budget (step 3.1, default 50); see [`docs/escalation-protocol.md`](docs/escalation-protocol.md) § Budgets for all four.
 
 ## Relation to the other lanes
 
