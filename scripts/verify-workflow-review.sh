@@ -1764,6 +1764,179 @@ const dimKeys = (s) => selectDimensions('code', s).map((d) => d.key);
   // it stays a genuine false.
   const changelogOnly = deriveSignals({ changedFiles: ['CHANGELOG.md'], diffText: '+- did a thing\n' });
   assert.equal(changelogOnly.userFacing, false, 'a CHANGELOG-only docs diff never trips userFacing on its own');
+
+  // ...and the OTHER branch of that same OR: a CHANGELOG.md co-changed with a
+  // CODE file CONFIRMS userFacing even though nothing in the added content
+  // matches a user-facing pattern. Without this the confirming term could be
+  // deleted outright and every remaining assertion would stay green.
+  const confirmed = deriveSignals({
+    changedFiles: ['src/util/helper.js', 'CHANGELOG.md'],
+    diffText: '+  const x = a + b;\n+- did a thing\n',
+  });
+  assert.equal(confirmed.userFacing, true, 'a CHANGELOG.md co-changed with a code file CONFIRMS userFacing with no matching content');
+  assert.ok(dimKeys(confirmed).includes('changelog'), 'the CHANGELOG-confirmed userFacing selects the changelog dimension');
+  assert.equal(confirmed.publicApiChanged, false, 'the CHANGELOG confirming term is scoped to userFacing — publicApiChanged stays false');
+  assert.equal(confirmed.securitySurface, false, 'the CHANGELOG confirming term is scoped to userFacing — securitySurface stays false');
+
+  // The confirming term is path-shape aware, not a bare basename equality on a
+  // top-level file: a nested CHANGELOG.md confirms too, in any case.
+  const nested = deriveSignals({
+    changedFiles: ['packages/core/src/util.ts', 'packages/core/ChangeLog.md'],
+    diffText: '+  const x = a + b;\n',
+  });
+  assert.equal(nested.userFacing, true, 'a nested, mixed-case CHANGELOG.md still confirms userFacing');
+}
+
+// -- ONLY ADDED LINES ARE EVER SCANNED. A REMOVED `export`/`exec(` line must
+//    not trip a signal, and a unified diff's own `+++ b/<path>` file header
+//    must not be read as content. Both are load-bearing invariants of
+//    addedLines and neither is implied by any positive-match fixture.
+{
+  const removedExport = deriveSignals({ changedFiles: ['src/api/index.ts'], diffText: '-export function foo() {}\n' });
+  assert.equal(removedExport.publicApiChanged, false, 'a REMOVED export line never trips publicApiChanged');
+
+  const removedSink = deriveSignals({
+    changedFiles: ['src/lib/runner.js'],
+    diffText: '-const { exec } = require("child_process");\n',
+  });
+  assert.equal(removedSink.securitySurface, false, 'a REMOVED process-execution sink never trips securitySurface');
+
+  const removedPrint = deriveSignals({ changedFiles: ['src/cli/run.js'], diffText: '-  console.log("bye");\n' });
+  assert.equal(removedPrint.userFacing, false, 'a REMOVED console.log never trips userFacing');
+
+  // A realistic mixed hunk: removed matching lines plus context, with the only
+  // ADDED line inert. Nothing may fire.
+  const mixed = deriveSignals({
+    changedFiles: ['src/api/index.ts'],
+    diffText:
+      '@@ -1,5 +1,3 @@\n' +
+      ' const unchanged = 1;\n' +
+      '-export function foo() {}\n' +
+      '-  console.log("bye");\n' +
+      '+  const x = 1;\n',
+  });
+  assert.equal(mixed.publicApiChanged, false, 'a mixed hunk whose only match is on a REMOVED line stays false: publicApiChanged');
+  assert.equal(mixed.userFacing, false, 'a mixed hunk whose only match is on a REMOVED line stays false: userFacing');
+
+  // The `+++ b/<path>` header is skipped explicitly: this path would otherwise
+  // match the CommonJS `exports.` pattern through the file NAME alone — exactly
+  // the path-derived triggering this phase removes.
+  const header = deriveSignals({
+    changedFiles: ['src/exports.ts'],
+    diffText: '--- a/src/exports.ts\n+++ b/src/exports.ts\n+  const x = 1;\n',
+  });
+  assert.equal(header.publicApiChanged, false, "a diff's own `+++ b/…` file header is never read as added content");
+}
+
+// -- VOCABULARY COVERAGE: one positive per language/category group in each of
+//    the three vocabularies, so a mis-anchored or typo'd regex in any bucket
+//    cannot ship silently. Grouped, not exhaustive per regex.
+{
+  const sig = (file, diffText) => deriveSignals({ changedFiles: [file], diffText });
+
+  const EXPORT_CASES = [
+    ['ES module named export', 'src/a.ts', '+export const VERSION = "1";\n'],
+    ['ES module default export', 'src/a.js', '+export default function handler() {}\n'],
+    ['CommonJS module.exports', 'src/a.js', '+module.exports = { run };\n'],
+    ['CommonJS exports.NAME', 'src/a.js', '+exports.run = run;\n'],
+    ['Rust pub item', 'src/a.rs', '+pub fn run() {}\n'],
+    ['Rust pub(crate) item', 'src/a.rs', '+pub(crate) struct Cfg;\n'],
+    ['Java/C#/TS member visibility', 'src/a.ts', '+  public static void main(String[] args) {}\n'],
+    ['Go exported func', 'src/a.go', '+func Run(ctx context.Context) error {\n'],
+    ['Go exported type', 'src/a.go', '+type Config struct {\n'],
+    ['Python __all__', 'src/a.py', '+__all__ = ["run"]\n'],
+  ];
+  for (const [label, file, diffText] of EXPORT_CASES) {
+    assert.equal(sig(file, diffText).publicApiChanged, true, 'EXPORT vocabulary matches ' + label);
+  }
+
+  // The deliberate exclusions: a module-private definition is not a public-API
+  // change, and an unexported Go identifier is not either.
+  const EXPORT_NEGATIVES = [
+    ['a bare JS function', 'src/a.js', '+function run() {}\n'],
+    ['a bare Python def', 'src/a.py', '+def run():\n'],
+    ['a private Rust fn', 'src/a.rs', '+fn run() {}\n'],
+    ['an unexported Go func', 'src/a.go', '+func run(ctx context.Context) error {\n'],
+  ];
+  for (const [label, file, diffText] of EXPORT_NEGATIVES) {
+    assert.equal(sig(file, diffText).publicApiChanged, false, 'EXPORT vocabulary deliberately excludes ' + label);
+  }
+
+  const USER_FACING_CASES = [
+    // Kept free of a `help=` kwarg on purpose: with one, the help-string bucket
+    // would cover for a broken add_argument regex and the mutation self-test
+    // proving this case exercises its own bucket would go vacuous.
+    ['argparse add_argument', 'src/a.py', '+    parser.add_argument("--verbose")\n'],
+    ['an argparse help kwarg', 'src/a.py', '+        help="print more output",\n'],
+    ['commander addOption', 'src/a.js', '+  cmd.addOption(new Option("--json"));\n'],
+    ['clap arg builder', 'src/a.rs', '+        .arg(Arg::new("verbose"))\n'],
+    ['clap subcommand builder', 'src/a.rs', '+        .subcommand(sub)\n'],
+    ['an attached help string', 'src/a.rs', '+        .help("print more output")\n'],
+    ['an argparse constructor', 'src/a.py', '+parser = ArgumentParser(prog="tool")\n'],
+    ['an express route', 'src/a.js', '+app.get("/health", handler);\n'],
+    ['a flask route decorator', 'src/a.py', '+@app.route("/health")\n'],
+    ['an MCP tool registration', 'src/a.ts', '+  addTool({ name: "run" });\n'],
+    ['a Go HandleFunc', 'src/a.go', '+    mux.HandleFunc("/health", handler)\n'],
+    ['a Rust println!', 'src/a.rs', '+    println!("done");\n'],
+    ['a Rust eprintln!', 'src/a.rs', '+    eprintln!("failed");\n'],
+    ['a Go fmt.Println', 'src/a.go', '+    fmt.Println("done")\n'],
+    ['a Python print', 'src/a.py', '+    print("done")\n'],
+    ['a console.error', 'src/a.js', '+  console.error("boom");\n'],
+  ];
+  for (const [label, file, diffText] of USER_FACING_CASES) {
+    assert.equal(sig(file, diffText).userFacing, true, 'USER-FACING vocabulary matches ' + label);
+  }
+
+  // The `print(` guard is anchored so a longer identifier or a method call on an
+  // unrelated object does not read as user-visible output.
+  const PRINT_NEGATIVES = [
+    ['pprint', 'src/a.py', '+    pprint(data)\n'],
+    ['sprint', 'src/a.go', '+    s := sprint(x)\n'],
+    ['an unrelated .print( method', 'src/a.js', '+  writer.print(x);\n'],
+  ];
+  for (const [label, file, diffText] of PRINT_NEGATIVES) {
+    assert.equal(sig(file, diffText).userFacing, false, 'the print( guard excludes ' + label);
+  }
+
+  const SECURITY_CASES = [
+    ['a node child_process require', 'src/a.js', '+const cp = require("child_process");\n'],
+    ['a spawnSync call', 'src/a.js', '+  spawnSync(bin, args);\n'],
+    ['a python subprocess call', 'src/a.py', '+    subprocess.run([bin])\n'],
+    ['a python os.system call', 'src/a.py', '+    os.system(cmd)\n'],
+    ['a rust std::process use', 'src/a.rs', '+use std::process::Command;\n'],
+    ['a go exec.Command call', 'src/a.go', '+    out, err := exec.Command(bin).Output()\n'],
+    ['a rust std::fs call', 'src/a.rs', '+    std::fs::write(p, b)?;\n'],
+    ['a node fs require', 'src/a.js', '+const fs = require("fs");\n'],
+    ['an fs read call', 'src/a.js', '+  fs.readFileSync(p);\n'],
+    ['a go ioutil read', 'src/a.go', '+    b, err := ioutil.ReadFile(p)\n'],
+    ['a process.env read', 'src/a.js', '+  const t = process.env.TOKEN;\n'],
+    ['an os.environ read', 'src/a.py', '+    t = os.environ["TOKEN"]\n'],
+    ['a rust env::var read', 'src/a.rs', '+    let t = env::var("TOKEN")?;\n'],
+    ['a go os.Getenv read', 'src/a.go', '+    t := os.Getenv("TOKEN")\n'],
+    ['a secret-shaped identifier', 'src/a.py', '+API_KEY = load()\n'],
+    ['a python pickle.loads', 'src/a.py', '+    obj = pickle.loads(blob)\n'],
+    ['a python yaml.load', 'src/a.py', '+    cfg = yaml.load(text)\n'],
+    ['a js eval', 'src/a.js', '+  eval(src);\n'],
+    ['a js new Function', 'src/a.js', '+  const f = new Function("return 1");\n'],
+    ['a go Unmarshal', 'src/a.go', '+    json.Unmarshal(b, &v)\n'],
+    ['a rust serde_json::from_str', 'src/a.rs', '+    let v: V = serde_json::from_str(s)?;\n'],
+    ['a rust unsafe block', 'src/a.rs', '+    unsafe { *p = 1; }\n'],
+    ['a rust transmute', 'src/a.rs', '+    let x = transmute(y);\n'],
+    ['a rust ptr::write', 'src/a.rs', '+    ptr::write(dst, v);\n'],
+    ['a memcpy', 'src/a.go', '+    memcpy(dst, src, n);\n'],
+  ];
+  for (const [label, file, diffText] of SECURITY_CASES) {
+    assert.equal(sig(file, diffText).securitySurface, true, 'SECURITY vocabulary matches ' + label);
+  }
+
+  // The deliberate exclusion, pinned so a later reader cannot "fix" it: JSON.parse
+  // is the most common line in any JS diff and would collapse `security` into an
+  // always-on dimension for every JS repo.
+  assert.equal(
+    sig('src/a.js', '+  const cfg = JSON.parse(text);\n').securitySurface,
+    false,
+    'SECURITY vocabulary deliberately excludes JSON.parse — it would make security always-on in any JS repo'
+  );
 }
 
 // -- securitySurface: content, not paths. A sink under a neutral path fires; a
@@ -2142,7 +2315,48 @@ smut_drop_security_regex() {
 }
 signal_mutate_and_expect_fail f 'neutering the child_process regex in the security vocabulary' smut_drop_security_regex
 
-pass "3b: all seven content-signal mutations flip an assertion, and the control passes"
+# (g) Delete the CHANGELOG.md confirming term from userFacing. Only the POSITIVE
+#     confirming fixture (a CHANGELOG co-changed with a code file, inert content)
+#     can catch this — the CHANGELOG-only negative stays green either way.
+smut_drop_changelog_term() {
+    sed 's#|| changelogTouched, hasCode, diffText)#/* MUTANT */, hasCode, diffText)#' "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail g 'deleting the CHANGELOG.md confirming term from userFacing' smut_drop_changelog_term
+
+# (h) Widen addedLines to scan REMOVED lines too: deleting an `export`/`exec(`
+#     line would start tripping a signal.
+smut_scan_removed_lines() {
+    sed "s|charAt(0) !== '+') continue;|charAt(0) !== '+' \&\& line.charAt(0) !== '-') continue; // MUTANT|" \
+        "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail h 'letting addedLines scan REMOVED diff lines' smut_scan_removed_lines
+
+# (i) Drop the `+++` file-header skip: the diff's own header line is read as
+#     content, so a path merely NAMED `exports.ts` trips publicApiChanged —
+#     path-derived triggering smuggled back in through the header.
+smut_scan_diff_headers() {
+    sed "s|if (line.indexOf('+++') === 0) continue;|if (false) continue; // MUTANT|" "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail i 'reading the diff file header as added content' smut_scan_diff_headers
+
+# (j)-(l) One vocabulary-coverage mutation per vocabulary, proving the grouped
+#     per-language positives above actually exercise their own bucket.
+smut_drop_python_all() {
+    sed 's|__all__|MUTANT_never_matches|' "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail j 'neutering the Python __all__ arm of the export vocabulary' smut_drop_python_all
+
+smut_drop_add_argument() {
+    sed 's|add_argument|MUTANT_never_matches|' "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail k 'neutering the argparse arm of the user-facing vocabulary' smut_drop_add_argument
+
+smut_drop_pickle() {
+    sed 's|pickle|MUTANT_never_matches|' "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail l 'neutering the deserialization arm of the security vocabulary' smut_drop_pickle
+
+pass "3b: all thirteen content-signal mutations flip an assertion, and the control passes"
 
 # --- 4. PLAN CALIBRATION MUTATION SELF-TEST -----------------------------------
 # Prove the AC1 presence check (embedded in section 3's test.mjs) is not
