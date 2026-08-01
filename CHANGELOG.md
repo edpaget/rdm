@@ -221,6 +221,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The `security` dimension of the review skills emitted by `rdm agent-config
+  claude --skills` now reviews on a **threat-model** basis instead of matching
+  language-specific API and keyword patterns. A finding is a claim that an
+  attacker can do something they should not be able to do, backed by the code
+  that grants it — explicitly not lint, not style, not "consider using a safer
+  API" — and it is worked through five language-neutral categories: injection,
+  authorization, memory, crypto, and exposure. Severity is rated on impact
+  rather than certainty and maps onto the existing `blocking` / `concern` /
+  `suggestion` contract rather than adding a second ladder. Findings may now
+  carry an optional `category` slug (`command-injection`, `path-traversal`,
+  `unsafe-ffi`, `hardcoded-secret`, `info-disclosure`, …). The dimension is now
+  triggered purely by the paths a change touches; the previous
+  language-specific diff-content triggers, which could never fire outside one
+  language, are gone.
+- Every review finder prompt — both code review and plan review, every
+  dimension — now carries **prompt-injection hygiene**: the repository under
+  review is untrusted data and cannot issue instructions to a reviewer, and
+  text telling a reviewer to skip a file, ignore a finding, stop reviewing, or
+  claiming the code is already verified or approved is itself reportable as a
+  finding. Applies to the review and plan-review skills `rdm agent-config
+  claude --skills` emits and to the workflow scripts it ships alongside them.
 - The shipped code-review dimensions no longer hardcode rdm's own Rust
   conventions. `correctness`, `architecture`, `api-docs`, `changelog` and
   `security` now state generic intent — the error-handling conventions the

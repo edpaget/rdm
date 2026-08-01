@@ -766,6 +766,7 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | --------------- | ---------------------------------------- | ------------------------------------------------- |
 | `id`            | string (required)                        | short stable slug, unique within the finder       |
 | `concern`       | string (required)                        | the dimension key (`ac`, `correctness`, …)        |
+| `category`      | string                                   | **optional**; security-style slug (injection / authorization / memory / crypto / exposure) |
 | `location`      | string                                   | `file:line`, section heading, or phase stem       |
 | `severity`      | `blocking` \| `concern` \| `suggestion`  | required; drives ranking and the overall verdict  |
 | `confidence`    | integer 0–100 (required)                 | the finder's confidence **in the finding**        |
@@ -775,6 +776,26 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `unrefuted`     | `true` (post-pipeline only)              | set by `buildReviewPipeline`, never by a finder    |
 | `unrefutedReason` | `'non-gating'` \| `'budget'` (post-pipeline only) | present iff `unrefuted` is; WHY it went ungraded |
 | `refuterError`  | `true` (post-pipeline only)              | a refuter was dispatched and CRASHED; never combined with `unrefuted` |
+
+**`category` is additive, optional, and read by nobody.** It exists because
+`FINDINGS_SCHEMA` is `additionalProperties: false`: the `security` dimension's
+prose asks a finder for a threat-category slug (`command-injection`,
+`path-traversal`, `unsafe-ffi`, `hardcoded-secret`, `info-disclosure`, …), and
+without a declared field the runtime would **reject** that output and silently
+discard every security finding. It is deliberately NOT folded into `concern`,
+which is the DIMENSION identity three consumers match on
+(`stripNonPhaseUnitOfWork`, `classifyPlanOutcome`, and `buildReviewPipeline`'s
+`concern: f.concern || dim.key` backfill). The reference agent's
+`(file, line, category)` **dedupe key is NOT implemented** in this pipeline — the
+field is a carrier, not a half-built dedupe, and no consumer reads it today.
+
+**Security severity maps onto the existing three-value ladder.** The `security`
+dimension's impact scale is expressed directly in `blocking` / `concern` /
+`suggestion` rather than as a parallel HIGH/MEDIUM/LOW enum: HIGH → `blocking`
+(control of the system, or access to many users' data), MEDIUM → `concern` (real
+but bounded — needs an authenticated account, a non-default configuration, or
+victim interaction), LOW → `suggestion` (defense in depth and hygiene).
+Uncertainty stays in `confidence`, never in `severity`.
 
 **Four states, four markers.** Every finding a consumer receives is in exactly
 one of these, and they are distinguishable by markers alone — this is the single
@@ -1162,10 +1183,20 @@ different paths, and `verify-workflow-review.sh` asserts both.
 Pure and deterministic (no `Date.now`/`Math.random`, no shell). Maps
 `{ targetType, changedFiles, diffText? }` onto a **fully-populated** signals
 object — every boolean key in `SIGNAL_KEYS` (`changesLogic`, `missingTests`,
-`multiModule`, `publicApiChanged`, `userFacing`, `securitySurface`, `hasUnsafe`)
-is set explicitly. A partially-populated object would make a conditional
+`multiModule`, `publicApiChanged`, `userFacing`, `securitySurface`) is set
+explicitly. A partially-populated object would make a conditional
 dimension drop out on a *missing* key rather than a real negative, so callers
 that cannot compute a diff must pass **no** signals rather than a partial object.
+
+**`securitySurface` is currently PATH-based only** (`SECURITY_PATH_PATTERNS`).
+The diff-content triggers it used to carry, and the sibling `hasUnsafe` signal,
+were both language-specific and were removed together with the threat-model
+rewrite of the `security` dimension — `hasUnsafe` left `SIGNAL_KEYS` and the
+`deriveSignals` return object in the same change, since a key present in one but
+not the other is exactly the missing-key fail-mode above. Language-agnostic
+content-based triggering — and the removal of the path list itself — is owned by
+a sibling phase, so **treat the path-only state as INTERIM**: do not read it as a
+durable contract and do not extend the path list to compensate.
 
 **Who feeds it.** `dispatch-phase`'s code gate runs a mechanical `diff:signals`
 agent inside the item's worktree (`git diff --name-only main...HEAD` plus a
