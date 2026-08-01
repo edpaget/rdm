@@ -3,7 +3,7 @@
   "workflowName": "plan-review",
   "status": "completed",
   "startTime": 1782907200000,
-  "agentCount": 16,
+  "agentCount": 20,
   "totalTokens": 0,
   "totalToolCalls": 0,
   "durationMs": 1000,
@@ -118,6 +118,34 @@
       "type": "workflow_agent",
       "agentId": "a16",
       "label": "refute:plan:a-coherence-1",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a17",
+      "label": "find:plan:coherence",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a18",
+      "label": "find:plan:architectural-fit",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a19",
+      "label": "find:plan:restraint",
+      "model": "claude-opus-fixture",
+      "phase": "Find"
+    },
+    {
+      "type": "workflow_agent",
+      "agentId": "a20",
+      "label": "find:plan:unit-of-work",
       "model": "claude-opus-fixture",
       "phase": "Find"
     }

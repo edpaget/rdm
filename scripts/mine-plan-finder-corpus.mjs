@@ -48,7 +48,9 @@
 //   --project-slug <s>    Repeatable/comma-separated project-slug prefix filter.
 //   --until <iso-date>    Ignore runs starting after this instant (the PINNED
 //                         selection window; recorded in the header record).
-//   --limit <n>           Stop after n recovered review units.
+//   --limit <n>           Recover at most n review units; every unit past the
+//                         limit is counted in the `beyond-limit` skip bucket
+//                         so the accounting identity still closes exactly.
 //   --out <path>          Write JSONL here instead of stdout.
 //   --format jsonl|json   Output format (default: jsonl).
 //   --help                Print this help and exit.
@@ -285,12 +287,25 @@ export function mine(options = {}) {
   // Counting a rejected unit as ONE skip would silently lose its other finders,
   // which is precisely the "unknown contributing to no bucket" this instrument
   // must not do.
+  //
+  // The identity holds UNDER `--limit` too. `--limit` is a truncation of the
+  // recovered population, not a licence to stop accounting: a unit past the
+  // limit is classified FIRST, before any other test, into the single
+  // `beyond-limit` bucket and the loop keeps walking. Testing the limit after
+  // the qualification tests (or breaking out of the loop) would drop the
+  // boundary unit's always-on records into no bucket at all and abandon every
+  // later unit unclassified, while `finderRecordCount` — computed from Pass 1
+  // and independent of the limit — still reported them.
   const units = [];
   for (const [, u] of [...byUnit.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
     const lensCount = Object.keys(u.byLens).length;
     const bumpUnit = (reason) => {
       for (let i = 0; i < lensCount; i++) bump(reason);
     };
+    if (options.limit !== undefined && units.length >= options.limit) {
+      bumpUnit('beyond-limit');
+      continue;
+    }
     const targetType = targetTypeOf(u.ident);
     if (targetType === null) {
       bumpUnit('unrecognized-target-type');
@@ -315,7 +330,6 @@ export function mine(options = {}) {
     for (const lens of Object.keys(u.byLens)) {
       if (ALWAYS_ON_PLAN_LENSES.indexOf(lens) === -1) bump('not-an-always-on-lens');
     }
-    if (options.limit !== undefined && units.length >= options.limit) break;
     const byLens = {};
     const armAUsage = {};
     for (const lens of ALWAYS_ON_PLAN_LENSES) {
@@ -461,7 +475,8 @@ Options:
   --project-slug <s>    Repeatable/comma-separated project-slug prefix filter
                         (default: this repo's slugs, incl. --worktrees- variants).
   --until <iso-date>    Ignore runs starting after this instant (the PINNED window).
-  --limit <n>           Stop after n recovered review units.
+  --limit <n>           Recover at most n review units; units past the limit are
+                        counted in the "beyond-limit" skip bucket, never dropped.
   --out <path>          Write JSONL here instead of stdout.
   --format jsonl|json   Output format (default: jsonl).
   --help                Print this help and exit.

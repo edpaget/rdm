@@ -15,10 +15,11 @@
 #      PLAN_SEVERITY_CALIBRATION paragraph exactly once, the concern enum, and
 #      the unit-of-work prohibition. Once the merge SHIPS, the instrument's arm-B
 #      render must be byte-identical to review.mjs's own merged render.
-#   4  Miner behavior against the hermetic mine-sidecars fixture: the recovered
-#      unit, all FOUR exclusion paths (unrecoverable unit identity, plan doc
+#   4  Miner behavior against the hermetic mine-sidecars fixture: both recovered
+#      units, all FOUR exclusion paths (unrecoverable unit identity, plan doc
 #      below the floor, incomplete always-on lenses, no findings output), a
-#      no-silent-drop accounting identity, and the CLI surface.
+#      no-silent-drop accounting identity that holds UNDER --limit truncation as
+#      well as without it, and the CLI surface.
 #   5  Scorer replay: re-scoring the committed trials file reproduces the figures
 #      committed in docs/token-baseline.json § planFinderCollapse exactly.
 #   6  The decision rule, driven over synthetic trial sets: all six pass ->
@@ -33,7 +34,9 @@
 #      no-blended-cross-lens-rate negative in both JSON and text.
 #   9  The DECISION/PIPELINE XOR: a no-ship decision and a half-landed merged
 #      dimension can never coexist, in both directions.
-#  10  Planted-mutation self-tests proving 2, 3, 4, 5, 6, 8 and 9 are not vacuous.
+#  10  Planted-mutation self-tests proving 2, 3, 4, 5, 6, 8 and 9 are not
+#      vacuous — including reverting the miner's --limit bucket to a bare
+#      `break`, which must break section 4's under-truncation identity.
 #
 # THIS SCRIPT NEVER DISPATCHES A PAID AGENT. Section 7 proves it.
 set -euo pipefail
@@ -293,10 +296,13 @@ node --input-type=module -e '
 import fs from "node:fs";
 import assert from "node:assert/strict";
 const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-assert.equal(r.units.length, 1, "exactly one fixture unit is recoverable");
+// TWO qualifying units, so the --limit truncation case below has a real
+// boundary to cut at; a single-qualifying-unit fixture can never exercise it.
+assert.equal(r.units.length, 2, "exactly two fixture units are recoverable");
 const u = r.units[0];
 assert.equal(u.targetType, "phase");
 assert.equal(u.targetId, "phase fixture-roadmap/phase-1-complete-unit");
+assert.equal(r.units[1].targetId, "phase fixture-roadmap/phase-3-second-complete-unit");
 assert.ok(u.planDoc.length >= 500, "the recovered plan doc must clear the floor");
 assert.ok(!u.planDoc.startsWith("phase fixture-roadmap"), "planDoc must be the BODY, not the identity line");
 assert.deepEqual(Object.keys(u.armA.byLens).sort(), ["architectural-fit", "coherence", "restraint"]);
@@ -311,7 +317,8 @@ assert.equal(s["unrecoverable-unit-identity"], 3, "the --implementation-plan JSO
 assert.equal(s["plan-doc-below-floor"], 3, "a fetch-status-line roadmap body must be excluded, counted PER FINDER");
 assert.equal(s["incomplete-always-on-lenses"], 4, "a unit missing a lens must be excluded, counted PER FINDER");
 assert.equal(s["no-findings-output"], 1, "a finder with no StructuredOutput must be excluded and counted");
-assert.equal(s["not-an-always-on-lens"], 1, "the recovered unit unit-of-work finder is counted, not silently dropped");
+assert.equal(s["not-an-always-on-lens"], 2, "each recovered unit unit-of-work finder is counted, not silently dropped");
+assert.equal(s["beyond-limit"], undefined, "an unlimited run must never bucket anything as beyond-limit");
 
 // NO SILENT DROP: every plan-finder record is either recovered as an always-on
 // lens observation or counted in exactly one skip bucket. Exact, not >=.
@@ -320,10 +327,10 @@ const skipped = Object.values(s).reduce((a, b) => a + b, 0);
 assert.equal(lensesRecovered + skipped, r.finderRecordCount,
   "accounting identity: recovered lens records + skips must equal the plan-finder records exactly");
 // The label filter is doing work: the fixture holds a refuter that must not appear.
-assert.equal(r.finderRecordCount, 15, "only find:plan:* agents are considered");
-console.log("miner: 1 unit, 4 exclusion buckets, accounting closes");
+assert.equal(r.finderRecordCount, 19, "only find:plan:* agents are considered");
+console.log("miner: 2 units, 4 exclusion buckets, accounting closes");
 ' "$TMP/mined.json" || fail "the miner did not behave as specified against the fixture"
-[ "$FAILURES" = "$BEFORE" ] && pass "the miner recovers the unit, fires all four exclusion paths, and drops nothing silently"
+[ "$FAILURES" = "$BEFORE" ] && pass "the miner recovers both units, fires all four exclusion paths, and drops nothing silently"
 
 BEFORE="$FAILURES"
 # --project-slug is a real filter: a prefix that matches nothing recovers nothing.
@@ -339,6 +346,27 @@ node "$MINER" --root "$SIDECARS" --project-slug -Users-edward-Projects-rdm-fixtu
     --out "$TMP/mined.jsonl" >/dev/null 2>&1 || fail "the miner failed under --limit/--out"
 [ -s "$TMP/mined.jsonl" ] || fail "--out wrote nothing"
 head -1 "$TMP/mined.jsonl" | grep -q '"kind":"header"' || fail "--out must write the pinned header first"
+# --limit TRUNCATES MID-LIST (the fixture holds two qualifying units), and the
+# accounting identity must survive the truncation: a unit past the limit is
+# classified into `beyond-limit` BEFORE any other test, so neither the boundary
+# unit's always-on records nor any later unit's records vanish into no bucket.
+node "$MINER" --root "$SIDECARS" --project-slug -Users-edward-Projects-rdm-fixture --limit 1 \
+    --format json >"$TMP/mined-limited.json" 2>/dev/null || fail "the miner failed under --limit 1"
+# shellcheck disable=SC2016  # a Node program, deliberately not shell-expanded
+node --input-type=module -e '
+import fs from "node:fs";
+import assert from "node:assert/strict";
+const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+assert.equal(r.units.length, 1, "--limit 1 must recover exactly one unit");
+assert.equal(r.units[0].targetId, "phase fixture-roadmap/phase-1-complete-unit",
+  "--limit must truncate in the deterministic sort order, keeping the first unit");
+assert.equal(r.finderRecordCount, 19, "finderRecordCount is limit-independent (it is a Pass-1 figure)");
+assert.ok(r.skips["beyond-limit"] > 0, "the truncated units must land in the beyond-limit bucket");
+const skipped = Object.values(r.skips).reduce((a, b) => a + b, 0);
+assert.equal(r.units.length * 3 + skipped, r.finderRecordCount,
+  "accounting identity must hold UNDER --limit too: nothing may be dropped by truncation");
+console.log("miner --limit: truncates mid-list and still closes the accounting identity");
+' "$TMP/mined-limited.json" || fail "--limit truncation lost records from the accounting identity"
 # --until in both directions.
 node "$MINER" --root "$SIDECARS" --project-slug -Users-edward-Projects-rdm-fixture \
     --until 2026-01-01T00:00:00Z --format json >"$TMP/before.json" 2>/dev/null || fail "the miner failed under --until"
@@ -848,8 +876,35 @@ mut_audit() {
 }
 mutate_and_expect_fail vii 'letting the audit accept a ship decision its criteria table contradicts' mut_audit
 
+# (viii) The MINER's --limit accounting, which section 4 asserts. Reverting the
+# pre-classification `beyond-limit` bucket to a bare `break` — the shape that
+# abandoned the boundary unit's always-on records AND every later unit into no
+# bucket at all, while finderRecordCount kept reporting them — must break the
+# under-truncation accounting identity. Without this, section 4's --limit
+# assertion could be passing vacuously.
+miner_limit_identity_holds() {
+    node "$1" --root "$SIDECARS" --project-slug -Users-edward-Projects-rdm-fixture --limit 1 \
+        --format json >"$TMP/mut-limited.json" 2>/dev/null || return 1
+    # shellcheck disable=SC2016  # a Node program, deliberately not shell-expanded
+    node --input-type=module -e '
+import fs from "node:fs";
+const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const skipped = Object.values(r.skips).reduce((a, b) => a + b, 0);
+process.exit(r.units.length * 3 + skipped === r.finderRecordCount ? 0 : 1);
+' "$TMP/mut-limited.json"
+}
+sed "s|^      bumpUnit('beyond-limit');\$|      break; // MUTANT|" "$MINER" >"$MUT/scripts/mine-plan-finder-corpus.mjs"
+grep -q 'MUTANT' "$MUT/scripts/mine-plan-finder-corpus.mjs" ||
+    die "10-viii: could not plant the miner --limit mutation"
+if miner_limit_identity_holds "$MUT/scripts/mine-plan-finder-corpus.mjs"; then
+    fail "10-viii: the accounting identity still closed after --limit was reverted to a bare break"
+fi
+cp "$MINER" "$MUT/scripts/mine-plan-finder-corpus.mjs"
+miner_limit_identity_holds "$MINER" ||
+    fail "10-viii-control: the unmutated miner does not close the identity under --limit"
+
 [ "$FAILURES" = "$MUT_BEFORE" ] &&
-    pass "10: all seven mutations flip an assertion and the control passes — sections 2-8 are non-vacuous"
+    pass "10: all eight mutations flip an assertion and the controls pass — sections 2-8 are non-vacuous"
 
 # ---------------------------------------------------------------------------
 if [ "$FAILURES" -ne 0 ]; then

@@ -102,7 +102,12 @@ exactly: 16 units × 3 always-on lenses = 48 recovered, plus 376 skipped, is 424
 Nothing is silently dropped — an unrecovered finder is an unknown, and an unknown
 must never contribute to a rate. (`not-an-always-on-lens` is the `unit-of-work`
 finder of a unit that WAS recovered: neither arm uses it, so it is counted rather
-than vanishing.) `unrecoverable-unit-identity=231` is overwhelmingly the
+than vanishing.) The identity holds under `--limit` as well: a unit past the
+limit is classified into a single `beyond-limit` bucket **before** any other
+test, so truncating a run never drops the boundary unit's always-on records — or
+any later unit's — into no bucket at all while the limit-independent
+`finderRecordCount` keeps reporting them.
+`unrecoverable-unit-identity=231` is overwhelmingly the
 `--implementation-plan` shape, correctly rejected. The corpus is 16 units:
 **15 `phase`, 1 `task`, 0 `roadmap`**.
 
