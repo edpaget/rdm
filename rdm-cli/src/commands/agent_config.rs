@@ -74,22 +74,30 @@ fn write_mcp_json(base_dir: &Path, root: &Path) -> Result<()> {
 ///
 /// When the target is `Platform::Claude` and the output is a project
 /// directory (`--out`, not `--user`), this also emits the autonomous-lane
-/// Workflow-tool scripts under `<base_dir>/.claude/workflows/`. This is
-/// intentionally narrower than the skills surface:
+/// Workflow-tool scripts under `<base_dir>/.claude/workflows/`, then runs
+/// superseded-workflow cleanup over that same directory
+/// (`agent_config::resolve_superseded_workflows` against the shipped
+/// `agent_config::SUPERSEDED_WORKFLOWS` table) and reports one line per
+/// removed or skipped-as-modified file. This is intentionally narrower than
+/// the skills surface:
 ///
 /// - **Claude-only**: Pi has no Workflow-tool runtime, so `--skills` against
-///   `Platform::Pi` writes only `.pi/skills`, never a workflows directory.
+///   `Platform::Pi` writes only `.pi/skills`, never a workflows directory,
+///   and never runs cleanup.
 /// - **`--out`-only, not `--user`**: the shipped scripts hardcode this
 ///   repo's own `./target/debug/rdm` binary path and `--project rdm`
 ///   invocation (they are not yet parameterized for a downstream target
 ///   repo). Those values only make sense relative to a specific checked-out
 ///   project, so they are never written to a user-global location like
-///   `~/.claude/workflows`.
+///   `~/.claude/workflows`, and cleanup never runs against `--user` either.
 ///
 /// # Errors
 ///
 /// Returns an error if neither `--out` nor `--user` resolves an output
 /// directory, the platform does not support skills, or a file write fails.
+/// A superseded-workflow removal failure is never surfaced as an error here
+/// — it is reported on stdout and otherwise ignored, per
+/// [`agent_config::resolve_superseded_workflows`]'s contract.
 fn write_skills(
     platform: Platform,
     project: Option<String>,
@@ -128,11 +136,32 @@ fn write_skills(
     // Workflow-tool scripts are Claude-only (Pi has no Workflow-tool runtime)
     // and --out-only (not --user; see the doc comment above for why).
     if platform == Platform::Claude && !user {
+        let workflows_dir = base_dir.join(".claude/workflows");
         for workflow in agent_config::generate_workflows() {
-            let path = base_dir
-                .join(".claude/workflows")
-                .join(workflow.relative_path);
+            let path = workflows_dir.join(workflow.relative_path);
             write_output(&path, workflow.content.as_bytes())?;
+        }
+        // Clean up files superseded by an earlier emission of this same
+        // lane. Reported, never fatal: a removal failure must not abort an
+        // otherwise-successful emit (see the decision function's contract).
+        for outcome in agent_config::resolve_superseded_workflows(
+            &workflows_dir,
+            agent_config::SUPERSEDED_WORKFLOWS,
+        ) {
+            match outcome {
+                agent_config::SupersededOutcome::Removed { path } => {
+                    println!("Removed {}", path.display());
+                }
+                agent_config::SupersededOutcome::SkippedModified { path } => {
+                    println!(
+                        "Skipped {} (content modified since emission; left in place)",
+                        path.display()
+                    );
+                }
+                agent_config::SupersededOutcome::Failed { path, error } => {
+                    println!("Failed to remove {}: {error}", path.display());
+                }
+            }
         }
     }
     // When --mcp, also write .mcp.json at the project (or user-level) root.

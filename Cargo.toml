@@ -36,6 +36,7 @@ terminal_size = "0.4"
 rmcp = { version = "2.0", features = ["server", "transport-io", "macros"] }
 tracing = "0.1"
 ratatui = "0.30.1"
+sha2 = "0.10"
 
 # The profile that 'dist' will build with
 [profile.dist]

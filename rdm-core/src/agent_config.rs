@@ -4,7 +4,7 @@
 //! how to interact with `rdm` via its CLI.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// Target platform for agent configuration output.
@@ -360,6 +360,189 @@ pub fn generate_workflows() -> Vec<WorkflowFile> {
             content: include_str!("templates/workflows/review-refute-fix.js"),
         },
     ]
+}
+
+/// A previously-emitted `.claude/workflows/` file that a newer emission may
+/// supersede.
+///
+/// Two supersession shapes share this table, and [`resolve_superseded_workflows`]
+/// handles both with the same matching/removal logic:
+///
+/// - **Renamed**: `successor: Some(new_name)` — the file at `name` was
+///   replaced by a differently-named current template (the motivating case
+///   for this mechanism).
+/// - **Retired outright**: `successor: None` — the file at `name` has no
+///   current template of any name (e.g. the historical `autopilot.js`,
+///   retired by the `prose-autopilot-orchestration` roadmap before this
+///   table existed).
+///
+/// `successor` is metadata for readers of the table; the removal decision
+/// in [`resolve_superseded_workflows`] only ever consults `name` and
+/// `fingerprints`, so it treats both shapes identically.
+pub struct SupersededWorkflow {
+    /// The relative filename (a bare filename — no path separators, no
+    /// `..`, not absolute) this entry may remove, as it was previously
+    /// emitted directly under `.claude/workflows/`.
+    pub name: &'static str,
+    /// Known SHA-256 hex digests of every previously-emitted body for
+    /// `name`. A candidate file is only ever removed when its current
+    /// on-disk content hashes to one of these — content the user has since
+    /// edited, or content this table doesn't recognize, is left in place.
+    pub fingerprints: &'static [&'static str],
+    /// The current template's relative path this entry was renamed to, or
+    /// `None` if the file was retired outright with no successor. See the
+    /// type-level doc for how the two shapes differ.
+    pub successor: Option<&'static str>,
+}
+
+/// The production superseded-workflow table consulted by `rdm agent-config`'s
+/// cleanup step.
+///
+/// Shipped **empty**: nothing has been renamed or retired under this
+/// mechanism yet, so [`resolve_superseded_workflows`] is a structural no-op
+/// against this table no matter what the output directory contains. A
+/// future rename (or retirement) populates this constant with real entries
+/// and content fingerprints.
+pub const SUPERSEDED_WORKFLOWS: &[SupersededWorkflow] = &[];
+
+/// The outcome of resolving one [`SupersededWorkflow`] table entry against
+/// an output directory.
+///
+/// A table entry with no same-named file present in the directory produces
+/// no outcome at all — it is simply absent from
+/// [`resolve_superseded_workflows`]'s returned `Vec`, distinct from every
+/// variant below.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SupersededOutcome {
+    /// The candidate file's content matched a known fingerprint and was
+    /// removed from disk.
+    Removed {
+        /// The removed file's path.
+        path: PathBuf,
+    },
+    /// A same-named file exists but was left in place: its content matched
+    /// no known fingerprint, it was not a plain readable file (e.g. a
+    /// directory or symlink), or its table entry's `name` was rejected as
+    /// an unsafe (non-bare) filename.
+    SkippedModified {
+        /// The file left in place.
+        path: PathBuf,
+    },
+    /// The candidate file's content matched a known fingerprint, but the
+    /// removal itself failed (e.g. a permission error). Reported, never
+    /// treated as fatal by the caller.
+    Failed {
+        /// The file that could not be removed.
+        path: PathBuf,
+        /// A human-readable description of why removal failed.
+        error: String,
+    },
+}
+
+/// Computes the lowercase hex-encoded SHA-256 digest of `bytes`.
+///
+/// Shared by [`SUPERSEDED_WORKFLOWS`]-style fingerprint tables (computed
+/// once, offline, when a file is superseded) and by
+/// [`resolve_superseded_workflows`] (computed at cleanup time against each
+/// candidate file's current on-disk content).
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Returns `true` when `name` is safe to join onto a directory: a single
+/// non-empty, non-`..`, non-root path component. Rejects absolute paths,
+/// `..` traversal, and any nested separator, so a caller can never resolve
+/// outside the directory it started from.
+fn is_bare_filename(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut components = Path::new(name).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
+/// Resolves `table` against `workflows_dir`, returning a removed/skipped/
+/// failed outcome for every table entry with a same-named file present.
+///
+/// This is the decision-and-removal logic behind `rdm agent-config`'s
+/// superseded-workflow cleanup. For each entry in `table`, it looks for a
+/// file directly inside `workflows_dir` whose name is exactly
+/// `entry.name` — no directory listing, no globbing, so a file not named in
+/// the table is structurally unreachable — and:
+///
+/// - removes it and reports [`SupersededOutcome::Removed`], if its content
+///   hashes to one of `entry.fingerprints`;
+/// - leaves it in place and reports [`SupersededOutcome::SkippedModified`],
+///   if a same-named file exists but its content matches no known
+///   fingerprint, it isn't a plain file (a directory, a symlink, or
+///   otherwise unreadable), or `entry.name` was rejected as unsafe (see
+///   [`is_bare_filename`]);
+/// - leaves it in place and reports [`SupersededOutcome::Failed`], if the
+///   fingerprint matched but the removal call itself failed (e.g. a
+///   permission error);
+/// - produces no outcome at all, if no file exists at that path (including
+///   when `workflows_dir` itself doesn't exist).
+///
+/// If two entries in `table` share the same `name` (a malformed table —
+/// the shipped [`SUPERSEDED_WORKFLOWS`] never does this), entries are
+/// resolved in order: once the first matching entry removes the file, the
+/// second entry's candidate is already absent and produces no outcome. This
+/// is deterministic but not a promised feature of the API — a well-formed
+/// table has unique names.
+///
+/// This function is infallible (`Vec`, not `Result`): a removal failure is
+/// captured as [`SupersededOutcome::Failed`] rather than propagated, so a
+/// caller can never have a superseded-cleanup failure abort an otherwise
+/// successful emit.
+pub fn resolve_superseded_workflows(
+    workflows_dir: &Path,
+    table: &[SupersededWorkflow],
+) -> Vec<SupersededOutcome> {
+    let mut outcomes = Vec::new();
+    for entry in table {
+        if !is_bare_filename(entry.name) {
+            continue;
+        }
+        let candidate = workflows_dir.join(entry.name);
+
+        // `symlink_metadata` never follows the final symlink component, so a
+        // symlink at this name is classified by its own type (not a plain
+        // file) rather than by whatever it points at — this keeps removal
+        // decisions scoped to `workflows_dir`'s own contents.
+        let metadata = match std::fs::symlink_metadata(&candidate) {
+            Ok(m) => m,
+            Err(_) => continue, // absent — no outcome
+        };
+        if !metadata.is_file() {
+            outcomes.push(SupersededOutcome::SkippedModified { path: candidate });
+            continue;
+        }
+
+        let contents = match std::fs::read(&candidate) {
+            Ok(c) => c,
+            Err(_) => {
+                outcomes.push(SupersededOutcome::SkippedModified { path: candidate });
+                continue;
+            }
+        };
+        let digest = sha256_hex(&contents);
+        if entry.fingerprints.contains(&digest.as_str()) {
+            match std::fs::remove_file(&candidate) {
+                Ok(()) => outcomes.push(SupersededOutcome::Removed { path: candidate }),
+                Err(e) => outcomes.push(SupersededOutcome::Failed {
+                    path: candidate,
+                    error: e.to_string(),
+                }),
+            }
+        } else {
+            outcomes.push(SupersededOutcome::SkippedModified { path: candidate });
+        }
+    }
+    outcomes
 }
 
 fn skill_principles_note(path: &str) -> String {
@@ -1272,6 +1455,270 @@ mod tests {
                 workflow.relative_path
             );
         }
+    }
+
+    // --- Superseded-workflow cleanup tests ---
+
+    /// Leaks a runtime-computed `String` to a `&'static str`, for building
+    /// synthetic [`SupersededWorkflow`] tables in tests (the field requires
+    /// `'static`, but fingerprints are naturally computed at test time via
+    /// [`sha256_hex`]). Test-only; the leak is bounded by the test process.
+    fn leak_str(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+
+    /// Leaks a runtime-built `Vec<T>` to a `&'static [T]`, for the same
+    /// reason as [`leak_str`]: [`SupersededWorkflow::fingerprints`] requires
+    /// `'static`, but test tables are naturally built at test time.
+    fn leak_slice<T>(v: Vec<T>) -> &'static [T] {
+        Box::leak(v.into_boxed_slice())
+    }
+
+    #[test]
+    fn superseded_workflows_table_is_shipped_empty() {
+        assert!(
+            SUPERSEDED_WORKFLOWS.is_empty(),
+            "the production table must ship empty — a future rename/retirement \
+             phase populates it deliberately"
+        );
+    }
+
+    #[test]
+    fn resolve_superseded_workflows_empty_table_touches_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.js");
+        std::fs::write(&a, b"alpha").unwrap();
+        std::fs::write(&b, b"bravo").unwrap();
+
+        let outcomes = resolve_superseded_workflows(dir.path(), SUPERSEDED_WORKFLOWS);
+
+        assert!(outcomes.is_empty());
+        assert_eq!(std::fs::read(&a).unwrap(), b"alpha");
+        assert_eq!(std::fs::read(&b).unwrap(), b"bravo");
+    }
+
+    #[test]
+    fn resolve_superseded_workflows_removes_fingerprint_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = b"old-workflow-body-for-fingerprint-match-test\n";
+        let path = dir.path().join("old-name.js");
+        std::fs::write(&path, content).unwrap();
+        let digest = leak_str(sha256_hex(content));
+        let fingerprints = leak_slice(vec![digest]);
+
+        let table = [SupersededWorkflow {
+            name: "old-name.js",
+            fingerprints,
+            successor: Some("new-name.js"),
+        }];
+        let outcomes = resolve_superseded_workflows(dir.path(), &table);
+
+        assert_eq!(outcomes.len(), 1);
+        match &outcomes[0] {
+            SupersededOutcome::Removed { path: p } => assert_eq!(p, &path),
+            other => panic!("expected Removed, got {other:?}"),
+        }
+        // Self-test / removal-branch proof: this is a disk-state assertion,
+        // not merely a check on the returned enum. Commenting out the
+        // `std::fs::remove_file` call inside `resolve_superseded_workflows`'s
+        // fingerprint-match branch would leave this file on disk and turn
+        // this assertion red even if a stub still returned `Removed`.
+        assert!(!path.exists(), "file should have been removed from disk");
+    }
+
+    #[test]
+    fn resolve_superseded_workflows_skips_modified_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = b"old-workflow-body-that-user-has-since-modified\n";
+        let path = dir.path().join("old-name.js");
+        std::fs::write(&path, original).unwrap();
+        // The table's only known fingerprint is for different content, so
+        // the on-disk file (as modified by the user) matches nothing.
+        let unrelated_digest = leak_str(sha256_hex(b"a completely different original body\n"));
+        let fingerprints = leak_slice(vec![unrelated_digest]);
+
+        let table = [SupersededWorkflow {
+            name: "old-name.js",
+            fingerprints,
+            successor: Some("new-name.js"),
+        }];
+        let outcomes = resolve_superseded_workflows(dir.path(), &table);
+
+        assert_eq!(outcomes.len(), 1);
+        match &outcomes[0] {
+            SupersededOutcome::SkippedModified { path: p } => assert_eq!(p, &path),
+            other => panic!("expected SkippedModified, got {other:?}"),
+        }
+        // Disk-state proof: if the skip branch were replaced by an
+        // unconditional match, this file would be missing instead.
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "modified file must be left byte-for-byte untouched"
+        );
+    }
+
+    #[test]
+    fn resolve_superseded_workflows_skips_empty_fingerprint_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = b"some content";
+        let path = dir.path().join("old-name.js");
+        std::fs::write(&path, content).unwrap();
+
+        let table = [SupersededWorkflow {
+            name: "old-name.js",
+            fingerprints: &[],
+            successor: None,
+        }];
+        let outcomes = resolve_superseded_workflows(dir.path(), &table);
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(
+            outcomes[0],
+            SupersededOutcome::SkippedModified { .. }
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn resolve_superseded_workflows_skips_directory_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("old-name.js");
+        std::fs::create_dir(&subdir).unwrap();
+
+        let table = [SupersededWorkflow {
+            name: "old-name.js",
+            fingerprints: &["deadbeef"],
+            successor: None,
+        }];
+        let outcomes = resolve_superseded_workflows(dir.path(), &table);
+
+        assert_eq!(outcomes.len(), 1);
+        match &outcomes[0] {
+            SupersededOutcome::SkippedModified { path: p } => assert_eq!(p, &subdir),
+            other => panic!("expected SkippedModified, got {other:?}"),
+        }
+        assert!(subdir.is_dir(), "directory must survive untouched");
+    }
+
+    #[test]
+    fn resolve_superseded_workflows_ignores_unrelated_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let unrelated = dir.path().join("notes.txt");
+        std::fs::write(&unrelated, b"my own notes, not an rdm file").unwrap();
+
+        // A synthetic table that names a completely different file — the
+        // unrelated file's name never appears in it.
+        let table = [SupersededWorkflow {
+            name: "old-name.js",
+            fingerprints: &["deadbeef"],
+            successor: Some("new-name.js"),
+        }];
+        let outcomes = resolve_superseded_workflows(dir.path(), &table);
+
+        assert!(
+            outcomes.iter().all(|o| match o {
+                SupersededOutcome::Removed { path }
+                | SupersededOutcome::SkippedModified { path }
+                | SupersededOutcome::Failed { path, .. } => path != &unrelated,
+            }),
+            "no outcome may reference a file the table never named"
+        );
+        assert_eq!(
+            std::fs::read(&unrelated).unwrap(),
+            b"my own notes, not an rdm file"
+        );
+    }
+
+    #[test]
+    fn resolve_superseded_workflows_rejects_path_traversal_names() {
+        let root = tempfile::tempdir().unwrap();
+        let workflows_dir = root.path().join("workflows");
+        std::fs::create_dir(&workflows_dir).unwrap();
+
+        // A file living outside workflows_dir that a `..`-escaping name
+        // would resolve to, if traversal were permitted.
+        let escape_target = root.path().join("escape.js");
+        std::fs::write(&escape_target, b"do not touch me").unwrap();
+        let digest = leak_str(sha256_hex(b"do not touch me"));
+        let fingerprints = leak_slice(vec![digest]);
+
+        let table = [
+            SupersededWorkflow {
+                name: "../escape.js",
+                fingerprints,
+                successor: None,
+            },
+            SupersededWorkflow {
+                name: "sub/escape.js",
+                fingerprints,
+                successor: None,
+            },
+        ];
+        let outcomes = resolve_superseded_workflows(&workflows_dir, &table);
+
+        assert!(
+            outcomes.is_empty(),
+            "traversal-shaped names must be rejected before any filesystem match, got {outcomes:?}"
+        );
+        assert!(
+            escape_target.exists(),
+            "file outside workflows_dir must survive"
+        );
+        assert_eq!(std::fs::read(&escape_target).unwrap(), b"do not touch me");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolve_superseded_workflows_reports_failed_removal_without_erroring() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let workflows_dir = root.path().join("workflows");
+        std::fs::create_dir(&workflows_dir).unwrap();
+
+        let content = b"file-inside-readonly-dir-for-failed-removal-test\n";
+        let path = workflows_dir.join("old-name.js");
+        std::fs::write(&path, content).unwrap();
+        let digest = leak_str(sha256_hex(content));
+
+        // Removing a file requires write+execute permission on its parent
+        // directory, not on the file itself — so make workflows_dir
+        // read-only-and-traversable to force the unlink to fail with
+        // EACCES/EPERM regardless of the file's own permissions.
+        std::fs::set_permissions(&workflows_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let fingerprints = leak_slice(vec![digest]);
+        let table = [SupersededWorkflow {
+            name: "old-name.js",
+            fingerprints,
+            successor: Some("new-name.js"),
+        }];
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resolve_superseded_workflows(&workflows_dir, &table)
+        }));
+
+        // Restore permissions unconditionally so the tempdir can be cleaned
+        // up regardless of whether the assertions below pass or fail.
+        std::fs::set_permissions(&workflows_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let outcomes = result.expect("resolve_superseded_workflows must not panic");
+        assert_eq!(outcomes.len(), 1);
+        match &outcomes[0] {
+            SupersededOutcome::Failed { path: p, error } => {
+                assert_eq!(p, &path);
+                assert!(
+                    !error.is_empty(),
+                    "Failed outcome must carry a non-empty error"
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(
+            path.exists(),
+            "file must still exist after a failed removal"
+        );
     }
 
     #[test]

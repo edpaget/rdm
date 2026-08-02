@@ -20,6 +20,17 @@
 #      identical to this repo's own `.claude/workflows/*.js` — the one
 #      surface `generate_workflows` promises to emit verbatim (see its doc
 #      comment in `rdm-core/src/agent_config.rs`).
+#   3b. CLEANUP (empty table): re-emitting into the same output directory is
+#      idempotent and non-destructive. The shipped `SUPERSEDED_WORKFLOWS`
+#      table is empty (nothing has been renamed/retired under this mechanism
+#      yet — see `resolve_superseded_workflows` in
+#      `rdm-core/src/agent_config.rs`), so this section asserts what's
+#      reachable with the REAL binary today: re-emission prints no `Removed`
+#      line, the two conventionally-named workflow files are rewritten (not
+#      removed — still byte-identical to source), and an unrelated
+#      user-authored file planted in the same output directory survives
+#      byte-for-byte. The end-to-end "a stale file is actually removed" case
+#      needs a populated table and is deferred to the phase that populates it.
 #   4. SEMANTIC: asserts every literal `.claude/workflows/<name>.js`
 #      reference inside an emitted skill resolves to a real file in the SAME
 #      emitted tree — a shim can never ship pointing at an absent workflow.
@@ -48,11 +59,13 @@
 #      catches both an unfamiliar Workflow name and a skill other than
 #      rdm-autopilot.
 #   6. NEGATIVE / PLAN-REPO INDEPENDENCE: Pi emission never writes
-#      `.claude/workflows` (no Workflow-tool runtime); `--user` emission
-#      never writes `.claude/workflows` either (the scripts hardcode a
-#      target repo's own binary path, so they're `--out`-only); and emission
-#      succeeds even when `RDM_ROOT` points at a path that does not exist,
-#      since `--skills` emission never needs the plan repo.
+#      `.claude/workflows` (no Workflow-tool runtime) and never prints a
+#      cleanup-report line; `--user` emission never writes
+#      `.claude/workflows` either (the scripts hardcode a target repo's own
+#      binary path, so they're `--out`-only) and never prints a
+#      cleanup-report line; and emission succeeds even when `RDM_ROOT` points
+#      at a path that does not exist, since `--skills` emission never needs
+#      the plan repo.
 #
 # Deliberately OUT OF SCOPE (see CLAUDE.md's Dogfooding section and the
 # `distribute-workflow-lane` roadmap's phase-4 notes for why): a full-body
@@ -255,6 +268,43 @@ for variant in cli mcp; do
     fi
 done
 
+# --- 3b. cleanup mechanism (empty table): re-emission is idempotent --------
+# --- and non-destructive ----------------------------------------------------
+say "3b. Cleanup (empty table): re-emission is idempotent and non-destructive"
+
+CLI_WORKFLOWS_DIR="$TMP/cli/.claude/workflows"
+UNRELATED_FILE="$CLI_WORKFLOWS_DIR/notes.txt"
+UNRELATED_CONTENT="these are my own notes, rdm did not write this file"
+printf '%s\n' "$UNRELATED_CONTENT" >"$UNRELATED_FILE"
+
+BEFORE_DP_SUM=$(shasum -a 256 "$CLI_WORKFLOWS_DIR/dispatch-phase.js" | awk '{print $1}')
+BEFORE_RRF_SUM=$(shasum -a 256 "$CLI_WORKFLOWS_DIR/review-refute-fix.js" | awk '{print $1}')
+BEFORE_UNRELATED_SUM=$(shasum -a 256 "$UNRELATED_FILE" | awk '{print $1}')
+
+"$RDM_BIN" agent-config claude --skills --project distro-check --out "$TMP/cli" >"$TMP/reemit-cli.log"
+
+if grep -q '^Removed ' "$TMP/reemit-cli.log"; then
+    fail "3b: re-emission with the shipped (empty) SUPERSEDED_WORKFLOWS table printed a 'Removed' line — empty-table no-op is violated:\n$(cat "$TMP/reemit-cli.log")"
+fi
+pass "3b: re-emission printed no 'Removed' line (empty-table no-op)"
+
+if ! check_workflows_byte_identical "$TMP/cli"; then
+    fail "3b: re-emitted workflow scripts drifted from $REPO_ROOT/.claude/workflows (see drift lines above) — rewrite-not-remove is violated"
+fi
+AFTER_DP_SUM=$(shasum -a 256 "$CLI_WORKFLOWS_DIR/dispatch-phase.js" | awk '{print $1}')
+AFTER_RRF_SUM=$(shasum -a 256 "$CLI_WORKFLOWS_DIR/review-refute-fix.js" | awk '{print $1}')
+[ "$BEFORE_DP_SUM" = "$AFTER_DP_SUM" ] ||
+    fail "3b: dispatch-phase.js checksum changed across re-emission ($BEFORE_DP_SUM -> $AFTER_DP_SUM)"
+[ "$BEFORE_RRF_SUM" = "$AFTER_RRF_SUM" ] ||
+    fail "3b: review-refute-fix.js checksum changed across re-emission ($BEFORE_RRF_SUM -> $AFTER_RRF_SUM)"
+pass "3b: both conventionally-named workflow files were rewritten, not removed, and stayed byte-identical to source"
+
+[ -f "$UNRELATED_FILE" ] || fail "3b: planted unrelated file $UNRELATED_FILE was removed — unrelated-file guarantee is violated"
+AFTER_UNRELATED_SUM=$(shasum -a 256 "$UNRELATED_FILE" | awk '{print $1}')
+[ "$BEFORE_UNRELATED_SUM" = "$AFTER_UNRELATED_SUM" ] ||
+    fail "3b: planted unrelated file $UNRELATED_FILE changed across re-emission — it must never be touched"
+pass "3b: planted unrelated file survived re-emission byte-for-byte, untouched"
+
 # --- 4. semantic: every shim reference resolves within the emitted tree ----
 say "4. Semantic: every emitted shim's workflow reference resolves in-tree"
 for variant in cli mcp; do
@@ -361,20 +411,26 @@ fi
 pass "self-test E: planted 'nonexistent-workflow' invocation in a non-autopilot skill correctly turned the generalized check red"
 
 # --- 6. negative checks: platform/scope boundaries + plan-repo independence -
-say "6a. Negative: Pi emission never writes .claude/workflows"
-"$RDM_BIN" agent-config pi --skills --project distro-check --out "$TMP/pi" >/dev/null
+say "6a. Negative: Pi emission never writes .claude/workflows or prints a cleanup report"
+"$RDM_BIN" agent-config pi --skills --project distro-check --out "$TMP/pi" >"$TMP/pi-emit.log"
 if [ -d "$TMP/pi/.claude/workflows" ]; then
     fail "Pi emission must not write .claude/workflows (Pi has no Workflow-tool runtime)"
 fi
-pass "Pi emission has no .claude/workflows directory"
+if grep -qE '^(Removed |Skipped |Failed to remove )' "$TMP/pi-emit.log"; then
+    fail "Pi emission printed a cleanup-report line — cleanup must never run outside Platform::Claude && !user:\n$(cat "$TMP/pi-emit.log")"
+fi
+pass "Pi emission has no .claude/workflows directory and prints no cleanup-report line"
 
-say "6b. Negative: --user emission never writes .claude/workflows"
+say "6b. Negative: --user emission never writes .claude/workflows or prints a cleanup report"
 mkdir -p "$TMP/user-home"
 if HOME="$TMP/user-home" "$RDM_BIN" agent-config claude --skills --user >"$TMP/user-emit.log" 2>&1; then
     if [ -d "$TMP/user-home/.claude/workflows" ]; then
         fail "--user emission must not write .claude/workflows (scripts are --out-only, not user-global)"
     fi
-    pass "--user emission has no .claude/workflows directory"
+    if grep -qE '^(Removed |Skipped |Failed to remove )' "$TMP/user-emit.log"; then
+        fail "--user emission printed a cleanup-report line — cleanup must never run against --user:\n$(cat "$TMP/user-emit.log")"
+    fi
+    pass "--user emission has no .claude/workflows directory and prints no cleanup-report line"
 else
     cat "$TMP/user-emit.log" >&2
     fail "--user emission failed unexpectedly"
