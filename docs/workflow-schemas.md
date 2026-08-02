@@ -1665,6 +1665,14 @@ commands of its own, but the workflow it invokes still shells out through Bash
 agents, so omitting `rdmBin` "because MCP" would hard-break the downstream MCP
 lane on first dispatch.
 
+The `rdm-autopilot` shims are in that list for exactly this reason, and for no
+other. Their own drive-loop prose still names a hardcoded binary and project;
+only the one `dispatch-phase` call payload is threaded, because that is the only
+line the fail-closed rule can break. `verify-skill-autopilot.sh` bounds both
+directions — it asserts the payload carries `rdmBin`, and asserts the skill
+still carries its own binary/project literals, so the wider prose
+parameterization cannot be absorbed here by accident.
+
 ## autopilot contract
 
 Autopilot is now the prose `rdm-autopilot` skill
