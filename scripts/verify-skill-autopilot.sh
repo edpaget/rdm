@@ -187,22 +187,26 @@ grep -qF '**`dispatch-phase`' "$SKILL" || fail "SKILL.md must name the 'dispatch
 grep -qF '**`estimate`' "$SKILL" || fail "SKILL.md must name the 'estimate' Workflow"
 pass "exactly one named dispatch-phase Workflow call and one named estimate Workflow call"
 
-# PER-CALLER rdmBin assertion (project-agnostic-lane, phase 4). dispatch-phase's
-# `rdmBin` arg is REQUIRED and FAIL-CLOSED: there is no ambient/PATH fallback, so
-# a caller that passes no `rdmBin` throws before the workflow's first agent()
-# call. This skill IS such a caller, so its dispatch-phase invocation line must
-# carry the arg with this repo's development-build path. Line-scoped (not a
-# whole-file grep), so an `rdmBin` mentioned anywhere else cannot satisfy it.
+# PER-CALLER rdmBin/project assertion (project-agnostic-lane, phase 10).
+# dispatch-phase's `rdmBin` arg is REQUIRED and FAIL-CLOSED: there is no
+# ambient/PATH fallback, so a caller that passes no `rdmBin` throws before the
+# workflow's first agent() call. This skill IS such a caller, so its
+# dispatch-phase invocation line must carry both keys. Phase 10 de-literalized
+# the local loop entirely, so the payload now carries BARE `rdmBin`/`project`
+# variable names (resolved from this skill's own `--rdm-bin`/`--project` args
+# in step 1), never a literal path/project string — unlike the shipped
+# templates below, which use the same bare-key style already. Line-scoped (not
+# a whole-file grep), so a mention elsewhere cannot satisfy it.
 assert_autopilot_dispatch_rdmbin() {
     grep -F 'dispatch-phase` Workflow**' "$1" >"$TMP/ap-dispatch-line" 2>/dev/null || return 1
     [ -s "$TMP/ap-dispatch-line" ] || return 1
     grep -qF 'rdmBin' "$TMP/ap-dispatch-line" || return 1
-    grep -qF './target/debug/rdm' "$TMP/ap-dispatch-line" || return 1
+    grep -qF 'project' "$TMP/ap-dispatch-line" || return 1
     return 0
 }
 assert_autopilot_dispatch_rdmbin "$SKILL" ||
-    fail "the dispatch-phase invocation line must pass rdmBin: \"./target/debug/rdm\" — dispatch-phase requires it and errors without it (no PATH fallback)"
-pass "the dispatch-phase invocation line passes rdmBin with this repo's development-build path"
+    fail "the dispatch-phase invocation line must pass bare rdmBin/project keys — dispatch-phase requires rdmBin and errors without it (no PATH fallback)"
+pass "the dispatch-phase invocation line passes rdmBin and project"
 
 # Self-test: prove the assertion is not vacuous.
 sed 's/rdmBin/rdmBn/g' "$SKILL" >"$TMP/ap-rdmbin-mutant.md"
@@ -211,16 +215,92 @@ if assert_autopilot_dispatch_rdmbin "$TMP/ap-rdmbin-mutant.md"; then
 fi
 pass "autopilot rdmBin detector fires on a mangled key"
 
-# SPLIT BOUND (project-agnostic-lane, phase 4 vs phase 10): phase 4 threads the
-# dispatch-phase CALL PAYLOAD only. The drive loop's OWN Bash commands (`rdm
-# next`, advance/park, read-back, model resolve) stay hardcoded here until phase
-# 10 parameterizes the prose loop itself. If these literals ever vanish, phase
-# 10's subject has been silently absorbed and the split is no longer honest.
-grep -qF './target/debug/rdm' "$SKILL" ||
-    fail "SKILL.md must still carry its own './target/debug/rdm' Bash literals — parameterizing the prose drive loop belongs to phase 10, not phase 4"
-grep -qF -- '--project rdm' "$SKILL" ||
-    fail "SKILL.md must still carry its own '--project rdm' Bash literals — parameterizing the prose drive loop belongs to phase 10, not phase 4"
-pass "the prose drive loop still carries its own binary/project literals (phase 10's subject is untouched)"
+# NEW estimate-payload assertion (project-agnostic-lane, phase 10): the
+# `estimate` Workflow invocation line must ALSO carry both rdmBin and project —
+# estimate.js's own parseEstimateArgs validates them via
+# resolveRdmBin/parseProjectArg, same fail-closed contract as dispatch-phase.
+# Line-scoped, mirroring the dispatch-phase assertion above.
+assert_autopilot_estimate_rdmbin() {
+    grep -F 'estimate` Workflow**' "$1" >"$TMP/ap-estimate-line" 2>/dev/null || return 1
+    [ -s "$TMP/ap-estimate-line" ] || return 1
+    grep -qF 'rdmBin' "$TMP/ap-estimate-line" || return 1
+    grep -qF 'project' "$TMP/ap-estimate-line" || return 1
+    return 0
+}
+assert_autopilot_estimate_rdmbin "$SKILL" ||
+    fail "the estimate invocation line must pass rdmBin and project — estimate.js requires rdmBin and errors without it (no PATH fallback)"
+pass "the estimate invocation line passes rdmBin and project"
+
+# Self-test: prove the estimate assertion is not vacuous.
+sed 's/rdmBin/rdmBn/g' "$SKILL" >"$TMP/ap-estimate-mutant.md"
+if assert_autopilot_estimate_rdmbin "$TMP/ap-estimate-mutant.md"; then
+    fail "the autopilot estimate rdmBin detector missed a mangled key — the check is vacuous"
+fi
+pass "autopilot estimate rdmBin detector fires on a mangled key"
+
+# ZERO-LITERAL assertion (project-agnostic-lane, phase 10): the local drive
+# loop's own Bash steps (`rdm next`, advance/park, model resolve, phase list,
+# the printed-summary pointer) are now fully de-literalized behind
+# `<rdmBin>`/`<proj-flag>` placeholders resolved from this skill's own
+# `--rdm-bin`/`--project` args. An unmodified pre-phase-10 file carried 7 and 5
+# occurrences respectively, so this is non-vacuous. This REPLACES phase 4's
+# "must still carry its own literals" split-bound guard, which is now the
+# opposite of what this file must do.
+LITERAL_BIN_COUNT=$(grep -c 'target/debug/rdm' "$SKILL" || true)
+[ "$LITERAL_BIN_COUNT" -eq 0 ] ||
+    fail "SKILL.md must carry ZERO 'target/debug/rdm' literals — the drive loop must be fully de-literalized, found $LITERAL_BIN_COUNT"
+LITERAL_PROJECT_COUNT=$(grep -c -- '--project rdm' "$SKILL" || true)
+[ "$LITERAL_PROJECT_COUNT" -eq 0 ] ||
+    fail "SKILL.md must carry ZERO '--project rdm' literals — the drive loop must be fully de-literalized, found $LITERAL_PROJECT_COUNT"
+pass "the prose drive loop carries zero hardcoded binary/project literals"
+
+# ALLOW-LIST assertion (project-agnostic-lane, phase 10): `model resolve`
+# carries no project flag; `next` / `phase update` / `phase show` all do.
+grep -F '<rdmBin> model resolve mechanical' "$SKILL" >"$TMP/ap-model-resolve-line" 2>/dev/null ||
+    fail "missing the '<rdmBin> model resolve mechanical' line"
+grep -qF '<proj-flag>' "$TMP/ap-model-resolve-line" &&
+    fail "the model-resolve line must NOT carry <proj-flag> — it is allow-listed as project-free"
+pass "model resolve carries no <proj-flag> (allow-listed)"
+
+# Every matching LINE (not just "some" line in the file) must carry
+# <proj-flag> — a per-line check, since phase update/show appear on more than
+# one line.
+assert_every_line_has_proj_flag() {
+    file="$1"
+    pattern="$2"
+    grep -F "$pattern" "$file" >"$TMP/ap-allowlist-lines" 2>/dev/null || return 1
+    [ -s "$TMP/ap-allowlist-lines" ] || return 1
+    while IFS= read -r line; do
+        printf '%s' "$line" | grep -qF '<proj-flag>' || return 1
+    done <"$TMP/ap-allowlist-lines"
+    return 0
+}
+for pattern in '<rdmBin> next' '<rdmBin> phase update' '<rdmBin> phase show'; do
+    assert_every_line_has_proj_flag "$SKILL" "$pattern" ||
+        fail "every '$pattern' line must carry <proj-flag>, found at least one line without it (or no matching line at all)"
+done
+pass "next/phase update/phase show all carry <proj-flag> on every occurrence"
+
+# Self-test: prove the allow-list assertions are not vacuous — strip every
+# <proj-flag> occurrence in a scratch copy (the phase-update/phase-show line
+# carries TWO on one line, so a partial mutation could still pass vacuously —
+# strip them all) and confirm detection on the phase-update pattern.
+sed 's/<proj-flag>//g' "$SKILL" >"$TMP/ap-allowlist-mutant.md"
+if assert_every_line_has_proj_flag "$TMP/ap-allowlist-mutant.md" '<rdmBin> phase update'; then
+    fail "the allow-list self-test mutation did not remove <proj-flag> from the phase-update line — self-test is broken"
+fi
+pass "allow-list detector correctly rejects a scratch copy missing <proj-flag> on phase update (self-test)"
+
+# Self-test the other direction: mutate model-resolve to ADD <proj-flag> and
+# confirm the model-resolve check (above) would now fail on it too.
+sed 's/<rdmBin> model resolve mechanical/<rdmBin> model resolve mechanical<proj-flag>/' \
+    "$SKILL" >"$TMP/ap-model-resolve-mutant.md"
+grep -F '<rdmBin> model resolve mechanical' "$TMP/ap-model-resolve-mutant.md" >"$TMP/ap-model-resolve-mutant-line"
+if grep -qF '<proj-flag>' "$TMP/ap-model-resolve-mutant-line"; then
+    pass "model-resolve allow-list self-test: a planted <proj-flag> is detectable (would fail the real check)"
+else
+    fail "the model-resolve self-test mutation did not add <proj-flag> — self-test is broken"
+fi
 
 # The four guardrails, present as literal text.
 grep -qF 'Single roadmap' "$SKILL" || fail "missing guardrail 1: single roadmap"
@@ -304,6 +384,95 @@ pass "estimate pre-pass documented as unconditional (one Workflow call, always)"
 grep -qF 'planOnlySeen' "$SKILL" || fail "missing the planOnlySeen in-context dedup set"
 grep -qF 'plan-only-exhausted' "$SKILL" || fail "missing the plan-only-exhausted stop reason"
 pass "--plan-only dedup-via-in-context-set (planOnlySeen) present"
+
+# --- 1b. SHIPPED skill-autopilot-{cli,mcp}.md static invariants ---------------
+say "1b. Static invariants on the shipped skill-autopilot-{cli,mcp}.md templates"
+
+# These are a SEPARATE surface from the local dogfood skill above: they were
+# already fully threaded by phase 4's one-line carve-out (git diff main shows
+# exactly one changed line per file), invoke dispatch-phase only, and never
+# invoke estimate. Written as its own function/loop rather than reusing
+# assert_autopilot_dispatch_rdmbin, per the plan's explicit "not copy-pasted"
+# requirement.
+SHIPPED_TEMPLATES="$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md $REPO_ROOT/rdm-core/src/templates/skill-autopilot-mcp.md"
+
+assert_shipped_dispatch_line_has_keys() {
+    file="$1"
+    grep -F 'dispatch-phase` Workflow**' "$file" >"$TMP/shipped-dispatch-line" 2>/dev/null || return 1
+    [ -s "$TMP/shipped-dispatch-line" ] || return 1
+    grep -qF 'rdmBin' "$TMP/shipped-dispatch-line" || return 1
+    grep -qF 'project' "$TMP/shipped-dispatch-line" || return 1
+    return 0
+}
+
+for f in $SHIPPED_TEMPLATES; do
+    [ -f "$f" ] || fail "shipped template not found: $f"
+    assert_shipped_dispatch_line_has_keys "$f" ||
+        fail "$f: the dispatch-phase invocation line must carry both rdmBin and project"
+    pass "$(basename "$f"): dispatch-phase invocation line carries rdmBin and project"
+done
+
+# Self-test: prove the shipped-template assertion is not vacuous.
+for f in $SHIPPED_TEMPLATES; do
+    sed 's/rdmBin/rdmBn/g' "$f" >"$TMP/shipped-mutant.md"
+    if assert_shipped_dispatch_line_has_keys "$TMP/shipped-mutant.md"; then
+        fail "$(basename "$f"): the shipped-template rdmBin detector missed a mangled key — the check is vacuous"
+    fi
+done
+pass "shipped-template rdmBin detector fires on a mangled key (both files)"
+
+# NEGATIVE: neither shipped file invokes the `estimate` Workflow. Scoped to the
+# exact invocation phrase the LOCAL skill uses to name its real call, not the
+# bare word "estimate" — both shipped files legitimately discuss "estimate" in
+# their "Why no estimate pre-pass here" explanatory paragraph, and a bare
+# substring-absence assertion would fail against correct, unmodified input.
+for f in $SHIPPED_TEMPLATES; do
+    # shellcheck disable=SC2016
+    if grep -qF '**`estimate`' "$f"; then
+        fail "$(basename "$f"): must not invoke the estimate Workflow — this is a deliberate, permanent divergence from the local dogfood skill"
+    fi
+done
+pass "neither shipped template invokes the estimate Workflow (scoped to the invocation phrase)"
+
+# Self-test: prove the estimate-phrase check is non-vacuous — plant the
+# invocation phrase into a scratch copy and confirm detection.
+for f in $SHIPPED_TEMPLATES; do
+    # shellcheck disable=SC2016
+    printf '\ninvoke the **`estimate` Workflow** via the Workflow tool\n' >>"$TMP/estimate-mutant.md"
+    cat "$f" "$TMP/estimate-mutant.md" >"$TMP/estimate-mutant-full.md"
+    # shellcheck disable=SC2016
+    if ! grep -qF '**`estimate`' "$TMP/estimate-mutant-full.md"; then
+        fail "$(basename "$f"): estimate-phrase self-test mutation did not plant the phrase — self-test is broken"
+    fi
+    rm -f "$TMP/estimate-mutant.md" "$TMP/estimate-mutant-full.md"
+done
+pass "estimate-phrase detector fires when the phrase is planted (self-test, both files)"
+
+# NEGATIVE: no `agentType` reference on the dispatch-phase payload/invocation
+# line specifically (the same line the rdmBin/project check above greps).
+# Scoped, not a whole-file substring search: both shipped files ALREADY,
+# legitimately, contain the bare word "agentType" once each inside the
+# pre-existing "Why no estimate pre-pass here" paragraph, so a whole-file
+# assertion would fail against correct, unmodified input.
+for f in $SHIPPED_TEMPLATES; do
+    grep -F 'dispatch-phase` Workflow**' "$f" >"$TMP/shipped-dispatch-line-agentcheck" 2>/dev/null
+    [ -s "$TMP/shipped-dispatch-line-agentcheck" ] || fail "$(basename "$f"): missing dispatch-phase invocation line"
+    if grep -qF 'agentType' "$TMP/shipped-dispatch-line-agentcheck"; then
+        fail "$(basename "$f"): the dispatch-phase payload/invocation line must not reference agentType"
+    fi
+done
+pass "neither shipped template's dispatch-phase line references agentType (scoped check passes on unmodified input)"
+
+# Self-test: prove the scoped agentType check fires when planted onto the
+# dispatch-phase line of a scratch copy (and would NOT fire from the
+# pre-existing explanatory-paragraph mention alone, already proven above).
+for f in $SHIPPED_TEMPLATES; do
+    awk '/dispatch-phase` Workflow\*\*/ { sub(/\}`/, ", agentType: \x27rdm-mechanical\x27 }`") } { print }' "$f" >"$TMP/shipped-agenttype-mutant.md"
+    grep -F 'dispatch-phase` Workflow**' "$TMP/shipped-agenttype-mutant.md" >"$TMP/shipped-agenttype-mutant-line"
+    grep -qF 'agentType' "$TMP/shipped-agenttype-mutant-line" ||
+        fail "$(basename "$f"): agentType self-test mutation did not land on the dispatch-phase line — self-test is broken"
+done
+pass "agentType-on-dispatch-phase-line detector fires when planted (self-test, both files)"
 
 # --- 2. DYNAMIC OUTCOME CONTRACT ----------------------------------------------
 say "2. Dynamic advance/park write+read-back contract against the real binary"

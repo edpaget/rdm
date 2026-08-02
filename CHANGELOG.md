@@ -260,6 +260,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   phase and task flows) and `rdm-autopilot` skills all pass the new arguments,
   in both the CLI and MCP variants.
 
+- The local `rdm-autopilot` dogfood skill (`.claude/skills/rdm-autopilot/SKILL.md`)
+  no longer hardcodes this repo's `./target/debug/rdm` binary or `--project rdm`
+  either — closing the fourth (prose) propagation channel the
+  `project-agnostic-lane` roadmap identified, the one no generator, byte-identity
+  gate, or `*.js` grep could reach. It now accepts a **required** `--rdm-bin
+  <path>` (accepts the literal sentinel `rdm` to opt into `PATH` resolution) and
+  an **optional** `--project <name>`, and threads both through: `rdm model
+  resolve` still carries no project flag, while `rdm next` / `phase update` /
+  `phase show` all do, and both its `estimate` and `dispatch-phase` Workflow
+  payloads now pass `rdmBin`/`project` as bare keys instead of this repo's
+  literal values. The shipped `skill-autopilot-{cli,mcp}.md` templates were
+  already project-agnostic (threaded by the `dispatch-phase` payload change
+  above) and needed no change — they invoke no `estimate` pre-pass by design.
+
 - The shipped code-review pipeline now decides **which conditional dimensions
   run from the CONTENT of the diff rather than from rdm-specific file paths**, so
   `api-docs`, `changelog` and `security` fire correctly in any repository and any
