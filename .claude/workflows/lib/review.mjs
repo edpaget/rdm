@@ -1290,8 +1290,15 @@ const SECURITY_CONTENT_PATTERNS = [
   /\bnew\s+Function\s*\(/,
   /\bUnmarshal\s*\(/,
   /\bserde_json::from_(str|slice|reader)\b/,
-  // raw memory
+  // raw memory. BOTH Rust `unsafe` shapes are needed: the inline expression
+  // form (`let x = unsafe { *p };`) AND the declaration forms
+  // (`unsafe fn`, `pub unsafe fn`, `unsafe impl`, `unsafe trait`,
+  // `unsafe extern "C"`). Matching only `unsafe {` would silently miss the
+  // declarations — the most common and most consequential way unsafe code
+  // enters a Rust codebase, and exactly what a project's unsafe policy exists
+  // to catch. Do not narrow this back to a single pattern.
   /\bunsafe\s*\{/,
+  /\bunsafe\s+(fn|impl|trait|extern|mod)\b/,
   /\bfrom_utf8_unchecked\b/,
   /\btransmute\s*\(/,
   /\bptr::(read|write|copy)/,

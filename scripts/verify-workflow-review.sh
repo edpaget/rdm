@@ -1921,6 +1921,15 @@ const dimKeys = (s) => selectDimensions('code', s).map((d) => d.key);
     ['a go Unmarshal', 'src/a.go', '+    json.Unmarshal(b, &v)\n'],
     ['a rust serde_json::from_str', 'src/a.rs', '+    let v: V = serde_json::from_str(s)?;\n'],
     ['a rust unsafe block', 'src/a.rs', '+    unsafe { *p = 1; }\n'],
+    // The DECLARATION forms, not just the inline expression form. An
+    // `unsafe {`-only pattern reads false on every one of these, which would
+    // silently skip the security dimension on the most consequential shape
+    // unsafe code takes in a Rust diff.
+    ['a rust unsafe fn', 'src/a.rs', '+unsafe fn get_ptr() -> *mut u8 {\n'],
+    ['a rust pub unsafe fn', 'src/a.rs', '+pub unsafe fn write_raw(p: *mut u8, v: u8) {\n'],
+    ['a rust unsafe impl', 'src/a.rs', '+unsafe impl Send for Foo {}\n'],
+    ['a rust unsafe trait', 'src/a.rs', '+unsafe trait Bar {}\n'],
+    ['a rust unsafe extern block', 'src/a.rs', '+unsafe extern "C" {\n'],
     ['a rust transmute', 'src/a.rs', '+    let x = transmute(y);\n'],
     ['a rust ptr::write', 'src/a.rs', '+    ptr::write(dst, v);\n'],
     ['a memcpy', 'src/a.go', '+    memcpy(dst, src, n);\n'],
@@ -2356,7 +2365,17 @@ smut_drop_pickle() {
 }
 signal_mutate_and_expect_fail l 'neutering the deserialization arm of the security vocabulary' smut_drop_pickle
 
-pass "3b: all thirteen content-signal mutations flip an assertion, and the control passes"
+# (m) Narrow the Rust unsafe vocabulary back to the inline `unsafe {` expression
+#     form alone. `unsafe fn` / `pub unsafe fn` / `unsafe impl` / `unsafe trait`
+#     / `unsafe extern` then read FALSE, so a diff introducing raw-memory code in
+#     its most common shape silently skips the security dimension. This is the
+#     exact regression the declaration-form fixtures above exist to pin.
+smut_narrow_unsafe() {
+    sed 's#(fn|impl|trait|extern|mod)#(MUTANT_never_matches)#' "$LIB" >"$SMUT/review.mjs"
+}
+signal_mutate_and_expect_fail m 'narrowing the unsafe vocabulary to the inline-block form only' smut_narrow_unsafe
+
+pass "3b: all fourteen content-signal mutations flip an assertion, and the control passes"
 
 # --- 4. PLAN CALIBRATION MUTATION SELF-TEST -----------------------------------
 # Prove the AC1 presence check (embedded in section 3's test.mjs) is not

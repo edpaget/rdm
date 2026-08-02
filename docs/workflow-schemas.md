@@ -1214,7 +1214,7 @@ would break determinism):
 | --- | --- | --- |
 | `EXPORT_CONTENT_PATTERNS` | `publicApiChanged` | `export` / `export default`, `module.exports`, Rust `pub`/`pub(crate)` + item kind, Java/C#/TS `public`, a capitalized Go identifier, Python `__all__` |
 | `USER_FACING_CONTENT_PATTERNS` | `userFacing` | CLI subcommand/argument/flag registration, the help/usage strings attached to them, HTTP/RPC route/handler/tool registration, printed or logged output |
-| `SECURITY_CONTENT_PATTERNS` | `securitySurface` | process/command execution, filesystem access, environment and secret reads, deserialization/eval, raw memory |
+| `SECURITY_CONTENT_PATTERNS` | `securitySurface` | process/command execution, filesystem access, environment and secret reads, deserialization/eval, raw memory (both Rust `unsafe` shapes: the inline `unsafe { … }` expression **and** the `unsafe fn`/`impl`/`trait`/`extern` declarations) |
 
 A `CHANGELOG.md` path in `changedFiles` is a positive-**confirming** term for
 `userFacing`, never a sole trigger — a CHANGELOG-only diff has no code files and

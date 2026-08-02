@@ -236,8 +236,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or tool, or user-visible printed output — instead of on any path merely spelled
   `config` or `mcp`, so a change to `vite.config.ts` no longer trips it; and
   `security` fires on sink-shaped content (process execution, filesystem access,
-  environment and secret reads, deserialization or `eval`, raw memory) instead of
-  on a security-sounding path name, so a `child_process` sink in
+  environment and secret reads, deserialization or `eval`, raw memory — including
+  every Rust `unsafe` shape, the inline `unsafe { … }` expression as well as the
+  `unsafe fn` / `unsafe impl` / `unsafe trait` / `unsafe extern` declarations)
+  instead of on a security-sounding path name, so a `child_process` sink in
   `src/lib/runner.js` is caught while `src/auth/session.js` with no sink content
   is not. Only ADDED diff lines are scanned, so a *removed* line never trips a
   signal.
