@@ -46,6 +46,57 @@
 // (Difficulty::model_tier); the writeback sets --difficulty only, and the tier
 // is read back from `rdm phase show`.
 
+// --- Environment args: `rdmBin` and `project` --------------------------------
+//
+// estimate names NO particular rdm executable and NO particular rdm project.
+// Both arrive as RUNTIME args and are threaded into every prompt that shells
+// out, via the `cfg` object each such prompt builder takes as its trailing
+// parameter. This is dispatch-phase's contract, reused — NOT a second one: the
+// three helpers below are copied in shape from
+// .claude/workflows/lib/dispatch-phase.mjs (only the thrown-message prefix
+// differs), and the runtime cannot import, so a per-consumer copy is expected.
+// Canonical write-up (rationale, table, why an emit-time placeholder is not
+// workable): docs/workflow-schemas.md § "Environment args: `rdmBin` and
+// `project`" — not restated here.
+//
+// Allow-list, in one line: `rdm model resolve` / `rdm commit` / `rdm status` /
+// `rdm discard` reject a project flag and must carry NONE; every other
+// subcommand this workflow emits (phase list/show/update) is project-scoped and
+// takes it. Asserted AS DATA by scripts/verify-workflow-estimate.sh § 9b, not
+// by grepping every line.
+
+// projectFlag(cfg) — the ` --project <name>` suffix for a PROJECT-SCOPED
+// command, or '' when no project was configured.
+function projectFlag(cfg) {
+  return cfg && cfg.project ? ' --project ' + cfg.project : '';
+}
+
+// resolveRdmBin(value) — FAIL-CLOSED resolution of the rdm executable to
+// invoke. No ambient/PATH fallback: a caller that wants PATH resolution opts in
+// explicitly with the sentinel `rdmBin: 'rdm'`, accepted verbatim.
+function resolveRdmBin(value) {
+  if (typeof value === 'string' && value.trim() !== '') return value;
+  throw new Error(
+    'estimate: rdmBin is required — pass the exact rdm executable to invoke (a repo-local ' +
+      'build path, or the explicit sentinel "rdm" to opt into PATH resolution). Refusing to guess: ' +
+      'an absent rdmBin would silently run whatever global rdm is on PATH.'
+  );
+}
+
+// parseProjectArg(value) — validate the OPTIONAL project name. Any falsy value
+// means "emit no project flag at all". The value is interpolated into a
+// Bash-agent prompt, so whitespace and shell metacharacters are rejected rather
+// than escaped.
+function parseProjectArg(value) {
+  if (!value) return '';
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(
+      'estimate: project must be a plain project name matching /^[A-Za-z0-9._-]+$/ (got "' + String(value) + '")'
+    );
+  }
+  return value;
+}
+
 // parseEstimateArgs(args) — validate and normalize the run config. A roadmap
 // slug is REQUIRED. `phase` is an optional phase NUMBER (a positive integer) to
 // narrow the run to a single phase; unset means "every unestimated phase in the
@@ -74,7 +125,17 @@ function parseEstimateArgs(args) {
     if (!(n > 0)) throw new Error('estimate: --phase must be a positive integer phase number');
     phase = n;
   }
-  return { roadmap: roadmap, phase: phase };
+  // The two ENVIRONMENT axes are resolved AFTER the required-roadmap throw
+  // above, not before it. dispatch-phase resolves rdmBin as its very first
+  // statement because it has no earlier required field; estimate does, and a
+  // payload missing BOTH should surface the actionable "a roadmap slug is
+  // required" message for the far more common mis-invocation. Order among the
+  // two is still deterministic: rdmBin first (fail-closed — no ambient
+  // default), then the optional project name. Both are validated HERE, at parse
+  // time, so a mis-invocation costs zero tokens.
+  const rdmBin = resolveRdmBin(a.rdmBin);
+  const project = parseProjectArg(a.project);
+  return { roadmap: roadmap, phase: phase, rdmBin: rdmBin, project: project };
 }
 
 // selectUnestimated(phaseList) — the stems of phases with NO difficulty and NO
@@ -89,12 +150,17 @@ function selectUnestimated(phaseList) {
     .filter(Boolean);
 }
 
-// buildEstimateListPrompt(slug) — a mechanical Bash agent that lists the phases.
-function buildEstimateListPrompt(slug) {
+// buildEstimateListPrompt(slug, cfg) — a mechanical Bash agent that lists the
+// phases. `cfg` is the environment payload `{ rdmBin, project }`; `phase list`
+// is PROJECT-SCOPED, so the flag is concatenated BEFORE ' --format json' —
+// appending it at the end of the string would change the command's shape.
+function buildEstimateListPrompt(slug, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
+  const proj = projectFlag(cfg);
   return [
     'You are a mechanical fetch agent. Do not plan or implement anything.',
     'Run exactly this command in the repo root and read its JSON output:',
-    '  ./target/debug/rdm phase list --roadmap ' + slug + ' --project rdm --format json',
+    '  ' + bin + ' phase list --roadmap ' + slug + proj + ' --format json',
     'Return the parsed JSON array verbatim: each element has `number`, `stem`,',
     '`title`, `status`, and — when the phase has been estimated — `difficulty` and',
     '`model`.',
@@ -121,7 +187,7 @@ function buildEstimatorPrompt(phaseBody) {
   ].join('\n');
 }
 
-// buildEstimateWritebackPrompt(stem, difficulty, justification, slug) — persist
+// buildEstimateWritebackPrompt(stem, difficulty, justification, slug, cfg) — persist
 // a phase's difficulty AND append a `## Estimate` audit note carrying the
 // rating's justification to the phase body. The model tier derives
 // automatically, so --model is NEVER set (rdm-core owns difficulty->tier).
@@ -135,13 +201,19 @@ function buildEstimatorPrompt(phaseBody) {
 // Success is verified with a read-back rather than self-asserted from the
 // command's exit code alone: an unresolvable model id makes the whole agent come
 // back empty, not merely non-zero, so the caller needs proof the field landed.
-function buildEstimateWritebackPrompt(stem, difficulty, justification, slug) {
+//
+// `cfg` is the environment payload `{ rdmBin, project }`. All THREE commands
+// below (`phase show`, `phase update`, the read-back `phase show`) are
+// PROJECT-SCOPED and carry the flag.
+function buildEstimateWritebackPrompt(stem, difficulty, justification, slug, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
+  const proj = projectFlag(cfg);
   return [
     'You are a mechanical write agent. Do not plan or implement anything.',
     'Persist the phase difficulty AND append an audit note to the phase body.',
     'Do NOT pass --model — the model tier derives automatically from the difficulty.',
     '1. Read the current phase body:',
-    '     ./target/debug/rdm phase show ' + stem + ' --roadmap ' + slug + ' --project rdm --format json',
+    '     ' + bin + ' phase show ' + stem + ' --roadmap ' + slug + proj + ' --format json',
     '   Take the `body` field verbatim.',
     '2. Build the updated body in a shell variable using a QUOTED heredoc so that',
     '   backticks, $, and punctuation stay literal. The updated body is the current',
@@ -159,30 +231,35 @@ function buildEstimateWritebackPrompt(stem, difficulty, justification, slug) {
     '     RDM_ESTIMATE_EOF',
     '     )',
     '3. Persist the difficulty and the updated body in a single update:',
-    '     ./target/debug/rdm phase update ' +
+    '     ' +
+      bin +
+      ' phase update ' +
       stem +
       ' --difficulty ' +
       difficulty +
       ' --body "$body" --no-edit --roadmap ' +
       slug +
-      ' --project rdm',
+      proj,
     '4. Read the phase back to confirm the write landed:',
-    '     ./target/debug/rdm phase show ' + stem + ' --roadmap ' + slug + ' --project rdm --format json',
+    '     ' + bin + ' phase show ' + stem + ' --roadmap ' + slug + proj + ' --format json',
     'Report ok: true ONLY if the read-back shows difficulty equal to "' +
       difficulty +
       '" and the body now contains the ## Estimate note; otherwise report ok: false.',
   ].join('\n');
 }
 
-// buildEstimateTierPrompt(stem, slug) — read the core-derived model tier back
-// from rdm-core after a writeback, for the summary. The tier is NEVER computed
-// in JS: it is whatever `rdm phase show`'s `model` field reports (rdm-core's
-// Difficulty::model_tier is authoritative).
-function buildEstimateTierPrompt(stem, slug) {
+// buildEstimateTierPrompt(stem, slug, cfg) — read the core-derived model tier
+// back from rdm-core after a writeback, for the summary. The tier is NEVER
+// computed in JS: it is whatever `rdm phase show`'s `model` field reports
+// (rdm-core's Difficulty::model_tier is authoritative). `phase show` is
+// PROJECT-SCOPED, so it carries the flag from `cfg`.
+function buildEstimateTierPrompt(stem, slug, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
+  const proj = projectFlag(cfg);
   return [
     'You are a mechanical fetch agent. Do not plan or implement anything.',
     'Run exactly this command in the repo root and read its JSON output:',
-    '  ./target/debug/rdm phase show ' + stem + ' --roadmap ' + slug + ' --project rdm --format json',
+    '  ' + bin + ' phase show ' + stem + ' --roadmap ' + slug + proj + ' --format json',
     'Return JSON { "model": "<the phase JSON `model` field verbatim, or empty string if unset>" }.',
   ].join('\n');
 }
@@ -320,6 +397,9 @@ function buildEstimateSummaryText(summary) {
 // Node-only exports for the verify harness. NOT part of the copied block — the
 // marker END is above this line, so a copy never carries these.
 export {
+  projectFlag,
+  resolveRdmBin,
+  parseProjectArg,
   parseEstimateArgs,
   selectUnestimated,
   buildEstimateListPrompt,

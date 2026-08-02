@@ -1777,6 +1777,66 @@ function buildReviewPipeline(mode, deps) {
 }
 // >>> review-refute-fix:end <<<
 
+// --- Environment args: `rdmBin` and `project` --------------------------------
+//
+// review-refute-fix names NO particular rdm executable and NO particular rdm
+// project. Both arrive as RUNTIME args and are threaded into every prompt that
+// shells out, via the `cfg` object each such prompt builder takes as its
+// trailing parameter. This is dispatch-phase's contract, reused — NOT a second
+// one: the three helpers below are copied in shape from
+// .claude/workflows/lib/dispatch-phase.mjs (only the thrown-message prefix
+// differs), and the runtime cannot import, so a per-consumer copy is expected.
+// Canonical write-up (rationale, table, why an emit-time placeholder is not
+// workable): docs/workflow-schemas.md § "Environment args: `rdmBin` and
+// `project`" — not restated here.
+//
+// Allow-list, in one line: `rdm model resolve` / `rdm commit` / `rdm status` /
+// `rdm discard` reject a project flag and must carry NONE; every other
+// subcommand this driver emits (worktree add, phase update, task update) is
+// project-scoped and takes it. Asserted AS DATA by
+// scripts/verify-workflow-review-outcome.sh, not by grepping every line.
+//
+// SCOPE — the same contract, applied where it has a referent. `resolveRdmBin`
+// is called on the STANDALONE code-review path only. The legacy survivors-only
+// shapes (`mode: 'plan'`, and `mode: 'code'` with no item identifiers) emit
+// ZERO rdm invocations, so there is no binary for the fail-closed rule to
+// guard; requiring the arg there would break a documented backward-compatible
+// shape for no safety gain. Both directions are pinned by the harness.
+
+// projectFlag(cfg) — the ` --project <name>` suffix for a PROJECT-SCOPED
+// command, or '' when no project was configured.
+function projectFlag(cfg) {
+  return cfg && cfg.project ? ' --project ' + cfg.project : '';
+}
+
+// resolveRdmBin(value) — FAIL-CLOSED resolution of the rdm executable to
+// invoke. No ambient/PATH fallback: a caller that wants PATH resolution opts in
+// explicitly with the sentinel `rdmBin: 'rdm'`, accepted verbatim.
+function resolveRdmBin(value) {
+  if (typeof value === 'string' && value.trim() !== '') return value;
+  throw new Error(
+    'review-refute-fix: rdmBin is required — pass the exact rdm executable to invoke (a repo-local ' +
+      'build path, or the explicit sentinel "rdm" to opt into PATH resolution). Refusing to guess: ' +
+      'an absent rdmBin would silently run whatever global rdm is on PATH.'
+  );
+}
+
+// parseProjectArg(value) — validate the OPTIONAL project name. Any falsy value
+// means "emit no project flag at all". The value is interpolated into a
+// Bash-agent prompt, so whitespace and shell metacharacters are rejected rather
+// than escaped.
+function parseProjectArg(value) {
+  if (!value) return '';
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(
+      'review-refute-fix: project must be a plain project name matching /^[A-Za-z0-9._-]+$/ (got "' +
+        String(value) +
+        '")'
+    );
+  }
+  return value;
+}
+
 // --- Driver -------------------------------------------------------------------
 const rawArgs = args || {}
 const mode = rawArgs.mode || 'code'
@@ -1828,6 +1888,11 @@ const kind = isTask ? 'task' : 'phase'
 const worktreeRef = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
 const reviewTarget = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
 const gate = !!rawArgs.gate
+// The environment payload for every prompt on THIS path that shells out.
+// rdmBin is resolved FIRST (fail-closed), then the optional project name, so
+// validation order is deterministic and a mis-invocation throws before the
+// first agent() call — costing zero tokens.
+const cfg = { rdmBin: resolveRdmBin(rawArgs.rdmBin), project: parseProjectArg(rawArgs.project) }
 const findModel = rawArgs.findModel
 const verifyModel = rawArgs.verifyModel
 // Per-unit refutation budget for this review. Unset falls back to the review
@@ -1846,18 +1911,21 @@ const DIFF_SIGNALS_SCHEMA = {
   },
 }
 
-// buildDiffSignalsPrompt(worktreeRef) — a mechanical Bash agent reads the
+// buildDiffSignalsPrompt(worktreeRef, cfg) — a mechanical Bash agent reads the
 // branch diff out of the item's worktree. Copied from dispatch-phase.js's
 // version of the same prompt (duplicated plumbing, not review logic). Its
 // output feeds `deriveSignals` (from the stamped canonical review block
 // above), which decides which review dimensions actually run.
 //
 // Diff base: THREE-DOT (`main...HEAD`) scopes to the branch's own changes.
-function buildDiffSignalsPrompt(ref) {
+//
+// `cfg` is the environment payload `{ rdmBin, project }`. `worktree add` is a
+// PROJECT-SCOPED subcommand, so it carries the project flag.
+function buildDiffSignalsPrompt(ref, cfg) {
   return [
     'You are a mechanical diff agent. Do not review, plan, or implement anything, and edit no files.',
     'Find the worktree for this item and work THERE:',
-    '  ./target/debug/rdm worktree add ' + ref + ' --project rdm',
+    '  ' + resolveRdmBin(cfg && cfg.rdmBin) + ' worktree add ' + ref + projectFlag(cfg),
     '(it prints the existing path if the worktree already exists) then `cd` into that path.',
     'Run exactly these two commands and read their output:',
     '  git diff --name-only main...HEAD',
@@ -1887,7 +1955,7 @@ if (hoistedDiff && typeof hoistedDiff === 'object' && Array.isArray(hoistedDiff.
   log('review-refute-fix: diff hoisted from caller args for ' + reviewTarget)
 } else {
   try {
-    diff = await agent(buildDiffSignalsPrompt(worktreeRef), {
+    diff = await agent(buildDiffSignalsPrompt(worktreeRef, cfg), {
       label: 'diff:signals',
       phase: 'Review',
       schema: DIFF_SIGNALS_SCHEMA,
@@ -1976,16 +2044,26 @@ const reason = outcome === 'escalated' ? gateFor('code', 'escalated').reasonPref
 // driver) and never writes the completion trailer.
 if (gate) {
   const reasonFlag = outcome === 'escalated' ? ' --reason "' + reason + '"' : ''
+  // Both are PROJECT-SCOPED subcommands: the flag stays TRAILING, exactly where
+  // the pre-parameterization literals put it, so only the values differ.
   const statusCmd = isTask
-    ? './target/debug/rdm task update ' + taskSlug + ' --status ' + status + reasonFlag + ' --no-edit --project rdm'
-    : './target/debug/rdm phase update ' +
+    ? resolveRdmBin(cfg && cfg.rdmBin) +
+      ' task update ' +
+      taskSlug +
+      ' --status ' +
+      status +
+      reasonFlag +
+      ' --no-edit' +
+      projectFlag(cfg)
+    : resolveRdmBin(cfg && cfg.rdmBin) +
+      ' phase update ' +
       phaseArg +
       ' --status ' +
       status +
       reasonFlag +
       ' --no-edit --roadmap ' +
       roadmap +
-      ' --project rdm'
+      projectFlag(cfg)
   await agent(
     [
       'You are a mechanical status agent. Do not plan, implement, or review anything.',

@@ -52,6 +52,14 @@
 #                   between the field names the pure JS assumes (stem/difficulty/
 #                   model) and what rdm-core emits is caught — not just the
 #                   hand-fabricated fakes of sections 1/1b.
+#   9. PARAM      — estimate names NO particular rdm executable and NO particular
+#                   rdm project: both are RUNTIME args (`rdmBin`, `project`),
+#                   the same contract dispatch-phase landed. Per-file literal
+#                   zeroing with planted mutants (9a), a driven prompt capture
+#                   checking every emitted `rdm <subcommand>` against the
+#                   project-agnostic allow-list expressed AS DATA (9b), the
+#                   fail-closed `rdmBin` rule (9c), and self-tests proving 9b is
+#                   not vacuous (9d).
 #
 # Node is used only as a host to unit-test the pure module and drive the pipeline
 # with fakes; it is stdlib-only (node:assert), with no package.json /
@@ -151,15 +159,22 @@ const {
 } = m;
 
 // --- parseEstimateArgs -------------------------------------------------------
+// The required-ROADMAP throw runs FIRST, before the environment axes, so its
+// actionable message survives for the most common mis-invocation (§ 9c pins the
+// rdmBin half of the same parse).
 assert.throws(() => parseEstimateArgs({}), /roadmap slug is required/, 'roadmap slug required');
 assert.throws(() => parseEstimateArgs({ roadmap: '' }), /roadmap slug is required/, 'empty roadmap rejected');
-assert.deepEqual(parseEstimateArgs({ roadmap: 'rm' }), { roadmap: 'rm', phase: null }, 'defaults: no phase narrowing');
-assert.equal(parseEstimateArgs({ roadmap: 'rm', phase: 3 }).phase, 3, 'phase number kept');
-assert.equal(parseEstimateArgs({ roadmap: 'rm', phase: '2' }).phase, 2, 'phase number coerced from string');
-assert.throws(() => parseEstimateArgs({ roadmap: 'rm', phase: 0 }), /positive integer/, 'phase 0 rejected');
-assert.throws(() => parseEstimateArgs({ roadmap: 'rm', phase: -1 }), /positive integer/, 'phase negative rejected');
+assert.deepEqual(
+  parseEstimateArgs({ roadmap: 'rm', rdmBin: 'rdm' }),
+  { roadmap: 'rm', phase: null, rdmBin: 'rdm', project: '' },
+  'defaults: no phase narrowing, no project flag'
+);
+assert.equal(parseEstimateArgs({ roadmap: 'rm', phase: 3, rdmBin: 'rdm' }).phase, 3, 'phase number kept');
+assert.equal(parseEstimateArgs({ roadmap: 'rm', phase: '2', rdmBin: 'rdm' }).phase, 2, 'phase number coerced from string');
+assert.throws(() => parseEstimateArgs({ roadmap: 'rm', phase: 0, rdmBin: 'rdm' }), /positive integer/, 'phase 0 rejected');
+assert.throws(() => parseEstimateArgs({ roadmap: 'rm', phase: -1, rdmBin: 'rdm' }), /positive integer/, 'phase negative rejected');
 // A caller may stringify the Workflow tool payload; coerce it instead of failing.
-assert.equal(parseEstimateArgs('{"roadmap":"rm"}').roadmap, 'rm', 'stringified JSON args coerced');
+assert.equal(parseEstimateArgs('{"roadmap":"rm","rdmBin":"rdm"}').roadmap, 'rm', 'stringified JSON args coerced');
 assert.throws(() => parseEstimateArgs('not json'), /roadmap slug is required/, 'non-JSON string falls back to actionable error');
 assert.throws(() => parseEstimateArgs('null'), /roadmap slug is required/, 'JSON null rejected without a TypeError');
 
@@ -178,9 +193,20 @@ assert.deepEqual(selectUnestimated([]), [], 'empty list');
 assert.deepEqual(selectUnestimated(null), [], 'non-array tolerated');
 
 // --- buildEstimateListPrompt -------------------------------------------------
-const listPrompt = buildEstimateListPrompt('rm');
-assert.ok(listPrompt.includes('./target/debug/rdm phase list --roadmap rm'), 'list prompt runs phase list for the roadmap');
+// Parameterized: the binary and the project flag come from the trailing cfg, and
+// the project flag is concatenated BEFORE ' --format json' so the command shape
+// is unchanged from the pre-parameterization literal.
+const CFG = { rdmBin: '/fake/bin/rdm', project: 'demo' };
+const listPrompt = buildEstimateListPrompt('rm', CFG);
+assert.ok(
+  listPrompt.includes('/fake/bin/rdm phase list --roadmap rm --project demo --format json'),
+  'list prompt runs phase list for the roadmap with the injected binary and project'
+);
 assert.ok(listPrompt.includes('--format json'), 'list prompt asks for JSON');
+assert.ok(
+  buildEstimateListPrompt('rm', { rdmBin: 'rdm' }).includes('rdm phase list --roadmap rm --format json'),
+  'no project configured -> the list prompt emits no project flag at all'
+);
 
 // --- buildEstimatorPrompt (now requires a justification) ---------------------
 const ratePrompt = buildEstimatorPrompt('some phase body');
@@ -190,7 +216,7 @@ assert.ok(/justification/i.test(ratePrompt), 'estimator asks for a justification
 assert.ok(ratePrompt.includes('"justification"'), 'estimator return schema includes the justification field');
 
 // --- buildEstimateWritebackPrompt: note + --difficulty + --body, NO --model --
-const wb = buildEstimateWritebackPrompt('phase-1-x', 'hard', 'risky cross-cutting change', 'rm');
+const wb = buildEstimateWritebackPrompt('phase-1-x', 'hard', 'risky cross-cutting change', 'rm', CFG);
 assert.ok(wb.includes('--difficulty hard'), 'writeback passes --difficulty');
 assert.ok(wb.includes('--body'), 'writeback passes --body (the audit note rides in the body)');
 assert.ok(wb.includes('## Estimate'), 'writeback appends a ## Estimate section');
@@ -205,7 +231,11 @@ assert.ok(wb.includes('phase update phase-1-x'), 'writeback updates the right ph
 assert.ok(wb.includes('--roadmap rm'), 'writeback scopes to the roadmap');
 
 // --- buildEstimateTierPrompt: tier is READ BACK, never computed --------------
-const tierPrompt = buildEstimateTierPrompt('phase-1-x', 'rm');
+const tierPrompt = buildEstimateTierPrompt('phase-1-x', 'rm', CFG);
+assert.ok(
+  tierPrompt.includes('/fake/bin/rdm phase show phase-1-x --roadmap rm --project demo --format json'),
+  'tier prompt reads the phase back with the injected binary and project'
+);
 assert.ok(tierPrompt.includes('phase show phase-1-x'), 'tier prompt reads the phase back');
 assert.ok(tierPrompt.includes('"model"'), 'tier prompt returns the core-derived model field');
 
@@ -215,10 +245,10 @@ function hasForbidden(s) {
   return FORBIDDEN.some((f) => s.includes(f));
 }
 const allPrompts = [
-  buildEstimateListPrompt('rm'),
+  buildEstimateListPrompt('rm', CFG),
   buildEstimatorPrompt('a phase body'),
-  buildEstimateWritebackPrompt('phase-1-x', 'hard', 'why', 'rm'),
-  buildEstimateTierPrompt('phase-1-x', 'rm'),
+  buildEstimateWritebackPrompt('phase-1-x', 'hard', 'why', 'rm', CFG),
+  buildEstimateTierPrompt('phase-1-x', 'rm', CFG),
 ];
 for (const p of allPrompts) {
   assert.ok(!hasForbidden(p), 'no estimate prompt leaks a land/merge/commit/Done directive:\n' + p);
@@ -821,6 +851,9 @@ fs.writeFileSync(wrapperPath, 'export default async function(args, agent, parall
 const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
 const run = mod.default;
 
+// Every run of the REAL driver must thread the now-required environment arg.
+const RDM_BIN_ARG = '/fake/bin/rdm';
+
 const PHASES = [
   { stem: 'phase-1-a', status: 'not-started' },
   { stem: 'phase-2-b', status: 'not-started', difficulty: 'moderate', model: 'medium' },
@@ -848,7 +881,7 @@ const nolog = () => {};
   // Both hoists supplied -> neither agent runs, and the hoisted values are used.
   const a = makeAgent({});
   const out = await run(
-    { roadmap: 'rm', mechanicalModel: 'hoisted-haiku', phaseList: PHASES },
+    { roadmap: 'rm', rdmBin: RDM_BIN_ARG, mechanicalModel: 'hoisted-haiku', phaseList: PHASES },
     a.agent,
     refParallel,
     nolog
@@ -862,7 +895,7 @@ const nolog = () => {};
 {
   // Neither supplied -> exactly one of each agent, as today, and the SAME result.
   const a = makeAgent({});
-  const out = await run({ roadmap: 'rm' }, a.agent, refParallel, nolog);
+  const out = await run({ roadmap: 'rm', rdmBin: RDM_BIN_ARG }, a.agent, refParallel, nolog);
   assert.equal(a.count('model:mechanical'), 1, 'no hoist -> exactly one model:mechanical agent call');
   assert.equal(a.count('estimate:list'), 1, 'no hoist -> exactly one estimate:list agent call');
   assert.deepEqual(out.estimated.map((e) => e.stem), ['phase-1-a'], 'the fallback path produces the same estimate set');
@@ -874,7 +907,7 @@ for (const [name, bad] of [
   ['wrong type', 42],
 ]) {
   const a = makeAgent({});
-  await run({ roadmap: 'rm', mechanicalModel: bad, phaseList: PHASES }, a.agent, refParallel, nolog);
+  await run({ roadmap: 'rm', rdmBin: RDM_BIN_ARG, mechanicalModel: bad, phaseList: PHASES }, a.agent, refParallel, nolog);
   assert.equal(a.count('model:mechanical'), 1, 'malformed mechanicalModel (' + name + ') falls back to the agent');
 }
 for (const [name, bad] of [
@@ -883,14 +916,14 @@ for (const [name, bad] of [
   ['string', 'phase-1-a'],
 ]) {
   const a = makeAgent({});
-  await run({ roadmap: 'rm', mechanicalModel: 'hoisted-haiku', phaseList: bad }, a.agent, refParallel, nolog);
+  await run({ roadmap: 'rm', rdmBin: RDM_BIN_ARG, mechanicalModel: 'hoisted-haiku', phaseList: bad }, a.agent, refParallel, nolog);
   assert.equal(a.count('estimate:list'), 1, 'malformed phaseList (' + name + ') falls back to the agent');
 }
 {
   // A JSON-STRINGIFIED args payload (which real LLM callers have delivered
   // despite the contract) must still surface both hoists.
   const a = makeAgent({});
-  await run(JSON.stringify({ roadmap: 'rm', mechanicalModel: 'hoisted-haiku', phaseList: PHASES }), a.agent, refParallel, nolog);
+  await run(JSON.stringify({ roadmap: 'rm', rdmBin: RDM_BIN_ARG, mechanicalModel: 'hoisted-haiku', phaseList: PHASES }), a.agent, refParallel, nolog);
   assert.equal(a.count('model:mechanical'), 0, 'a stringified args payload still surfaces mechanicalModel');
   assert.equal(a.count('estimate:list'), 0, 'a stringified args payload still surfaces phaseList');
 }
@@ -945,16 +978,377 @@ assert_shim_gathers() {
     # workflow-invocation arg object, so a single stray mention cannot satisfy it.
     [ "$(grep -cF 'mechanicalModel' "$1")" -ge 2 ] || return 1
     [ "$(grep -cF 'phaseList' "$1")" -ge 2 ] || return 1
+    # ENVIRONMENT ARGS (§ 9): `rdmBin` is fail-closed and REQUIRED, so a shim
+    # that omits it hard-errors on first dispatch instead of degrading. Both
+    # keys are named in the config bullet AND in the invocation payload.
+    grep -qF 'rdmBin' "$1" || return 1
+    grep -qF 'project' "$1" || return 1
+    [ "$(grep -cF 'rdmBin' "$1")" -ge 2 ] || return 1
+    [ "$(grep -cF 'rdmBin: "./target/debug/rdm"' "$1")" -ge 1 ] || return 1
     return 0
 }
 assert_shim_gathers "$SKILL" ||
-    fail "HOIST-SHIM: $SKILL must gather 'rdm model resolve mechanical' and 'rdm phase list --format json' and pass mechanicalModel + phaseList (each named at least twice)"
-pass "HOIST-SHIM: the local shim gathers and passes both hoisted args"
+    fail "HOIST-SHIM: $SKILL must gather 'rdm model resolve mechanical' and 'rdm phase list --format json' and pass mechanicalModel + phaseList + rdmBin + project (each named at least twice)"
+pass "HOIST-SHIM: the local shim gathers and passes both hoisted args plus rdmBin/project"
 
 sed 's/mechanicalModel/mechModel/g' "$SKILL" >"$TMP/shim-typo.md"
 if assert_shim_gathers "$TMP/shim-typo.md"; then
     fail "HOIST-SHIM: detector missed a typo'd arg key in the shim"
 fi
-pass "HOIST-SHIM: detector fires on a typo'd arg key in the shim"
+sed 's/rdmBin/rdmBn/g' "$SKILL" >"$TMP/shim-typo-bin.md"
+if assert_shim_gathers "$TMP/shim-typo-bin.md"; then
+    fail "HOIST-SHIM: detector missed a typo'd rdmBin arg key in the shim"
+fi
+pass "HOIST-SHIM: detector fires on a typo'd arg key in the shim (mechanicalModel and rdmBin)"
+
+# --- 9. PARAMETERIZATION ------------------------------------------------------
+# estimate names NO particular rdm executable and NO particular rdm project:
+# both arrive as RUNTIME args (`rdmBin`, `project`) and are threaded into every
+# prompt that shells out. This mirrors scripts/verify-workflow-dispatch.sh § 9,
+# which gates the SAME contract for dispatch-phase — the helpers here are copies
+# in shape, not a second contract. Four sub-gates:
+#
+#   9a — per-file literal zeroing across BOTH copies (lib + workflow), asserted
+#        PER FILE so a half-applied edit cannot pass.
+#   9b — a DRIVEN prompt capture: run the real workflow under a capturing fake
+#        agent, tokenize every emitted `rdm <subcommand>` occurrence, and check
+#        it against the project-agnostic allow-list expressed AS DATA.
+#   9c — the fail-closed `rdmBin` rule (and the optional-project validation),
+#        plus a grep proving it was NOT implemented as an existence preflight.
+#   9d — planted-mutation self-tests for 9b.
+say "9. Parameterization: no hardcoded rdm binary or project; the environment axes are runtime args"
+
+# --- 9a. Per-file literal zeroing ---------------------------------------------
+say "9a. Per-file literal zeroing (lib + workflow)"
+
+# assert_no_env_literals <file> — zero occurrences of THIS repo's dev binary path
+# and zero of THIS repo's project flag. Deliberately per-file: a concatenated
+# stream would let a zero in one copy mask a hit in the other, which is exactly
+# the half-applied-edit failure mode (the estimate-core block is byte-stamped,
+# the driver below it is hand-swept). Comments and prose count too — a leftover
+# explanatory comment naming either literal is the same staleness hazard.
+assert_no_env_literals() {
+    _f=$1
+    _bin=$(grep -c 'target/debug/rdm' "$_f" || true)
+    _proj=$(grep -c -- '--project rdm' "$_f" || true)
+    [ "$_bin" -eq 0 ] && [ "$_proj" -eq 0 ]
+}
+
+for f in "$LIB" "$WF"; do
+    if assert_no_env_literals "$f"; then
+        pass "9a: ${f#"$REPO_ROOT"/} carries neither 'target/debug/rdm' nor '--project rdm'"
+    else
+        grep -n 'target/debug/rdm' "$f" >&2 || true
+        grep -n -- '--project rdm' "$f" >&2 || true
+        fail "9a: $f still hardcodes this repo's rdm binary and/or project — both must be runtime args"
+    fi
+done
+
+# Self-test: plant the literals into EACH file in turn and prove the per-file
+# check fires on each one individually (so restoring only one cannot go green).
+_i=0
+for f in "$LIB" "$WF"; do
+    _i=$((_i + 1))
+    cp "$f" "$TMP/env-mutant-$_i"
+    printf '\n// planted: ./target/debug/rdm phase show --project rdm\n' >>"$TMP/env-mutant-$_i"
+    if assert_no_env_literals "$TMP/env-mutant-$_i"; then
+        fail "9a: the per-file literal check did not fire on a planted literal in $f — the gate is vacuous"
+    fi
+done
+pass "9a: the per-file check fires independently on both planted mutants"
+
+# --- 9b. Driven prompt capture ------------------------------------------------
+say "9b. Driven prompt capture: every emitted rdm invocation honors the allow-list"
+
+cat >"$TMP/paramz.mjs" <<'NODE_PARAMZ'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const wfPath = process.argv[2];
+const src = fs.readFileSync(wfPath, 'utf8').replace(/^export /m, '');
+const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-estimate-paramz-wrapped.mjs');
+fs.writeFileSync(wrapperPath, 'export default async function(args, agent, parallel, log) {\n' + src + '\n}\n');
+const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
+const run = mod.default;
+
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+
+// The injected binary is deliberately NOT a plausible real path, so a
+// re-hardcoded './target/debug/rdm' anywhere shows up as a mismatch rather than
+// blending in.
+const FAKE_BIN = '/fake/bin/rdm';
+
+// The PROJECT-AGNOSTIC ALLOW-LIST, expressed as DATA — the SAME array
+// verify-workflow-dispatch.sh § 9b uses (dispatch-phase's landed contract, not
+// re-derived here). These subcommands reject `--project` outright, so they must
+// carry NO project flag; everything else is project-scoped and MUST carry it
+// whenever a project was configured.
+const PROJECT_AGNOSTIC = ['model resolve', 'commit', 'status', 'discard'];
+
+const PHASES = [{ number: 1, stem: 'phase-1-x', title: 'X', status: 'not-started' }];
+
+// A capturing fake agent. NOTE: the capture runs deliberately supply NEITHER
+// hoist (`mechanicalModel` / `phaseList`) — a hoist short-circuits the agent
+// that builds the corresponding prompt, silently narrowing the scan.
+function makeCapture() {
+  const prompts = [];
+  const agent = async (prompt, opts) => {
+    prompts.push(String(prompt));
+    const label = (opts && opts.label) || '';
+    if (label === 'model:mechanical') return { model: 'm-mech' };
+    if (label === 'estimate:list') return { phases: PHASES };
+    if (label.startsWith('estimate:rate:')) {
+      return { stem: label.slice('estimate:rate:'.length), difficulty: 'moderate', justification: 'j' };
+    }
+    if (label.startsWith('estimate:write:')) return { ok: true };
+    if (label.startsWith('estimate:tier:')) return { model: 'medium' };
+    throw new Error('unexpected agent label: ' + label);
+  };
+  return { agent, prompts };
+}
+
+// Tokenize `<bin> <subcommand>` occurrences out of a prompt. The binary token is
+// whatever non-space run precedes the subcommand, so a re-hardcoded path is
+// caught by comparison rather than by being silently skipped. Same regex as
+// verify-workflow-dispatch.sh § 9b.
+const INVOCATION = /(^|[\s`])((?:[^\s`]*\/)?rdm)\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*)?)/g;
+
+// Only COMMAND-BEARING lines are tokenized. Every command these prompts emit is
+// either an indented command line ('  <bin> phase list …') or a backtick-quoted
+// inline directive ('Run `<bin> phase show …`'). Flush-left PROSE that merely
+// names the tool — the estimator prompt opens "You are a difficulty-estimation
+// agent for a single rdm phase." — is not an invocation, and tokenizing it would
+// report a false hit whose "binary" is the bare word `rdm`. The non-vacuity
+// floors below prove the filter is not silently dropping real commands.
+function isCommandLine(line) {
+  return /^\s{2,}\S/.test(line) || line.includes('`');
+}
+
+function scan(prompts) {
+  const out = [];
+  for (const p of prompts) {
+    for (const line of p.split('\n')) {
+      if (!isCommandLine(line)) continue;
+      INVOCATION.lastIndex = 0;
+      let m;
+      while ((m = INVOCATION.exec(line)) !== null) {
+        out.push({ bin: m[2], two: m[3], line });
+      }
+    }
+  }
+  return out;
+}
+
+async function capture(args) {
+  const c = makeCapture();
+  await run(args, c.agent, refParallel, () => {});
+  return scan(c.prompts);
+}
+
+// --- Run A: a project IS configured.
+const withProject = await capture({ roadmap: 'rm', rdmBin: FAKE_BIN, project: 'demo' });
+assert.ok(withProject.length > 0, 'the scan found no rdm invocations at all — it cannot pass vacuously');
+
+const seen = new Set();
+for (const occ of withProject) {
+  assert.equal(occ.bin, FAKE_BIN, 'an rdm invocation used ' + occ.bin + ' instead of the injected rdmBin: ' + occ.line);
+  seen.add(occ.two);
+  const agnostic = PROJECT_AGNOSTIC.includes(occ.two);
+  if (agnostic) {
+    assert.ok(!occ.line.includes('--project'), 'project-agnostic `rdm ' + occ.two + '` must carry NO project flag: ' + occ.line);
+  } else {
+    assert.ok(occ.line.includes(' --project demo'), 'project-scoped `rdm ' + occ.two + '` must carry " --project demo": ' + occ.line);
+  }
+}
+
+// Non-vacuity floors: the scan must actually have reached every command shape,
+// not merely found nothing to object to.
+for (const n of ['phase list', 'phase show', 'phase update', 'model resolve']) {
+  assert.ok(seen.has(n), 'expected at least one `rdm ' + n + '` occurrence, saw: ' + [...seen].join(', '));
+}
+const resolves = withProject.filter((o) => o.two === 'model resolve');
+assert.ok(resolves.length >= 1, 'expected at least one `rdm model resolve` occurrence');
+for (const r of resolves) {
+  assert.ok(!r.line.includes('--project'), '`rdm model resolve` is on the allow-list and must never gain a project flag: ' + r.line);
+}
+
+// --- Run B: NO project configured -> not a single --project anywhere.
+const noProject = await capture({ roadmap: 'rm', rdmBin: FAKE_BIN });
+assert.ok(noProject.length > 0, 'the no-project scan found no rdm invocations at all');
+for (const occ of noProject) {
+  assert.equal(occ.bin, FAKE_BIN, '(no project): an rdm invocation used ' + occ.bin + ': ' + occ.line);
+}
+const stray = noProject.filter((o) => o.line.includes('--project'));
+assert.equal(stray.length, 0, '(no project): expected zero --project occurrences, found: ' + stray.map((o) => o.line).join(' | '));
+
+// Determinism: the same args produce byte-identical prompt captures.
+const d1 = await capture({ roadmap: 'rm', rdmBin: FAKE_BIN, project: 'demo' });
+const d2 = await capture({ roadmap: 'rm', rdmBin: FAKE_BIN, project: 'demo' });
+assert.deepEqual(d2, d1, 'the prompt capture must be deterministic across identical runs');
+
+console.log('all estimate parameterization prompt-capture assertions passed');
+NODE_PARAMZ
+
+if run_node "$TMP/paramz.mjs" "$WF"; then
+    pass "9b: every emitted rdm invocation uses the injected binary and honors the project-agnostic allow-list (with and without a project)"
+else
+    fail "9b: parameterization prompt-capture assertions failed"
+fi
+
+# --- 9c. Fail-closed rdmBin ---------------------------------------------------
+say "9c. Fail-closed rdmBin: an absent arg throws, and the guard is not an existence preflight"
+
+cat >"$TMP/rdmbin.mjs" <<'NODE_RDMBIN'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const libPath = process.argv[2];
+const wfPath = process.argv[3];
+const { parseEstimateArgs, projectFlag, resolveRdmBin, parseProjectArg } = await import('file://' + libPath);
+
+// (1) The ABSENCE of the argument is what throws — not the unresolvability of a
+// path. An existence preflight cannot express this: the stale global rdm this
+// rule exists to block EXISTS, so `which rdm` would pass.
+for (const bad of [undefined, null, '', '   ', '\t', 42, {}, [], true]) {
+  assert.throws(
+    () => parseEstimateArgs({ roadmap: 'rm', rdmBin: bad }),
+    /rdmBin/,
+    'an absent/empty/non-string rdmBin (' + JSON.stringify(bad) + ') must throw'
+  );
+}
+assert.throws(() => parseEstimateArgs({ roadmap: 'rm' }), /rdmBin/, 'a missing rdmBin key must throw');
+assert.throws(() => parseEstimateArgs(JSON.stringify({ roadmap: 'rm' })), /rdmBin/, 'a stringified payload must still require rdmBin');
+
+// ORDERING: the pre-existing required-roadmap throw still runs FIRST, so the
+// most common mis-invocation keeps its actionable message rather than being
+// masked by the newer rdmBin error.
+assert.throws(() => parseEstimateArgs({}), /roadmap slug is required/, 'a payload missing BOTH reports the roadmap first');
+assert.throws(() => parseEstimateArgs({ rdmBin: 'rdm' }), /roadmap slug is required/, 'roadmap is still checked first');
+
+// The error must be actionable: it names the sentinel opt-in and says why no
+// default is chosen.
+try {
+  parseEstimateArgs({ roadmap: 'rm' });
+  assert.fail('expected a throw');
+} catch (e) {
+  assert.match(e.message, /rdmBin is required/, 'the message names the missing arg');
+  assert.match(e.message, /"rdm"/, 'the message names the explicit PATH sentinel');
+  assert.match(e.message, /PATH/, 'the message explains what an absent value would silently do');
+}
+
+// (2) The explicit sentinel is accepted VERBATIM — a downstream repo that wants
+// PATH resolution opts in on purpose.
+assert.equal(parseEstimateArgs({ roadmap: 'rm', rdmBin: 'rdm' }).rdmBin, 'rdm', "the 'rdm' sentinel is accepted verbatim");
+assert.equal(parseEstimateArgs({ roadmap: 'rm', rdmBin: '/opt/x/rdm' }).rdmBin, '/opt/x/rdm', 'an absolute path is accepted verbatim');
+assert.equal(resolveRdmBin('rdm'), 'rdm', 'resolveRdmBin passes the sentinel through');
+
+// (3) `project` is OPTIONAL, falsy means NO flag, and a hostile value is
+// rejected rather than escaped (it is interpolated into a Bash-agent prompt).
+assert.equal(parseEstimateArgs({ roadmap: 'rm', rdmBin: 'rdm' }).project, '', 'an absent project means no flag');
+for (const falsy of [undefined, null, '', 0, false]) {
+  assert.equal(parseProjectArg(falsy), '', 'falsy project ' + JSON.stringify(falsy) + ' means no flag');
+  assert.equal(projectFlag({ project: parseProjectArg(falsy) }), '', 'a falsy project emits no flag at all');
+}
+assert.equal(projectFlag({}), '', 'an empty cfg emits no flag');
+assert.equal(projectFlag(null), '', 'a null cfg emits no flag');
+assert.equal(projectFlag({ project: 'demo' }), ' --project demo', 'a configured project emits the flag');
+for (const hostile of ['a b', 'a;rm -rf /', '$(x)', '`x`', 'a\nb', 'a|b', 7, {}]) {
+  assert.throws(() => parseProjectArg(hostile), /project must be a plain project name/, 'hostile project ' + JSON.stringify(hostile) + ' must be rejected');
+}
+assert.equal(parseEstimateArgs({ roadmap: 'rm', rdmBin: 'rdm', project: 'rdm-atlas.v2_x' }).project, 'rdm-atlas.v2_x', 'a plain project name survives');
+
+// (4) The throw happens BEFORE any agent() call — driving the wrapped workflow
+// with no rdmBin must reject rather than run, and must not have spawned a
+// single agent.
+const src = fs.readFileSync(wfPath, 'utf8').replace(/^export /m, '');
+const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-estimate-rdmbin-wrapped.mjs');
+fs.writeFileSync(wrapperPath, 'export default async function(args, agent, parallel, log) {\n' + src + '\n}\n');
+const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
+let agentCalls = 0;
+const spy = async () => {
+  agentCalls++;
+  return null;
+};
+await assert.rejects(
+  () => mod.default({ roadmap: 'rm' }, spy, async () => [], () => {}),
+  /rdmBin/,
+  'a direct Workflow invocation with no rdmBin must reject, not silently run a global rdm'
+);
+assert.equal(agentCalls, 0, 'the rdmBin throw must precede every agent() call — a mis-invocation costs zero tokens');
+
+console.log('all fail-closed rdmBin assertions passed');
+NODE_RDMBIN
+
+if run_node "$TMP/rdmbin.mjs" "$LIB" "$WF"; then
+    pass "9c: rdmBin is fail-closed (absent/empty/non-string throws before any agent call); the 'rdm' sentinel opts into PATH explicitly; project is validated"
+else
+    fail "9c: fail-closed rdmBin assertions failed"
+fi
+
+# The guard must NOT be an existence preflight. `which -a rdm` resolves to the
+# stale global build in this repo, so an existence check passes while running
+# exactly the binary the development-build rule forbids. COMMENT LINES ARE
+# STRIPPED FIRST so a rationale comment naming the rejected mechanism is not
+# itself flagged.
+assert_no_existence_preflight() {
+    grep -vE '^[[:space:]]*(//|\*|/\*)' "$1" |
+        grep -nE 'which +(-a +)?rdm|command -v|existsSync|accessSync|statSync' >"$TMP/preflight-hits" 2>/dev/null || true
+    [ ! -s "$TMP/preflight-hits" ]
+}
+for f in "$LIB" "$WF"; do
+    if ! assert_no_existence_preflight "$f"; then
+        cat "$TMP/preflight-hits" >&2
+        fail "9c: $f must not implement the rdmBin guard as an existence preflight — the guard is on the ABSENCE of the argument"
+    fi
+done
+pass "9c: no existence preflight (which rdm / command -v / existsSync) in either estimate copy"
+
+cp "$WF" "$TMP/preflight-mutant.js"
+printf "\nconst ok = existsSync(rdmBin)\n" >>"$TMP/preflight-mutant.js"
+if assert_no_existence_preflight "$TMP/preflight-mutant.js"; then
+    fail "9c: the existence-preflight detector missed a planted existsSync call — the gate is vacuous"
+fi
+pass "9c: the existence-preflight detector fires on planted code while ignoring the rationale prose"
+
+# --- 9d. Planted-mutation self-tests for 9b -----------------------------------
+say "9d. Planted-mutation self-tests: the allow-list assertion is not vacuous"
+
+# (i) a builder RE-HARDCODES this repo's dev binary path.
+sed "s|+ bin + ' phase list |+ './target/debug/rdm' + ' phase list |" "$WF" >"$TMP/pz-mut-bin.js"
+if cmp -s "$WF" "$TMP/pz-mut-bin.js"; then
+    fail "9d(i): the re-hardcoded-binary mutation did not apply — the self-test is not exercising anything"
+fi
+if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-bin.js" >/dev/null 2>&1; then
+    fail "9d(i): a re-hardcoded rdm binary was NOT detected — the binary assertion is vacuous"
+fi
+pass "9d(i): detector fires when a builder re-hardcodes the rdm binary"
+
+# (ii) the ALLOW-LIST member `rdm model resolve` wrongly gains a project flag —
+#      a command rdm rejects at runtime that a naive whole-file grep still
+#      accepts. This is the exact failure mode 9b exists to catch.
+sed "s|' model resolve mechanical',|' model resolve mechanical' + projectFlag(cfg),|" "$WF" >"$TMP/pz-mut-agnostic.js"
+if cmp -s "$WF" "$TMP/pz-mut-agnostic.js"; then
+    fail "9d(ii): the allow-list mutation did not apply"
+fi
+if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-agnostic.js" >/dev/null 2>&1; then
+    fail "9d(ii): a project flag on 'rdm model resolve' was NOT detected — the allow-list assertion is vacuous"
+fi
+pass "9d(ii): detector fires when an allow-list subcommand gains a project flag"
+
+# (iii) a project-scoped builder DROPS its flag.
+sed "s|+ ' --roadmap ' + slug + proj + ' --format json'|+ ' --roadmap ' + slug + ' --format json'|g" "$WF" >"$TMP/pz-mut-drop.js"
+if cmp -s "$WF" "$TMP/pz-mut-drop.js"; then
+    fail "9d(iii): the dropped-flag mutation did not apply"
+fi
+if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-drop.js" >/dev/null 2>&1; then
+    fail "9d(iii): a project-scoped command that dropped its project flag was NOT detected"
+fi
+pass "9d(iii): detector fires when a project-scoped builder drops '+ proj'"
 
 say "verify-workflow-estimate.sh: ALL GREEN"

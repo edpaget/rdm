@@ -1673,6 +1673,50 @@ directions — it asserts the payload carries `rdmBin`, and asserts the skill
 still carries its own binary/project literals, so the wider prose
 parameterization cannot be absorbed here by accident.
 
+#### The other two engines: `review-refute-fix` and `estimate`
+
+Both now honor this contract, reusing the same three helpers (copied in shape,
+since the runtime cannot import) rather than re-deriving it. `estimate` takes
+`rdmBin`/`project` through `parseEstimateArgs` — resolved **after** its
+pre-existing required-roadmap throw, so the actionable "a roadmap slug is
+required" message survives for the far more common mis-invocation — and threads
+a `cfg` into `buildEstimateListPrompt` / `buildEstimateWritebackPrompt` /
+`buildEstimateTierPrompt` plus its driver's own `model resolve` call and
+per-phase rate directive. `review-refute-fix` builds its `cfg` in the standalone
+code-review path and threads it into `buildDiffSignalsPrompt` and the optional
+gate's status command.
+
+**One scope difference, and it is the same contract applied where it has a
+referent — not a second contract.** `review-refute-fix` calls `resolveRdmBin`
+inside the standalone code-review path only. Its two legacy survivors-only
+shapes (`mode: 'plan'`, and `mode: 'code'` with no item identifiers) emit
+**zero** rdm invocations, so there is no binary for the fail-closed rule to
+guard, and requiring the arg there would break a documented
+backward-compatible shape for no safety gain.
+`verify-workflow-review-outcome.sh` § 6c pins both directions: the standalone
+path throws without `rdmBin` before any `agent()` call, while both legacy shapes
+still succeed without it and still return `{ mode, survivors, budget }`.
+
+Rewired callers: `.claude/skills/rdm-review` (the only caller of
+`review-refute-fix`; its invocation prose sits ABOVE the
+`gen-skill-review.sh`-stamped region, and the shipped
+`skill-review-{cli,mcp}.md` templates invoke no workflow at all, so
+`lib/review.mjs` is never opened) and `.claude/skills/rdm-estimate` (the only
+caller of `estimate.js`; `skill-estimate-{cli,mcp}.md` remains the `{proj_flag}`
+prose rating loop and needs no change). Asserted per-shim by
+`verify-workflow-review-outcome.sh` § 4 and `verify-workflow-estimate.sh`'s
+HOIST-SHIM section, each with a planted-typo self-test; the allow-list is
+asserted AS DATA by the same two harnesses' driven prompt captures (§ 6b / § 9b).
+
+**Bounded consequence, recorded rather than absorbed.** The prose
+`rdm-autopilot` skill's estimate pre-pass passes no `rdmBin` yet — that payload,
+and the loop's own literals, belong to the phase that parameterizes the prose
+loop — so that one call throws until it is threaded. It does **not** break the
+lane: the skill's own prose already says to log a warning and continue into the
+drive loop non-fatally on an estimate error, and unrated phases simply dispatch
+at whatever tier `rdm next` reports. Its `dispatch-phase` payload was threaded
+above and is unaffected.
+
 ## autopilot contract
 
 Autopilot is now the prose `rdm-autopilot` skill

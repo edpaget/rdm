@@ -63,6 +63,18 @@
 #   5. STATIC INVARIANT — `meta.phases` in review-refute-fix.js lists exactly
 #      the distinct `phase:` tags the driver + the inlined review block
 #      actually emit (`Find`, `Refute`, `Review`, `Gate`).
+#   6. PARAMETERIZATION — review-refute-fix names NO particular rdm executable
+#      and NO particular rdm project: both are RUNTIME args (`rdmBin`,
+#      `project`), the same contract dispatch-phase landed (gated there by
+#      `scripts/verify-workflow-dispatch.sh` § 9). Per-file literal zeroing over
+#      BOTH copies with planted mutants, plus a NEGATIVE pin on
+#      `lib/review.mjs`'s own counts (6a); a driven prompt capture with
+#      `gate: true` and no `diff` hoist, checking every emitted
+#      `rdm <subcommand>` against the project-agnostic allow-list expressed AS
+#      DATA (6b); the fail-closed `rdmBin` rule AND its documented carve-out —
+#      the standalone path throws without it while BOTH legacy survivors-only
+#      shapes still succeed without it, because they emit zero rdm invocations
+#      (6c); and self-tests proving 6b is not vacuous (6d).
 #
 # Node is used only as a host to drive the pure/injectable parts of the real
 # workflow script; it is stdlib-only (node:assert), no package.json /
@@ -254,6 +266,14 @@ async function refPipeline(items, ...stages) {
   );
 }
 
+// The standalone code-review path shells out (worktree add; the optional gate's
+// phase/task update), so it requires the fail-closed `rdmBin` environment arg.
+// The two LEGACY survivors-only shapes below — run({ mode: 'plan' }) and
+// run({ mode: 'code' }) with no item identifiers — deliberately do NOT get it:
+// they emit zero rdm invocations, so the rule has no referent there, and that
+// carve-out is asserted in both directions (see the fail-closed section).
+const RDM_BIN_ARG = '/fake/bin/rdm';
+
 const ALL_CODE_DIMS = ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'];
 const CLEAN = Object.fromEntries(ALL_CODE_DIMS.map((k) => [k, []]));
 
@@ -292,7 +312,7 @@ function makeAgent(opts) {
 // ============================================================================
 {
   const a = makeAgent({ diffResult: { changedFiles: ['src/api/index.ts'], diffText: '+export function foo() {}' }, findings: CLEAN, verdicts: {} });
-  const out = await run({ mode: 'code', roadmap: 'rm', phase: '1', gate: false }, a.agent, refPipeline, refParallel, () => {});
+  const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: false }, a.agent, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
     ['findings', 'outcome', 'phase', 'reason', 'reviewBudget', 'roadmap', 'status', 'summary', 'writesCompletion'].sort(),
@@ -314,7 +334,7 @@ function makeAgent(opts) {
   const findings = { ...CLEAN, ac: [{ id: 'ac1', concern: 'ac', severity: 'blocking', confidence: 90, what_fails: 'missing test' }] };
   const verdicts = { ac1: { refuted: false, confidence: 95 } };
   const a = makeAgent({ diffResult: { changedFiles: ['src/cli/x.ts'], diffText: '' }, findings, verdicts });
-  const out = await run({ mode: 'code', task: 'my-task', gate: false }, a.agent, refPipeline, refParallel, () => {});
+  const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, task: 'my-task', gate: false }, a.agent, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
     ['findings', 'outcome', 'reason', 'reviewBudget', 'status', 'summary', 'task', 'writesCompletion'].sort(),
@@ -341,7 +361,7 @@ function makeAgent(opts) {
   };
   const a = makeAgent({ diffResult: { changedFiles: ['src/api/index.ts'], diffText: '' }, findings: many, verdicts: {} });
   const out = await run(
-    { mode: 'code', roadmap: 'rm', phase: '1', gate: false, maxRefutations: 1 },
+    { mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: false, maxRefutations: 1 },
     a.agent,
     refPipeline,
     refParallel,
@@ -368,14 +388,14 @@ console.log('3a OK: reviewed / rework OUTCOME shapes and the refutation budget v
 // ============================================================================
 {
   const a = makeAgent({ diffThrows: true, findings: CLEAN, verdicts: {} });
-  await run({ mode: 'code', roadmap: 'rm', phase: '2', gate: false }, a.agent, refPipeline, refParallel, () => {});
+  await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '2', gate: false }, a.agent, refPipeline, refParallel, () => {});
   const findLabels = a.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label);
   assert.equal(findLabels.length, ALL_CODE_DIMS.length, 'diff agent throws -> fail-open -> every code dimension runs');
 }
 {
   // An empty (not thrown) changedFiles array is the OTHER fail-open trigger.
   const a = makeAgent({ diffResult: { changedFiles: [], diffText: '' }, findings: CLEAN, verdicts: {} });
-  await run({ mode: 'code', roadmap: 'rm', phase: '2b', gate: false }, a.agent, refPipeline, refParallel, () => {});
+  await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '2b', gate: false }, a.agent, refPipeline, refParallel, () => {});
   const findLabels = a.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label);
   assert.equal(findLabels.length, ALL_CODE_DIMS.length, 'empty changedFiles -> fail-open -> every code dimension runs');
 }
@@ -384,7 +404,7 @@ console.log('3a OK: reviewed / rework OUTCOME shapes and the refutation budget v
   // conditional signal is a confident false (content is never even consulted)
   // -> only the two always-on dimensions (ac, correctness) should fire.
   const a = makeAgent({ diffResult: { changedFiles: ['docs/readme.md'], diffText: '' }, findings: CLEAN, verdicts: {} });
-  await run({ mode: 'code', roadmap: 'rm', phase: '3', gate: false }, a.agent, refPipeline, refParallel, () => {});
+  await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '3', gate: false }, a.agent, refPipeline, refParallel, () => {});
   const findLabels = a.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label.split(':')[2]);
   assert.deepEqual(findLabels.sort(), ['ac', 'correctness'].sort(), 'a real, non-triggering diff selects only the always-on dimensions (signals threaded through, not omitted)');
 }
@@ -397,7 +417,7 @@ console.log('3b OK: fail-open omits signals entirely; a real diff threads derive
   const a = makeAgent({ diffResult: { changedFiles: [], diffText: '' }, findings: CLEAN, verdicts: {} });
   let threw = false;
   try {
-    await run({ mode: 'code', task: 'x', roadmap: 'rm', phase: '1' }, a.agent, refPipeline, refParallel, () => {});
+    await run({ mode: 'code', rdmBin: RDM_BIN_ARG, task: 'x', roadmap: 'rm', phase: '1' }, a.agent, refPipeline, refParallel, () => {});
   } catch (e) {
     threw = true;
   }
@@ -442,17 +462,17 @@ console.log('3d OK: both legacy shapes unaffected, no diff agent called on the l
 // ============================================================================
 {
   const a = makeAgent({ diffResult: { changedFiles: ['x.rs'], diffText: '' }, findings: CLEAN, verdicts: {} });
-  await run({ mode: 'code', roadmap: 'rm', phase: '1' }, a.agent, refPipeline, refParallel, () => {});
+  await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1' }, a.agent, refPipeline, refParallel, () => {});
   const gateCalls = a.calls.filter((c) => c.label === 'gate:persist');
   assert.equal(gateCalls.length, 0, 'gate omitted -> no status-persist agent call');
 }
 {
   const a = makeAgent({ diffResult: { changedFiles: ['x.rs'], diffText: '' }, findings: CLEAN, verdicts: {} });
-  const out = await run({ mode: 'code', roadmap: 'rm', phase: '1', gate: true }, a.agent, refPipeline, refParallel, () => {});
+  const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: true }, a.agent, refPipeline, refParallel, () => {});
   const gateCalls = a.calls.filter((c) => c.label === 'gate:persist');
   assert.equal(gateCalls.length, 1, 'gate:true -> exactly one status-persist agent call');
   assert.ok(gateCalls[0].prompt.includes('rdm phase update 1 --status ' + out.status), 'gate prompt persists the mapped status');
-  assert.ok(!gateCalls[0].prompt.includes('./target/debug/rdm commit'), 'gate prompt never invokes rdm commit');
+  assert.ok(!/^\s+\S*rdm commit/m.test(gateCalls[0].prompt), 'gate prompt never invokes rdm commit as a command');
   assert.ok(gateCalls[0].prompt.includes('Do not run'), 'gate prompt explicitly instructs against running rdm commit');
 }
 {
@@ -461,7 +481,7 @@ console.log('3d OK: both legacy shapes unaffected, no diff agent called on the l
   // so this only exercises the rework path's reason (empty) for completeness.
   const findings = { ...CLEAN, ac: [{ id: 'ac1', concern: 'ac', severity: 'blocking', confidence: 90, what_fails: 'x' }] };
   const a = makeAgent({ diffResult: { changedFiles: ['x.rs'], diffText: '' }, findings, verdicts: { ac1: { refuted: false, confidence: 95 } } });
-  const out = await run({ mode: 'code', roadmap: 'rm', phase: '1', gate: true }, a.agent, refPipeline, refParallel, () => {});
+  const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: true }, a.agent, refPipeline, refParallel, () => {});
   assert.equal(out.outcome, 'rework');
   const gateCalls = a.calls.filter((c) => c.label === 'gate:persist');
   assert.ok(gateCalls[0].prompt.includes('--status in-progress'), 'rework gate persists in-progress');
@@ -482,7 +502,7 @@ console.log('3e OK: gate defaults off, gate:true persists mapped status without 
     acTable: [{ criterion: 'x', status: 'FAIL', evidence: 'y' }],
     verdicts: {},
   });
-  const out = await run({ mode: 'code', roadmap: 'rm', phase: '1', gate: false }, a.agent, refPipeline, refParallel, () => {});
+  const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: false }, a.agent, refPipeline, refParallel, () => {});
   assert.equal(out.outcome, 'rework', 'an AC-FAIL alone (no blocking findings) forces rework');
   assert.equal(
     out.summary,
@@ -503,7 +523,7 @@ const HOIST_DIFF = { changedFiles: ['src/api/index.ts'], diffText: '+export func
   // Supplied and shape-valid -> ZERO diff:signals calls.
   const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
   const out = await run(
-    { mode: 'code', roadmap: 'rm', phase: '1', gate: false, diff: HOIST_DIFF },
+    { mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: false, diff: HOIST_DIFF },
     a.agent,
     refPipeline,
     refParallel,
@@ -515,7 +535,7 @@ const HOIST_DIFF = { changedFiles: ['src/api/index.ts'], diffText: '+export func
   // Same run WITHOUT the hoist -> exactly one diff:signals call, and a
   // deep-equal OUTCOME. The hoist changes agent count, never behaviour.
   const b = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
-  const outNoHoist = await run({ mode: 'code', roadmap: 'rm', phase: '1', gate: false }, b.agent, refPipeline, refParallel, () => {});
+  const outNoHoist = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: false }, b.agent, refPipeline, refParallel, () => {});
   assert.equal(b.calls.filter((c) => c.label === 'diff:signals').length, 1, 'no hoist -> exactly one diff:signals agent call');
   assert.deepEqual(out, outNoHoist, 'OUTCOME is deep-equal with and without the hoisted diff');
 
@@ -534,7 +554,7 @@ for (const [name, bad] of [
   ['changedFiles not an array', { changedFiles: 'a.rs', diffText: 'x' }],
 ]) {
   const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
-  const args = { mode: 'code', roadmap: 'rm', phase: '1', gate: false };
+  const args = { mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: false };
   if (name !== 'absent') args.diff = bad;
   const out = await run(args, a.agent, refPipeline, refParallel, () => {});
   assert.equal(
@@ -550,7 +570,7 @@ for (const [name, bad] of [
   // branch: no diff:signals call, and every dimension runs.
   const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
   await run(
-    { mode: 'code', roadmap: 'rm', phase: '1', gate: false, diff: { changedFiles: [], diffText: '' } },
+    { mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: false, diff: { changedFiles: [], diffText: '' } },
     a.agent,
     refPipeline,
     refParallel,
@@ -644,7 +664,26 @@ grep -qF 'git commit --amend' "$SKILL" ||
     fail "$SKILL must retain the git commit --amend gate mechanism"
 grep -qE 'gate: ?false' "$SKILL" ||
     fail "$SKILL must invoke the workflow with gate: false — it must own its own gate, not delegate to the workflow's mechanical one"
-pass "skill shim references the workflow and retains its interactive gate mechanism"
+
+# ENVIRONMENT ARGS (§ 6): `rdmBin` is fail-closed and REQUIRED on the standalone
+# code-review path, so a shim that omits it hard-errors on first dispatch
+# instead of degrading. Occurrence floor of 2 because the phase and task
+# invocation shapes are separate arg lines and BOTH must carry it.
+assert_skill_passes_rdmbin() {
+    grep -qF 'rdmBin' "$1" || return 1
+    [ "$(grep -cF 'rdmBin: "./target/debug/rdm"' "$1")" -ge 2 ] || return 1
+    grep -qF 'project: "rdm"' "$1" || return 1
+    return 0
+}
+assert_skill_passes_rdmbin "$SKILL" ||
+    fail "$SKILL must pass rdmBin (in BOTH the phase and task arg shapes) and project into the review-refute-fix invocation"
+pass "skill shim references the workflow and retains its interactive gate mechanism, and passes rdmBin/project"
+
+sed 's/rdmBin/rdmBn/g' "$SKILL" >"$TMP/skill-rdmbin-typo.md"
+if assert_skill_passes_rdmbin "$TMP/skill-rdmbin-typo.md"; then
+    fail "4: detector missed a typo'd rdmBin arg key in the shim"
+fi
+pass "4: rdmBin detector fires on a planted typo in the shim"
 
 say "4b. gen-skill-review.sh --check still passes in both modes (untouched by this hand-authored trim)"
 if sh "$SKILL_GEN" --check --mode code && sh "$SKILL_GEN" --check --mode plan; then
@@ -671,5 +710,402 @@ PHASE_TAGS_DECLARED=$(awk '/phases: \[/{p=1} p{print} p&&/\]/{exit}' "$WF" | gre
 [ "$PHASE_TAGS_DECLARED" = "$PHASE_TAGS_USED" ] ||
     fail "meta.phases ($PHASE_TAGS_DECLARED) does not match the distinct phase: tags actually emitted ($PHASE_TAGS_USED)"
 pass "meta.phases matches the distinct phase: tags emitted: $PHASE_TAGS_DECLARED"
+
+# --- 6. PARAMETERIZATION ------------------------------------------------------
+# review-refute-fix names NO particular rdm executable and NO particular rdm
+# project: both arrive as RUNTIME args (`rdmBin`, `project`) and are threaded
+# into every prompt that shells out. This is dispatch-phase's landed contract,
+# reused — scripts/verify-workflow-dispatch.sh § 9 gates the same rules there.
+# Four sub-gates:
+#
+#   6a — per-file literal zeroing across BOTH copies (dogfood workflow + shipped
+#        template), asserted PER FILE so a half-applied edit cannot pass. Also
+#        pins lib/review.mjs's counts, which this phase must NOT change.
+#   6b — a DRIVEN prompt capture over the standalone phase and task paths with
+#        `gate: true` and NO diff hoist, tokenizing every emitted
+#        `rdm <subcommand>` and checking it against the project-agnostic
+#        allow-list expressed AS DATA.
+#   6c — the fail-closed `rdmBin` rule AND its documented carve-out: the
+#        standalone path throws without it, while BOTH legacy survivors-only
+#        shapes still succeed without it and keep their exact legacy result.
+#   6d — planted-mutation self-tests for 6b.
+say "6. Parameterization: no hardcoded rdm binary or project; the environment axes are runtime args"
+
+# --- 6a. Per-file literal zeroing ---------------------------------------------
+say "6a. Per-file literal zeroing (dogfood workflow + shipped template)"
+
+# assert_no_env_literals <file> — zero occurrences of THIS repo's dev binary path
+# and zero of THIS repo's project flag. Deliberately per-file: a concatenated
+# stream would let a zero in one copy mask a hit in the other, which is exactly
+# the half-applied-edit failure mode (the two copies are kept identical by hand).
+assert_no_env_literals() {
+    _f=$1
+    _bin=$(grep -c 'target/debug/rdm' "$_f" || true)
+    _proj=$(grep -c -- '--project rdm' "$_f" || true)
+    [ "$_bin" -eq 0 ] && [ "$_proj" -eq 0 ]
+}
+
+for f in "$WF" "$WF_TEMPLATE"; do
+    if assert_no_env_literals "$f"; then
+        pass "6a: ${f#"$REPO_ROOT"/} carries neither 'target/debug/rdm' nor '--project rdm'"
+    else
+        grep -n 'target/debug/rdm' "$f" >&2 || true
+        grep -n -- '--project rdm' "$f" >&2 || true
+        fail "6a: $f still hardcodes this repo's rdm binary and/or project — both must be runtime args"
+    fi
+done
+
+_i=0
+for f in "$WF" "$WF_TEMPLATE"; do
+    _i=$((_i + 1))
+    cp "$f" "$TMP/env-mutant-$_i"
+    printf '\n// planted: ./target/debug/rdm phase show --project rdm\n' >>"$TMP/env-mutant-$_i"
+    if assert_no_env_literals "$TMP/env-mutant-$_i"; then
+        fail "6a: the per-file literal check did not fire on a planted literal in $f — the gate is vacuous"
+    fi
+done
+pass "6a: the per-file check fires independently on both planted mutants"
+
+# NEGATIVE: lib/review.mjs is the canonical review source, stamped into THREE
+# consumers. It contains ZERO binary INVOCATION sites; its single
+# 'target/debug/rdm' occurrence lives in a `//!` module-doc comment describing
+# the `{rdm_bin}` placeholder the skill renderer substitutes, and is not stamped
+# into any consumer. Pin BOTH counts exactly: an added literal moves the count
+# and fails, a removed one likewise.
+REVIEW_LIB="$REPO_ROOT/.claude/workflows/lib/review.mjs"
+[ -f "$REVIEW_LIB" ] || fail "6a: canonical review source not found: $REVIEW_LIB"
+REVIEW_LIB_BIN=$(grep -c 'target/debug/rdm' "$REVIEW_LIB" || true)
+REVIEW_LIB_PROJ=$(grep -c -- '--project rdm' "$REVIEW_LIB" || true)
+[ "$REVIEW_LIB_BIN" -eq 1 ] ||
+    fail "6a: lib/review.mjs must carry EXACTLY ONE 'target/debug/rdm' (the //! module-doc {rdm_bin} reference) — found $REVIEW_LIB_BIN"
+[ "$REVIEW_LIB_PROJ" -eq 0 ] ||
+    fail "6a: lib/review.mjs must carry ZERO '--project rdm' — found $REVIEW_LIB_PROJ"
+grep -n 'target/debug/rdm' "$REVIEW_LIB" | grep -q '^[0-9]*://!' ||
+    fail "6a: lib/review.mjs's single 'target/debug/rdm' occurrence must be inside a //! module-doc comment, not a live invocation"
+pass "6a: lib/review.mjs is unchanged (1 doc-comment reference, 0 project literals) — the stamped source was not touched"
+
+# --- 6b. Driven prompt capture ------------------------------------------------
+say "6b. Driven prompt capture: every emitted rdm invocation honors the allow-list"
+
+cat >"$TMP/paramz.mjs" <<'NODE_PARAMZ'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const wfPath = process.argv[2];
+const src = fs.readFileSync(wfPath, 'utf8').replace(/^export /m, '');
+const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-review-outcome-paramz-wrapped.mjs');
+fs.writeFileSync(wrapperPath, 'export default async function(args, agent, pipeline, parallel, log) {\n' + src + '\n}\n');
+const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
+const run = mod.default;
+
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+
+// The injected binary is deliberately NOT a plausible real path, so a
+// re-hardcoded './target/debug/rdm' anywhere shows up as a mismatch rather than
+// blending in.
+const FAKE_BIN = '/fake/bin/rdm';
+
+// The PROJECT-AGNOSTIC ALLOW-LIST, expressed as DATA — the SAME array
+// verify-workflow-dispatch.sh § 9b uses (dispatch-phase's landed contract, not
+// re-derived here).
+const PROJECT_AGNOSTIC = ['model resolve', 'commit', 'status', 'discard'];
+
+const ALL_CODE_DIMS = ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'];
+const CLEAN = Object.fromEntries(ALL_CODE_DIMS.map((k) => [k, []]));
+
+// A capturing fake agent. NOTE: the capture runs deliberately supply NO `diff`
+// hoist — a hoist short-circuits the `diff:signals` agent, which is where the
+// `worktree add` invocation lives, silently narrowing the scan. They also run
+// with `gate: true`, because the `phase update` / `task update` invocation
+// lives ONLY in the optional mechanical gate step (the rdm-review skill itself
+// correctly passes `gate: false` and owns its own gate).
+function makeCapture() {
+  const prompts = [];
+  const agent = async (prompt, opts) => {
+    prompts.push(String(prompt));
+    const label = (opts && opts.label) || '';
+    if (label === 'diff:signals') return { changedFiles: ['rdm-core/src/lib.rs'], diffText: '' };
+    if (label === 'gate:persist') return { ok: true };
+    const parts = label.split(':');
+    if (parts[0] === 'find') return { findings: [] };
+    if (parts[0] === 'refute') return { refuted: false, confidence: 90 };
+    throw new Error('unexpected agent label: ' + label);
+  };
+  return { agent, prompts };
+}
+
+const INVOCATION = /(^|[\s`])((?:[^\s`]*\/)?rdm)\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*)?)/g;
+
+// Only COMMAND-BEARING lines are tokenized. Every command this driver emits is
+// an INDENTED command line ('  <bin> worktree add …', '  ' + statusCmd).
+// Flush-left prose is not an invocation — and one such line is a NEGATIVE
+// directive ("Do not run `rdm commit`"), which names a bare `rdm` deliberately
+// and must not be read as a hardcoded binary. The non-vacuity floors below
+// prove the filter is not silently dropping real commands.
+function isCommandLine(line) {
+  return /^\s{2,}\S/.test(line);
+}
+
+function scan(prompts) {
+  const out = [];
+  for (const p of prompts) {
+    for (const line of p.split('\n')) {
+      if (!isCommandLine(line)) continue;
+      INVOCATION.lastIndex = 0;
+      let m;
+      while ((m = INVOCATION.exec(line)) !== null) {
+        out.push({ bin: m[2], two: m[3], line });
+      }
+    }
+  }
+  return out;
+}
+
+async function capture(args) {
+  const c = makeCapture();
+  await run(args, c.agent, refPipeline, refParallel, () => {});
+  return scan(c.prompts);
+}
+
+const BASE_PHASE = { mode: 'code', roadmap: 'rm', phase: '1', gate: true };
+const BASE_TASK = { mode: 'code', task: 'my-task', gate: true };
+
+for (const [mode, base] of [['phase', BASE_PHASE], ['task', BASE_TASK]]) {
+  // --- Run A: a project IS configured.
+  const withProject = await capture({ ...base, rdmBin: FAKE_BIN, project: 'demo' });
+  assert.ok(withProject.length > 0, mode + ': the scan found no rdm invocations at all — it cannot pass vacuously');
+
+  const seen = new Set();
+  for (const occ of withProject) {
+    assert.equal(occ.bin, FAKE_BIN, mode + ': an rdm invocation used ' + occ.bin + ' instead of the injected rdmBin: ' + occ.line);
+    seen.add(occ.two);
+    const agnostic = PROJECT_AGNOSTIC.includes(occ.two);
+    if (agnostic) {
+      assert.ok(!occ.line.includes('--project'), mode + ': project-agnostic `rdm ' + occ.two + '` must carry NO project flag: ' + occ.line);
+    } else {
+      assert.ok(occ.line.includes(' --project demo'), mode + ': project-scoped `rdm ' + occ.two + '` must carry " --project demo": ' + occ.line);
+    }
+  }
+
+  // Non-vacuity floors: the scan must actually have reached both command shapes.
+  const need = mode === 'task' ? ['worktree add', 'task update'] : ['worktree add', 'phase update'];
+  for (const n of need) {
+    assert.ok(seen.has(n), mode + ': expected at least one `rdm ' + n + '` occurrence, saw: ' + [...seen].join(', '));
+  }
+
+  // --- Run B: NO project configured -> not a single --project anywhere.
+  const noProject = await capture({ ...base, rdmBin: FAKE_BIN });
+  assert.ok(noProject.length > 0, mode + ': the no-project scan found no rdm invocations at all');
+  for (const occ of noProject) {
+    assert.equal(occ.bin, FAKE_BIN, mode + ' (no project): an rdm invocation used ' + occ.bin + ': ' + occ.line);
+  }
+  const stray = noProject.filter((o) => o.line.includes('--project'));
+  assert.equal(stray.length, 0, mode + ' (no project): expected zero --project occurrences, found: ' + stray.map((o) => o.line).join(' | '));
+}
+
+// Determinism: the same args produce byte-identical prompt captures.
+const d1 = await capture({ ...BASE_PHASE, rdmBin: FAKE_BIN, project: 'demo' });
+const d2 = await capture({ ...BASE_PHASE, rdmBin: FAKE_BIN, project: 'demo' });
+assert.deepEqual(d2, d1, 'the prompt capture must be deterministic across identical runs');
+
+console.log('all review-refute-fix parameterization prompt-capture assertions passed');
+NODE_PARAMZ
+
+if run_node "$TMP/paramz.mjs" "$WF"; then
+    pass "6b: every emitted rdm invocation uses the injected binary and honors the project-agnostic allow-list (phase + task, with and without a project)"
+else
+    fail "6b: parameterization prompt-capture assertions failed"
+fi
+
+# --- 6c. Fail-closed rdmBin + the legacy-path carve-out -----------------------
+say "6c. Fail-closed rdmBin on the standalone path; both legacy shapes still succeed without it"
+
+cat >"$TMP/rdmbin.mjs" <<'NODE_RDMBIN'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const wfPath = process.argv[2];
+const src = fs.readFileSync(wfPath, 'utf8').replace(/^export /m, '');
+const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-review-outcome-rdmbin-wrapped.mjs');
+fs.writeFileSync(wrapperPath, 'export default async function(args, agent, pipeline, parallel, log) {\n' + src + '\n}\n');
+const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
+const run = mod.default;
+
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+
+let agentCalls = 0;
+const spy = async (prompt, opts) => {
+  agentCalls++;
+  const label = (opts && opts.label) || '';
+  const parts = label.split(':');
+  if (parts[0] === 'find') return { findings: [] };
+  if (parts[0] === 'refute') return { refuted: false, confidence: 90 };
+  if (label === 'diff:signals') return { changedFiles: [], diffText: '' };
+  return { ok: true };
+};
+
+// (1) The STANDALONE code-review path shells out, so an absent/empty/non-string
+// rdmBin throws — BEFORE any agent() call, so a mis-invocation costs zero
+// tokens.
+for (const bad of [undefined, null, '', '   ', '\t', 42, {}, [], true]) {
+  agentCalls = 0;
+  const args = { mode: 'code', roadmap: 'rm', phase: '1' };
+  if (bad !== undefined) args.rdmBin = bad;
+  await assert.rejects(
+    () => run(args, spy, refPipeline, refParallel, () => {}),
+    /rdmBin/,
+    'an absent/empty/non-string rdmBin (' + JSON.stringify(bad) + ') must throw on the standalone path'
+  );
+  assert.equal(agentCalls, 0, 'the rdmBin throw must precede every agent() call');
+}
+agentCalls = 0;
+await assert.rejects(
+  () => run({ mode: 'code', task: 'my-task' }, spy, refPipeline, refParallel, () => {}),
+  /rdmBin/,
+  'the standalone TASK path must require rdmBin too'
+);
+assert.equal(agentCalls, 0, 'the task-path rdmBin throw also precedes every agent() call');
+
+// The error must be actionable.
+try {
+  await run({ mode: 'code', roadmap: 'rm', phase: '1' }, spy, refPipeline, refParallel, () => {});
+  assert.fail('expected a throw');
+} catch (e) {
+  assert.match(e.message, /rdmBin is required/, 'the message names the missing arg');
+  assert.match(e.message, /"rdm"/, 'the message names the explicit PATH sentinel');
+  assert.match(e.message, /PATH/, 'the message explains what an absent value would silently do');
+}
+
+// (2) THE CARVE-OUT, asserted in the other direction: BOTH legacy
+// survivors-only shapes emit ZERO rdm invocations, so the fail-closed rule has
+// no referent there. They must still succeed with NO rdmBin at all, and still
+// return the exact legacy { mode, survivors, budget } shape.
+for (const legacy of [{ mode: 'plan' }, { mode: 'code' }]) {
+  const out = await run(legacy, spy, refPipeline, refParallel, () => {});
+  assert.deepEqual(
+    Object.keys(out).sort(),
+    ['budget', 'mode', 'survivors'].sort(),
+    JSON.stringify(legacy) + ' must still return the legacy { mode, survivors, budget } shape with no rdmBin'
+  );
+  assert.equal(out.mode, legacy.mode, 'the legacy shape echoes its mode');
+}
+
+// (3) A hostile project name is rejected rather than escaped (it is
+// interpolated into a Bash-agent prompt).
+for (const hostile of ['a b', 'a;rm -rf /', '$(x)', '`x`', 'a|b']) {
+  await assert.rejects(
+    () => run({ mode: 'code', roadmap: 'rm', phase: '1', rdmBin: 'rdm', project: hostile }, spy, refPipeline, refParallel, () => {}),
+    /project must be a plain project name/,
+    'hostile project ' + JSON.stringify(hostile) + ' must be rejected'
+  );
+}
+// The 'rdm' sentinel is accepted verbatim — an explicit PATH opt-in.
+{
+  const out = await run({ mode: 'code', roadmap: 'rm', phase: '1', rdmBin: 'rdm' }, spy, refPipeline, refParallel, () => {});
+  assert.equal(out.outcome, 'reviewed', "the 'rdm' PATH sentinel is accepted verbatim and the run proceeds");
+}
+
+console.log('all fail-closed rdmBin + legacy-carve-out assertions passed');
+NODE_RDMBIN
+
+if run_node "$TMP/rdmbin.mjs" "$WF"; then
+    pass "6c: rdmBin is fail-closed on the standalone path (throws before any agent call); both legacy shapes still succeed without it"
+else
+    fail "6c: fail-closed rdmBin / legacy-carve-out assertions failed"
+fi
+
+# The guard must NOT be an existence preflight. `which -a rdm` resolves to the
+# stale global build in this repo, so an existence check passes while running
+# exactly the binary the development-build rule forbids. Comment lines are
+# stripped first so rationale prose is not itself flagged.
+assert_no_existence_preflight() {
+    grep -vE '^[[:space:]]*(//|\*|/\*)' "$1" |
+        grep -nE 'which +(-a +)?rdm|command -v|existsSync|accessSync|statSync' >"$TMP/preflight-hits" 2>/dev/null || true
+    [ ! -s "$TMP/preflight-hits" ]
+}
+for f in "$WF" "$WF_TEMPLATE"; do
+    if ! assert_no_existence_preflight "$f"; then
+        cat "$TMP/preflight-hits" >&2
+        fail "6c: $f must not implement the rdmBin guard as an existence preflight — the guard is on the ABSENCE of the argument"
+    fi
+done
+cp "$WF" "$TMP/preflight-mutant.js"
+printf "\nconst ok = existsSync(rdmBin)\n" >>"$TMP/preflight-mutant.js"
+if assert_no_existence_preflight "$TMP/preflight-mutant.js"; then
+    fail "6c: the existence-preflight detector missed a planted existsSync call — the gate is vacuous"
+fi
+pass "6c: no existence preflight in either copy; the detector fires on planted code"
+
+# --- 6d. Planted-mutation self-tests for 6b -----------------------------------
+say "6d. Planted-mutation self-tests: the allow-list assertion is not vacuous"
+
+# (i) a builder RE-HARDCODES this repo's dev binary path.
+sed "s|+ resolveRdmBin(cfg \&\& cfg.rdmBin) + ' worktree add '|+ './target/debug/rdm' + ' worktree add '|" "$WF" >"$TMP/pz-mut-bin.js"
+if cmp -s "$WF" "$TMP/pz-mut-bin.js"; then
+    fail "6d(i): the re-hardcoded-binary mutation did not apply — the self-test is not exercising anything"
+fi
+if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-bin.js" >/dev/null 2>&1; then
+    fail "6d(i): a re-hardcoded rdm binary was NOT detected — the binary assertion is vacuous"
+fi
+pass "6d(i): detector fires when a builder re-hardcodes the rdm binary"
+
+# (ii) projectFlag returns the flag UNCONDITIONALLY -> the no-project run gains
+#      stray --project occurrences, which run B must reject.
+sed "s|return cfg \&\& cfg.project ? ' --project ' + cfg.project : '';|return ' --project ' + ((cfg \&\& cfg.project) \|\| 'demo');|" "$WF" >"$TMP/pz-mut-uncond.js"
+if cmp -s "$WF" "$TMP/pz-mut-uncond.js"; then
+    fail "6d(ii): the projectFlag mutation did not apply"
+fi
+if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-uncond.js" >/dev/null 2>&1; then
+    fail "6d(ii): an unconditional projectFlag was NOT detected — the allow-list assertion is vacuous"
+fi
+pass "6d(ii): detector fires when projectFlag stops honoring the configured project"
+
+# (iii) a project-scoped builder DROPS its flag.
+sed "s|' worktree add ' + ref + projectFlag(cfg)|' worktree add ' + ref|" "$WF" >"$TMP/pz-mut-drop.js"
+if cmp -s "$WF" "$TMP/pz-mut-drop.js"; then
+    fail "6d(iii): the dropped-flag mutation did not apply"
+fi
+if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-drop.js" >/dev/null 2>&1; then
+    fail "6d(iii): a project-scoped command that dropped its project flag was NOT detected"
+fi
+pass "6d(iii): detector fires when a project-scoped builder drops its project flag"
 
 say "verify-workflow-review-outcome.sh: ALL GREEN"

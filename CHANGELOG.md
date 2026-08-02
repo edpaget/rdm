@@ -221,6 +221,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The `review-refute-fix` and `estimate` workflows no longer hardcode this
+  repo's `./target/debug/rdm` binary or `--project rdm` either — the same change
+  `dispatch-phase` already landed, applied to the other two engines, so all
+  three now honor ONE contract rather than each inventing its own. Both take
+  `rdmBin` (**required**, fail-closed, with no PATH fallback — pass the explicit
+  sentinel `"rdm"` to opt into PATH resolution) and an optional `project`,
+  applied only to project-scoped subcommands: `rdm model resolve` and
+  `rdm commit` never carry the flag, while `phase list/show/update`,
+  `task update` and `worktree add` do. Both args are validated at parse time, so
+  a mis-invocation throws before the first agent is dispatched and costs zero
+  tokens.
+  - `review-refute-fix`'s two legacy survivors-only shapes — `mode: "plan"`, and
+    `mode: "code"` with no item identifiers — are the one documented carve-out:
+    they emit no rdm invocations at all, so they keep working with no `rdmBin`
+    and return their existing `{ mode, survivors, budget }` result unchanged.
+  - The `rdm-review` and `rdm-estimate` skills now pass both args, so nothing
+    that works today stops working. One bounded, temporary exception: until the
+    prose `rdm-autopilot` loop is parameterized, its `estimate` pre-pass throws —
+    **non-fatally**, because that skill already logs a warning and continues
+    into its drive loop on an estimate error. Phases then dispatch at whatever
+    tier `rdm next` reports rather than a freshly-rated one; autopilot's
+    `dispatch-phase` payload is unaffected.
 - The `dispatch-phase` workflow no longer hardcodes this repo's
   `./target/debug/rdm` binary or `--project rdm`, so a downstream repo can drive
   the autonomous lane with its own executable and its own project. It now takes

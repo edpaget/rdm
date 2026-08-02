@@ -23,8 +23,12 @@ This skill is **non-interactive**. Launch unattended runs with `--permission-mod
 1. **Parse `$ARGUMENTS`** into a config object:
    - `roadmap` — the required slug (the first positional argument).
    - `phase` — the positive integer phase number, when a second positional argument is present (omit otherwise, meaning "every unestimated phase").
+   - `rdmBin` — `"./target/debug/rdm"`, this repo's development build. The workflow names no rdm executable of its own.
+   - `project` — `"rdm"`, this repo's plan project.
 2. **Gather the two mechanical values yourself and hand them to the workflow.** You are already a running agent with the repo in context; the workflow is not, so each of these otherwise costs it a whole dedicated subagent. Both are **optional** — the workflow falls back to its own in-workflow fetch for anything you omit or get wrong.
    - `mechanicalModel` — the id printed by `./target/debug/rdm model resolve mechanical`, verbatim.
    - `phaseList` — the parsed array from `./target/debug/rdm phase list --roadmap <slug> --project rdm --format json`, passed through **verbatim**, never summarized. It feeds the unestimated filter, so a summarized list would silently skip or re-rate phases.
-3. **Invoke the `estimate` workflow** via the Workflow tool with `{ roadmap, phase, mechanicalModel, phaseList }` (omit `phase` when not supplied). Pass `args` as a JSON object, never a stringified value.
+3. **Invoke the `estimate` workflow** via the Workflow tool with `{ roadmap, phase, mechanicalModel, phaseList, rdmBin: "./target/debug/rdm", project: "rdm" }` (omit `phase` when not supplied). Pass `args` as a JSON object, never a stringified value.
+
+   `rdmBin` is REQUIRED and the workflow errors without it — it refuses to guess an executable (pass the explicit sentinel `"rdm"` to opt into PATH resolution instead of a build path). `project` is optional and applies only to project-scoped subcommands; `rdm model resolve` never carries it.
 4. **Print the returned summary verbatim.** It lists each phase estimated this run with its assigned difficulty, the core-derived model tier, and the one-line justification, plus the phases skipped because they were already estimated.

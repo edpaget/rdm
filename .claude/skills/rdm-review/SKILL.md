@@ -50,10 +50,12 @@ Invoke the `review-refute-fix` Workflow tool to run the dimension-finding and pe
 
 ```
 Workflow: review-refute-fix
-args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, diff: <the object captured in step 3, or omitted> }
+args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "./target/debug/rdm", project: "rdm", diff: <the object captured in step 3, or omitted> }
 # or, for a task:
-args: { mode: "code", task: "<slug>", gate: false, diff: <the object captured in step 3, or omitted> }
+args: { mode: "code", task: "<slug>", gate: false, rdmBin: "./target/debug/rdm", project: "rdm", diff: <the object captured in step 3, or omitted> }
 ```
+
+`rdmBin` is REQUIRED on this path and the workflow errors without it — it names no rdm executable of its own and refuses to guess (pass the explicit sentinel `"rdm"` to opt into PATH resolution instead of a build path). `project` is optional and applies only to project-scoped subcommands.
 
 Always pass `gate: false` (or omit `gate`) — this skill owns the gate (step 5 below), never the workflow's own mechanical status-persist path, which is reserved for headless/ad hoc callers. The workflow returns the dispatch-shaped OUTCOME: `{ roadmap, phase, outcome, status, writesCompletion, summary, reason, findings }` (or `{ task, ... }`), with `outcome` ∈ `reviewed | rework | escalated` and `findings` already ranked survivors. Treat this as the one canonical review pass — do not additionally dispatch your own finder/refuter agents.
 
