@@ -30,7 +30,16 @@ pub fn run(
     }
 
     if skills {
-        write_skills(platform, project, principles_file, mcp, user, &out, root)?;
+        write_skills(
+            platform,
+            project,
+            principles_file,
+            mcp,
+            user,
+            &out,
+            root,
+            agent_config::SUPERSEDED_WORKFLOWS,
+        )?;
     } else {
         write_instruction(platform, project, principles_file, mcp, user, &out, root)?;
     }
@@ -98,6 +107,12 @@ fn write_mcp_json(base_dir: &Path, root: &Path) -> Result<()> {
 /// A superseded-workflow removal failure is never surfaced as an error here
 /// — it is reported on stdout and otherwise ignored, per
 /// [`agent_config::resolve_superseded_workflows`]'s contract.
+///
+/// `superseded_table` is threaded through (rather than reading
+/// [`agent_config::SUPERSEDED_WORKFLOWS`] directly) so tests can inject a
+/// synthetic non-empty table and observe that a `Failed` cleanup outcome
+/// never aborts the emit; `run` always passes the shipped production table.
+#[allow(clippy::too_many_arguments)]
 fn write_skills(
     platform: Platform,
     project: Option<String>,
@@ -106,6 +121,7 @@ fn write_skills(
     user: bool,
     out: &Option<PathBuf>,
     root: &Path,
+    superseded_table: &[agent_config::SupersededWorkflow],
 ) -> Result<()> {
     // Resolve the skills root and the base dir for .mcp.json.
     // --user → ~/.claude/skills or ~/.pi/agent/skills (base dir is
@@ -144,10 +160,8 @@ fn write_skills(
         // Clean up files superseded by an earlier emission of this same
         // lane. Reported, never fatal: a removal failure must not abort an
         // otherwise-successful emit (see the decision function's contract).
-        for outcome in agent_config::resolve_superseded_workflows(
-            &workflows_dir,
-            agent_config::SUPERSEDED_WORKFLOWS,
-        ) {
+        for outcome in agent_config::resolve_superseded_workflows(&workflows_dir, superseded_table)
+        {
             match outcome {
                 agent_config::SupersededOutcome::Removed { path } => {
                     println!("Removed {}", path.display());
@@ -160,6 +174,11 @@ fn write_skills(
                 }
                 agent_config::SupersededOutcome::Failed { path, error } => {
                     println!("Failed to remove {}: {error}", path.display());
+                }
+                agent_config::SupersededOutcome::InvalidName { name } => {
+                    println!(
+                        "Skipped {name} (invalid superseded-workflow table entry name; not a bare filename)"
+                    );
                 }
             }
         }
@@ -230,6 +249,101 @@ mod tests {
         let path = dir.path().join("nested/deep/file.txt");
         write_output(&path, b"hello world").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
+    }
+
+    /// A `Failed` superseded-workflow cleanup outcome (e.g. a permission
+    /// error on the unlink) must never abort the emit: `write_skills` still
+    /// returns `Ok(())`, and the newly emitted workflow files still land on
+    /// disk with their generated content. This exercises `write_skills`
+    /// end-to-end (not just `resolve_superseded_workflows` in isolation) by
+    /// injecting a synthetic table via the `superseded_table` parameter, per
+    /// this phase's code-review finding that the prior pass only ever
+    /// verified the failure-capture behavior of the decision function on its
+    /// own.
+    #[test]
+    #[cfg(unix)]
+    fn write_skills_failed_cleanup_does_not_abort_emit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let out_dir = tempfile::tempdir().unwrap();
+        let out = out_dir.path().to_path_buf();
+        let workflows_dir = out.join(".claude/workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+
+        // A stale file whose content matches a known fingerprint in the
+        // synthetic table below (SHA-256 of the exact bytes written here,
+        // precomputed offline).
+        let stale_content = b"stale-old-content-for-cli-failed-cleanup-test\n";
+        let stale_path = workflows_dir.join("stale-old.js");
+        std::fs::write(&stale_path, stale_content).unwrap();
+        const STALE_DIGEST: &str =
+            "817fb92cc9636eafeca8496fbceee4c9523cda22174939637ee7067b01370298";
+
+        // Pre-seed the conventionally-named workflow files too (arbitrary
+        // placeholder content) so `write_skills`'s overwrite of them below
+        // only needs write permission on each *file*, not on the directory
+        // — matching how a real re-emission encounters files that already
+        // exist. Only a brand-new file name would need directory write
+        // permission to create.
+        for workflow in agent_config::generate_workflows() {
+            std::fs::write(workflows_dir.join(workflow.relative_path), b"placeholder").unwrap();
+        }
+
+        // Removing a file requires write+execute on its parent directory;
+        // make workflows_dir read-only-and-traversable so the cleanup's
+        // unlink fails with EACCES/EPERM regardless of the file's own mode
+        // (same technique as rdm-core's
+        // resolve_superseded_workflows_reports_failed_removal_without_erroring).
+        std::fs::set_permissions(&workflows_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let table = [agent_config::SupersededWorkflow {
+            name: "stale-old.js",
+            fingerprints: &[STALE_DIGEST],
+            successor: None,
+        }];
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            write_skills(
+                Platform::Claude,
+                Some("distro-check".to_string()),
+                None,
+                false,
+                false,
+                &Some(out.clone()),
+                Path::new("."),
+                &table,
+            )
+        }));
+
+        // Restore permissions unconditionally so the tempdir can be cleaned
+        // up regardless of whether the assertions below pass or fail.
+        std::fs::set_permissions(&workflows_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let write_result = result.expect("write_skills must not panic");
+        assert!(
+            write_result.is_ok(),
+            "a Failed cleanup outcome must not abort the emit: {write_result:?}"
+        );
+
+        // The stale file survives (removal failed) ...
+        assert!(
+            stale_path.exists(),
+            "unlink failed, so the stale file must still be present"
+        );
+        // ... and the newly emitted workflow files still landed with their
+        // generated content, proving the primary emit is unaffected.
+        for workflow in agent_config::generate_workflows() {
+            let written =
+                std::fs::read(workflows_dir.join(workflow.relative_path)).unwrap_or_else(|e| {
+                    panic!("expected {} to be written: {e}", workflow.relative_path)
+                });
+            assert_eq!(
+                written,
+                workflow.content.as_bytes(),
+                "{} must be rewritten with generated content despite the Failed cleanup outcome",
+                workflow.relative_path
+            );
+        }
     }
 
     #[test]

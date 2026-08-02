@@ -421,9 +421,8 @@ pub enum SupersededOutcome {
         path: PathBuf,
     },
     /// A same-named file exists but was left in place: its content matched
-    /// no known fingerprint, it was not a plain readable file (e.g. a
-    /// directory or symlink), or its table entry's `name` was rejected as
-    /// an unsafe (non-bare) filename.
+    /// no known fingerprint, or it was not a plain readable file (e.g. a
+    /// directory or symlink).
     SkippedModified {
         /// The file left in place.
         path: PathBuf,
@@ -436,6 +435,18 @@ pub enum SupersededOutcome {
         path: PathBuf,
         /// A human-readable description of why removal failed.
         error: String,
+    },
+    /// A table entry's `name` was rejected as an unsafe (non-bare) filename
+    /// — it contained a path separator, a `..` component, was absolute, or
+    /// was empty (see [`is_bare_filename`]) — so no filesystem path was ever
+    /// constructed or touched for it. Reported like every other skip, per
+    /// this mechanism's "report every removal and every skip" contract,
+    /// carrying only the offending table-supplied name rather than a
+    /// resolved path, since resolving one would defeat the point of
+    /// rejecting it.
+    InvalidName {
+        /// The rejected table entry's `name`, verbatim.
+        name: &'static str,
     },
 }
 
@@ -478,12 +489,16 @@ fn is_bare_filename(name: &str) -> bool {
 ///   hashes to one of `entry.fingerprints`;
 /// - leaves it in place and reports [`SupersededOutcome::SkippedModified`],
 ///   if a same-named file exists but its content matches no known
-///   fingerprint, it isn't a plain file (a directory, a symlink, or
-///   otherwise unreadable), or `entry.name` was rejected as unsafe (see
-///   [`is_bare_filename`]);
+///   fingerprint, or it isn't a plain file (a directory, a symlink, or
+///   otherwise unreadable);
 /// - leaves it in place and reports [`SupersededOutcome::Failed`], if the
 ///   fingerprint matched but the removal call itself failed (e.g. a
 ///   permission error);
+/// - reports [`SupersededOutcome::InvalidName`] and never touches the
+///   filesystem at all for that entry, if `entry.name` was rejected as
+///   unsafe (see [`is_bare_filename`]) — this is a reported skip, not a
+///   silent drop, even though (unlike every other variant) it carries the
+///   table-supplied name rather than a resolved path;
 /// - produces no outcome at all, if no file exists at that path (including
 ///   when `workflows_dir` itself doesn't exist).
 ///
@@ -505,6 +520,10 @@ pub fn resolve_superseded_workflows(
     let mut outcomes = Vec::new();
     for entry in table {
         if !is_bare_filename(entry.name) {
+            // Reported, never silently dropped: no path is ever resolved
+            // for a rejected name, so this carries the raw table name
+            // rather than a joined `PathBuf`.
+            outcomes.push(SupersededOutcome::InvalidName { name: entry.name });
             continue;
         }
         let candidate = workflows_dir.join(entry.name);
@@ -1622,6 +1641,7 @@ mod tests {
                 SupersededOutcome::Removed { path }
                 | SupersededOutcome::SkippedModified { path }
                 | SupersededOutcome::Failed { path, .. } => path != &unrelated,
+                SupersededOutcome::InvalidName { .. } => true,
             }),
             "no outcome may reference a file the table never named"
         );
@@ -1658,9 +1678,20 @@ mod tests {
         ];
         let outcomes = resolve_superseded_workflows(&workflows_dir, &table);
 
-        assert!(
-            outcomes.is_empty(),
-            "traversal-shaped names must be rejected before any filesystem match, got {outcomes:?}"
+        // Both entries are reported — as `InvalidName`, not silently
+        // dropped — but neither ever resolves a filesystem path, so
+        // `escape_target` is untouched regardless.
+        assert_eq!(
+            outcomes,
+            vec![
+                SupersededOutcome::InvalidName {
+                    name: "../escape.js"
+                },
+                SupersededOutcome::InvalidName {
+                    name: "sub/escape.js"
+                },
+            ],
+            "traversal-shaped names must be rejected before any filesystem match, and reported as InvalidName, got {outcomes:?}"
         );
         assert!(
             escape_target.exists(),
