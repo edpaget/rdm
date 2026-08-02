@@ -187,6 +187,41 @@ grep -qF '**`dispatch-phase`' "$SKILL" || fail "SKILL.md must name the 'dispatch
 grep -qF '**`estimate`' "$SKILL" || fail "SKILL.md must name the 'estimate' Workflow"
 pass "exactly one named dispatch-phase Workflow call and one named estimate Workflow call"
 
+# PER-CALLER rdmBin assertion (project-agnostic-lane, phase 4). dispatch-phase's
+# `rdmBin` arg is REQUIRED and FAIL-CLOSED: there is no ambient/PATH fallback, so
+# a caller that passes no `rdmBin` throws before the workflow's first agent()
+# call. This skill IS such a caller, so its dispatch-phase invocation line must
+# carry the arg with this repo's development-build path. Line-scoped (not a
+# whole-file grep), so an `rdmBin` mentioned anywhere else cannot satisfy it.
+assert_autopilot_dispatch_rdmbin() {
+    grep -F 'dispatch-phase` Workflow**' "$1" >"$TMP/ap-dispatch-line" 2>/dev/null || return 1
+    [ -s "$TMP/ap-dispatch-line" ] || return 1
+    grep -qF 'rdmBin' "$TMP/ap-dispatch-line" || return 1
+    grep -qF './target/debug/rdm' "$TMP/ap-dispatch-line" || return 1
+    return 0
+}
+assert_autopilot_dispatch_rdmbin "$SKILL" ||
+    fail "the dispatch-phase invocation line must pass rdmBin: \"./target/debug/rdm\" — dispatch-phase requires it and errors without it (no PATH fallback)"
+pass "the dispatch-phase invocation line passes rdmBin with this repo's development-build path"
+
+# Self-test: prove the assertion is not vacuous.
+sed 's/rdmBin/rdmBn/g' "$SKILL" >"$TMP/ap-rdmbin-mutant.md"
+if assert_autopilot_dispatch_rdmbin "$TMP/ap-rdmbin-mutant.md"; then
+    fail "the autopilot rdmBin detector missed a mangled key — the check is vacuous"
+fi
+pass "autopilot rdmBin detector fires on a mangled key"
+
+# SPLIT BOUND (project-agnostic-lane, phase 4 vs phase 10): phase 4 threads the
+# dispatch-phase CALL PAYLOAD only. The drive loop's OWN Bash commands (`rdm
+# next`, advance/park, read-back, model resolve) stay hardcoded here until phase
+# 10 parameterizes the prose loop itself. If these literals ever vanish, phase
+# 10's subject has been silently absorbed and the split is no longer honest.
+grep -qF './target/debug/rdm' "$SKILL" ||
+    fail "SKILL.md must still carry its own './target/debug/rdm' Bash literals — parameterizing the prose drive loop belongs to phase 10, not phase 4"
+grep -qF -- '--project rdm' "$SKILL" ||
+    fail "SKILL.md must still carry its own '--project rdm' Bash literals — parameterizing the prose drive loop belongs to phase 10, not phase 4"
+pass "the prose drive loop still carries its own binary/project literals (phase 10's subject is untouched)"
+
 # The four guardrails, present as literal text.
 grep -qF 'Single roadmap' "$SKILL" || fail "missing guardrail 1: single roadmap"
 grep -qF 'same fixed' "$SKILL" || fail "guardrail 1 must state every command uses the SAME fixed --roadmap"

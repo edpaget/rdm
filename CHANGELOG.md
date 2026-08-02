@@ -221,6 +221,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The `dispatch-phase` workflow no longer hardcodes this repo's
+  `./target/debug/rdm` binary or `--project rdm`, so a downstream repo can drive
+  the autonomous lane with its own executable and its own project. It now takes
+  a **required** `rdmBin` argument — the exact rdm executable to invoke; pass
+  `"rdm"` to opt into `PATH` resolution explicitly — and an **optional**
+  `project` argument, applied only to project-scoped subcommands (`rdm model
+  resolve` and `rdm commit` never receive a project flag; omitting `project`
+  emits no flag at all, so rdm's own `RDM_PROJECT`/`default_project` chain
+  applies). A `Workflow` invocation that omits `rdmBin` now fails fast with an
+  actionable error, before spending a single token, instead of silently running
+  whichever `rdm` happens to be first on `PATH`; there is deliberately no
+  existence preflight, because a stale global `rdm` would pass one. A `project`
+  value that is not a plain name is rejected rather than interpolated into an
+  agent's shell prompt. The `rdm-dispatch-phase`, `rdm-do --auto` (both the
+  phase and task flows) and `rdm-autopilot` skills all pass the new arguments,
+  in both the CLI and MCP variants.
+
 - The shipped code-review pipeline now decides **which conditional dimensions
   run from the CONTENT of the diff rather than from rdm-specific file paths**, so
   `api-docs`, `changelog` and `security` fire correctly in any repository and any

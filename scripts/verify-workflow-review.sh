@@ -3933,6 +3933,11 @@ const planMod = await import(pathToFileURL(planPath).href);
 
 const { buildReviewPipeline, NON_GATING_SEVERITIES, needsRefutation, UNREFUTED_DISPOSITION } = mod;
 const { buildCodeActPrompt, CODE_ACT_SCHEMA } = dispatchMod;
+// buildCodeActPrompt takes a trailing environment cfg ({ rdmBin, project })
+// since the project-agnostic-lane parameterization. With THIS repo's dogfood
+// values the rendered prompt is byte-identical to the pre-parameterization
+// text, which is what CODE_ACT_BASELINE below pins.
+const DOGFOOD_CFG = { rdmBin: './target/debug/rdm', project: 'rdm' };
 const { buildActPrompt } = planMod;
 
 // Same reference runtime as section 3: order-preserving, with the documented
@@ -4062,7 +4067,7 @@ const MIXED = VERIFIED_ONLY.concat([{ id: 'f2', severity: 'suggestion', confiden
 
 // af-2: the LEADING claim is conditional. With a mixed payload neither prompt may
 // keep asserting that everything in it survived refutation.
-const codeMixed = buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', MIXED);
+const codeMixed = buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', MIXED, DOGFOOD_CFG);
 assert.ok(codeMixed.includes(UNREFUTED_DISPOSITION), 'code act prompt carries the disposition rule verbatim');
 assert.ok(
   !codeMixed.includes('These findings survived refutation'),
@@ -4087,7 +4092,7 @@ assert.ok(
 const CODE_ACT_BASELINE = 'You are acting on ALREADY-VERIFIED code-review findings for rm/phase-1-x (worktree: wt/rm).\nThese findings survived refutation and are non-gating (the reviewed outcome is already decided).\n[\n  {\n    "id": "f1",\n    "severity": "concern",\n    "confidence": 90,\n    "what_fails": "x"\n  }\n]\nFor EACH finding, decide SMALL vs LARGE:\n- SMALL — localized, low-risk, no new acceptance criterion (a typo, a missing doc comment, a tightened error message, an extra test). Fix it directly in the worktree at wt/rm and re-run the relevant tests. Do not create a separate landing commit — the fix folds into the eventual land-time commit.\n- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance criterion. Do NOT edit code for these: file it with `./target/debug/rdm task create <slug> --title "Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.\nReturn JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — id, action (fixed-inline|filed-as-task), and taskSlug when you filed a task.';
 const PLAN_ACT_BASELINE = 'You are the plan-review orchestrator applying already-verified findings. The findings below already\nsurvived independent refutation — do not re-review; act on them.\nFindings (ranked, most-severe first):\n[\n  {\n    "id": "f1",\n    "severity": "concern",\n    "confidence": 90,\n    "what_fails": "x"\n  }\n]\nFor each finding, decide small vs large:\n- SMALL (a localized wording/typo/missing-detail fix to the plan document itself): apply it by reading the\n  current body and writing the ENTIRE modified body back — `--body` is whole-document-authoritative, there\n  is no patch mechanism. Use the matching command:\n    ./target/debug/rdm phase update phase-1-x --roadmap rm --body "<full updated body>" --no-edit --project rdm\n- LARGE (a structural concern: a missing prerequisite, scope too big for one phase, a conflicting design\n  decision): do NOT edit the plan document — file it as a task, with `--no-plan-review` so this finding\n  does not itself get re-stamped `needs-plan-review`:\n    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-plan-review --no-edit --project rdm\nAfter applying any changes, run: ./target/debug/rdm commit -m "chore(plan): address plan review findings on rm/phase-1-x"\nIf there is nothing small to fix and nothing large to file, make no changes.\nReturn a STAMP_ACK object: { ok: true } if you completed without error (including the no-op case), else { ok: false }.';
 assert.equal(
-  buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', VERIFIED_ONLY),
+  buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', VERIFIED_ONLY, DOGFOOD_CFG),
   CODE_ACT_BASELINE,
   'an all-verified code act prompt is byte-identical to the pre-change baseline'
 );
@@ -4291,7 +4296,7 @@ import { pathToFileURL } from 'node:url';
 const dispatchMod = await import(pathToFileURL(process.argv[2]).href);
 const planMod = await import(pathToFileURL(process.argv[3]).href);
 const MIXED = [{ id: 'f2', severity: 'suggestion', confidence: 90, unrefuted: true }];
-const codePrompt = dispatchMod.buildCodeActPrompt('phase', 'rm', 'p1', 'wt', MIXED);
+const codePrompt = dispatchMod.buildCodeActPrompt('phase', 'rm', 'p1', 'wt', MIXED, { rdmBin: './target/debug/rdm', project: 'rdm' });
 const planPrompt = planMod.buildActPrompt('phase', 'rm', 'p1', MIXED);
 assert.throws(
   () => assert.ok(codePrompt.includes('reported, not verified')),
@@ -4318,7 +4323,7 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 const dispatchMod = await import(pathToFileURL(process.argv[2]).href);
 const MIXED = [{ id: 'f2', severity: 'suggestion', confidence: 90, unrefuted: true }];
-const prompt = dispatchMod.buildCodeActPrompt('phase', 'rm', 'p1', 'wt', MIXED);
+const prompt = dispatchMod.buildCodeActPrompt('phase', 'rm', 'p1', 'wt', MIXED, { rdmBin: './target/debug/rdm', project: 'rdm' });
 assert.throws(
   () => assert.ok(!prompt.includes('These findings survived refutation')),
   'an unconditional "survived refutation" lead must FAIL the mixed-payload check — else the check is vacuous'

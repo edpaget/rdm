@@ -1587,6 +1587,84 @@ fail-open contract). `verify-workflow-dispatch.sh` pins both halves: exactly one
 `findPrompt`/`refutePrompt`, plus the `deriveSignals(` / `signals:` /
 `diff:signals` wiring.
 
+### Environment args: `rdmBin` and `project`
+
+`dispatch-phase` names NO particular rdm executable and NO particular rdm
+project. Both are **runtime args**, threaded through a trailing `cfg` parameter
+on every prompt builder that shells out. This is the contract the rest of the
+project-agnostic lane consumes — the same helper shape and the same allow-list
+apply to `review-refute-fix` / `estimate` and to the prose `rdm-autopilot` loop
+when those are parameterized; they must not re-derive it.
+
+| arg       | required | shape                                            | applies to |
+| --------- | -------- | ------------------------------------------------ | ---------- |
+| `rdmBin`  | **yes**  | non-empty, non-whitespace string                 | every emitted `rdm` invocation |
+| `project` | no       | plain name matching `/^[A-Za-z0-9._-]+$/`, or absent | PROJECT-SCOPED subcommands only |
+
+An emit-time `{rdm_bin}` placeholder is not workable here:
+`.claude/workflows/*.js` is simultaneously the template `generate_workflows()`
+`include_str!`s **and** the file the Workflow tool executes, so a placeholder
+would sit unsubstituted in the file rdm itself runs. Runtime args change no
+bytes, which is also why every byte-identity gate stays green across this
+change.
+
+#### The project-agnostic allow-list
+
+`projectFlag(cfg)` (`cfg && cfg.project ? ' --project ' + cfg.project : ''`,
+the same shape `backlog.js` uses) is appended at **project-scoped** call sites
+only. These subcommands reject `--project` outright and must carry NO flag:
+
+    rdm model resolve, rdm commit    (and rdm status / rdm discard, if added)
+
+Every other subcommand this lane emits is project-scoped and takes the flag:
+`phase list/show/update`, `task list/show/create/update`, `worktree add`,
+`next`, `search`. A blanket append would produce commands that fail at runtime
+while still satisfying a naive whole-file grep, which is why
+`scripts/verify-workflow-dispatch.sh` § 9b drives the real workflow under a
+capturing fake agent, tokenizes every emitted `rdm <subcommand>` occurrence, and
+checks each against the allow-list expressed **as data** — flag present iff the
+subcommand is not on the list, and zero `--project` occurrences at all when no
+project was configured.
+
+#### Why `rdmBin` is fail-closed, with no ambient default
+
+`resolveRdmBin(value)` has exactly two states: it returns a non-empty string
+verbatim, or it **throws**. There is deliberately no PATH fallback for an absent
+key:
+
+- A default of bare `rdm` would silently run whichever global rdm is first on
+  `PATH`. In the rdm repo itself that is a stale installed build, which the
+  project's development-build rule forbids.
+- An **existence preflight does not close this**. `which -a rdm` resolves to the
+  stale global, so the check passes while running exactly the wrong binary.
+  `verify-workflow-dispatch.sh` § 9c greps (over non-comment lines) to prove the
+  guard was not implemented that way.
+- An identity check against a caller-supplied path is not viable either: in the
+  case being guarded the caller supplied **nothing**, so there is no path to
+  compare against — and detecting "we are in the rdm repo" is precisely the
+  repo-specific knowledge this parameterization removes.
+
+A caller that genuinely wants `PATH` resolution opts in **explicitly** by
+passing the sentinel `rdmBin: 'rdm'`, which is accepted verbatim. Validation
+runs inside `parseDispatchArgs`, which the driver executes as its very first
+statement, so a mis-invocation throws before any `agent()` call and costs zero
+tokens (the same discipline as `parseBudget`).
+
+**A fail-closed required arg obliges rewiring every caller in the same change
+that makes it required.** Because there is no ambient default, a caller left
+un-threaded does not degrade — it throws on first dispatch. The verified callers
+of the `dispatch-phase` Workflow are `.claude/skills/rdm-dispatch-phase`,
+`.claude/skills/rdm-do` (both `--auto` flows), `.claude/skills/rdm-autopilot`,
+and the shipped `skill-dispatch-phase-{cli,mcp}.md` /
+`skill-do-{cli,mcp}.md` / `skill-autopilot-{cli,mcp}.md` templates. All of them
+pass `rdmBin`, asserted per-shim by `verify-workflow-do-auto.sh`,
+`verify-workflow-do-auto-task.sh`, `verify-skill-autopilot.sh`, and
+`verify-agent-config-distribution.sh` § 6d, each with a planted-removal
+self-test. The MCP shims are included on purpose: an MCP shim runs no CLI
+commands of its own, but the workflow it invokes still shells out through Bash
+agents, so omitting `rdmBin` "because MCP" would hard-break the downstream MCP
+lane on first dispatch.
+
 ## autopilot contract
 
 Autopilot is now the prose `rdm-autopilot` skill
@@ -1660,6 +1738,10 @@ classification rule behind them, and the measured delta live in
 | `document` | `mechanicalModel` | `model:mechanical` | non-empty string |
 | `document` | `roadmapMeta` | `fetch:roadmap-meta` | object with `found === true` and an array `phases` |
 | `review-refute-fix` | `diff` | `diff:signals` | object with an array `changedFiles` |
+
+`rdmBin` is **not** a hoist and is **not** optional — it is an environment arg
+with no fallback path at all (see "Environment args" above); `project` is
+optional but is likewise an environment arg rather than a mechanical-agent hoist.
 
 ### The invariant: every hoist is optional
 

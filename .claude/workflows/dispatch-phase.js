@@ -4,7 +4,17 @@
 //   Plan → PlanReview → Implement → CodeReview → OUTCOME.
 // It replaces rdm-dispatch-phase's prose orchestration with a mechanical driver.
 //
-// Invoke with args: { roadmap: '<roadmap-slug>', phase: '<stem-or-number>' } (phase mode) or { task: '<slug>' } (task mode).
+// Invoke with args: { roadmap: '<roadmap-slug>', phase: '<stem-or-number>', rdmBin, project? } (phase mode)
+// or { task: '<slug>', rdmBin, project? } (task mode).
+//   rdmBin  — REQUIRED. The exact rdm executable every Bash-agent prompt shells
+//             out to. There is NO ambient/PATH fallback: an absent key throws
+//             before the first agent() call rather than silently running
+//             whichever global rdm is first on PATH. Pass the sentinel 'rdm' to
+//             opt into PATH resolution explicitly.
+//   project — optional. Appended as ` --project <name>` to PROJECT-SCOPED
+//             subcommands only; `rdm model resolve` and `rdm commit` never carry
+//             it. Omitted entirely when unset, so rdm's own resolution chain
+//             (RDM_PROJECT / default_project) applies.
 // Returns the OUTCOME contract: phase mode { roadmap, phase, outcome, status,
 // writesCompletion, summary, reason, findings }; task mode { task, outcome,
 // status, writesCompletion, summary, reason, findings }, outcome ∈ { reviewed, rework,
@@ -1808,6 +1818,77 @@ function buildReviewPipeline(mode, deps) {
 // review. It must never be conflated with "unset" by a falsy check.
 const DEFAULT_MAX_PLAN_REVISE = 2;
 
+// --- Environment args: `rdmBin` and `project` --------------------------------
+//
+// dispatch-phase names NO particular rdm executable and NO particular rdm
+// project. Both arrive as RUNTIME args (`rdmBin`, `project`) and are threaded
+// into every prompt that shells out, via the `cfg` object each prompt builder
+// takes as its trailing parameter. This is the CONTRACT the rest of the
+// project-agnostic lane consumes — do not re-derive it elsewhere.
+//
+// PROJECT-AGNOSTIC ALLOW-LIST — the subcommands that must carry NO project
+// flag, because rdm rejects `--project` on them outright:
+//
+//     rdm model resolve, rdm commit   (and rdm status / rdm discard, if added)
+//
+// EVERY other subcommand this lane emits is PROJECT-SCOPED and takes the flag:
+// phase list/show/update, task list/show/create/update, worktree add, next,
+// search. A blanket append would produce commands that fail at runtime while
+// still satisfying a naive whole-file grep, which is why the allow-list is
+// asserted as DATA by scripts/verify-workflow-dispatch.sh § 9b rather than by
+// grepping every line.
+//
+// Canonical write-up: docs/workflow-schemas.md
+// § "Environment args: `rdmBin` and `project`".
+
+// projectFlag(cfg) — the ` --project <name>` suffix to append to a
+// PROJECT-SCOPED command, or '' when no project was configured (rdm's standard
+// resolution chain then applies). Same shape as .claude/workflows/backlog.js.
+function projectFlag(cfg) {
+  return cfg && cfg.project ? ' --project ' + cfg.project : '';
+}
+
+// resolveRdmBin(value) — FAIL-CLOSED resolution of the rdm executable to invoke.
+//
+// There is NO ambient/PATH fallback for an absent key, deliberately. Defaulting
+// to a bare `rdm` would silently run whichever global rdm happens to be first on
+// PATH; inside the rdm repo that is a stale installed build, which the project's
+// development-build rule forbids outright. An existence preflight (`which rdm`,
+// `command -v`, an fs check) does NOT close this: the stale global EXISTS, so
+// the check passes while running exactly the wrong binary. Nor can the guard
+// compare against a caller-supplied path — in the case being guarded the caller
+// supplied nothing. So the guard is on the ABSENCE of the argument itself.
+//
+// A caller that genuinely wants PATH resolution opts in EXPLICITLY with the
+// sentinel `rdmBin: 'rdm'`, which is accepted verbatim. Because there is no
+// fallback, EVERY caller must pass this arg in the same change that makes it
+// required — an un-threaded caller throws before the first agent() call.
+function resolveRdmBin(value) {
+  if (typeof value === 'string' && value.trim() !== '') return value;
+  throw new Error(
+    'dispatch-phase: rdmBin is required — pass the exact rdm executable to invoke (a repo-local ' +
+      'build path, or the explicit sentinel "rdm" to opt into PATH resolution). Refusing to guess: ' +
+      'an absent rdmBin would silently run whatever global rdm is on PATH.'
+  );
+}
+
+// parseProjectArg(value) — validate the OPTIONAL project name. Any falsy value
+// (absent / null / '' / 0 / false) means "emit no project flag at all" — never
+// ` --project false`. Anything else must be a plain project name: the value is
+// interpolated into a Bash-agent prompt, so whitespace and shell metacharacters
+// are rejected rather than escaped.
+function parseProjectArg(value) {
+  if (!value) return '';
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(
+      'dispatch-phase: project must be a plain project name matching /^[A-Za-z0-9._-]+$/ (got "' +
+        String(value) +
+        '")'
+    );
+  }
+  return value;
+}
+
 // parseBudget(value, flag, fallback) — validate a per-run budget override.
 // Unset (null/undefined/'') falls back to the caller's default. Anything else
 // must be a non-negative integer; a non-integer string is REJECTED rather than
@@ -1849,6 +1930,13 @@ function parseDispatchArgs(args) {
     }
   }
   if (!dispatchArgs || typeof dispatchArgs !== 'object') dispatchArgs = {};
+  // The two ENVIRONMENT axes are resolved BEFORE the returned object literal, so
+  // validation order is deterministic and independent of property-evaluation
+  // order: rdmBin first (fail-closed — no ambient default), then the optional
+  // project name. Like the budgets, both are validated HERE, at parse time, so a
+  // mis-invocation costs zero tokens.
+  const rdmBin = resolveRdmBin(dispatchArgs.rdmBin);
+  const project = parseProjectArg(dispatchArgs.project);
   return {
     roadmap: dispatchArgs.roadmap || '',
     phase: dispatchArgs.phase || '',
@@ -1878,6 +1966,12 @@ function parseDispatchArgs(args) {
     // the workflow's own observability stamp is redundant. NEVER set by a
     // --plan-only invocation (the workflow suppresses the stamp there anyway).
     alreadyInProgress: !!dispatchArgs.alreadyInProgress,
+    // --- Environment axes (see the contract block above).
+    // `rdmBin` is REQUIRED — the exact rdm executable every Bash-agent prompt
+    // shells out to. `project` is OPTIONAL and applies ONLY to project-scoped
+    // subcommands; '' means "emit no project flag".
+    rdmBin: rdmBin,
+    project: project,
   };
 }
 
@@ -2095,14 +2189,19 @@ const CODE_ACT_SCHEMA = {
   },
 };
 
-// buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) — the
-// code-lane Act step: an already-verified surviving finding is incorporated by
-// SIZE, not severity (severity already decided the outcome — this decides
+// buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, cfg) —
+// the code-lane Act step: an already-verified surviving finding is incorporated
+// by SIZE, not severity (severity already decided the outcome — this decides
 // whether/how the finding is acted on). Modeled directly on
 // lib/plan-review.mjs's buildActPrompt, but code-review findings are fixed
 // inline in the worktree (no whole-document authoritative-body rewrite) and
 // large ones are filed with `rdm task create`, not a plan-doc note.
-function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) {
+//
+// `cfg` is the environment payload `{ rdmBin, project }`. `task create` is a
+// PROJECT-SCOPED subcommand, so it carries the project flag.
+function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
+  const proj = projectFlag(cfg);
   const target = kind === 'task' ? 'task/' + ident : roadmapOrTask + '/' + ident;
   // Provenance is MIXED once the review passes a non-gating finding through
   // un-refuted, so the LEADING claim has to be conditional: an unconditional
@@ -2130,8 +2229,8 @@ function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) 
       ' and re-run the relevant tests. Do not create a separate landing commit — the fix folds into the ' +
       'eventual land-time commit.',
     '- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance ' +
-      'criterion. Do NOT edit code for these: file it with `./target/debug/rdm task create <slug> --title ' +
-      '"Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.'
+      'criterion. Do NOT edit code for these: file it with `' + bin + ' task create <slug> --title ' +
+      '"Code review finding: <desc>" --body "<details>" --tags code-review --no-edit' + proj + '`.'
   );
   if (hasUnrefuted) {
     lines.push(UNREFUTED_DISPOSITION);
@@ -2494,42 +2593,53 @@ const PLAN_DOC_SCHEMA = {
 
 // Stage 0: a mechanical Bash agent reads the phase JSON (the runtime cannot shell
 // out itself). Sized to the small/mechanical tier.
-function buildFetchPrompt(roadmap, phase) {
+//
+// Every builder below takes the environment payload `cfg` = { rdmBin, project }
+// as its TRAILING parameter and resolves it through `resolveRdmBin` /
+// `projectFlag` (both from the copied dispatch-outcome block above, where the
+// project-agnostic allow-list is documented). `phase show` / `task show` are
+// project-scoped and take the flag; `model resolve` is project-agnostic and must
+// never carry one.
+function buildFetchPrompt(roadmap, phase, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin)
+  const proj = projectFlag(cfg)
   return [
     'You are a mechanical fetch agent. Do not plan or implement anything.',
     'Run exactly this command in the repo root and read its JSON output:',
-    '  ./target/debug/rdm phase show --roadmap ' + roadmap + ' ' + phase + ' --project rdm --format json',
+    '  ' + bin + ' phase show --roadmap ' + roadmap + ' ' + phase + proj + ' --format json',
     'Return a PHASE_META object: roadmap (the roadmap slug), phase (the stem-or-number you were given),',
     'stem (the phase JSON `stem`), model (the phase JSON `model` tier: small|medium|large),',
     'and body (the phase JSON `body` verbatim). If the command fails or the body is empty, return an empty body.',
     'Then resolve the models for this dispatch. Let T be the phase JSON `model` field.',
     'If T is a non-empty string, run these two WITH the tier hint:',
-    '  ./target/debug/rdm model resolve plan --tier T',
-    '  ./target/debug/rdm model resolve implement --tier T',
+    '  ' + bin + ' model resolve plan --tier T',
+    '  ' + bin + ' model resolve implement --tier T',
     'If T is empty or missing, run the same two with NO --tier argument.',
     'ALWAYS run these three with NO --tier argument, whatever T is:',
-    '  ./target/debug/rdm model resolve review-find',
-    '  ./target/debug/rdm model resolve review-verify',
-    '  ./target/debug/rdm model resolve mechanical',
+    '  ' + bin + ' model resolve review-find',
+    '  ' + bin + ' model resolve review-verify',
+    '  ' + bin + ' model resolve mechanical',
     'Return the five resulting model ids verbatim in a `models` object with keys',
     'plan, implement, review_find, review_verify, mechanical. Do not invent ids; if a command fails, return an empty body.',
   ].join('\n')
 }
 
-function buildTaskFetchPrompt(slug) {
+function buildTaskFetchPrompt(slug, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin)
+  const proj = projectFlag(cfg)
   return [
     'You are a mechanical fetch agent. Do not plan or implement anything.',
     'Run exactly this command in the repo root and read its JSON output:',
-    '  ./target/debug/rdm task show ' + slug + ' --project rdm --format json',
+    '  ' + bin + ' task show ' + slug + proj + ' --format json',
     'Return a TASK_META object: task (the slug you were given) and body (the task JSON `body` verbatim).',
     'If the command fails or the body is empty, return an empty body.',
     'Then resolve the models for this dispatch. A task carries NO tier, so run all five',
     'resolver commands with NO --tier argument:',
-    '  ./target/debug/rdm model resolve plan',
-    '  ./target/debug/rdm model resolve implement',
-    '  ./target/debug/rdm model resolve review-find',
-    '  ./target/debug/rdm model resolve review-verify',
-    '  ./target/debug/rdm model resolve mechanical',
+    '  ' + bin + ' model resolve plan',
+    '  ' + bin + ' model resolve implement',
+    '  ' + bin + ' model resolve review-find',
+    '  ' + bin + ' model resolve review-verify',
+    '  ' + bin + ' model resolve mechanical',
     'Return the five resulting model ids verbatim in a `models` object with keys',
     'plan, implement, review_find, review_verify, mechanical. Do not invent ids; if a command fails, return an empty body.',
   ].join('\n')
@@ -2539,14 +2649,17 @@ function buildTaskFetchPrompt(slug) {
 // moment real work begins on it. Best-effort — never gated, never retried; see
 // the driver call site (right after Stage 0, before the plan gate) for the
 // try/catch that keeps a failed stamp from affecting control flow.
-function buildStampInProgressPrompt(isTaskFlag, roadmapSlugArg, target) {
+function buildStampInProgressPrompt(isTaskFlag, roadmapSlugArg, target, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin)
+  const proj = projectFlag(cfg)
   const cmd = isTaskFlag
-    ? './target/debug/rdm task update ' + target + ' --status in-progress --no-edit --project rdm'
-    : './target/debug/rdm phase update ' +
+    ? bin + ' task update ' + target + ' --status in-progress --no-edit' + proj
+    : bin +
+      ' phase update ' +
       target +
       ' --status in-progress --no-edit --roadmap ' +
       roadmapSlugArg +
-      ' --project rdm'
+      proj
   return [
     'You are a mechanical status agent. Do not plan, implement, or review anything.',
     'Run exactly this command in the repo root:',
@@ -2597,11 +2710,17 @@ function buildPlanRevisePrompt(phaseBody, planDocText, rankedPlanFindings) {
 // criterion need not also appear as a finding), so an AC-only-gap rework round
 // (empty `findings`) still needs `acTable` rendered or the implementer gets no
 // signal about what to fix at all.
-function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes) {
+//
+// `cfg` is the trailing environment payload { rdmBin, project }; `reworkNotes`
+// keeps its slot, so the first-pass call site passes an explicit `null` for it
+// rather than letting `cfg` slide into the wrong parameter.
+function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin)
+  const proj = projectFlag(cfg)
   const lines = [
     'You are an implementation agent. You are seeded with ONLY the item body and the approved plan below.',
     'First, create/enter the worktree for this item and work THERE:',
-    '  ./target/debug/rdm worktree add ' + worktreeRef + ' --project rdm',
+    '  ' + bin + ' worktree add ' + worktreeRef + proj,
     'then `cd` into the path it prints. Do all edits and the commit in that worktree.',
     '--- PHASE BODY ---',
     phaseBody,
@@ -2615,9 +2734,13 @@ function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes) 
       worktreeRef +
       ' worktree, not main. If the side-task body cites a file or behavior introduced by this worktree\'s not-yet-landed work, tag it `depends-unlanded` and phrase the body as "<file/behavior>, introduced by ' +
       worktreeRef +
-      ', not yet on main" — e.g. `./target/debug/rdm task create sweep-x --title "..." --body "rdm-core/src/ops/tag.rs, introduced by ' +
+      ', not yet on main" — e.g. `' +
+      bin +
+      ' task create sweep-x --title "..." --body "rdm-core/src/ops/tag.rs, introduced by ' +
       worktreeRef +
-      ', not yet on main. ..." --tags depends-unlanded --no-edit --project rdm`.',
+      ', not yet on main. ..." --tags depends-unlanded --no-edit' +
+      proj +
+      '`.',
   ]
   if (reworkNotes) {
     const notesFindings = Array.isArray(reworkNotes.findings) ? reworkNotes.findings : []
@@ -2660,11 +2783,13 @@ function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes) 
 // the branch, so a later phase sees the whole branch diff. That is
 // over-inclusive (a trigger may fire for an earlier phase's files) but never
 // under-inclusive, which is the safe direction for a coverage gate.
-function buildDiffSignalsPrompt(worktreeRef) {
+function buildDiffSignalsPrompt(worktreeRef, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin)
+  const proj = projectFlag(cfg)
   return [
     'You are a mechanical diff agent. Do not review, plan, or implement anything, and edit no files.',
     'Find the worktree for this item and work THERE:',
-    '  ./target/debug/rdm worktree add ' + worktreeRef + ' --project rdm',
+    '  ' + bin + ' worktree add ' + worktreeRef + proj,
     '(it prints the existing path if the worktree already exists) then `cd` into that path.',
     'Run exactly these two commands and read their output:',
     '  git diff --name-only main...HEAD',
@@ -2711,6 +2836,14 @@ const maxRefutations = dispatchArgs.maxRefutations
 // `Workflow` invocation (no caller) always does.
 const hoistedMeta = isTask ? dispatchArgs.taskMeta : dispatchArgs.phaseMeta
 const alreadyInProgress = dispatchArgs.alreadyInProgress
+// The two ENVIRONMENT axes, already resolved and validated by parseDispatchArgs:
+// `rdmBin` is REQUIRED (fail-closed — an absent key threw above, before any
+// agent() call, rather than falling back to whatever `rdm` is on PATH) and
+// `project` is optional (''  means "emit no project flag"). Bundled once as
+// `cfg` and threaded into every prompt builder that shells out.
+const rdmBin = dispatchArgs.rdmBin
+const project = dispatchArgs.project
+const cfg = { rdmBin: rdmBin, project: project }
 
 // itemOutcome — emit the identifier-correct OUTCOME for whichever mode is
 // active. Keeps every downstream return site mode-agnostic.
@@ -2771,12 +2904,12 @@ if (hoistedMetaComplete(hoistedMeta, isTask)) {
   log('dispatch-phase: fetching ' + (isTask ? 'task' : 'phase') + ' meta for ' + itemLabelRaw + ' (no usable caller hoist)')
   try {
     phaseMeta = isTask
-      ? await agent(buildTaskFetchPrompt(taskSlug), {
+      ? await agent(buildTaskFetchPrompt(taskSlug, cfg), {
           label: 'fetch:task-meta',
           phase: 'Plan',
           schema: TASK_META_SCHEMA,
         })
-      : await agent(buildFetchPrompt(roadmap, phaseArg), {
+      : await agent(buildFetchPrompt(roadmap, phaseArg, cfg), {
           label: 'fetch:phase-meta',
           phase: 'Plan',
           schema: PHASE_META_SCHEMA,
@@ -2853,7 +2986,7 @@ if (!planOnly) {
   } else {
     try {
       const target = isTask ? taskSlug : stem
-      const stampAck = await agent(buildStampInProgressPrompt(isTask, roadmapSlug, target), {
+      const stampAck = await agent(buildStampInProgressPrompt(isTask, roadmapSlug, target, cfg), {
         label: 'stamp:in-progress',
         phase: 'Implement',
         schema: STAMP_ACK_SCHEMA,
@@ -2965,13 +3098,13 @@ const codeGate = await runCodeGate(
     implement: async (notes) => {
       const r =
         notes == null
-          ? await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText), {
+          ? await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, null, cfg), {
               model: models.implement,
               label: 'implement:worktree',
               phase: 'Implement',
               schema: IMPLEMENT_RESULT_SCHEMA,
             })
-          : await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, notes), {
+          : await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, notes, cfg), {
               model: models.implement,
               label: 'implement:rework',
               phase: 'Implement',
@@ -2998,7 +3131,7 @@ const codeGate = await runCodeGate(
         log('dispatch-phase: diff signals absorbed from the implementer for ' + itemLabel)
       } else {
         try {
-          diff = await agent(buildDiffSignalsPrompt(worktreeRef), {
+          diff = await agent(buildDiffSignalsPrompt(worktreeRef, cfg), {
             label: 'diff:signals',
             phase: 'Review',
             schema: DIFF_SIGNALS_SCHEMA,
@@ -3031,7 +3164,7 @@ const codeGate = await runCodeGate(
     // buildCodeActPrompt. A missing/failing agent call never affects the
     // outcome (runCodeGate already swallows a throw from this dep).
     act: async (findings) =>
-      agent(buildCodeActPrompt(isTask ? 'task' : 'phase', roadmap, isTask ? taskSlug : stem, worktreeRef, findings), {
+      agent(buildCodeActPrompt(isTask ? 'task' : 'phase', roadmap, isTask ? taskSlug : stem, worktreeRef, findings, cfg), {
         model: models.implement,
         label: 'act:code',
         phase: 'Act',

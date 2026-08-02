@@ -180,14 +180,17 @@ function tally(labels) {
  */
 async function measureDispatch(run, mode) {
   const isTask = mode === 'task';
-  const baseArgs = isTask ? { task: 'my-task' } : { roadmap: 'rm', phase: '1' };
+  // `rdmBin` is REQUIRED by the workflow's fail-closed environment contract (no
+  // ambient PATH fallback), so BOTH runs carry the explicit `'rdm'` sentinel.
+  // It is identical across the two runs, so it cannot influence the delta.
+  const baseArgs = isTask ? { task: 'my-task', rdmBin: 'rdm' } : { roadmap: 'rm', phase: '1', rdmBin: 'rdm' };
 
   const before = makeAgent({ absorbDiff: false });
   const outBefore = await run(baseArgs, before.agent, refPipeline, refParallel, () => {});
 
   const hoistedArgs = isTask
-    ? { task: 'my-task', taskMeta: TASK_META, alreadyInProgress: true }
-    : { roadmap: 'rm', phase: '1', phaseMeta: PHASE_META, alreadyInProgress: true };
+    ? { task: 'my-task', rdmBin: 'rdm', taskMeta: TASK_META, alreadyInProgress: true }
+    : { roadmap: 'rm', phase: '1', rdmBin: 'rdm', phaseMeta: PHASE_META, alreadyInProgress: true };
   const after = makeAgent({ absorbDiff: true });
   const outAfter = await run(hoistedArgs, after.agent, refPipeline, refParallel, () => {});
 

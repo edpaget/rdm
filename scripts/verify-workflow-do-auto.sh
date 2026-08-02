@@ -79,6 +79,33 @@ pass "frontmatter lists the Workflow tool"
 grep -q '^## Auto phase dispatch' "$SKILL" || fail "missing '## Auto phase dispatch' section header"
 pass "'## Auto phase dispatch' section header present"
 
+# PER-SHIM rdmBin assertion (project-agnostic-lane): dispatch-phase's `rdmBin`
+# arg is REQUIRED and fail-closed — there is NO ambient/PATH fallback, so a
+# caller that stops passing it hard-breaks on first dispatch. Zeroing the
+# workflow's own literals is therefore not enough; this asserts the PHASE flow's
+# own section still passes it, with this repo's development-build path. Scoped
+# to the section with awk so the sibling task flow cannot cover for it.
+extract_named_section() {
+    awk -v hdr="$2" 'index($0, hdr) == 1 {p=1; next} p && /^## /{exit} p' "$1"
+}
+extract_named_section "$SKILL" '## Auto phase dispatch' >"$TMP/phase-dispatch-section"
+[ -s "$TMP/phase-dispatch-section" ] || fail "could not extract the '## Auto phase dispatch' section"
+assert_phase_flow_rdmbin() {
+    grep -qF 'rdmBin' "$1" || return 1
+    grep -qF './target/debug/rdm' "$1" || return 1
+    return 0
+}
+assert_phase_flow_rdmbin "$TMP/phase-dispatch-section" ||
+    fail "'## Auto phase dispatch' must pass rdmBin: \"./target/debug/rdm\" into the dispatch-phase Workflow (it is REQUIRED — the workflow errors without it rather than falling back to a global rdm)"
+pass "'## Auto phase dispatch' passes rdmBin with this repo's development-build path"
+
+# Self-test: prove the assertion is not vacuous.
+sed 's/rdmBin/rdmBn/g' "$TMP/phase-dispatch-section" >"$TMP/phase-dispatch-mutant"
+if assert_phase_flow_rdmbin "$TMP/phase-dispatch-mutant"; then
+    fail "the phase-flow rdmBin detector missed a mangled key — the check is vacuous"
+fi
+pass "phase-flow rdmBin detector fires on a mangled key"
+
 # Text after that header must reference dispatch-phase.
 awk '/^## Auto phase dispatch/{p=1} p' "$SKILL" >"$TMP/auto-section"
 grep -q 'dispatch-phase' "$TMP/auto-section" || fail "'## Auto phase dispatch' section must reference 'dispatch-phase'"

@@ -443,6 +443,11 @@ assert_shim_hoists() {
     # `next` must be documented as one-shot on both variants, or a caller could
     # cache it and re-dispatch the same phase forever.
     _need "$ap" 'one-shot, on the first loop iteration only' || return 1
+    # dispatch-phase's `rdmBin` arg is REQUIRED and fail-closed (no ambient PATH
+    # fallback), so an emitted shim that omits it hard-breaks the downstream lane
+    # on its first dispatch. Asserted on BOTH variants and for ALL THREE shims —
+    # it is not a model-derived hoist, so it sits outside the cli-only guards.
+    _need "$ap" 'rdmBin' || return 1
     if [ "$variant" = mcp ]; then
         # MCP has no `rdm phase show` CLI command to read a write back with, so
         # the advance/park confirmation step needs its own dedicated tool.
@@ -459,8 +464,10 @@ assert_shim_hoists() {
         fi
     fi
 
-    # rdm-dispatch-phase: alreadyInProgress on both; phaseMeta/taskMeta CLI only.
+    # rdm-dispatch-phase: alreadyInProgress + rdmBin on both; phaseMeta/taskMeta
+    # CLI only.
     _need "$dp" 'alreadyInProgress' || return 1
+    _need "$dp" 'rdmBin' || return 1
     if [ "$variant" = cli ]; then
         _need "$dp" 'phaseMeta' || return 1
         _need "$dp" 'taskMeta' || return 1
@@ -471,6 +478,7 @@ assert_shim_hoists() {
 
     # rdm-do --auto: same contract, both flows.
     _need "$do_" 'alreadyInProgress' || return 1
+    _need "$do_" 'rdmBin' || return 1
     if [ "$variant" = cli ]; then
         _need "$do_" 'phaseMeta' || return 1
         _need "$do_" 'taskMeta' || return 1
@@ -487,7 +495,9 @@ for variant in cli mcp; do
         fail "$HOIST_FAILURE"
     fi
     # Occurrence floor, so the check can never pass vacuously: CLI asserts
-    # >= 13 references, MCP >= 6 (recomputed after the `estimate` pre-pass —
+    # >= 16 references, MCP >= 9 (raised from 13/6 by the project-agnostic-lane
+    # roadmap, which added one REQUIRED `rdmBin` needle to each of the three
+    # shims on both variants; recomputed after the `estimate` pre-pass —
     # and its mechanicalModel/phaseList hoist — was dropped from the
     # distributed rdm-autopilot template; MCP retains the rdm_phase_show
     # read-back hoist, added alongside the {t_phase_show} placeholder, and
@@ -496,11 +506,11 @@ for variant in cli mcp; do
     # `stem`-keyed, `project`-less argument shape). A drop below the floor
     # means a shim silently stopped gathering.
     if [ "$variant" = cli ]; then
-        [ "$HOIST_REF_COUNT" -ge 13 ] ||
-            fail "cli: expected >= 13 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
+        [ "$HOIST_REF_COUNT" -ge 16 ] ||
+            fail "cli: expected >= 16 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
     else
-        [ "$HOIST_REF_COUNT" -ge 6 ] ||
-            fail "mcp: expected >= 6 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
+        [ "$HOIST_REF_COUNT" -ge 9 ] ||
+            fail "mcp: expected >= 9 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
     fi
 done
 pass "hoist-arg occurrence floors hold for both variants"
@@ -528,6 +538,19 @@ if assert_shim_hoists "$TMP/cli-hoist-typo" cli; then
     fail "6e: hoist-arg check did not detect a typo'd 'phaseMeta' key — the check is vacuous"
 fi
 pass "6e: hoist-arg check detects a typo'd arg key ($HOIST_FAILURE)"
+
+# Self-test: mangling the REQUIRED rdmBin key in each of the three emitted shims
+# in turn must be caught — one shim carrying it cannot cover for another.
+for shim in rdm-dispatch-phase rdm-do rdm-autopilot; do
+    rm -rf "$TMP/cli-rdmbin-typo"
+    cp -R "$TMP/cli" "$TMP/cli-rdmbin-typo"
+    sed 's/rdmBin/rdmBn/g' "$TMP/cli/.claude/skills/$shim/SKILL.md" \
+        >"$TMP/cli-rdmbin-typo/.claude/skills/$shim/SKILL.md"
+    if assert_shim_hoists "$TMP/cli-rdmbin-typo" cli; then
+        fail "6e: hoist-arg check did not detect a mangled 'rdmBin' key in $shim — the check is vacuous"
+    fi
+done
+pass "6e: hoist-arg check detects a mangled rdmBin key in each of the three shims independently"
 
 say "6f. Self-test: a shim that stops gathering must be caught"
 cp -R "$TMP/cli" "$TMP/cli-hoist-drop"

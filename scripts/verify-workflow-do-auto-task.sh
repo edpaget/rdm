@@ -65,7 +65,9 @@ grep -qF 'dispatchArgs.task' "$DISPATCH_WF" ||
     fail "dispatch-phase.js must read a task slug from args (dispatchArgs.task)"
 pass "task mode is selected from args.task"
 
-grep -qF 'rdm task show ' "$DISPATCH_WF" ||
+# The rdm binary is a RUNTIME arg now (project-agnostic-lane), so the command is
+# assembled as `bin + ' task show ' + slug`; match the assembled fragment.
+grep -qF "' task show '" "$DISPATCH_WF" ||
     fail "task mode must fetch via 'rdm task show <slug>' (no --roadmap)"
 pass "task metadata is fetched via 'rdm task show'"
 
@@ -183,6 +185,26 @@ fi
 grep -qF 'Auto phase dispatch' "$TMP/task-section" &&
     fail "the task-section extractor leaked the phase section — its assertions would be false-green"
 pass "the --auto --task section reads outcome.status/reason/writesCompletion and defers the trailer to rdm-land"
+
+# PER-SHIM rdmBin assertion (project-agnostic-lane): dispatch-phase's `rdmBin`
+# arg is REQUIRED and fail-closed — there is NO ambient/PATH fallback, so a
+# caller that stops passing it hard-breaks on first dispatch. Asserted on the
+# TASK section specifically, independently of the sibling phase-flow assertion in
+# verify-workflow-do-auto.sh, so one flow carrying it cannot cover for the other.
+assert_task_flow_rdmbin() {
+    grep -qF 'rdmBin' "$1" || return 1
+    grep -qF './target/debug/rdm' "$1" || return 1
+    return 0
+}
+assert_task_flow_rdmbin "$TMP/task-section" ||
+    fail "'## Auto task dispatch' must pass rdmBin: \"./target/debug/rdm\" into the dispatch-phase Workflow (it is REQUIRED — the workflow errors without it rather than falling back to a global rdm)"
+pass "'## Auto task dispatch' passes rdmBin with this repo's development-build path"
+
+sed 's/rdmBin/rdmBn/g' "$TMP/task-section" >"$TMP/task-section-mutant"
+if assert_task_flow_rdmbin "$TMP/task-section-mutant"; then
+    fail "the task-flow rdmBin detector missed a mangled key — the check is vacuous"
+fi
+pass "task-flow rdmBin detector fires on a mangled key"
 
 # --- 2. PURE OUTCOME SHAPE ----------------------------------------------------
 say "2. buildTaskOutcome emits the task-keyed OUTCOME contract"

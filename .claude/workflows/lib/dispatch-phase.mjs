@@ -71,6 +71,77 @@ import {
 // review. It must never be conflated with "unset" by a falsy check.
 const DEFAULT_MAX_PLAN_REVISE = 2;
 
+// --- Environment args: `rdmBin` and `project` --------------------------------
+//
+// dispatch-phase names NO particular rdm executable and NO particular rdm
+// project. Both arrive as RUNTIME args (`rdmBin`, `project`) and are threaded
+// into every prompt that shells out, via the `cfg` object each prompt builder
+// takes as its trailing parameter. This is the CONTRACT the rest of the
+// project-agnostic lane consumes — do not re-derive it elsewhere.
+//
+// PROJECT-AGNOSTIC ALLOW-LIST — the subcommands that must carry NO project
+// flag, because rdm rejects `--project` on them outright:
+//
+//     rdm model resolve, rdm commit   (and rdm status / rdm discard, if added)
+//
+// EVERY other subcommand this lane emits is PROJECT-SCOPED and takes the flag:
+// phase list/show/update, task list/show/create/update, worktree add, next,
+// search. A blanket append would produce commands that fail at runtime while
+// still satisfying a naive whole-file grep, which is why the allow-list is
+// asserted as DATA by scripts/verify-workflow-dispatch.sh § 9b rather than by
+// grepping every line.
+//
+// Canonical write-up: docs/workflow-schemas.md
+// § "Environment args: `rdmBin` and `project`".
+
+// projectFlag(cfg) — the ` --project <name>` suffix to append to a
+// PROJECT-SCOPED command, or '' when no project was configured (rdm's standard
+// resolution chain then applies). Same shape as .claude/workflows/backlog.js.
+function projectFlag(cfg) {
+  return cfg && cfg.project ? ' --project ' + cfg.project : '';
+}
+
+// resolveRdmBin(value) — FAIL-CLOSED resolution of the rdm executable to invoke.
+//
+// There is NO ambient/PATH fallback for an absent key, deliberately. Defaulting
+// to a bare `rdm` would silently run whichever global rdm happens to be first on
+// PATH; inside the rdm repo that is a stale installed build, which the project's
+// development-build rule forbids outright. An existence preflight (`which rdm`,
+// `command -v`, an fs check) does NOT close this: the stale global EXISTS, so
+// the check passes while running exactly the wrong binary. Nor can the guard
+// compare against a caller-supplied path — in the case being guarded the caller
+// supplied nothing. So the guard is on the ABSENCE of the argument itself.
+//
+// A caller that genuinely wants PATH resolution opts in EXPLICITLY with the
+// sentinel `rdmBin: 'rdm'`, which is accepted verbatim. Because there is no
+// fallback, EVERY caller must pass this arg in the same change that makes it
+// required — an un-threaded caller throws before the first agent() call.
+function resolveRdmBin(value) {
+  if (typeof value === 'string' && value.trim() !== '') return value;
+  throw new Error(
+    'dispatch-phase: rdmBin is required — pass the exact rdm executable to invoke (a repo-local ' +
+      'build path, or the explicit sentinel "rdm" to opt into PATH resolution). Refusing to guess: ' +
+      'an absent rdmBin would silently run whatever global rdm is on PATH.'
+  );
+}
+
+// parseProjectArg(value) — validate the OPTIONAL project name. Any falsy value
+// (absent / null / '' / 0 / false) means "emit no project flag at all" — never
+// ` --project false`. Anything else must be a plain project name: the value is
+// interpolated into a Bash-agent prompt, so whitespace and shell metacharacters
+// are rejected rather than escaped.
+function parseProjectArg(value) {
+  if (!value) return '';
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(
+      'dispatch-phase: project must be a plain project name matching /^[A-Za-z0-9._-]+$/ (got "' +
+        String(value) +
+        '")'
+    );
+  }
+  return value;
+}
+
 // parseBudget(value, flag, fallback) — validate a per-run budget override.
 // Unset (null/undefined/'') falls back to the caller's default. Anything else
 // must be a non-negative integer; a non-integer string is REJECTED rather than
@@ -112,6 +183,13 @@ function parseDispatchArgs(args) {
     }
   }
   if (!dispatchArgs || typeof dispatchArgs !== 'object') dispatchArgs = {};
+  // The two ENVIRONMENT axes are resolved BEFORE the returned object literal, so
+  // validation order is deterministic and independent of property-evaluation
+  // order: rdmBin first (fail-closed — no ambient default), then the optional
+  // project name. Like the budgets, both are validated HERE, at parse time, so a
+  // mis-invocation costs zero tokens.
+  const rdmBin = resolveRdmBin(dispatchArgs.rdmBin);
+  const project = parseProjectArg(dispatchArgs.project);
   return {
     roadmap: dispatchArgs.roadmap || '',
     phase: dispatchArgs.phase || '',
@@ -141,6 +219,12 @@ function parseDispatchArgs(args) {
     // the workflow's own observability stamp is redundant. NEVER set by a
     // --plan-only invocation (the workflow suppresses the stamp there anyway).
     alreadyInProgress: !!dispatchArgs.alreadyInProgress,
+    // --- Environment axes (see the contract block above).
+    // `rdmBin` is REQUIRED — the exact rdm executable every Bash-agent prompt
+    // shells out to. `project` is OPTIONAL and applies ONLY to project-scoped
+    // subcommands; '' means "emit no project flag".
+    rdmBin: rdmBin,
+    project: project,
   };
 }
 
@@ -358,14 +442,19 @@ const CODE_ACT_SCHEMA = {
   },
 };
 
-// buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) — the
-// code-lane Act step: an already-verified surviving finding is incorporated by
-// SIZE, not severity (severity already decided the outcome — this decides
+// buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, cfg) —
+// the code-lane Act step: an already-verified surviving finding is incorporated
+// by SIZE, not severity (severity already decided the outcome — this decides
 // whether/how the finding is acted on). Modeled directly on
 // lib/plan-review.mjs's buildActPrompt, but code-review findings are fixed
 // inline in the worktree (no whole-document authoritative-body rewrite) and
 // large ones are filed with `rdm task create`, not a plan-doc note.
-function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) {
+//
+// `cfg` is the environment payload `{ rdmBin, project }`. `task create` is a
+// PROJECT-SCOPED subcommand, so it carries the project flag.
+function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
+  const proj = projectFlag(cfg);
   const target = kind === 'task' ? 'task/' + ident : roadmapOrTask + '/' + ident;
   // Provenance is MIXED once the review passes a non-gating finding through
   // un-refuted, so the LEADING claim has to be conditional: an unconditional
@@ -393,8 +482,8 @@ function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors) 
       ' and re-run the relevant tests. Do not create a separate landing commit — the fix folds into the ' +
       'eventual land-time commit.',
     '- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance ' +
-      'criterion. Do NOT edit code for these: file it with `./target/debug/rdm task create <slug> --title ' +
-      '"Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.'
+      'criterion. Do NOT edit code for these: file it with `' + bin + ' task create <slug> --title ' +
+      '"Code review finding: <desc>" --body "<details>" --tags code-review --no-edit' + proj + '`.'
   );
   if (hasUnrefuted) {
     lines.push(UNREFUTED_DISPOSITION);
@@ -624,6 +713,9 @@ export {
   buildReviewBudget,
   budgetSummaryClause,
   parseBudget,
+  projectFlag,
+  resolveRdmBin,
+  parseProjectArg,
   parseDispatchArgs,
   hoistedMetaComplete,
   runPlanGate,
