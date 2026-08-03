@@ -15,14 +15,16 @@ When a plugin is named `rdm`, the hand-rolled `rdm-` prefixes in skill names and
 
 **Workflows are a first-class plugin component.** The mechanism is proven by official Anthropic plugins:
 
-- **claude-security** plugin (1 workflow: scan.js): demonstrates both invocation forms in production.
-  - Source: [Distribute a workflow in a plugin](https://code.claude.com/docs/en/workflows)
+- **claude-security** plugin (7 workflows): demonstrates both invocation forms in production.
+  - Mechanism source: [Distribute a workflow in a plugin](https://code.claude.com/docs/en/workflows)
+  - Official registry: [claude-plugins-official](https://github.com/anthropics/claude-plugins-official) (verified: 7 workflows including scan.js, audit.js, and others)
   - Example invocation: `Workflow({ name: "claude-security:scan", args: {…} })`
   - Scripts directory: `workflows/` at the plugin root, sibling to `skills/`
   - Manifest: `.claude-plugin/plugin.json`, no `workflows` field (convention-discovered directory)
 
 - **code-modernization** plugin (6 workflows): demonstrates the scriptPath invocation form.
-  - Source: [Plugins Reference](https://code.claude.com/docs/en/plugins-reference)
+  - Mechanism source: [Plugins Reference](https://code.claude.com/docs/en/plugins-reference)
+  - Official registry: [claude-plugins-official](https://github.com/anthropics/claude-plugins-official) (verified: 6 workflows including portfolio-assess.js and others)
   - Example invocation: `Workflow({ scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/portfolio-assess.js" })`
   - Layout: workflows/ directory at plugin root, manifest under `.claude-plugin/`
 
@@ -34,7 +36,7 @@ When a plugin is named `rdm`, the hand-rolled `rdm-` prefixes in skill names and
 
 ### Caveat: `claude plugin details` Display Gap
 
-The `claude plugin details` command shows Skills / Agents / Hooks / MCP servers / LSP servers, but **has no Workflows category**. This was verified against `claude-security`, which ships 1 workflow (scan.js) and shows none in the details output. This is a display gap in the CLI tool, **not** evidence that the mechanism is unsupported. Later phases must check `.claude-plugin/plugin.json` or the file tree directly; they must **not** use `plugin details` as a workflow-presence signal.
+The `claude plugin details` command shows Skills / Agents / Hooks / MCP servers / LSP servers, but **has no Workflows category**. This was verified against `claude-security`, which ships 7 workflows and shows none in the details output. This is a display gap in the CLI tool, **not** evidence that the mechanism is unsupported. Later phases must check `.claude-plugin/plugin.json` or the file tree directly; they must **not** use `plugin details` as a workflow-presence signal.
 
 ## The Disjointness Invariant
 
