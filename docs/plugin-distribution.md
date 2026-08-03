@@ -46,10 +46,10 @@ The `claude plugin details` command shows Skills / Agents / Hooks / MCP servers 
 
 rdm's raw-skills distribution includes both skills and workflow engines:
 
-- **Emitted skills (11 total):** autopilot, backlog, dispatch-phase, do, document, estimate, land, plan-review, review, revise, roadmap
+- **Emitted raw-distribution skills (11 total):** rdm-autopilot, rdm-backlog, rdm-dispatch-phase, rdm-do, rdm-document, rdm-estimate, rdm-land, rdm-plan-review, rdm-review, rdm-revise, rdm-roadmap
 - **Emitted workflow engines (2 total):** rdm-wf-dispatch-phase, rdm-wf-review-refute-fix
 
-Note: `dispatch-phase` appears in **both** lists — it is a thin skill shim that invokes the `rdm-wf-dispatch-phase` workflow engine.
+Note: `rdm-dispatch-phase` appears in **both** lists — it is a thin skill shim that invokes the `rdm-wf-dispatch-phase` workflow engine.
 
 ### The Collision Scenario
 
@@ -190,11 +190,19 @@ The following layout decisions were established in the roadmap's "Central constr
   .claude-plugin/
     plugin.json              # Plugin manifest (standard Claude Code format)
   skills/
-    rdm-roadmap/             # Skill implementations (renamed from SKILL.md)
-    rdm-dispatch-phase/
-    …                        # (11 total skills)
+    roadmap/                 # Skill implementations (directory names: rdm- prefix dropped per Decision 1)
+    dispatch-phase/
+    autopilot/
+    backlog/
+    do/
+    document/
+    estimate/
+    land/
+    plan-review/
+    review/
+    revise/
   workflows/
-    rdm-wf-dispatch-phase.js # Workflow engines (2 total)
+    rdm-wf-dispatch-phase.js # Workflow engines (directory names: rdm-wf- prefix kept per Decision 2)
     rdm-wf-review-refute-fix.js
 ```
 
