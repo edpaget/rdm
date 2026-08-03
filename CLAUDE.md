@@ -168,7 +168,7 @@ Downstream consumers should install rdm via the plugin marketplace:
 
 ```bash
 claude plugin marketplace add edpaget/rdm
-claude plugin install rdm@<version>
+claude plugin install rdm@rdm
 ```
 
 This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc.) and 2 workflow engines (`rdm:rdm-wf-dispatch-phase`, `rdm:rdm-wf-review-refute-fix`). The skills invoke bare `rdm` at runtime; the plugin shims resolve the rdm binary via `RDM_BIN` environment variable, PATH lookup, or standard installation locations.

@@ -518,14 +518,18 @@ These are hand-edited to accommodate repo-local paths, hoisted arguments, and wo
 **Generated artifacts (drift-gated):** The following files are **generated** by the stamping scripts and **must never be hand-edited**:
 - `.claude/skills/rdm-review/SKILL.md` — stamped from `.claude/workflows/lib/review.mjs` by `scripts/gen-skill-review.sh`
 - `.claude/skills/rdm-plan-review/SKILL.md` — stamped from `.claude/workflows/lib/review.mjs` by `scripts/gen-skill-review.sh` (plan mode variant)
-- `.claude/workflows/rdm-wf-dispatch-phase.js` — stamped from `.claude/workflows/lib/dispatch-phase.mjs` by `scripts/gen-workflow-review.sh`
 - `.claude/workflows/rdm-wf-review-refute-fix.js` — stamped from `.claude/workflows/lib/review.mjs` by `scripts/gen-workflow-review.sh`
 - `.claude/workflows/rdm-wf-estimate.js` — stamped from `.claude/workflows/lib/estimate.mjs` by `scripts/gen-workflow-estimate.sh`
-- `.claude/workflows/rdm-wf-backlog.js` — stamped from `.claude/workflows/lib/backlog.mjs` by various generators
-- `.claude/workflows/rdm-wf-document.js` — stamped from `.claude/workflows/lib/document.mjs` by various generators
-- `.claude/workflows/rdm-wf-plan-review.js` — stamped from `.claude/workflows/lib/plan-review.mjs` by various generators
 
-When these files are hand-edited, the corresponding drift gate (`scripts/verify-workflow-review.sh`, `scripts/verify-workflow-estimate.sh`, etc.) turns red. Regenerate with the canonical command (e.g., `scripts/gen-skill-review.sh`, no `--check`), then the gate passes again.
+**Byte-identity-checked (not generated, but drift-gated):** The following files contain hand-copied blocks from their corresponding `.mjs` modules, verified byte-identical by their CI harnesses (never by a generator script):
+- `.claude/workflows/rdm-wf-dispatch-phase.js` — byte-checked against `.claude/workflows/lib/dispatch-phase.mjs` by `scripts/verify-workflow-dispatch.sh`
+- `.claude/workflows/rdm-wf-plan-review.js` — byte-checked against `.claude/workflows/lib/plan-review.mjs` by `scripts/verify-workflow-review.sh`
+- `.claude/workflows/rdm-wf-backlog.js` — byte-checked against `.claude/workflows/lib/backlog.mjs` by `scripts/verify-workflow-backlog.sh`
+- `.claude/workflows/rdm-wf-document.js` — byte-checked against `.claude/workflows/lib/document.mjs` by `scripts/verify-workflow-document.sh`
+
+When generated files are hand-edited, the corresponding drift gate (`scripts/verify-workflow-review.sh`, `scripts/verify-workflow-estimate.sh`, etc.) turns red. Regenerate with the canonical command (e.g., `scripts/gen-skill-review.sh`, no `--check`), then the gate passes again.
+
+When byte-checked files are hand-edited (which should never happen), their drift gate turns red. Restore the file from git or regenerate it by running the corresponding library module through its harness.
 
 **Invocation:** this repo's skills invoke `./target/debug/rdm` (the local debug binary built during development).
 

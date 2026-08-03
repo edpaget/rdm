@@ -609,7 +609,7 @@
           "gate:clear-tag:<kind>:<ident>"
         ]
       },
-      "notThreaded": "The three DISTRIBUTED workflows (autopilot.js, dispatch-phase.js, review-refute-fix.js) -- blocked by the missing emission surface -- and every JUDGMENT site (find:*, refute:*, plan:*, implement:*, synthesize:draft, analyze:*, estimate:rate:*, plan-review's act:*).",
+      "notThreaded": "The two DISTRIBUTED workflows (dispatch-phase.js, review-refute-fix.js) -- blocked by the missing emission surface -- and every JUDGMENT site (find:*, refute:*, plan:*, implement:*, synthesize:draft, analyze:*, estimate:rate:*, plan-review's act:*).",
       "gate": "scripts/verify-workflow-review.sh §2c asserts both directions with planted-mutation self-tests, plus a completeness sweep that fails if a site is added or removed without updating the asserted list, or if any agentType other than 'rdm-mechanical' appears.",
       "residualRisk": "Workflow-path resolution is unconfirmed (see workflowPathSpike). If it does not resolve, these four workflows RAISE on first dispatch rather than degrading silently -- a loud failure, not a corrupting one.",
       "expectedSavingPerAgent": 8907,
