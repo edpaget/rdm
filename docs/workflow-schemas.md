@@ -9,12 +9,17 @@ the canonical schema contracts they exchange.
 > scripts — `rdm-wf-dispatch-phase.js`, `rdm-wf-review-refute-fix.js` — ARE now
 > emitted by `rdm agent-config claude --skills --out <dir>`, byte-identical to
 > this repo's own `.claude/workflows/` copies, under `<dir>/.claude/workflows/`
-> (Claude-only, `--out`-only — see `CHANGELOG.md`). Everything else stays
-> dogfood-only and unshipped: `lib/*.mjs` (no regeneration script travels
-> downstream to consume it), the generator scripts (`scripts/gen-workflow-review.sh`
-> and friends), and the hardcoded `./target/debug/rdm` / `--project rdm`
-> invocations baked into the shipped scripts (not yet parameterized for an
-> arbitrary target repo). rdm's shipped autonomous skills
+> (Claude-only, `--out`-only — see `CHANGELOG.md`). Those two emitted engines are
+> **project- and binary-agnostic**: they name no particular rdm executable and no
+> particular rdm project, because both arrive as runtime arguments (see
+> § "Environment args: `rdmBin` and `project`"). Byte-identity with this repo's
+> copies is a CONSEQUENCE of that design, not a limitation of it, and
+> `scripts/verify-agent-config-distribution.sh` § 7 gates the claim by emitting
+> into a hermetic non-rdm, non-Rust fixture repo and then executing the emitted
+> engines' pipeline logic — and one of the rdm commands they build — there. The
+> unshipped set is now exactly: `lib/*.mjs` (no regeneration script travels
+> downstream to consume it) and the generator scripts
+> (`scripts/gen-workflow-review.sh` and friends). rdm's shipped autonomous skills
 > (`rdm-core/src/templates/skill-{autopilot,dispatch-phase}-{cli,mcp}.md`, and the
 > `--auto` section of `skill-do-{cli,mcp}.md`) are the user-facing autonomous
 > lane: `skill-autopilot-{cli,mcp}.md` is now a **prose** skill that itself
@@ -24,8 +29,8 @@ the canonical schema contracts they exchange.
 > was retired from `.claude/workflows/` in favor of prose. `skill-dispatch-phase-{cli,mcp}.md`
 > remains a thin shim that invokes `rdm-wf-dispatch-phase.js` via the `Workflow` tool,
 > instead of re-narrating the orchestration in prose. Distributing the
-> still-unshipped pieces (parameterization, `lib/`, a downstream regeneration
-> story) remains a follow-up roadmap.
+> still-unshipped pieces (`lib/`, a downstream regeneration story) remains a
+> follow-up roadmap.
 
 ## The `.claude/workflows/` convention
 
@@ -1662,8 +1667,8 @@ fail-open contract). `verify-workflow-dispatch.sh` pins both halves: exactly one
 project. Both are **runtime args**, threaded through a trailing `cfg` parameter
 on every prompt builder that shells out. This is the contract the rest of the
 project-agnostic lane consumes — the same helper shape and the same allow-list
-apply to `rdm-wf-review-refute-fix` / `rdm-wf-estimate` and to the prose `rdm-autopilot` loop
-when those are parameterized; they must not re-derive it.
+already apply to `rdm-wf-review-refute-fix` / `rdm-wf-estimate` and to the prose
+`rdm-autopilot` loop; they must not re-derive it.
 
 | arg       | required | shape                                            | applies to |
 | --------- | -------- | ------------------------------------------------ | ---------- |
@@ -1734,13 +1739,15 @@ commands of its own, but the workflow it invokes still shells out through Bash
 agents, so omitting `rdmBin` "because MCP" would hard-break the downstream MCP
 lane on first dispatch.
 
-The `rdm-autopilot` shims are in that list for exactly this reason, and for no
-other. Their own drive-loop prose still names a hardcoded binary and project;
-only the one `rdm-wf-dispatch-phase` call payload is threaded, because that is the only
-line the fail-closed rule can break. `verify-skill-autopilot.sh` bounds both
-directions — it asserts the payload carries `rdmBin`, and asserts the skill
-still carries its own binary/project literals, so the wider prose
-parameterization cannot be absorbed here by accident.
+The `rdm-autopilot` shims were originally in that list only because of the
+fail-closed rule on the one `rdm-wf-dispatch-phase` call payload. Their own
+drive-loop prose has since been de-literalized too (phase 10 of
+`project-agnostic-lane`): the skill parses a required `--rdm-bin <path>` and an
+optional `--project <name>` and threads them through every Bash step it runs
+itself, as well as into both the `rdm-wf-estimate` and `rdm-wf-dispatch-phase`
+payloads. `verify-skill-autopilot.sh` bounds both directions — it asserts each
+payload carries `rdmBin`, and asserts the skill carries zero binary/project
+literals of its own.
 
 #### The other two engines: `rdm-wf-review-refute-fix` and `rdm-wf-estimate`
 

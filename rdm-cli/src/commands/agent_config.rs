@@ -93,11 +93,11 @@ fn write_mcp_json(base_dir: &Path, root: &Path) -> Result<()> {
 /// - **Claude-only**: Pi has no Workflow-tool runtime, so `--skills` against
 ///   `Platform::Pi` writes only `.pi/skills`, never a workflows directory,
 ///   and never runs cleanup.
-/// - **`--out`-only, not `--user`**: the shipped scripts hardcode this
-///   repo's own `./target/debug/rdm` binary path and `--project rdm`
-///   invocation (they are not yet parameterized for a downstream target
-///   repo). Those values only make sense relative to a specific checked-out
-///   project, so they are never written to a user-global location like
+/// - **`--out`-only, not `--user`**: the shipped scripts are project-scoped —
+///   they drive one checked-out repo and its worktrees, using the rdm
+///   executable and plan project supplied to them at run time (`rdmBin` /
+///   `project`). That only makes sense relative to a specific checkout, so
+///   they are never written to a user-global location like
 ///   `~/.claude/workflows`, and cleanup never runs against `--user` either.
 ///
 /// # Errors

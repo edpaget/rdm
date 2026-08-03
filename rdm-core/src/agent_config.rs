@@ -234,9 +234,15 @@ pub struct SkillFile {
 /// A generated Workflow-tool script with its relative path and content.
 ///
 /// Unlike [`SkillFile`], workflow content is emitted verbatim: there is no
-/// project/principles substitution pass, since the Workflow runtime cannot
-/// `import`/`require` and the scripts are the already-stamped output of
-/// `scripts/gen-workflow-review.sh` (see `docs/workflow-schemas.md`).
+/// project/principles substitution pass, because BOTH environment axes the
+/// scripts depend on are RUNTIME arguments the caller supplies — the rdm
+/// executable (`rdmBin`, required and fail-closed) and the plan project
+/// (`project`, optional and applied only to project-scoped subcommands). The
+/// emitted bytes are therefore correct, unmodified, in any consumer repo, and
+/// byte-identity with this repo's own `.claude/workflows/` is a CONSEQUENCE of
+/// that design rather than a limitation. The scripts are also the
+/// already-stamped output of `scripts/gen-workflow-review.sh`. See
+/// `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`".
 pub struct WorkflowFile {
     /// Relative path within `.claude/workflows/` (e.g., "rdm-wf-dispatch-phase.js").
     pub relative_path: &'static str,
@@ -359,11 +365,16 @@ const SHIPPED_WORKFLOWS: [(&str, &str); 2] = [
 /// counts (skills vs. workflows) are independent and should not be summed
 /// when asserting either one.
 ///
-/// The scripts hardcode this repo's own `./target/debug/rdm` binary path and
-/// `--project rdm` invocation — they are not yet parameterized for an
-/// arbitrary downstream target repo. `lib/*.mjs` (the canonical source
-/// modules the scripts are stamped from) is deliberately not shipped here:
-/// there is no regeneration script that travels downstream to consume it.
+/// The scripts name no particular rdm executable and no particular rdm
+/// project: both arrive as runtime arguments (`rdmBin`, required and
+/// fail-closed; `project`, optional and applied only to project-scoped
+/// subcommands), so the emitted bytes work unmodified in an arbitrary
+/// downstream target repo. `scripts/verify-agent-config-distribution.sh` § 7
+/// gates that claim by emitting into a hermetic non-rdm, non-Rust fixture and
+/// executing the emitted engines' pipeline logic and built commands there.
+/// `lib/*.mjs` (the canonical source modules the scripts are stamped from) is
+/// deliberately not shipped here: there is no regeneration script that travels
+/// downstream to consume it.
 ///
 /// # Examples
 ///

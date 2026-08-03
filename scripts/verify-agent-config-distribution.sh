@@ -66,11 +66,32 @@
 #   6. NEGATIVE / PLAN-REPO INDEPENDENCE: Pi emission never writes
 #      `.claude/workflows` (no Workflow-tool runtime) and never prints a
 #      cleanup-report line; `--user` emission never writes
-#      `.claude/workflows` either (the scripts hardcode a target repo's own
-#      binary path, so they're `--out`-only) and never prints a
+#      `.claude/workflows` either (the scripts are project-scoped to a specific
+#      checked-out repo, so they're `--out`-only) and never prints a
 #      cleanup-report line; and emission succeeds even when `RDM_ROOT` points
 #      at a path that does not exist, since `--skills` emission never needs
 #      the plan repo.
+#   7. DOWNSTREAM EXECUTION: byte-identity is NECESSARY but not SUFFICIENT —
+#      it says nothing about whether the emitted lane WORKS anywhere else. So
+#      sections 7a-7f stand up a hermetic non-rdm, NON-RUST fixture (a
+#      Python/TypeScript source repo with a real feature branch, a docs-only
+#      and a CHANGELOG-only negative control, its own `rdm init`-seeded plan
+#      repo under project `acme-web`, and its own rdm executable path), emit
+#      the lane into it, EXTRACT importable modules from the EMITTED scripts
+#      (copy + neutralized top-level `return` + an explicit appended export
+#      block, imported as `.mjs`; an inverse transform proves the copy is
+#      byte-identical to the emitted file, and the untransformed file provably
+#      does NOT import), then EXECUTE that pure logic: `deriveSignals` fires
+#      every signal on the fixture's OWN diff, `selectDimensions` returns all
+#      seven code dimensions (against a two-dimension docs-only control), every
+#      built rdm command names the fixture's binary and honors the
+#      project-agnostic allow-list with zero `./target/debug/rdm` or
+#      `--project rdm`, and three of those built commands are really RUN
+#      against the fixture plan repo (exit 0 + the expected JSON shape + an
+#      `in-progress` read-back, with a dropped-`--roadmap` negative control).
+#      Four planted corruptions in the EMITTED bytes prove none of it is
+#      vacuous, and a composed-pattern self-gate forbids the harness from ever
+#      importing one of this repo's non-emitted canonical source modules.
 #
 # Deliberately OUT OF SCOPE (see CLAUDE.md's Dogfooding section and the
 # `distribute-workflow-lane` roadmap's phase-4 notes for why): a full-body
@@ -83,7 +104,8 @@
 # are gated structurally (existence + frontmatter + reference resolution)
 # instead.
 #
-# Requires: a cargo-built rdm at target/debug/rdm (from this repo).
+# Requires: a cargo-built rdm at target/debug/rdm (from this repo), and `node`
+# (on PATH or via `mise exec node --`) for the section 7 downstream driver.
 
 set -eu
 
@@ -824,7 +846,758 @@ if assert_shim_hoists "$TMP/cli-hoist-drop" cli; then
 fi
 pass "6f: hoist-arg check detects a mangled gathering command ($HOIST_FAILURE)"
 
-say "7. Confirming $REPO_ROOT git status is unchanged after the whole run"
+# --- 7. DOWNSTREAM EXECUTION: the emitted lane, exercised in a foreign repo -
+#
+# Sections 2/3/3b/4/5/6 above prove the emitted bytes are RIGHT. They do not
+# prove the emitted lane WORKS somewhere that is neither this repo nor Rust —
+# byte-identity is necessary, not sufficient. Sections 7a-7f close that: they
+# stand up a hermetic non-rdm, non-Rust consumer repo, emit into it, then
+# EXECUTE the emitted engines' pure pipeline logic and one of the rdm commands
+# they build against that fixture's own binary and project.
+#
+# NOT a duplicate of scripts/verify-workflow-dispatch.sh § 9 or
+# scripts/verify-workflow-review-outcome.sh § 6: those gate this repo's LOCAL
+# .claude/workflows/ copies. These sections assert the same properties on the
+# DOWNSTREAM EMITTED artifact, which is the only surface a consumer ever sees.
+# Do not delete either as redundant.
+
+say "7a. Downstream fixture: a hermetic non-rdm, non-Rust consumer repo"
+
+FIXTURE="$TMP/fixture"
+FIXTURE_REPO="$FIXTURE/repo"
+FIXTURE_PLAN="$FIXTURE/plan"
+FIXTURE_SCRATCH="$FIXTURE/scratch"
+FIXTURE_HOME="$FIXTURE/home"
+FIXTURE_TOOLS="$FIXTURE/tools"
+FIXTURE_PROJECT="acme-web"
+FIXTURE_ROADMAP="checkout-revamp"
+FIXTURE_PHASE="phase-1-checkout-form"
+FIXTURE_TASK="tidy-cli"
+mkdir -p "$FIXTURE_REPO" "$FIXTURE_PLAN" "$FIXTURE_SCRATCH" "$FIXTURE_HOME" "$FIXTURE_TOOLS"
+
+# Hermetic git: the developer's global/system config (init.defaultBranch,
+# core.hooksPath -> .githooks, commit signing, commit templates) must not leak
+# into the fixture, or `git diff main...HEAD` silently changes meaning.
+fixture_git() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+        git -C "$FIXTURE_REPO" \
+        -c user.name=Fixture -c user.email=fixture@example.invalid \
+        -c commit.gpgsign=false "$@"
+}
+
+if ! fixture_git init -b main -q >/dev/null 2>&1; then
+    fixture_git init -q
+    fixture_git checkout -q -b main
+fi
+
+mkdir -p "$FIXTURE_REPO/src/acme" "$FIXTURE_REPO/web/src" "$FIXTURE_REPO/bin" \
+    "$FIXTURE_REPO/tests" "$FIXTURE_REPO/docs"
+
+cat >"$FIXTURE_REPO/src/acme/api.py" <<'PY_API'
+"""Order API."""
+
+
+def _normalize(order):
+    return {"id": order["id"], "total": order["total"]}
+PY_API
+
+cat >"$FIXTURE_REPO/src/acme/runner.py" <<'PY_RUNNER'
+"""Job runner."""
+
+
+def run_job(name):
+    return name
+PY_RUNNER
+
+cat >"$FIXTURE_REPO/web/src/client.ts" <<'TS_CLIENT'
+const BASE = "/api";
+
+function join(a: string, b: string): string {
+  return a + b;
+}
+TS_CLIENT
+
+cat >"$FIXTURE_REPO/bin/acme_cli.py" <<'PY_CLI'
+"""acme command line."""
+import argparse
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="acme")
+    return parser
+PY_CLI
+
+cat >"$FIXTURE_REPO/tests/test_api.py" <<'PY_TEST'
+from src.acme.api import _normalize
+
+
+def test_normalize():
+    assert _normalize({"id": 1, "total": 2})["id"] == 1
+PY_TEST
+
+printf 'Usage\n=====\n\nRun acme.\n' >"$FIXTURE_REPO/docs/usage.md"
+printf '# Changelog\n\n## [Unreleased]\n' >"$FIXTURE_REPO/CHANGELOG.md"
+printf '{\n  "name": "acme-web",\n  "version": "0.1.0"\n}\n' >"$FIXTURE_REPO/package.json"
+
+fixture_git add -A
+fixture_git commit -qm "seed: acme base"
+
+# The POSITIVE branch: one commit, engineered so every CONDITIONAL code
+# dimension fires — and written in Python/TypeScript ONLY, so what is exercised
+# is the language-neutral content vocabulary phases 1-3 introduced. A
+# conditional dimension failing to fire here is a regression in those phases,
+# not a fixture bug.
+fixture_git checkout -q -b feature/checkout
+cat >>"$FIXTURE_REPO/web/src/client.ts" <<'TS_ADD'
+
+export function listOrders(limit: number): Promise<string[]> {
+  return fetch(BASE + "/orders?limit=" + limit).then((r) => r.json());
+}
+TS_ADD
+cat >>"$FIXTURE_REPO/bin/acme_cli.py" <<'PY_CLI_ADD'
+
+
+def add_limit(parser):
+    parser.add_argument("--limit", type=int, default=10)
+    print("done")
+    return parser
+PY_CLI_ADD
+cat >>"$FIXTURE_REPO/src/acme/runner.py" <<'PY_RUNNER_ADD'
+
+
+def run_remote(cmd):
+    import os
+    import subprocess
+
+    token = os.environ["ACCESS_TOKEN"]
+    subprocess.run([cmd, token], check=True)
+PY_RUNNER_ADD
+printf -- '- Added a --limit flag to the acme CLI.\n' >>"$FIXTURE_REPO/CHANGELOG.md"
+fixture_git add -A
+fixture_git commit -qm "feat: add order listing and a remote runner"
+
+# Negative control: a docs-only branch must select the always-on pair and
+# nothing else, so the positive result above is discriminating.
+fixture_git checkout -q main
+fixture_git checkout -q -b feature/docs-only
+printf '\nMore usage notes.\n' >>"$FIXTURE_REPO/docs/usage.md"
+fixture_git add -A
+fixture_git commit -qm "docs: expand usage"
+
+# Second negative control: `changelogTouched` only ever CONFIRMS `userFacing`;
+# a CHANGELOG-only diff has no code files and must stay false.
+fixture_git checkout -q main
+fixture_git checkout -q -b feature/changelog-only
+printf -- '- Noted an unrelated change.\n' >>"$FIXTURE_REPO/CHANGELOG.md"
+fixture_git add -A
+fixture_git commit -qm "docs: changelog note"
+fixture_git checkout -q feature/checkout
+
+[ ! -f "$FIXTURE_REPO/Cargo.toml" ] ||
+    fail "7a: the fixture must not be a Rust/cargo repo — it exists to exercise the lane somewhere unlike this repo"
+FIXTURE_RS=$(find "$FIXTURE_REPO" -name '*.rs' -not -path '*/.git/*' | wc -l | tr -d ' ')
+[ "$FIXTURE_RS" -eq 0 ] ||
+    fail "7a: the fixture source tree contains $FIXTURE_RS Rust file(s) — it must be non-Rust"
+[ "$(fixture_git rev-parse --abbrev-ref HEAD)" = "feature/checkout" ] ||
+    fail "7a: the fixture repo is not on the expected feature/checkout branch"
+pass "7a: fixture source repo seeded (Python/TypeScript, no Cargo.toml, no *.rs) on feature/checkout"
+
+# The fixture's OWN plan repo, under its OWN project name — neither `rdm` nor
+# `distro-check`, and matching parseProjectArg's /^[A-Za-z0-9._-]+$/.
+fixture_rdm() {
+    HOME="$FIXTURE_HOME" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+        "$RDM_BIN" --root "$FIXTURE_PLAN" "$@"
+}
+FIXTURE_SEED_LOG="$TMP/fixture-seed.log"
+{
+    fixture_rdm init --default-project "$FIXTURE_PROJECT"
+    fixture_rdm roadmap create "$FIXTURE_ROADMAP" --title "Checkout revamp" \
+        --body "Revamp the acme checkout flow." --no-edit --project "$FIXTURE_PROJECT"
+    fixture_rdm phase create checkout-form --title "Checkout form" --number 1 \
+        --body "Build the acme checkout form." --no-edit \
+        --roadmap "$FIXTURE_ROADMAP" --project "$FIXTURE_PROJECT"
+    fixture_rdm phase create order-summary --title "Order summary" --number 2 \
+        --body "Summarize orders on the confirmation screen." --no-edit \
+        --roadmap "$FIXTURE_ROADMAP" --project "$FIXTURE_PROJECT"
+    fixture_rdm task create "$FIXTURE_TASK" --title "Tidy the acme CLI" \
+        --body "Tidy up the acme command line." --no-edit --project "$FIXTURE_PROJECT"
+    fixture_rdm commit -m "seed: acme-web fixture"
+} >>"$FIXTURE_SEED_LOG" 2>&1
+# The stem the emitted engines will be asked to address must really exist, or
+# section 7d's "exit 0" would be measuring the wrong thing.
+fixture_rdm phase show "$FIXTURE_PHASE" --roadmap "$FIXTURE_ROADMAP" \
+    --project "$FIXTURE_PROJECT" --no-body >>"$FIXTURE_SEED_LOG" 2>&1 ||
+    fail "7a: the fixture plan repo does not carry $FIXTURE_PHASE — the seed failed"
+pass "7a: fixture plan repo seeded under project '$FIXTURE_PROJECT' (roadmap + 2 phases + 1 task)"
+
+# The fixture's OWN rdm executable path. Everything the emitted engines build
+# must name THIS, never this repo's dev build.
+FIXTURE_BIN="$FIXTURE_TOOLS/acme-rdm"
+ln -s "$RDM_BIN" "$FIXTURE_BIN" 2>/dev/null || cp "$RDM_BIN" "$FIXTURE_BIN"
+[ -x "$FIXTURE_BIN" ] || fail "7a: could not stand up the fixture rdm executable at $FIXTURE_BIN"
+case "$FIXTURE_BIN" in
+    *target/debug*) fail "7a: the fixture binary path must not contain this repo's build directory" ;;
+esac
+pass "7a: fixture rdm executable at $FIXTURE_BIN"
+
+# node is a NEW dependency of this harness. Resolve it the same way the sibling
+# workflow harnesses do, and FAIL rather than skip — a silent skip would make
+# every gate below vacuous on a machine without node.
+NODE_VIA_MISE=0
+if command -v node >/dev/null 2>&1; then
+    NODE_VIA_MISE=0
+elif command -v mise >/dev/null 2>&1 && mise exec node -- node --version >/dev/null 2>&1; then
+    NODE_VIA_MISE=1
+else
+    fail "node not found on PATH or via 'mise exec node --'. node is pinned in .mise.toml; run 'mise install'."
+fi
+run_node() {
+    if [ "$NODE_VIA_MISE" -eq 1 ]; then
+        mise exec node -- node "$@"
+    else
+        node "$@"
+    fi
+}
+pass "7a: node resolved for the downstream-execution driver"
+
+# --- 7b. Emit into the fixture, then EXTRACT importable modules from the ---
+# --- EMITTED scripts --------------------------------------------------------
+say "7b. Emitting the lane into the fixture and extracting importable modules from the EMITTED scripts"
+
+"$RDM_BIN" agent-config claude --skills --project "$FIXTURE_PROJECT" --out "$FIXTURE_REPO" >/dev/null
+
+# The fixture emission is a THIRD emission and satisfies the same byte-identity
+# contract — runtime-args parameterization changes no bytes (AC7).
+if check_workflows_byte_identical "$FIXTURE_REPO"; then
+    pass "7b: fixture-emitted workflow scripts are byte-identical to source"
+else
+    fail "7b: fixture-emitted workflow scripts drifted from $REPO_ROOT/.claude/workflows"
+fi
+
+for engine in $WORKFLOWS; do
+    [ -f "$FIXTURE_REPO/.claude/workflows/$engine" ] ||
+        fail "7b: the fixture emission is missing .claude/workflows/$engine"
+    # Derive the PRE-RENAME bare name from the variable rather than writing a
+    # second literal (section 0 permits exactly one occurrence of each).
+    bare_engine=${engine#rdm-wf-}
+    [ ! -e "$FIXTURE_REPO/.claude/workflows/$bare_engine" ] ||
+        fail "7b: the fixture emission still carries a pre-rename engine file named $bare_engine"
+done
+pass "7b: both rdm-wf-* engines emitted; no pre-rename bare filename present"
+
+# The fixture's skill shims must resolve to the rdm-wf-* engines in this same
+# emitted tree — a shim left pointing at a pre-rename engine name fails here.
+if check_shim_refs_resolve "$FIXTURE_REPO/.claude/skills" "$FIXTURE_REPO/.claude/workflows"; then
+    pass "7b: all $SHIM_REF_COUNT fixture shim reference(s) resolve to the emitted rdm-wf-* engines"
+else
+    fail "7b: $SHIM_REF_UNRESOLVED unresolved shim reference(s) in the fixture emission"
+fi
+[ "$SHIM_REF_COUNT" -ge 3 ] ||
+    fail "7b: expected >= 3 shim references in the fixture emission, found $SHIM_REF_COUNT"
+if check_workflow_invocations_resolve "$FIXTURE_REPO/.claude/skills" "$FIXTURE_REPO/.claude/workflows"; then
+    pass "7b: all $INVOCATION_COUNT fixture Workflow-invocation instruction(s) resolve"
+else
+    fail "7b: $INVOCATION_UNRESOLVED unresolved Workflow-invocation instruction(s) in the fixture emission"
+fi
+[ "$INVOCATION_COUNT" -ge 5 ] ||
+    fail "7b: expected >= 5 Workflow-invocation instructions in the fixture emission, found $INVOCATION_COUNT"
+
+# The downstream-execution driver. ONE Node program, three stages, so a
+# planted-corruption self-test (7e) can re-run the exact same assertions
+# against a corrupted copy of the fixture.
+cat >"$TMP/downstream.mjs" <<'NODE_DOWNSTREAM'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+
+const [stage, fixtureRoot, fixtureBin, project, dispatchEngine, reviewEngine] = process.argv.slice(2);
+
+const SRC_REPO = path.join(fixtureRoot, 'repo');
+const EMITTED_DIR = path.join(SRC_REPO, '.claude', 'workflows');
+const SCRATCH = path.join(fixtureRoot, 'scratch');
+const PLAN_DIR = path.join(fixtureRoot, 'plan');
+const HOME_DIR = path.join(fixtureRoot, 'home');
+
+// --- The extraction mechanism ------------------------------------------------
+// An emitted `.claude/workflows/*.js` has `export const meta` as its ONLY
+// export and ends in a top-level `return` (the Workflow runtime wraps the body
+// in a function), so importing one as-is fails with
+// `SyntaxError: Illegal return statement`, and its pure helpers are
+// module-private. The transform below is the ONLY sanctioned way this harness
+// reaches them; it must never fall back to this repo's canonical sources, which
+// are not emitted at all (see the harness self-gate section).
+const WRAP_HEAD = 'const __wf = async function (args, agent, pipeline, parallel, log) {';
+const WRAP_TAIL = '};';
+const HANDLE = 'const __H = await __wf();';
+const SENTINEL = '// --- Driver';
+
+function returnLine(names) {
+  return 'return { ' + names.map((n) => n + ': ' + n).join(', ') + ' };';
+}
+
+function transform(src, helpers) {
+  const names = helpers.concat(['meta']);
+  const lines = src.split('\n');
+
+  // (2) `export const meta` must be the ONLY column-0 export — an `export`
+  // inside the wrapper function would be a SyntaxError.
+  const exportIdx = [];
+  lines.forEach((l, i) => {
+    if (l.startsWith('export ')) exportIdx.push(i);
+  });
+  assert.equal(exportIdx.length, 1, 'expected exactly ONE column-0 `export` in the emitted script, found ' + exportIdx.length);
+  assert.ok(lines[exportIdx[0]].startsWith('export const meta'), 'the single column-0 export must be `export const meta`');
+  lines[exportIdx[0]] = lines[exportIdx[0]].slice('export '.length);
+  const metaLines = lines.filter((l) => /^const meta\b/.test(l));
+  assert.equal(metaLines.length, 1, 'expected exactly one column-0 `const meta` line after stripping the export keyword');
+
+  // (3) the driver sentinel must occur EXACTLY once.
+  const sentinelIdx = [];
+  lines.forEach((l, i) => {
+    if (l.startsWith(SENTINEL)) sentinelIdx.push(i);
+  });
+  assert.equal(
+    sentinelIdx.length,
+    1,
+    'expected exactly ONE `' + SENTINEL + '` sentinel in the emitted script, found ' + sentinelIdx.length + ' — a rename or duplication must fail loudly here'
+  );
+
+  // (4) every named helper must be a HOISTED function declaration. A future
+  // `const x = () => …` refactor would otherwise throw an opaque TDZ
+  // ReferenceError from the injected return instead of failing here.
+  for (const h of helpers) {
+    assert.ok(
+      new RegExp('^function ' + h + '\\(', 'm').test(src),
+      'helper `' + h + '` is not declared as a column-0 `function ' + h + '(` in the emitted script — the injected return relies on function-declaration hoisting'
+    );
+  }
+
+  // (4) inject the capture immediately BEFORE the sentinel, and (5) wrap.
+  // The wrapper is the NEUTRALIZATION: every original top-level `return`
+  // becomes a legal function return AND is made unreachable by the injected
+  // one, and the ambient globals become never-bound parameters, so nothing of
+  // the driver ever executes.
+  lines.splice(sentinelIdx[0], 0, returnLine(names));
+  return (
+    WRAP_HEAD + '\n' + lines.join('\n') + '\n' + WRAP_TAIL + '\n' + HANDLE + '\n' +
+    names.map((n) => 'export const ' + n + ' = __H.' + n + ';').join('\n') + '\n'
+  );
+}
+
+// The INVERSE transform — provenance. Reproducing the emitted file byte-for-byte
+// from the module that was actually imported is what proves the executed code IS
+// the emitted code, not a look-alike.
+function inverse(out, helpers) {
+  const names = helpers.concat(['meta']);
+  const lines = out.split('\n');
+  assert.equal(lines.pop(), '', 'transformed module must end in a newline');
+  for (let i = names.length - 1; i >= 0; i--) {
+    assert.equal(lines.pop(), 'export const ' + names[i] + ' = __H.' + names[i] + ';');
+  }
+  assert.equal(lines.pop(), HANDLE);
+  assert.equal(lines.pop(), WRAP_TAIL);
+  assert.equal(lines.shift(), WRAP_HEAD);
+  const ri = lines.indexOf(returnLine(names));
+  assert.ok(ri !== -1, 'injected capture line not found during the inverse transform');
+  lines.splice(ri, 1);
+  const mi = lines.findIndex((l) => /^const meta\b/.test(l));
+  assert.ok(mi !== -1, '`const meta` line not found during the inverse transform');
+  lines[mi] = 'export ' + lines[mi];
+  return lines.join('\n');
+}
+
+const IMPORTED = [];
+async function importFromScratch(file) {
+  const abs = path.resolve(file);
+  assert.ok(
+    abs.startsWith(SCRATCH + path.sep),
+    'refusing to import ' + abs + ' — every module this harness imports must live under the fixture scratch dir ' + SCRATCH
+  );
+  IMPORTED.push(abs);
+  return import(pathToFileURL(abs).href + '?t=' + process.pid);
+}
+
+async function extract(engine, helpers) {
+  const emitted = path.resolve(EMITTED_DIR, engine);
+  assert.ok(
+    emitted.startsWith(path.resolve(SRC_REPO) + path.sep),
+    'the module under test must be read from the FIXTURE emitted tree, got ' + emitted
+  );
+  const src = fs.readFileSync(emitted, 'utf8');
+  const out = transform(src, helpers);
+  assert.equal(inverse(out, helpers), src, 'the inverse transform did not reproduce ' + emitted + ' byte-for-byte');
+  const dest = path.join(SCRATCH, engine + '.mjs');
+  fs.mkdirSync(SCRATCH, { recursive: true });
+  fs.writeFileSync(dest, out);
+  const mod = await importFromScratch(dest);
+  assert.equal(mod.meta.name, engine.replace(/\.js$/, ''), 'meta.name must equal the emitted filename stem');
+  return { mod, emitted };
+}
+
+// Non-vacuity of the transform: the UNTRANSFORMED emitted file must NOT import.
+async function assertRawImportRejects(engine) {
+  const raw = path.join(SCRATCH, engine + '.raw.mjs');
+  fs.mkdirSync(SCRATCH, { recursive: true });
+  fs.copyFileSync(path.join(EMITTED_DIR, engine), raw);
+  let err = null;
+  try {
+    await importFromScratch(raw);
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, 'importing the UNTRANSFORMED emitted ' + engine + ' unexpectedly succeeded — the neutralization step is not load-bearing');
+  assert.ok(err instanceof SyntaxError, 'expected a SyntaxError, got ' + err.constructor.name + ': ' + err.message);
+  assert.match(err.message, /return/i, 'expected the SyntaxError to name the illegal top-level return, got: ' + err.message);
+}
+
+const DISPATCH_HELPERS = [
+  'deriveSignals',
+  'selectDimensions',
+  'projectFlag',
+  'resolveRdmBin',
+  'parseProjectArg',
+  'parseDispatchArgs',
+  'buildFetchPrompt',
+  'buildTaskFetchPrompt',
+  'buildStampInProgressPrompt',
+  'buildDiffSignalsPrompt',
+  'buildImplementPrompt',
+  'buildCodeActPrompt',
+];
+const REVIEW_HELPERS = [
+  'deriveSignals',
+  'selectDimensions',
+  'findPrompt',
+  'refutePrompt',
+  'projectFlag',
+  'resolveRdmBin',
+  'parseProjectArg',
+  'buildDiffSignalsPrompt',
+];
+
+// --- Shared fixture facts ----------------------------------------------------
+const ROADMAP = 'checkout-revamp';
+const PHASE = 'phase-1-checkout-form';
+const TASK = 'tidy-cli';
+const WORKTREE = 'roadmap-' + ROADMAP;
+const CFG = { rdmBin: fixtureBin, project: project };
+
+function fixtureGit(args) {
+  return execFileSync('git', ['-C', SRC_REPO, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+  });
+}
+
+// Run EXACTLY the two commands buildDiffSignalsPrompt instructs, on a real
+// branch of the fixture repo. The arrays are never hand-authored.
+function realDiff(dispatch, branch) {
+  const prompt = dispatch.buildDiffSignalsPrompt(WORKTREE, CFG);
+  const gitCmds = prompt
+    .split('\n')
+    .filter((l) => /^ {2}git diff /.test(l))
+    .map((l) => l.trim());
+  assert.deepEqual(gitCmds, ['git diff --name-only main...HEAD', 'git diff main...HEAD'], 'the emitted diff prompt no longer instructs the two expected git commands');
+  fixtureGit(['checkout', '-q', branch]);
+  const changedFiles = fixtureGit(gitCmds[0].split(' ').slice(1)).split('\n').filter(Boolean);
+  const diffText = fixtureGit(gitCmds[1].split(' ').slice(1));
+  return { changedFiles, diffText };
+}
+
+function buildAllPrompts(dispatch, review, cfg) {
+  return [
+    dispatch.buildFetchPrompt(ROADMAP, PHASE, cfg),
+    dispatch.buildTaskFetchPrompt(TASK, cfg),
+    dispatch.buildStampInProgressPrompt(false, ROADMAP, PHASE, cfg),
+    dispatch.buildStampInProgressPrompt(true, '', TASK, cfg),
+    dispatch.buildDiffSignalsPrompt(WORKTREE, cfg),
+    dispatch.buildImplementPrompt(WORKTREE, 'phase body', 'plan doc', null, cfg),
+    dispatch.buildCodeActPrompt('phase', ROADMAP, PHASE, WORKTREE, [{ id: 'f1', severity: 'suggestion' }], cfg),
+    review.buildDiffSignalsPrompt(WORKTREE, cfg),
+    review.findPrompt('code', { key: 'ac', title: 'AC compliance', focus: 'f' }, { target: PHASE }),
+    review.refutePrompt('code', { key: 'ac', title: 'AC compliance', focus: 'f' }, { id: 'f1', what_fails: 'x' }, { target: PHASE }),
+  ];
+}
+
+// Tokenize every rdm invocation out of the built prompts. The binary token is
+// whatever rdm-naming, non-space run precedes a known subcommand, so a
+// re-hardcoded path is caught by COMPARISON rather than silently skipped.
+const INVOCATION = /(^|[\s`])((?:[^\s`]*\/)?[A-Za-z0-9_.-]*rdm[A-Za-z0-9_.-]*)\s+([a-z][a-z-]*)(?:\s+([a-z][a-z-]*))?/g;
+const PROJECT_AGNOSTIC = ['model resolve', 'commit', 'status', 'discard'];
+
+function scan(prompts) {
+  const out = [];
+  for (const p of prompts) {
+    for (const line of p.split('\n')) {
+      INVOCATION.lastIndex = 0;
+      let m;
+      while ((m = INVOCATION.exec(line)) !== null) {
+        out.push({ bin: m[2], two: m[4] ? m[3] + ' ' + m[4] : m[3], line });
+      }
+    }
+  }
+  return out;
+}
+
+// Pull a command line back OUT of a built prompt rather than retyping it, and
+// assert it is character-identical to the substring of that prompt.
+function extractCommand(prompt, needle) {
+  const hit = prompt
+    .split('\n')
+    .filter((l) => l.startsWith('  ' + fixtureBin + ' ') && l.includes(needle))
+    .map((l) => l.slice(2));
+  assert.equal(hit.length, 1, 'expected exactly one built command containing "' + needle + '", found ' + hit.length);
+  assert.ok(prompt.includes('  ' + hit[0]), 'the extracted command is not a verbatim substring of the built prompt');
+  return hit[0];
+}
+
+function runCommand(cmd) {
+  return spawnSync('/bin/sh', ['-c', cmd], {
+    cwd: SRC_REPO,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      RDM_ROOT: PLAN_DIR,
+      HOME: HOME_DIR,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+    },
+  });
+}
+
+// --- Stages ------------------------------------------------------------------
+const dispatch = (await extract(dispatchEngine, DISPATCH_HELPERS)).mod;
+const review = (await extract(reviewEngine, REVIEW_HELPERS)).mod;
+
+if (stage === 'extract') {
+  await assertRawImportRejects(dispatchEngine);
+  await assertRawImportRejects(reviewEngine);
+  assert.ok(IMPORTED.length >= 4, 'expected at least four module imports, all from the fixture scratch dir');
+  console.log('downstream extract: both emitted engines transformed, provenance-checked and imported');
+}
+
+if (stage === 'logic') {
+  // --- Signals derived from the fixture's OWN diffs -------------------------
+  const positive = realDiff(dispatch, 'feature/checkout');
+  fs.writeFileSync(path.join(fixtureRoot, 'signals-input.json'), JSON.stringify(positive, null, 2));
+  assert.ok(positive.changedFiles.length >= 3, 'the positive fixture diff must touch several files');
+  for (const rustToken of [/(^|[^A-Za-z])fn /, /(^|[^A-Za-z])pub /, /unsafe/, /\.rs\b/]) {
+    assert.ok(!rustToken.test(positive.diffText), 'the fixture diff smuggled a Rust token (' + rustToken + ') — the language-neutrality claim would not be exercised');
+  }
+
+  const signals = dispatch.deriveSignals({ targetType: 'phase', changedFiles: positive.changedFiles, diffText: positive.diffText });
+  for (const key of ['changesLogic', 'missingTests', 'multiModule', 'publicApiChanged', 'userFacing', 'securitySurface']) {
+    assert.equal(typeof signals[key], 'boolean', 'signal ' + key + ' must be present and boolean');
+    assert.equal(signals[key], true, 'signal ' + key + ' must fire on the fixture feature branch (a Python/TypeScript diff)');
+  }
+  const dims = dispatch.selectDimensions('code', signals).map((d) => d.key);
+  assert.deepEqual(dims, ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'], 'every CONDITIONAL code dimension must fire on the fixture diff, got: ' + dims.join(','));
+
+  // Negative control: docs-only.
+  const docs = realDiff(dispatch, 'feature/docs-only');
+  const docsSignals = dispatch.deriveSignals({ targetType: 'phase', changedFiles: docs.changedFiles, diffText: docs.diffText });
+  for (const key of ['changesLogic', 'publicApiChanged', 'userFacing', 'securitySurface']) {
+    assert.equal(docsSignals[key], false, 'docs-only control: ' + key + ' must be false');
+  }
+  assert.deepEqual(dispatch.selectDimensions('code', docsSignals).map((d) => d.key), ['ac', 'correctness'], 'docs-only control must select only the always-on pair');
+
+  // CHANGELOG-only control: changelogTouched CONFIRMS userFacing, never triggers it.
+  const cl = realDiff(dispatch, 'feature/changelog-only');
+  assert.deepEqual(cl.changedFiles, ['CHANGELOG.md'], 'the changelog-only control must touch exactly CHANGELOG.md');
+  assert.equal(dispatch.deriveSignals({ targetType: 'phase', changedFiles: cl.changedFiles, diffText: cl.diffText }).userFacing, false, 'a CHANGELOG-only diff must not set userFacing');
+  fixtureGit(['checkout', '-q', 'feature/checkout']);
+
+  // Fail-open contract, on the EMITTED artifact.
+  assert.equal(dispatch.selectDimensions('code', null).length, 7, 'omitted signals must fail open to every code dimension');
+  assert.deepEqual(dispatch.selectDimensions('code', {}).map((d) => d.key), ['ac', 'correctness'], 'an explicit empty signals object means "computed, nothing triggered"');
+  assert.deepEqual(review.selectDimensions('code', signals).map((d) => d.key), dims, 'both emitted engines must select the same dimensions for the same signals');
+
+  // --- Every built command names the FIXTURE binary and project -------------
+  const prompts = buildAllPrompts(dispatch, review, CFG);
+  const occ = scan(prompts);
+  assert.ok(occ.length >= 12, 'expected >= 12 rdm invocations across the built prompts, found ' + occ.length + ' — the tokenizer must not pass vacuously');
+  const seen = new Set();
+  for (const o of occ) {
+    assert.equal(o.bin, fixtureBin, 'a built command used "' + o.bin + '" instead of the fixture binary: ' + o.line);
+    seen.add(o.two);
+    if (PROJECT_AGNOSTIC.includes(o.two)) {
+      assert.ok(!o.line.includes('--project'), 'project-agnostic `' + o.two + '` must carry NO project flag: ' + o.line);
+    } else {
+      assert.ok(o.line.includes(' --project ' + project), 'project-scoped `' + o.two + '` must carry " --project ' + project + '": ' + o.line);
+    }
+  }
+  for (const need of ['phase show', 'phase update', 'task show', 'task update', 'task create', 'worktree add', 'model resolve']) {
+    assert.ok(seen.has(need), 'expected at least one built `rdm ' + need + '` command, saw: ' + [...seen].join(', '));
+  }
+  const joined = prompts.join('\n');
+  for (const forbidden of ['target/debug/rdm', '--project rdm']) {
+    assert.ok(!joined.includes(forbidden), 'a built prompt contains the rdm-specific literal "' + forbidden + '"');
+  }
+  assert.ok(!/(^|[\s`])rdm\s/.test(joined), 'a built prompt names a bare `rdm` binary token instead of the fixture binary');
+
+  // Run B: no project configured -> not a single --project anywhere.
+  const noProject = buildAllPrompts(dispatch, review, { rdmBin: fixtureBin });
+  assert.ok(!noProject.join('\n').includes('--project'), 'with no project configured, no built command may carry a --project flag');
+
+  // Fail-closed guards, on the EMITTED artifact.
+  assert.throws(() => dispatch.parseDispatchArgs({ roadmap: 'r', phase: 'p' }), /rdmBin/, 'parseDispatchArgs must fail closed without rdmBin');
+  for (const bad of ['a b', 'a;rm -rf /', '$(x)']) {
+    assert.throws(() => dispatch.parseProjectArg(bad), /project/, 'parseProjectArg must reject "' + bad + '"');
+    assert.throws(() => review.parseProjectArg(bad), /project/, 'the review engine must reject "' + bad + '" too');
+  }
+  assert.equal(dispatch.projectFlag({ project: project }), ' --project ' + project);
+  assert.equal(dispatch.projectFlag({}), '');
+  assert.equal(dispatch.resolveRdmBin(fixtureBin), fixtureBin);
+
+  console.log('downstream logic: ' + occ.length + ' built rdm invocations, all naming ' + fixtureBin + '; conditional dimensions fired');
+}
+
+if (stage === 'exec') {
+  assert.equal(process.env.RDM_ROOT, undefined, 'the harness must not carry an ambient RDM_ROOT — the real dogfood plan repo must be unreachable here');
+
+  const fetchPrompt = dispatch.buildFetchPrompt(ROADMAP, PHASE, CFG);
+  const showCmd = extractCommand(fetchPrompt, ' phase show ');
+  const shown = runCommand(showCmd);
+  assert.equal(shown.status, 0, 'the built `phase show` command failed (' + shown.status + '): ' + showCmd + '\n' + shown.stderr);
+  const phaseJson = JSON.parse(shown.stdout);
+  assert.equal(phaseJson.stem, PHASE, 'unexpected `stem` in the built command output shape');
+  assert.ok(typeof phaseJson.body === 'string' && phaseJson.body.length > 0, 'the built command returned an empty body');
+  assert.ok(typeof phaseJson.status === 'string' && phaseJson.status.length > 0, 'the built command output has no status field');
+
+  const stampCmd = extractCommand(dispatch.buildStampInProgressPrompt(false, ROADMAP, PHASE, CFG), ' phase update ');
+  const stamped = runCommand(stampCmd);
+  assert.equal(stamped.status, 0, 'the built `phase update` command failed (' + stamped.status + '): ' + stampCmd + '\n' + stamped.stderr);
+  const reread = JSON.parse(runCommand(showCmd).stdout);
+  assert.equal(reread.status, 'in-progress', 'the built `phase update` did not persist — read back ' + reread.status);
+
+  const taskShowCmd = extractCommand(dispatch.buildTaskFetchPrompt(TASK, CFG), ' task show ');
+  const taskShown = runCommand(taskShowCmd);
+  assert.equal(taskShown.status, 0, 'the built `task show` command failed (' + taskShown.status + '): ' + taskShowCmd + '\n' + taskShown.stderr);
+  const taskJson = JSON.parse(taskShown.stdout);
+  assert.equal(taskJson.slug, TASK, 'unexpected `slug` in the built task command output shape');
+  assert.ok(typeof taskJson.body === 'string' && taskJson.body.length > 0, 'the built task command returned an empty body');
+
+  // Negative control: "exit 0" only discriminates if a malformed command fails.
+  const broken = stampCmd.replace(' --roadmap ' + ROADMAP, '');
+  assert.notEqual(broken, stampCmd, 'the negative control did not actually mutate the command');
+  assert.notEqual(runCommand(broken).status, 0, 'a `phase update` with --roadmap dropped still exited 0 — "exit 0" is not a discriminating assertion');
+
+  console.log('downstream exec: 3 built commands executed against the fixture plan repo, all exit 0 with the expected shape');
+}
+NODE_DOWNSTREAM
+
+if run_node "$TMP/downstream.mjs" extract "$FIXTURE" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$DISPATCH_WF" "$REVIEW_WF"; then
+    pass "7b: both EMITTED engines transformed into importable modules (inverse transform reproduces them byte-for-byte; the untransformed file provably does not import)"
+else
+    fail "7b: extracting importable modules from the EMITTED engines failed"
+fi
+
+# --- 7c. Executed pure logic on the fixture's own diffs --------------------
+say "7c. Executed pure logic: conditional dimensions fire on the fixture's real diffs; every built command names the fixture binary and project"
+if run_node "$TMP/downstream.mjs" logic "$FIXTURE" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$DISPATCH_WF" "$REVIEW_WF"; then
+    pass "7c: deriveSignals/selectDimensions fired on real Python/TypeScript diffs; zero rdm-specific literals in any built command"
+else
+    fail "7c: downstream pure-logic assertions failed"
+fi
+
+# --- 7d. Real execution against the fixture plan repo ----------------------
+say "7d. Real execution: commands BUILT by the emitted engines run against the fixture plan repo"
+if run_node "$TMP/downstream.mjs" exec "$FIXTURE" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$DISPATCH_WF" "$REVIEW_WF"; then
+    pass "7d: built phase show / phase update / task show commands executed and exit 0 with the expected output shape"
+else
+    fail "7d: executing commands built by the emitted engines against the fixture plan repo failed"
+fi
+
+# --- 7e. Planted-corruption self-tests on the EMITTED bytes ----------------
+say "7e. Self-tests: reintroducing an rdm-specific literal into the EMITTED bytes must turn 7c red"
+
+# assert_corrupt_emitted_is_red <label> <sed-expr> <grep-needle> <engine>
+# Copies the pristine fixture, mutates the EMITTED engine file the extractor
+# reads (not a re-emission, not a local .claude/ copy), asserts the mutation
+# APPLIED, then asserts the section-7c driver goes red on it.
+assert_corrupt_emitted_is_red() {
+    _label=$1
+    _sed=$2
+    _needle=$3
+    _engine=$4
+    _dir="$TMP/fixture-corrupt"
+    rm -rf "$_dir"
+    cp -R "$FIXTURE" "$_dir"
+    _target="$_dir/repo/.claude/workflows/$_engine"
+    sed "$_sed" "$_target" >"$_target.new"
+    mv "$_target.new" "$_target"
+    grep -q -- "$_needle" "$_target" ||
+        fail "7e/$_label: the planted mutation did NOT apply to $_target — the self-test would be vacuous"
+    if run_node "$TMP/downstream.mjs" logic "$_dir" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$DISPATCH_WF" "$REVIEW_WF" >/dev/null 2>&1; then
+        fail "7e/$_label: the corrupted EMITTED bytes did NOT turn the downstream driver red — the gate is vacuous"
+    fi
+    rm -rf "$_dir"
+    pass "7e/$_label: the planted corruption correctly turned the downstream driver red"
+}
+
+# A: the rdm dev-build binary path re-hardcoded into buildFetchPrompt.
+assert_corrupt_emitted_is_red "A (binary literal)" \
+    "s|const bin = resolveRdmBin(cfg \&\& cfg.rdmBin)|const bin = './target/debug/rdm'|" \
+    "target/debug/rdm" "$DISPATCH_WF"
+# B: this repo's own project flag re-hardcoded in place of projectFlag(cfg).
+assert_corrupt_emitted_is_red "B (project literal)" \
+    "s|const proj = projectFlag(cfg)|const proj = ' --project rdm'|" \
+    "project rdm" "$DISPATCH_WF"
+# C: the export vocabulary emptied — the api-docs dimension must stop firing,
+# proving the conditional-dimension assertion is not vacuous.
+assert_corrupt_emitted_is_red "C (dimension non-vacuity)" \
+    "s|^const EXPORT_CONTENT_PATTERNS = \[|const EXPORT_CONTENT_PATTERNS = []; const EXPORT_CONTENT_PATTERNS_UNUSED = [|" \
+    "EXPORT_CONTENT_PATTERNS_UNUSED" "$DISPATCH_WF"
+# D: the same binary literal planted in the OTHER engine — one engine passing
+# must never cover for the other.
+assert_corrupt_emitted_is_red "D (review engine)" \
+    "s|resolveRdmBin(cfg \&\& cfg.rdmBin)|'./target/debug/rdm'|" \
+    "target/debug/rdm" "$REVIEW_WF"
+
+# --- 7f. Harness self-gate: this file may never import a canonical source --
+say "7f. Self-gate: the harness imports nothing under this repo's non-emitted workflow library"
+
+# The canonical modules this repo stamps FROM are never emitted. Importing one
+# would certify a local artifact instead of the downstream one — the exact
+# "held the disproof in its hands" failure sections 7a-7e exist to close. The
+# forbidden patterns are COMPOSED from fragments so this gate can never match
+# its own source text.
+assert_no_lib_import() {
+    _file=$1
+    _libdir="$(printf '%s' '.claude/workflows')$(printf '%s' '/lib/')"
+    _hits=$(grep -c -- "$_libdir" "$_file" || true)
+    [ "$_hits" -eq 0 ] || {
+        echo "  forbidden: $_file references $_libdir" >&2
+        return 1
+    }
+    _mjs=$(grep -cE -- "$(printf '%s' 'lib')$(printf '%s' '/[a-z-]*\.mjs')" "$_file" || true)
+    [ "$_mjs" -eq 0 ] || {
+        echo "  forbidden: $_file references a canonical-source module path" >&2
+        return 1
+    }
+    return 0
+}
+
+assert_no_lib_import "$0" ||
+    fail "7f: this harness references a non-emitted canonical source module — every module it executes must be derived from the EMITTED tree"
+pass "7f: the harness references no non-emitted canonical source module"
+
+MUTANT_HARNESS="$TMP/harness-lib-mutant"
+cp "$0" "$MUTANT_HARNESS"
+{
+    printf '# planted for the 7f self-test: '
+    printf '%s' '.claude/workflows'
+    printf '%s' '/lib/'
+    printf 'review.mjs\n'
+} >>"$MUTANT_HARNESS"
+if assert_no_lib_import "$MUTANT_HARNESS" >/dev/null 2>&1; then
+    fail "7f self-test: a planted canonical-source reference was NOT detected — the self-gate is vacuous"
+fi
+pass "7f self-test: a planted canonical-source reference correctly turns the self-gate red"
+
+say "8. Confirming $REPO_ROOT git status is unchanged after the whole run"
 AFTER_STATUS=$(git -C "$REPO_ROOT" status --porcelain)
 if [ "$BEFORE_STATUS" != "$AFTER_STATUS" ]; then
     printf 'before:\n%s\nafter:\n%s\n' "$BEFORE_STATUS" "$AFTER_STATUS" >&2
