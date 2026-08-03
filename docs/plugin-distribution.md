@@ -476,3 +476,73 @@ $ env PATH=/usr/bin:/bin sh scripts/observe-plugin-install.sh; echo "EXIT=$?"
           The hermetic half (scripts/verify-plugin-install.sh) covers everything CI gates.
 EXIT=2
 ```
+
+## Which copy runs?
+
+rdm is distributed via three surfaces, each with a distinct purpose and audience:
+
+### 1. Source of Truth: `rdm-core/src/templates/`
+
+The **authoritative source** for all distributed artifacts — the skills, workflow engines, and templates that all other surfaces derive from. When you modify a skill or workflow, you edit the template in this tree:
+
+- **Skills:** `rdm-core/src/templates/skill-*.md` (11 skills: autopilot, backlog, dispatch-phase, do, document, estimate, land, plan-review, review, revise, roadmap)
+- **Workflows:** `rdm-core/src/templates/workflows/rdm-wf-*.js` (2 engines: rdm-wf-dispatch-phase.js, rdm-wf-review-refute-fix.js)
+- **Generators:** `rdm-cli`'s `agent-config` command emits these templates verbatim (with substitutions for `{rdm_bin}`, `{project}`, etc.) to create downstream artifacts.
+
+Invocation: the emitted skills invoke bare `rdm` (e.g., `./target/debug/rdm phase list …`).
+
+### 2. Plugin Installation: the Emitted Plugin Tree
+
+What **downstream consumers install** via `claude plugin marketplace add` and `claude plugin install`. Built by `rdm agent-config claude --plugin --out <dir>`, emitted to `plugins/rdm/` in this repo for release. Consumers never see the templates — they only see the installed plugin.
+
+**Layout:** 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc., with the `rdm-` prefix dropped per the naming decision) and 2 workflow engines (`rdm:rdm-wf-dispatch-phase`, `rdm:rdm-wf-review-refute-fix`, with the `rdm-wf-` prefix kept for disambiguation).
+
+**Invocation:** skills resolve as `rdm:<name>` (e.g., `rdm:roadmap`), and they invoke workflows via `Workflow({ name: "rdm:rdm-wf-dispatch-phase", … })`.
+
+**rdmBin Resolution:** the emitted plugin shims must resolve the rdm binary at runtime via `RDM_BIN` env var, PATH lookup, or standard installation locations — see `docs/plugin-distribution.md` § "Runtime Arguments Delivery" for details.
+
+### 3. This Repo's Lane: `.claude/skills/` and `.claude/workflows/`
+
+The **local copies** that **this repo** (`rdm` source) runs internally — deliberately different from the templates to support development and testing. This repo **never installs its own plugin**; it uses these local copies instead.
+
+**Hand-maintained dogfood:** Most `.claude/skills/` files are curated local copies of the skills, tuned for development:
+- `.claude/skills/rdm-roadmap/SKILL.md`
+- `.claude/skills/rdm-do/SKILL.md`
+- `.claude/skills/rdm-revise/SKILL.md`
+- `.claude/skills/rdm-backlog/SKILL.md`
+- `.claude/skills/rdm-autopilot/SKILL.md`
+- etc.
+
+These are hand-edited to accommodate repo-local paths, hoisted arguments, and worktree-specific logic. Edit them freely — they are not code.
+
+**Generated artifacts (drift-gated):** The following files are **generated** by the stamping scripts and **must never be hand-edited**:
+- `.claude/skills/rdm-review/SKILL.md` — stamped from `.claude/workflows/lib/review.mjs` by `scripts/gen-skill-review.sh`
+- `.claude/skills/rdm-plan-review/SKILL.md` — stamped from `.claude/workflows/lib/review.mjs` by `scripts/gen-skill-review.sh` (plan mode variant)
+- `.claude/workflows/rdm-wf-dispatch-phase.js` — stamped from `.claude/workflows/lib/dispatch-phase.mjs` by `scripts/gen-workflow-review.sh`
+- `.claude/workflows/rdm-wf-review-refute-fix.js` — stamped from `.claude/workflows/lib/review.mjs` by `scripts/gen-workflow-review.sh`
+- `.claude/workflows/rdm-wf-estimate.js` — stamped from `.claude/workflows/lib/estimate.mjs` by `scripts/gen-workflow-estimate.sh`
+- `.claude/workflows/rdm-wf-backlog.js` — stamped from `.claude/workflows/lib/backlog.mjs` by various generators
+- `.claude/workflows/rdm-wf-document.js` — stamped from `.claude/workflows/lib/document.mjs` by various generators
+- `.claude/workflows/rdm-wf-plan-review.js` — stamped from `.claude/workflows/lib/plan-review.mjs` by various generators
+
+When these files are hand-edited, the corresponding drift gate (`scripts/verify-workflow-review.sh`, `scripts/verify-workflow-estimate.sh`, etc.) turns red. Regenerate with the canonical command (e.g., `scripts/gen-skill-review.sh`, no `--check`), then the gate passes again.
+
+**Invocation:** this repo's skills invoke `./target/debug/rdm` (the local debug binary built during development).
+
+### Why This Repo Doesn't Install Its Own Plugin
+
+This repo runs its local `.claude/` lane and never installs the distributed plugin, for two reasons:
+
+1. **Development-build requirement:** rdm's own development is guided by the hard rule "ALWAYS run `cargo build` before any rdm command; ALWAYS use `./target/debug/rdm`, never a globally installed `rdm`." The plugin surface is designed for distributed consumers who have no local source repo — it has no way to invoke an unbuilt binary. Installing the plugin here would break this invariant and cause silent use of a stale installed version instead of the freshly built one.
+
+2. **Generated-artifact drift-gate root:** The `.claude/` tree is the drift-gate root for the stamping scripts and their CI harnesses. Every harness verifies that committed generated files are byte-identical to fresh output; this verification is anchored to the repo-local committed copies. If this repo installed the plugin (which replaces the source-tree paths), the harnesses would have no local copy to check against and could not enforce drift detection. Downstream consumers, by contrast, never see `rdm-core/src/templates/` and don't need to run the generators — they install the pre-built plugin as-is.
+
+---
+
+**Summary table:**
+
+| Surface | Purpose | Consumer | Invocation | Binary Path |
+|---------|---------|----------|-----------|-------------|
+| `rdm-core/src/templates/` | Authoritative source | Generator input | N/A | N/A |
+| Emitted plugin (`plugins/rdm/`) | Distributed installation | End users | `rdm:<skill>`, `rdm:rdm-wf-<engine>` | Resolved at runtime from `RDM_BIN` or PATH |
+| Local `.claude/` lane | Development & testing | This repo | `./target/debug/rdm` | Built local binary |

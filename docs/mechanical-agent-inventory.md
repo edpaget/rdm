@@ -442,7 +442,7 @@ effort options spike"; the operative outcomes are:
   `model` id produces. This was previously inferred from a runtime string table; the spike
   observed it four times (cases B, C, F and the retry probe), and the script distinguishes a
   throw from a null return explicitly, so the shape is unambiguous. Since `rdm agent-config`
-  emits no `.claude/agents/` definitions, threading `agentType` into the three distributed
+  emits no `.claude/agents/` definitions, threading `agentType` into the two distributed
   workflow templates would **hard-break** every downstream lane on first dispatch rather than
   degrade it. §2b of the review harness gates that. This phase therefore does not introduce a
   distributed dangling reference — it declines to.

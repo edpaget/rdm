@@ -73,20 +73,38 @@ rdm task update fix-barrel-nulls --project fbm --status done
 
 rdm is designed to work with AI coding agents. Instead of granting filesystem access to your plan repo, you allowlist the `rdm` binary or MCP server and the agent reads and writes roadmaps through the CLI.
 
-### CLI Agent Config
+### Claude Code Plugin Marketplace (Recommended)
 
-Generate instructions and skill definitions for your agent:
+Install rdm as a Claude Code plugin for automatic skill and workflow discovery:
+
+```bash
+# Add the marketplace (if not already configured)
+claude plugin marketplace add edpaget/rdm
+
+# Install the plugin
+claude plugin install rdm@<version>
+```
+
+This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, `rdm:do`, etc.) and 2 workflow engines, with automatic namespace prefixing and workflow discovery. No manual path resolution or binary discovery required — the plugin shims handle `rdm` binary resolution at runtime via `RDM_BIN` environment variable, PATH lookup, or standard installation locations.
+
+**This is the recommended distribution path for downstream consumers.**
+
+### CLI Agent Config (Fallback)
+
+For users unable to use the plugin marketplace, generate instructions and skill definitions manually:
 
 ```bash
 # Generate CLAUDE.md instructions for a target project
 rdm agent-config claude --project fbm > ~/Projects/fbm/.claude/rdm.md
 
-# Generate Claude Code skill definitions
+# Generate Claude Code skill definitions (fallback: raw skills emission)
 rdm agent-config claude --skills --project fbm --out ~/Projects/fbm
 
 # Or generate AGENTS.md + skills for the Pi coding agent
 rdm agent-config pi --skills --project fbm --out ~/Projects/fbm
 ```
+
+The raw skills emission (`--skills --out <dir>`) is a fallback for environments without plugin marketplace access. It emits 11 skills and 2 workflow engines to a target directory with no collision protection or namespace prefixing, requiring manual binary path resolution and workflow discovery.
 
 rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), reviewing a plan before implementation begins (`rdm-plan-review`), implementation and task work (`rdm-do`), review (`rdm-review`), acting on document reviews that request changes (`rdm-revise`) — which works a submitted review comment by comment, applying edits through rdm and landing each with `rdm commit`, recording per-comment commit provenance until the review is `addressed` — documentation generation (`rdm-document`), autonomous roadmap execution (`rdm-autopilot`) — which drives one roadmap to `reviewed` unattended (see [`docs/autonomous-loop.md`](docs/autonomous-loop.md)) — and landing (`rdm-land`), which integrates a reviewed item into `main` with linear history and then prunes its worktree (see [`docs/landing.md`](docs/landing.md)). There is also backlog grooming (`rdm-backlog`), a propose-only pass that reads `rdm backlog report` and emits a batched, human-reviewable plan of consolidate/merge/retire/archive actions — each paired with the exact `rdm` command that would carry it out — without mutating the plan repo. The same skill set is emitted for Pi under `.pi/skills/`.
 

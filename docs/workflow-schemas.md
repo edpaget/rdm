@@ -721,7 +721,7 @@ and `rdm-wf-review-refute-fix.js` and re-synced into
 `scripts/verify-agent-config-distribution.sh`'s semantic check greps only for
 literal `.claude/workflows/<name>.js` references and would not catch it.
 
-This is a blocking reason not to thread the three distributed files until the
+This is a blocking reason not to thread the two distributed files until the
 follow-up task `ship-mechanical-agent-type-downstream` lands an emission
 surface plus a reference-resolution gate. **This phase does not claim
 distribution self-consistency, and it does not introduce a distributed dangling
@@ -781,7 +781,7 @@ measured one.
 
 **Not threaded, and each for its own reason:**
 
-1. **The three distributed workflows** — blocked outright by the missing emission
+1. **The two distributed workflows** — blocked outright by the missing emission
    surface (§ Distribution). A downstream tree receives no `.claude/agents/` at
    all, so the reference could never resolve there. §2b(ii) gates this.
 2. **Every judgment site** — finders, refuters, planners, implementers,
@@ -821,7 +821,7 @@ and it is 42 % of a mechanical agent's floor. What remains is carried by two tas
   `agentType` honored through `parallel()`) is untested for the same reason: in
   the invalid run, nothing ever ran under the definition.
 - `ship-mechanical-agent-type-downstream` — the `.claude/agents/` emission surface
-  and its reference-resolution gate, which unblocks the three distributed
+  and its reference-resolution gate, which unblocks the two distributed
   workflows and lifts §2b(ii). Its "hard failure on first dispatch" premise is now
   observed rather than inferred.
 

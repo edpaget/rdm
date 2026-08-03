@@ -158,6 +158,35 @@ shfmt -d $(git ls-files '*.sh')           # shell format check
 for f in scripts/verify-*.sh; do bash "$f"; done   # shell integration harnesses
 ```
 
+## Agent Distribution
+
+rdm's autonomous lane (skills and workflows) is distributed via two channels:
+
+### Recommended: Claude Code Plugin Marketplace
+
+Downstream consumers should install rdm via the plugin marketplace:
+
+```bash
+claude plugin marketplace add edpaget/rdm
+claude plugin install rdm@<version>
+```
+
+This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc.) and 2 workflow engines (`rdm:rdm-wf-dispatch-phase`, `rdm:rdm-wf-review-refute-fix`). The skills invoke bare `rdm` at runtime; the plugin shims resolve the rdm binary via `RDM_BIN` environment variable, PATH lookup, or standard installation locations.
+
+**This repo does not install its own plugin.** It runs the local `.claude/` lane instead — a deliberately divergent surface that supports development and testing. See `docs/plugin-distribution.md` § "Which copy runs?" for the three surfaces and why this repo's configuration differs from downstream consumers.
+
+### Fallback: Raw Skills Emission
+
+For users unable to use the plugin marketplace:
+
+```bash
+rdm agent-config claude --skills --out <dir>
+```
+
+This emits 11 skills and 2 workflow engines to a target directory, with no collision protection or namespace prefixing. Raw emission is **not** the recommended path and carries higher friction — consumers must manage skill naming, binary path resolution, and workflow discovery manually.
+
+The plugin marketplace is recommended for these reasons: automatic namespace prefixing avoids collisions, automatic workflow discovery, and a single installed entity vs. 13 separate file copies.
+
 ## Dogfooding
 
 rdm's own development is tracked in a plan repo at `$RDM_ROOT` (set in `.mise.toml` to `~/Projects/rdm-atlas-repo`).
@@ -203,7 +232,7 @@ The autonomous do/autopilot lane has migrated from prose-orchestrated skills to 
 `.claude/agents/` is the custom-agent registry `agent()`'s `opts.agentType` resolves against. It
 holds one definition, `rdm-mechanical.md`. The **four local-only workflows** (`rdm-wf-document.js`,
 `rdm-wf-backlog.js`, `rdm-wf-estimate.js`, `rdm-wf-plan-review.js`) thread it at their mechanical call sites; the
-three distributed workflows and every judgment site must not. `scripts/verify-workflow-review.sh`
+two distributed workflows and every judgment site must not. `scripts/verify-workflow-review.sh`
 §2c asserts both directions with planted-mutation self-tests. Resolution is confirmed on the
 Workflow path and the trim measured at **8907 tokens/agent (−23 %)** — roughly half the 19894
 the `claude -p` 2×2 predicts, so quote 8907 for these sites. It is **not distributed**.
