@@ -1859,11 +1859,17 @@ say "10. CHANGELOG hygiene"
 
 grep -q '## \[Unreleased\]' CHANGELOG.md || fail "CHANGELOG.md has no [Unreleased] section"
 UNREL="$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md)"
-printf '%s' "$UNREL" | grep -q 'refuter-agreement' ||
+# Herestrings, not `printf ... | grep`: this script runs under `pipefail`, and
+# the [Unreleased] section is ~59 KB while the first match lands ~6.7 KB in.
+# `grep -q` exits the moment it matches, so `printf` takes SIGPIPE on the
+# ~52 KB it has not written yet, and `pipefail` promotes that into a failed
+# pipeline — turning a check that MATCHED into a spurious FAIL. A herestring
+# has no reader to disappear.
+grep -q 'refuter-agreement' <<<"$UNREL" ||
     fail "CHANGELOG.md's [Unreleased] section does not mention the refuter-agreement harness"
-printf '%s' "$UNREL" | grep -q "$DOC" ||
+grep -q "$DOC" <<<"$UNREL" ||
     fail "CHANGELOG.md's [Unreleased] section does not point at $DOC"
-printf '%s' "$UNREL" | grep -q "$BATCH_DOC" ||
+grep -q "$BATCH_DOC" <<<"$UNREL" ||
     fail "CHANGELOG.md's [Unreleased] section does not point at $BATCH_DOC"
 pass "CHANGELOG.md's [Unreleased] section describes the harness and names both decision docs"
 
