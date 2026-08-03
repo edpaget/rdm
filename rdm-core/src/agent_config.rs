@@ -4355,4 +4355,144 @@ mod tests {
             }
         }
     }
+
+    // --- Raw `--skills` emission baseline ---
+    //
+    // A per-file sha256 fingerprint of everything the RAW emission surface
+    // produces, captured from the pre-change tree and committed as a fixture
+    // BEFORE plugin-mode emission existed. Its whole purpose is to be a
+    // baseline that the plugin-mode emitter provably did not author: it makes
+    // "raw `--skills` output is unchanged" a checkable claim rather than an
+    // assertion of intent.
+
+    /// The four canonical [`SkillOptions`] combinations the raw-emission
+    /// baseline covers, each paired with the key prefix it contributes to the
+    /// fixture map: the CLI and MCP surfaces, each with and without a project
+    /// name and a principles file (the only two axes `generate_skills`
+    /// substitutes on).
+    fn raw_baseline_combos() -> Vec<(&'static str, SkillOptions)> {
+        vec![
+            (
+                "cli-bare",
+                SkillOptions {
+                    project: None,
+                    principles_file: None,
+                    mcp: false,
+                },
+            ),
+            (
+                "cli-full",
+                SkillOptions {
+                    project: Some("demo".to_string()),
+                    principles_file: Some("PRINCIPLES.md".to_string()),
+                    mcp: false,
+                },
+            ),
+            (
+                "mcp-bare",
+                SkillOptions {
+                    project: None,
+                    principles_file: None,
+                    mcp: true,
+                },
+            ),
+            (
+                "mcp-full",
+                SkillOptions {
+                    project: Some("demo".to_string()),
+                    principles_file: Some("PRINCIPLES.md".to_string()),
+                    mcp: true,
+                },
+            ),
+        ]
+    }
+
+    /// Recomputes the `"<combo-key>/<relative_path>" -> "<sha256-hex>"` map
+    /// over the raw emission surface: [`generate_skills`] across all four
+    /// [`raw_baseline_combos`], plus [`generate_workflows`].
+    fn raw_emission_checksums() -> std::collections::BTreeMap<String, String> {
+        let mut map = std::collections::BTreeMap::new();
+        for (key, opts) in raw_baseline_combos() {
+            for skill in generate_skills(&opts) {
+                map.insert(
+                    format!("{key}/{}", skill.relative_path),
+                    sha256_hex(skill.content.as_bytes()),
+                );
+            }
+        }
+        for workflow in generate_workflows() {
+            map.insert(
+                format!("workflows/{}", workflow.relative_path),
+                sha256_hex(workflow.content.as_bytes()),
+            );
+        }
+        map
+    }
+
+    fn raw_baseline_fixture_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/raw-skills-baseline.json")
+    }
+
+    /// Regenerates the committed raw-emission baseline fixture.
+    ///
+    /// Deliberately `#[ignore]`d: running it rewrites the very artifact
+    /// [`raw_skills_emission_matches_committed_baseline`] checks against, so
+    /// an accidental run would launder a real regression into a "new
+    /// baseline". If the raw templates ever legitimately change, regenerating
+    /// this fixture must be a deliberate, separately-reviewed commit that
+    /// stands on its own — never bundled with the change that moved the
+    /// bytes.
+    ///
+    /// Run with:
+    /// `cargo test -p rdm-core regenerate_raw_skills_baseline -- --ignored`
+    #[test]
+    #[ignore = "generator: rewrites the committed baseline fixture; run deliberately only"]
+    fn regenerate_raw_skills_baseline() {
+        let map = raw_emission_checksums();
+        let path = raw_baseline_fixture_path();
+        std::fs::create_dir_all(path.parent().expect("fixture path has a parent"))
+            .expect("create fixture dir");
+        let json = serde_json::to_string_pretty(&map).expect("serialize baseline");
+        std::fs::write(&path, format!("{json}\n")).expect("write baseline fixture");
+    }
+
+    #[test]
+    fn raw_skills_emission_matches_committed_baseline() {
+        let path = raw_baseline_fixture_path();
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read {}: {e}\n\
+                 regenerate with: cargo test -p rdm-core regenerate_raw_skills_baseline -- --ignored",
+                path.display()
+            )
+        });
+        let expected: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&raw).expect("baseline fixture is valid JSON");
+        let actual = raw_emission_checksums();
+
+        assert!(
+            !expected.is_empty(),
+            "baseline fixture is empty — it would pass vacuously"
+        );
+
+        let mut differing: Vec<String> = Vec::new();
+        for (key, want) in &expected {
+            match actual.get(key) {
+                Some(got) if got == want => {}
+                Some(got) => differing.push(format!("{key}: baseline {want} != emitted {got}")),
+                None => differing.push(format!("{key}: present in baseline, absent from emission")),
+            }
+        }
+        for key in actual.keys() {
+            if !expected.contains_key(key) {
+                differing.push(format!("{key}: emitted but absent from baseline"));
+            }
+        }
+        assert!(
+            differing.is_empty(),
+            "raw `--skills` emission drifted from the committed pre-change baseline:\n  {}",
+            differing.join("\n  ")
+        );
+    }
 }
