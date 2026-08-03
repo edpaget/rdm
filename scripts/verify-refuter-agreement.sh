@@ -162,10 +162,10 @@ pass "$DOC documents the harness, names all three scripts, and states on-demand 
 grep -q 'verify-refuter-agreement.sh' CLAUDE.md || fail "CLAUDE.md has no verify-refuter-agreement.sh bullet"
 pass "CLAUDE.md carries the harness bullet"
 
-# AC7: the plan-review.js model-omission question is answered explicitly.
+# AC7: the rdm-wf-plan-review.js model-omission question is answered explicitly.
 BEFORE_AC7="$FAILURES"
-grep -qE '^## The .?plan-review\.js.? model-omission question' "$DOC" ||
-    fail "$DOC has no '## The plan-review.js model-omission question' section"
+grep -qE '^## The .?rdm-wf-plan-review\.js.? model-omission question' "$DOC" ||
+    fail "$DOC has no '## The rdm-wf-plan-review.js model-omission question' section"
 grep -q 'f4e89d7' "$DOC" || fail "$DOC must cite commit f4e89d7"
 grep -q 'verify-workflow-review.sh' "$DOC" || fail "$DOC must cite scripts/verify-workflow-review.sh"
 grep -q '5b-mechanical' "$DOC" || fail "$DOC must cite the 5b-mechanical criterion"

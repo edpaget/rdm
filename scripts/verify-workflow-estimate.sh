@@ -1,7 +1,7 @@
 #!/bin/sh
 # Hermetic regression for the estimate workflow and its shared estimate-core.
 #
-# estimate (`.claude/workflows/estimate.js`) rates an rdm roadmap's UNESTIMATED
+# estimate (`.claude/workflows/rdm-wf-estimate.js`) rates an rdm roadmap's UNESTIMATED
 # phases: it lists the phases, filters to those whose difficulty is unset,
 # rates each in a parallel() fan-out, writes back the difficulty AND appends a
 # `## Estimate <difficulty> — <justification>` audit note to the phase body, and
@@ -9,10 +9,10 @@
 # It NEVER passes `--model` and NEVER reimplements the difficulty->tier mapping —
 # rdm-core (Difficulty::model_tier) owns that. Its pure estimate core lives once
 # in `.claude/workflows/lib/estimate.mjs` (the `estimate-core` marker region) and
-# is copied BYTE-IDENTICAL into a single consumer — estimate.js — by
+# is copied BYTE-IDENTICAL into a single consumer — rdm-wf-estimate.js — by
 # scripts/gen-workflow-estimate.sh (the Workflow runtime cannot import a helper
 # module; see docs/workflow-schemas.md § "Import spike"). The prose
-# `rdm-autopilot` skill's estimate pre-pass invokes this same `estimate`
+# `rdm-autopilot` skill's estimate pre-pass invokes this same `rdm-wf-estimate`
 # Workflow directly via the Workflow tool rather than reusing a stamped copy of
 # this block (workflow-orchestration roadmap, phase 3 retired the earlier
 # `autopilot.js`/`lib/autopilot.mjs` stamped copy). This harness gates all of
@@ -36,13 +36,13 @@
 #   2. DRIFT      — scripts/gen-workflow-estimate.sh --check passes on the tree,
 #                   with a planted-mutation self-test proving the gate is not a
 #                   no-op and heals on restore.
-#   3. STATIC     — estimate.js loads under module semantics; no import/require;
+#   3. STATIC     — rdm-wf-estimate.js loads under module semantics; no import/require;
 #                   no Date.now / Math.random anywhere in the estimate sources; no
 #                   `difficultyToTier` anywhere under .claude/workflows/; no
 #                   *_SCHEMA handed to agent() with a top-level type:'array'
 #                   (Anthropic tools require 'object'); meta.phases parity; and
 #                   the rewritten rdm-estimate SKILL.md is a thin shim referencing
-#                   estimate.js with no retired rating-loop prose.
+#                   rdm-wf-estimate.js with no retired rating-loop prose.
 #   5. HERMETIC   — a temp git-backed plan repo seeded via the REAL target/debug/rdm
 #      SEED         binary (mixed estimated/unestimated phases), whose actual
 #                   `rdm phase list --format json` output is fed through
@@ -74,7 +74,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
 WF_DIR="$REPO_ROOT/.claude/workflows"
 LIB="$WF_DIR/lib/estimate.mjs"
-WF="$WF_DIR/estimate.js"
+WF="$WF_DIR/rdm-wf-estimate.js"
 SKILL="$REPO_ROOT/.claude/skills/rdm-estimate/SKILL.md"
 GEN="$SCRIPT_DIR/gen-workflow-estimate.sh"
 RDM_BIN="$REPO_ROOT/target/debug/rdm"
@@ -540,7 +540,7 @@ fi
 say "2. Drift: gen-workflow-estimate.sh --check passes on the committed tree"
 
 if "$GEN" --check >/dev/null 2>&1; then
-    pass "estimate-core is in sync in estimate.js"
+    pass "estimate-core is in sync in rdm-wf-estimate.js"
 else
     "$GEN" --check >&2 || true
     fail "estimate-core DRIFTED — run scripts/gen-workflow-estimate.sh"
@@ -550,16 +550,16 @@ fi
 # --check FAILS, then restore and prove it heals. We drive the generator against a
 # scratch repo so the real tree is never touched.
 say "2b. Drift detector fires on planted drift inside a consumer's estimate-core region (self-test)"
-# Plant the mutation directly in estimate.js, run --check, then restore.
-cp "$WF" "$TMP/estimate.js.orig"
+# Plant the mutation directly in rdm-wf-estimate.js, run --check, then restore.
+cp "$WF" "$TMP/rdm-wf-estimate.js.orig"
 # Mutate one line inside the estimate-core region (the summary header string).
-sed 's/estimate summary for roadmap/PLANTED DRIFT for roadmap/' "$WF" >"$TMP/estimate.js.mut"
-cp "$TMP/estimate.js.mut" "$WF"
+sed 's/estimate summary for roadmap/PLANTED DRIFT for roadmap/' "$WF" >"$TMP/rdm-wf-estimate.js.mut"
+cp "$TMP/rdm-wf-estimate.js.mut" "$WF"
 if "$GEN" --check >/dev/null 2>&1; then
-    cp "$TMP/estimate.js.orig" "$WF"
-    fail "drift gate did NOT fire on a planted mutation inside estimate.js's estimate-core region"
+    cp "$TMP/rdm-wf-estimate.js.orig" "$WF"
+    fail "drift gate did NOT fire on a planted mutation inside rdm-wf-estimate.js's estimate-core region"
 fi
-cp "$TMP/estimate.js.orig" "$WF"
+cp "$TMP/rdm-wf-estimate.js.orig" "$WF"
 if "$GEN" --check >/dev/null 2>&1; then
     pass "drift detector fires on a planted mutation and heals on restore"
 else
@@ -568,27 +568,27 @@ else
 fi
 
 # --- 3. STATIC INVARIANTS ----------------------------------------------------
-say "3. Static invariants on estimate.js and the estimate sources"
+say "3. Static invariants on rdm-wf-estimate.js and the estimate sources"
 
 # 3a. Module parse.
 if parse_workflow "$WF" >/dev/null 2>&1; then
-    pass "estimate.js parses under module semantics (top-level meta declared once)"
+    pass "rdm-wf-estimate.js parses under module semantics (top-level meta declared once)"
 else
     parse_workflow "$WF" >&2 || true
-    fail "estimate.js does NOT parse — fix the SyntaxError"
+    fail "rdm-wf-estimate.js does NOT parse — fix the SyntaxError"
 fi
 
 # 3b. No import/require (the runtime forbids it — sharing is by stamped copy).
 if grep -nE '(^|[^A-Za-z_])import[ (]' "$WF" >/dev/null 2>&1; then
     grep -nE '(^|[^A-Za-z_])import[ (]' "$WF" >&2 || true
-    fail "estimate.js must not import (the runtime forbids it — sharing is by stamped copy)"
+    fail "rdm-wf-estimate.js must not import (the runtime forbids it — sharing is by stamped copy)"
 fi
 if grep -nE '(^|[^A-Za-z_])require\(' "$WF" >/dev/null 2>&1; then
-    fail "estimate.js must not require() (the runtime forbids it)"
+    fail "rdm-wf-estimate.js must not require() (the runtime forbids it)"
 fi
-grep -q '>>> estimate-core:begin' "$WF" || fail "missing estimate-core:begin marker in estimate.js"
-grep -q '>>> estimate-core:end' "$WF" || fail "missing estimate-core:end marker in estimate.js"
-pass "no import/require; both estimate-core markers present in estimate.js"
+grep -q '>>> estimate-core:begin' "$WF" || fail "missing estimate-core:begin marker in rdm-wf-estimate.js"
+grep -q '>>> estimate-core:end' "$WF" || fail "missing estimate-core:end marker in rdm-wf-estimate.js"
+pass "no import/require; both estimate-core markers present in rdm-wf-estimate.js"
 
 # 3c. No Date.now / Math.random anywhere in the estimate sources.
 if grep -nE 'Date\.now\(|Math\.random\(' "$WF" "$LIB" 2>/dev/null; then
@@ -598,7 +598,7 @@ printf 'const x = Date.now();\n' >"$TMP/planted-nondeterm.js"
 if ! grep -nE 'Date\.now\(|Math\.random\(' "$TMP/planted-nondeterm.js" >/dev/null 2>&1; then
     fail "hygiene grep did NOT catch a planted Date.now() — the detector is broken"
 fi
-pass "no Date.now / Math.random in estimate.js or lib/estimate.mjs; detector catches a planted one"
+pass "no Date.now / Math.random in rdm-wf-estimate.js or lib/estimate.mjs; detector catches a planted one"
 
 # 3d. No difficultyToTier ANYWHERE under .claude/workflows/ (rdm-core owns the map).
 if grep -rn 'difficultyToTier' "$WF_DIR" >/dev/null 2>&1; then
@@ -621,7 +621,7 @@ if [ -n "$OFFENDERS" ]; then
     printf 'top-level type:array schema(s): %s\n' "$(echo "$OFFENDERS" | tr '\n' ' ')" >&2
     fail "no *_SCHEMA handed to agent() may use a top-level type:'array' (Anthropic tools require 'object'); offending: $OFFENDERS"
 fi
-grep -q 'r.phases' "$WF" || fail "the list realDep must unwrap the PHASE_LIST_SCHEMA wrapper (expected 'r.phases' in estimate.js)"
+grep -q 'r.phases' "$WF" || fail "the list realDep must unwrap the PHASE_LIST_SCHEMA wrapper (expected 'r.phases' in rdm-wf-estimate.js)"
 sed "s/^  type: 'object',/  type: 'array',/" "$WF" >"$TMP/wf.array.scratch"
 if [ -z "$(schema_array_offenders "$TMP/wf.array.scratch")" ]; then
     fail "top-level-array detector did NOT fire on a planted type:'array' schema"
@@ -645,7 +645,7 @@ fi
 . "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
 
 agent_option_blocks "$WF" >"$TMP/mech-blocks"
-[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from estimate.js"
+[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from rdm-wf-estimate.js"
 
 assert_label_model "$TMP/mech-blocks" 'estimate:list' 'mechanicalModel' ||
     fail "AC-MECHANICAL-TIER: estimate:list must resolve to model: mechanicalModel"
@@ -671,9 +671,9 @@ fi
 pass "AC-MECHANICAL-TIER: detector fires when estimate:list is repointed away from mechanicalModel"
 
 # --- 4. SKILL SHIM -----------------------------------------------------------
-say "4. rdm-estimate SKILL.md is a thin shim referencing estimate.js with no retired rating-loop prose"
+say "4. rdm-estimate SKILL.md is a thin shim referencing rdm-wf-estimate.js with no retired rating-loop prose"
 
-grep -qF '.claude/workflows/estimate.js' "$SKILL" || fail "SKILL.md must reference '.claude/workflows/estimate.js'"
+grep -qF '.claude/workflows/rdm-wf-estimate.js' "$SKILL" || fail "SKILL.md must reference '.claude/workflows/rdm-wf-estimate.js'"
 grep -q 'Workflow' "$SKILL" || fail "SKILL.md must invoke the estimate Workflow"
 # The retired step-by-step rating loop prose must be gone.
 for retired in "Rate its difficulty as one of" "body=\$(cat <<'EOF'" "Skipping is the override mechanism"; do
@@ -685,7 +685,7 @@ done
 if grep -qF -- '--difficulty <difficulty> --body' "$SKILL"; then
     fail "SKILL.md still re-narrates the writeback heredoc command — it should defer to the workflow"
 fi
-pass "SKILL.md is a thin shim: references estimate.js, no retired rating-loop prose"
+pass "SKILL.md is a thin shim: references rdm-wf-estimate.js, no retired rating-loop prose"
 
 # --- 5. HERMETIC SEED (real target/debug/rdm) --------------------------------
 say "5. Hermetic seed: real rdm JSON drives selectUnestimated / buildEstimatePipeline against a temp plan repo"
@@ -830,12 +830,12 @@ fi
 # --- HOIST: caller-supplied mechanicalModel / phaseList -----------------------
 # Phase 3 of the workflow-token-reduction roadmap eliminates mechanical
 # subagents by never spawning them (docs/mechanical-agent-inventory.md). In
-# estimate.js the two hoists live in the DRIVER REGION's realDeps only — the
+# rdm-wf-estimate.js the two hoists live in the DRIVER REGION's realDeps only — the
 # stamped `estimate-core` block and scripts/gen-workflow-estimate.sh are
 # untouched. Both are OPTIONAL: the original agent call is reached through a
 # fall-through and is never deleted, so a direct `Workflow` invocation behaves
 # exactly as before.
-say "HOIST. estimate.js driver region: mechanicalModel / phaseList hoists and their fallbacks"
+say "HOIST. rdm-wf-estimate.js driver region: mechanicalModel / phaseList hoists and their fallbacks"
 
 cat >"$TMP/hoist.mjs" <<'NODE_HOIST'
 import assert from 'node:assert/strict';

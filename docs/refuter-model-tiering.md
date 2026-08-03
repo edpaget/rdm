@@ -4,7 +4,7 @@
 
 Refuters run on the most expensive tier everywhere in the autonomous lane.
 `rdm model resolve review-verify` returns `opus` at the default tier and at
-`large`, and `.claude/workflows/plan-review.js` passes **no** models at all, so
+`large`, and `.claude/workflows/rdm-wf-plan-review.js` passes **no** models at all, so
 its finders and refuters inherit the ambient session model — which is
 opus-class. Refutation is also expensive in aggregate: `docs/token-baseline.json`
 measures the refuter class at 19.6 % of all lane tokens.
@@ -12,7 +12,7 @@ measures the refuter class at 19.6 % of all lane tokens.
 Two things had to be settled:
 
 1. **Can refuters move to a cheaper tier without shipping defects?**
-2. **Is `plan-review.js`'s model omission deliberate policy or an oversight?**
+2. **Is `rdm-wf-plan-review.js`'s model omission deliberate policy or an oversight?**
    That question was itself contested — an Opus refuter, handed exactly that
    finding, refuted it by citing `f4e89d7` and
    `scripts/verify-workflow-review.sh` §5b-mechanical.
@@ -291,7 +291,7 @@ Re-tiering changes PRICE-PER-TOKEN, not token VOLUME. These are volume figures o
 - **Neither tier refuted the one `false-premise` item that ran** (Opus 1/1,
   Sonnet 2/2 kept). That item is `mined-wf_909dbdd4-a29-a7caffc6c9f254a77`,
   **mined**, and its false premise is one of *commit attribution*, not a missing
-  file: the location it cites (`.claude/workflows/dispatch-phase.js:1503-1510`)
+  file: the location it cites (`.claude/workflows/rdm-wf-dispatch-phase.js:1503-1510`)
   exists, but its claim about which commit introduced it is false — `git show
   --stat 31be47a` touches exactly one file, `scripts/verify-workflow-dispatch.sh`,
   and no `.js` at all. Refuting it therefore required inspecting a commit's
@@ -322,7 +322,7 @@ Re-tiering changes PRICE-PER-TOKEN, not token VOLUME. These are volume figures o
   pinned-tree rule they are correctly `defect: false`, but their presence means
   the corpus over-represents "the code moved on" relative to live review traffic.
 
-## The `plan-review.js` model-omission question
+## The `rdm-wf-plan-review.js` model-omission question
 
 **Verdict: oversight** — not deliberate policy.
 
@@ -349,7 +349,7 @@ transcript:
 
 So plan-review's finders and refuters inherit the ambient session model.
 
-The sibling consumer does the opposite. `.claude/workflows/dispatch-phase.js`
+The sibling consumer does the opposite. `.claude/workflows/rdm-wf-dispatch-phase.js`
 builds
 `const reviewModels = { findModel: models.review_find, verifyModel: models.review_verify }`
 and threads it into the same pipeline. Two consumers of one pipeline therefore
@@ -357,7 +357,7 @@ disagree about whether its judgment agents carry a model.
 
 The consequence is not neutral, and it is not a saving. `rdm model resolve
 review-find` returns **`sonnet`**; `review-verify` returns **`opus`**. Under
-`dispatch-phase`, a plan-mode finder runs on Sonnet. Under `plan-review.js`, the
+`rdm-wf-dispatch-phase`, a plan-mode finder runs on Sonnet. Under `rdm-wf-plan-review.js`, the
 same finder inherits the opus-class session model. The omission makes
 plan-review's finders **more** expensive than the configured policy, not less.
 
@@ -372,7 +372,7 @@ lane".** Its body reads, verbatim:
 > Judgment agents (plan/implement/review, the estimate rater, plan-review's act
 > step, backlog's analyzers, document's synthesis step) are left unpinned.
 
-That sentence is scoped by its own commit. The same commit's `dispatch-phase`
+That sentence is scoped by its own commit. The same commit's `rdm-wf-dispatch-phase`
 half demonstrably *keeps* `review_find` / `review_verify` threaded, so "judgment
 agents are left unpinned" cannot mean "judgment sites must carry no model" — it
 means "this commit did not pin them to the **mechanical** tier". Reading it as a
@@ -386,7 +386,7 @@ assert_label_not_model "$TMP/mech-blocks" 'act:' '_mechanicalModel'
 
 It asserts that `act:` is not pinned to `_mechanicalModel`. It says nothing about
 any other model, and nothing about finders or refuters at all — which it could
-not, because those are not `agent()` call sites in `plan-review.js`. They live
+not, because those are not `agent()` call sites in `rdm-wf-plan-review.js`. They live
 inside the stamped review block, dispatched by `buildReviewPipeline`.
 
 **And a third artifact points the other way.** `CHANGELOG.md`'s entry on the
@@ -397,7 +397,7 @@ review fleet states that the skill surface now sizes review agents via the
 > given an explicit `model`, closing the session-model-inheritance leak.
 
 That is the same leak, described as a defect and closed elsewhere. It is still
-open in `plan-review.js`.
+open in `rdm-wf-plan-review.js`.
 
 **No artifact anywhere states that a judgment site should be left unpinned
 entirely.** Absent such a statement, and with the sibling consumer, the config
@@ -468,7 +468,7 @@ binding was evaluated and deliberately left as-is, and
 `lib/plan-review.mjs` gains a `findModel`, the gate starts demanding a matching
 `5b-models` criterion.
 
-**What is NOT closed by this decision.** The `plan-review.js` model omission is a
+**What is NOT closed by this decision.** The `rdm-wf-plan-review.js` model omission is a
 separate question with a separate answer — it is an oversight, and it is filed as
 `thread-plan-review-judgment-models`. That fix is about aligning plan-review with
 the configured `[models]` policy (which would move its *finders* to Sonnet, since

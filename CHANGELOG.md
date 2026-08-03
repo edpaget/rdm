@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 
-- `rdm agent-config claude --skills` now cleans up superseded `.claude/workflows/` files left over from an earlier emission of the same lane, once it recognizes a file's exact prior content: it reports `Removed <path>` for a file whose bytes match a known previously-emitted fingerprint, and `Skipped <path> (content modified since emission; left in place)` for a same-named file it does not recognize (user-edited, or from a version of rdm it doesn't know about) — the latter is never deleted. A removal failure (e.g. a permission error) is reported as `Failed to remove <path>: <error>` and never fails the overall emit. This only runs for Claude Code project output (`--out`, not `--user`; Pi has no `.claude/workflows` at all). For now the shipped superseded-file table is empty — nothing has been renamed or retired under this mechanism yet — so `rdm agent-config` has nothing to clean up; a future rename populates it.
+- `rdm agent-config claude --skills` now cleans up superseded `.claude/workflows/` files left over from an earlier emission of the same lane, once it recognizes a file's exact prior content: it reports `Removed <path>` for a file whose bytes match a known previously-emitted fingerprint, and `Skipped <path> (content modified since emission; left in place)` for a same-named file it does not recognize (user-edited, or from a version of rdm it doesn't know about) — the latter is never deleted. A removal failure (e.g. a permission error) is reported as `Failed to remove <path>: <error>` and never fails the overall emit. This only runs for Claude Code project output (`--out`, not `--user`; Pi has no `.claude/workflows` at all). The shipped superseded-file table now carries the two engines renamed by the `rdm-wf-` prefix change below, plus the retired `autopilot.js` orphan.
 - The `plan`-mode review's always-on dimension set is now **correctly documented as three** — `coherence`, `architectural-fit` and `restraint`. `restraint` carries no `when` predicate and has always run on every plan review; `CLAUDE.md`, `docs/workflow-schemas.md`'s dimension table, and the shipped plan-review skill templates' finding template (`concern: <coherence|architectural-fit|restraint|unit-of-work>`) all said otherwise. No behavior changed — only the description of it.
 - The shipped **code-review** skill templates now state **why `ac` and `correctness` are not merged into one always-on finder**: `ac` is the only dimension resolving the AC-review schema rather than the findings schema, and its per-criterion table is the structured side-channel the verdict consumes directly — a channel that never reads a finding's severity, is never refuted, and never consumes refutation budget. Folding it into a shared findings stream would route the acceptance-criteria contract through exactly the path it was kept out of. Rendered into the code-mode skills only; the long-form rationale lives in `docs/workflow-schemas.md`.
 - A new on-demand **finder-collapse harness** answers, on evidence, whether `plan` mode's three always-on finders can be collapsed into ONE agent holding three lenses. `scripts/mine-plan-finder-corpus.mjs` recovers real plan REVIEW UNITS verbatim from the full-fidelity `subagents/workflows/<runId>/agent-*.jsonl` transcripts — plan-mode prompts interpolate the plan document inline, so both the document and the three-finder output are replayable — keyed on the same `(runId, unitIdent)` boundary `docs/token-baseline.json` § `refuterFanout` documents, and never adjudicates. `scripts/lib/finder-collapse.mjs` + `scripts/run-finder-collapse.mjs` build both arms (arm A through the REAL exported `findPrompt` over the REAL always-on `DIMENSIONS.plan` entries — never a copy; arm B through a collapsed three-lens prompt that lives in the instrument so a no-ship leaves the lane byte-unchanged), dispatch them with replicates via `claude -p`, and score per-lens finding counts, per-lens severity distribution, adjudicated material recall, `concern` attribution validity and per-class token totals — never blending a rate across lenses (enforced by a recursive key assertion). Modes that spend nothing: `--dry-run`, `--dispatch-stub`, `--score`, `--audit`. The miner's accounting identity — every plan-finder record is either recovered as an always-on lens observation or counted in exactly one skip bucket, since an unrecovered finder is an unknown and an unknown must never contribute to a rate — holds under `--limit` too: a unit past the limit is classified into a single `beyond-limit` bucket before any other test, rather than the boundary unit's records and every later unit being abandoned uncounted. `scripts/verify-finder-collapse.sh` gates all of it hermetically with planted-mutation self-tests, including one that reverts that bucket to a bare `break` and must break the under-truncation identity.
@@ -221,6 +221,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   set, never the parsed one.)
 
 ### Changed
+
+- **BREAKING — every Workflow engine under `.claude/workflows/` is now named
+  `rdm-wf-<name>.js`.** The engines used to surface in the skill/slash-command
+  listing under bare names that read as siblings of their `rdm-*` skill front
+  doors, so `dispatch-phase` and `rdm-dispatch-phase` were indistinguishable
+  without reading both files. All six moved at once — a prefix applied to a
+  subset would be worse than none, because the *absence* of a prefix would stop
+  meaning anything:
+  `dispatch-phase.js` -> `rdm-wf-dispatch-phase.js`,
+  `review-refute-fix.js` -> `rdm-wf-review-refute-fix.js`,
+  `backlog.js` -> `rdm-wf-backlog.js`,
+  `document.js` -> `rdm-wf-document.js`,
+  `estimate.js` -> `rdm-wf-estimate.js`,
+  `plan-review.js` -> `rdm-wf-plan-review.js`.
+  Each engine's `meta.name` matches its new filename stem, so the listing entry
+  moves with the file.
+  **No `rdm-*` skill was renamed** — all 11 front doors (`rdm-do`,
+  `rdm-dispatch-phase`, `rdm-autopilot`, `rdm-review`, `rdm-plan-review`,
+  `rdm-estimate`, `rdm-backlog`, `rdm-document`, `rdm-land`, `rdm-revise`,
+  `rdm-roadmap`) keep their names and invocations; only the engines behind them
+  moved. `.claude/workflows/lib/*.mjs` filenames are likewise unchanged.
+  **What you must do:** if you invoke a Workflow by name from your own
+  automation or prose — a `Workflow` tool call, a custom skill, a script — update
+  that name to its `rdm-wf-` form. Invoking a bare engine name now resolves
+  nothing.
+  **What you need not do:** no manual `rm`. Re-running
+  `rdm agent-config claude --skills --out <dir>` **removes the superseded**
+  `dispatch-phase.js` and `review-refute-fix.js` from a previously-emitted tree
+  as part of the same emit, using the fingerprint-gated cleanup mechanism, and
+  reports each as `Removed <path>`. The same emit also removes the long-retired
+  `autopilot.js` orphan, which had no successor and no other cleanup path. A
+  file you have edited yourself is never removed — it is reported as `Skipped`
+  and left in place.
 
 - The `review-refute-fix` and `estimate` workflows no longer hardcode this
   repo's `./target/debug/rdm` binary or `--project rdm` either — the same change

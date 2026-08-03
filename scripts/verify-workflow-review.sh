@@ -105,7 +105,7 @@ done
 [ "$GATE_BEGIN" -lt "$GATE_END" ] || fail "review-gate-spec markers are inverted"
 
 # The stamped region of the SOURCE must not name the land-time completion
-# trailer: it is copied verbatim into dispatch-phase.js, whose AC-1 forbids it.
+# trailer: it is copied verbatim into rdm-wf-dispatch-phase.js, whose AC-1 forbids it.
 awk -v b=">>> review-refute-fix:begin" -v e=">>> review-refute-fix:end" '
     index($0, b) { inb = 1; next }
     index($0, e) { inb = 0 }
@@ -138,17 +138,17 @@ SCRATCH="$TMP/scratch"
 mkdir -p "$SCRATCH/scripts" "$SCRATCH/.claude/workflows/lib"
 cp "$GEN" "$SCRATCH/scripts/gen-workflow-review.sh"
 cp "$LIB" "$SCRATCH/.claude/workflows/lib/review.mjs"
-cp "$WF_DIR/review-refute-fix.js" "$SCRATCH/.claude/workflows/review-refute-fix.js"
+cp "$WF_DIR/rdm-wf-review-refute-fix.js" "$SCRATCH/.claude/workflows/rdm-wf-review-refute-fix.js"
 # gen-workflow-review.sh lists every consumer; the scratch tree must carry them
 # all or the scratch --check fails on a missing consumer rather than on drift.
-cp "$WF_DIR/dispatch-phase.js" "$SCRATCH/.claude/workflows/dispatch-phase.js"
-cp "$WF_DIR/plan-review.js" "$SCRATCH/.claude/workflows/plan-review.js"
+cp "$WF_DIR/rdm-wf-dispatch-phase.js" "$SCRATCH/.claude/workflows/rdm-wf-dispatch-phase.js"
+cp "$WF_DIR/rdm-wf-plan-review.js" "$SCRATCH/.claude/workflows/rdm-wf-plan-review.js"
 sh "$SCRATCH/scripts/gen-workflow-review.sh" --check >/dev/null 2>&1 ||
     fail "scratch --check should pass on a clean copy"
 # Mutate a line INSIDE the generated block, portably (no in-place sed).
 sed 's/const CONFIDENCE_FLOOR = 70;/const CONFIDENCE_FLOOR = 999;/' \
-    "$SCRATCH/.claude/workflows/review-refute-fix.js" >"$SCRATCH/mutated" &&
-    mv "$SCRATCH/mutated" "$SCRATCH/.claude/workflows/review-refute-fix.js"
+    "$SCRATCH/.claude/workflows/rdm-wf-review-refute-fix.js" >"$SCRATCH/mutated" &&
+    mv "$SCRATCH/mutated" "$SCRATCH/.claude/workflows/rdm-wf-review-refute-fix.js"
 if sh "$SCRATCH/scripts/gen-workflow-review.sh" --check >/dev/null 2>&1; then
     fail "drift gate did NOT detect planted drift in the scratch consumer"
 fi
@@ -565,9 +565,166 @@ if ! grep -nE 'Date\.now\(|Math\.random\(' "$SCRATCH/planted.js" >/dev/null 2>&1
 fi
 pass "no forbidden globals present; detector catches a planted one"
 
+# --- 2d. ENGINE NAMING (the rdm-wf- prefix contract) --------------------------
+# Every engine under .claude/workflows/ carries the `rdm-wf-` prefix so a
+# listing entry can never be confused with its identically-worded `rdm-*` skill
+# front door. Three things must hold together, and this section asserts all
+# three plus a planted-mutation self-test for each.
+say "2d. Engine naming: rdm-wf-* filenames, meta.name parity, frozen lib filenames"
+
+EXPECTED_ENGINES="rdm-wf-backlog.js rdm-wf-dispatch-phase.js rdm-wf-document.js rdm-wf-estimate.js rdm-wf-plan-review.js rdm-wf-review-refute-fix.js spike-agent-type.js"
+ACTUAL_ENGINES=$(find "$WF_DIR" -maxdepth 1 -name '*.js' -exec basename {} \; | sort | tr '\n' ' ')
+# shellcheck disable=SC2086  # deliberately word-split name list
+EXPECTED_ENGINES_SORTED=$(printf '%s\n' $EXPECTED_ENGINES | sort | tr '\n' ' ')
+[ "$ACTUAL_ENGINES" = "$EXPECTED_ENGINES_SORTED" ] || fail "2d: .claude/workflows/*.js is not the expected engine set (spike-agent-type.js is an exempt spike artifact and keeps its bare name).
+  expected: $EXPECTED_ENGINES_SORTED
+  actual:   $ACTUAL_ENGINES"
+pass "2d: all six engines carry the rdm-wf- prefix (plus the exempt spike artifact)"
+
+EXPECTED_LIBS="backlog.mjs dispatch-phase.mjs document.mjs estimate.mjs plan-review.mjs review.mjs"
+ACTUAL_LIBS=$(find "$WF_DIR/lib" -maxdepth 1 -name '*.mjs' -exec basename {} \; | sort | tr '\n' ' ')
+# shellcheck disable=SC2086  # deliberately word-split name list
+EXPECTED_LIBS_SORTED=$(printf '%s\n' $EXPECTED_LIBS | sort | tr '\n' ' ')
+[ "$ACTUAL_LIBS" = "$EXPECTED_LIBS_SORTED" ] || fail "2d: .claude/workflows/lib/*.mjs filenames changed — libs are shared SOURCE modules, never listing entries, and their names are frozen by decision.
+  expected: $EXPECTED_LIBS_SORTED
+  actual:   $ACTUAL_LIBS"
+pass "2d: all six lib/*.mjs filenames are unchanged"
+
+# meta.name must equal the filename stem, or the listing shows one name while
+# the file carries another.
+check_meta_name_parity() {
+    parity_dir=$1
+    parity_bad=0
+    for engine in "$parity_dir"/rdm-wf-*.js; do
+        [ -f "$engine" ] || continue
+        stem=$(basename "$engine" .js)
+        declared=$(sed -n "s/^  name: '\(.*\)',$/\1/p" "$engine" | head -1)
+        [ -n "$declared" ] || {
+            echo "  $engine declares no meta.name" >&2
+            parity_bad=1
+            continue
+        }
+        [ "$declared" = "$stem" ] || {
+            echo "  $engine declares meta.name '$declared' but its stem is '$stem'" >&2
+            parity_bad=1
+        }
+    done
+    return "$parity_bad"
+}
+check_meta_name_parity "$WF_DIR" || fail "2d: an engine's meta.name does not match its filename stem (see lines above)"
+pass "2d: every engine's meta.name equals its filename stem"
+
+# Non-vacuity: revert one meta.name to its bare pre-rename form in a scratch
+# copy and confirm the parity check turns red.
+mkdir -p "$SCRATCH/2d"
+cp "$WF_DIR"/rdm-wf-*.js "$SCRATCH/2d/"
+sed "s/^  name: 'rdm-wf-backlog',$/  name: 'backlog',/" \
+    "$SCRATCH/2d/rdm-wf-backlog.js" >"$SCRATCH/2d/rdm-wf-backlog.js.mut"
+mv "$SCRATCH/2d/rdm-wf-backlog.js.mut" "$SCRATCH/2d/rdm-wf-backlog.js"
+grep -q "name: 'backlog'," "$SCRATCH/2d/rdm-wf-backlog.js" ||
+    fail "2d self-test: could not plant the bare meta.name — the self-test is vacuous"
+if check_meta_name_parity "$SCRATCH/2d" 2>/dev/null; then
+    fail "2d self-test: a planted bare meta.name did NOT turn the parity check red"
+fi
+pass "2d self-test: a planted bare meta.name correctly turns the parity check red"
+
+# The two SHIPPED copies must stay byte-identical to their local counterparts.
+for shipped in rdm-wf-dispatch-phase.js rdm-wf-review-refute-fix.js; do
+    diff -q "$WF_DIR/$shipped" "$REPO_ROOT/rdm-core/src/templates/workflows/$shipped" >/dev/null ||
+        fail "2d: $shipped drifted between .claude/workflows and rdm-core/src/templates/workflows"
+done
+pass "2d: both shipped template copies are byte-identical to their local engines"
+
+# The engine names rendered by the `find-refute-verdict:local-code-override`
+# block must reach ONLY the local dogfood rdm-review skill. The four SHIPPED
+# review-skill templates carry no engine reference today and must gain none —
+# a mis-scoped edit into the DEFAULT find-refute-verdict span would silently
+# expand the distributed surface.
+for shipped_skill in skill-review-cli.md skill-review-mcp.md skill-plan-review-cli.md skill-plan-review-mcp.md; do
+    [ "$(grep -c 'rdm-wf-' "$REPO_ROOT/rdm-core/src/templates/$shipped_skill" || true)" -eq 0 ] ||
+        fail "2d: $shipped_skill gained an engine reference — the local-code-override block must never render into a SHIPPED template"
+done
+pass "2d: no shipped review-skill template gained an engine reference"
+
+# --- 2e. ANCHORED REFERENCE-FORM SWEEP ---------------------------------------
+# The seven ways an engine can be named. Every hit outside the allowlist means
+# a reference still points at a file that no longer exists.
+say "2e. Anchored reference-form sweep: no live reference names a bare engine"
+
+ENGINE_ALT='dispatch-phase|review-refute-fix|backlog|document|estimate|plan-review'
+
+# Paths deliberately excluded, each for a stated reason. `autopilot` is absent
+# from ENGINE_ALT on purpose: it is a front door with NO engine behind it, and
+# substituting it would corrupt the one skill this rename must not touch.
+sweep_allowed() {
+    case $1 in
+        # Historical entries describing the pre-rename world.
+        */CHANGELOG.md) return 0 ;;
+        # Frozen measurement corpora keyed to committed figures.
+        */docs/token-baseline.json | */docs/token-baseline.md) return 0 ;;
+        # Frozen adjudication/measurement fixtures.
+        */tests/fixtures/*) return 0 ;;
+        # This harness and the distribution harness both name the PRE-rename
+        # forms deliberately, as planted-mutation inputs.
+        */scripts/verify-workflow-review.sh) return 0 ;;
+        */scripts/verify-agent-config-distribution.sh) return 0 ;;
+        # The superseded-name table records the pre-rename names by design.
+        */rdm-core/src/agent_config.rs) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+run_sweep() {
+    sweep_root=$1
+    sweep_out=$2
+    : >"$sweep_out"
+    {
+        # form 1 + 7: workflow-directory paths
+        grep -rnE "workflows/($ENGINE_ALT)\.js" "$sweep_root/.claude" "$sweep_root/scripts" "$sweep_root/docs" "$sweep_root/rdm-core" "$sweep_root/rdm-cli" "$sweep_root/CLAUDE.md" "$sweep_root/README.md" 2>/dev/null || :
+        # form 2: meta.name declarations
+        grep -rnE "^\s*name: '($ENGINE_ALT)'," "$sweep_root/.claude/workflows" "$sweep_root/rdm-core/src/templates/workflows" 2>/dev/null || :
+        # form 3: nested workflow() calls — expected to be structurally ZERO
+        grep -rnE "workflow\(['\"]($ENGINE_ALT)['\"]" "$sweep_root/.claude" "$sweep_root/rdm-core" "$sweep_root/scripts" "$sweep_root/docs" 2>/dev/null || :
+        # form 4: backticked name adjacent to Workflow/workflow
+        grep -rnE "\`($ENGINE_ALT)\` *\**\[?[Ww]orkflow" "$sweep_root/.claude" "$sweep_root/rdm-core/src/templates" "$sweep_root/docs" "$sweep_root/CLAUDE.md" "$sweep_root/README.md" 2>/dev/null || :
+        # form 5: bare prose invocation line
+        grep -rnE "^Workflow: *($ENGINE_ALT) *$" "$sweep_root/.claude" "$sweep_root/rdm-core/src/templates" 2>/dev/null || :
+        # form 6: bare <name>.js with no path prefix
+        grep -rnE "(^|[^/A-Za-z0-9_-])($ENGINE_ALT)\.js" "$sweep_root/README.md" "$sweep_root/CLAUDE.md" "$sweep_root/docs" "$sweep_root/rdm-cli" "$sweep_root/rdm-core" "$sweep_root/scripts" "$sweep_root/.claude" 2>/dev/null || :
+    } >"$sweep_out.raw" 2>/dev/null
+    while IFS= read -r hit; do
+        hit_path=${hit%%:*}
+        sweep_allowed "$hit_path" || printf '%s\n' "$hit" >>"$sweep_out"
+    done <"$sweep_out.raw"
+    [ ! -s "$sweep_out" ]
+}
+
+run_sweep "$REPO_ROOT" "$SCRATCH/sweep.txt" ||
+    fail "2e: a live reference still names a bare (pre-rename) engine:
+$(sort -u "$SCRATCH/sweep.txt")"
+pass "2e: no live reference names a bare engine (only allowlisted historical prose survives)"
+
+# Form 3 gets its own dedicated ZERO assertion — the phase's contract is that
+# it is structurally empty, not that it was swept.
+if grep -rnE "workflow\(['\"]($ENGINE_ALT)['\"]" "$REPO_ROOT/.claude" "$REPO_ROOT/rdm-core" >/dev/null 2>&1; then
+    fail "2e: a nested workflow() call by engine name reappeared — it must stay structurally ZERO"
+fi
+pass "2e: form 3 (nested workflow() calls by engine name) is still structurally zero"
+
+# Non-vacuity: plant a bare path reference in a scratch tree and confirm the
+# sweep turns red.
+rm -rf "$SCRATCH/2e-tree"
+mkdir -p "$SCRATCH/2e-tree/docs"
+# shellcheck disable=SC2016  # backticks are literal Markdown, not substitution
+printf 'See `.claude/workflows/document.js` for details.\n' >"$SCRATCH/2e-tree/docs/planted.md"
+if run_sweep "$SCRATCH/2e-tree" "$SCRATCH/sweep-planted.txt"; then
+    fail "2e self-test: a planted bare '.claude/workflows/document.js' reference was NOT caught — the sweep is vacuous"
+fi
+pass "2e self-test: a planted bare engine reference correctly turns the sweep red"
+
 # --- 2a. PROJECT-AGNOSTIC SIGNAL DERIVATION (region-scoped) ------------------
 # `deriveSignals` must carry NO repo-specific literal and NO language-specific
-# keyword clause. The grep is deliberately REGION-scoped: dispatch-phase.js's
+# keyword clause. The grep is deliberately REGION-scoped: rdm-wf-dispatch-phase.js's
 # hand-written side-task prose and the DIMENSIONS `//|` prose both mention
 # `rdm-core/src/...` legitimately, and a whole-file grep would flag them.
 say "2a. deriveSignals is project-agnostic and language-neutral (region-scoped grep)"
@@ -584,9 +741,9 @@ extract_signals_region() {
 
 AGNOSTIC_SIGNAL_TOKENS='rdm-cli|rdm-server|rdm-core/src/|\\bpub\\b'
 SIGNAL_REGION_FILES="$LIB"
-for f in "$WF_DIR"/review-refute-fix.js "$WF_DIR"/dispatch-phase.js "$WF_DIR"/plan-review.js \
-    "$REPO_ROOT/rdm-core/src/templates/workflows/review-refute-fix.js" \
-    "$REPO_ROOT/rdm-core/src/templates/workflows/dispatch-phase.js"; do
+for f in "$WF_DIR"/rdm-wf-review-refute-fix.js "$WF_DIR"/rdm-wf-dispatch-phase.js "$WF_DIR"/rdm-wf-plan-review.js \
+    "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js" \
+    "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-dispatch-phase.js"; do
     SIGNAL_REGION_FILES="$SIGNAL_REGION_FILES $f"
 done
 for f in $SIGNAL_REGION_FILES; do
@@ -723,21 +880,21 @@ has_agent_type() {
 #     consumed by `while read`, matching this harness's existing style.
 MECHANICAL_SITES=$(
     cat <<'SITES'
-document.js|model:mechanical'
-document.js|fetch:roadmap-meta'
-document.js|gather:' +
-document.js|write:draft'
-backlog.js|model:mechanical'
-backlog.js|fetch:report'
-estimate.js|model:mechanical'
-estimate.js|estimate:list'
-estimate.js|estimate:write:' +
-estimate.js|estimate:tier:' +
-plan-review.js|model:mechanical'
-plan-review.js|fetch:roadmap'
-plan-review.js|fetch:' + kind
-plan-review.js|fetch:wontfix'
-plan-review.js|gate:clear-tag:' +
+rdm-wf-document.js|model:mechanical'
+rdm-wf-document.js|fetch:roadmap-meta'
+rdm-wf-document.js|gather:' +
+rdm-wf-document.js|write:draft'
+rdm-wf-backlog.js|model:mechanical'
+rdm-wf-backlog.js|fetch:report'
+rdm-wf-estimate.js|model:mechanical'
+rdm-wf-estimate.js|estimate:list'
+rdm-wf-estimate.js|estimate:write:' +
+rdm-wf-estimate.js|estimate:tier:' +
+rdm-wf-plan-review.js|model:mechanical'
+rdm-wf-plan-review.js|fetch:roadmap'
+rdm-wf-plan-review.js|fetch:' + kind
+rdm-wf-plan-review.js|fetch:wontfix'
+rdm-wf-plan-review.js|gate:clear-tag:' +
 lib/plan-review.mjs|fetch:roadmap'
 lib/plan-review.mjs|fetch:' + kind
 lib/plan-review.mjs|fetch:wontfix'
@@ -755,7 +912,7 @@ printf '%s\n' "$MECHANICAL_SITES" | while IFS= read -r site; do
 done || exit 1
 # Self-test: strip the key from one site in a scratch copy; the check must fail.
 mkdir -p "$SCRATCH/2c"
-sed "s/ *agentType: 'rdm-mechanical',//" "$WF_DIR/document.js" >"$SCRATCH/2c/stripped.js"
+sed "s/ *agentType: 'rdm-mechanical',//" "$WF_DIR/rdm-wf-document.js" >"$SCRATCH/2c/stripped.js"
 if has_agent_type "$SCRATCH/2c/stripped.js" "write:draft'"; then
     fail "2c: positive detector did NOT notice a stripped agentType — it is vacuous"
 fi
@@ -831,7 +988,7 @@ rm -rf "$SCRATCH/2c-tree"
 mkdir -p "$SCRATCH/2c-tree/lib"
 cp "$WF_DIR"/*.js "$SCRATCH/2c-tree/" 2>/dev/null || true
 cp "$WF_DIR"/lib/*.mjs "$SCRATCH/2c-tree/lib/" 2>/dev/null || true
-cat >>"$SCRATCH/2c-tree/document.js" <<'PLANTED'
+cat >>"$SCRATCH/2c-tree/rdm-wf-document.js" <<'PLANTED'
 await agent(P, {
   label: 'fetch:newly-added-mechanical-site',
   phase: 'Fetch',
@@ -2618,17 +2775,17 @@ else
 fi
 
 # --- 5. PLAN-STANDALONE PATH -------------------------------------------------
-# The plan-review.js standalone workflow reuses buildReviewPipeline('plan') and
+# The rdm-wf-plan-review.js standalone workflow reuses buildReviewPipeline('plan') and
 # GATE_POLICY.plan with NO new review logic, and adds three pure consolidation
 # helpers to the stamped block: stripNonPhaseUnitOfWork (phase-only unit-of-work
 # scoping), filterPlanReviewTag (sibling-preserving tag read-filter-write), and
 # classifyPlanOutcome (reviewed|rework|escalated). Drive them in Node, then grep
-# plan-review.js for the structural invariants (four target types, parallel()
+# rdm-wf-plan-review.js for the structural invariants (four target types, parallel()
 # fan-out, pipeline/gate reuse, per-unit strip, implementation-plan carve-outs).
-say "5. Plan-standalone path: consolidation helpers + plan-review.js structure"
+say "5. Plan-standalone path: consolidation helpers + rdm-wf-plan-review.js structure"
 
-PLAN_REVIEW="$WF_DIR/plan-review.js"
-[ -f "$PLAN_REVIEW" ] || fail "plan-review.js not found: $PLAN_REVIEW"
+PLAN_REVIEW="$WF_DIR/rdm-wf-plan-review.js"
+[ -f "$PLAN_REVIEW" ] || fail "rdm-wf-plan-review.js not found: $PLAN_REVIEW"
 
 cat >"$TMP/plan-test.mjs" <<'NODE_PLAN_TEST'
 import assert from 'node:assert/strict';
@@ -2638,7 +2795,7 @@ const libPath = process.argv[2];
 const mod = await import(pathToFileURL(libPath).href);
 const { stripNonPhaseUnitOfWork, filterPlanReviewTag, classifyPlanOutcome, gateFor, hasBlocking } = mod;
 
-// Export presence — the harness (and plan-review.js's stamped copy) needs all three.
+// Export presence — the harness (and rdm-wf-plan-review.js's stamped copy) needs all three.
 for (const name of ['stripNonPhaseUnitOfWork', 'filterPlanReviewTag', 'classifyPlanOutcome']) {
   assert.equal(typeof mod[name], 'function', name + ' must be exported from review.mjs');
 }
@@ -2736,53 +2893,53 @@ else
     fail "plan-standalone helper assertions failed"
 fi
 
-# --- 5b. plan-review.js STRUCTURE (static greps) -----------------------------
-say "5b. plan-review.js parses four target types, fans out, and reuses the core"
+# --- 5b. rdm-wf-plan-review.js STRUCTURE (static greps) -----------------------------
+say "5b. rdm-wf-plan-review.js parses four target types, fans out, and reuses the core"
 grep -q "buildReviewPipeline('plan')" "$PLAN_REVIEW" ||
-    fail "plan-review.js must call buildReviewPipeline('plan')"
+    fail "rdm-wf-plan-review.js must call buildReviewPipeline('plan')"
 grep -qE "gateFor\('plan'|GATE_POLICY\.plan" "$PLAN_REVIEW" ||
-    fail "plan-review.js must gate through gateFor('plan', …) / GATE_POLICY.plan"
+    fail "rdm-wf-plan-review.js must gate through gateFor('plan', …) / GATE_POLICY.plan"
 grep -q 'stripNonPhaseUnitOfWork' "$PLAN_REVIEW" ||
-    fail "plan-review.js must apply stripNonPhaseUnitOfWork per unit"
+    fail "rdm-wf-plan-review.js must apply stripNonPhaseUnitOfWork per unit"
 grep -q 'filterPlanReviewTag' "$PLAN_REVIEW" ||
-    fail "plan-review.js must clear the tag via filterPlanReviewTag"
+    fail "rdm-wf-plan-review.js must clear the tag via filterPlanReviewTag"
 grep -q 'classifyPlanOutcome' "$PLAN_REVIEW" ||
-    fail "plan-review.js must classify each outcome via classifyPlanOutcome"
+    fail "rdm-wf-plan-review.js must classify each outcome via classifyPlanOutcome"
 grep -qE '\bparallel\(' "$PLAN_REVIEW" ||
-    fail "plan-review.js must fan out per-phase via parallel()"
+    fail "rdm-wf-plan-review.js must fan out per-phase via parallel()"
 # The three flag target forms are all parsed...
 for form in '--task' '--roadmap' '--implementation-plan'; do
     grep -q -- "$form" "$PLAN_REVIEW" ||
-        fail "plan-review.js does not parse the '$form' target form"
+        fail "rdm-wf-plan-review.js does not parse the '$form' target form"
 done
 # ...and the fourth (positional `<slug> [phase]`) resolves to the phase/roadmap kinds.
 grep -q "kind = 'phase'" "$PLAN_REVIEW" ||
-    fail "plan-review.js must resolve a positional <slug> phase target"
+    fail "rdm-wf-plan-review.js must resolve a positional <slug> phase target"
 grep -q "kind = 'roadmap'" "$PLAN_REVIEW" ||
-    fail "plan-review.js must resolve the roadmap target"
+    fail "rdm-wf-plan-review.js must resolve the roadmap target"
 
 # The act half AND the gate are carved out for --implementation-plan behind an
 # explicit `if (kind !== 'implementation-plan')` guard, so a static reader (and
 # this grep) can confirm no rdm update/create/commit is reachable in that branch.
 IMPL_GUARDS=$(grep -c "kind !== 'implementation-plan'" "$PLAN_REVIEW")
 [ "$IMPL_GUARDS" -ge 2 ] ||
-    fail "plan-review.js must guard BOTH act and gate with 'if (kind !== \"implementation-plan\")' (found $IMPL_GUARDS)"
+    fail "rdm-wf-plan-review.js must guard BOTH act and gate with 'if (kind !== \"implementation-plan\")' (found $IMPL_GUARDS)"
 
 # The driver must not RE-DECLARE the pipeline internals (it consumes the stamped
 # block), and must not thread a signals object into the pipeline (the deferral).
 DRIVER=$(awk '/>>> review-refute-fix:end/{p=1;next} p' "$PLAN_REVIEW")
 if printf '%s\n' "$DRIVER" | grep -nE 'function findPrompt|function refutePrompt|const DIMENSIONS ='; then
-    fail "plan-review.js driver re-declares pipeline internals — it must consume the stamped block"
+    fail "rdm-wf-plan-review.js driver re-declares pipeline internals — it must consume the stamped block"
 fi
 if printf '%s\n' "$DRIVER" | grep -nE 'signals:'; then
-    fail "plan-review.js must NOT thread a signals object into the pipeline (unit-of-work scoping is consumer-side)"
+    fail "rdm-wf-plan-review.js must NOT thread a signals object into the pipeline (unit-of-work scoping is consumer-side)"
 fi
-# The hygiene grep (section 2) already covers plan-review.js via workflows/*.js;
+# The hygiene grep (section 2) already covers rdm-wf-plan-review.js via workflows/*.js;
 # re-assert here that it carries no forbidden nondeterministic global.
 if grep -nE 'Date\.now\(|Math\.random\(' "$PLAN_REVIEW" >&2; then
-    fail "plan-review.js contains a forbidden nondeterministic global"
+    fail "rdm-wf-plan-review.js contains a forbidden nondeterministic global"
 fi
-pass "plan-review.js parses four targets, fans out, reuses the core, and carves out implementation-plan"
+pass "rdm-wf-plan-review.js parses four targets, fans out, reuses the core, and carves out implementation-plan"
 
 # --- 5b-mechanical. Mechanical-tier pin: fetch/gate agents pinned, act:* is not.
 #
@@ -2800,7 +2957,7 @@ say "5b-mechanical. Mechanical-tier pin: fetch:roadmap, fetch:<kind>, gate:clear
 . "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
 
 agent_option_blocks "$PLAN_REVIEW" >"$TMP/mech-blocks"
-[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from plan-review.js"
+[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from rdm-wf-plan-review.js"
 
 # label_re 'fetch:' deliberately matches BOTH the literal 'fetch:roadmap'
 # label and the dynamic 'fetch:' + kind label (task/phase) — the label regex
@@ -2832,7 +2989,7 @@ pass "AC-MECHANICAL-TIER: detector fires when fetch:roadmap is repointed away fr
 # --- 5b-drift. PLAN-REVIEW DRIVER BLOCK: byte-identical (lib vs workflow) ------
 # The plan-review DRIVER (parsePlanArgs + the fetch/act/gate orchestration in
 # runPlanReviewDriver) is the single source of truth in lib/plan-review.mjs and
-# is copied BYTE-IDENTICAL into plan-review.js's `plan-review-driver` block. Like
+# is copied BYTE-IDENTICAL into rdm-wf-plan-review.js's `plan-review-driver` block. Like
 # dispatch-phase's dispatch-outcome block, this copy is NOT stamped by the
 # generator — gate it for byte-equality here so a drifted copy cannot ship.
 say "5b-drift. plan-review-driver block is byte-identical between the lib and the workflow"
@@ -2865,7 +3022,7 @@ done
 # (it uses top-level `return` / ambient globals, illegal in a Node module), so it
 # must NOT appear in the lib copy.
 grep -q 'return await runPlanReviewDriver' "$PLAN_REVIEW" ||
-    fail "plan-review.js must invoke the driver via a thin runtime entry (return await runPlanReviewDriver(...))"
+    fail "rdm-wf-plan-review.js must invoke the driver via a thin runtime entry (return await runPlanReviewDriver(...))"
 if grep -q 'return await runPlanReviewDriver' "$PLAN_LIB"; then
     fail "the top-level runtime entry leaked into the lib copy — it must stay OUTSIDE the block"
 fi
@@ -3263,15 +3420,15 @@ plan_mutate_and_expect_fail iv 'silencing formatUnitBudget so a budget hit never
 pass "5b-mut: all four driver mutations flip a 5b-exec assertion, and the control passes"
 
 # --- 5c. SKILL SHIM (AC-5) ---------------------------------------------------
-# The local dogfood SKILL.md is a thin shim over plan-review.js. Its hand-authored
+# The local dogfood SKILL.md is a thin shim over rdm-wf-plan-review.js. Its hand-authored
 # prose (above the generated review-spec marker) must reference the workflow, keep
 # the canonical pipeline phrase, and speak only the new outcome vocabulary — the
 # retired PASS WITH CONCERNS / REWORK words survive ONLY inside the generated
 # region (as the collapse-mapping note), never in the hand-authored prose.
-say "5c. rdm-plan-review SKILL.md is a thin shim over plan-review.js"
+say "5c. rdm-plan-review SKILL.md is a thin shim over rdm-wf-plan-review.js"
 SKILL_MD="$REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
 [ -f "$SKILL_MD" ] || fail "SKILL.md not found: $SKILL_MD"
-grep -q 'plan-review.js' "$SKILL_MD" || fail "SKILL.md must reference the plan-review.js Workflow"
+grep -q 'rdm-wf-plan-review.js' "$SKILL_MD" || fail "SKILL.md must reference the rdm-wf-plan-review.js Workflow"
 grep -q '<!-- rdm:review-spec:begin' "$SKILL_MD" || fail "SKILL.md must keep the generated review-spec begin marker"
 grep -q '<!-- rdm:review-spec:end' "$SKILL_MD" || fail "SKILL.md must keep the generated review-spec end marker"
 # Hand-authored prose = everything BEFORE the generated region begins.
@@ -5073,8 +5230,8 @@ const keysFor = (signals) => selectDimensions('plan', signals).map((d) => d.key)
 assert.ok(!keysFor({}).includes('unit-of-work'), 'explicit empty signals must NOT select unit-of-work');
 assert.ok(keysFor({ targetType: 'phase' }).includes('unit-of-work'), 'a phase target must select unit-of-work');
 assert.deepEqual(keysFor(null), DIMENSIONS.plan.map((d) => d.key), 'omitted signals must fail OPEN to every dimension');
-// plan-review.js threads NO signals, so the fail-open path is the one it takes.
-assert.ok(keysFor(null).includes('unit-of-work'), 'the fail-open path plan-review.js takes must include unit-of-work');
+// rdm-wf-plan-review.js threads NO signals, so the fail-open path is the one it takes.
+assert.ok(keysFor(null).includes('unit-of-work'), 'the fail-open path rdm-wf-plan-review.js takes must include unit-of-work');
 
 // stripNonPhaseUnitOfWork is the CONSUMER-SIDE scoping that fail-open cannot do.
 const survivors = [

@@ -412,8 +412,8 @@ fn agent_config_skills_generates_ten_files() {
         .arg(dir.path())
         .assert()
         .success()
-        // 11 skill files + 2 workflow files ("dispatch-phase.js",
-        // "review-refute-fix.js") emitted for Claude + --out. This is a
+        // 11 skill files + 2 workflow files ("rdm-wf-dispatch-phase.js",
+        // "rdm-wf-review-refute-fix.js") emitted for Claude + --out. This is a
         // deliberate, accounted-for change from the prior 11 (skills only) —
         // see agent_config_workflows_written_under_out and
         // agent_config_workflows_are_byte_identical_to_source below.
@@ -446,8 +446,8 @@ fn agent_config_workflows_written_under_out() {
         .success();
 
     let workflows_dir = dir.path().join(".claude/workflows");
-    assert!(workflows_dir.join("dispatch-phase.js").exists());
-    assert!(workflows_dir.join("review-refute-fix.js").exists());
+    assert!(workflows_dir.join("rdm-wf-dispatch-phase.js").exists());
+    assert!(workflows_dir.join("rdm-wf-review-refute-fix.js").exists());
 }
 
 #[test]
@@ -470,7 +470,7 @@ fn agent_config_workflows_are_byte_identical_to_source() {
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap();
-    for name in &["dispatch-phase.js", "review-refute-fix.js"] {
+    for name in &["rdm-wf-dispatch-phase.js", "rdm-wf-review-refute-fix.js"] {
         let emitted = std::fs::read(dir.path().join(".claude/workflows").join(name)).unwrap();
         let source = std::fs::read(repo_root.join(".claude/workflows").join(name)).unwrap();
         assert_eq!(emitted, source, "{name} drifted from the emitted template");

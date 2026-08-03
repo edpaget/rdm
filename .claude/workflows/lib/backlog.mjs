@@ -1,7 +1,7 @@
 //! backlog — pure control logic for the propose-only backlog-grooming pass.
 //!
 //! This is the **single source of truth** for the deterministic control core of
-//! the `backlog` workflow: argument parsing, the fixed category registry over
+//! the `rdm-wf-backlog` workflow: argument parsing, the fixed category registry over
 //! `rdm backlog report`'s four signal arrays, the per-category analyzer prompt
 //! builders (inlining the grooming rules the `rdm-backlog` skill used to carry
 //! as prose), the JSON schema every analyzer agent is forced to satisfy, and the
@@ -12,7 +12,7 @@
 //!
 //! Because the Claude Code Workflow runtime cannot `import`/`require` (see
 //! docs/workflow-schemas.md § "Import spike"), the marked block below is copied
-//! BYTE-IDENTICAL into `.claude/workflows/backlog.js`;
+//! BYTE-IDENTICAL into `.claude/workflows/rdm-wf-backlog.js`;
 //! `scripts/verify-workflow-backlog.sh` gates the two copies for byte-equality.
 //!
 //! Everything the block needs is self-contained (no imports, pure array/string
@@ -39,7 +39,7 @@
 // Pure, deterministic control logic for the backlog-grooming pass.
 //
 // This block is the single source of truth in .claude/workflows/lib/backlog.mjs
-// and is copied BYTE-IDENTICAL into .claude/workflows/backlog.js (the Workflow
+// and is copied BYTE-IDENTICAL into .claude/workflows/rdm-wf-backlog.js (the Workflow
 // runtime cannot load modules at run time). scripts/verify-workflow-backlog.sh
 // gates the two copies for drift. No Date.now / Math.random — pure array/string
 // ops only. The block names NO ambient runtime global (agent/parallel/log):

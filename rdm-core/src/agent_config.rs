@@ -238,7 +238,7 @@ pub struct SkillFile {
 /// `import`/`require` and the scripts are the already-stamped output of
 /// `scripts/gen-workflow-review.sh` (see `docs/workflow-schemas.md`).
 pub struct WorkflowFile {
-    /// Relative path within `.claude/workflows/` (e.g., "autopilot.js").
+    /// Relative path within `.claude/workflows/` (e.g., "rdm-wf-dispatch-phase.js").
     pub relative_path: &'static str,
     /// The full, unmodified content of the workflow script.
     pub content: &'static str,
@@ -321,12 +321,38 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
     }
 }
 
+/// The single canonical list of shipped engine names.
+///
+/// One entry per engine, pairing the emitted `relative_path` with the
+/// `include_str!` of the template it is emitted from. The two must live in the
+/// same entry because `include_str!` takes a string literal and cannot be given
+/// a `const`/variable path — so "named in exactly one place" means one table
+/// entry per engine, not one literal.
+///
+/// Only the TWO engines rdm actually distributes appear here. The four
+/// local-only engines (`rdm-wf-backlog`, `rdm-wf-document`, `rdm-wf-estimate`,
+/// `rdm-wf-plan-review`) are deliberately unshipped — adding them would change
+/// emitted bytes and expand the distribution boundary. The emitted-file-count
+/// test and the rustdoc example on [`generate_workflows`] deliberately keep
+/// their OWN independent literals rather than reading this table, so they stay a real check on what
+/// rdm ships instead of asserting the table equals itself.
+const SHIPPED_WORKFLOWS: [(&str, &str); 2] = [
+    (
+        "rdm-wf-dispatch-phase.js",
+        include_str!("templates/workflows/rdm-wf-dispatch-phase.js"),
+    ),
+    (
+        "rdm-wf-review-refute-fix.js",
+        include_str!("templates/workflows/rdm-wf-review-refute-fix.js"),
+    ),
+];
+
 /// Returns the autonomous-lane Workflow-tool scripts that ship alongside the
 /// Claude Code skills.
 ///
 /// These are the already-stamped `.claude/workflows/*.js` consumers from this
-/// repo's own dogfood setup (`dispatch-phase.js`, `review-refute-fix.js`),
-/// embedded verbatim via `include_str!` and returned
+/// repo's own dogfood setup (`rdm-wf-dispatch-phase.js`,
+/// `rdm-wf-review-refute-fix.js`), embedded verbatim via `include_str!` and returned
 /// unmodified — there is no project/principles substitution, unlike
 /// [`generate_skills`]'s `render_skill` pass. This is a separate emission
 /// surface from `generate_skills`/`SkillFile`, not folded into it: the two
@@ -346,20 +372,17 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
 ///
 /// let workflows = generate_workflows();
 /// assert_eq!(workflows.len(), 2);
-/// assert_eq!(workflows[0].relative_path, "dispatch-phase.js");
-/// assert_eq!(workflows[1].relative_path, "review-refute-fix.js");
+/// assert_eq!(workflows[0].relative_path, "rdm-wf-dispatch-phase.js");
+/// assert_eq!(workflows[1].relative_path, "rdm-wf-review-refute-fix.js");
 /// ```
 pub fn generate_workflows() -> Vec<WorkflowFile> {
-    vec![
-        WorkflowFile {
-            relative_path: "dispatch-phase.js",
-            content: include_str!("templates/workflows/dispatch-phase.js"),
-        },
-        WorkflowFile {
-            relative_path: "review-refute-fix.js",
-            content: include_str!("templates/workflows/review-refute-fix.js"),
-        },
-    ]
+    SHIPPED_WORKFLOWS
+        .iter()
+        .map(|(relative_path, content)| WorkflowFile {
+            relative_path,
+            content,
+        })
+        .collect()
 }
 
 /// A previously-emitted `.claude/workflows/` file that a newer emission may
@@ -398,24 +421,92 @@ pub struct SupersededWorkflow {
 /// The production superseded-workflow table consulted by `rdm agent-config`'s
 /// cleanup step.
 ///
-/// Shipped **empty**: nothing has been renamed or retired under this
-/// mechanism yet, so [`resolve_superseded_workflows`] is a structural no-op
-/// against this table no matter what the output directory contains. A
-/// future rename (or retirement) populates this constant with real entries
-/// and content fingerprints, alongside the canonical engine-name table that
-/// same phase builds.
+/// Populated by phase 7 of the `project-agnostic-lane` roadmap, which prefixed
+/// every `.claude/workflows/` engine with `rdm-wf-` so a listing entry can no
+/// longer be mistaken for its identically-named `rdm-*` skill front door. It
+/// carries both supersession shapes:
 ///
-/// That pairing target is **phase 7** of the `project-agnostic-lane`
-/// roadmap, not phase 4: this phase's own body corrects an earlier
-/// "phase 4 step 8" reference (phase 4 has no step 8 — engine-name
-/// single-sourcing moved to phase 7 via
-/// `split-step-8-engine-name-single-sourcing`), but the phase's Acceptance
-/// Criteria bullet for this table still reads "paired with phase 4's
-/// canonical engine-name table" verbatim — a stale copy of the same error
-/// that the phase body explicitly says not to go looking for in phase 4.
-/// Recorded here, next to the table, so the next reader (and phase 7 itself)
-/// doesn't have to re-discover the correction.
-pub const SUPERSEDED_WORKFLOWS: &[SupersededWorkflow] = &[];
+/// - **Renamed** — `dispatch-phase.js` and `review-refute-fix.js`, the two
+///   engines rdm actually ships, each pointing at its `rdm-wf-` successor.
+/// - **Retired outright** — `autopilot.js`, which had no successor to point at
+///   and no other cleanup path. It was a shipped template until
+///   `prose-autopilot-orchestration` phase 3 replaced the JS drive loop with
+///   the prose `rdm-autopilot` skill, so any repo that ran
+///   `rdm agent-config claude --skills` before that still carries an orphan
+///   engine downstream. Nothing references it, so the emitted-skill
+///   invocation-resolution check cannot see it — only this table can remove it.
+///   `lib/autopilot.mjs` is deliberately absent: `lib/*.mjs` was never shipped.
+///
+/// Each entry's fingerprints are the SHA-256 digests of **every** body that
+/// path ever held in this repo's history, so a downstream copy emitted by any
+/// past release is recognized. A file whose content matches none of them is a
+/// user edit and is left in place.
+pub const SUPERSEDED_WORKFLOWS: &[SupersededWorkflow] = &[
+    SupersededWorkflow {
+        name: "dispatch-phase.js",
+        fingerprints: &[
+            "05c1b5d2500abd165b9f21a93510a08091766dcc73e7f2b1edd1cbcc02bbd1f1",
+            "1c7ba2f947b6200fa202649f1ca8fa0ed0bc1ee651e284979366605293f71981",
+            "21d2e635986074af50a2239fd821a93f579a1c8a0a90bc0d264feb1ca3a734b5",
+            "25ff8ad00197e2253030398101e4f1f8947c60782757c14b44adfb377a854c88",
+            "2c0fa8cc03984096aeb64dd0b37ae2275b40214e83519aea35bc74bae2ea4b95",
+            "3840e75d0f153b8cf4627467339680c6ae502a112f2b1dba743173b26b569ad1",
+            "3b6d05bf3523782c36bedb6e60ce6cbc0f1ee2f656c6ffc1f950d31da27ce908",
+            "3db2eeec8abddff336a091e8985ffbdf11323fa60c612d322561ce1dbad5f200",
+            "47289be1e85c63ad823326db1e6c4b34ff52f63c0c338de420faa0f141a5a8ca",
+            "5ae366dfe172c6a892d68a528e7bc486624c89016843e077ee25712f3a7a6e79",
+            "69789faa4cc19ecffc8b12db424a4c583e45b09764c8aeb716e15c75965a0c89",
+            "802148dec6ceceb5252e7d94aec95997d4833d9f42c0f75abdf6880c04aa0c2b",
+            "8095b4fa080a97a9b98a7a09e2e6b005eef5b8f853ccedb2bf69e410cdb3d16f",
+            "8e9940c156803e57a2abfc4ff068674a6740d4115e98a735e187eb5d8911cd4e",
+            "9b710124944dbf4dbb9d507fd22983ed957c39398280de542cefc2af628260e0",
+            "acc8b40b21779025ede8c7618fdb0f742fa7081e8ba6e1ef8fb446990e8175fe",
+            "cec6d000bbcb4c4817d5205fcfd08c97e6caf87dcda9b9010c56354c90e9ee50",
+            "cf9cd60a9f0a24189b0ae0a35488bbb9ef4c22513d73603ab9d59053c662b89a",
+            "e7644f1718c9f6690cd8136bbf668c26cc19fd7b6a2a93fd97add25a27604522",
+            "ef95333938832a4623b14160875bced07420cc14319970c85c69de6a88377999",
+        ],
+        successor: Some("rdm-wf-dispatch-phase.js"),
+    },
+    SupersededWorkflow {
+        name: "review-refute-fix.js",
+        fingerprints: &[
+            "032ffd9ea22dee0eeef54ea8433b9bf25955174bf564094e65f33e80ba72229a",
+            "156ba2037bfda1783b49b5f4e97b9246b7c9c6087f7df938348767a071301225",
+            "1b6013abfddb26b0754ce9db2f5678112cb91c69582f5789769bb9c609c99d9f",
+            "25ddd34570ae748009c1779cb2581c0bcd296ad80fbfca1b6d1003f1e8091a85",
+            "45038c9836573df5a63cd70e92fa0063073e4520fe1d4083415d469b52cd660b",
+            "4ac6868da30dd942e5cf007c7d674dd5389a7070e074d136ca02933aa32b7dad",
+            "5a041fb01eeca74b8a0211570ab62f55253437a4e9b3a2c72483811a89fd9468",
+            "6e74cbe6b5eb302f7266bd57b16e55053a6d712c4ac61e4087ebb5b2baf8ef84",
+            "83e6702b13f60914d5c6c9c4de701949935cb0c9adc36565c508eb5a7bf2ed5c",
+            "882cd12b9032cd6e8ee0dd75f4bfa2f692fdb5345517086a182ada73cea756e3",
+            "a325c63adacc64ee9594ae26cfe6f1217e33a4f755efe75dfe210d063043bf26",
+            "abafeb94cecb9cf89d8d810590ad2608b4df6956266c9c8022010c17636cf8c9",
+            "c97bc7ded2498f6bfd839d72b3476fd898660f1c2b21f5d19eb64dcbf725ef3e",
+            "d0bfdb5568c455c98f1a939952521c91bceef14ad625620a8f6652b3e8abcf56",
+            "d4089dad134aecc4532089c8ae4b3bef740accb3aad300db2ac92d814ab05f69",
+            "d74eb6dd0ab57609ae5780bfa8f7e14d1c5c9727dbd4a71688fbe3b852987df5",
+            "dfb0d66c7be2228cc08e3899bc8b81fdeeb4330c94951be35491b2758ce30993",
+            "e038557330dec51effb4908ba790e3e2904701201a45b5639477e9633d34ab55",
+        ],
+        successor: Some("rdm-wf-review-refute-fix.js"),
+    },
+    SupersededWorkflow {
+        name: "autopilot.js",
+        fingerprints: &[
+            "21ec3a6f3c16dbeb658cfcdab953de769052ed6698cefc117bcb142422ace262",
+            "5b4013a2d565a45a6bf18cf245168d55bacf96dd34362a8247a40de09e913282",
+            "63845c0c766c3dece2008036929294c3c604caea637592eb40c85d277737d11d",
+            "6cd5dff20806aa5eba84e3a2de27889fa4d027d819bf26fc681e175fad5abd6e",
+            "817c8ecde65ba7d614620927cc86bc9743b10511b4a85e3249ede7d0324be7e4",
+            "8c9a9d3449cd1fa4ed3ecf4af40c9b70ac8981b650b260ceeae2d9204342b2e4",
+            "95138b284199fa36950054336c89ad346aa332463b99372bbc75f632ecaa3155",
+            "de7bad05b6695be2d1375c2f67d0f111dba30a99dcf9c78afa8f3f6a2006c845",
+        ],
+        successor: None,
+    },
+];
 
 /// The outcome of resolving one [`SupersededWorkflow`] table entry against
 /// an output directory.
@@ -1461,8 +1552,8 @@ mod tests {
     fn generate_workflows_returns_two_files() {
         let workflows = generate_workflows();
         assert_eq!(workflows.len(), 2);
-        assert_eq!(workflows[0].relative_path, "dispatch-phase.js");
-        assert_eq!(workflows[1].relative_path, "review-refute-fix.js");
+        assert_eq!(workflows[0].relative_path, "rdm-wf-dispatch-phase.js");
+        assert_eq!(workflows[1].relative_path, "rdm-wf-review-refute-fix.js");
     }
 
     #[test]
@@ -1505,13 +1596,89 @@ mod tests {
         Box::leak(v.into_boxed_slice())
     }
 
+    // The production table is no longer empty: the `rdm-wf-` engine rename
+    // populated it. These assertions pin the entries deliberately rather than
+    // reading them back off the table, so a silent edit fails here.
     #[test]
-    fn superseded_workflows_table_is_shipped_empty() {
-        assert!(
-            SUPERSEDED_WORKFLOWS.is_empty(),
-            "the production table must ship empty — a future rename/retirement \
-             phase populates it deliberately"
+    fn superseded_workflows_table_names_the_renamed_and_retired_engines() {
+        let names: Vec<&str> = SUPERSEDED_WORKFLOWS.iter().map(|e| e.name).collect();
+        assert_eq!(
+            names,
+            vec!["dispatch-phase.js", "review-refute-fix.js", "autopilot.js"],
+            "the production table must carry exactly the two renamed engines \
+             plus the retired autopilot orphan"
         );
+
+        let successors: Vec<Option<&str>> =
+            SUPERSEDED_WORKFLOWS.iter().map(|e| e.successor).collect();
+        assert_eq!(
+            successors,
+            vec![
+                Some("rdm-wf-dispatch-phase.js"),
+                Some("rdm-wf-review-refute-fix.js"),
+                None,
+            ],
+            "autopilot.js is retired outright and must carry no successor"
+        );
+
+        // Every entry must actually be able to match something: an empty
+        // fingerprint list is a structural no-op that would silently never
+        // clean up.
+        for entry in SUPERSEDED_WORKFLOWS {
+            assert!(
+                !entry.fingerprints.is_empty(),
+                "{} must carry at least one fingerprint",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn superseded_workflow_names_never_collide_with_shipped_names() {
+        for entry in SUPERSEDED_WORKFLOWS {
+            assert!(
+                !SHIPPED_WORKFLOWS
+                    .iter()
+                    .any(|(path, _)| *path == entry.name),
+                "{} is both shipped and superseded — cleanup would delete a \
+                 file the same emission just wrote",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn superseded_fingerprints_are_well_formed_and_never_match_a_shipped_body() {
+        // A shipped body must never fingerprint into the superseded table:
+        // that would make an emission delete a file the same emission just
+        // wrote. (The names already can't collide — see the test above — but
+        // this catches a copy-pasted digest, which the name check cannot.)
+        let shipped: Vec<String> = generate_workflows()
+            .iter()
+            .map(|w| sha256_hex(w.content.as_bytes()))
+            .collect();
+        for entry in SUPERSEDED_WORKFLOWS {
+            for fp in entry.fingerprints {
+                assert_eq!(
+                    fp.len(),
+                    64,
+                    "{}: {fp} is not a SHA-256 hex digest",
+                    entry.name
+                );
+                assert!(
+                    fp.chars()
+                        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+                    "{}: {fp} must be lowercase hex",
+                    entry.name
+                );
+                assert!(
+                    !shipped.contains(&fp.to_string()),
+                    "{}: fingerprint {fp} matches a CURRENTLY-shipped workflow body — \
+                     cleanup would delete a file this same emission wrote",
+                    entry.name
+                );
+            }
+        }
     }
 
     #[test]
@@ -1522,11 +1689,26 @@ mod tests {
         std::fs::write(&a, b"alpha").unwrap();
         std::fs::write(&b, b"bravo").unwrap();
 
-        let outcomes = resolve_superseded_workflows(dir.path(), SUPERSEDED_WORKFLOWS);
+        let outcomes = resolve_superseded_workflows(dir.path(), &[]);
 
         assert!(outcomes.is_empty());
         assert_eq!(std::fs::read(&a).unwrap(), b"alpha");
         assert_eq!(std::fs::read(&b).unwrap(), b"bravo");
+    }
+
+    #[test]
+    fn resolve_superseded_workflows_shipped_table_ignores_unnamed_files() {
+        // The shipped table is no longer empty, so this replaces the old
+        // "empty table is a structural no-op" guarantee: a directory holding
+        // no file the table names must still come back untouched.
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("custom-local.js");
+        std::fs::write(&a, b"alpha").unwrap();
+
+        let outcomes = resolve_superseded_workflows(dir.path(), SUPERSEDED_WORKFLOWS);
+
+        assert!(outcomes.is_empty());
+        assert_eq!(std::fs::read(&a).unwrap(), b"alpha");
     }
 
     #[test]
@@ -2585,19 +2767,23 @@ mod tests {
         assert!(!content.contains("Mandatory dispatch"));
         assert!(!content.contains("inline-collapse"));
         // generate_workflows() no longer ships an `autopilot.js` (2 files
-        // remain: dispatch-phase.js, review-refute-fix.js), so this template
+        // remain: rdm-wf-dispatch-phase.js, rdm-wf-review-refute-fix.js), so
+        // this template
         // must never instruct invoking a Workflow literally named
         // "autopilot" — that call would target a file this same generator
         // does not emit. It may still name the one real Workflow it composes
-        // downstream (`dispatch-phase`); the `estimate` pre-pass is
+        // downstream (`rdm-wf-dispatch-phase`); the estimate pre-pass is
         // intentionally dropped from this distributed template (see
         // docs/workflow-vs-prose-boundary.md), so this template must never
-        // instruct invoking `estimate` either.
+        // instruct invoking the estimate engine either, under EITHER its
+        // pre-rename bare name or its current `rdm-wf-` name.
         assert!(!content.contains("Invoke the `autopilot`"));
         assert!(!content.contains("the `autopilot` workflow"));
         assert!(!content.contains(".claude/workflows/autopilot.js"));
         assert!(!content.contains("Invoke the `estimate`"));
         assert!(!content.contains("the `estimate` Workflow"));
+        assert!(!content.contains("Invoke the `rdm-wf-estimate`"));
+        assert!(!content.contains("the `rdm-wf-estimate` Workflow"));
     }
 
     #[test]
@@ -2612,7 +2798,7 @@ mod tests {
         // It is a thin shim invoking the Workflow tool, not a prose 8-step loop.
         assert!(content.contains("thin shim"));
         assert!(content.contains("Workflow"));
-        assert!(content.contains(".claude/workflows/dispatch-phase.js"));
+        assert!(content.contains(".claude/workflows/rdm-wf-dispatch-phase.js"));
         // Task mode alongside phase mode.
         assert!(content.contains("--task"));
         assert!(content.contains("model tier"));
@@ -3717,19 +3903,23 @@ mod tests {
         assert!(!content.contains("Mandatory dispatch"));
         assert!(!content.contains("inline-collapse"));
         // generate_workflows() no longer ships an `autopilot.js` (2 files
-        // remain: dispatch-phase.js, review-refute-fix.js), so this template
+        // remain: rdm-wf-dispatch-phase.js, rdm-wf-review-refute-fix.js), so
+        // this template
         // must never instruct invoking a Workflow literally named
         // "autopilot" — that call would target a file this same generator
         // does not emit. It may still name the one real Workflow it composes
-        // downstream (`dispatch-phase`); the `estimate` pre-pass is
+        // downstream (`rdm-wf-dispatch-phase`); the estimate pre-pass is
         // intentionally dropped from this distributed template (see
         // docs/workflow-vs-prose-boundary.md), so this template must never
-        // instruct invoking `estimate` either.
+        // instruct invoking the estimate engine either, under EITHER its
+        // pre-rename bare name or its current `rdm-wf-` name.
         assert!(!content.contains("Invoke the `autopilot`"));
         assert!(!content.contains("the `autopilot` workflow"));
         assert!(!content.contains(".claude/workflows/autopilot.js"));
         assert!(!content.contains("Invoke the `estimate`"));
         assert!(!content.contains("the `estimate` Workflow"));
+        assert!(!content.contains("Invoke the `rdm-wf-estimate`"));
+        assert!(!content.contains("the `rdm-wf-estimate` Workflow"));
     }
 
     #[test]
@@ -3744,7 +3934,7 @@ mod tests {
         // Thin shim invoking the Workflow tool, not per-tool MCP wiring — the
         // workflow itself performs the worktree/status operations internally.
         assert!(content.contains("thin shim"));
-        assert!(content.contains(".claude/workflows/dispatch-phase.js"));
+        assert!(content.contains(".claude/workflows/rdm-wf-dispatch-phase.js"));
         assert!(content.contains("--task"));
         let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
         assert!(frontmatter.contains("Workflow"));

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Hermetic regression for the backlog-grooming workflow.
 #
-# backlog (`.claude/workflows/backlog.js`) is the headless successor to the
+# backlog (`.claude/workflows/rdm-wf-backlog.js`) is the headless successor to the
 # read-only, propose-only `rdm-backlog` skill: it runs `rdm backlog report`
 # ONCE, fans one READ-ONLY analyzer agent out per POPULATED signal category
 # (stale_tasks, duplicate_clusters, tag_clusters, archivable_roadmaps) in
@@ -46,17 +46,17 @@
 #                       no import/require; both markers present; meta.phases
 #                       parity with the emitted `phase:` literals; no
 #                       Date.now(/Math.random( anywhere.
-#   5. MODULE PARSE   — backlog.js loads under module semantics (no
+#   5. MODULE PARSE   — rdm-wf-backlog.js loads under module semantics (no
 #                       SyntaxError), with a planted duplicate-meta self-test.
 #   6. SKILL SHIM     — .claude/skills/rdm-backlog/SKILL.md is a thin shim
-#                       pointing at the `backlog` Workflow tool, with the old
+#                       pointing at the `rdm-wf-backlog` Workflow tool, with the old
 #                       per-category command-template prose removed.
 #
 # Node is used only as a host to unit-test the pure module and drive the
 # pipeline with fakes; it is stdlib-only (node:assert), with no package.json /
 # node_modules / third-party packages. node is pinned in .mise.toml.
 #
-# Run after touching .claude/workflows/lib/backlog.mjs, backlog.js, or
+# Run after touching .claude/workflows/lib/backlog.mjs, rdm-wf-backlog.js, or
 # .claude/skills/rdm-backlog/SKILL.md.
 #
 # Requires: node (via PATH or `mise exec node --`), cargo-built rdm at
@@ -68,7 +68,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
 LIB="$REPO_ROOT/.claude/workflows/lib/backlog.mjs"
-WF="$REPO_ROOT/.claude/workflows/backlog.js"
+WF="$REPO_ROOT/.claude/workflows/rdm-wf-backlog.js"
 SKILL="$REPO_ROOT/.claude/skills/rdm-backlog/SKILL.md"
 RDM_BIN="$REPO_ROOT/target/debug/rdm"
 
@@ -410,10 +410,10 @@ else
 fi
 
 # =============================================================================
-say "1c. Driver: whole-file execution of backlog.js's mechanical-model bootstrap gate"
+say "1c. Driver: whole-file execution of rdm-wf-backlog.js's mechanical-model bootstrap gate"
 # =============================================================================
 # Section 1/1b only drive buildBacklogPipeline from lib/backlog.mjs — they
-# never execute backlog.js's own driver tail (the model:mechanical bootstrap
+# never execute rdm-wf-backlog.js's own driver tail (the model:mechanical bootstrap
 # + if/else gate around the pipeline call). That tail is hand-authored,
 # top-level code in the workflow script itself, so it needs its own
 # Node-executed test: wrap the real file body in an async function taking
@@ -494,9 +494,9 @@ console.log('all backlog driver-tail assertions passed');
 NODE_TEST
 
 if run_node "$TMP/driver.mjs" "$WF"; then
-    pass "backlog.js driver tail: unresolved-model gate returns cleanly, resolved-model path pins fetch:report"
+    pass "rdm-wf-backlog.js driver tail: unresolved-model gate returns cleanly, resolved-model path pins fetch:report"
 else
-    fail "backlog.js driver-tail execution assertions failed (the mechanical-model bootstrap gate is broken)"
+    fail "rdm-wf-backlog.js driver-tail execution assertions failed (the mechanical-model bootstrap gate is broken)"
 fi
 
 # =============================================================================
@@ -642,11 +642,11 @@ say "4. Static invariants on the workflow source"
 # report fetch and the mechanical-model bootstrap resolve. No analyzer prompt
 # may say "Run exactly this command".
 DIRECTIVES=$(grep -c "Run exactly this command" "$WF" || true)
-[ "$DIRECTIVES" -eq 2 ] || fail "expected exactly two 'Run exactly this command' directives in backlog.js, found $DIRECTIVES"
+[ "$DIRECTIVES" -eq 2 ] || fail "expected exactly two 'Run exactly this command' directives in rdm-wf-backlog.js, found $DIRECTIVES"
 printf 'Run exactly this command\nRun exactly this command\nRun exactly this command\n' >"$TMP/planted-three-directives.js"
 [ "$(grep -c "Run exactly this command" "$TMP/planted-three-directives.js")" -eq 3 ] ||
     fail "directive-count detector broken — missed a planted third occurrence"
-pass "exactly two Bash-executing agent directives in backlog.js (report fetch + mechanical-model resolve)"
+pass "exactly two Bash-executing agent directives in rdm-wf-backlog.js (report fetch + mechanical-model resolve)"
 
 # That one directive's command template (buildFetchReportPrompt's body) must
 # never contain a mutating verb — extracted from `function buildFetchReportPrompt`
@@ -705,10 +705,10 @@ pass "planted-mutation self-test: detector fires on injected verb, real file sti
 
 # No import/require (the runtime forbids it); both markers present.
 if grep -nE '(^|[^A-Za-z_])import[ (]' "$WF" >/dev/null 2>&1; then
-    fail "backlog.js must not import (the runtime forbids it — sharing is by stamped copy)"
+    fail "rdm-wf-backlog.js must not import (the runtime forbids it — sharing is by stamped copy)"
 fi
 if grep -nE '(^|[^A-Za-z_])require\(' "$WF" >/dev/null 2>&1; then
-    fail "backlog.js must not require() (the runtime forbids it)"
+    fail "rdm-wf-backlog.js must not require() (the runtime forbids it)"
 fi
 grep -q '>>> backlog-groom:begin' "$WF" || fail "missing backlog-groom:begin marker"
 grep -q '>>> backlog-groom:end' "$WF" || fail "missing backlog-groom:end marker"
@@ -750,7 +750,7 @@ say "4c. Mechanical-tier pin: fetch:report resolves to the mechanical model"
 . "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
 
 agent_option_blocks "$WF" >"$TMP/mech-blocks"
-[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from backlog.js"
+[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from rdm-wf-backlog.js"
 
 assert_label_model "$TMP/mech-blocks" 'fetch:report' 'mechanicalModel' ||
     fail "AC-MECHANICAL-TIER: fetch:report must resolve to model: mechanicalModel"
@@ -766,14 +766,14 @@ fi
 pass "AC-MECHANICAL-TIER: detector fires when fetch:report is repointed away from mechanicalModel"
 
 # =============================================================================
-say "5. Module parse: backlog.js loads under module semantics (no SyntaxError)"
+say "5. Module parse: rdm-wf-backlog.js loads under module semantics (no SyntaxError)"
 # =============================================================================
 
 if parse_workflow "$WF" >/dev/null 2>&1; then
-    pass "backlog.js parses under module semantics (top-level meta declared once)"
+    pass "rdm-wf-backlog.js parses under module semantics (top-level meta declared once)"
 else
     parse_workflow "$WF" >&2 || true
-    fail "backlog.js does NOT parse — fix the SyntaxError"
+    fail "rdm-wf-backlog.js does NOT parse — fix the SyntaxError"
 fi
 
 say "5b. Parse gate fires on a planted syntax error (self-test)"
@@ -808,12 +808,12 @@ pass "SKILL.md is a thin shim ($LINES lines) invoking the backlog Workflow, old 
 # --- HOIST: caller-supplied mechanicalModel / report --------------------------
 # Phase 3 of the workflow-token-reduction roadmap eliminates mechanical
 # subagents by never spawning them (docs/mechanical-agent-inventory.md). In
-# backlog.js both hoists live in the DRIVER REGION's realDeps only; the copied
+# rdm-wf-backlog.js both hoists live in the DRIVER REGION's realDeps only; the copied
 # `backlog-groom` block is untouched. Both are OPTIONAL — the original agent
 # call is reached through a fall-through and is never deleted — and neither
 # weakens the propose-only contract: `rdm backlog report` is read-only whoever
 # runs it, and the zero-mutation section above still gates that independently.
-say "HOIST. backlog.js driver region: mechanicalModel / report hoists and their fallbacks"
+say "HOIST. rdm-wf-backlog.js driver region: mechanicalModel / report hoists and their fallbacks"
 
 cat >"$TMP/hoist.mjs" <<'NODE_HOIST'
 import assert from 'node:assert/strict';

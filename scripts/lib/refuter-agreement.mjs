@@ -4,7 +4,7 @@
 // WHY THIS EXISTS
 // ------------------------------------------------------------------------
 // Refuters run on the most expensive tier everywhere: `review-verify` resolves
-// to opus at the default and `large` tiers, and `plan-review.js` passes no
+// to opus at the default and `large` tiers, and `rdm-wf-plan-review.js` passes no
 // models at all (so its finders and refuters inherit the ambient, opus-class
 // session model). An initial 8-finding A/B suggested a cheaper tier might be
 // viable but was far too small to move a gate on — and its ONE disagreement was

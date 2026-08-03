@@ -2,7 +2,7 @@
 # Hermetic regression for the rdm-do `--auto` phase-flow -> dispatch-phase wiring.
 #
 # The phase-flow branch of `--auto` in `.claude/skills/rdm-do/SKILL.md` routes
-# into the `dispatch-phase` Workflow instead of re-implementing
+# into the `rdm-wf-dispatch-phase` Workflow instead of re-implementing
 # plan -> plan-review -> implement -> code-review in prose (interactive
 # `rdm-do` is untouched; `--auto --task` routes in the same way). As of the
 # `distribute-workflow-lane` roadmap's phase 2, this wiring is no longer a
@@ -14,15 +14,15 @@
 # to record. This harness gates three things:
 #
 #   1. STATIC INVARIANTS — SKILL.md's frontmatter lists the `Workflow` tool; the
-#      `## Auto phase dispatch` section references `dispatch-phase`; the
-#      referenced workflow file exists and is named `dispatch-phase`; the
+#      `## Auto phase dispatch` section references `rdm-wf-dispatch-phase`; the
+#      referenced workflow file exists and is named `rdm-wf-dispatch-phase`; the
 #      OUTCOME -> status mapping (`--status reviewed`, `--status blocked`,
 #      `[code]`, `[plan]`) is present; the interactive plan-mode path
 #      (`EnterPlanMode`/`ExitPlanMode`) is preserved; the `--auto --task`
 #      flow is wired into the Workflow (`{ task: <slug> }` + its OUTCOME ->
 #      status map) with no stale prose-path claims; the stale "dogfood-only,
 #      not propagated" note is gone; and the distributed templates DO
-#      reference `dispatch-phase` and the `Workflow` tool (the divergence the
+#      reference `rdm-wf-dispatch-phase` and the `Workflow` tool (the divergence the
 #      old dogfood note recorded is resolved), with a planted-absence
 #      self-test proving that detector isn't a tautological no-op.
 #   2. DYNAMIC OUTCOME CONTRACT — against the real binary in a hermetic temp
@@ -45,7 +45,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 RDM_BIN="$REPO_ROOT/target/debug/rdm"
 SKILL="$REPO_ROOT/.claude/skills/rdm-do/SKILL.md"
-DISPATCH_WF="$REPO_ROOT/.claude/workflows/dispatch-phase.js"
+DISPATCH_WF="$REPO_ROOT/.claude/workflows/rdm-wf-dispatch-phase.js"
 TEMPLATE_CLI="$REPO_ROOT/rdm-core/src/templates/skill-do-cli.md"
 TEMPLATE_MCP="$REPO_ROOT/rdm-core/src/templates/skill-do-mcp.md"
 
@@ -111,8 +111,8 @@ awk '/^## Auto phase dispatch/{p=1} p' "$SKILL" >"$TMP/auto-section"
 grep -q 'dispatch-phase' "$TMP/auto-section" || fail "'## Auto phase dispatch' section must reference 'dispatch-phase'"
 pass "'## Auto phase dispatch' section references dispatch-phase"
 
-grep -q "name: 'dispatch-phase'" "$DISPATCH_WF" || fail "the referenced workflow is not named 'dispatch-phase'"
-pass "referenced workflow exists and is named 'dispatch-phase'"
+grep -q "name: 'rdm-wf-dispatch-phase'" "$DISPATCH_WF" || fail "the referenced workflow is not named 'rdm-wf-dispatch-phase'"
+pass "referenced workflow exists and is named 'rdm-wf-dispatch-phase'"
 
 # OUTCOME-mapping commands present, and — critically — each outcome name is
 # bound to its correct tag/status ON THE SAME BULLET LINE. Independent

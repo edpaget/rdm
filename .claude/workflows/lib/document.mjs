@@ -1,12 +1,12 @@
 //! document — pure decision logic for the headless documentation-draft workflow.
 //!
 //! This is the **single source of truth** for the deterministic decision core of
-//! the `document` workflow: argument parsing/defaulting, the all-done validation,
+//! the `rdm-wf-document` workflow: argument parsing/defaulting, the all-done validation,
 //! and the has-SHA-vs-body-only fallback check that decides whether a phase's
 //! per-phase gather step runs `git log`/`git diff --stat` or falls back to
 //! phase-body-only. Because the Claude Code Workflow runtime cannot
 //! `import`/`require` (see docs/workflow-schemas.md § "Import spike"), the marked
-//! block below is copied BYTE-IDENTICAL into `.claude/workflows/document.js`.
+//! block below is copied BYTE-IDENTICAL into `.claude/workflows/rdm-wf-document.js`.
 //! Unlike the review-refute-fix block — which is stamped by
 //! `scripts/gen-workflow-review.sh` — this block is NOT run through a generator
 //! (it is unique to the one `document` consumer, mirroring the `dispatch-outcome`
@@ -24,7 +24,7 @@
 //
 // This block is the single source of truth in
 // .claude/workflows/lib/document.mjs and is copied BYTE-IDENTICAL into
-// .claude/workflows/document.js (the Workflow runtime cannot load modules at run
+// .claude/workflows/rdm-wf-document.js (the Workflow runtime cannot load modules at run
 // time). scripts/verify-workflow-document.sh gates the two copies for drift.
 // No Date.now / Math.random — pure array/string ops only.
 
@@ -63,7 +63,7 @@ function resolveOutPath(args) {
 // computeIncompletePhases(phases) — every phase whose status is not `done`.
 // A roadmap with zero phases is vacuously all-done (returns []), so an empty
 // roadmap proceeds to a (contentless) draft rather than short-circuiting —
-// this is a deliberate, documented choice (see document.js's driver), not an
+// this is a deliberate, documented choice (see rdm-wf-document.js's driver), not an
 // oversight.
 function computeIncompletePhases(phases) {
   const list = Array.isArray(phases) ? phases : [];

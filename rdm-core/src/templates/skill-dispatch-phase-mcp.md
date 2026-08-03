@@ -8,7 +8,7 @@ allowed-tools:
   - {t_task_update}
 ---
 
-Run **one** rdm phase (or task) to completion by invoking the **`dispatch-phase` Workflow** (`.claude/workflows/dispatch-phase.js`, provisioned automatically by `rdm agent-config claude --skills`). This skill is a **thin shim**: it parses the invocation, hands off to the workflow, and returns the OUTCOME JSON the workflow returns verbatim. All the per-phase work — planning, the independent plan gate, implementation, and code review — happens inside the workflow's own deterministic 4-stage pipeline (Plan → PlanReview → Implement → CodeReview), not in this prose.
+Run **one** rdm phase (or task) to completion by invoking the **`rdm-wf-dispatch-phase` Workflow** (`.claude/workflows/rdm-wf-dispatch-phase.js`, provisioned automatically by `rdm agent-config claude --skills`). This skill is a **thin shim**: it parses the invocation, hands off to the workflow, and returns the OUTCOME JSON the workflow returns verbatim. All the per-phase work — planning, the independent plan gate, implementation, and code review — happens inside the workflow's own deterministic 4-stage pipeline (Plan → PlanReview → Implement → CodeReview), not in this prose.
 {principles}
 ## Dispatch contract
 
@@ -41,7 +41,7 @@ Run **one** rdm phase (or task) to completion by invoking the **`dispatch-phase`
 2. **Stamp the item in-progress yourself** unless this is a `--plan-only` invocation: `{t_phase_update}` (`project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "in-progress"`) or `{t_task_update}` (`project: {proj_param}, slug: "<slug>", status: "in-progress"`). Pass `alreadyInProgress: true` in the workflow args **only** if that call succeeded; never pass it for a `--plan-only` run. This makes the item observably `in-progress` strictly earlier than the workflow's own stamp would, and lets the workflow skip a dedicated subagent for it. The flag is **optional** — omit it and the workflow stamps the item itself, exactly as before.
 
    The CLI variant of this shim additionally hoists the phase/task body plus the five resolved per-step model ids as `phaseMeta`/`taskMeta`. That is **deliberately not done here**: the workflow applies an all-or-nothing guard requiring all five model ids, there is no MCP model-resolve tool, and a partial payload is rejected outright — so this shim omits `phaseMeta`/`taskMeta` entirely and the in-workflow fetch remains the path on MCP.
-3. **Invoke the `dispatch-phase` workflow** via the Workflow tool with `{ roadmap, phase, alreadyInProgress, rdmBin, project: {proj_param} }` (phase mode) or `{ task, alreadyInProgress, rdmBin, project: {proj_param} }` (task mode); pass `args` as a JSON object, never a stringified value. Block for its returned OUTCOME.
+3. **Invoke the `rdm-wf-dispatch-phase` workflow** via the Workflow tool with `{ roadmap, phase, alreadyInProgress, rdmBin, project: {proj_param} }` (phase mode) or `{ task, alreadyInProgress, rdmBin, project: {proj_param} }` (task mode); pass `args` as a JSON object, never a stringified value. Block for its returned OUTCOME.
    - `rdmBin` — the exact rdm executable the workflow's own Bash agents invoke (e.g. `rdm` on PATH, or a repo-local build path). **REQUIRED** even on MCP: this shim makes no CLI calls of its own, but the workflow it invokes still shells out, so omitting `rdmBin` hard-breaks the lane on first dispatch instead of falling back to a `PATH`-resolved `rdm`.
    - `project` — **optional**; appended only to project-scoped commands (`rdm model resolve` never receives it).
 

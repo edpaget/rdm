@@ -25,12 +25,12 @@ grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 
 | file | call sites |
 |---|---|
-| `backlog.js` | 3 |
-| `dispatch-phase.js` | 11 |
-| `document.js` | 5 |
-| `estimate.js` | 5 |
-| `plan-review.js` | 9 |
-| `review-refute-fix.js` | 4 |
+| `rdm-wf-backlog.js` | 3 |
+| `rdm-wf-dispatch-phase.js` | 11 |
+| `rdm-wf-document.js` | 5 |
+| `rdm-wf-estimate.js` | 5 |
+| `rdm-wf-plan-review.js` | 9 |
+| `rdm-wf-review-refute-fix.js` | 4 |
 | **total** | **37** |
 
 (`autopilot.js` carried 7 of the original 44 call sites; it was retired in favor of the prose
@@ -75,7 +75,7 @@ Where a call site lives determines how it is edited. Three routes exist:
 
 | route | blocks | how to edit |
 |---|---|---|
-| **stamped** | `review-refute-fix` (in `dispatch-phase.js`, `plan-review.js`, `review-refute-fix.js`), `estimate-core` (in `estimate.js`) | edit the lib (`lib/review.mjs` / `lib/estimate.mjs`), re-run `scripts/gen-workflow-review.sh` / `gen-workflow-estimate.sh`; `--check` gates drift |
+| **stamped** | `rdm-wf-review-refute-fix` (in `rdm-wf-dispatch-phase.js`, `rdm-wf-plan-review.js`, `rdm-wf-review-refute-fix.js`), `estimate-core` (in `rdm-wf-estimate.js`) | edit the lib (`lib/review.mjs` / `lib/estimate.mjs`), re-run `scripts/gen-workflow-review.sh` / `gen-workflow-estimate.sh`; `--check` gates drift |
 | **byte-copied** | `dispatch-outcome` (`lib/dispatch-phase.mjs`), `plan-review-driver` (`lib/plan-review.mjs`) | edit the lib **first**, then copy the block verbatim into the consumer; `verify-workflow-dispatch.sh` §2 / `verify-workflow-review.sh` §5b-drift gate byte-equality |
 | **unprojected** | everything below a `:end` marker (the driver regions), plus `document-core`/`backlog-groom` consumers | edit in place |
 
@@ -84,7 +84,7 @@ Where a call site lives determines how it is edited. Three routes exist:
 which sit inside the byte-copied `plan-review-driver` block. No mechanical site sits inside a
 generator-**stamped** block, so no generator had to learn anything new for this phase.
 
-Independently: `dispatch-phase.js` and `review-refute-fix.js` carry
+Independently: `rdm-wf-dispatch-phase.js` and `rdm-wf-review-refute-fix.js` carry
 hand-maintained **byte-identical copies** under `rdm-core/src/templates/workflows/`, embedded
 by `rdm-core/src/agent_config.rs` via `include_str!`. **No generator writes those copies** —
 they are re-synced by `cp`, and `scripts/verify-agent-config-distribution.sh` plus
@@ -128,34 +128,34 @@ can supply the hoist today.
 
 | label | file | route | dist copy | caller | class | reasoning | phase 4? |
 |---|---|---|---|---|---|---|---|
-| `fetch:phase-meta` | `dispatch-phase.js` | unprojected driver | yes | distributed shim (`rdm-dispatch-phase`, `rdm-do --auto`) — CLI only | **hoistable** | Read-only Stage-0 read, fires before any judgment agent, and the caller already ran `rdm phase show`. Accepted only when the payload carries a non-empty body, all five resolved model ids, **and** the `model` difficulty tier (`hoistedMetaComplete`) — the tier is the driver's sole source for gate strictness and its `'medium'` default would silently loosen a `large` phase's gate. | no (direct/shim path) |
-| `fetch:task-meta` | `dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI only | **hoistable** | Task-mode twin of the above, same body+models guard. No tier requirement: `TASK_META` carries none and the driver hard-codes a task to `medium`, so there is nothing to lose. | no (direct/shim path) |
-| `stamp:in-progress` | `dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI **and** MCP | **redundant** | Interactive `rdm-do`, `rdm-do --auto` and the `rdm-dispatch-phase` shim all write `--status in-progress` before invoking the workflow. Suppressed by an explicit `alreadyInProgress` flag set **only** when that write exited 0, and **never** for a `--plan-only` run. | **yes** (autopilot-nested + direct-`Workflow` paths) |
-| `diff:signals` | `dispatch-phase.js` | unprojected driver | yes | n/a — absorbed, no caller needed | **absorbable** | `runCodeGate` calls `d.implement(...)` immediately before every `d.review()` with nothing in between, so the implementer — already in the worktree it just wrote to — reports the same two `git diff` commands. One-shot handoff (`pendingDiff` read-and-cleared) preserves per-round freshness. Works on **every** path, including autopilot-nested. | no |
-| `diff:signals` | `review-refute-fix.js` | unprojected driver | yes | local shim only (`rdm-review`) | **hoistable** | No adjacent implementer in this workflow (it reviews an already-implemented item), but `worktreeRef` is fully determined by `args`, so the caller can run the diff itself. | partly (distributed-caller path) |
-| `gate:persist` | `review-refute-fix.js` | unprojected driver | yes | — | **irreducible** | A write whose status/reason are computed mid-run from the classified outcome. | **yes** |
+| `fetch:phase-meta` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | distributed shim (`rdm-dispatch-phase`, `rdm-do --auto`) — CLI only | **hoistable** | Read-only Stage-0 read, fires before any judgment agent, and the caller already ran `rdm phase show`. Accepted only when the payload carries a non-empty body, all five resolved model ids, **and** the `model` difficulty tier (`hoistedMetaComplete`) — the tier is the driver's sole source for gate strictness and its `'medium'` default would silently loosen a `large` phase's gate. | no (direct/shim path) |
+| `fetch:task-meta` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI only | **hoistable** | Task-mode twin of the above, same body+models guard. No tier requirement: `TASK_META` carries none and the driver hard-codes a task to `medium`, so there is nothing to lose. | no (direct/shim path) |
+| `stamp:in-progress` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI **and** MCP | **redundant** | Interactive `rdm-do`, `rdm-do --auto` and the `rdm-dispatch-phase` shim all write `--status in-progress` before invoking the workflow. Suppressed by an explicit `alreadyInProgress` flag set **only** when that write exited 0, and **never** for a `--plan-only` run. | **yes** (autopilot-nested + direct-`Workflow` paths) |
+| `diff:signals` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | n/a — absorbed, no caller needed | **absorbable** | `runCodeGate` calls `d.implement(...)` immediately before every `d.review()` with nothing in between, so the implementer — already in the worktree it just wrote to — reports the same two `git diff` commands. One-shot handoff (`pendingDiff` read-and-cleared) preserves per-round freshness. Works on **every** path, including autopilot-nested. | no |
+| `diff:signals` | `rdm-wf-review-refute-fix.js` | unprojected driver | yes | local shim only (`rdm-review`) | **hoistable** | No adjacent implementer in this workflow (it reviews an already-implemented item), but `worktreeRef` is fully determined by `args`, so the caller can run the diff itself. | partly (distributed-caller path) |
+| `gate:persist` | `rdm-wf-review-refute-fix.js` | unprojected driver | yes | — | **irreducible** | A write whose status/reason are computed mid-run from the classified outcome. | **yes** |
 | `model:mechanical` | `autopilot.js` | unprojected driver | yes | distributed shim — **CLI only** | **hoistable** | Pure bootstrap read of `rdm model resolve mechanical`, before everything. MCP has no model-resolve tool, so the MCP shim omits it and the agent runs. | partly (MCP path) |
 | `estimate:list` | `autopilot.js` | unprojected driver | yes | distributed shim (CLI + MCP) | **hoistable** | `rdm phase list --format json` — read-only, pre-run, no judgment agent before it. | no |
 | `fetch:next` | `autopilot.js` | unprojected driver | yes | distributed shim (CLI + MCP) | **hoistable — first iteration only** | `rdm next` is what *advances the cursor* once advance/park has persisted a status, so a cached result is only valid for iteration 1. Consumed strictly one-shot (`pendingNext`); iterations 2..N always re-read live state. | **yes** (iterations 2..N) |
 | `estimate:write:*` | `autopilot.js` | unprojected driver | yes | — | **irreducible** | A write whose difficulty/justification inputs are produced mid-run by the rater. | **yes** |
 | `advance:*` | `autopilot.js` | unprojected driver | yes | — | **irreducible** | A write keyed on the OUTCOME the dispatch just produced. | **yes** |
 | `park:*` | `autopilot.js` | unprojected driver | yes | — | **irreducible** | Same — a mid-run write with a computed reason. | **yes** |
-| `model:mechanical` | `estimate.js` | unprojected driver | no | local shim only (`rdm-estimate`) | **hoistable** | Same bootstrap read as autopilot's. | partly (distributed-caller path) |
-| `estimate:list` | `estimate.js` | unprojected driver | no | local shim only | **hoistable** | Same as autopilot's. | partly (distributed-caller path) |
-| `estimate:write:*` | `estimate.js` | unprojected driver | no | — | **irreducible** | Mid-run write. | **yes** |
-| `estimate:tier:*` | `estimate.js` | unprojected driver | no | — | **irreducible** | Reads back a tier that only exists *after* the writeback it follows. | **yes** |
-| `model:mechanical` | `plan-review.js` | unprojected runtime entry | no | local shim only (`rdm-plan-review`) | **hoistable** | Same bootstrap read. | partly (distributed-caller path) |
-| `fetch:roadmap` | `plan-review.js` | **byte-copied** `plan-review-driver` (gate: `verify-workflow-review.sh` §5b-drift) | no | local shim only | **hoistable — PRIORITY** | See § The hoist with a recorded correctness failure. Not ranked on cost. | partly (distributed-caller path) |
-| `fetch:<kind>` (`fetch:task` / `fetch:phase`) | `plan-review.js` | **byte-copied** `plan-review-driver` | no | local shim only | **hoistable — PRIORITY** | Same — see below. | partly (distributed-caller path) |
-| `fetch:wontfix` | `plan-review.js` | **byte-copied** `plan-review-driver` | no | local shim only | **hoistable** | One `rdm search` covering the whole run, read-only, before any unit is reviewed. | partly (distributed-caller path) |
-| `act:round-note:*` | `plan-review.js` | **byte-copied** `plan-review-driver` | no | — | **irreducible** | A write whose round number and finding list are computed mid-run. | **yes** |
-| `gate:clear-tag:*` | `plan-review.js` | **byte-copied** `plan-review-driver` | no | — | **irreducible** | A write keyed on the per-unit outcome the pipeline just produced. | **yes** |
-| `model:mechanical` | `backlog.js` | unprojected driver | no | local shim only (`rdm-backlog`) | **hoistable** | Same bootstrap read. | partly (distributed-caller path) |
-| `fetch:report` | `backlog.js` | unprojected driver | no | local shim only | **hoistable** | `rdm backlog report --format json` is read-only whoever runs it, so hoisting it does not weaken the propose-only contract. | partly (distributed-caller path) |
-| `model:mechanical` | `document.js` | unprojected driver | no | local shim only (`rdm-document`) | **hoistable** | Same bootstrap read. | partly (distributed-caller path) |
-| `fetch:roadmap-meta` | `document.js` | unprojected driver | no | local shim only | **hoistable** | `rdm roadmap show --format json`, read before the all-done validation and before any judgment agent. | partly (distributed-caller path) |
-| `gather:*` | `document.js` | unprojected driver | no | — | **irreducible** | A per-phase mid-run read fan-out whose inputs come from the phase list. | **yes** |
-| `write:draft` | `document.js` | unprojected driver | no | — | **irreducible** | Writes a document the synthesis agent produced mid-run. | **yes** |
+| `model:mechanical` | `rdm-wf-estimate.js` | unprojected driver | no | local shim only (`rdm-estimate`) | **hoistable** | Same bootstrap read as autopilot's. | partly (distributed-caller path) |
+| `estimate:list` | `rdm-wf-estimate.js` | unprojected driver | no | local shim only | **hoistable** | Same as autopilot's. | partly (distributed-caller path) |
+| `estimate:write:*` | `rdm-wf-estimate.js` | unprojected driver | no | — | **irreducible** | Mid-run write. | **yes** |
+| `estimate:tier:*` | `rdm-wf-estimate.js` | unprojected driver | no | — | **irreducible** | Reads back a tier that only exists *after* the writeback it follows. | **yes** |
+| `model:mechanical` | `rdm-wf-plan-review.js` | unprojected runtime entry | no | local shim only (`rdm-plan-review`) | **hoistable** | Same bootstrap read. | partly (distributed-caller path) |
+| `fetch:roadmap` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` (gate: `verify-workflow-review.sh` §5b-drift) | no | local shim only | **hoistable — PRIORITY** | See § The hoist with a recorded correctness failure. Not ranked on cost. | partly (distributed-caller path) |
+| `fetch:<kind>` (`fetch:task` / `fetch:phase`) | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | local shim only | **hoistable — PRIORITY** | Same — see below. | partly (distributed-caller path) |
+| `fetch:wontfix` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | local shim only | **hoistable** | One `rdm search` covering the whole run, read-only, before any unit is reviewed. | partly (distributed-caller path) |
+| `act:round-note:*` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | — | **irreducible** | A write whose round number and finding list are computed mid-run. | **yes** |
+| `gate:clear-tag:*` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | — | **irreducible** | A write keyed on the per-unit outcome the pipeline just produced. | **yes** |
+| `model:mechanical` | `rdm-wf-backlog.js` | unprojected driver | no | local shim only (`rdm-backlog`) | **hoistable** | Same bootstrap read. | partly (distributed-caller path) |
+| `fetch:report` | `rdm-wf-backlog.js` | unprojected driver | no | local shim only | **hoistable** | `rdm backlog report --format json` is read-only whoever runs it, so hoisting it does not weaken the propose-only contract. | partly (distributed-caller path) |
+| `model:mechanical` | `rdm-wf-document.js` | unprojected driver | no | local shim only (`rdm-document`) | **hoistable** | Same bootstrap read. | partly (distributed-caller path) |
+| `fetch:roadmap-meta` | `rdm-wf-document.js` | unprojected driver | no | local shim only | **hoistable** | `rdm roadmap show --format json`, read before the all-done validation and before any judgment agent. | partly (distributed-caller path) |
+| `gather:*` | `rdm-wf-document.js` | unprojected driver | no | — | **irreducible** | A per-phase mid-run read fan-out whose inputs come from the phase list. | **yes** |
+| `write:draft` | `rdm-wf-document.js` | unprojected driver | no | — | **irreducible** | Writes a document the synthesis agent produced mid-run. | **yes** |
 
 ### Why `stamp:in-progress` is NOT absorbed
 
@@ -175,7 +175,7 @@ seed with `alreadyInProgress` unset, `stamp:in-progress` appears **before** the 
 
 ## The hoist with a recorded correctness failure
 
-Most sites here are a pure cost question. `plan-review.js`'s `fetch:roadmap` and `fetch:<kind>`
+Most sites here are a pure cost question. `rdm-wf-plan-review.js`'s `fetch:roadmap` and `fetch:<kind>`
 are not: they have **twice corrupted plan data in production**, and hoisting is the only
 mechanism that removes the failure rather than checking for it after the fact. They are
 classified **HOISTABLE, priority** — explicitly *not* ranked on cost.
@@ -237,13 +237,13 @@ Named explicitly, because this list *is* phase 4's input:
 2. **Mid-run writes**, whose inputs are computed during the run: `estimate:write:*` (autopilot
    and estimate), `estimate:tier:*`, `advance:*`, `park:*`, `gate:clear-tag:*`, `gate:persist`,
    `act:round-note:*`, `write:draft`.
-3. **`gather:*`** — a per-phase mid-run read fan-out in `document.js`.
+3. **`gather:*`** — a per-phase mid-run read fan-out in `rdm-wf-document.js`.
 4. **`fetch:next` iterations 2..N** — only the first is hoistable, because `rdm next` is the
    cursor.
 5. **The retained in-workflow fallback path of every hoisted site.** A direct `Workflow`
    invocation has no caller and always takes it.
-6. **The distributed-caller path of the five local-only-shim workflows** (`plan-review`,
-   `backlog`, `document`, `review`, `estimate`) — until task
+6. **The distributed-caller path of the five local-only-shim workflows** (`rdm-wf-plan-review`,
+   `rdm-wf-backlog`, `rdm-wf-document`, `review`, `rdm-wf-estimate`) — until task
    `convert-remaining-skill-templates-to-workflow-shims` lands.
 7. **The MCP path of `model:mechanical`/`phaseMeta`/`taskMeta`** — no MCP model-resolve tool
    exists, and the all-or-nothing guard correctly rejects a partial payload.
@@ -279,8 +279,8 @@ and should be taken on the next real lane run; it could not be taken from inside
 implementing session, whose own workflow was already running the pre-change code.
 
 Two further caveats carried over from phase 2: the baseline run set contains **zero standalone
-`estimate` and `document` runs** (those lanes are only observable nested inside autopilot), and
-the `estimate` class **mixes mechanical (`estimate:list`/`write`/`tier`) with judgment
+`rdm-wf-estimate` and `rdm-wf-document` runs** (those lanes are only observable nested inside autopilot), and
+the `rdm-wf-estimate` class **mixes mechanical (`estimate:list`/`write`/`tier`) with judgment
 (`estimate:rate`) agents**, so it must never be reported as a single mechanical figure.
 
 ### Per-label replay, by workflow
@@ -314,7 +314,7 @@ live across the same corpus.
 ### Rolled up to the baseline's `byAgentClass` keys
 
 `docs/token-baseline.json`'s reference figures are `fetch` 105, `stamp` 20, `model` 14,
-`diff` 33, `estimate` 95 agents. Rolled up over the current corpus:
+`diff` 33, `rdm-wf-estimate` 95 agents. Rolled up over the current corpus:
 
 | class | observed | eliminated | remaining | vs. `token-baseline.json` |
 |---|---|---|---|---|
@@ -322,7 +322,7 @@ live across the same corpus.
 | `stamp` | 25 | 5 | 20 | baseline 20 |
 | `model` | 15 | 15 | **0** | baseline 14 |
 | `diff` | 37 | 37 | **0** | baseline 33 |
-| `estimate` (mechanical part only) | 55 | 14 | 41 | baseline class 95 **mixes judgment** — not comparable as a whole |
+| `rdm-wf-estimate` (mechanical part only) | 55 | 14 | 41 | baseline class 95 **mixes judgment** — not comparable as a whole |
 | `advance` / `park` / `gate` / `act` | unchanged | 0 | — | irreducible |
 
 The `model` and `diff` classes go to **zero on the shim-driven paths**. `diff` goes to zero
@@ -399,7 +399,7 @@ effort options spike"; the operative outcomes are:
 
   The controlled A/B pair — same session, identical prompt, back to back — measures
   **38689 → 29782, a saving of 8907 tokens (−23.0 %)**, reproduced exactly by the E/F pair. A
-  live `backlog` dispatch (propose-only, verified zero-mutation) agrees against the pinned
+  live `rdm-wf-backlog` dispatch (propose-only, verified zero-mutation) agrees against the pinned
   medians: `model:mechanical` 36877 → 29524 (−19.9 %) and `fetch:report` 30098 → 24418
   (−18.9 %), both n=1 and therefore directional rather than a re-baseline.
 
@@ -451,21 +451,21 @@ effort options spike"; the operative outcomes are:
 
 These are the mechanical sites that now carry `agentType: 'rdm-mechanical'` — 15 call sites in
 the four local-only workflows, 4 of them duplicated into `lib/plan-review.mjs` as the
-byte-copied source of `plan-review.js`'s driver block, for 19 records in total. The same table
+byte-copied source of `rdm-wf-plan-review.js`'s driver block, for 19 records in total. The same table
 is the worklist for `effort:` if that is threaded later. Judgment sites are excluded by § The
 classification rule and must stay excluded; `scripts/verify-workflow-review.sh` §2c asserts
 both directions with planted-mutation self-tests.
 
 | File | Mechanical sites now carrying `agentType` | Maintenance route |
 |---|---|---|
-| `document.js` | `model:mechanical`, `fetch:roadmap-meta`, `gather:<stem>`, `write:draft` | unprojected driver (all below `document-core:end`) — edit in place |
-| `backlog.js` | `model:mechanical`, `fetch:report` | unprojected driver — edit in place |
-| `estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver (below `estimate-core:end`) — edit in place. **Verified NOT stamped**: the generator projects only the `estimate-core` block, so these do not propagate into any distributed workflow (`autopilot.js` formerly carried its own duplicate driver copies of the same labels, before its retirement to prose) |
-| `plan-review.js` | `fetch:roadmap`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | **byte-copied** — inside the `plan-review-driver` block; edit `lib/plan-review.mjs` first, then copy verbatim. `verify-workflow-review.sh` §5b-drift gates the pair |
-| `plan-review.js` | `model:mechanical` | unprojected driver (below `plan-review-driver:end`) — edit in place |
+| `rdm-wf-document.js` | `model:mechanical`, `fetch:roadmap-meta`, `gather:<stem>`, `write:draft` | unprojected driver (all below `document-core:end`) — edit in place |
+| `rdm-wf-backlog.js` | `model:mechanical`, `fetch:report` | unprojected driver — edit in place |
+| `rdm-wf-estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver (below `estimate-core:end`) — edit in place. **Verified NOT stamped**: the generator projects only the `estimate-core` block, so these do not propagate into any distributed workflow (`autopilot.js` formerly carried its own duplicate driver copies of the same labels, before its retirement to prose) |
+| `rdm-wf-plan-review.js` | `fetch:roadmap`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | **byte-copied** — inside the `plan-review-driver` block; edit `lib/plan-review.mjs` first, then copy verbatim. `verify-workflow-review.sh` §5b-drift gates the pair |
+| `rdm-wf-plan-review.js` | `model:mechanical` | unprojected driver (below `plan-review-driver:end`) — edit in place |
 
 15 sites, three maintenance routes, all threaded. **Off-limits regardless:**
-`dispatch-phase.js`, `review-refute-fix.js` (byte-identical to the distributed templates, gated
+`rdm-wf-dispatch-phase.js`, `rdm-wf-review-refute-fix.js` (byte-identical to the distributed templates, gated
 by `verify-agent-config-distribution.sh`), anything stamped from `lib/review.mjs` or
 `lib/estimate.mjs`, and every judgment site — `find:*`, `refute:*`, `plan:*`, `implement:*`,
 `synthesize:draft`, `analyze:*`, `estimate:rate:*`, and plan-review's `act:*` (including

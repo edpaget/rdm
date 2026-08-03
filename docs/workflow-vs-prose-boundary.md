@@ -30,7 +30,7 @@ A unit belongs in a **workflow** when it has all five of these properties. It be
    constantly, and every edit costs a generator run, a byte-identity gate, and a harness
    update.
 3. **Headless.** No *mid-run* human gate. A terminal handoff at end-of-run is not a
-   mid-run gate: `backlog` proposes and stops, `document` writes and stops, and both are
+   mid-run gate: `rdm-wf-backlog` proposes and stops, `rdm-wf-document` writes and stops, and both are
    fine as workflows. A unit that must pause for approval and then continue is not.
 4. **Deterministic / resumable.** The same inputs produce the same `agent()` call
    sequence, so the runtime's prefix-cached resume is meaningful. (This is also why
@@ -46,7 +46,7 @@ consumers by a `gen-workflow-*.sh` generator under a byte-identity gate. And `wo
 nesting is capped at **one level** — a workflow may call another, but that one may not.
 A candidate that needs to compose two existing workflows therefore cannot simply nest
 them; it either spends the single level, carries a stamped copy (which is why
-`autopilot.js` held its own `estimate-core` copy rather than calling `estimate`), or
+`autopilot.js` held its own `estimate-core` copy rather than calling `rdm-wf-estimate`), or
 belongs at the prose layer, where no such cap applies. Both constraints are recorded in
 `docs/workflow-schemas.md`.
 
@@ -61,10 +61,10 @@ and it is why the loop moves to prose while everything it drives stays a workflo
 
 Moving the drive loop to prose left the other seven scripts in place as workflows, but
 it was not a pure surface swap, and the table should not be read as claiming one.
-`autopilot.js` made exactly **one** `workflow()` call — `workflow('dispatch-phase',
-…)` — and reached the estimate fan-out through a stamped `estimate-core` copy of its own,
-not by invoking `estimate`. The prose orchestrator calls `dispatch-phase` as autopilot
-did **and additionally calls `estimate` as a workflow**, which was a new call path
+`autopilot.js` made exactly **one** nested `workflow()` call — a dispatch of the
+phase engine, then named `dispatch-phase` — and reached the estimate fan-out through a stamped `estimate-core` copy of its own,
+not by invoking `rdm-wf-estimate`. The prose orchestrator calls `rdm-wf-dispatch-phase` as autopilot
+did **and additionally calls `rdm-wf-estimate` as a workflow**, which was a new call path
 rather than a preserved one, and which dropped `gen-workflow-estimate.sh`'s stamped
 consumers from three to one.
 
@@ -73,34 +73,34 @@ while `autopilot.js` still existed, and continues to hold for the seven live scr
 today: the `Date.now(` / `Math.random(` bans are already grepped by the verify harnesses,
 so no script can violate it and stay green.
 
-**Distribution is a separate axis from disposition.** Only `dispatch-phase.js` and
-`review-refute-fix.js` are emitted downstream by `generate_workflows` (`autopilot.js` was
-too, until phase 3 retired it in favor of the prose `rdm-autopilot` skill); `plan-review.js`,
-`estimate.js`, `backlog.js`, `document.js`, and
+**Distribution is a separate axis from disposition.** Only `rdm-wf-dispatch-phase.js` and
+`rdm-wf-review-refute-fix.js` are emitted downstream by `generate_workflows` (`autopilot.js` was
+too, until phase 3 retired it in favor of the prose `rdm-autopilot` skill); `rdm-wf-plan-review.js`,
+`rdm-wf-estimate.js`, `rdm-wf-backlog.js`, `rdm-wf-document.js`, and
 `spike-agent-type.js` are local-only, and every one of the local-only five references
 `agentType: 'rdm-mechanical'`, which a downstream tree has no definition for and which
 *raises* rather than degrading silently. So the phase 4 rewrite of the **distributed**
 `skill-autopilot-{cli,mcp}.md` cannot simply mirror the local prose skill by pointing at
-`estimate` — it needs an explicit answer (ship `estimate.js` with the `agentType`
+`rdm-wf-estimate` — it needs an explicit answer (ship `rdm-wf-estimate.js` with the `agentType`
 stripped, inline the pre-pass in the shipped prose, or drop the pre-pass downstream).
 **Decided (phase 4): drop the pre-pass downstream.** The distributed `rdm-autopilot`
 template dispatches every phase at whatever tier `next.model` (or `{t_next}` on the MCP
-variant) already reports, defaulting to `medium`, and never invokes `estimate` at all.
-Shipping `estimate.js` stays blocked on lifting the `agentType`-downstream rule (owned by
+variant) already reports, defaulting to `medium`, and never invokes `rdm-wf-estimate` at all.
+Shipping `rdm-wf-estimate.js` stays blocked on lifting the `agentType`-downstream rule (owned by
 `ship-mechanical-agent-type-downstream`, not this phase), and inlining the pre-pass in
 prose would duplicate `estimate.mjs`'s filtering/rating/writeback logic outside its
 single-sourced home and risk silent drift. The local dogfood `rdm-autopilot` skill is
-unaffected and still invokes the real `estimate` Workflow.
+unaffected and still invokes the real `rdm-wf-estimate` Workflow.
 
 | Script | Fan-out | Shape | Mid-run gate | Disposition |
 |---|---|---|---|---|
-| `autopilot.js` | only its estimate pre-pass — and that was a stamped `estimate-core` copy (single-sourced in `lib/estimate.mjs`), not a call to `estimate.js` | policy: advance/park, retry budgets, stop conditions, operator summary; sequential `while` loop, ~5 iterations | no | **MOVED to prose** (`rdm-autopilot` skill) — failed criteria 1 and 2, and was the anti-criterion exactly *(historical row — retired to prose in phase 3 of `prose-autopilot-orchestration`; the file no longer exists)* |
-| `dispatch-phase.js` | two review stages — plan (4 dimensions) then code (up to 7, narrowed by diff signals) — each fanning `parallel()` over its findings | mechanism: fixed 4-stage plan → plan-review → implement → code-review | no | **STAY** — real fan-out over a fixed procedure |
-| `review-refute-fix.js` | same review core: dimensions → findings | mechanism: find → refute → filter → verdict | no | **STAY** — the canonical review pipeline, already single-sourced in `lib/review.mjs` |
-| `plan-review.js` | the review core **plus** an outer `parallel()` over phase units | mechanism | no | **STAY** — two nested levels of genuine fan-out |
-| `estimate.js` | `parallel()` rate over unestimated phases | mechanism | no | **STAY** — the pre-pass fan-out, which the prose loop now depends on *newly* (in the local dogfood skill only — the distributed template drops the pre-pass, see "Decided (phase 4)" above), as a real `workflow()` call rather than autopilot's former stamped copy |
-| `backlog.js` | `parallel()` over ≤4 signal categories | mechanism; propose-only, zero mutation | no — the handoff to a human is terminal | **STAY** |
-| `document.js` | `parallel()` git-gather over completed phases | mechanism; zero rdm mutation | no — approval is terminal | **STAY** |
+| `autopilot.js` | only its estimate pre-pass — and that was a stamped `estimate-core` copy (single-sourced in `lib/estimate.mjs`), not a call to `rdm-wf-estimate.js` | policy: advance/park, retry budgets, stop conditions, operator summary; sequential `while` loop, ~5 iterations | no | **MOVED to prose** (`rdm-autopilot` skill) — failed criteria 1 and 2, and was the anti-criterion exactly *(historical row — retired to prose in phase 3 of `prose-autopilot-orchestration`; the file no longer exists)* |
+| `rdm-wf-dispatch-phase.js` | two review stages — plan (4 dimensions) then code (up to 7, narrowed by diff signals) — each fanning `parallel()` over its findings | mechanism: fixed 4-stage plan → plan-review → implement → code-review | no | **STAY** — real fan-out over a fixed procedure |
+| `rdm-wf-review-refute-fix.js` | same review core: dimensions → findings | mechanism: find → refute → filter → verdict | no | **STAY** — the canonical review pipeline, already single-sourced in `lib/review.mjs` |
+| `rdm-wf-plan-review.js` | the review core **plus** an outer `parallel()` over phase units | mechanism | no | **STAY** — two nested levels of genuine fan-out |
+| `rdm-wf-estimate.js` | `parallel()` rate over unestimated phases | mechanism | no | **STAY** — the pre-pass fan-out, which the prose loop now depends on *newly* (in the local dogfood skill only — the distributed template drops the pre-pass, see "Decided (phase 4)" above), as a real `workflow()` call rather than autopilot's former stamped copy |
+| `rdm-wf-backlog.js` | `parallel()` over ≤4 signal categories | mechanism; propose-only, zero mutation | no — the handoff to a human is terminal | **STAY** |
+| `rdm-wf-document.js` | `parallel()` git-gather over completed phases | mechanism; zero rdm mutation | no — approval is terminal | **STAY** |
 | `spike-agent-type.js` | none (its cases are dispatched sequentially on purpose) | neither — it is a spike artifact that exercises the Workflow runtime itself, not a lane | n/a | **STAY, exempt** — kept as the executable record of the spike; it would not be authored as a lane workflow today |
 
 ## Non-goals

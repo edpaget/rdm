@@ -5,7 +5,7 @@
 //! and code-review gates, decide the phase OUTCOME. Because the Claude Code
 //! Workflow runtime cannot `import`/`require` (see docs/workflow-schemas.md
 //! § "Import spike"), the marked block below is copied BYTE-IDENTICAL into
-//! `.claude/workflows/dispatch-phase.js`. Unlike the review-refute-fix block —
+//! `.claude/workflows/rdm-wf-dispatch-phase.js`. Unlike the review-refute-fix block —
 //! which is stamped by `scripts/gen-workflow-review.sh` — this second block is NOT
 //! run through the generator; instead `scripts/verify-workflow-dispatch.sh` gates
 //! the two copies for byte-equality, which achieves the same drift protection
@@ -47,7 +47,7 @@ import {
 //
 // This block is the single source of truth in
 // .claude/workflows/lib/dispatch-phase.mjs and is copied BYTE-IDENTICAL into
-// .claude/workflows/dispatch-phase.js (the Workflow runtime cannot load modules
+// .claude/workflows/rdm-wf-dispatch-phase.js (the Workflow runtime cannot load modules
 // at run time). scripts/verify-workflow-dispatch.sh gates the two copies for
 // drift. No Date.now / Math.random — pure array/string ops only.
 //
@@ -96,7 +96,7 @@ const DEFAULT_MAX_PLAN_REVISE = 2;
 
 // projectFlag(cfg) — the ` --project <name>` suffix to append to a
 // PROJECT-SCOPED command, or '' when no project was configured (rdm's standard
-// resolution chain then applies). Same shape as .claude/workflows/backlog.js.
+// resolution chain then applies). Same shape as .claude/workflows/rdm-wf-backlog.js.
 function projectFlag(cfg) {
   return cfg && cfg.project ? ' --project ' + cfg.project : '';
 }

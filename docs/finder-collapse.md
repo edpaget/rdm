@@ -26,7 +26,7 @@ so they are mergeable into one finder with no schema change.
 > `when` predicate and has always been always-on. Corrected in the same commit as
 > this document.
 
-The multiplier is largest where it is safest. `plan-review.js` fans out per unit
+The multiplier is largest where it is safest. `rdm-wf-plan-review.js` fans out per unit
 with `parallel()` under `--roadmap`, and `buildReviewUnits` emits the roadmap's
 own body as a unit **in addition to** one per phase — so a five-phase roadmap is
 six units and **eighteen** always-on plan finders before a single triggered
@@ -58,7 +58,7 @@ schema on the merged agent. Plan mode's three lenses share ONE schema, which is
 what makes them mergeable at all.
 
 `unit-of-work` likewise stays its own triggered dimension. It is scoped to phase
-units CONSUMER-SIDE by `stripNonPhaseUnitOfWork` in `plan-review.js` (which
+units CONSUMER-SIDE by `stripNonPhaseUnitOfWork` in `rdm-wf-plan-review.js` (which
 filters on `f.concern === 'unit-of-work'`), and folding a conditionally-scoped
 lens into the unconditional agent would defeat that scoping.
 

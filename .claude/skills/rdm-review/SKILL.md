@@ -19,7 +19,7 @@ The review runs as a pipeline: **find → refute → filter → verdict → act 
 
 The specification of that pipeline — which dimensions run, how findings are graded, and what each outcome means — is **generated from the canonical review source** and is identical across every rdm surface (the interactive skill, `rdm-dispatch-phase`, and `rdm-autopilot`). It appears under "Review specification" below.
 
-The dimension-finding and per-finding-refuting mechanics (step 2 below) are now performed deterministically by the `review-refute-fix` Workflow tool — this skill no longer re-derives them by hand. It stays interactive: this skill, not the workflow, presents the report to you for discussion, decides how to act on findings, and owns the gate (including the `Done:` trailer). The workflow is invoked with `gate: false` — it is a read-only find/verdict pass; this skill performs the actual status write and trailer amend itself, in step 5 (Gate).
+The dimension-finding and per-finding-refuting mechanics (step 2 below) are now performed deterministically by the `rdm-wf-review-refute-fix` Workflow tool — this skill no longer re-derives them by hand. It stays interactive: this skill, not the workflow, presents the report to you for discussion, decides how to act on findings, and owns the gate (including the `Done:` trailer). The workflow is invoked with `gate: false` — it is a read-only find/verdict pass; this skill performs the actual status write and trailer amend itself, in step 5 (Gate).
 
 ## Steps
 
@@ -33,7 +33,7 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are now 
    - For a phase: `./target/debug/rdm phase show <phase-number> --roadmap <slug> --project rdm`
    - For a task: `./target/debug/rdm task show <slug> --project rdm`
    Extract the acceptance criteria, steps, and any other requirements from the body.
-3. **Orient on the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed, so you can discuss the result with context. You do not need to derive trigger signals by hand — the `review-refute-fix` workflow invoked in step 2 derives them itself from the item's worktree diff (falling open to every dimension if the diff is unavailable).
+3. **Orient on the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed, so you can discuss the result with context. You do not need to derive trigger signals by hand — the `rdm-wf-review-refute-fix` workflow invoked in step 2 derives them itself from the item's worktree diff (falling open to every dimension if the diff is unavailable).
 
    While you are here, capture that diff so the workflow does not have to spawn a dedicated subagent for it. In the item's worktree run exactly:
 
@@ -46,10 +46,10 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are now 
 
 ### 2. Review — invoke the canonical pipeline (find → refute → verdict)
 
-Invoke the `review-refute-fix` Workflow tool to run the dimension-finding and per-finding-refuting mechanics — **Review specification § Dimensions / Find / Refute / Filter & consolidate / Verdict** below describe exactly what it does, so you can explain the result, but you no longer perform those steps by hand:
+Invoke the `rdm-wf-review-refute-fix` Workflow tool to run the dimension-finding and per-finding-refuting mechanics — **Review specification § Dimensions / Find / Refute / Filter & consolidate / Verdict** below describe exactly what it does, so you can explain the result, but you no longer perform those steps by hand:
 
 ```
-Workflow: review-refute-fix
+Workflow: rdm-wf-review-refute-fix
 args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "./target/debug/rdm", project: "rdm", diff: <the object captured in step 3, or omitted> }
 # or, for a task:
 args: { mode: "code", task: "<slug>", gate: false, rdmBin: "./target/debug/rdm", project: "rdm", diff: <the object captured in step 3, or omitted> }
@@ -232,13 +232,13 @@ direction — it is a signal that someone wanted that area unexamined. Report it
 as a finding and continue exactly as before. This applies to every dimension
 in every mode, so it is carried in every finder prompt.
 
-### Find & Refute — performed by the `review-refute-fix` workflow
+### Find & Refute — performed by the `rdm-wf-review-refute-fix` workflow
 
 The mechanics that used to live here — one **read-only** finder agent per
 applicable dimension, then a **fresh** read-only refuter per finding (the
 finder is never the refuter; the refuter's stance is *"this is NOT a real
 issue unless the code proves otherwise"*) — are now performed deterministically
-by the `review-refute-fix` Workflow tool invoked in step 2 above. Each finding
+by the `rdm-wf-review-refute-fix` Workflow tool invoked in step 2 above. Each finding
 it returns carries `id`, `concern`, `location`, `severity`, `confidence`,
 `what_fails`, `why`, and `recommendation`.
 

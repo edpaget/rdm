@@ -33,10 +33,10 @@ fi
 
 # The list of consumers that embed the block. Add new consumers here — they are
 # kept in sync automatically. autopilot (now the prose `rdm-autopilot` skill,
-# not a workflow script) invokes the real `estimate` Workflow directly via the
-# Workflow tool for its estimate pre-pass, rather than reusing a stamped copy
-# of this block — so it is not a consumer here.
-set -- "$REPO_ROOT/.claude/workflows/estimate.js"
+# not a workflow script) invokes the real `rdm-wf-estimate` Workflow directly
+# via the Workflow tool for its estimate pre-pass, rather than reusing a stamped
+# copy of this block — so it is not a consumer here.
+set -- "$REPO_ROOT/.claude/workflows/rdm-wf-estimate.js"
 
 if [ ! -f "$SOURCE" ]; then
     echo "error: source of truth not found: $SOURCE" >&2

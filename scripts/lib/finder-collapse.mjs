@@ -7,7 +7,7 @@
 // `architectural-fit` and `restraint` — each dispatched as its own finder agent,
 // each paying its own agent context floor, and all three resolving the same
 // `FINDINGS_SCHEMA`. Collapsing them into ONE agent holding three lenses would
-// cut two agents per review unit. `plan-review.js` fans out per unit with
+// cut two agents per review unit. `rdm-wf-plan-review.js` fans out per unit with
 // `parallel()`, and a roadmap emits its own body as a unit IN ADDITION to one
 // per phase, so a five-phase roadmap pays eighteen always-on plan finders.
 //

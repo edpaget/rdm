@@ -1,58 +1,51 @@
-// dispatch-phase — the keystone unit of autonomous execution for phases and tasks.
+// plan-review — standalone plan-mode review workflow for direct invocation.
 //
-// A deterministic 4-stage pipeline for a roadmap phase or standalone task:
-//   Plan → PlanReview → Implement → CodeReview → OUTCOME.
-// It replaces rdm-dispatch-phase's prose orchestration with a mechanical driver.
+// Reviews the PLAN of an rdm item before implementation begins (the earlier of
+// the two review gates), reusing the ONE canonical review core in
+// .claude/workflows/lib/review.mjs — `buildReviewPipeline('plan')` for
+// find → refute → filter, and `GATE_POLICY.plan` / `gateFor('plan', …)` for the
+// gate. It declares NO review dimension, finder, refuter, or gate table of its
+// own; the stamped block below is copied VERBATIM from the lib by
+// scripts/gen-workflow-review.sh (the Workflow runtime cannot import a module —
+// see docs/workflow-schemas.md § "Import spike"). Edit the lib, not the copy;
+// scripts/verify-workflow-review.sh fails the build on drift.
 //
-// Invoke with args: { roadmap: '<roadmap-slug>', phase: '<stem-or-number>', rdmBin, project? } (phase mode)
-// or { task: '<slug>', rdmBin, project? } (task mode).
-//   rdmBin  — REQUIRED. The exact rdm executable every Bash-agent prompt shells
-//             out to. There is NO ambient/PATH fallback: an absent key throws
-//             before the first agent() call rather than silently running
-//             whichever global rdm is first on PATH. Pass the sentinel 'rdm' to
-//             opt into PATH resolution explicitly.
-//   project — optional. Appended as ` --project <name>` to PROJECT-SCOPED
-//             subcommands only; `rdm model resolve` and `rdm commit` never carry
-//             it. Omitted entirely when unset, so rdm's own resolution chain
-//             (RDM_PROJECT / default_project) applies.
-// Returns the OUTCOME contract: phase mode { roadmap, phase, outcome, status,
-// writesCompletion, summary, reason, findings }; task mode { task, outcome,
-// status, writesCompletion, summary, reason, findings }, outcome ∈ { reviewed, rework,
-// escalated }. `status` and `writesCompletion` carry the canonical review's
-// gate/completion policy so no consumer restates it. It NEVER emits a land-time
-// completion directive itself — `writesCompletion: true` tells `rdm-land` to
-// synthesize the trailer via `rdm hook done-line` at land time. See
-// docs/workflow-schemas.md.
+// Four target types (mirroring the rdm-plan-review skill's $ARGUMENTS surface):
 //
-// This script embeds TWO copied blocks, because the Workflow runtime cannot load
-// helper modules at run time (docs/workflow-schemas.md § "Import spike"):
-//   1. the review-refute-fix block — stamped from lib/review.mjs by
-//      scripts/gen-workflow-review.sh; its `buildReviewPipeline(mode)` is called
-//      inline for BOTH review gates (NOT via a nested sub-workflow call).
-//   2. the dispatch-outcome block — copied BYTE-IDENTICAL from
-//      lib/dispatch-phase.mjs; scripts/verify-workflow-dispatch.sh gates it.
+//   1. `--task <slug>`            — review a task's plan.
+//   2. `--roadmap <slug>`         — review the whole roadmap: its own body plus
+//                                   EVERY phase, each gated INDEPENDENTLY (an
+//                                   ambient parallel() fan-out).
+//   3. `<slug> [phase]`           — positional: a single phase when a phase arg
+//                                   is present, else identical to --roadmap.
+//   4. `--implementation-plan`    — review an rdm-do plan document handed over in
+//                                   context ahead of implementation. There is NO
+//                                   persisted rdm item behind it, so it is
+//                                   report-only: no body edit, no filed task, and
+//                                   no gate.
+//
+// Args may arrive as a raw $ARGUMENTS flag string, a JSON payload, or a
+// structured object ({ roadmap, phase }, { task }, { implementationPlan,
+// planText }). See parsePlanArgs.
+//
+// Unit-of-work scoping: this workflow deliberately passes NO `signals` into the
+// pipeline (honoring the dispatch-phase deferral of signal-threading to the
+// sibling unify-plan-review roadmap), so selectDimensions fail-opens and the
+// unit-of-work finder runs on every unit. Phase-only scoping is instead applied
+// in the CONSUMER via stripNonPhaseUnitOfWork(survivors, targetType).
+//
+// The DRIVER below (parsePlanArgs + the fetch/act/gate orchestration in
+// runPlanReviewDriver) is the single source of truth in
+// .claude/workflows/lib/plan-review.mjs and is copied BYTE-IDENTICAL into the
+// plan-review-driver block here — the runtime cannot import a module. The verify
+// harness imports that lib and executes the driver against a fake agent/parallel;
+// scripts/verify-workflow-review.sh gates the two copies for byte-drift.
 
 export const meta = {
-  name: 'dispatch-phase',
+  name: 'rdm-wf-plan-review',
   description:
-    'Deterministic 4-stage pipeline for phases and tasks: plan → plan-review → implement → code-review → OUTCOME (reviewed|rework|escalated)',
-  // Must list exactly the distinct `phase:` values the driver + the inlined
-  // review-refute-fix block actually emit. Both review gates run their finders
-  // under 'Find' and refuters under 'Refute' (from the stamped block), so those
-  // appear here; there is no 'CodeReview' phase because no agent() call uses it.
-  // 'Review' is the mechanical diff-signals agent that feeds the code gate's
-  // dimension selection. 'Act' is the optional code-lane Act step that
-  // incorporates surviving non-blocking findings on a clean final round.
-  // verify-workflow-dispatch.sh asserts this list matches the emitted phases.
-  phases: [
-    { title: 'Plan' },
-    { title: 'PlanReview' },
-    { title: 'Implement' },
-    { title: 'Review' },
-    { title: 'Find' },
-    { title: 'Refute' },
-    { title: 'Act' },
-  ],
+    'Standalone plan-mode review: find → refute → filter over a task/phase/roadmap/implementation-plan, with per-phase independent needs-plan-review gating',
+  phases: [{ title: 'Read' }, { title: 'Find' }, { title: 'Refute' }, { title: 'Act' }, { title: 'Gate' }],
 }
 
 // The block below is GENERATED from .claude/workflows/lib/review.mjs by
@@ -592,13 +585,13 @@ function refutePrompt(mode, dim, finding, context) {
 // >>> find-refute-verdict:end <<<
 // >>> find-refute-verdict:local-code-override:begin (skipped everywhere except --target local --mode code; scripts/gen-skill-review.sh's extract_region swaps THIS `//|` span in for the default one above only in that one combination) <<<
 //|
-//| ### Find & Refute — performed by the `review-refute-fix` workflow
+//| ### Find & Refute — performed by the `rdm-wf-review-refute-fix` workflow
 //|
 //| The mechanics that used to live here — one **read-only** finder agent per
 //| applicable dimension, then a **fresh** read-only refuter per finding (the
 //| finder is never the refuter; the refuter's stance is *"this is NOT a real
 //| issue unless the code proves otherwise"*) — are now performed deterministically
-//| by the `review-refute-fix` Workflow tool invoked in step 2 above. Each finding
+//| by the `rdm-wf-review-refute-fix` Workflow tool invoked in step 2 above. Each finding
 //| it returns carries `id`, `concern`, `location`, `severity`, `confidence`,
 //| `what_fails`, `why`, and `recommendation`.
 //|
@@ -1396,7 +1389,7 @@ function summarizeFindings(findings) {
 
 // --- Plan-standalone consolidation helpers -----------------------------------
 // Three pure, post-pipeline consolidation/gate helpers the standalone
-// plan-review workflow (.claude/workflows/plan-review.js) consumes. They are
+// plan-review workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. They are
 // CONSOLIDATION, not find/refute logic — they operate on the ranked survivors a
 // `buildReviewPipeline('plan')` run already produced, and add no new review
 // dimension, finder, or refuter. They live inside the stamped block so the
@@ -1408,7 +1401,7 @@ function summarizeFindings(findings) {
 // and idempotent.
 //
 // This is the CONSUMER-SIDE phase-scoping that selectDimensions' omitted-signals
-// path cannot do. plan-review.js deliberately runs `buildReviewPipeline('plan')`
+// path cannot do. rdm-wf-plan-review.js deliberately runs `buildReviewPipeline('plan')`
 // with NO signals (honoring the dispatch-phase deferral of signal-threading to
 // the sibling unify-plan-review roadmap), so selectDimensions fail-opens and the
 // unit-of-work finder runs on EVERY unit — task, roadmap body, and
@@ -1786,763 +1779,224 @@ function buildReviewPipeline(mode, deps) {
 }
 // >>> review-refute-fix:end <<<
 
-// The block below is copied BYTE-IDENTICAL from
-// .claude/workflows/lib/dispatch-phase.mjs — do NOT edit it here. Edit the lib and
-// scripts/verify-workflow-dispatch.sh fails the build on drift.
-// >>> dispatch-outcome:begin <<<
-// Pure, deterministic decision logic for the dispatch-phase pipeline.
+// --- Driver -------------------------------------------------------------------
+//
+// The plan-review DRIVER (argument parsing, the mechanical fetch/act/gate prompt
+// builders, and the dependency-injected orchestration) is the single source of
+// truth in .claude/workflows/lib/plan-review.mjs and is copied BYTE-IDENTICAL
+// into the block below. The Workflow runtime cannot import a module at run time
+// (docs/workflow-schemas.md § "Import spike"), so — exactly like dispatch-phase's
+// dispatch-outcome block — the logic lives in a Node-importable lib the verify
+// harness drives with a fake agent/parallel, while this consumer carries a
+// verbatim copy. scripts/verify-workflow-review.sh gates the two for byte-drift.
+// Edit the lib, then re-copy; do NOT edit the block here.
+// >>> plan-review-driver:begin <<<
+// Pure + dependency-injected driver logic for the standalone plan-review
+// workflow.
 //
 // This block is the single source of truth in
-// .claude/workflows/lib/dispatch-phase.mjs and is copied BYTE-IDENTICAL into
-// .claude/workflows/dispatch-phase.js (the Workflow runtime cannot load modules
-// at run time). scripts/verify-workflow-dispatch.sh gates the two copies for
-// drift. No Date.now / Math.random — pure array/string ops only.
+// .claude/workflows/lib/plan-review.mjs and is copied BYTE-IDENTICAL into
+// .claude/workflows/rdm-wf-plan-review.js (the Workflow runtime cannot load modules at
+// run time). scripts/verify-workflow-review.sh gates the two copies for drift.
+// No Date.now / Math.random — pure array/string ops plus injected async deps.
 //
-// `hasBlocking`, `summarizeFindings`, `codeReviewRounds`, `classifyOutcome`,
-// `statusFor`, `writesCompletion`, `DEFAULT_MAX_CODE_REWORK`,
-// `DEFAULT_MAX_REFUTATIONS`, `buildReviewBudget`, and `budgetSummaryClause` are
-// NOT declared here: they belong to the canonical review source
-// (lib/review.mjs) and reach this block from the stamped review block that
-// precedes it in the workflow consumer.
+// `buildReviewPipeline`, `stripNonPhaseUnitOfWork`, `filterPlanReviewTag`,
+// `classifyPlanOutcome`, `gateFor`, `summarizeFindings`, and
+// `resolveRefutationBudget` are NOT declared here: they belong to the canonical
+// review source (lib/review.mjs) and reach this block from the stamped review
+// block that precedes it in the workflow consumer (and from the import above in
+// Node).
 
-// DEFAULT_MAX_PLAN_REVISE — the in-run plan-revision budget. It is counted
-// INDEPENDENTLY of the code-rework budget (DEFAULT_MAX_CODE_REWORK, which lives
-// in the review source): a plan that took two revisions consumes no code-rework
-// budget, and vice versa.
-//
-// A budget of N means N reworks AFTER the original attempt, i.e. N + 1 attempts:
-//   plan: plan → review → revise 1 → review → revise 2 → review → escalate
-//   code: implement → review → rework 1 → review → rework 2 → review → rework
-//
-// 0 is legal and MEANINGFUL: no reworks at all — terminate on the first blocking
-// review. It must never be conflated with "unset" by a falsy check.
-const DEFAULT_MAX_PLAN_REVISE = 2;
-
-// --- Environment args: `rdmBin` and `project` --------------------------------
-//
-// dispatch-phase names NO particular rdm executable and NO particular rdm
-// project. Both arrive as RUNTIME args (`rdmBin`, `project`) and are threaded
-// into every prompt that shells out, via the `cfg` object each prompt builder
-// takes as its trailing parameter. This is the CONTRACT the rest of the
-// project-agnostic lane consumes — do not re-derive it elsewhere.
-//
-// PROJECT-AGNOSTIC ALLOW-LIST — the subcommands that must carry NO project
-// flag, because rdm rejects `--project` on them outright:
-//
-//     rdm model resolve, rdm commit   (and rdm status / rdm discard, if added)
-//
-// EVERY other subcommand this lane emits is PROJECT-SCOPED and takes the flag:
-// phase list/show/update, task list/show/create/update, worktree add, next,
-// search. A blanket append would produce commands that fail at runtime while
-// still satisfying a naive whole-file grep, which is why the allow-list is
-// asserted as DATA by scripts/verify-workflow-dispatch.sh § 9b rather than by
-// grepping every line.
-//
-// Canonical write-up: docs/workflow-schemas.md
-// § "Environment args: `rdmBin` and `project`".
-
-// projectFlag(cfg) — the ` --project <name>` suffix to append to a
-// PROJECT-SCOPED command, or '' when no project was configured (rdm's standard
-// resolution chain then applies). Same shape as .claude/workflows/backlog.js.
-function projectFlag(cfg) {
-  return cfg && cfg.project ? ' --project ' + cfg.project : '';
-}
-
-// resolveRdmBin(value) — FAIL-CLOSED resolution of the rdm executable to invoke.
-//
-// There is NO ambient/PATH fallback for an absent key, deliberately. Defaulting
-// to a bare `rdm` would silently run whichever global rdm happens to be first on
-// PATH; inside the rdm repo that is a stale installed build, which the project's
-// development-build rule forbids outright. An existence preflight (`which rdm`,
-// `command -v`, an fs check) does NOT close this: the stale global EXISTS, so
-// the check passes while running exactly the wrong binary. Nor can the guard
-// compare against a caller-supplied path — in the case being guarded the caller
-// supplied nothing. So the guard is on the ABSENCE of the argument itself.
-//
-// A caller that genuinely wants PATH resolution opts in EXPLICITLY with the
-// sentinel `rdmBin: 'rdm'`, which is accepted verbatim. Because there is no
-// fallback, EVERY caller must pass this arg in the same change that makes it
-// required — an un-threaded caller throws before the first agent() call.
-function resolveRdmBin(value) {
-  if (typeof value === 'string' && value.trim() !== '') return value;
-  throw new Error(
-    'dispatch-phase: rdmBin is required — pass the exact rdm executable to invoke (a repo-local ' +
-      'build path, or the explicit sentinel "rdm" to opt into PATH resolution). Refusing to guess: ' +
-      'an absent rdmBin would silently run whatever global rdm is on PATH.'
-  );
-}
-
-// parseProjectArg(value) — validate the OPTIONAL project name. Any falsy value
-// (absent / null / '' / 0 / false) means "emit no project flag at all" — never
-// ` --project false`. Anything else must be a plain project name: the value is
-// interpolated into a Bash-agent prompt, so whitespace and shell metacharacters
-// are rejected rather than escaped.
-function parseProjectArg(value) {
-  if (!value) return '';
-  if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value)) {
-    throw new Error(
-      'dispatch-phase: project must be a plain project name matching /^[A-Za-z0-9._-]+$/ (got "' +
-        String(value) +
-        '")'
-    );
-  }
-  return value;
-}
-
-// parseBudget(value, flag, fallback) — validate a per-run budget override.
-// Unset (null/undefined/'') falls back to the caller's default. Anything else
-// must be a non-negative integer; a non-integer string is REJECTED rather than
-// silently coerced (parseInt('2abc') === 2 is exactly the trap to avoid).
-function parseBudget(value, flag, fallback) {
-  if (value === null || value === undefined || value === '') return fallback;
-  let n = NaN;
-  if (typeof value === 'number') {
-    n = value;
-  } else if (typeof value === 'string' && /^[+-]?[0-9]+$/.test(value.trim())) {
-    n = parseInt(value.trim(), 10);
-  }
-  if (!Number.isInteger(n) || n < 0 || Object.is(n, -0)) {
-    throw new Error(
-      'dispatch-phase: ' +
-        flag +
-        ' must be a non-negative integer (got "' +
-        String(value) +
-        '") — 0 means no reworks, terminate on the first blocking review'
-    );
-  }
-  return n;
-}
-
-// parseDispatchArgs(args) — coerce and validate the whole args payload.
-//
-// The Workflow tool contract forbids stringified args, but LLM callers (rdm-do
-// --auto and hand-run single phases) invoke dispatch-phase DIRECTLY and have
-// delivered a JSON string; coerce once, then derive every field from it. Budget
-// validation runs HERE, at parse time — before any agent() call — so an invalid
-// budget can never burn tokens.
-function parseDispatchArgs(args) {
-  let dispatchArgs = args || {};
-  if (typeof dispatchArgs === 'string') {
-    try {
-      dispatchArgs = JSON.parse(dispatchArgs) || {};
-    } catch (e) {
-      dispatchArgs = {};
+// parsePlanArgs(rawArgs) — resolve the four target types from a raw $ARGUMENTS
+// flag string, a JSON payload, or a structured object. Returns
+// { kind, roadmap, phase, task, planText } where kind is one of
+// 'task' | 'phase' | 'roadmap' | 'implementation-plan'. Throws an actionable
+// error when no target can be resolved.
+function parsePlanArgs(rawArgs) {
+  let a = rawArgs || {}
+  if (typeof a === 'string') {
+    const trimmed = a.trim()
+    if (trimmed.slice(0, 1) === '{') {
+      try {
+        a = JSON.parse(trimmed) || {}
+      } catch (e) {
+        a = { target: a }
+      }
+    } else {
+      a = { target: a }
     }
   }
-  if (!dispatchArgs || typeof dispatchArgs !== 'object') dispatchArgs = {};
-  // The two ENVIRONMENT axes are resolved BEFORE the returned object literal, so
-  // validation order is deterministic and independent of property-evaluation
-  // order: rdmBin first (fail-closed — no ambient default), then the optional
-  // project name. Like the budgets, both are validated HERE, at parse time, so a
-  // mis-invocation costs zero tokens.
-  const rdmBin = resolveRdmBin(dispatchArgs.rdmBin);
-  const project = parseProjectArg(dispatchArgs.project);
-  return {
-    roadmap: dispatchArgs.roadmap || '',
-    phase: dispatchArgs.phase || '',
-    // Task mode: `{ task: <slug> }` dispatches a standalone task instead of a
-    // phase — no roadmap, no tier, its own `task/<slug>` worktree.
-    task: dispatchArgs.task || '',
-    planOnly: !!dispatchArgs.planOnly,
-    maxPlanRevise: parseBudget(dispatchArgs.maxPlanRevise, 'maxPlanRevise', DEFAULT_MAX_PLAN_REVISE),
-    maxCodeRework: parseBudget(dispatchArgs.maxCodeRework, 'maxCodeRework', DEFAULT_MAX_CODE_REWORK),
-    // Per-unit REFUTATION budget (how many gating findings each review round
-    // grades), threaded into BOTH review contexts. Validated here, at parse
-    // time — before any agent() call — exactly like the two retry budgets, so an
-    // invalid value can never burn tokens. 0 is legal and MEANINGFUL (grade
-    // nothing; every gating finding passes through un-refuted), and must never
-    // be conflated with "unset" by a falsy check.
-    maxRefutations: parseBudget(dispatchArgs.maxRefutations, 'maxRefutations', DEFAULT_MAX_REFUTATIONS),
-    // --- Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md).
-    // A caller that is ALREADY a running agent with the repo in context (the
-    // rdm-dispatch-phase / rdm-do --auto shims) can run the mechanical command
-    // itself and pass the result here, so the workflow never spawns a dedicated
-    // subagent for it. Every one of these is OPTIONAL: absent/malformed simply
-    // falls through to the in-workflow agent, which is exactly what a direct
-    // `Workflow` invocation (no caller) does.
-    phaseMeta: dispatchArgs.phaseMeta && typeof dispatchArgs.phaseMeta === 'object' ? dispatchArgs.phaseMeta : null,
-    taskMeta: dispatchArgs.taskMeta && typeof dispatchArgs.taskMeta === 'object' ? dispatchArgs.taskMeta : null,
-    // The caller already wrote `--status in-progress` itself and it exited 0, so
-    // the workflow's own observability stamp is redundant. NEVER set by a
-    // --plan-only invocation (the workflow suppresses the stamp there anyway).
-    alreadyInProgress: !!dispatchArgs.alreadyInProgress,
-    // --- Environment axes (see the contract block above).
-    // `rdmBin` is REQUIRED — the exact rdm executable every Bash-agent prompt
-    // shells out to. `project` is OPTIONAL and applies ONLY to project-scoped
-    // subcommands; '' means "emit no project flag".
-    rdmBin: rdmBin,
-    project: project,
-  };
-}
+  if (!a || typeof a !== 'object') a = {}
 
-// hoistedMetaComplete(meta, isTask) — the ALL-OR-NOTHING guard on a caller-
-// supplied phase/task meta payload. A hoisted meta replaces a fetch agent that
-// did TWO things: read the item body AND resolve the five per-step model ids.
-// Accepting a partial payload would therefore save nothing (the driver would
-// still need a model-resolving agent) while actively breaking the run: an
-// incomplete `models` map trips the driver's `unresolvedStep` check and
-// short-circuits the whole dispatch as a fetchError. So: accept only when the
-// body is a non-empty string AND all five model ids are non-empty strings —
-// otherwise reject and let the original agent run untouched.
-//
-// `isTask` selects between the two schemas' requirements. A TASK_META payload
-// carries no roadmap/stem/model tier and the driver hard-codes a task's tier to
-// `medium`, so body + models are all it needs. A PHASE_META payload is
-// different: `meta.model` is the phase's DIFFICULTY TIER, and it is the driver's
-// SOLE source for it — unlike `stem`/`roadmap`, which fall back to values the
-// top-level args already carry, an absent tier falls back to a hard-coded
-// 'medium'. That default is not neutral: `hasBlocking` scales with the tier, and
-// a `large` phase silently downgraded to `medium` stops treating a surviving
-// `concern` finding as blocking — loosening the gate, the opposite direction
-// from the one-directional tightening this gate exists to uphold. So the phase
-// case ALSO requires a non-empty string `model`, mirroring PHASE_META_SCHEMA's
-// own `required` list; anything short of that falls back to the fetch agent,
-// which always supplies it.
-function hoistedMetaComplete(meta, isTask) {
-  if (!meta || typeof meta !== 'object') return false;
-  if (typeof meta.body !== 'string' || String(meta.body).trim() === '') return false;
-  // Phase mode only: the difficulty tier has no recoverable fallback.
-  if (!isTask && (typeof meta.model !== 'string' || meta.model.trim() === '')) return false;
-  const m = meta.models;
-  if (!m || typeof m !== 'object') return false;
-  const keys = ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'];
-  return keys.filter((k) => typeof m[k] !== 'string' || m[k] === '').length === 0;
-}
+  // Tokenize a raw $ARGUMENTS-style flag string if one was supplied.
+  const rawTarget =
+    typeof a.target === 'string'
+      ? a.target
+      : typeof a.arguments === 'string'
+      ? a.arguments
+      : typeof a.args === 'string'
+      ? a.args
+      : ''
+  const tokens = rawTarget.trim() ? rawTarget.trim().split(/\s+/) : []
 
-// runPlanGate(config, deps) — the bounded plan stage. Author a plan, review it,
-// and revise up to `config.maxRevise` times, breaking early the moment a review
-// comes back with no blockers. Returns
-// { fetchError, stage, planDoc, findings, reviewCount, reviseCount }.
-//
-// Every side effect is reached through the injected `deps` (d.plan / d.revise /
-// d.review), so this block names NO ambient runtime global and the module
-// imports cleanly in Node — the lib/autopilot.mjs precedent, which is what makes
-// the budget loop testable at all.
-//
-// `d.review(planDoc)` is a `runReview` from the canonical review source and
-// therefore resolves `{ survivors, acTable }`, not a bare array — both call
-// sites below destructure it. `acTable` is discarded: plan mode never sets it
-// (the `ac` dimension does not exist there), and `hasBlocking`'s
-// `Array.isArray(findings)` guard would otherwise silently see a non-array and
-// report no blocking findings at all, permanently defeating the plan gate's
-// escalation path.
-//
-// agent() RESOLVES to null on an unknown/unavailable model id rather than
-// throwing (spike consequence 3), so BOTH the initial plan and EVERY revise
-// result are null-guarded. The revise guard runs before the reassignment and
-// before the next review, so a null doc is never reviewed as an empty plan and
-// never clobbers the last good one.
-async function runPlanGate(config, deps) {
-  const c = config || {};
-  const d = deps || {};
-  const maxRevise = c.maxRevise != null ? c.maxRevise : DEFAULT_MAX_PLAN_REVISE;
-  const tier = c.tier;
-  let planDoc = await d.plan();
-  if (planDoc === null || planDoc === undefined) {
-    return { fetchError: true, stage: 'plan', planDoc: null, findings: [], reviewCount: 0, reviseCount: 0 };
-  }
-  let reviewResult = (await d.review(planDoc)) || {};
-  let findings = reviewResult.survivors || [];
-  // The per-round refutation-budget accounting the review pipeline returns as
-  // its third field. Captured per round so a plan gate that hit its bound is
-  // visible even when a later round did not.
-  const budgetRounds = [reviewResult.budget || null];
-  let reviewCount = 1;
-  let reviseCount = 0;
-  for (let i = 0; i < maxRevise; i++) {
-    if (!hasBlocking(findings, tier)) break;
-    const revised = await d.revise(planDoc, findings);
-    reviseCount++;
-    if (revised === null || revised === undefined) {
-      return {
-        fetchError: true,
-        stage: 'revise',
-        planDoc: planDoc,
-        findings: findings,
-        budgetRounds: budgetRounds,
-        budget: budgetRounds[budgetRounds.length - 1],
-        reviewCount: reviewCount,
-        reviseCount: reviseCount,
-      };
+  let roadmap = ''
+  let phase = ''
+  let task = ''
+  let implementationPlan = false
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t === '--task') {
+      task = tokens[i + 1] || ''
+      i++
+    } else if (t === '--roadmap') {
+      roadmap = tokens[i + 1] || ''
+      i++
+    } else if (t === '--implementation-plan') {
+      implementationPlan = true
+    } else if (t.slice(0, 2) !== '--') {
+      // Positional `<slug> [phase]`.
+      if (!roadmap) roadmap = t
+      else if (!phase) phase = t
     }
-    planDoc = revised;
-    reviewResult = (await d.review(planDoc)) || {};
-    findings = reviewResult.survivors || [];
-    budgetRounds.push(reviewResult.budget || null);
-    reviewCount++;
   }
+
+  // Structured object keys supplement / override the flag string.
+  if (typeof a.task === 'string' && a.task) task = a.task
+  if (typeof a.roadmap === 'string' && a.roadmap) roadmap = a.roadmap
+  if (typeof a.phase === 'string' && a.phase) phase = a.phase
+  if (a.implementationPlan) implementationPlan = true
+
+  const planText = typeof a.planText === 'string' ? a.planText : typeof a.plan === 'string' ? a.plan : ''
+
+  // Precedence is fixed and total: implementation-plan wins over everything
+  // (it is report-only and has no persisted item), then an explicit task, then
+  // a roadmap+phase pair (a single phase), then a bare roadmap (the whole
+  // roadmap). A positional `<slug>` with no phase therefore behaves exactly
+  // like `--roadmap <slug>`.
+  let kind
+  if (implementationPlan) kind = 'implementation-plan'
+  else if (task) kind = 'task'
+  else if (roadmap && phase) kind = 'phase'
+  else if (roadmap) kind = 'roadmap'
+  else
+    throw new Error(
+      'plan-review: no target — pass --task <slug>, --roadmap <slug>, <slug> [phase], or --implementation-plan'
+    )
+
+  // --- Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md).
+  // Read from STRUCTURED OBJECT KEYS ONLY — deliberately never parsed out of the
+  // `$ARGUMENTS` flag string, which would let a raw prose target string
+  // masquerade as a fetched payload. Every one is OPTIONAL: absent or malformed
+  // falls through to the in-workflow agent, which is what a direct `Workflow`
+  // invocation (and, today, every DISTRIBUTED caller of this workflow) does.
+  //
+  // `fetched` is the priority hoist: the fetch agents it replaces have twice
+  // transcribed junk over real plan tags in production (runs wf_e3402021-0af and
+  // wf_f4be8027-dbb), and `agent(..., { schema })` provably cannot catch that —
+  // both corrupt returns were schema-valid. Passing the parsed
+  // `rdm ... show --format json` through `args` removes the transcription step
+  // entirely. NOTE: validating the CONTENT of a hoisted payload is deliberately
+  // NOT done here — that belongs to task fix-plan-review-gate-tag-clobber.
+  const fetched = a.fetched && typeof a.fetched === 'object' ? a.fetched : null
+  const wontFixedTexts = Array.isArray(a.wontFixedTexts) ? a.wontFixedTexts : null
+  const mechanicalModel =
+    typeof a.mechanicalModel === 'string' && a.mechanicalModel.trim() !== '' ? a.mechanicalModel.trim() : null
+  // Per-unit REFUTATION budget, threaded into every review context below.
+  // Read from a STRUCTURED key only (like every other hoist here) and RESOLVED
+  // HERE, at parse time — before any agent() call — by the review core's single
+  // validator, so an invalid value throws instead of burning tokens. Unset
+  // resolves to the core's documented default; `0` is legal and distinct from
+  // unset (grade nothing).
+  const maxRefutations = resolveRefutationBudget(a.maxRefutations)
+
   return {
-    fetchError: false,
-    stage: null,
-    planDoc: planDoc,
-    findings: findings,
-    budgetRounds: budgetRounds,
-    budget: budgetRounds[budgetRounds.length - 1],
-    reviewCount: reviewCount,
-    reviseCount: reviseCount,
-  };
+    kind: kind,
+    roadmap: roadmap,
+    phase: phase,
+    task: task,
+    planText: planText,
+    fetched: fetched,
+    wontFixedTexts: wontFixedTexts,
+    mechanicalModel: mechanicalModel,
+    maxRefutations: maxRefutations,
+  }
 }
 
-// runCodeGate(config, deps) — the bounded code stage. Implement, review, and
-// rework up to `config.maxRework` times, breaking early on a clean review.
-// Returns { findings, rounds, acRounds, reworkCount, reviewCount, actResult }
-// where `rounds`/`acRounds` are the per-round review findings / AC tables in
-// order (always at least one entry each).
+// hoistedFetchedOk(fetched, kind) — the shape guard on a caller-supplied target
+// payload. It stands in for the schema the fetch agent it replaces was forced to
+// satisfy (PLAN_TARGET_SCHEMA / ROADMAP_TARGET_SCHEMA), so it must be no weaker
+// than that schema: a non-empty `body` (buildReviewUnits' own fail-closed
+// condition) AND a `tags` array of strings, plus — for the roadmap kind — an
+// array `phases` whose every entry carries a non-empty string `stem`, a string
+// `body`, and its own `tags` array of strings.
 //
-// `d.review()` is a `runReview` from the canonical review source and therefore
-// resolves `{ survivors, acTable }`, not a bare array — every round destructures
-// it. The rework-loop continuation checks BOTH `hasBlocking` and
-// `acTableHasGap`: an AC-only gap (no blocking finding at all) must still
-// consume the rework budget instead of exiting after round 1 and reporting
-// `rework` without ever attempting a fix.
+// `tags` is required, not optional-with-a-default, because it is WRITTEN BACK:
+// on a `reviewed` outcome the gate issues `rdm ... update --tags "<list>"`, and
+// `--tags` replaces the whole list. Accepting a payload with no `tags` would let
+// buildReviewUnits default it to `[]` and the gate would then clobber every real
+// tag the item carried. Anything this guard rejects runs the original
+// schema-enforced fetch agent instead — a cost, never a correctness loss.
 //
-// No null guard is needed here: `implement` returns no document the pipeline
-// consumes, and the review pipeline already converts an all-null finder sweep
-// into a blocking finding.
-//
-// Act step: once the loop settles on a CLEAN final round (no blocking finding,
-// no AC-table gap) with non-empty survivors, the optional `d.act` dep is
-// invoked exactly once to incorporate them by size (small → fixed inline,
-// large → filed as a task — see buildCodeActPrompt). This never runs on a
-// still-blocking/AC-gapped round, whatever caused it (still-blocking findings
-// and unresolved AC gaps are handled by the rework/status machinery, not this
-// step — "never fix large changes inline" stays intact). A missing `act` dep or
-// a thrown Act call is swallowed: concern/suggestion findings are non-gating by
-// the module's own severity contract, so a failed fix-attempt must never
-// change the outcome.
-//
-// Rework notes: `d.implement` is called with `null` for the first pass and
-// `{ findings, acTable }` on every rework pass — NEVER a bare findings array.
-// The AC table is a structured side-channel decoupled from `findings` (a FAIL
-// criterion need not also appear as a finding), so without also passing
-// `acTable` an AC-only-gap rework (empty `findings`) would hand the
-// implementer zero information about what to fix.
-async function runCodeGate(config, deps) {
-  const c = config || {};
-  const d = deps || {};
-  const maxRework = c.maxRework != null ? c.maxRework : DEFAULT_MAX_CODE_REWORK;
-  const tier = c.tier;
-  await d.implement(null);
-  let reviewResult = (await d.review()) || {};
-  let findings = reviewResult.survivors || [];
-  let acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
-  const rounds = [findings];
-  const acRounds = [acTable];
-  // Per-round refutation-budget accounting, parallel to `rounds`/`acRounds`. The
-  // budget re-applies per round, so a round-1 hit that was resolved by round 2
-  // stays visible via `everHit` in the OUTCOME.
-  const budgetRounds = [reviewResult.budget || null];
-  let reworkCount = 0;
-  for (let i = 0; i < maxRework; i++) {
-    if (!hasBlocking(findings, tier) && !acTableHasGap(acTable)) break;
-    await d.implement({ findings: findings, acTable: acTable });
-    reworkCount++;
-    reviewResult = (await d.review()) || {};
-    findings = reviewResult.survivors || [];
-    acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
-    rounds.push(findings);
-    acRounds.push(acTable);
-    budgetRounds.push(reviewResult.budget || null);
+// This is a SHAPE guard only: it cannot tell a real tag list from a transcribed
+// one (see parsePlanArgs' note on the two recorded corruptions, both of which
+// are schema-valid and are accepted here by design). Content validation is task
+// fix-plan-review-gate-tag-clobber's scope.
+function stringArrayOk(v) {
+  return Array.isArray(v) && v.every((s) => typeof s === 'string')
+}
+function hoistedFetchedOk(fetched, kind) {
+  if (!fetched || typeof fetched !== 'object') return false
+  if (typeof fetched.body !== 'string' || String(fetched.body).trim() === '') return false
+  if (!stringArrayOk(fetched.tags)) return false
+  if (kind === 'roadmap') {
+    if (!Array.isArray(fetched.phases)) return false
+    const phasesOk = fetched.phases.every(
+      (p) =>
+        p &&
+        typeof p === 'object' &&
+        typeof p.stem === 'string' &&
+        p.stem.trim() !== '' &&
+        typeof p.body === 'string' &&
+        stringArrayOk(p.tags)
+    )
+    if (!phasesOk) return false
   }
-  let actResult = null;
-  const isClean = !hasBlocking(findings, tier) && !acTableHasGap(acTable);
-  if (isClean && findings.length > 0) {
-    actResult = d.act ? await d.act(findings).catch(() => null) : null;
-  }
-  return {
-    findings: findings,
-    rounds: rounds,
-    acRounds: acRounds,
-    budgetRounds: budgetRounds,
-    reworkCount: reworkCount,
-    reviewCount: rounds.length,
-    actResult: actResult,
-  };
+  return true
 }
 
-// JSON Schema the code-lane Act step is forced to satisfy: one disposition per
-// surviving finding it was asked to incorporate. Mirrors the STAMP_ACK_SCHEMA
-// pattern (a small, verifiable acknowledgement) rather than free text.
-const CODE_ACT_SCHEMA = {
+// Schemas the mechanical Bash fetch agents are forced to satisfy. Plumbing, not
+// review logic.
+const PLAN_TARGET_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['handled'],
+  required: ['body', 'tags'],
   properties: {
-    handled: {
+    body: { type: 'string' },
+    tags: { type: 'array', items: { type: 'string' } },
+  },
+}
+const ROADMAP_TARGET_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['body', 'tags', 'phases'],
+  properties: {
+    body: { type: 'string' },
+    tags: { type: 'array', items: { type: 'string' } },
+    phases: {
       type: 'array',
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['id', 'action'],
+        required: ['stem', 'body', 'tags'],
         properties: {
-          id: { type: 'string', minLength: 1 },
-          // `skipped` is what an un-refuted (non-gating) finding's disposition
-          // rule actually resolves to when the change would be major — without
-          // it the act step has no way to record "deliberately not done", and
-          // would have to misreport a skip as one of the other two actions.
-          action: { type: 'string', enum: ['fixed-inline', 'filed-as-task', 'skipped'] },
-          taskSlug: { type: 'string' },
-          reason: { type: 'string' },
+          stem: { type: 'string' },
+          body: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
         },
       },
     },
   },
-};
-
-// buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, cfg) —
-// the code-lane Act step: an already-verified surviving finding is incorporated
-// by SIZE, not severity (severity already decided the outcome — this decides
-// whether/how the finding is acted on). Modeled directly on
-// lib/plan-review.mjs's buildActPrompt, but code-review findings are fixed
-// inline in the worktree (no whole-document authoritative-body rewrite) and
-// large ones are filed with `rdm task create`, not a plan-doc note.
-//
-// `cfg` is the environment payload `{ rdmBin, project }`. `task create` is a
-// PROJECT-SCOPED subcommand, so it carries the project flag.
-function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, cfg) {
-  const bin = resolveRdmBin(cfg && cfg.rdmBin);
-  const proj = projectFlag(cfg);
-  const target = kind === 'task' ? 'task/' + ident : roadmapOrTask + '/' + ident;
-  // Provenance is MIXED once the review passes a non-gating finding through
-  // un-refuted, so the LEADING claim has to be conditional: an unconditional
-  // "these survived refutation" would be a false statement about part of the
-  // payload, not merely an incomplete one. The all-verified branch stays
-  // byte-identical to the pre-pass-through prompt.
-  const list = Array.isArray(survivors) ? survivors : [];
-  const hasUnrefuted = list.some((f) => f && f.unrefuted);
-  const lines = hasUnrefuted
-    ? [
-        'You are acting on code-review findings of MIXED provenance for ' + target +
-          ' (worktree: ' + worktreeRef + ').',
-        'None of them gates (the reviewed outcome is already decided). A finding WITHOUT `unrefuted: true` ' +
-          'survived an independent refuter; a finding WITH it was never graded by one.',
-      ]
-    : [
-        'You are acting on ALREADY-VERIFIED code-review findings for ' + target + ' (worktree: ' + worktreeRef + ').',
-        'These findings survived refutation and are non-gating (the reviewed outcome is already decided).',
-      ];
-  lines.push(
-    JSON.stringify(survivors, null, 2),
-    'For EACH finding, decide SMALL vs LARGE:',
-    '- SMALL — localized, low-risk, no new acceptance criterion (a typo, a missing doc comment, a tightened ' +
-      'error message, an extra test). Fix it directly in the worktree at ' + worktreeRef +
-      ' and re-run the relevant tests. Do not create a separate landing commit — the fix folds into the ' +
-      'eventual land-time commit.',
-    '- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance ' +
-      'criterion. Do NOT edit code for these: file it with `' + bin + ' task create <slug> --title ' +
-      '"Code review finding: <desc>" --body "<details>" --tags code-review --no-edit' + proj + '`.'
-  );
-  if (hasUnrefuted) {
-    lines.push(UNREFUTED_DISPOSITION);
-  }
-  lines.push(
-    hasUnrefuted
-      ? 'Return JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — ' +
-          'id, action (fixed-inline|filed-as-task|skipped), taskSlug when you filed a task, and a one-line ' +
-          '`reason` when you skipped one under the rule above.'
-      : 'Return JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — ' +
-          'id, action (fixed-inline|filed-as-task), and taskSlug when you filed a task.'
-  );
-  return lines.join('\n');
 }
-
-// OUTCOME_REASON_PREFIX — which gate a non-clean outcome came out of.
-// dispatch-phase's escalations originate at the PLAN gate (classifyOutcome only
-// returns 'escalated' from a blocking plan finding, or from a fetch failure
-// before any code exists), so they are tagged `[plan]`; an unresolved code
-// rework is tagged `[code]`. This deliberately differs from the canonical
-// STATUS_MAPPING.reasonPrefix (`[code]`), which describes the INTERACTIVE review
-// surface, where an escalation comes out of the code gate. The tag names which
-// gate escalated, not which module produced the string.
-const OUTCOME_REASON_PREFIX = { escalated: '[plan]', rework: '[code]' };
-
-// outcomePolicy(outcome, kind, summary) — the gate/completion policy owned by the
-// canonical review source, projected onto the OUTCOME contract so no consumer
-// has to restate the map:
-//   status           — the rdm status this outcome maps to for `kind`
-//                      ('phase' | 'task'), straight from statusFor().
-//   writesCompletion — MAY this outcome's surface write the land-time completion
-//                      directive? Expressed ONLY as a boolean, never as the
-//                      directive literal: this block is stamped verbatim into
-//                      workflow scripts, and the dispatch harness forbids that
-//                      literal anywhere in a stamped region. The land-time writer
-//                      (`rdm-land`) turns this boolean plus the OUTCOME's
-//                      identifiers into the real trailer via `rdm hook done-line`.
-//   reason           — a gate-tagged park/escalation note; empty on a clean review.
-function outcomePolicy(outcome, kind, summary) {
-  const prefix = OUTCOME_REASON_PREFIX[outcome];
-  return {
-    status: statusFor(outcome, kind),
-    writesCompletion: writesCompletion(outcome),
-    reason: prefix ? prefix + ' ' + summary : '',
-  };
-}
-
-// annotateHandled(findings, actResult) — realize the guideline "for each
-// finding, state how it was handled (fixed-inline / filed-as-task)" for the
-// mechanical code lane: stamp a `handled` field onto each finding from the
-// matching `actResult.handled` entry (by `id`), defaulting to `'unhandled'`
-// when the Act step wasn't run, failed, or didn't report that specific
-// finding. Pure and order-preserving; a no-op (returns `findings` unchanged)
-// when `actResult` carries no usable `handled` array.
-function annotateHandled(findings, actResult) {
-  if (!actResult || !Array.isArray(actResult.handled)) return findings;
-  const actionById = {};
-  actResult.handled.forEach((h) => {
-    if (h && h.id) actionById[h.id] = h.action;
-  });
-  return findings.map((f) => ({ ...f, handled: (f && f.id && actionById[f.id]) || 'unhandled' }));
-}
-
-// buildOutcome — the OUTCOME contract { roadmap, phase, outcome, status,
-// writesCompletion, summary, reason, findings }. fetchError short-circuits to
-// escalated. Never emits a land-time completion directive — it emits the
-// `writesCompletion` boolean instead, and `rdm-land` writes the trailer.
-function buildOutcome(input) {
-  const i = input || {};
-  const roadmap = i.roadmap;
-  const phase = i.phase;
-  const tier = i.tier;
-  if (i.fetchError === true) {
-    const failSummary = 'phase fetch failed';
-    const failPolicy = outcomePolicy('escalated', 'phase', failSummary);
-    return {
-      roadmap: roadmap,
-      phase: phase,
-      outcome: 'escalated',
-      status: failPolicy.status,
-      writesCompletion: failPolicy.writesCompletion,
-      summary: failSummary,
-      reason: failPolicy.reason,
-      reviewBudget: buildReviewBudget(i.budgetRounds, i.planBudget),
-      findings: [],
-    };
-  }
-  const planFindings = i.planFindings || [];
-  const acRounds = i.acRounds || [];
-  const lastAcTable = acRounds.length ? acRounds[acRounds.length - 1] : null;
-  const classifierInput = {
-    planFindings: planFindings,
-    codeFindings: i.codeFindings,
-    codeFindingsAfterRework: i.codeFindingsAfterRework,
-    codeReviews: i.codeReviews,
-    maxRework: i.maxRework,
-    tier: tier,
-    acTable: lastAcTable,
-  };
-  const outcome = classifyOutcome(classifierInput);
-  // The LAST code-review round is what both the rework and reviewed payloads
-  // report — never a stale earlier pass, whatever the rework budget was.
-  const rounds = codeReviewRounds(classifierInput);
-  const lastRound = rounds[rounds.length - 1] || [];
-  let findings;
-  let summary;
-  if (outcome === 'escalated') {
-    findings = planFindings;
-    summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
-  } else if (outcome === 'rework') {
-    findings = lastRound;
-    // An AC-only gap can force `rework` with an EMPTY lastRound findings
-    // array (no blocking finding at all) — summarizeFindings([]) would then
-    // misleadingly read "no surviving findings". Name the real cause instead.
-    summary =
-      lastRound.length === 0 && acTableHasGap(lastAcTable)
-        ? 'code rework unresolved: unmet acceptance criteria in AC table'
-        : 'code rework unresolved: ' + summarizeFindings(lastRound);
-  } else {
-    findings = annotateHandled(lastRound, i.actResult);
-    summary = 'phase reviewed clean: ' + summarizeFindings(lastRound);
-  }
-  // The bound is appended to the summary in ALL THREE branches, and only when a
-  // round actually hit it — a run that stayed under budget keeps a
-  // byte-unchanged summary. Because outcomePolicy derives `reason` from
-  // `summary`, a parked/escalated budget-hit unit surfaces it in the
-  // `rdm review blocked` queue for free.
-  const reviewBudget = buildReviewBudget(i.budgetRounds, i.planBudget);
-  summary = summary + budgetSummaryClause(reviewBudget);
-  const policy = outcomePolicy(outcome, 'phase', summary);
-  return {
-    roadmap: roadmap,
-    phase: phase,
-    outcome: outcome,
-    status: policy.status,
-    writesCompletion: policy.writesCompletion,
-    summary: summary,
-    reason: policy.reason,
-    reviewBudget: reviewBudget,
-    findings: findings,
-  };
-}
-
-// buildTaskOutcome — the task-shaped OUTCOME contract { task, outcome, status,
-// writesCompletion, summary, reason, findings }. A task is keyed by slug and
-// belongs to no roadmap, so it emits a `task` identifier instead of
-// `roadmap`/`phase`; the decision core (classifyOutcome / hasBlocking /
-// summarizeFindings / outcomePolicy) is shared UNCHANGED with the phase path.
-// Tasks always dispatch at the fixed `medium` tier, so the `large`
-// gate-tightening in hasBlocking never applies to them. `escalated` maps to the
-// `blocked` TASK status — never downgraded to `in-progress`. fetchError
-// short-circuits to escalated. Never emits a land-time completion directive.
-function buildTaskOutcome(input) {
-  const i = input || {};
-  const task = i.task;
-  const tier = i.tier;
-  if (i.fetchError === true) {
-    const failSummary = 'task fetch failed';
-    const failPolicy = outcomePolicy('escalated', 'task', failSummary);
-    return {
-      task: task,
-      outcome: 'escalated',
-      status: failPolicy.status,
-      writesCompletion: failPolicy.writesCompletion,
-      summary: failSummary,
-      reason: failPolicy.reason,
-      reviewBudget: buildReviewBudget(i.budgetRounds, i.planBudget),
-      findings: [],
-    };
-  }
-  const planFindings = i.planFindings || [];
-  const acRounds = i.acRounds || [];
-  const lastAcTable = acRounds.length ? acRounds[acRounds.length - 1] : null;
-  const classifierInput = {
-    planFindings: planFindings,
-    codeFindings: i.codeFindings,
-    codeFindingsAfterRework: i.codeFindingsAfterRework,
-    codeReviews: i.codeReviews,
-    maxRework: i.maxRework,
-    tier: tier,
-    acTable: lastAcTable,
-  };
-  const outcome = classifyOutcome(classifierInput);
-  const rounds = codeReviewRounds(classifierInput);
-  const lastRound = rounds[rounds.length - 1] || [];
-  let findings;
-  let summary;
-  if (outcome === 'escalated') {
-    findings = planFindings;
-    summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
-  } else if (outcome === 'rework') {
-    findings = lastRound;
-    // See buildOutcome's identical AC-only-gap note: an empty lastRound with a
-    // gapped AC table must not read as "no surviving findings".
-    summary =
-      lastRound.length === 0 && acTableHasGap(lastAcTable)
-        ? 'code rework unresolved: unmet acceptance criteria in AC table'
-        : 'code rework unresolved: ' + summarizeFindings(lastRound);
-  } else {
-    findings = annotateHandled(lastRound, i.actResult);
-    summary = 'task reviewed clean: ' + summarizeFindings(lastRound);
-  }
-  // See buildOutcome's identical note: appended in all three branches, only on
-  // an actual hit.
-  const reviewBudget = buildReviewBudget(i.budgetRounds, i.planBudget);
-  summary = summary + budgetSummaryClause(reviewBudget);
-  const policy = outcomePolicy(outcome, 'task', summary);
-  return {
-    task: task,
-    outcome: outcome,
-    status: policy.status,
-    writesCompletion: policy.writesCompletion,
-    summary: summary,
-    reason: policy.reason,
-    reviewBudget: reviewBudget,
-    findings: findings,
-  };
-}
-// >>> dispatch-outcome:end <<<
-
-// --- Schemas (dispatch-specific; see docs/workflow-schemas.md) ----------------
-
-// DIFF_SIGNALS — what the mechanical diff agent returns from the item's worktree
-// so the code gate can select review dimensions from the REAL change shape via
-// the canonical `deriveSignals`. `diffText` is truncated by the agent; truncation
-// only weakens trigger detection toward FAIL-OPEN (a missed trigger costs a
-// dimension that would have run anyway when the file paths already imply it), and
-// an empty/failed result omits `signals` entirely so every dimension runs.
-const DIFF_SIGNALS_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['changedFiles', 'diffText'],
-  properties: {
-    changedFiles: { type: 'array', items: { type: 'string' } },
-    diffText: { type: 'string' },
-  },
-}
-
-// IMPLEMENT_RESULT — the ABSORBED diff the implementer returns alongside its
-// work. The implementer is already running in the item's worktree with the repo
-// in context immediately before every review round (runCodeGate calls
-// `d.implement(...)` right before `d.review()` with nothing in between), so
-// asking it for the same two `git diff` commands the diff:signals agent would
-// have run costs a tool call instead of a whole subagent context load.
-//
-// Deliberately OPTIONAL by construction: a truncated, refused, or absent
-// StructuredOutput leaves `pendingDiff` null and the review closure falls back
-// to the untouched `diff:signals` agent. Same fields, same base, same
-// truncation as DIFF_SIGNALS_SCHEMA so `deriveSignals` sees identical input.
-const IMPLEMENT_RESULT_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['changedFiles', 'diffText'],
-  properties: {
-    changedFiles: { type: 'array', items: { type: 'string' } },
-    diffText: { type: 'string' },
-  },
-}
-
-// PHASE_META — what the Stage-0 fetch agent returns from `rdm phase show`.
-const PHASE_META_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['roadmap', 'phase', 'stem', 'model', 'body', 'models'],
-  properties: {
-    roadmap: { type: 'string' },
-    phase: { type: 'string' },
-    stem: { type: 'string' },
-    model: { type: 'string' }, // the tier: small | medium | large
-    body: { type: 'string' },
-    models: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'],
-      properties: {
-        plan: { type: 'string' },
-        implement: { type: 'string' },
-        review_find: { type: 'string' },
-        review_verify: { type: 'string' },
-        mechanical: { type: 'string' },
-      },
-    },
-  },
-}
-
-// TASK_META — the task-mode twin of PHASE_META. A task has no roadmap and no
-// difficulty/model tier, so neither field appears here.
-const TASK_META_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['task', 'body', 'models'],
-  properties: {
-    task: { type: 'string' },
-    body: { type: 'string' },
-    models: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'],
-      properties: {
-        plan: { type: 'string' },
-        implement: { type: 'string' },
-        review_find: { type: 'string' },
-        review_verify: { type: 'string' },
-        mechanical: { type: 'string' },
-      },
-    },
-  },
-}
-
-// STAMP_ACK — what the mechanical in-progress-stamp agent reports back: did the
-// status-update command it ran exit 0? No retry — the stamp is best-effort
-// observability, not a gated step (see buildStampInProgressPrompt below).
 const STAMP_ACK_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -2550,638 +2004,791 @@ const STAMP_ACK_SCHEMA = {
   properties: { ok: { type: 'boolean' } },
 }
 
-// PLAN_DOC — the plan document the planner agent produces from ONLY the phase body.
-const PLAN_DOC_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['steps_per_ac', 'file_map', 'tests_per_ac', 'edge_cases', 'cross_phase_deps', 'summary'],
-  properties: {
-    steps_per_ac: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['ac', 'steps'],
-        properties: { ac: { type: 'string' }, steps: { type: 'array', items: { type: 'string' } } },
-      },
-    },
-    file_map: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['path', 'change'],
-        properties: { path: { type: 'string' }, change: { type: 'string' } },
-      },
-    },
-    tests_per_ac: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['ac', 'test'],
-        properties: { ac: { type: 'string' }, test: { type: 'string' } },
-      },
-    },
-    edge_cases: { type: 'array', items: { type: 'string' } },
-    cross_phase_deps: { type: 'array', items: { type: 'string' } },
-    summary: { type: 'string' },
-  },
-}
-
-// --- Prompt builders ----------------------------------------------------------
-
-// Stage 0: a mechanical Bash agent reads the phase JSON (the runtime cannot shell
-// out itself). Sized to the small/mechanical tier.
-//
-// Every builder below takes the environment payload `cfg` = { rdmBin, project }
-// as its TRAILING parameter and resolves it through `resolveRdmBin` /
-// `projectFlag` (both from the copied dispatch-outcome block above, where the
-// project-agnostic allow-list is documented). `phase show` / `task show` are
-// project-scoped and take the flag; `model resolve` is project-agnostic and must
-// never carry one.
-function buildFetchPrompt(roadmap, phase, cfg) {
-  const bin = resolveRdmBin(cfg && cfg.rdmBin)
-  const proj = projectFlag(cfg)
+// Fetch prompts — mechanical Bash agents (the runtime cannot shell out itself).
+function buildPhaseFetchPrompt(roadmap, phase) {
   return [
-    'You are a mechanical fetch agent. Do not plan or implement anything.',
+    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
     'Run exactly this command in the repo root and read its JSON output:',
-    '  ' + bin + ' phase show --roadmap ' + roadmap + ' ' + phase + proj + ' --format json',
-    'Return a PHASE_META object: roadmap (the roadmap slug), phase (the stem-or-number you were given),',
-    'stem (the phase JSON `stem`), model (the phase JSON `model` tier: small|medium|large),',
-    'and body (the phase JSON `body` verbatim). If the command fails or the body is empty, return an empty body.',
-    'Then resolve the models for this dispatch. Let T be the phase JSON `model` field.',
-    'If T is a non-empty string, run these two WITH the tier hint:',
-    '  ' + bin + ' model resolve plan --tier T',
-    '  ' + bin + ' model resolve implement --tier T',
-    'If T is empty or missing, run the same two with NO --tier argument.',
-    'ALWAYS run these three with NO --tier argument, whatever T is:',
-    '  ' + bin + ' model resolve review-find',
-    '  ' + bin + ' model resolve review-verify',
-    '  ' + bin + ' model resolve mechanical',
-    'Return the five resulting model ids verbatim in a `models` object with keys',
-    'plan, implement, review_find, review_verify, mechanical. Do not invent ids; if a command fails, return an empty body.',
+    '  ./target/debug/rdm phase show ' + phase + ' --roadmap ' + roadmap + ' --project rdm --format json',
+    'Return a PLAN_TARGET object: `body` (the phase JSON `body` verbatim) and `tags` (the phase JSON',
+    '`tags` array verbatim, one element each — an empty array if there are none).',
+    'If the command fails or the body is empty, return an empty `body` and an empty `tags` array.',
+  ].join('\n')
+}
+function buildTaskFetchPrompt(slug) {
+  return [
+    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
+    'Run exactly this command in the repo root and read its JSON output:',
+    '  ./target/debug/rdm task show ' + slug + ' --project rdm --format json',
+    'Return a PLAN_TARGET object: `body` (the task JSON `body` verbatim) and `tags` (the task JSON',
+    '`tags` array verbatim, one element each — an empty array if there are none).',
+    'If the command fails or the body is empty, return an empty `body` and an empty `tags` array.',
+  ].join('\n')
+}
+function buildRoadmapFetchPrompt(slug) {
+  return [
+    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
+    'Run exactly this command in the repo root and read its JSON output:',
+    '  ./target/debug/rdm roadmap show ' + slug + ' --project rdm --format json',
+    'That JSON carries the roadmap body, the roadmap tags, and a summary of every phase.',
+    'For each phase, ALSO run and read:',
+    '  ./target/debug/rdm phase show <stem> --roadmap ' + slug + ' --project rdm --format json',
+    'to get that phase\'s full `body` and `tags`.',
+    'Return a ROADMAP_TARGET object: `body` (the roadmap JSON `body` verbatim), `tags` (the roadmap JSON',
+    '`tags` array verbatim), and `phases` — one entry per phase with `stem` (the phase JSON `stem`), `body`',
+    '(the phase JSON `body` verbatim), and `tags` (the phase JSON `tags` array verbatim).',
+    'If the command fails or the roadmap body is empty, return an empty `body`, an empty `tags` array, and an empty `phases` array.',
   ].join('\n')
 }
 
-function buildTaskFetchPrompt(slug, cfg) {
-  const bin = resolveRdmBin(cfg && cfg.rdmBin)
-  const proj = projectFlag(cfg)
-  return [
-    'You are a mechanical fetch agent. Do not plan or implement anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
-    '  ' + bin + ' task show ' + slug + proj + ' --format json',
-    'Return a TASK_META object: task (the slug you were given) and body (the task JSON `body` verbatim).',
-    'If the command fails or the body is empty, return an empty body.',
-    'Then resolve the models for this dispatch. A task carries NO tier, so run all five',
-    'resolver commands with NO --tier argument:',
-    '  ' + bin + ' model resolve plan',
-    '  ' + bin + ' model resolve implement',
-    '  ' + bin + ' model resolve review-find',
-    '  ' + bin + ' model resolve review-verify',
-    '  ' + bin + ' model resolve mechanical',
-    'Return the five resulting model ids verbatim in a `models` object with keys',
-    'plan, implement, review_find, review_verify, mechanical. Do not invent ids; if a command fails, return an empty body.',
-  ].join('\n')
-}
-
-// Observability stamp: a mechanical agent marks the phase/task in-progress the
-// moment real work begins on it. Best-effort — never gated, never retried; see
-// the driver call site (right after Stage 0, before the plan gate) for the
-// try/catch that keeps a failed stamp from affecting control flow.
-function buildStampInProgressPrompt(isTaskFlag, roadmapSlugArg, target, cfg) {
-  const bin = resolveRdmBin(cfg && cfg.rdmBin)
-  const proj = projectFlag(cfg)
-  const cmd = isTaskFlag
-    ? bin + ' task update ' + target + ' --status in-progress --no-edit' + proj
-    : bin +
-      ' phase update ' +
-      target +
-      ' --status in-progress --no-edit --roadmap ' +
-      roadmapSlugArg +
-      proj
+// buildTagWritePrompt — the read-filter-write half of the gate, as a mechanical
+// agent. The COMPLETE remaining list (already filtered by filterPlanReviewTag) is
+// written back, since `--tags` replaces the whole list; an empty list writes
+// `--tags ""`. Leaves the change staged for the caller's commit.
+function buildTagWritePrompt(kind, roadmap, ident, remainingTags) {
+  const tagsFlag = remainingTags.length === 0 ? '--tags ""' : '--tags "' + remainingTags.join(',') + '"'
+  let updateCmd
+  if (kind === 'task') {
+    updateCmd = './target/debug/rdm task update ' + ident + ' ' + tagsFlag + ' --no-edit --project rdm'
+  } else if (kind === 'phase') {
+    updateCmd = './target/debug/rdm phase update ' + ident + ' --roadmap ' + roadmap + ' ' + tagsFlag + ' --no-edit --project rdm'
+  } else {
+    updateCmd = './target/debug/rdm roadmap update ' + ident + ' ' + tagsFlag + ' --no-edit --project rdm'
+  }
   return [
     'You are a mechanical status agent. Do not plan, implement, or review anything.',
-    'Run exactly this command in the repo root:',
-    '  ' + cmd,
-    'Return a STAMP_ACK object: { ok: true } if the command exited 0, otherwise { ok: false }.',
+    'Run exactly these two commands in the repo root:',
+    '  ' + updateCmd,
+    '  ./target/debug/rdm commit -m "chore(plan): clear needs-plan-review on ' + (kind === 'phase' ? roadmap + '/' + ident : ident) + '"',
+    'Return a STAMP_ACK object: { ok: true } if BOTH commands exited 0, otherwise { ok: false }.',
     'Do not retry on failure — report the result of the single attempt.',
   ].join('\n')
 }
 
-// Stage A: the planner is seeded with ONLY the phase body — no worktree, no code.
-function buildPlanPrompt(phaseBody) {
-  return [
-    'You are a planning agent. Produce an implementation PLAN only — write NO code and touch NO files.',
-    'You are given ONLY the phase body below; plan strictly from it.',
-    '--- PHASE BODY ---',
-    phaseBody,
-    '--- END PHASE BODY ---',
-    'Return a PLAN_DOC: steps_per_ac (steps for each acceptance criterion), file_map (path + change per file),',
-    'tests_per_ac (a test per acceptance criterion), edge_cases, cross_phase_deps, and a one-paragraph summary.',
-    'Be concrete and actionable — a vague or empty plan will be rejected at plan-review.',
-  ].join('\n')
-}
-
-// Stage B revise: the planner revises its own plan against the ranked plan
-// findings. One bounded round only.
-function buildPlanRevisePrompt(phaseBody, planDocText, rankedPlanFindings) {
-  return [
-    'You are a planning agent revising an earlier PLAN. Write NO code and touch NO files.',
-    'Phase body (authoritative source):',
-    '--- PHASE BODY ---',
-    phaseBody,
-    '--- END PHASE BODY ---',
-    'Your previous plan:',
-    planDocText,
-    'Plan-review raised these ranked findings — address every blocking one:',
-    JSON.stringify(rankedPlanFindings, null, 2),
-    'Return a corrected PLAN_DOC in the same schema.',
-  ].join('\n')
-}
-
-// Stage C / D-rework: a FRESH implementer seeded ONLY with the phase body + the
-// approved plan doc (+ optional code-review findings / AC-table gaps on the
-// rework pass). It is NEVER given the planner's or plan-reviewer's
-// context/transcript. `reworkNotes`, when present, is `{ findings, acTable }`
-// from runCodeGate's rework call (`d.implement({ findings, acTable })`) —
-// NEVER plan-review findings, and never a bare findings array: the AC table is
-// a structured side-channel decoupled from `findings` (a FAIL/PARTIAL
-// criterion need not also appear as a finding), so an AC-only-gap rework round
-// (empty `findings`) still needs `acTable` rendered or the implementer gets no
-// signal about what to fix at all.
-//
-// `cfg` is the trailing environment payload { rdmBin, project }; `reworkNotes`
-// keeps its slot, so the first-pass call site passes an explicit `null` for it
-// rather than letting `cfg` slide into the wrong parameter.
-function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes, cfg) {
-  const bin = resolveRdmBin(cfg && cfg.rdmBin)
-  const proj = projectFlag(cfg)
-  const lines = [
-    'You are an implementation agent. You are seeded with ONLY the item body and the approved plan below.',
-    'First, create/enter the worktree for this item and work THERE:',
-    '  ' + bin + ' worktree add ' + worktreeRef + proj,
-    'then `cd` into the path it prints. Do all edits and the commit in that worktree.',
-    '--- PHASE BODY ---',
-    phaseBody,
-    '--- END PHASE BODY ---',
-    '--- APPROVED PLAN ---',
-    planDocText,
-    '--- END APPROVED PLAN ---',
-    'Implement the approved plan, run the project checks, then stage and commit with a conventional-commit message.',
-    'Do NOT add any land-time completion directive to the commit message — landing happens later, not here.',
-    'If you discover side-work and file it as a task (per "Discovering bugs or side-work" in CLAUDE.md): you are working in the ' +
-      worktreeRef +
-      ' worktree, not main. If the side-task body cites a file or behavior introduced by this worktree\'s not-yet-landed work, tag it `depends-unlanded` and phrase the body as "<file/behavior>, introduced by ' +
-      worktreeRef +
-      ', not yet on main" — e.g. `' +
-      bin +
-      ' task create sweep-x --title "..." --body "rdm-core/src/ops/tag.rs, introduced by ' +
-      worktreeRef +
-      ', not yet on main. ..." --tags depends-unlanded --no-edit' +
-      proj +
-      '`.',
-  ]
-  if (reworkNotes) {
-    const notesFindings = Array.isArray(reworkNotes.findings) ? reworkNotes.findings : []
-    const notesAcTable = Array.isArray(reworkNotes.acTable) ? reworkNotes.acTable : []
-    const acGaps = notesAcTable.filter((e) => e && (e.status === 'FAIL' || e.status === 'PARTIAL'))
-    if (notesFindings.length > 0) {
-      lines.push('Code-review found these ranked issues on the prior pass — fix every blocking one:')
-      lines.push(JSON.stringify(notesFindings, null, 2))
-    }
-    if (acGaps.length > 0) {
-      lines.push(
-        'The acceptance-criteria table found these UNMET criteria on the prior pass — fix every one (this is a separate channel from the findings above, not a duplicate):'
-      )
-      lines.push(JSON.stringify(acGaps, null, 2))
-    }
-  }
-  // ABSORBED diff report. Appended LAST so it never displaces the implementation
-  // instructions above. The wording deliberately mirrors buildDiffSignalsPrompt
-  // (same three-dot `main...HEAD` base, same 40000-character truncation) so
-  // `deriveSignals` receives byte-identical input whichever path produced it.
+// buildActPrompt — orchestrator-only act step: apply small plan-body fixes by
+// writing the WHOLE --body, and file large findings as tasks. Never runs in
+// --implementation-plan mode (guarded at the call site). Large findings are
+// filed with `--no-plan-review` so the gate's own output is never re-stamped
+// `needs-plan-review` and fed back into itself as new input.
+function buildActPrompt(kind, roadmap, ident, survivors) {
+  // Once the review passes a non-gating finding through un-refuted the payload
+  // is of MIXED provenance, so the leading "already survived refutation — do not
+  // re-review" claim would be false for part of it. Both the claim and the
+  // do-not-re-review directive are therefore conditional; with no un-refuted
+  // survivor the prompt is byte-identical to the pre-pass-through one.
+  const list = Array.isArray(survivors) ? survivors : []
+  const hasUnrefuted = list.some((f) => f && f.unrefuted)
+  const lines = hasUnrefuted
+    ? [
+        'You are the plan-review orchestrator applying findings of MIXED provenance. A finding WITHOUT',
+        '`unrefuted: true` survived independent refutation; a finding WITH it was never graded by a refuter.',
+      ]
+    : [
+        'You are the plan-review orchestrator applying already-verified findings. The findings below already',
+        'survived independent refutation — do not re-review; act on them.',
+      ]
   lines.push(
-    'Finally, AFTER committing, run exactly these two commands in the worktree and read their output:',
-    '  git diff --name-only main...HEAD',
-    '  git diff main...HEAD',
-    'Return an IMPLEMENT_RESULT object: `changedFiles` — the repo-relative paths from the first command,',
-    'verbatim, one array element each; and `diffText` — the second command\'s output TRUNCATED to the',
-    'first 40000 characters (append nothing; just stop). If either command fails or the branch has no',
-    'commits of its own, return an empty `changedFiles` array and an empty `diffText`.'
+    'Findings (ranked, most-severe first):',
+    JSON.stringify(survivors, null, 2),
+    'For each finding, decide small vs large:',
+    '- SMALL (a localized wording/typo/missing-detail fix to the plan document itself): apply it by reading the',
+    '  current body and writing the ENTIRE modified body back — `--body` is whole-document-authoritative, there',
+    '  is no patch mechanism. Use the matching command:',
+    kind === 'task'
+      ? '    ./target/debug/rdm task update ' + ident + ' --body "<full updated body>" --no-edit --project rdm'
+      : kind === 'phase'
+      ? '    ./target/debug/rdm phase update ' + ident + ' --roadmap ' + roadmap + ' --body "<full updated body>" --no-edit --project rdm'
+      : '    ./target/debug/rdm roadmap update ' + ident + ' --body "<full updated body>" --no-edit --project rdm',
+    '- LARGE (a structural concern: a missing prerequisite, scope too big for one phase, a conflicting design',
+    '  decision): do NOT edit the plan document — file it as a task, with `--no-plan-review` so this finding',
+    '  does not itself get re-stamped `needs-plan-review`:',
+    '    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-plan-review --no-edit --project rdm'
+  )
+  if (hasUnrefuted) {
+    lines.push(UNREFUTED_DISPOSITION)
+  }
+  lines.push(
+    'After applying any changes, run: ./target/debug/rdm commit -m "chore(plan): address plan review findings on ' +
+      (kind === 'phase' ? roadmap + '/' + ident : ident) +
+      '"',
+    'If there is nothing small to fix and nothing large to file, make no changes.',
+    'Return a STAMP_ACK object: { ok: true } if you completed without error (including the no-op case), else { ok: false }.'
   )
   return lines.join('\n')
 }
 
-// Review pre-step: a mechanical Bash agent reads the branch diff out of the
-// item's worktree. Its output feeds `deriveSignals` (from the stamped canonical
-// review block), which decides which review dimensions actually run.
+// --- Round-capping helpers (bounds repeated plan-review passes on one item) --
+// A ROUND AUDIT NOTE is appended to a non-`reviewed` unit's body after each
+// pass, following the shipped `## Estimate <difficulty> — <justification>`
+// body-note convention: a `## Plan Review Round <N> — <outcome>` header
+// followed by one bullet per surviving finding. Reading it back on the next
+// pass tells the driver which round it is on and what was already reported,
+// with no external state.
 //
-// Diff base: THREE-DOT (`main...HEAD`) scopes to the branch's own changes rather
-// than to everything `main` gained meanwhile. For a phase implemented in the
-// SHARED per-roadmap worktree, earlier phases of the same roadmap are already on
-// the branch, so a later phase sees the whole branch diff. That is
-// over-inclusive (a trigger may fire for an earlier phase's files) but never
-// under-inclusive, which is the safe direction for a coverage gate.
-function buildDiffSignalsPrompt(worktreeRef, cfg) {
-  const bin = resolveRdmBin(cfg && cfg.rdmBin)
-  const proj = projectFlag(cfg)
+// IMPORTANT: repeat-filtering below is REPORTING-ONLY. It thins what gets
+// written to the audit note / shown to a human so an unresolved complaint
+// is not re-litigated verbatim every round — it must NEVER be used to decide
+// the round's outcome. Rounds 1 and 2 both classify from the FULL (wont-fix-
+// suppressed, repeat-UNfiltered) survivor set, so a finding that is still
+// genuinely present and blocking keeps the plan in rework/escalated on round
+// 2 exactly as it would on round 1 — it cannot silently "age out" into a pass
+// purely by being repeated. Only an actual fix (the finder stops reporting
+// it) or an explicit human `wont-fix` removes a finding from the outcome.
+
+const ROUND_HEADER_RE = /^## Plan Review Round (\d+) — (\S+)\s*$/
+
+// parseRoundNotes(body) — read every well-formed `## Plan Review Round N —
+// outcome` block already present in a fetched body and return the LAST
+// (highest-numbered) one as { round, outcome, findings }, where findings is
+// the parsed bullet list of { severity, concern, what_fails } for that round.
+// Returns { round: 0, outcome: null, findings: [] } when no well-formed
+// header is found — this fails TOWARD round 1 (the cap engages later, not
+// never), never toward silently skipping the cap on a body that happens to
+// contain unrelated text resembling the header.
+function parseRoundNotes(body) {
+  const text = typeof body === 'string' ? body : ''
+  const lines = text.split('\n')
+  let best = { round: 0, outcome: null, findings: [] }
+  let current = null
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const m = ROUND_HEADER_RE.exec(line)
+    if (m) {
+      const round = parseInt(m[1], 10)
+      if (Number.isFinite(round) && round > 0 && round > best.round) {
+        current = { round: round, outcome: m[2], findings: [] }
+        best = current
+      } else {
+        current = null // malformed, duplicate, or lower-numbered — ignore its body
+      }
+      continue
+    }
+    if (!current) continue
+    // Every severity the WRITER can emit must round-trip through the READER.
+    // formatRoundNote renders whatever severity a survivor carries, so a reader
+    // that whitelists only two of the three silently truncates a note's bullet
+    // list at its first `suggestion` — and non-gating pass-through makes a
+    // surviving `suggestion` the common case rather than a rarity.
+    const bm = /^- \[(blocking|concern|suggestion)\] ([^:]+): (.*)$/.exec(line)
+    if (bm) {
+      current.findings.push({ severity: bm[1], concern: bm[2], what_fails: bm[3] })
+    } else if (line.trim() !== '' && line.slice(0, 3) !== '## ') {
+      // Any other non-bullet, non-blank, non-heading content ends this round's
+      // bullet capture (conservative: do not keep scanning past unrelated prose).
+      current = null
+    }
+  }
+  return best
+}
+
+// formatRoundNote(round, outcome, findings) — pure: render the audit-note
+// block text (no surrounding blank lines — the caller joins with '\n\n').
+function formatRoundNote(round, outcome, findings) {
+  const list = Array.isArray(findings) ? findings : []
+  const lines = ['## Plan Review Round ' + round + ' — ' + outcome]
+  if (list.length === 0) {
+    lines.push('- (no surviving findings)')
+  } else {
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i] || {}
+      lines.push('- [' + (f.severity || 'concern') + '] ' + (f.concern || 'general') + ': ' + (f.what_fails || f.id || ''))
+    }
+  }
+  return lines.join('\n')
+}
+
+// normalizeWords(text) — lowercase, strip punctuation, split into significant
+// (length > 3) words. A deterministic string op, not a real fuzzy-matching
+// library — used only by the two heuristics below.
+function normalizeWords(text) {
+  const s = String(text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+  return s.split(/\s+/).filter((w) => w.length > 3)
+}
+
+// findingSignature(finding) — the deterministic text used for repeat
+// detection: concern plus normalized what_fails words.
+function findingSignature(finding) {
+  const concern = (finding && finding.concern) || ''
+  const what = (finding && (finding.what_fails || finding.id)) || ''
+  return concern + '::' + normalizeWords(what).join(' ')
+}
+
+// partitionRepeats(survivors, priorFindings) — REPORTING-ONLY split into
+// { repeats, fresh } by exact signature match against the prior round's
+// recorded findings. Never used to decide the outcome (see header note): a
+// false negative here (a repeat wrongly treated as fresh) only re-lists
+// something in the note, it never changes pass/fail.
+function partitionRepeats(survivors, priorFindings) {
+  const list = Array.isArray(survivors) ? survivors : []
+  const prior = Array.isArray(priorFindings) ? priorFindings : []
+  const priorSigs = prior.map(findingSignature)
+  const repeats = []
+  const fresh = []
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i]
+    const isRepeat = priorSigs.indexOf(findingSignature(f)) !== -1
+    ;(isRepeat ? repeats : fresh).push(f)
+  }
+  return { repeats: repeats, fresh: fresh }
+}
+
+// wontFixOverlapMatches(finding, wontFixedTexts) — a deterministic, pure,
+// conservative token-overlap heuristic. `rdm search` already did the real
+// typo-tolerant fuzzy matching on the fetch side to produce the wont-fixed
+// candidate list; this is a SECOND, stricter gate applied client-side. A
+// finding is only suppressed when a large majority of its significant words
+// appear in a candidate wont-fixed task's text AND at least
+// WONTFIX_MIN_OVERLAP_WORDS of them do — biased toward under-suppressing,
+// since a false suppress removes a live finding from BOTH the report and the
+// outcome, while a false miss only re-reports something already dismissed.
+const WONTFIX_OVERLAP_RATIO = 0.7
+const WONTFIX_MIN_OVERLAP_WORDS = 3
+function wontFixOverlapMatches(finding, wontFixedTexts) {
+  const findingWords = normalizeWords((finding && (finding.what_fails || finding.id)) || '')
+  if (findingWords.length < WONTFIX_MIN_OVERLAP_WORDS) return false
+  const findingSet = new Set(findingWords)
+  const list = Array.isArray(wontFixedTexts) ? wontFixedTexts : []
+  for (let i = 0; i < list.length; i++) {
+    const textWords = new Set(normalizeWords(list[i]))
+    let overlap = 0
+    findingSet.forEach((w) => {
+      if (textWords.has(w)) overlap++
+    })
+    if (overlap >= WONTFIX_MIN_OVERLAP_WORDS && overlap / findingSet.size >= WONTFIX_OVERLAP_RATIO) return true
+  }
+  return false
+}
+
+// suppressWontFixed(survivors, wontFixedTexts) — drop any survivor matching an
+// already-wont-fixed task. Removes it from consideration ENTIRELY: both the
+// report and the outcome (a human already explicitly overruled it) — unlike
+// repeat-filtering above, which is reporting-only.
+function suppressWontFixed(survivors, wontFixedTexts) {
+  const list = Array.isArray(survivors) ? survivors : []
+  if (!Array.isArray(wontFixedTexts) || wontFixedTexts.length === 0) return list.slice()
+  return list.filter((f) => !wontFixOverlapMatches(f, wontFixedTexts))
+}
+
+// classifyRoundOutcome(round, survivors) — the round-outcome capper. EVERY
+// round classifies from the FULL (wont-fix-suppressed but repeat-unfiltered)
+// survivor set via classifyPlanOutcome, exactly as an uncapped run would.
+// Round 3+ then escalates only when that base outcome is still non-`reviewed`,
+// so an item can never loop forever on an unresolved finding — while a plan
+// that was genuinely fixed on the third pass still passes. The cap is an
+// anti-loop valve, not a penalty for having needed three rounds: escalating a
+// clean survivor list would send a human a plan with nothing left to decide.
+function classifyRoundOutcome(round, survivors) {
+  const base = classifyPlanOutcome(survivors)
+  if (round >= 3 && base !== 'reviewed') return 'escalated'
+  return base
+}
+
+// buildWontFixFetchPrompt — mechanical fetch agent: list every task already
+// resolved `wont-fix` that came out of a plan-review finding, as raw
+// title+body text for the client-side overlap heuristic above to match
+// against. One search covers every unit in this run.
+function buildWontFixFetchPrompt() {
   return [
-    'You are a mechanical diff agent. Do not review, plan, or implement anything, and edit no files.',
-    'Find the worktree for this item and work THERE:',
-    '  ' + bin + ' worktree add ' + worktreeRef + proj,
-    '(it prints the existing path if the worktree already exists) then `cd` into that path.',
-    'Run exactly these two commands and read their output:',
-    '  git diff --name-only main...HEAD',
-    '  git diff main...HEAD',
-    'Return a DIFF_SIGNALS object: `changedFiles` — the repo-relative paths from the first command,',
-    'verbatim, one array element each; and `diffText` — the second command\'s output TRUNCATED to the',
-    'first 40000 characters (append nothing; just stop). If either command fails or the branch has no',
-    'commits of its own, return an empty `changedFiles` array and an empty `diffText`.',
+    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
+    'Run exactly this command in the repo root and read its JSON output:',
+    '  ./target/debug/rdm search "" --tag plan-review --status wont-fix --type task --project rdm --format json',
+    'Return a WONTFIX_LIST object: `texts` — one string per result, each the concatenation of that result\'s',
+    'title and body separated by a newline.',
+    'If the command fails or there are no results, return an empty `texts` array.',
   ].join('\n')
 }
 
-// Render a PLAN_DOC object to deterministic text for review + implementer seeding.
-function renderPlanDoc(planDoc) {
-  return JSON.stringify(planDoc, null, 2)
+// buildRoundNoteWritePrompt — mechanical body-audit-note agent: append the
+// round note to the END of the target's current body and commit. Runs on
+// every non-`reviewed` outcome (persisted targets only — implementation-plan
+// has no item to write to and is never routed here) so the body reflects the
+// round before the next invocation reads it.
+function buildRoundNoteWritePrompt(kind, roadmap, ident, round, outcome, findings) {
+  const label = kind === 'phase' ? roadmap + '/' + ident : ident
+  const showCmd =
+    kind === 'task'
+      ? './target/debug/rdm task show ' + ident + ' --project rdm --format json'
+      : kind === 'phase'
+      ? './target/debug/rdm phase show ' + ident + ' --roadmap ' + roadmap + ' --project rdm --format json'
+      : './target/debug/rdm roadmap show ' + ident + ' --project rdm --format json'
+  const updateCmd =
+    kind === 'task'
+      ? './target/debug/rdm task update ' + ident + ' --no-edit --project rdm'
+      : kind === 'phase'
+      ? './target/debug/rdm phase update ' + ident + ' --roadmap ' + roadmap + ' --no-edit --project rdm'
+      : './target/debug/rdm roadmap update ' + ident + ' --no-edit --project rdm'
+  return [
+    'You are a mechanical body-audit-note agent. Do not plan, implement, or review anything.',
+    '1. Read the current body: ' + showCmd + ' (the `body` field).',
+    '2. Append exactly this block to the END of that body, separated from the existing content by a blank line:',
+    '',
+    formatRoundNote(round, outcome, findings),
+    '',
+    '3. Write the complete new body back verbatim (the current body, a blank line, then the block above) — `--body`',
+    '   is whole-document-authoritative, there is no patch mechanism:',
+    '   ' + updateCmd + ' --body "<current body>\\n\\n<block above>"',
+    '4. Run: ./target/debug/rdm commit -m "chore(plan): record plan review round ' + round + ' on ' + label + '"',
+    'Return a STAMP_ACK object: { ok: true } if all commands exited 0, else { ok: false }.',
+  ].join('\n')
 }
 
-// --- Driver -------------------------------------------------------------------
-// Args are coerced (a stringified payload is JSON.parsed once) and validated by
-// parseDispatchArgs, from the copied block above — including both retry budgets,
-// so an invalid budget throws before a single agent() call burns tokens.
-const dispatchArgs = parseDispatchArgs(args)
-const roadmap = dispatchArgs.roadmap
-const phaseArg = dispatchArgs.phase
-// Task mode: `{ task: <slug> }` dispatches a standalone task instead of a phase.
-// A task belongs to no roadmap, carries no difficulty/model tier, and lives in
-// its own `task/<slug>` worktree — see the deltas handled below.
-const taskSlug = dispatchArgs.task
-const isTask = !!taskSlug
-const planOnly = dispatchArgs.planOnly
-// The two in-run retry budgets, counted INDEPENDENTLY (each feeds exactly one
-// gate). Defaults DEFAULT_MAX_PLAN_REVISE / DEFAULT_MAX_CODE_REWORK; overridable
-// per run via the maxPlanRevise / maxCodeRework args.
-const maxPlanRevise = dispatchArgs.maxPlanRevise
-const maxCodeRework = dispatchArgs.maxCodeRework
-// The per-unit REFUTATION budget, threaded into BOTH review contexts below.
-// Default DEFAULT_MAX_REFUTATIONS; overridable per run via the maxRefutations
-// arg, already validated at parse time by parseDispatchArgs.
-const maxRefutations = dispatchArgs.maxRefutations
-// Optional caller-supplied hoists. A caller that is already a running agent with
-// the repo in context (the rdm-dispatch-phase / rdm-do --auto shims) runs the
-// mechanical command itself and passes the result here, so this workflow never
-// spawns a dedicated subagent for it. All three are OPTIONAL — absent or
-// malformed simply falls through to the original agent, which is what a direct
-// `Workflow` invocation (no caller) always does.
-const hoistedMeta = isTask ? dispatchArgs.taskMeta : dispatchArgs.phaseMeta
-const alreadyInProgress = dispatchArgs.alreadyInProgress
-// The two ENVIRONMENT axes, already resolved and validated by parseDispatchArgs:
-// `rdmBin` is REQUIRED (fail-closed — an absent key threw above, before any
-// agent() call, rather than falling back to whatever `rdm` is on PATH) and
-// `project` is optional (''  means "emit no project flag"). Bundled once as
-// `cfg` and threaded into every prompt builder that shells out.
-const rdmBin = dispatchArgs.rdmBin
-const project = dispatchArgs.project
-const cfg = { rdmBin: rdmBin, project: project }
+const WONTFIX_LIST_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['texts'],
+  properties: { texts: { type: 'array', items: { type: 'string' } } },
+}
 
-// itemOutcome — emit the identifier-correct OUTCOME for whichever mode is
-// active. Keeps every downstream return site mode-agnostic.
-function itemOutcome(fields) {
-  const f = fields || {}
-  if (isTask) {
-    return buildTaskOutcome({
-      task: taskSlug,
-      fetchError: f.fetchError,
-      planFindings: f.planFindings,
-      codeReviews: f.codeReviews,
-      acRounds: f.acRounds,
-      budgetRounds: f.budgetRounds,
-      planBudget: f.planBudget,
-      maxRework: f.maxRework,
-      tier: f.tier,
-      actResult: f.actResult,
+// buildReviewUnits(parsed, fetched) — pure: turn a parsed target plus the fetched
+// artifact JSON into the list of independent review units. A `phase`/`task`
+// target is a single unit; a `roadmap` target is the roadmap body plus one unit
+// per phase, each gated independently. Returns { units, fetchFailed }. FAIL-CLOSED
+// on an empty/unread body: an unread plan must NEVER be silently marked reviewed.
+function buildReviewUnits(parsed, fetched) {
+  const kind = parsed.kind
+  if (kind === 'roadmap') {
+    const rm = fetched
+    if (!rm || !rm.body || String(rm.body).trim() === '') return { units: [], fetchFailed: true }
+    const units = []
+    units.push({
+      kind: 'roadmap',
+      targetType: 'roadmap',
+      ident: parsed.roadmap,
+      roadmap: parsed.roadmap,
+      tags: Array.isArray(rm.tags) ? rm.tags : [],
+      body: String(rm.body),
+      target: 'roadmap ' + parsed.roadmap + ' (body)\n\n' + String(rm.body),
     })
-  }
-  return buildOutcome({
-    roadmap: roadmap,
-    phase: phaseArg,
-    fetchError: f.fetchError,
-    planFindings: f.planFindings,
-    codeReviews: f.codeReviews,
-    acRounds: f.acRounds,
-    budgetRounds: f.budgetRounds,
-    planBudget: f.planBudget,
-    maxRework: f.maxRework,
-    tier: f.tier,
-    actResult: f.actResult,
-  })
-}
-
-// A pre-fetch label for logs emitted BEFORE the fetch resolves the stem. Only
-// the fetch-failure log can use this; every later log uses the resolved
-// `itemLabel` below, which matches the pre-dual-mode behaviour.
-const itemLabelRaw = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
-
-// Stage 0: fetch the phase/task metadata + body via a mechanical Bash agent.
-// NOTE: this local is `phaseMeta`, NOT `meta` — the top-level `export const meta`
-// (the workflow contract) already owns that identifier in this module scope.
-//
-// HOIST: when the caller supplied a COMPLETE meta payload (non-empty body, all
-// five resolved model ids, and — in phase mode — a non-empty `model` difficulty
-// tier; hoistedMetaComplete, from the copied block), use it and skip the agent
-// entirely. The guard is all-or-nothing on purpose: a partial payload would
-// still need a model-resolving agent (saving nothing) and would trip the
-// `unresolvedStep` check below, short-circuiting the dispatch as a fetchError —
-// and a tier-less phase payload would silently take `tier` to its 'medium'
-// default, LOOSENING the code gate on a `large` phase. Anything the guard
-// rejects falls through to the agent path, which is left BYTE-UNCHANGED.
-let phaseMeta = null
-if (hoistedMetaComplete(hoistedMeta, isTask)) {
-  phaseMeta = hoistedMeta
-  log('dispatch-phase: ' + (isTask ? 'task' : 'phase') + ' meta hoisted from caller args for ' + itemLabelRaw)
-} else {
-  log('dispatch-phase: fetching ' + (isTask ? 'task' : 'phase') + ' meta for ' + itemLabelRaw + ' (no usable caller hoist)')
-  try {
-    phaseMeta = isTask
-      ? await agent(buildTaskFetchPrompt(taskSlug, cfg), {
-          label: 'fetch:task-meta',
-          phase: 'Plan',
-          schema: TASK_META_SCHEMA,
-        })
-      : await agent(buildFetchPrompt(roadmap, phaseArg, cfg), {
-          label: 'fetch:phase-meta',
-          phase: 'Plan',
-          schema: PHASE_META_SCHEMA,
-        })
-  } catch (e) {
-    phaseMeta = null
-  }
-}
-
-if (!phaseMeta || !phaseMeta.body || String(phaseMeta.body).trim() === '') {
-  log('dispatch-phase: ' + (isTask ? 'task' : 'phase') + ' fetch failed for ' + itemLabelRaw)
-  return itemOutcome({ fetchError: true })
-}
-
-const phaseBody = String(phaseMeta.body)
-const stem = isTask ? taskSlug : phaseMeta.stem || phaseArg
-const roadmapSlug = phaseMeta.roadmap || roadmap
-// Tasks carry no difficulty/model, so they always dispatch at the fixed
-// `medium` tier — the `large` gate-tightening never applies to a task.
-const tier = isTask ? 'medium' : phaseMeta.model || 'medium'
-// Stage C works in the per-task worktree for tasks, the shared per-roadmap
-// worktree for phases.
-const worktreeRef = isTask ? 'task/' + taskSlug : roadmapSlug
-// Explicitly resolved models for this dispatch, from the single Stage-0 batch.
-// An incomplete map means the resolver did not run: fail loudly rather than
-// dispatching every agent on the inherited session model, which is the silent
-// no-op this whole change exists to remove.
-const models = phaseMeta.models || {}
-// Expressed with .filter() rather than a `for`/`while` on purpose: the driver
-// region carries NO `while` at all and only allowlisted `for` headers (gated by
-// verify-workflow-dispatch.sh). The two budget-bounded retry loops live in the
-// copied dispatch-outcome block, where the Node harness can drive them.
-const unresolvedStep = ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'].filter(
-  (k) => typeof models[k] !== 'string' || models[k] === ''
-)[0]
-if (unresolvedStep) {
-  log('dispatch-phase: unresolved model for step "' + unresolvedStep + '" on ' + itemLabelRaw)
-  return itemOutcome({ fetchError: true })
-}
-const reviewModels = { findModel: models.review_find, verifyModel: models.review_verify }
-// Resolved log label: phase mode logs the resolved `stem`, not the raw
-// stem-or-number the caller passed, matching the pre-dual-mode behaviour.
-const itemLabel = isTask ? 'task/' + taskSlug : roadmap + '/' + stem
-
-// Observability stamp: mark the item in-progress the moment real work begins
-// (right after Stage 0 resolves metadata + models, before planning). This is
-// the only entry point that reaches dispatch-phase WITHOUT already having
-// stamped in-progress itself — interactive rdm-do, rdm-do --auto, and the
-// rdm-dispatch-phase skill all stamp before invoking the workflow; autopilot
-// calls this workflow directly and writes no status of its own. Best-effort:
-// wrapped in try/catch, and a non-ok ack only logs — it never gates the run,
-// never mutates plan/code-gate state, and never appears in the returned
-// OUTCOME. Guarded by `if (!planOnly)`, using the already-parsed
-// `dispatchArgs.planOnly` local: a --plan-only pass does no implementation, so
-// stamping in-progress would misreport it, and skipping (not reverting) avoids
-// clobbering a phase legitimately left in-progress by an earlier interrupted
-// run.
-//
-// REDUNDANCY SUPPRESSION: `alreadyInProgress` says the CALLER already ran the
-// `--status in-progress` write itself and it exited 0 — so this agent would
-// re-write a status that is already correct. It is only ever set by a shim that
-// actually performed that write, and never by a --plan-only invocation. The
-// `!planOnly` guard is kept INDEPENDENTLY of it: a plan-only pass must skip the
-// stamp whatever the flag says. On every path where no caller stamped (a direct
-// `Workflow` invocation, and every autopilot-nested dispatch — autopilot is
-// itself a workflow and cannot shell out), the stamp still runs here, BEFORE the
-// plan gate. That ordering is load-bearing: a blocking plan finding escalates
-// before any implementer runs, so the stamp can never be folded into the
-// implementer without leaving the item going not-started → blocked with no
-// in-progress signal at all.
-if (!planOnly) {
-  if (alreadyInProgress) {
-    log('dispatch-phase: in-progress stamp skipped for ' + itemLabel + ' — the caller already stamped it')
-  } else {
-    try {
-      const target = isTask ? taskSlug : stem
-      const stampAck = await agent(buildStampInProgressPrompt(isTask, roadmapSlug, target, cfg), {
-        label: 'stamp:in-progress',
-        phase: 'Implement',
-        schema: STAMP_ACK_SCHEMA,
-        model: models.mechanical,
+    const phases = Array.isArray(rm.phases) ? rm.phases : []
+    for (let i = 0; i < phases.length; i++) {
+      const p = phases[i]
+      units.push({
+        kind: 'phase',
+        targetType: 'phase',
+        ident: p.stem,
+        roadmap: parsed.roadmap,
+        tags: Array.isArray(p.tags) ? p.tags : [],
+        body: String(p.body || ''),
+        target: 'phase ' + parsed.roadmap + '/' + p.stem + '\n\n' + String(p.body || ''),
       })
-      if (!stampAck || stampAck.ok !== true) {
-        log('dispatch-phase: in-progress stamp did not confirm for ' + itemLabel + ' — continuing (observability only)')
-      }
-    } catch (e) {
-      log('dispatch-phase: in-progress stamp failed for ' + itemLabel + ' — continuing (observability only)')
+    }
+    return { units: units, fetchFailed: false }
+  }
+  // phase or task — a single unit.
+  const meta = fetched
+  if (!meta || !meta.body || String(meta.body).trim() === '') return { units: [], fetchFailed: true }
+  const ident = kind === 'task' ? parsed.task : parsed.phase
+  const label = kind === 'task' ? 'task/' + parsed.task : parsed.roadmap + '/' + parsed.phase
+  return {
+    units: [
+      {
+        kind: kind,
+        targetType: kind,
+        ident: ident,
+        roadmap: parsed.roadmap,
+        tags: Array.isArray(meta.tags) ? meta.tags : [],
+        body: String(meta.body),
+        target: kind + ' ' + label + '\n\n' + String(meta.body),
+      },
+    ],
+    fetchFailed: false,
+  }
+}
+
+// formatUnitBudget(budget) — the visible per-unit refutation-budget clause,
+// appended to a unit's log line ONLY when the bound was actually hit. A unit
+// that stayed under budget logs a byte-unchanged line, so a bounded run can
+// never be mistaken for complete coverage and an unbounded one reads exactly as
+// it did before.
+function formatUnitBudget(budget) {
+  if (!budget || budget.hit !== true) return ''
+  return (
+    ' [review budget hit: ' +
+    budget.produced +
+    ' produced, ' +
+    budget.graded +
+    ' graded, ' +
+    budget.passedThroughBudget +
+    ' ungraded]'
+  )
+}
+
+// runPlanReviewDriver(args, deps) — the full plan-review orchestration. Every
+// side effect is reached through the injected `deps`:
+//   deps.agent          — the mechanical fetch / act / tag-write agent runner.
+//   deps.parallel       — the per-unit fan-out primitive.
+//   deps.log            — the log sink (optional; defaults to a no-op).
+//   deps.runPlanReview  — an async runReview(context) from buildReviewPipeline
+//                         ('plan'); optional — built from the review core when
+//                         omitted (the Workflow runtime path, where the ambient
+//                         agent/pipeline/parallel globals are probed by
+//                         buildReviewPipeline itself).
+//
+// Returns the structured result the caller reports:
+//   - implementation-plan: { kind, outcome, summary, findings } (report-only).
+//   - fetch failure:       { kind, outcome:'escalated', fetchError:true, ... }.
+//   - persisted targets:   { kind, units:[…] } with a single phase/task target
+//                          also flattened onto { outcome, summary, findings }.
+async function runPlanReviewDriver(args, deps) {
+  const d = deps || {}
+  const _agent = d.agent
+  const _parallel = d.parallel
+  const _log = d.log || function () {}
+  // Optional: the resolved `rdm model resolve mechanical` id, threaded into
+  // every mechanical fetch/gate call below (fetch:roadmap, fetch:<kind>,
+  // gate:clear-tag:*). Left unset (undefined) is inert — see agent()'s
+  // documented `model: undefined` behavior — so a caller that does not supply
+  // it degrades to the pre-existing unpinned behavior rather than breaking.
+  // A caller-supplied `args.mechanicalModel` (see parsePlanArgs) takes
+  // precedence over the injected dep, so the local shim can skip the whole
+  // model:mechanical bootstrap agent.
+  let _mechanicalModel = d.mechanicalModel
+  // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
+  // the review core, with NO independent review logic in this driver. Passing NO
+  // signals is deliberate (see the header note); phase-only unit-of-work scoping
+  // is applied per unit via stripNonPhaseUnitOfWork below.
+  const runPlanReview = d.runPlanReview || buildReviewPipeline('plan')
+
+  const parsed = parsePlanArgs(args)
+  const kind = parsed.kind
+  if (parsed.mechanicalModel) _mechanicalModel = parsed.mechanicalModel
+  // Already validated by parsePlanArgs via the review core's single validator.
+  const maxRefutations = parsed.maxRefutations
+
+  // reviewUnit — run find → refute → filter for ONE review unit, then strip
+  // non-phase unit-of-work survivors, drop anything already resolved
+  // wont-fix, read the unit's prior round off its own body, and classify with
+  // the round cap. Returns a per-unit result the act + gate steps consume
+  // independently. `wontFixedTexts` is the SAME list for every unit in a run
+  // (one search covers the whole run, not one per unit).
+  async function reviewUnit(unit, wontFixedTexts) {
+    // runPlanReview is a `runReview` from the canonical review source and
+    // resolves `{ survivors, acTable, budget }`; `acTable` is always `null` in
+    // plan mode (the `ac` dimension does not exist there) and is intentionally
+    // discarded here. `budget` is the per-unit refutation-budget accounting and
+    // is carried through to the reported result.
+    //
+    // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
+    // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
+    // may drop a survivor that consumed budget.
+    const { survivors: rawSurvivors, budget } = await runPlanReview({
+      target: unit.target,
+      maxRefutations: maxRefutations,
+    })
+    const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
+    const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
+    const prior = parseRoundNotes(unit.body)
+    const round = prior.round + 1
+    const outcome = classifyRoundOutcome(round, survivors)
+    const partition = partitionRepeats(survivors, prior.findings)
+    return {
+      unit: unit,
+      survivors: survivors,
+      outcome: outcome,
+      round: round,
+      newlyReported: partition.fresh,
+      repeats: partition.repeats,
+      budget: budget || null,
+      summary: summarizeFindings(survivors),
     }
   }
-}
 
-// Stages A + B: author the plan from ONLY the phase body, review it via the
-// stamped shared pipeline, and revise it up to the plan-revise budget. The loop
-// itself lives in runPlanGate (copied block) so it is driveable from Node; this
-// driver only supplies the side effects.
-//
-// SIGNALS SITE (plan gate): this gate deliberately passes NO `signals`, so
-// selectDimensions fail-opens and every plan dimension runs — including
-// `unit-of-work`, whose `when` is a TARGET-TYPE trigger (phases only). Threading
-// `signals: { targetType: isTask ? 'task' : 'phase' }` here belongs to the
-// sibling `unify-plan-review` roadmap (phase 3, wire-plan-gates-and-hook), not
-// to this one. Do not add it here.
-const runPlanReview = buildReviewPipeline('plan')
-const planGate = await runPlanGate(
-  { maxRevise: maxPlanRevise, tier: tier },
-  {
-    plan: async () =>
-      agent(buildPlanPrompt(phaseBody), {
-        label: 'plan:author',
-        phase: 'Plan',
-        schema: PLAN_DOC_SCHEMA,
-        model: models.plan,
-      }),
-    revise: async (doc, findings) =>
-      agent(buildPlanRevisePrompt(phaseBody, renderPlanDoc(doc), findings), {
-        label: 'plan:revise',
-        phase: 'PlanReview',
-        schema: PLAN_DOC_SCHEMA,
-        model: models.plan,
-      }),
-    review: async (doc) => runPlanReview({ target: renderPlanDoc(doc), maxRefutations: maxRefutations, ...reviewModels }),
+  // ------------------------------------------------------------------ implementation-plan
+  // Report-only: no persisted rdm item, so no act and no gate.
+  // stripNonPhaseUnitOfWork drops unit-of-work here too (targetType
+  // 'implementation-plan' !== 'phase').
+  if (kind === 'implementation-plan') {
+    const planText = parsed.planText || '(the implementation plan provided in context)'
+    // See reviewUnit's identical notes: acTable is always null in plan mode, and
+    // `budget` describes the pipeline, not the post-strip survivor set.
+    const { survivors: rawSurvivors, budget } = await runPlanReview({
+      target: planText,
+      maxRefutations: maxRefutations,
+    })
+    const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
+    const outcome = classifyPlanOutcome(survivors)
+    _log(
+      'plan-review (implementation-plan): ' +
+        outcome +
+        ' — ' +
+        summarizeFindings(survivors) +
+        formatUnitBudget(budget)
+    )
+    return {
+      kind: 'implementation-plan',
+      outcome: outcome,
+      summary: summarizeFindings(survivors),
+      budget: budget || null,
+      findings: survivors,
+    }
   }
-)
 
-// agent() RESOLVES to null on an unknown/unavailable model id rather than
-// throwing (spike consequence 3). runPlanGate guards BOTH the initial plan and
-// every revise result and reports which stage produced the null, so the failure
-// is diagnosable instead of silently escalating.
-if (planGate.fetchError === true) {
-  const nullStage = planGate.stage === 'revise' ? 'plan revise' : 'plan'
-  log('dispatch-phase: ' + nullStage + ' agent returned null on ' + itemLabelRaw + ' (model: ' + models.plan + ')')
-  return itemOutcome({ fetchError: true })
-}
+  // ------------------------------------------------------------------ persisted targets
+  // Fetch the artifact(s), then build the independent review unit list.
+  //
+  // HOIST: a caller-supplied `fetched` payload replaces the transcribing agent
+  // outright. This is the priority hoist of the whole elimination pass — see
+  // parsePlanArgs' note on the two recorded production corruptions that
+  // schema validation could not catch. A payload the shape guard rejects falls
+  // through to the agent below, which is left byte-unchanged.
+  let fetched = null
+  if (hoistedFetchedOk(parsed.fetched, kind)) {
+    fetched = parsed.fetched
+    _log('plan-review: ' + kind + ' payload hoisted from caller args (no fetch agent)')
+  } else if (kind === 'roadmap') {
+    try {
+      fetched = await _agent(buildRoadmapFetchPrompt(parsed.roadmap), {
+        label: 'fetch:roadmap',
+        phase: 'Read',
+        agentType: 'rdm-mechanical',
+        schema: ROADMAP_TARGET_SCHEMA,
+        model: _mechanicalModel,
+      })
+    } catch (e) {
+      fetched = null
+    }
+  } else {
+    const fetchPrompt =
+      kind === 'task' ? buildTaskFetchPrompt(parsed.task) : buildPhaseFetchPrompt(parsed.roadmap, parsed.phase)
+    try {
+      fetched = await _agent(fetchPrompt, {
+        label: 'fetch:' + kind,
+        phase: 'Read',
+        agentType: 'rdm-mechanical',
+        schema: PLAN_TARGET_SCHEMA,
+        model: _mechanicalModel,
+      })
+    } catch (e) {
+      fetched = null
+    }
+  }
 
-const planDoc = planGate.planDoc
-const planFindings = planGate.findings
+  const built = buildReviewUnits(parsed, fetched)
+  const units = built.units
 
-// Plan gate: never implement on a blocking plan.
-if (hasBlocking(planFindings, tier)) {
-  log('dispatch-phase: plan gate escalated for ' + itemLabel)
-  return itemOutcome({ planFindings: planFindings, tier: tier, planBudget: planGate.budgetRounds })
-}
+  // FAIL-CLOSED: an unread plan must NOT be silently marked reviewed / have its
+  // tag cleared. Report the failure and mutate nothing.
+  if (built.fetchFailed) {
+    _log('plan-review: artifact fetch failed for ' + kind + ' — leaving needs-plan-review in place (fail-closed)')
+    return { kind: kind, outcome: 'escalated', fetchError: true, summary: 'plan-review: artifact fetch failed', units: [] }
+  }
 
-// --plan-only: the plan gate passed — stop before implementing and report the
-// vetted plan as `reviewed` (autopilot's estimate/plan-vet pass). This early
-// return is NOT part of the copied dispatch-outcome block, so it must carry the
-// identifier for the active mode itself (task-keyed vs roadmap/phase-keyed).
-if (planOnly) {
-  // The plan gate's own refutation budget rides along on this early return too,
-  // so a plan-only run that hit the bound is still visible to autopilot's run
-  // summary (which tags a `noop-vetted` phase from exactly this OUTCOME). The
-  // FULL per-round array is threaded, not the last round, so a bound hit on an
-  // early plan round that a later revision resolved is not silently dropped.
-  const planOnlyBudget = buildReviewBudget([], planGate.budgetRounds)
-  const planOnlySummary = 'plan-only: plan gate passed' + budgetSummaryClause(planOnlyBudget)
-  const o = isTask
-    ? { task: taskSlug, outcome: 'reviewed', summary: planOnlySummary, reviewBudget: planOnlyBudget, findings: planFindings }
-    : {
-        roadmap: roadmap,
-        phase: phaseArg,
-        outcome: 'reviewed',
-        summary: planOnlySummary,
-        reviewBudget: planOnlyBudget,
-        findings: planFindings,
+  // One wont-fix search covers every unit in this run — a human's explicit
+  // override on one finding must never be looked up per unit.
+  // HOIST: a caller-supplied `wontFixedTexts` array replaces this search agent.
+  let wontFixedTexts = []
+  if (Array.isArray(parsed.wontFixedTexts)) {
+    wontFixedTexts = parsed.wontFixedTexts
+    _log('plan-review: wont-fix texts hoisted from caller args (no fetch agent)')
+  } else {
+    try {
+      const wf = await _agent(buildWontFixFetchPrompt(), {
+        label: 'fetch:wontfix',
+        phase: 'Read',
+        agentType: 'rdm-mechanical',
+        schema: WONTFIX_LIST_SCHEMA,
+        model: _mechanicalModel,
+      })
+      wontFixedTexts = wf && Array.isArray(wf.texts) ? wf.texts : []
+    } catch (e) {
+      wontFixedTexts = []
+    }
+  }
+
+  // Review each unit independently (parallel per-unit fan-out — a phase's outcome
+  // never changes a sibling's). A single phase/task target is a one-element list.
+  const results = await _parallel(units.map((u) => () => reviewUnit(u, wontFixedTexts)))
+
+  // Act + gate each unit independently. Both halves are skipped in
+  // --implementation-plan mode (handled by the early return above); the explicit
+  // `if (kind !== 'implementation-plan')` guards make that carve-out grep-visible
+  // and keep the code robust if the flow is ever restructured.
+  const reported = []
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i]
+    if (!r) continue
+    const u = r.unit
+    const gate = gateFor('plan', r.outcome)
+
+    // --- Act (orchestrator-only; skipped for implementation-plan) ---
+    if (kind !== 'implementation-plan' && r.survivors.length > 0) {
+      try {
+        await _agent(buildActPrompt(u.kind, u.roadmap, u.ident, r.survivors), {
+          label: 'act:' + u.kind + ':' + u.ident,
+          phase: 'Act',
+          schema: STAMP_ACK_SCHEMA,
+        })
+      } catch (e) {
+        _log('plan-review: act step failed for ' + u.kind + '/' + u.ident + ' — continuing to gate')
       }
-  log('dispatch-phase (' + itemLabel + '): plan-only — plan approved')
-  return o
-}
+    }
 
-// Stages C + D: implement in the shared per-roadmap worktree (a FRESH
-// implementer seeded with ONLY the phase body + approved plan doc — not the
-// planner context), code-review via the same stamped pipeline, and rework up to
-// the code-rework budget. As with the plan gate, the loop lives in runCodeGate.
-const approvedPlanText = renderPlanDoc(planDoc)
-const runCodeReview = buildReviewPipeline('code')
-const reviewTarget = isTask ? 'task/' + taskSlug : roadmapSlug + '/' + stem
-// ABSORPTION handoff: the implementer reports its own branch diff (see
-// IMPLEMENT_RESULT_SCHEMA), and the review closure immediately below consumes it
-// ONE-SHOT — it reads and clears `pendingDiff` on entry, so a round-2 review can
-// never inherit round 1's stale diff. Per-round freshness is preserved because
-// runCodeGate implements exactly once before every review round.
-let pendingDiff = null
-const codeGate = await runCodeGate(
-  { maxRework: maxCodeRework, tier: tier },
-  {
-    implement: async (notes) => {
-      const r =
-        notes == null
-          ? await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, null, cfg), {
-              model: models.implement,
-              label: 'implement:worktree',
-              phase: 'Implement',
-              schema: IMPLEMENT_RESULT_SCHEMA,
-            })
-          : await agent(buildImplementPrompt(worktreeRef, phaseBody, approvedPlanText, notes, cfg), {
-              model: models.implement,
-              label: 'implement:rework',
-              phase: 'Implement',
-              schema: IMPLEMENT_RESULT_SCHEMA,
-            })
-      pendingDiff = r && Array.isArray(r.changedFiles) && r.changedFiles.length > 0 ? r : null
-      return r
-    },
-    // The code gate IS the canonical review — `buildReviewPipeline('code')` from
-    // the stamped block, with NO independent code-review logic in this driver.
-    // The diff is fetched INSIDE this closure so every rework round re-derives
-    // its signals from the post-rework tree: a round-2 fix that newly touches an
-    // `rdm-core` public item must turn `api-docs` on for round 2.
-    review: async () => {
-      // ONE-SHOT consume: read and clear, so the next round cannot inherit this
-      // round's diff. A null (implementer returned nothing usable, resolved to
-      // null on an unknown model, or threw) falls through to the untouched
-      // diff:signals agent below.
-      const diffFromImplementer = pendingDiff
-      pendingDiff = null
-      let diff = null
-      if (diffFromImplementer) {
-        diff = diffFromImplementer
-        log('dispatch-phase: diff signals absorbed from the implementer for ' + itemLabel)
-      } else {
+    // --- Round audit note (orchestrator-only; skipped for implementation-plan) ---
+    // On any non-`reviewed` outcome, record the round: the FULL deduped
+    // remaining findings (not just the newly-reported subset), so nothing open
+    // is hidden from a future reader — this runs even when survivors is empty
+    // (a round-3+ escalation can have zero findings and still must be capped).
+    if (kind !== 'implementation-plan' && r.outcome !== 'reviewed') {
+      try {
+        await _agent(buildRoundNoteWritePrompt(u.kind, u.roadmap, u.ident, r.round, r.outcome, r.survivors), {
+          label: 'act:round-note:' + u.kind + ':' + u.ident,
+          phase: 'Act',
+          schema: STAMP_ACK_SCHEMA,
+        })
+      } catch (e) {
+        _log('plan-review: round-note write failed for ' + u.kind + '/' + u.ident)
+      }
+    }
+
+    // --- Gate (skipped for implementation-plan) ---
+    // On reviewed: read-filter-write the tags to drop needs-plan-review,
+    // preserving siblings. On rework/escalated: leave the tag; GATE_POLICY.plan
+    // never persists an rdm status (gate.status is a literal null).
+    let tagCleared = false
+    if (kind !== 'implementation-plan') {
+      if (gate.clearsPlanReviewTag) {
+        const remaining = filterPlanReviewTag(u.tags)
         try {
-          diff = await agent(buildDiffSignalsPrompt(worktreeRef, cfg), {
-            label: 'diff:signals',
-            phase: 'Review',
-            schema: DIFF_SIGNALS_SCHEMA,
-            model: models.mechanical,
+          const ack = await _agent(buildTagWritePrompt(u.kind, u.roadmap, u.ident, remaining), {
+            label: 'gate:clear-tag:' + u.kind + ':' + u.ident,
+            phase: 'Gate',
+            agentType: 'rdm-mechanical',
+            schema: STAMP_ACK_SCHEMA,
+            model: _mechanicalModel,
           })
+          tagCleared = !!(ack && ack.ok === true)
         } catch (e) {
-          diff = null
+          _log('plan-review: tag-clear failed for ' + u.kind + '/' + u.ident)
         }
       }
-      const changedFiles = diff && Array.isArray(diff.changedFiles) ? diff.changedFiles.filter(Boolean) : []
-      if (changedFiles.length === 0) {
-        // FAIL-OPEN: omit the `signals` key ENTIRELY — never pass `{}`.
-        // selectDimensions treats an omitted `signals` as "unknown → run every
-        // dimension", while `{}` means "computed, nothing triggered" and would
-        // silently drop tests / api-docs / changelog / security coverage exactly
-        // when the driver knew the least.
-        log('dispatch-phase: diff signals unavailable for ' + itemLabel + ' — running every code dimension (fail-open)')
-        return runCodeReview({ target: reviewTarget, maxRefutations: maxRefutations, ...reviewModels })
-      }
-      const signals = deriveSignals({
-        targetType: isTask ? 'task' : 'phase',
-        changedFiles: changedFiles,
-        diffText: typeof diff.diffText === 'string' ? diff.diffText : null,
-      })
-      return runCodeReview({ target: reviewTarget, signals: signals, maxRefutations: maxRefutations, ...reviewModels })
-    },
-    // Act: only invoked by runCodeGate when the FINAL round is clean with
-    // non-empty surviving (non-gating) findings. Incorporates each finding by
-    // size — small fixed inline in the worktree, large filed as a task — per
-    // buildCodeActPrompt. A missing/failing agent call never affects the
-    // outcome (runCodeGate already swallows a throw from this dep).
-    act: async (findings) =>
-      agent(buildCodeActPrompt(isTask ? 'task' : 'phase', roadmap, isTask ? taskSlug : stem, worktreeRef, findings, cfg), {
-        model: models.implement,
-        label: 'act:code',
-        phase: 'Act',
-        schema: CODE_ACT_SCHEMA,
-      }),
-  }
-)
+    }
 
-const outcome = itemOutcome({
-  planFindings: planFindings,
-  codeReviews: codeGate.rounds,
-  acRounds: codeGate.acRounds,
-  budgetRounds: codeGate.budgetRounds,
-  planBudget: planGate.budgetRounds,
-  maxRework: maxCodeRework,
-  tier: tier,
-  actResult: codeGate.actResult,
+    const reason = gate.reasonPrefix ? gate.reasonPrefix + ' ' + r.summary : ''
+    reported.push({
+      kind: u.kind,
+      ident: u.ident,
+      roadmap: u.roadmap,
+      outcome: r.outcome,
+      round: r.round,
+      newlyReported: r.newlyReported,
+      repeats: r.repeats,
+      status: gate.status,
+      clearsPlanReviewTag: gate.clearsPlanReviewTag,
+      tagCleared: tagCleared,
+      reason: reason,
+      summary: r.summary,
+      budget: r.budget || null,
+      findings: r.survivors,
+    })
+    _log('plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + r.summary + formatUnitBudget(r.budget))
+  }
+
+  const result = { kind: kind, units: reported }
+  if (kind !== 'roadmap' && reported.length === 1) {
+    // Flatten a single phase/task target onto the top-level result for convenience.
+    result.outcome = reported[0].outcome
+    result.summary = reported[0].summary
+    result.budget = reported[0].budget
+    result.findings = reported[0].findings
+  }
+  _log('plan-review (' + kind + '): ' + reported.length + ' unit(s) gated')
+  return result
+}
+// >>> plan-review-driver:end <<<
+
+// --- Runtime entry ------------------------------------------------------------
+// Thin, NOT part of the copied block: wire the ambient Workflow globals into the
+// injectable driver and return its structured result. `typeof x !== 'undefined'`
+// is a ReferenceError-safe global probe; runPlanReview is built from the stamped
+// review core here so buildReviewPipeline probes the same ambient agent/pipeline/
+// parallel it always has.
+
+// buildMechanicalModelPrompt() — a mechanical Bash agent that resolves the
+// mechanical dispatch step to a concrete model id, ONCE per run, before any
+// other mechanical agent fires (fetch:roadmap, fetch:<kind>,
+// gate:clear-tag:*). This is deliberately the one call in the whole run left
+// UNSIZED (mirrors dispatch-phase's Stage-0 fetch:phase-meta/fetch:task-meta
+// exemption and autopilot's own model:mechanical bootstrap, both recorded in
+// their respective verify-workflow-*.sh AC-MODEL bootstrap whitelists): it is
+// the call that produces the model id every other mechanical agent below runs
+// on, so it cannot know its own model before running.
+function buildMechanicalModelPrompt() {
+  return [
+    'You are a mechanical fetch agent. Do not plan or implement anything.',
+    'Run exactly this command in the repo root and read its printed output:',
+    '  ./target/debug/rdm model resolve mechanical',
+    'Return the printed model id verbatim as JSON { "model": "<id>" }.',
+    'If the command fails or prints nothing, return { "model": "" }.',
+  ].join('\n')
+}
+
+// MECHANICAL_MODEL — the resolved `rdm model resolve mechanical` id, from the
+// one bootstrap call made before the driver runs.
+const MECHANICAL_MODEL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['model'],
+  properties: {
+    model: { type: 'string' },
+  },
+}
+
+// HOIST (see docs/mechanical-agent-inventory.md): the caller — already a running
+// agent with the repo in context — may run `rdm model resolve mechanical` itself
+// and pass the id as `args.mechanicalModel`. OPTIONAL: absent or malformed falls
+// through to the bootstrap agent below, which is left byte-unchanged and is what
+// a direct `Workflow` invocation always does. The unresolved-model fail-closed
+// abort applies identically to both paths.
+let mechanicalModel = ''
+let mechanicalErr = ''
+const hoistedMechanicalModel =
+  args && typeof args === 'object' && typeof args.mechanicalModel === 'string' ? args.mechanicalModel.trim() : ''
+if (hoistedMechanicalModel) {
+  mechanicalModel = hoistedMechanicalModel
+  if (typeof log !== 'undefined') log('plan-review: mechanical model hoisted from caller args')
+} else if (typeof agent !== 'undefined') {
+  try {
+    const mechanicalModelResult = await agent(buildMechanicalModelPrompt(), {
+      label: 'model:mechanical',
+      phase: 'Read',
+      agentType: 'rdm-mechanical',
+      schema: MECHANICAL_MODEL_SCHEMA,
+    })
+    mechanicalModel = mechanicalModelResult && typeof mechanicalModelResult.model === 'string' ? mechanicalModelResult.model.trim() : ''
+  } catch (e) {
+    mechanicalModel = ''
+    mechanicalErr = String((e && e.message) || e)
+  }
+}
+
+// An unresolved mechanical model stops the run before any mechanical agent
+// fires (fetch:roadmap, fetch:<kind>, gate:clear-tag:*), rather than silently
+// falling through to an unpinned call — mirrors autopilot's/backlog's/
+// estimate's/document's own model:mechanical empty-string guard. Fail-closed:
+// no tag is cleared, no status is persisted.
+if (!mechanicalModel) {
+  const safeLog = typeof log !== 'undefined' ? log : function () {}
+  safeLog(
+    'plan-review: mechanical model could not be resolved (' +
+      (mechanicalErr || 'rdm model resolve mechanical returned nothing') +
+      ') — stopping before any mechanical agent runs'
+  )
+  const parsedForAbort = parsePlanArgs(args)
+  return {
+    kind: parsedForAbort.kind,
+    outcome: 'escalated',
+    fetchError: true,
+    summary: 'plan-review: mechanical model unresolved',
+    units: [],
+  }
+}
+
+return await runPlanReviewDriver(args, {
+  agent: typeof agent !== 'undefined' ? agent : undefined,
+  parallel: typeof parallel !== 'undefined' ? parallel : undefined,
+  log: typeof log !== 'undefined' ? log : function () {},
+  runPlanReview: buildReviewPipeline('plan'),
+  mechanicalModel: mechanicalModel,
 })
-log('dispatch-phase (' + itemLabel + '): ' + outcome.outcome + ' — ' + outcome.summary)
-return outcome

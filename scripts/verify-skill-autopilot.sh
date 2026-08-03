@@ -68,7 +68,7 @@
 #      `lib/autopilot.mjs` and no stamped copy anymore; the skill is the one
 #      and only source of the loop's prose.
 #
-#   3. STATIC INVARIANTS (JS greps: one `workflow('dispatch-phase')` call, no
+#   3. STATIC INVARIANTS (JS greps: one nested `workflow()` dispatch call, no
 #      import/require, both markers, no land/merge/main-mutation string,
 #      no *_SCHEMA with a top-level `type:'array'`, meta.phases parity) —
 #      MOOT, JS-runtime/JS-schema-specific. The two invariants with a real
@@ -79,17 +79,17 @@
 #
 #   3b. AC-MODEL (every agent() call in the five mechanical deps carries an
 #      explicit model:) — MOOT. There are no agent() calls left in the loop
-#      itself; the only remaining Workflow calls (`estimate`, `dispatch-phase`)
+#      itself; the only remaining Workflow calls (`rdm-wf-estimate`, `rdm-wf-dispatch-phase`)
 #      are unchanged callers already covered by their own harnesses.
 #
 #   4. MODULE PARSE (autopilot.js loads under module semantics) — MOOT. There
 #      is no JS file to parse.
 #
 #   5. SIBLING GATE (verify-workflow-dispatch.sh stays green) — PORTABLE,
-#      unchanged in spirit: the prose loop nests exactly the `dispatch-phase`
-#      and `estimate` Workflows and no others, so both of their harnesses
+#      unchanged in spirit: the prose loop nests exactly the `rdm-wf-dispatch-phase`
+#      and `rdm-wf-estimate` Workflows and no others, so both of their harnesses
 #      staying green is still the right regression signal. Re-run in section 3
-#      below (now naming both siblings, since `estimate` is a genuinely new
+#      below (now naming both siblings, since `rdm-wf-estimate` is a genuinely new
 #      call path per SKILL.md step 3).
 #
 #   6. LAND-TIME COMPLETION TRAILER — PORTABLE, workflow-agnostic; this section
@@ -182,10 +182,61 @@ pass "all five arg names present, with required/omitted semantics documented"
 # The backticks below are literal grep-pattern characters (SKILL.md quotes
 # Workflow names in backticks), not shell command substitution.
 # shellcheck disable=SC2016
-grep -qF '**`dispatch-phase`' "$SKILL" || fail "SKILL.md must name the 'dispatch-phase' Workflow"
+grep -qF '**`rdm-wf-dispatch-phase`' "$SKILL" || fail "SKILL.md must name the 'dispatch-phase' Workflow"
 # shellcheck disable=SC2016
-grep -qF '**`estimate`' "$SKILL" || fail "SKILL.md must name the 'estimate' Workflow"
+grep -qF '**`rdm-wf-estimate`' "$SKILL" || fail "SKILL.md must name the 'estimate' Workflow"
 pass "exactly one named dispatch-phase Workflow call and one named estimate Workflow call"
+
+# --- 3a. THE rdm-wf- RENAME'S TWO HALVES -------------------------------------
+# This is the single highest-risk file in the `rdm-wf-` engine rename: it is the
+# one place where a token that MUST change (the engine names it invokes) and a
+# token that MUST NOT (its own `rdm-autopilot` skill name) differ only by
+# prefix. A sweep that gets one half and not the other is the expected failure
+# mode, so both halves are asserted, each with its own planted-mutation
+# self-test.
+say "3a. rdm-wf- rename: engine invocations renamed, the skill's own name untouched"
+
+# Half (a): every Workflow invocation names the PREFIXED engine, and no bold
+# invocation names a bare engine.
+# shellcheck disable=SC2016
+if grep -qE '\*\*`(dispatch-phase|estimate)`' "$SKILL"; then
+    fail "3a(a): SKILL.md still names a BARE engine in a bold Workflow invocation — the rename is half-completed"
+fi
+pass "3a(a): no bold invocation names a bare engine"
+
+# Half (b): the skill's own identity is untouched.
+[ -d "$REPO_ROOT/.claude/skills/rdm-autopilot" ] ||
+    fail "3a(b): .claude/skills/rdm-autopilot/ no longer exists — the front-door skill was renamed, which this phase forbids"
+grep -q '^name: rdm-autopilot$' "$SKILL" ||
+    fail "3a(b): SKILL.md frontmatter no longer declares 'name: rdm-autopilot'"
+NS=rdm-
+[ "$(grep -c "$NS$NS" "$SKILL" || true)" -eq 0 ] ||
+    fail "3a(b): SKILL.md contains a double-prefixed name — an unanchored substitution corrupted the skill name"
+pass "3a(b): the skill directory, frontmatter name and every rdm-autopilot token are unchanged"
+
+# Self-test for half (a): revert one invocation to its bare form and confirm
+# the half-(a) check turns red.
+AP_MUT_A="$TMP/autopilot-half-a.md"
+# shellcheck disable=SC2016  # backticks are literal SKILL.md text, not substitution
+sed 's/\*\*`rdm-wf-dispatch-phase`/**`dispatch-phase`/' "$SKILL" >"$AP_MUT_A"
+# shellcheck disable=SC2016
+grep -qF '**`dispatch-phase`' "$AP_MUT_A" ||
+    fail "3a self-test A: could not plant the bare invocation name — the self-test is vacuous"
+# shellcheck disable=SC2016
+grep -qE '\*\*`(dispatch-phase|estimate)`' "$AP_MUT_A" ||
+    fail "3a self-test A: a planted BARE engine invocation did NOT turn half (a) red"
+pass "3a self-test A: a planted bare engine invocation correctly turns half (a) red"
+
+# Self-test for half (b): rename the skill in a scratch tree and confirm the
+# half-(b) checks turn red.
+AP_MUT_B_DIR="$TMP/autopilot-half-b/.claude/skills/rdm-wf-autopilot"
+mkdir -p "$AP_MUT_B_DIR"
+sed 's/^name: rdm-autopilot$/name: rdm-wf-autopilot/' "$SKILL" >"$AP_MUT_B_DIR/SKILL.md"
+[ -d "$TMP/autopilot-half-b/.claude/skills/rdm-autopilot" ] &&
+    fail "3a self-test B: the scratch tree still has an rdm-autopilot directory — the self-test is vacuous"
+grep -q '^name: rdm-autopilot$' "$AP_MUT_B_DIR/SKILL.md" &&
+    fail "3a self-test B: a renamed frontmatter name did NOT turn half (b) red"
+pass "3a self-test B: a renamed skill directory and frontmatter name correctly turn half (b) red"
 
 # PER-CALLER rdmBin/project assertion (project-agnostic-lane, phase 10).
 # dispatch-phase's `rdmBin` arg is REQUIRED and FAIL-CLOSED: there is no
@@ -216,8 +267,8 @@ fi
 pass "autopilot rdmBin detector fires on a mangled key"
 
 # NEW estimate-payload assertion (project-agnostic-lane, phase 10): the
-# `estimate` Workflow invocation line must ALSO carry both rdmBin and project —
-# estimate.js's own parseEstimateArgs validates them via
+# `rdm-wf-estimate` Workflow invocation line must ALSO carry both rdmBin and project —
+# rdm-wf-estimate.js's own parseEstimateArgs validates them via
 # resolveRdmBin/parseProjectArg, same fail-closed contract as dispatch-phase.
 # Line-scoped, mirroring the dispatch-phase assertion above.
 assert_autopilot_estimate_rdmbin() {
@@ -228,7 +279,7 @@ assert_autopilot_estimate_rdmbin() {
     return 0
 }
 assert_autopilot_estimate_rdmbin "$SKILL" ||
-    fail "the estimate invocation line must pass rdmBin and project — estimate.js requires rdmBin and errors without it (no PATH fallback)"
+    fail "the estimate invocation line must pass rdmBin and project — rdm-wf-estimate.js requires rdmBin and errors without it (no PATH fallback)"
 pass "the estimate invocation line passes rdmBin and project"
 
 # Self-test: prove the estimate assertion is not vacuous.
@@ -421,14 +472,14 @@ for f in $SHIPPED_TEMPLATES; do
 done
 pass "shipped-template rdmBin detector fires on a mangled key (both files)"
 
-# NEGATIVE: neither shipped file invokes the `estimate` Workflow. Scoped to the
+# NEGATIVE: neither shipped file invokes the `rdm-wf-estimate` Workflow. Scoped to the
 # exact invocation phrase the LOCAL skill uses to name its real call, not the
 # bare word "estimate" — both shipped files legitimately discuss "estimate" in
 # their "Why no estimate pre-pass here" explanatory paragraph, and a bare
 # substring-absence assertion would fail against correct, unmodified input.
 for f in $SHIPPED_TEMPLATES; do
     # shellcheck disable=SC2016
-    if grep -qF '**`estimate`' "$f"; then
+    if grep -qF '**`rdm-wf-estimate`' "$f"; then
         fail "$(basename "$f"): must not invoke the estimate Workflow — this is a deliberate, permanent divergence from the local dogfood skill"
     fi
 done
@@ -438,10 +489,10 @@ pass "neither shipped template invokes the estimate Workflow (scoped to the invo
 # invocation phrase into a scratch copy and confirm detection.
 for f in $SHIPPED_TEMPLATES; do
     # shellcheck disable=SC2016
-    printf '\ninvoke the **`estimate` Workflow** via the Workflow tool\n' >>"$TMP/estimate-mutant.md"
+    printf '\ninvoke the **`rdm-wf-estimate` Workflow** via the Workflow tool\n' >>"$TMP/estimate-mutant.md"
     cat "$f" "$TMP/estimate-mutant.md" >"$TMP/estimate-mutant-full.md"
     # shellcheck disable=SC2016
-    if ! grep -qF '**`estimate`' "$TMP/estimate-mutant-full.md"; then
+    if ! grep -qF '**`rdm-wf-estimate`' "$TMP/estimate-mutant-full.md"; then
         fail "$(basename "$f"): estimate-phrase self-test mutation did not plant the phrase — self-test is broken"
     fi
     rm -f "$TMP/estimate-mutant.md" "$TMP/estimate-mutant-full.md"

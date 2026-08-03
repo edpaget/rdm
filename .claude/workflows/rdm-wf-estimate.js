@@ -21,7 +21,7 @@
 // `scripts/verify-workflow-estimate.sh` gates the two copies for drift.
 
 export const meta = {
-  name: 'estimate',
+  name: 'rdm-wf-estimate',
   description:
     "Rate an rdm roadmap's unestimated phases: list -> filter -> parallel-rate -> write back difficulty + a ## Estimate audit note (tier derives in core), skipping already-estimated phases",
   // Must list exactly the distinct `phase:` values the real deps' agent() calls
@@ -38,7 +38,7 @@ export const meta = {
 //
 // This block is the single source of truth in
 // .claude/workflows/lib/estimate.mjs and is copied BYTE-IDENTICAL into
-// .claude/workflows/estimate.js by scripts/gen-workflow-estimate.sh (the
+// .claude/workflows/rdm-wf-estimate.js by scripts/gen-workflow-estimate.sh (the
 // Workflow runtime cannot load modules at run time).
 // scripts/verify-workflow-estimate.sh gates the copies for drift. No Date.now /
 // Math.random — pure array/string ops only. The block names NO ambient runtime

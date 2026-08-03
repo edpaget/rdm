@@ -366,7 +366,7 @@ if (args.help) {
   process.exit(0);
 }
 
-const run = await loadWorkflow('.claude/workflows/dispatch-phase.js');
+const run = await loadWorkflow('.claude/workflows/rdm-wf-dispatch-phase.js');
 const results = [await measureDispatch(run, 'phase'), await measureDispatch(run, 'task')];
 const unitCost = baselineUnitCost();
 const report = buildReport(results, unitCost);

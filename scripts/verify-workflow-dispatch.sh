@@ -1,7 +1,7 @@
 #!/bin/sh
 # Hermetic regression for the dispatch-phase keystone workflow.
 #
-# dispatch-phase (`.claude/workflows/dispatch-phase.js`) is the unit of
+# dispatch-phase (`.claude/workflows/rdm-wf-dispatch-phase.js`) is the unit of
 # autonomous execution for phases and tasks: a deterministic 4-stage pipeline
 #   Plan → PlanReview → Implement → CodeReview → OUTCOME
 # that returns (phase mode) { roadmap, phase, outcome, status, writesCompletion,
@@ -64,7 +64,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
 LIB="$REPO_ROOT/.claude/workflows/lib/dispatch-phase.mjs"
-WF="$REPO_ROOT/.claude/workflows/dispatch-phase.js"
+WF="$REPO_ROOT/.claude/workflows/rdm-wf-dispatch-phase.js"
 
 # Clear rdm-related env vars inherited from the caller's shell for hermeticity.
 unset RDM_ROOT RDM_PROJECT RDM_STAGE RDM_FORMAT RDM_PLAN_REPO RDM_PLAN_REPO_TOKEN RDM_PLAN_REPO_PATH 2>/dev/null || true
@@ -1283,7 +1283,7 @@ extract_stamped_regions "$WF" >"$TMP/stamped-regions"
 [ -s "$TMP/stamped-regions" ] ||
     fail "AC-1: extracted an EMPTY stamped region from $WF — the extractor or the markers are broken"
 if grep -n 'Done:' "$TMP/stamped-regions" >&2; then
-    fail "AC-1: the stamped regions of dispatch-phase.js must not contain a 'Done:' line (land-time only)"
+    fail "AC-1: the stamped regions of rdm-wf-dispatch-phase.js must not contain a 'Done:' line (land-time only)"
 fi
 
 # Self-test A: a directive planted INSIDE a stamped region must fire the detector.
@@ -1314,7 +1314,7 @@ pass "AC-1: no 'Done:' directive in either stamped region; detector fires inside
 # `isolation:` (the isolation:'worktree' agent option) must NOT be used.
 if grep -n 'isolation' "$WF" >/dev/null 2>&1; then
     grep -n 'isolation' "$WF" >&2 || true
-    fail "AC-5: dispatch-phase.js must not use isolation:'worktree' — enter the shared worktree via Bash"
+    fail "AC-5: rdm-wf-dispatch-phase.js must not use isolation:'worktree' — enter the shared worktree via Bash"
 fi
 grep -q 'worktree add' "$WF" || fail "AC-5: expected a './target/debug/rdm worktree add' instruction in an agent prompt"
 printf "  isolation: 'worktree',\n" >"$TMP/planted-iso.js"
@@ -1328,14 +1328,14 @@ grep -q '>>> dispatch-outcome:begin' "$WF" || fail "AC-3: missing dispatch-outco
 grep -q '>>> dispatch-outcome:end' "$WF" || fail "AC-3: missing dispatch-outcome:end marker"
 if grep -nE '(^|[^A-Za-z_])import[ (]' "$WF" >/dev/null 2>&1; then
     grep -nE '(^|[^A-Za-z_])import[ (]' "$WF" >&2 || true
-    fail "AC-3: dispatch-phase.js must not import (the runtime forbids it — sharing is by stamped copy)"
+    fail "AC-3: rdm-wf-dispatch-phase.js must not import (the runtime forbids it — sharing is by stamped copy)"
 fi
 if grep -nE '(^|[^A-Za-z_])require\(' "$WF" >/dev/null 2>&1; then
-    fail "AC-3: dispatch-phase.js must not require() (the runtime forbids it)"
+    fail "AC-3: rdm-wf-dispatch-phase.js must not require() (the runtime forbids it)"
 fi
 if grep -n 'workflow(' "$WF" >/dev/null 2>&1; then
     grep -n 'workflow(' "$WF" >&2 || true
-    fail "AC-3: dispatch-phase.js must not nest a workflow() call — both review gates are inline copies"
+    fail "AC-3: rdm-wf-dispatch-phase.js must not nest a workflow() call — both review gates are inline copies"
 fi
 printf "import x from 'y'\n" >"$TMP/planted-import.js"
 grep -qE '(^|[^A-Za-z_])import[ (]' "$TMP/planted-import.js" || fail "AC-3 import detector broken"
@@ -1487,7 +1487,7 @@ pass "AC-2: implementer seeded from phase body + plan doc only, not the plan-rev
 
 # AC-MODEL: every dispatch-path agent() call carries an explicit `model:`.
 #
-# The extractor deliberately skips COMMENT lines: `dispatch-phase.js` contains
+# The extractor deliberately skips COMMENT lines: `rdm-wf-dispatch-phase.js` contains
 # prose mentioning `agent()` (e.g. the meta.phases note "no agent() call uses
 # it"), and a naive matcher would emit those as option blocks and fail on a
 # correct implementation. A whole-file `grep model:` is also NOT acceptable here
@@ -1794,7 +1794,7 @@ pass "AC-STAMP: fails-quietly detector fires on a planted early-return between t
 #     only `for` headers on an exact literal allowlist. A loose "looks bounded"
 #     regex would ratchet the guard down to nothing, so the allowlist is exact.
 #
-# Scope: the two stamped lib blocks (`review-refute-fix`, `dispatch-outcome`) are
+# Scope: the two stamped lib blocks (`rdm-wf-review-refute-fix`, `dispatch-outcome`) are
 # deliberately EXCLUDED — the budget loops legitimately live in the dispatch-
 # outcome block, and this phase does not own the review block. Scoping is by
 # MARKER TOKEN, never line numbers, so it survives either block growing.
@@ -1837,9 +1837,9 @@ assert_for_headers_allowlisted() {
 }
 
 assert_no_while_in_driver "$WF" ||
-    fail "AC-4: no 'while' is permitted in dispatch-phase.js's DRIVER REGION (the stamped review-refute-fix and dispatch-outcome blocks are deliberately out of scope — this phase does not own them; the budget loops belong in the dispatch-outcome block)"
+    fail "AC-4: no 'while' is permitted in rdm-wf-dispatch-phase.js's DRIVER REGION (the stamped review-refute-fix and dispatch-outcome blocks are deliberately out of scope — this phase does not own them; the budget loops belong in the dispatch-outcome block)"
 assert_for_headers_allowlisted "$WF" ||
-    fail "AC-4: a 'for' header in dispatch-phase.js's DRIVER REGION is not on the allowlist (only the two budget loops are permitted, and only in the dispatch-outcome block — the stamped blocks themselves are out of scope)"
+    fail "AC-4: a 'for' header in rdm-wf-dispatch-phase.js's DRIVER REGION is not on the allowlist (only the two budget loops are permitted, and only in the dispatch-outcome block — the stamped blocks themselves are out of scope)"
 pass "AC-4: driver region has no 'while' and only allowlisted 'for' headers"
 
 # Self-test A: a planted `while (true)` in the driver region trips the while rule
@@ -1909,13 +1909,13 @@ fi
 pass "meta.phases consistency detector catches a planted undeclared phase"
 
 # --- 4. MODULE PARSE ---------------------------------------------------------
-say "4. Module parse: dispatch-phase.js loads under module semantics (no SyntaxError)"
+say "4. Module parse: rdm-wf-dispatch-phase.js loads under module semantics (no SyntaxError)"
 
 if parse_workflow "$WF" >/dev/null 2>&1; then
-    pass "dispatch-phase.js parses under module semantics (top-level meta declared once)"
+    pass "rdm-wf-dispatch-phase.js parses under module semantics (top-level meta declared once)"
 else
     parse_workflow "$WF" >&2 || true
-    fail "dispatch-phase.js does NOT parse — fix the SyntaxError (e.g. a duplicate top-level 'meta')"
+    fail "rdm-wf-dispatch-phase.js does NOT parse — fix the SyntaxError (e.g. a duplicate top-level 'meta')"
 fi
 
 # Self-test: prove the parse gate is non-vacuous. Injecting a redeclared top-level
@@ -2616,7 +2616,7 @@ pass "8: --check still accepts the real doc (the self-tests are discriminating, 
 #   9e — the repo-wide nested-`workflow()` negative, comment-filtered.
 say "9. Parameterization: no hardcoded rdm binary or project; the environment axes are runtime args"
 
-TEMPLATE_WF="$REPO_ROOT/rdm-core/src/templates/workflows/dispatch-phase.js"
+TEMPLATE_WF="$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-dispatch-phase.js"
 [ -f "$TEMPLATE_WF" ] || fail "9: shipped workflow template not found: $TEMPLATE_WF"
 
 # --- 9a. Per-file literal zeroing ---------------------------------------------
@@ -2992,7 +2992,7 @@ pass "9d(iii): detector fires when a builder re-hardcodes the rdm binary"
 # (the runtime allows exactly one level, and dispatch-phase already spends it
 # on the stamped review block). Comment lines are stripped first: today the only
 # `workflow(` hits under .claude/workflows/ are prose comments in
-# review-refute-fix.js, so an unfiltered grep would be meaningless here.
+# rdm-wf-review-refute-fix.js, so an unfiltered grep would be meaningless here.
 say "9e. Negative: no nested workflow() call site anywhere under .claude/workflows/"
 
 filtered_workflow_calls() {

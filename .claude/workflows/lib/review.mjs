@@ -4,8 +4,8 @@
 //! **find → refute → filter → verdict → gate/completion policy**. Every surface
 //! consumes it, so an improvement to review lands once and is usable everywhere:
 //!
-//!   * the autonomous workflow lane — `.claude/workflows/review-refute-fix.js`
-//!     and `.claude/workflows/dispatch-phase.js` — receives the marked block
+//!   * the autonomous workflow lane — `.claude/workflows/rdm-wf-review-refute-fix.js`
+//!     and `.claude/workflows/rdm-wf-dispatch-phase.js` — receives the marked block
 //!     below VERBATIM, stamped by `scripts/gen-workflow-review.sh` (the Claude
 //!     Code Workflow runtime cannot `import`/`require`; see
 //!     docs/workflow-schemas.md § "Import spike");
@@ -618,13 +618,13 @@ function refutePrompt(mode, dim, finding, context) {
 // >>> find-refute-verdict:end <<<
 // >>> find-refute-verdict:local-code-override:begin (skipped everywhere except --target local --mode code; scripts/gen-skill-review.sh's extract_region swaps THIS `//|` span in for the default one above only in that one combination) <<<
 //|
-//| ### Find & Refute — performed by the `review-refute-fix` workflow
+//| ### Find & Refute — performed by the `rdm-wf-review-refute-fix` workflow
 //|
 //| The mechanics that used to live here — one **read-only** finder agent per
 //| applicable dimension, then a **fresh** read-only refuter per finding (the
 //| finder is never the refuter; the refuter's stance is *"this is NOT a real
 //| issue unless the code proves otherwise"*) — are now performed deterministically
-//| by the `review-refute-fix` Workflow tool invoked in step 2 above. Each finding
+//| by the `rdm-wf-review-refute-fix` Workflow tool invoked in step 2 above. Each finding
 //| it returns carries `id`, `concern`, `location`, `severity`, `confidence`,
 //| `what_fails`, `why`, and `recommendation`.
 //|
@@ -1422,7 +1422,7 @@ function summarizeFindings(findings) {
 
 // --- Plan-standalone consolidation helpers -----------------------------------
 // Three pure, post-pipeline consolidation/gate helpers the standalone
-// plan-review workflow (.claude/workflows/plan-review.js) consumes. They are
+// plan-review workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. They are
 // CONSOLIDATION, not find/refute logic — they operate on the ranked survivors a
 // `buildReviewPipeline('plan')` run already produced, and add no new review
 // dimension, finder, or refuter. They live inside the stamped block so the
@@ -1434,7 +1434,7 @@ function summarizeFindings(findings) {
 // and idempotent.
 //
 // This is the CONSUMER-SIDE phase-scoping that selectDimensions' omitted-signals
-// path cannot do. plan-review.js deliberately runs `buildReviewPipeline('plan')`
+// path cannot do. rdm-wf-plan-review.js deliberately runs `buildReviewPipeline('plan')`
 // with NO signals (honoring the dispatch-phase deferral of signal-threading to
 // the sibling unify-plan-review roadmap), so selectDimensions fail-opens and the
 // unit-of-work finder runs on EVERY unit — task, roadmap body, and

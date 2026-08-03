@@ -2,7 +2,7 @@
 # Hermetic regression for the standalone review-refute-fix workflow's full
 # dispatch-shaped OUTCOME path (headless-skill-workflows roadmap).
 #
-# `.claude/workflows/review-refute-fix.js` grew from a survivors-only wrapper
+# `.claude/workflows/rdm-wf-review-refute-fix.js` grew from a survivors-only wrapper
 # (`{ mode, survivors }`) into a full standalone code-review workflow: when
 # invoked as `{ mode: 'code', roadmap, phase }` or `{ mode: 'code', task }`, it
 # now derives real diff signals from the item's worktree (mirroring
@@ -19,8 +19,8 @@
 #
 # This harness gates:
 #
-#   0. BYTE-IDENTICAL COPY — `.claude/workflows/review-refute-fix.js` and
-#      `rdm-core/src/templates/workflows/review-refute-fix.js` are identical
+#   0. BYTE-IDENTICAL COPY — `.claude/workflows/rdm-wf-review-refute-fix.js` and
+#      `rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js` are identical
 #      (enforced independently by `cargo test
 #      generate_workflows_are_byte_identical_to_source` and
 #      `scripts/verify-agent-config-distribution.sh`; this is a fast local
@@ -53,14 +53,14 @@
 #      status-persist step (off by default, on only when requested, and never
 #      running `rdm commit`).
 #   4. SKILL SHIM — `.claude/skills/rdm-review/SKILL.md` references the
-#      `review-refute-fix` workflow AND still carries its interactive
+#      `rdm-wf-review-refute-fix` workflow AND still carries its interactive
 #      Report/Act/Gate sections and the `Done:`-trailer gate mechanism (it must
 #      NOT have become a headless pass-through), and
 #      `scripts/gen-skill-review.sh --check` still passes in both `--mode code`
 #      and `--mode plan` (proving the untouched, separately-generated
 #      `skill-review-{cli,mcp}.md` / `skill-plan-review-{cli,mcp}.md` templates
 #      are unaffected by this hand-authored prose trim).
-#   5. STATIC INVARIANT — `meta.phases` in review-refute-fix.js lists exactly
+#   5. STATIC INVARIANT — `meta.phases` in rdm-wf-review-refute-fix.js lists exactly
 #      the distinct `phase:` tags the driver + the inlined review block
 #      actually emit (`Find`, `Refute`, `Review`, `Gate`).
 #   6. PARAMETERIZATION — review-refute-fix names NO particular rdm executable
@@ -87,8 +87,8 @@ set -eu
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
-WF="$REPO_ROOT/.claude/workflows/review-refute-fix.js"
-WF_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/workflows/review-refute-fix.js"
+WF="$REPO_ROOT/.claude/workflows/rdm-wf-review-refute-fix.js"
+WF_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js"
 SKILL="$REPO_ROOT/.claude/skills/rdm-review/SKILL.md"
 SKILL_GEN="$REPO_ROOT/scripts/gen-skill-review.sh"
 MARKER_END='review-refute-fix:end'
@@ -131,7 +131,7 @@ trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 # --- 0. BYTE-IDENTICAL COPY ---------------------------------------------------
 say "0. Byte-identical copy: dogfood workflow vs shipped template"
 if diff -u "$WF" "$WF_TEMPLATE" >/dev/null 2>&1; then
-    pass "review-refute-fix.js and its shipped template copy are byte-identical"
+    pass "rdm-wf-review-refute-fix.js and its shipped template copy are byte-identical"
 else
     diff -u "$WF" "$WF_TEMPLATE" >&2 || true
     fail "$WF and $WF_TEMPLATE have drifted — mirror the edit byte-for-byte"

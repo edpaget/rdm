@@ -16,7 +16,7 @@ You run one command and transcribe its output. Nothing else.
 ## Status and design notes (for maintainers, not for the agent)
 
 **This definition is live.** The mechanical `agent()` call sites of the four local-only
-workflows (`document.js`, `backlog.js`, `estimate.js`, `plan-review.js`) resolve against it —
+workflows (`rdm-wf-document.js`, `rdm-wf-backlog.js`, `rdm-wf-estimate.js`, `rdm-wf-plan-review.js`) resolve against it —
 19 records in all, asserted bidirectionally by `scripts/verify-workflow-review.sh` §2c. It is
 **not** used by the three distributed workflows, and not by any judgment agent.
 
@@ -53,7 +53,7 @@ Two deliberate choices:
   *minimum*. The mechanical call sites all return through `agent(prompt, { schema })`
   (`STAMP_ACK_SCHEMA`, `DIFF_SIGNALS_SCHEMA`, `ACK_SCHEMA`, `ESTIMATE_SCHEMA`), and the 2026-07-28
   spike confirmed that path survives this list: case B ran `Bash` and returned a valid schema'd
-  object under exactly these two tools, as did both threaded agents in the live `backlog`
+  object under exactly these two tools, as did both threaded agents in the live `rdm-wf-backlog`
   dispatch. Do not narrow the list further without re-proving the schema-return path — every
   threaded site depends on it.
 

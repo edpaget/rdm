@@ -6,7 +6,7 @@ scripts** under `.claude/workflows/`, a sibling of `.claude/skills/` and
 the canonical schema contracts they exchange.
 
 > **Scope:** mostly dogfood-only, with one emitted exception. The two workflow
-> scripts — `dispatch-phase.js`, `review-refute-fix.js` — ARE now
+> scripts — `rdm-wf-dispatch-phase.js`, `rdm-wf-review-refute-fix.js` — ARE now
 > emitted by `rdm agent-config claude --skills --out <dir>`, byte-identical to
 > this repo's own `.claude/workflows/` copies, under `<dir>/.claude/workflows/`
 > (Claude-only, `--out`-only — see `CHANGELOG.md`). Everything else stays
@@ -18,11 +18,11 @@ the canonical schema contracts they exchange.
 > (`rdm-core/src/templates/skill-{autopilot,dispatch-phase}-{cli,mcp}.md`, and the
 > `--auto` section of `skill-do-{cli,mcp}.md`) are the user-facing autonomous
 > lane: `skill-autopilot-{cli,mcp}.md` is now a **prose** skill that itself
-> drives the roadmap loop, invoking `dispatch-phase` (and, locally, `estimate`)
+> drives the roadmap loop, invoking `rdm-wf-dispatch-phase` (and, locally, `rdm-wf-estimate`)
 > as ordinary `Workflow` calls rather than being a thin shim over a workflow
 > script of its own — see `docs/workflow-vs-prose-boundary.md` for why autopilot
 > was retired from `.claude/workflows/` in favor of prose. `skill-dispatch-phase-{cli,mcp}.md`
-> remains a thin shim that invokes `dispatch-phase.js` via the `Workflow` tool,
+> remains a thin shim that invokes `rdm-wf-dispatch-phase.js` via the `Workflow` tool,
 > instead of re-narrating the orchestration in prose. Distributing the
 > still-unshipped pieces (parameterization, `lib/`, a downstream regeneration
 > story) remains a follow-up roadmap.
@@ -31,9 +31,36 @@ the canonical schema contracts they exchange.
 
 ```
 .claude/workflows/
-  <name>.js              # a workflow script — invoked via the Workflow tool
+  rdm-wf-<name>.js       # an ENGINE script — invoked via the Workflow tool
   lib/<name>.mjs         # a canonical source module (Node ES module; see below)
 ```
+
+**Engine filenames carry the `rdm-wf-` prefix; `lib/*.mjs` filenames do not.**
+An engine's filename and its `meta.name` are the entry a user sees in the
+skill/slash-command listing, right next to the `rdm-*` skill front door that
+drives it — so `rdm-dispatch-phase` (the skill) and `rdm-wf-dispatch-phase`
+(the engine it invokes) are now distinguishable at a glance. A `lib/*.mjs` is a
+shared source module, never a listing entry, so its name is deliberately
+unprefixed and frozen. `spike-agent-type.js` is an exempt spike artifact and
+keeps its bare name.
+
+### Known-intentional survivors of an engine-name grep
+
+Several tokens read like engine names but are **not** listing entries or
+filenames, and are deliberately NOT renamed. Renaming them would ripple into
+both generators and ~96 harness assertions for zero listing benefit:
+
+| Token | What it actually is |
+|---|---|
+| `>>> review-refute-fix:begin` / `:end`, `find-refute-verdict`, `review-spec`, `estimate-core`, `dispatch-outcome`, `plan-review-driver`, `backlog-groom`, `document-core` | **Region marker names.** Internal identifiers naming a stamped or byte-copied block, consumed by the generators and their drift gates. |
+| `'review-refute-fix: …'` runtime error prefixes in `lib/review.mjs` | **Module-scoped error prefixes**, identifying which module raised — not a file path. |
+| `docs/token-baseline.json`'s bare per-engine record keys, and `docs/token-baseline.md`'s lane tables | **A frozen measurement corpus.** The figures are keyed to those names as recorded; rewriting them would invalidate `scripts/verify-token-report.sh --audit`. |
+| `autopilot.js`, `lib/autopilot.mjs`, and the `autopilot` Workflow name | **Retired, with no successor.** `rdm-autopilot` survives as a prose skill with no engine behind it, so `autopilot` must never be prefixed — doing so would corrupt the one front door the rename must leave untouched. `scripts/verify-agent-config-distribution.sh`'s self-test D depends on `autopilot` naming a Workflow that does not resolve. |
+| Historical `CHANGELOG.md` entries | Descriptions of the pre-rename world; correct as written. |
+
+`scripts/verify-workflow-review.sh` § 2e runs the seven anchored reference-form
+greps over the tree and fails on any hit outside that allowlist, with a
+planted-mutation self-test proving the sweep is not vacuous.
 
 - A **workflow script** (`.js`) begins with `export const meta = { … }` (a pure
   literal) and uses the ambient Workflow globals `agent()`, `pipeline()`,
@@ -49,7 +76,7 @@ the canonical schema contracts they exchange.
 ### Import spike (why the generated-copy mechanism exists)
 
 Phase 1 spiked whether the Workflow runtime can `import`/`require` a local helper
-module, to decide how `review-refute-fix` is shared between the standalone
+module, to decide how `rdm-wf-review-refute-fix` is shared between the standalone
 wrapper and dispatch-phase without a cross-`workflow()` call (which would exceed
 the one-level `workflow()` nesting limit).
 
@@ -99,24 +126,24 @@ Three consequences the dispatch path depends on:
    models different from the session's.
 2. **`model: undefined` is inert.** Always-assigning the key is safe; no
    conditional-assignment helper is needed for callers that have no model to pass
-   (e.g. the standalone `review-refute-fix` consumer).
+   (e.g. the standalone `rdm-wf-review-refute-fix` consumer).
 3. **An unknown model id does NOT throw — `agent()` RESOLVES to `null`.** This is
    the dangerous one: `[models]` tier bindings are user-configurable, so a binding
    this runtime does not recognise would make every dispatched agent yield `null`
    and the pipeline would proceed into a null plan / silently-clean review. Both
-   `dispatch-phase.js` (plan/implement) and `lib/review.mjs` (finders)
+   `rdm-wf-dispatch-phase.js` (plan/implement) and `lib/review.mjs` (finders)
    therefore guard explicitly against a `null` agent result whenever an explicit
    model was supplied, and fail loudly instead. Note a `null` finder result would
    otherwise be laundered into `[]` by the refute stage's `(found && …) || []`,
    so the guard converts it to a thrown stage — the only thing `pipeline()` turns
    into a `null` element.
 
-**`plan-review.js` omits `findModel`/`verifyModel` — that omission is an
+**`rdm-wf-plan-review.js` omits `findModel`/`verifyModel` — that omission is an
 OVERSIGHT, not policy.** `.claude/workflows/lib/plan-review.mjs` calls
 `runPlanReview({ target })` at both call sites, so `buildReviewPipeline` sees no
 `ctx.findModel`/`ctx.verifyModel` and its finders and refuters inherit the
 ambient session model (see the "key omitted" row above), while the sibling
-`dispatch-phase.js` threads
+`rdm-wf-dispatch-phase.js` threads
 `{ findModel: models.review_find, verifyModel: models.review_verify }`. The
 counter-argument that judgment sites are deliberately unpinned does not cover
 this case: `f4e89d7` and `scripts/verify-workflow-review.sh` §5b-mechanical both
@@ -200,8 +227,8 @@ dispatched via the `Workflow` tool on 2026-07-27 (run `wf_2bea58b9-38f`, 8 cases
   See § Q1a for the full retraction.
 
 **`agentType` IS threaded at the mechanical call sites of the four local-only
-workflows** (19 records across `document.js`, `backlog.js`, `estimate.js`,
-`plan-review.js` and `lib/plan-review.mjs`), on the strength of the documented
+workflows** (19 records across `rdm-wf-document.js`, `rdm-wf-backlog.js`, `rdm-wf-estimate.js`,
+`rdm-wf-plan-review.js` and `lib/plan-review.mjs`), on the strength of the documented
 registry behaviour plus the measured `--agent` resolution — with Q1a's confirming
 dispatch still outstanding. `effort:` is threaded nowhere. See "Disposition" at
 the end.
@@ -393,7 +420,7 @@ session start. **The answer is YES:**
 |---|---|
 | Case B `toolNames` | **`["Bash", "StructuredOutput"]`** vs the control's nine — the definition loaded *and* its tool restriction is enforced |
 | Case C's registry listing | now enumerates `rdm-mechanical` alongside the built-ins |
-| Live `backlog` lane sidecars | `{"agentType":"rdm-mechanical","model":"haiku"}` — confirming a per-call `model` still overrides the definition, the assumption behind omitting `model:` from the agent file |
+| Live `rdm-wf-backlog` lane sidecars | `{"agentType":"rdm-mechanical","model":"haiku"}` — confirming a per-call `model` still overrides the definition, the assumption behind omitting `model:` from the agent file |
 
 AC4's precondition is therefore met, and the threading described below rests on a
 measured result rather than a documented expectation.
@@ -414,7 +441,7 @@ Cases E/F repeat the pair with `effort: 'low'` on both sides and reproduce it
 *exactly*: 38689 → 29782. All five default-agent cases measured exactly 38689;
 both `agentType` cases exactly 29782.
 
-A first live lane dispatch (`backlog`, propose-only, verified zero-mutation)
+A first live lane dispatch (`rdm-wf-backlog`, propose-only, verified zero-mutation)
 agrees, against the pinned per-class medians:
 
 | Site | post | pinned pre | Δ |
@@ -604,7 +631,7 @@ bowling-app 17063; both share the same user-global copy, which cancels):
 
 | agent class | rdm median | bowling-app median | Δ |
 |---|---:|---:|---:|
-| `estimate` | 30050 (n=79) | 21710 (n=15) | 8340 |
+| `rdm-wf-estimate` | 30050 (n=79) | 21710 (n=15) | 8340 |
 | `find` | 40032 (n=622) | 28764 (n=7) | 11268 |
 | `model` | 37003 (n=13) | 24530 (n=3) | 12473 |
 | `refute` | 39444 (n=954) | 23792 (n=209) | 15652 |
@@ -639,8 +666,8 @@ the same repo at the path the runtime searches.
 The consequence is material. `rdm-core/src/agent_config.rs` exposes exactly
 `generate_skills` and `generate_workflows`; there is **no** emission surface for
 `.claude/agents/`, and adding one is out of scope for this phase by decision. Had
-`agentType: 'mechanical'` been threaded into `dispatch-phase.js`
-and `review-refute-fix.js` and re-synced into
+`agentType: 'mechanical'` been threaded into `rdm-wf-dispatch-phase.js`
+and `rdm-wf-review-refute-fix.js` and re-synced into
 `rdm-core/src/templates/workflows/`, every downstream repo running
 `rdm agent-config claude --skills --out <dir>` would receive workflows that
 **hard-fail on first dispatch** — not a "known-degraded surface", a broken lane.
@@ -680,15 +707,15 @@ Workflow-path answer governs, because that is the call path the call sites use.
 **`agentType: 'rdm-mechanical'` IS threaded** at every mechanical call site of the
 four local-only workflows — 19 records in all (15 call sites in the `.js`
 consumers, 4 of which are duplicated into `lib/plan-review.mjs` as the byte-copied
-source of `plan-review.js`'s `plan-review-driver` block):
+source of `rdm-wf-plan-review.js`'s `plan-review-driver` block):
 
 | File | Sites | Route |
 |---|---|---|
-| `document.js` | `model:mechanical`, `fetch:roadmap-meta`, `gather:<stem>`, `write:draft` | unprojected driver |
-| `backlog.js` | `model:mechanical`, `fetch:report` | unprojected driver |
-| `estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver, below `estimate-core:end` — not distributed to any downstream workflow (`autopilot.js` formerly carried its own duplicate `estimate-core` copy before its retirement to prose) |
-| `plan-review.js` + `lib/plan-review.mjs` | `fetch:roadmap`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | byte-copied block — both halves edited, gated by §5b-drift |
-| `plan-review.js` | `model:mechanical` | unprojected driver, below `plan-review-driver:end` |
+| `rdm-wf-document.js` | `model:mechanical`, `fetch:roadmap-meta`, `gather:<stem>`, `write:draft` | unprojected driver |
+| `rdm-wf-backlog.js` | `model:mechanical`, `fetch:report` | unprojected driver |
+| `rdm-wf-estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver, below `estimate-core:end` — not distributed to any downstream workflow (`autopilot.js` formerly carried its own duplicate `estimate-core` copy before its retirement to prose) |
+| `rdm-wf-plan-review.js` + `lib/plan-review.mjs` | `fetch:roadmap`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | byte-copied block — both halves edited, gated by §5b-drift |
+| `rdm-wf-plan-review.js` | `model:mechanical` | unprojected driver, below `plan-review-driver:end` |
 
 It is written as a plain literal at each site, never a module-level constant,
 because the source text is byte-copied across files with different scopes.
@@ -700,7 +727,7 @@ than `rdm-mechanical` appears.
 
 **Q1a has since confirmed this threading** — see
 [the Workflow-path trim](#workflow-path-trim). Case B resolves with the trimmed
-tool list, and a live `backlog` dispatch shows both its threaded sites dropping
+tool list, and a live `rdm-wf-backlog` dispatch shows both its threaded sites dropping
 ~19–20 %. The measured saving is **8907 tokens/agent (−23 %)**, not the 19894 the
 `claude -p` 2×2 predicted; every figure quoted for these call sites is the
 measured one.
@@ -912,7 +939,7 @@ byte-unchanged.
 **Both** of `buildReviewBudget`'s parameters take the gate's FULL per-round
 array. Passing only a last-round object silently drops an early round that hit
 its bound and was then resolved by a later revision/rework — precisely what
-`everHit` promises to keep visible — so `dispatch-phase` threads
+`everHit` promises to keep visible — so `rdm-wf-dispatch-phase` threads
 `planGate.budgetRounds`, not `planGate.budget`. (`planBudget` still accepts a
 single object, for a caller that predates the plan gate returning an array.) The
 two arrays are merged in **temporal** order, plan rounds first, because the plan
@@ -920,7 +947,7 @@ gate runs to completion before the code gate starts; consequently, when both
 gates hit, `hit` — and therefore the summary clause — reports the later code
 round, not the earlier plan one.
 
-The standalone `review-refute-fix.js` consumer has three invocation shapes: (a)
+The standalone `rdm-wf-review-refute-fix.js` consumer has three invocation shapes: (a)
 `mode: 'plan'`, and (b) `mode: 'code'` with no `roadmap`+`phase` or `task`
 identifier, both keep returning the legacy survivors-only `{ mode, survivors }`
 shape (plus an additive `budget` field) for backward compatibility with ad
@@ -1004,11 +1031,11 @@ budget, since they were already never refuted.
 
 | | |
 | --- | --- |
-| arg name | `maxRefutations` (on `dispatch-phase`, `plan-review`, and `review-refute-fix` args; reaches `runReview` as `context.maxRefutations`) |
+| arg name | `maxRefutations` (on `rdm-wf-dispatch-phase`, `rdm-wf-plan-review`, and `rdm-wf-review-refute-fix` args; reaches `runReview` as `context.maxRefutations`) |
 | default | `DEFAULT_MAX_REFUTATIONS` = 5 |
 | `0` | LEGAL and meaningful — grade nothing, pass every gating finding through as `unrefutedReason: 'budget'`. Never conflated with "unset" by a falsy check. |
 | uncapped | no sentinel exists; express an effectively-uncapped run as a large N |
-| validation | `resolveRefutationBudget(value)`, mirroring `parseBudget`'s contract — a number or integer-ONLY string; `'5abc'` is rejected, not coerced. `dispatch-phase`/`plan-review` validate at PARSE time, before any `agent()` call. |
+| validation | `resolveRefutationBudget(value)`, mirroring `parseBudget`'s contract — a number or integer-ONLY string; `'5abc'` is rejected, not coerced. `rdm-wf-dispatch-phase`/`rdm-wf-plan-review` validate at PARSE time, before any `agent()` call. |
 | ranking | `rankBudgetCandidates`: severity → confidence descending → id → source order. The source-order tiebreak is what makes the cut total when two dimensions emit the same finding id. |
 
 **Why 5.** Measured, not guessed: `docs/token-baseline.json` §
@@ -1042,7 +1069,7 @@ tracks a per-round `acRounds` array alongside `rounds` and checks
 `acTableHasGap` in its rework-loop continuation) and `runPlanGate` (which
 discards `acTable` — always `null` in `plan` mode — and uses `survivors` as
 its `findings`) needed updating; `lib/plan-review.mjs`'s `reviewUnit` and its
-`--implementation-plan` branch, and `review-refute-fix.js`'s legacy and
+`--implementation-plan` branch, and `rdm-wf-review-refute-fix.js`'s legacy and
 standalone driver paths, do the same.
 
 ### Dimensions and `when` triggers
@@ -1145,7 +1172,7 @@ skill templates and travels with the lane rather than staying tribal knowledge.
 
 `unit-of-work` likewise stays a separate triggered dimension in either scenario:
 it is scoped to phase units CONSUMER-SIDE by `stripNonPhaseUnitOfWork` in
-`plan-review.js`, which filters on `f.concern === 'unit-of-work'`, and folding a
+`rdm-wf-plan-review.js`, which filters on `f.concern === 'unit-of-work'`, and folding a
 conditionally-scoped lens into an unconditional agent would defeat that scoping.
 
 ### `context.signals` and `selectDimensions(mode, signals)`
@@ -1155,10 +1182,10 @@ load-bearing:
 
 - `signals == null` (omitted, or genuinely unknown) → return **ALL** dimensions
   for the mode, untouched. A caller that cannot compute a diff knows the least,
-  so it must get the most coverage. `review-refute-fix.js`'s legacy
+  so it must get the most coverage. `rdm-wf-review-refute-fix.js`'s legacy
   survivors-only shapes ((a) `mode: 'plan'`, (b) `mode: 'code'` with no item
   identifier) and dispatch-phase's **plan** gate take this path today;
-  dispatch-phase's **code** gate and `review-refute-fix.js`'s full
+  dispatch-phase's **code** gate and `rdm-wf-review-refute-fix.js`'s full
   `{ roadmap, phase }` / `{ task }` code-review path both now compute real
   signals (see below) and only fall back to this branch when the diff is
   unavailable.
@@ -1264,7 +1291,7 @@ conditional signals route through; branch order is load-bearing):
    diff". Note `diffText: ''` is a *string*, not `null`: an empty-but-present
    diff takes this branch.
 
-**Who feeds it.** `dispatch-phase`'s code gate runs a mechanical `diff:signals`
+**Who feeds it.** `rdm-wf-dispatch-phase`'s code gate runs a mechanical `diff:signals`
 agent inside the item's worktree (`git diff --name-only main...HEAD` plus a
 truncated `git diff main...HEAD`) and threads the result through `deriveSignals`
 into `buildReviewPipeline('code')` — recomputed on **every** rework round, so a
@@ -1319,7 +1346,7 @@ is written only by non-stamped code: the interactive skill's gate step and
 
 `lib/review.mjs` carries two marker systems:
 
-- the **stamped block** (`review-refute-fix` markers) — copied verbatim into the
+- the **stamped block** (`rdm-wf-review-refute-fix` markers) — copied verbatim into the
   workflow consumers by `scripts/gen-workflow-review.sh`;
 - the **skill-renderable spec** — a `review-spec` region nested *inside* the
   stamped block plus a `review-gate-spec` region *after* it, whose `//| `
@@ -1366,7 +1393,7 @@ The gate itself is likewise mode-dispatched data rather than a fork:
 `GATE_POLICY[mode][outcome]` yields `{ status, writesCompletion,
 clearsPlanReviewTag, reasonPrefix }`, and `STATUS_MAPPING` *is*
 `GATE_POLICY.code`, so `statusFor`/`writesCompletion` are unchanged for
-`dispatch-phase`/`autopilot`. The plan rows carry an explicit `status: null` — a
+`rdm-wf-dispatch-phase`/`autopilot`. The plan rows carry an explicit `status: null` — a
 plan review never persists an rdm status; it clears `needs-plan-review` on
 `reviewed` and leaves it on `rework`/`escalated`.
 
@@ -1378,7 +1405,7 @@ BOTH modes — which CI runs.
 
 ## dispatch-phase contracts
 
-`dispatch-phase` (`.claude/workflows/dispatch-phase.js`) is the keystone per-phase
+`rdm-wf-dispatch-phase` (`.claude/workflows/rdm-wf-dispatch-phase.js`) is the keystone per-phase
 unit of autonomous execution: a deterministic 4-stage pipeline
 `Plan → PlanReview → Implement → CodeReview`. Its plan-review and code-review
 stages call `buildReviewPipeline('plan')` / `buildReviewPipeline('code')` inline
@@ -1430,7 +1457,7 @@ plan-review `coherence` dimension and escalates before any implementation.
 
 ### `OUTCOME` (dispatch-phase)
 
-The top-level return of `dispatch-phase`. Distinct from the review pipeline's
+The top-level return of `rdm-wf-dispatch-phase`. Distinct from the review pipeline's
 `OUTCOME` array above — this is the phase-level verdict consumed by the Phase 3
 autopilot and Phase 4 `rdm-do --auto`. The `rdm-do --auto` wiring into this
 contract is regression-tested by `scripts/verify-workflow-do-auto.sh` (SKILL.md
@@ -1510,7 +1537,7 @@ always reaches a terminal value. Because the deterministic pipeline cannot
 classify a code finding's *nature* (the `FINDING` schema carries severity but no
 fixable/decision flag), a code defect surviving the one rework resolves to
 `rework`, and genuine decisions surface earlier at the plan gate as `escalated`;
-that is why the code stage yields only `reviewed`/`rework`. `dispatch-phase` never
+that is why the code stage yields only `reviewed`/`rework`. `rdm-wf-dispatch-phase` never
 emits a `Done:` line — it emits `writesCompletion` and landing is a separate,
 later step.
 
@@ -1521,7 +1548,7 @@ the AC table is a structured side-channel decoupled from `findings` (a
 rework round has an *empty* `findings` array; without also passing `acTable`
 the implementer would receive no signal at all about what to fix and the
 rework budget would very likely burn out reproducing the same gap.
-`dispatch-phase.js`'s `buildImplementPrompt` renders the two channels
+`rdm-wf-dispatch-phase.js`'s `buildImplementPrompt` renders the two channels
 separately — "ranked issues" from `findings` and "UNMET criteria" from the
 `FAIL`/`PARTIAL` entries of `acTable` — and explicitly notes they are not a
 duplicate report of the same thing.
@@ -1530,7 +1557,7 @@ duplicate report of the same thing.
 `classifyOutcome`.** `buildOutcome`/`buildTaskOutcome` name the real cause
 (`'code rework unresolved: unmet acceptance criteria in AC table'`) instead of
 the misleading `summarizeFindings([])` → `'no surviving findings'` when an
-AC-only gap forces `rework` with an empty findings array; `review-refute-fix.js`'s
+AC-only gap forces `rework` with an empty findings array; `rdm-wf-review-refute-fix.js`'s
 standalone `{ roadmap, phase }`/`{ task }` code-review path applies the
 identical branch to its own `rework` summary, since it independently threads
 `acTable` into its own `classifyOutcome` call.
@@ -1544,7 +1571,7 @@ plan-review skill's small/large Act split (`buildActPrompt`), but for code: a
 finding is fixed inline in the worktree (small) or filed as a task via
 `rdm task create --tags code-review` (large), never both, and never a
 separate landing commit for a small fix (it folds into the eventual land-time
-commit). `dispatch-phase.js` wires this dep to an `agent()` call using
+commit). `rdm-wf-dispatch-phase.js` wires this dep to an `agent()` call using
 `buildCodeActPrompt` and `CODE_ACT_SCHEMA`:
 
 | field                | type                                       | notes                                    |
@@ -1578,7 +1605,7 @@ absent (Act was never invoked, or it threw). This never runs when the loop
 exited still-blocking or AC-table-gapped — large/unresolved defects stay
 owned by the rework/status machinery, per "never fix large changes inline".
 
-**The code-review stage is the canonical review.** `dispatch-phase` builds it
+**The code-review stage is the canonical review.** `rdm-wf-dispatch-phase` builds it
 from the stamped `buildReviewPipeline('code')` — there is no independent
 code-review logic in the driver — and feeds it `deriveSignals` output from the
 real branch diff (see `deriveSignals(input)` above for the signals-absent
@@ -1589,11 +1616,11 @@ fail-open contract). `verify-workflow-dispatch.sh` pins both halves: exactly one
 
 ### Environment args: `rdmBin` and `project`
 
-`dispatch-phase` names NO particular rdm executable and NO particular rdm
+`rdm-wf-dispatch-phase` names NO particular rdm executable and NO particular rdm
 project. Both are **runtime args**, threaded through a trailing `cfg` parameter
 on every prompt builder that shells out. This is the contract the rest of the
 project-agnostic lane consumes — the same helper shape and the same allow-list
-apply to `review-refute-fix` / `estimate` and to the prose `rdm-autopilot` loop
+apply to `rdm-wf-review-refute-fix` / `rdm-wf-estimate` and to the prose `rdm-autopilot` loop
 when those are parameterized; they must not re-derive it.
 
 | arg       | required | shape                                            | applies to |
@@ -1611,7 +1638,7 @@ change.
 #### The project-agnostic allow-list
 
 `projectFlag(cfg)` (`cfg && cfg.project ? ' --project ' + cfg.project : ''`,
-the same shape `backlog.js` uses) is appended at **project-scoped** call sites
+the same shape `rdm-wf-backlog.js` uses) is appended at **project-scoped** call sites
 only. These subcommands reject `--project` outright and must carry NO flag:
 
     rdm model resolve, rdm commit    (and rdm status / rdm discard, if added)
@@ -1653,7 +1680,7 @@ tokens (the same discipline as `parseBudget`).
 **A fail-closed required arg obliges rewiring every caller in the same change
 that makes it required.** Because there is no ambient default, a caller left
 un-threaded does not degrade — it throws on first dispatch. The verified callers
-of the `dispatch-phase` Workflow are `.claude/skills/rdm-dispatch-phase`,
+of the `rdm-wf-dispatch-phase` Workflow are `.claude/skills/rdm-dispatch-phase`,
 `.claude/skills/rdm-do` (both `--auto` flows), `.claude/skills/rdm-autopilot`,
 and the shipped `skill-dispatch-phase-{cli,mcp}.md` /
 `skill-do-{cli,mcp}.md` / `skill-autopilot-{cli,mcp}.md` templates. All of them
@@ -1667,27 +1694,27 @@ lane on first dispatch.
 
 The `rdm-autopilot` shims are in that list for exactly this reason, and for no
 other. Their own drive-loop prose still names a hardcoded binary and project;
-only the one `dispatch-phase` call payload is threaded, because that is the only
+only the one `rdm-wf-dispatch-phase` call payload is threaded, because that is the only
 line the fail-closed rule can break. `verify-skill-autopilot.sh` bounds both
 directions — it asserts the payload carries `rdmBin`, and asserts the skill
 still carries its own binary/project literals, so the wider prose
 parameterization cannot be absorbed here by accident.
 
-#### The other two engines: `review-refute-fix` and `estimate`
+#### The other two engines: `rdm-wf-review-refute-fix` and `rdm-wf-estimate`
 
 Both now honor this contract, reusing the same three helpers (copied in shape,
-since the runtime cannot import) rather than re-deriving it. `estimate` takes
+since the runtime cannot import) rather than re-deriving it. `rdm-wf-estimate` takes
 `rdmBin`/`project` through `parseEstimateArgs` — resolved **after** its
 pre-existing required-roadmap throw, so the actionable "a roadmap slug is
 required" message survives for the far more common mis-invocation — and threads
 a `cfg` into `buildEstimateListPrompt` / `buildEstimateWritebackPrompt` /
 `buildEstimateTierPrompt` plus its driver's own `model resolve` call and
-per-phase rate directive. `review-refute-fix` builds its `cfg` in the standalone
+per-phase rate directive. `rdm-wf-review-refute-fix` builds its `cfg` in the standalone
 code-review path and threads it into `buildDiffSignalsPrompt` and the optional
 gate's status command.
 
 **One scope difference, and it is the same contract applied where it has a
-referent — not a second contract.** `review-refute-fix` calls `resolveRdmBin`
+referent — not a second contract.** `rdm-wf-review-refute-fix` calls `resolveRdmBin`
 inside the standalone code-review path only. Its two legacy survivors-only
 shapes (`mode: 'plan'`, and `mode: 'code'` with no item identifiers) emit
 **zero** rdm invocations, so there is no binary for the fail-closed rule to
@@ -1698,11 +1725,11 @@ path throws without `rdmBin` before any `agent()` call, while both legacy shapes
 still succeed without it and still return `{ mode, survivors, budget }`.
 
 Rewired callers: `.claude/skills/rdm-review` (the only caller of
-`review-refute-fix`; its invocation prose sits ABOVE the
+`rdm-wf-review-refute-fix`; its invocation prose sits ABOVE the
 `gen-skill-review.sh`-stamped region, and the shipped
 `skill-review-{cli,mcp}.md` templates invoke no workflow at all, so
 `lib/review.mjs` is never opened) and `.claude/skills/rdm-estimate` (the only
-caller of `estimate.js`; `skill-estimate-{cli,mcp}.md` remains the `{proj_flag}`
+caller of `rdm-wf-estimate.js`; `skill-estimate-{cli,mcp}.md` remains the `{proj_flag}`
 prose rating loop and needs no change). Asserted per-shim by
 `verify-workflow-review-outcome.sh` § 4 and `verify-workflow-estimate.sh`'s
 HOIST-SHIM section, each with a planted-typo self-test; the allow-list is
@@ -1714,7 +1741,7 @@ and the loop's own literals, belong to the phase that parameterizes the prose
 loop — so that one call throws until it is threaded. It does **not** break the
 lane: the skill's own prose already says to log a warning and continue into the
 drive loop non-fatally on an estimate error, and unrated phases simply dispatch
-at whatever tier `rdm next` reports. Its `dispatch-phase` payload was threaded
+at whatever tier `rdm next` reports. Its `rdm-wf-dispatch-phase` payload was threaded
 above and is unaffected.
 
 ## autopilot contract
@@ -1727,7 +1754,7 @@ terminal status per "The core fix" below — dispatch-phase itself never does.
 
 ### The core fix: the loop advances off PERSISTED status
 
-`dispatch-phase` persists **no terminal** phase status — it does stamp the
+`rdm-wf-dispatch-phase` persists **no terminal** phase status — it does stamp the
 phase (or task) `in-progress` itself, best-effort, right after Stage 0 (metadata
 + model resolution) and before it starts working the item; a `--plan-only` run
 skips that stamp, since it never implements — and `rdm next` returns only
@@ -1744,9 +1771,9 @@ steps), which is what makes `rdm next` step forward and eventually return
 There is **no** normal-mode in-memory `seen` Set; progress is driven entirely by
 the persisted status the selector reads back.
 
-### `dispatch-phase` `planOnly`
+### `rdm-wf-dispatch-phase` `planOnly`
 
-`dispatch-phase` accepts an optional `planOnly` arg. When set, once the plan gate
+`rdm-wf-dispatch-phase` accepts an optional `planOnly` arg. When set, once the plan gate
 passes it returns early — `{ outcome: 'reviewed', summary: 'plan-only: plan gate
 passed', findings: <planFindings> }` — before implementing, so a caller such as
 the prose `rdm-autopilot` loop can vet the plan half cheaply. This early return
@@ -1777,19 +1804,19 @@ classification rule behind them, and the measured delta live in
 
 | workflow | optional arg | replaces | shape guard |
 |---|---|---|---|
-| `dispatch-phase` | `phaseMeta` | `fetch:phase-meta` | **all-or-nothing** — see below |
-| `dispatch-phase` | `taskMeta` | `fetch:task-meta` | **all-or-nothing** — see below |
-| `dispatch-phase` | `alreadyInProgress` | `stamp:in-progress` | boolean; the caller must already have written the status |
-| `estimate` | `mechanicalModel` | `model:mechanical` | non-empty string |
-| `estimate` | `phaseList` | `estimate:list` | array |
-| `plan-review` | `fetched` | `fetch:roadmap` / `fetch:<kind>` | object with a non-empty `body` **and** a `tags` array of strings (roadmap kind additionally: an array `phases` whose every entry carries a non-empty `stem`, a string `body`, and its own `tags` array) |
-| `plan-review` | `wontFixedTexts` | `fetch:wontfix` | array |
-| `plan-review` | `mechanicalModel` | `model:mechanical` | non-empty string |
-| `backlog` | `mechanicalModel` | `model:mechanical` | non-empty string |
-| `backlog` | `report` | `fetch:report` | object carrying all four signal arrays |
-| `document` | `mechanicalModel` | `model:mechanical` | non-empty string |
-| `document` | `roadmapMeta` | `fetch:roadmap-meta` | object with `found === true` and an array `phases` |
-| `review-refute-fix` | `diff` | `diff:signals` | object with an array `changedFiles` |
+| `rdm-wf-dispatch-phase` | `phaseMeta` | `fetch:phase-meta` | **all-or-nothing** — see below |
+| `rdm-wf-dispatch-phase` | `taskMeta` | `fetch:task-meta` | **all-or-nothing** — see below |
+| `rdm-wf-dispatch-phase` | `alreadyInProgress` | `stamp:in-progress` | boolean; the caller must already have written the status |
+| `rdm-wf-estimate` | `mechanicalModel` | `model:mechanical` | non-empty string |
+| `rdm-wf-estimate` | `phaseList` | `estimate:list` | array |
+| `rdm-wf-plan-review` | `fetched` | `fetch:roadmap` / `fetch:<kind>` | object with a non-empty `body` **and** a `tags` array of strings (roadmap kind additionally: an array `phases` whose every entry carries a non-empty `stem`, a string `body`, and its own `tags` array) |
+| `rdm-wf-plan-review` | `wontFixedTexts` | `fetch:wontfix` | array |
+| `rdm-wf-plan-review` | `mechanicalModel` | `model:mechanical` | non-empty string |
+| `rdm-wf-backlog` | `mechanicalModel` | `model:mechanical` | non-empty string |
+| `rdm-wf-backlog` | `report` | `fetch:report` | object carrying all four signal arrays |
+| `rdm-wf-document` | `mechanicalModel` | `model:mechanical` | non-empty string |
+| `rdm-wf-document` | `roadmapMeta` | `fetch:roadmap-meta` | object with `found === true` and an array `phases` |
+| `rdm-wf-review-refute-fix` | `diff` | `diff:signals` | object with an array `changedFiles` |
 
 `rdmBin` is **not** a hoist and is **not** optional — it is an environment arg
 with no fallback path at all (see "Environment args" above); `project` is
@@ -1839,7 +1866,7 @@ negative cases (absent / empty / blank / non-string tier) fall back to the agent
 and a positive pair proves a hoisted `large` and a hoisted `medium` produce
 *different* outcomes from one identical concern seed.
 
-### `plan-review`'s `fetched` is structured-keys-only
+### `rdm-wf-plan-review`'s `fetched` is structured-keys-only
 
 `parsePlanArgs` reads `fetched` / `wontFixedTexts` / `mechanicalModel` from
 **structured object keys only** — never from the `$ARGUMENTS` flag string, which
@@ -1861,7 +1888,7 @@ no `tags` would be defaulted to `[]` by `buildReviewUnits` and issued as
 `--tags ""`, wiping every real tag the item carried. Rejecting it costs one fetch
 agent; accepting it costs the item's tags.
 
-### `dispatch-phase` absorbs its diff instead of hoisting it
+### `rdm-wf-dispatch-phase` absorbs its diff instead of hoisting it
 
 `diff:signals` is not hoisted — it is **absorbed**. `runCodeGate` calls
 `d.implement(...)` immediately before every `d.review()` with nothing in between, so
@@ -1878,10 +1905,10 @@ the item from `not-started` straight to `blocked` with no in-progress signal.
 
 ### Which caller surfaces supply them today
 
-- **`dispatch-phase`, `rdm-do --auto`** — supplied by the *distributed*
+- **`rdm-wf-dispatch-phase`, `rdm-do --auto`** — supplied by the *distributed*
   skill shims (`rdm-core/src/templates/skill-{dispatch-phase,do}-{cli,mcp}.md`)
   and their local copies.
-- **`plan-review`, `backlog`, `document`, `review-refute-fix`, `estimate`** — supplied
+- **`rdm-wf-plan-review`, `rdm-wf-backlog`, `rdm-wf-document`, `rdm-wf-review-refute-fix`, `rdm-wf-estimate`** — supplied
   only by this repo's **local** `.claude/skills/*/SKILL.md` dogfood copies. Their
   distributed templates are not yet Workflow shims; converting them is tracked by task
   `convert-remaining-skill-templates-to-workflow-shims`.

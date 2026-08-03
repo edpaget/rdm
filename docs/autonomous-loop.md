@@ -37,7 +37,7 @@ retired it in favor of this prose skill — see
 [`docs/workflow-vs-prose-boundary.md`](./workflow-vs-prose-boundary.md) for why.
 The mechanics that twin made explicit still hold for this prose driver:
 
-- **It drives off *persisted* status.** `dispatch-phase` persists no *terminal*
+- **It drives off *persisted* status.** `rdm-wf-dispatch-phase` persists no *terminal*
   phase status — it does stamp the phase (or task) `in-progress`, best-effort,
   right after Stage 0 and before it starts working the item (a `--plan-only`
   run skips that stamp, since it never implements) — and `rdm next` returns
@@ -189,7 +189,7 @@ rdm review blocked --project <proj> --format json
 Autopilot is the **active driver** — it pushes a roadmap forward phase by phase.
 Every lane that can produce a `needs-review` item now actively runs the
 canonical review (`.claude/workflows/lib/review.mjs`) before that lane's
-finalize step returns: `dispatch-phase`'s code-review stage runs it inline and
+finalize step returns: `rdm-wf-dispatch-phase`'s code-review stage runs it inline and
 returns a `reviewed`/`blocked` status as OUTCOME data — it persists no terminal
 status itself (see ["History: the retired workflow twin"](#history-the-retired-workflow-twin)
 above) — and autopilot's own advance/park steps persist that status directly
@@ -199,7 +199,7 @@ human confirm gate. With nothing left unreviewed, the once-passive needs-review
 Stop hook (Claude Code) and Pi `agent_end` extension — which only re-prompted
 when an item was *left* in `needs-review` — have been retired as redundant; see
 [`CLAUDE.md`](../CLAUDE.md)'s "Hook reconciliation" note for the harness
-evidence. The autopilot lane never emits a `Done:` line — `dispatch-phase`'s
+evidence. The autopilot lane never emits a `Done:` line — `rdm-wf-dispatch-phase`'s
 review is an inline pipeline (not the `rdm-review` skill), and autopilot's
 advance step writes only `--status reviewed`. The `Done:` line is supplied later
 by `rdm-review` or at landing.

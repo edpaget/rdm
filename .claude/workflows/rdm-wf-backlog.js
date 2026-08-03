@@ -18,7 +18,7 @@
 // spike"); `scripts/verify-workflow-backlog.sh` gates the two copies for drift.
 
 export const meta = {
-  name: 'backlog',
+  name: 'rdm-wf-backlog',
   description:
     "Run a batched backlog grooming pass over rdm's stale/duplicate/tag-cluster/archivable signals and emit a reviewable, propose-only plan of exact rdm commands — no mutations",
   // Must list exactly the distinct `phase:` values the real deps' agent() calls
@@ -33,7 +33,7 @@ export const meta = {
 // Pure, deterministic control logic for the backlog-grooming pass.
 //
 // This block is the single source of truth in .claude/workflows/lib/backlog.mjs
-// and is copied BYTE-IDENTICAL into .claude/workflows/backlog.js (the Workflow
+// and is copied BYTE-IDENTICAL into .claude/workflows/rdm-wf-backlog.js (the Workflow
 // runtime cannot load modules at run time). scripts/verify-workflow-backlog.sh
 // gates the two copies for drift. No Date.now / Math.random — pure array/string
 // ops only. The block names NO ambient runtime global (agent/parallel/log):

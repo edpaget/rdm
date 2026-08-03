@@ -3,11 +3,11 @@
 # verify-workflow-do-auto-task.sh — the TASK-flow twin of
 # verify-workflow-do-auto.sh.
 #
-# `rdm-do --auto --task <slug>` routes into the `dispatch-phase` Workflow in task
+# `rdm-do --auto --task <slug>` routes into the `rdm-wf-dispatch-phase` Workflow in task
 # mode (`{ task: <slug> }`) instead of the prose plan/implement/review loop. This
 # harness gates that wiring end to end:
 #
-#   1. STATIC INVARIANTS — dispatch-phase.js really accepts `{ task }`, fetches
+#   1. STATIC INVARIANTS — rdm-wf-dispatch-phase.js really accepts `{ task }`, fetches
 #      via `rdm task show` (not `phase show --roadmap`), pins tasks to the fixed
 #      `medium` tier, uses the per-task `task/<slug>` worktree, and emits a
 #      task-keyed OUTCOME — each with a planted-mutation self-test where the
@@ -33,7 +33,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 RDM_BIN="$REPO_ROOT/target/debug/rdm"
 SKILL="$REPO_ROOT/.claude/skills/rdm-do/SKILL.md"
-DISPATCH_WF="$REPO_ROOT/.claude/workflows/dispatch-phase.js"
+DISPATCH_WF="$REPO_ROOT/.claude/workflows/rdm-wf-dispatch-phase.js"
 LIB="$REPO_ROOT/.claude/workflows/lib/dispatch-phase.mjs"
 
 # Clear rdm-related env vars inherited from the caller's shell for hermeticity.
@@ -59,10 +59,10 @@ run_node() {
 }
 
 # --- 1. STATIC INVARIANTS -----------------------------------------------------
-say "1. Static invariants: dispatch-phase.js really implements task mode"
+say "1. Static invariants: rdm-wf-dispatch-phase.js really implements task mode"
 
 grep -qF 'dispatchArgs.task' "$DISPATCH_WF" ||
-    fail "dispatch-phase.js must read a task slug from args (dispatchArgs.task)"
+    fail "rdm-wf-dispatch-phase.js must read a task slug from args (dispatchArgs.task)"
 pass "task mode is selected from args.task"
 
 # The rdm binary is a RUNTIME arg now (project-agnostic-lane), so the command is
@@ -108,7 +108,7 @@ extract_item_outcome() {
     awk '/^function itemOutcome\(/{p=1} p{print} p&&/^}$/{exit}' "$1"
 }
 extract_item_outcome "$DISPATCH_WF" >"$TMP/itemoutcome"
-[ -s "$TMP/itemoutcome" ] || fail "could not extract itemOutcome() from dispatch-phase.js"
+[ -s "$TMP/itemoutcome" ] || fail "could not extract itemOutcome() from rdm-wf-dispatch-phase.js"
 # Assert the EXACT branch form. A looser `grep isTask` would still pass against a
 # short-circuit mutation like `if (false && isTask)`, which silently routes task
 # mode to buildOutcome; pinning the literal closes that.

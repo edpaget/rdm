@@ -5,7 +5,7 @@
 //! the dependency-injected orchestration (`runPlanReviewDriver`). Because the
 //! Claude Code Workflow runtime cannot `import`/`require` (see
 //! docs/workflow-schemas.md § "Import spike"), the marked block below is copied
-//! BYTE-IDENTICAL into `.claude/workflows/plan-review.js`. Unlike the
+//! BYTE-IDENTICAL into `.claude/workflows/rdm-wf-plan-review.js`. Unlike the
 //! review-refute-fix block — which is stamped by `scripts/gen-workflow-review.sh`
 //! — this block is NOT run through the generator (it is unique to the one
 //! plan-review consumer); instead `scripts/verify-workflow-review.sh` gates the
@@ -43,7 +43,7 @@ import {
 //
 // This block is the single source of truth in
 // .claude/workflows/lib/plan-review.mjs and is copied BYTE-IDENTICAL into
-// .claude/workflows/plan-review.js (the Workflow runtime cannot load modules at
+// .claude/workflows/rdm-wf-plan-review.js (the Workflow runtime cannot load modules at
 // run time). scripts/verify-workflow-review.sh gates the two copies for drift.
 // No Date.now / Math.random — pure array/string ops plus injected async deps.
 //

@@ -1,8 +1,8 @@
 #!/bin/sh
-# Hermetic regression for the `document` workflow (headless roadmap-to-docs
+# Hermetic regression for the `rdm-wf-document` workflow (headless roadmap-to-docs
 # drafting).
 #
-# `document` (`.claude/workflows/document.js`) validates that every phase of a
+# `rdm-wf-document` (`.claude/workflows/rdm-wf-document.js`) validates that every phase of a
 # roadmap is `done`, fans out a per-phase git-gather step in parallel()
 # (falling back to phase-body-only when a phase has no commit SHA), runs one
 # synthesis agent to draft the doc, and a mechanical Bash agent to write it to
@@ -19,7 +19,7 @@
 #      skill shim: the parallel() fan-out, the --out / rdm-show wiring, the
 #      abort-on-incomplete and has-SHA/body-only branches, both document-core
 #      markers present, no `--status` mutation or plan-mode/confirmation call
-#      anywhere in document.js, no `Date.now(`/`Math.random(` in document.js or
+#      anywhere in rdm-wf-document.js, no `Date.now(`/`Math.random(` in rdm-wf-document.js or
 #      lib/document.mjs, the skill shim retains the terminal
 #      "not done until reviewed and approved" human-approval language, and the
 #      skill shim no longer carries the old step-by-step git-gather prose.
@@ -53,7 +53,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
 LIB="$REPO_ROOT/.claude/workflows/lib/document.mjs"
-WF="$REPO_ROOT/.claude/workflows/document.js"
+WF="$REPO_ROOT/.claude/workflows/rdm-wf-document.js"
 SKILL="$REPO_ROOT/.claude/skills/rdm-document/SKILL.md"
 RDM_BIN="$REPO_ROOT/target/debug/rdm"
 
@@ -96,24 +96,24 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 
 # ==============================================================================
-say "1. Static invariants on document.js and the rdm-document skill shim"
+say "1. Static invariants on rdm-wf-document.js and the rdm-document skill shim"
 # ==============================================================================
 
-grep -q 'parallel(' "$WF" || fail "document.js must fan out per-phase gathering via parallel("
-grep -q -- '--out' "$WF" || fail "document.js must reference --out"
-grep -q 'rdm roadmap show' "$WF" || fail "document.js must fetch the roadmap via rdm roadmap show"
-grep -q 'rdm phase show' "$WF" || fail "document.js must fetch each phase via rdm phase show"
-grep -q -- '--format json' "$WF" || fail "document.js's rdm fetch commands must request --format json"
+grep -q 'parallel(' "$WF" || fail "rdm-wf-document.js must fan out per-phase gathering via parallel("
+grep -q -- '--out' "$WF" || fail "rdm-wf-document.js must reference --out"
+grep -q 'rdm roadmap show' "$WF" || fail "rdm-wf-document.js must fetch the roadmap via rdm roadmap show"
+grep -q 'rdm phase show' "$WF" || fail "rdm-wf-document.js must fetch each phase via rdm phase show"
+grep -q -- '--format json' "$WF" || fail "rdm-wf-document.js's rdm fetch commands must request --format json"
 pass "parallel() fan-out and the rdm roadmap show / phase show --format json wiring are present"
 
-grep -q 'incompletePhases' "$WF" || fail "document.js must carry an incompletePhases abort branch"
-grep -q 'aborted: true' "$WF" || fail "document.js must return aborted: true on the incomplete-phase short-circuit"
-grep -q 'computeIncompletePhases' "$WF" || fail "document.js must call computeIncompletePhases"
+grep -q 'incompletePhases' "$WF" || fail "rdm-wf-document.js must carry an incompletePhases abort branch"
+grep -q 'aborted: true' "$WF" || fail "rdm-wf-document.js must return aborted: true on the incomplete-phase short-circuit"
+grep -q 'computeIncompletePhases' "$WF" || fail "rdm-wf-document.js must call computeIncompletePhases"
 pass "abort-on-incomplete branch present"
 
-grep -q 'hasSha' "$WF" || fail "document.js must carry the hasSha has-SHA/body-only decision"
-grep -q 'fallback' "$WF" || fail "document.js must carry the body-only fallback flag"
-grep -q 'buildGitRangeCommands' "$WF" || fail "document.js must call buildGitRangeCommands"
+grep -q 'hasSha' "$WF" || fail "rdm-wf-document.js must carry the hasSha has-SHA/body-only decision"
+grep -q 'fallback' "$WF" || fail "rdm-wf-document.js must carry the body-only fallback flag"
+grep -q 'buildGitRangeCommands' "$WF" || fail "rdm-wf-document.js must call buildGitRangeCommands"
 pass "has-SHA / body-only fallback branch present"
 
 for marker in ">>> document-core:begin" ">>> document-core:end"; do
@@ -125,12 +125,12 @@ pass "document-core markers present in both lib and workflow"
 # AC: the workflow performs no rdm status mutation of its own (it is an
 # artifact producer, not a gate) and runs no confirmation/plan-mode call.
 if grep -qE -- '--status[[:space:]]' "$WF"; then
-    fail "document.js must not mutate any rdm --status — that is the (never-run) job of a gate, not this artifact producer"
+    fail "rdm-wf-document.js must not mutate any rdm --status — that is the (never-run) job of a gate, not this artifact producer"
 fi
 if grep -qE "(buildReviewPipeline\(|runPlanGate\(|runPlanReview\(|workflow\('plan-review'|--verdict)" "$WF"; then
-    fail "document.js must not invoke a plan-mode/review-pipeline call — approval happens only in the skill shim"
+    fail "rdm-wf-document.js must not invoke a plan-mode/review-pipeline call — approval happens only in the skill shim"
 fi
-pass "no --status mutation and no plan-mode/confirmation call in document.js"
+pass "no --status mutation and no plan-mode/confirmation call in rdm-wf-document.js"
 
 # AC: no Date.now(/Math.random( in either file (forbidden-primitives rule).
 for f in "$WF" "$LIB"; do
@@ -141,7 +141,7 @@ for f in "$WF" "$LIB"; do
         fail "forbidden Math.random( found in $f"
     fi
 done
-pass "no Date.now( / Math.random( in document.js or lib/document.mjs"
+pass "no Date.now( / Math.random( in rdm-wf-document.js or lib/document.mjs"
 
 # AC: the skill shim retains the terminal human-approval language...
 if ! grep -qi 'not done until' "$SKILL" || ! grep -qi 'reviewed and approved' "$SKILL"; then
@@ -152,7 +152,7 @@ pass "SKILL.md retains the terminal human-approval language"
 # ...and was actually thinned, not just re-saved: the old step-by-step
 # git-gather prose (a literal step named "Cross-reference") must be gone.
 if grep -q '\*\*Cross-reference\*\*' "$SKILL"; then
-    fail "SKILL.md still carries the old step-by-step 'Cross-reference' git-gather prose — it must be thinned into document.js's prompts"
+    fail "SKILL.md still carries the old step-by-step 'Cross-reference' git-gather prose — it must be thinned into rdm-wf-document.js's prompts"
 fi
 pass "SKILL.md no longer carries the old step-by-step git-gather prose"
 
@@ -167,7 +167,7 @@ say "1b. Mechanical-tier pin: mechanical fetch/gather/write agents pinned"
 . "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
 
 agent_option_blocks "$WF" >"$TMP/mech-blocks"
-[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from document.js"
+[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from rdm-wf-document.js"
 
 assert_label_model "$TMP/mech-blocks" 'fetch:roadmap-meta' 'mechanicalModel' ||
     fail "AC-MECHANICAL-TIER: fetch:roadmap-meta must resolve to model: mechanicalModel"
@@ -456,11 +456,11 @@ pass "real rdm JSON output round-trips correctly through the pure decision funct
 # --- HOIST: caller-supplied mechanicalModel / roadmapMeta --------------------
 # Phase 3 of the workflow-token-reduction roadmap eliminates mechanical
 # subagents by never spawning them (docs/mechanical-agent-inventory.md). In
-# document.js both hoists live in the DRIVER REGION only; the copied
+# rdm-wf-document.js both hoists live in the DRIVER REGION only; the copied
 # `document-core` block is untouched. Both are OPTIONAL — the original agent
 # call is reached through an `else` branch and is never deleted — and the
 # all-done validation, the gather fan-out and the write stage are unchanged.
-say "HOIST. document.js driver region: mechanicalModel / roadmapMeta hoists and their fallbacks"
+say "HOIST. rdm-wf-document.js driver region: mechanicalModel / roadmapMeta hoists and their fallbacks"
 
 cat >"$TMP/hoist.mjs" <<'NODE_HOIST'
 import assert from 'node:assert/strict';

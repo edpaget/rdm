@@ -87,9 +87,9 @@ predate or sit alongside the current six-lane set — is excluded.
 `Workflow` runs in the captured history (an `estimate:*`-labelled *agent class*
 does appear, but only nested inside `autopilot`'s estimate pre-pass — see the
 `estimate` row of the per-agent-class table below, which is real data drawn
-from those nested invocations, not from a standalone `estimate` workflow run).
+from those nested invocations, not from a standalone `rdm-wf-estimate` workflow run).
 This baseline therefore cannot speak to the token cost of a standalone
-`estimate` or `document` workflow run; any phase 3-7 change to those two
+`rdm-wf-estimate` or `rdm-wf-document` workflow run; any phase 3-7 change to those two
 lanes will be unmeasured against a real "before" until they have run at least
 once in production.
 
@@ -972,7 +972,7 @@ one at or above it still gates. The budget skips **grading**, never
 ## Refuter model tiering
 
 Refuters run on the most expensive tier everywhere (`review-verify` resolves to
-`opus`; `plan-review.js` passes no models and inherits the opus-class session
+`opus`; `rdm-wf-plan-review.js` passes no models and inherits the opus-class session
 model). Whether they must was settled against a 56-item adjudicated finding
 corpus rather than the original 8-finding A/B, with false-negative and
 false-positive rates reported separately — a false negative ships a defect, a
@@ -985,7 +985,7 @@ saving from re-tiering is a price-per-token argument, and this roadmap's metric
 is volume.
 
 The full method, the corpus composition, the per-class and authoritative-only
-tables, the self-consistency flip rates, the answer to the `plan-review.js`
+tables, the self-consistency flip rates, the answer to the `rdm-wf-plan-review.js`
 model-omission question, and the decision itself are in
 [`refuter-model-tiering.md`](refuter-model-tiering.md). Machine-readable figures
 live in `docs/token-baseline.json` § `refuterModelTiering` and are audited
