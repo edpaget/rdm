@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+
+- `rdm-core` can now emit rdm's Claude Code lane as an installable **plugin tree** as well as the existing raw skills tree. New public API in `rdm_core::agent_config`: `generate_plugin_manifest()` returns the `.claude-plugin/plugin.json` manifest (name `rdm`, the crate version, a plugin-facing description, and an author block — deliberately no `workflows` key, since that directory is convention-discovered and the key would replace rather than add to the default), `generate_plugin_skills()` / `generate_plugin_workflows()` return the eleven skills under `skills/<name>/SKILL.md` and the two engines under `workflows/` at the plugin root, and `generate_plugin_files()` returns the whole 14-file tree as `PluginFile { relative_path, content }`. In plugin mode skill names drop their `rdm-` prefix (the `rdm:` plugin namespace already disambiguates, so the skill is `rdm:roadmap` rather than `rdm:rdm-roadmap`), skill bodies invoke engines by the namespaced name `rdm:rdm-wf-dispatch-phase` instead of by a `.claude/workflows/…` path, and every shim that needs an rdm binary carries a note on how to resolve one from a plugin install (`--rdm-bin`, then `RDM_BIN`, then `PATH`, with an actionable error if none resolves). Engine names keep their `rdm-wf-` prefix, which is what keeps the emitted skill names and engine names disjoint. Existing `rdm agent-config claude --skills` output is byte-for-byte unchanged; the `--plugin` CLI surface is not wired up yet.
 
 ## [0.18.2] - 2026-08-03
 

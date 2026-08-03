@@ -678,6 +678,368 @@ pub fn resolve_superseded_workflows(
     outcomes
 }
 
+// --- Plugin-layout emission -------------------------------------------------
+//
+// A second, parallel emission surface that packages the SAME skills and
+// workflow engines as an installable Claude Code plugin tree:
+//
+//     <plugin-root>/
+//       .claude-plugin/plugin.json
+//       skills/<name>/SKILL.md          (11)
+//       workflows/rdm-wf-*.js           (2)
+//
+// Everything below runs as a POST-processing pass over `generate_skills`'s and
+// `generate_workflows`' already-rendered output. Nothing here is reachable
+// from `generate_skills`/`render_skill` or from any `templates/` file, which
+// is what makes raw `--skills` invariance structural rather than merely
+// tested. The naming decisions implemented here are recorded in
+// `docs/plugin-distribution.md`.
+
+/// The Claude Code plugin name, and therefore the namespace the runtime
+/// prefixes onto every skill and workflow the plugin ships (`rdm:<name>`).
+///
+/// This is the vendor name and is deliberately not configurable.
+pub const PLUGIN_NAME: &str = "rdm";
+
+/// The `description` field of the emitted plugin manifest.
+///
+/// Deliberately a dedicated literal rather than `env!("CARGO_PKG_DESCRIPTION")`:
+/// that one describes the `rdm-core` library ("Core library for rdm: …"),
+/// which is the wrong thing to show a user browsing installable plugins.
+const PLUGIN_DESCRIPTION: &str = "rdm's planning lane for Claude Code: skills for creating roadmaps, implementing and \
+     reviewing phases and tasks, and landing finished work, plus the Workflow engines they \
+     dispatch.";
+
+/// Maps each raw emitted skill directory name onto its plugin-mode name, in
+/// [`generate_skills`] emission order.
+///
+/// Plugin mode drops the hand-rolled `rdm-` prefix because the plugin
+/// namespace already supplies that disambiguation — `rdm:roadmap` rather than
+/// `rdm:rdm-roadmap` (`docs/plugin-distribution.md`, Decision 1).
+///
+/// The table is the ONLY thing that decides whether an `rdm-`-prefixed token
+/// is renamed. That is what keeps the rename exact as well as total: engine
+/// names (`rdm-wf-dispatch-phase`, `rdm-wf-estimate`), the `rdm-mechanical`
+/// agent type, and prose tokens like `rdm-next`/`rdm-side` all share the
+/// prefix but are absent from the table, so [`rewrite_skill_names`] copies
+/// them through untouched.
+const PLUGIN_SKILL_NAMES: [(&str, &str); 11] = [
+    ("rdm-roadmap", "roadmap"),
+    ("rdm-do", "do"),
+    ("rdm-review", "review"),
+    ("rdm-document", "document"),
+    ("rdm-estimate", "estimate"),
+    ("rdm-dispatch-phase", "dispatch-phase"),
+    ("rdm-autopilot", "autopilot"),
+    ("rdm-land", "land"),
+    ("rdm-revise", "revise"),
+    ("rdm-plan-review", "plan-review"),
+    ("rdm-backlog", "backlog"),
+];
+
+/// The plugin-mode note appended to every emitted skill body that needs an
+/// `rdmBin` argument.
+///
+/// A plugin-installed shim has no repo-local `./target/debug/rdm` to assume,
+/// so it must resolve the binary at runtime
+/// (`docs/plugin-distribution.md`, Decision 4).
+const PLUGIN_RDM_BIN_NOTE: &str = "\n## Resolving `rdmBin` (plugin install)\n\nThis skill was installed from the `rdm` plugin, so there is no repo-local build path to assume. Resolve the `rdmBin` argument in this order and use the first that exists:\n\n1. an explicitly supplied `--rdm-bin <path>`;\n2. the `RDM_BIN` environment variable;\n3. a plain `rdm` on `PATH`.\n\nIf none resolves, stop and report: `rdm binary not found. Install rdm, then set RDM_BIN=/path/to/rdm, put rdm on your PATH, or pass --rdm-bin /path/to/rdm.` Never guess a path, and never invoke a workflow without one.\n";
+
+/// A generated plugin-tree file with its plugin-root-relative path and content.
+///
+/// Distinct from [`SkillFile`]/[`WorkflowFile`] because plugin paths are
+/// *computed* (`skills/<plugin-name>/SKILL.md`, `workflows/<file>`) rather
+/// than fixed literals, so `relative_path` must be an owned `String` rather
+/// than the `&'static str` those two types use. Widening `SkillFile` instead
+/// would change a public type on the raw emission surface, which plugin mode
+/// deliberately does not touch.
+pub struct PluginFile {
+    /// Path relative to the plugin root (e.g. `"skills/roadmap/SKILL.md"`).
+    pub relative_path: String,
+    /// The full content of the file.
+    pub content: String,
+}
+
+/// Returns `true` when `b` may appear *inside* a kebab-case `rdm-` token.
+fn is_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-'
+}
+
+/// Returns `true` when `b` immediately preceding an `rdm-` occurrence means
+/// that occurrence is NOT the start of a token (e.g. the `-` in `--rdm-bin`,
+/// or the `r` in a hypothetical `librdm-do`).
+fn is_token_boundary_blocker(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
+/// Rewrites the eleven emitted skill names in `body` to their plugin-mode
+/// form, leaving every other `rdm-`-prefixed identifier byte-for-byte alone.
+///
+/// The scan is token-exact rather than substring-based: an occurrence of
+/// `rdm-` only starts a token when the preceding byte is not
+/// `[A-Za-z0-9_-]`; the token is then the maximal following run of
+/// `[A-Za-z0-9-]` with any trailing `-` trimmed; and it is substituted only
+/// when the WHOLE token is a key in [`PLUGIN_SKILL_NAMES`].
+///
+/// That construction is what makes the rename simultaneously **total** (the
+/// frontmatter `name:` line and every cross-reference in prose are part of
+/// the same string, so one pass covers them all) and **exact**:
+///
+/// - `rdm-document` renames to `document`, not to a `rdm-do`-prefixed hybrid,
+///   because the token is matched whole;
+/// - `rdm-wf-dispatch-phase`, `rdm-wf-estimate`, `rdm-mechanical`,
+///   `rdm-next`, `rdm-side` and `rdm-review-on-finalize` are all left verbatim
+///   because none is a table key;
+/// - `--rdm-bin` is not even considered a token, because `-` precedes it.
+fn rewrite_skill_names(body: &str) -> String {
+    const NEEDLE: &[u8] = b"rdm-";
+    let bytes = body.as_bytes();
+    let mut out = String::with_capacity(body.len());
+    let mut copied = 0usize;
+    let mut i = 0usize;
+    while i + NEEDLE.len() <= bytes.len() {
+        if &bytes[i..i + NEEDLE.len()] != NEEDLE
+            || (i > 0 && is_token_boundary_blocker(bytes[i - 1]))
+        {
+            i += 1;
+            continue;
+        }
+        let mut end = i + NEEDLE.len();
+        while end < bytes.len() && is_token_byte(bytes[end]) {
+            end += 1;
+        }
+        let mut token_end = end;
+        while token_end > i && bytes[token_end - 1] == b'-' {
+            token_end -= 1;
+        }
+        // `i` and `token_end` bound a run of ASCII bytes, so both are UTF-8
+        // char boundaries and slicing here can never panic.
+        match PLUGIN_SKILL_NAMES
+            .iter()
+            .find(|(raw, _)| *raw == &body[i..token_end])
+        {
+            Some((_, plugin_name)) => {
+                out.push_str(&body[copied..i]);
+                out.push_str(plugin_name);
+                copied = token_end;
+                i = token_end;
+            }
+            // Not a skill name: skip past the whole token so no shorter
+            // lookalike inside it can be matched.
+            None => i = end,
+        }
+    }
+    out.push_str(&body[copied..]);
+    out
+}
+
+/// Rewrites every reference a skill body makes to a shipped workflow engine
+/// into the plugin-mode invocation form, and drops the raw-surface
+/// provisioning clause that plugin installs make false.
+///
+/// Plugin shims invoke engines by namespaced NAME —
+/// `` `rdm:rdm-wf-dispatch-phase` `` — rather than by a
+/// `${CLAUDE_PLUGIN_ROOT}/workflows/<name>.js` `scriptPath`
+/// (`docs/plugin-distribution.md`, Decision 3). Engine names keep their
+/// `rdm-wf-` prefix (Decision 2), which is exactly what keeps the emitted
+/// skill names and the emitted engine names disjoint.
+///
+/// Applied BEFORE [`rewrite_skill_names`]. The two are in fact
+/// order-independent — the `rdm:<engine>` this produces has the kebab token
+/// `rdm-wf-…`, which is not a [`PLUGIN_SKILL_NAMES`] key, and
+/// `rewrite_skill_names` never produces a `.claude/workflows/` literal — but
+/// the order is pinned here (and asserted by a test) so it cannot drift into
+/// mattering unnoticed.
+fn rewrite_workflow_refs(body: &str) -> String {
+    let mut out = body.to_string();
+    for (file_name, _) in SHIPPED_WORKFLOWS {
+        let stem = file_name.strip_suffix(".js").unwrap_or(file_name);
+        out = out.replace(
+            &format!(".claude/workflows/{file_name}"),
+            &format!("{PLUGIN_NAME}:{stem}"),
+        );
+    }
+    out.replace(
+        ", provisioned automatically by `rdm agent-config claude --skills`",
+        ", installed by the `rdm` plugin",
+    )
+}
+
+/// Appends [`PLUGIN_RDM_BIN_NOTE`] to `body` when it needs one.
+///
+/// Applied last, after both renames, so its own `--rdm-bin` spelling is
+/// carried through verbatim.
+fn append_plugin_rdm_bin_note(body: String) -> String {
+    if !body.contains("rdmBin") {
+        return body;
+    }
+    let mut out = body;
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(PLUGIN_RDM_BIN_NOTE);
+    out
+}
+
+/// Generates the `.claude-plugin/plugin.json` manifest for the `rdm` plugin.
+///
+/// The `version` is the rdm crate version. There is deliberately **no**
+/// `workflows` key: the `workflows/` directory is convention-discovered by
+/// the Claude Code runtime, and the manifest key *replaces* the default
+/// location rather than adding to it.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_plugin_manifest;
+///
+/// let manifest = generate_plugin_manifest();
+/// let parsed: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+/// assert_eq!(parsed["name"], "rdm");
+/// assert!(parsed["workflows"].is_null());
+/// ```
+pub fn generate_plugin_manifest() -> String {
+    let manifest = serde_json::json!({
+        "name": PLUGIN_NAME,
+        "version": env!("CARGO_PKG_VERSION"),
+        "description": PLUGIN_DESCRIPTION,
+        "author": {
+            "name": "Edward Paget",
+            "url": env!("CARGO_PKG_REPOSITORY"),
+        },
+    });
+    let mut out = serde_json::to_string_pretty(&manifest)
+        .expect("a manifest built from string literals always serializes");
+    out.push('\n');
+    out
+}
+
+/// Generates the plugin-layout skill files: the same eleven skills
+/// [`generate_skills`] emits, re-rooted at `skills/<plugin-name>/SKILL.md`
+/// and passed through the plugin-mode content transforms.
+///
+/// The raw surface is called unchanged and every transform runs afterwards on
+/// its output, so this function cannot alter what `--skills` emits.
+///
+/// # Panics
+///
+/// Panics if [`generate_skills`] emits a skill whose directory name is absent
+/// from [`PLUGIN_SKILL_NAMES`]. That is a programmer error meaning the two
+/// have drifted — a twelfth skill was added without a plugin-mode name —
+/// and panicking is preferable to silently shipping a plugin directory that
+/// still carries the `rdm-` prefix.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::{SkillOptions, generate_plugin_skills};
+///
+/// let skills = generate_plugin_skills(&SkillOptions {
+///     project: Some("myproj".to_string()),
+///     principles_file: None,
+///     mcp: false,
+/// });
+/// assert_eq!(skills.len(), 11);
+/// assert_eq!(skills[0].relative_path, "skills/roadmap/SKILL.md");
+/// ```
+pub fn generate_plugin_skills(opts: &SkillOptions) -> Vec<PluginFile> {
+    generate_skills(opts)
+        .into_iter()
+        .map(|skill| {
+            let raw_name = skill
+                .relative_path
+                .split('/')
+                .next()
+                .unwrap_or(skill.relative_path);
+            let plugin_name = PLUGIN_SKILL_NAMES
+                .iter()
+                .find(|(raw, _)| *raw == raw_name)
+                .map(|(_, plugin_name)| *plugin_name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no PLUGIN_SKILL_NAMES entry for emitted skill {raw_name:?}: \
+                         generate_skills and the plugin-name table have drifted"
+                    )
+                });
+            let content = append_plugin_rdm_bin_note(rewrite_skill_names(&rewrite_workflow_refs(
+                &skill.content,
+            )));
+            PluginFile {
+                relative_path: format!("skills/{plugin_name}/SKILL.md"),
+                content,
+            }
+        })
+        .collect()
+}
+
+/// Generates the plugin-layout workflow scripts: exactly the set
+/// [`generate_workflows`] returns, re-rooted under `workflows/` at the plugin
+/// root (a sibling of `skills/`, never inside `.claude-plugin/`).
+///
+/// Content passes through **verbatim** — there is deliberately no `meta.name`
+/// transform. Engine names keep their `rdm-wf-` prefix in plugin mode
+/// (`docs/plugin-distribution.md`, Decision 2), so the runtime renders them as
+/// `/rdm:rdm-wf-dispatch-phase` and the emitted plugin bytes equal the raw
+/// emitted bytes, which in turn equal this repo's own `.claude/workflows/*.js`.
+/// That prefix is also the disambiguator that keeps the emitted skill-name set
+/// and the emitted engine-name set disjoint: dropping it as well as `rdm-`
+/// would collapse the `dispatch-phase` shim and its engine onto one listing
+/// entry.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_plugin_workflows;
+///
+/// let workflows = generate_plugin_workflows();
+/// assert_eq!(workflows.len(), 2);
+/// assert_eq!(
+///     workflows[0].relative_path,
+///     "workflows/rdm-wf-dispatch-phase.js"
+/// );
+/// ```
+pub fn generate_plugin_workflows() -> Vec<PluginFile> {
+    generate_workflows()
+        .into_iter()
+        .map(|workflow| PluginFile {
+            relative_path: format!("workflows/{}", workflow.relative_path),
+            content: workflow.content.to_string(),
+        })
+        .collect()
+}
+
+/// Generates the complete `rdm` plugin tree: the manifest, then the eleven
+/// plugin-layout skills, then the two workflow engines — 14 files, all paths
+/// relative to the plugin root.
+///
+/// # Panics
+///
+/// Panics under the same skill-table drift condition as
+/// [`generate_plugin_skills`].
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::{SkillOptions, generate_plugin_files};
+///
+/// let files = generate_plugin_files(&SkillOptions {
+///     project: None,
+///     principles_file: None,
+///     mcp: false,
+/// });
+/// assert_eq!(files.len(), 14);
+/// assert_eq!(files[0].relative_path, ".claude-plugin/plugin.json");
+/// ```
+pub fn generate_plugin_files(opts: &SkillOptions) -> Vec<PluginFile> {
+    let mut files = vec![PluginFile {
+        relative_path: ".claude-plugin/plugin.json".to_string(),
+        content: generate_plugin_manifest(),
+    }];
+    files.extend(generate_plugin_skills(opts));
+    files.extend(generate_plugin_workflows());
+    files
+}
+
 fn skill_principles_note(path: &str) -> String {
     format!(
         "\n## Principles\n\nRead `{path}` before starting. It contains project conventions that should guide your work."
@@ -4494,5 +4856,676 @@ mod tests {
             "raw `--skills` emission drifted from the committed pre-change baseline:\n  {}",
             differing.join("\n  ")
         );
+    }
+
+    // --- Plugin-layout emission tests ---
+
+    /// The two `SkillOptions` surfaces, keyed by the `mcp` flag, used by the
+    /// plugin tests that must hold on both.
+    fn plugin_test_opts(mcp: bool) -> SkillOptions {
+        SkillOptions {
+            project: Some("demo".to_string()),
+            principles_file: None,
+            mcp,
+        }
+    }
+
+    /// Returns the multiset of maximal `rdm-`-prefixed kebab tokens in `body`,
+    /// using exactly the token rule [`rewrite_skill_names`] applies (preceding
+    /// byte not in `[A-Za-z0-9_-]`; maximal `[A-Za-z0-9-]` run; trailing `-`
+    /// trimmed). Counting tokens rather than substrings is what lets the
+    /// preservation assertions be exact: `rdm-do` can never be counted inside
+    /// `rdm-document`.
+    fn rdm_tokens(body: &str) -> std::collections::BTreeMap<&str, usize> {
+        const NEEDLE: &[u8] = b"rdm-";
+        let bytes = body.as_bytes();
+        let mut counts = std::collections::BTreeMap::new();
+        let mut i = 0usize;
+        while i + NEEDLE.len() <= bytes.len() {
+            if &bytes[i..i + NEEDLE.len()] != NEEDLE
+                || (i > 0 && is_token_boundary_blocker(bytes[i - 1]))
+            {
+                i += 1;
+                continue;
+            }
+            let mut end = i + NEEDLE.len();
+            while end < bytes.len() && is_token_byte(bytes[end]) {
+                end += 1;
+            }
+            let mut token_end = end;
+            while token_end > i && bytes[token_end - 1] == b'-' {
+                token_end -= 1;
+            }
+            *counts.entry(&body[i..token_end]).or_insert(0usize) += 1;
+            i = end;
+        }
+        counts
+    }
+
+    /// Returns the multiset of ALL maximal kebab tokens in `body` (not just
+    /// `rdm-`-prefixed ones), used for the rename token-delta check.
+    fn kebab_tokens(body: &str) -> std::collections::BTreeMap<&str, usize> {
+        let bytes = body.as_bytes();
+        let mut counts = std::collections::BTreeMap::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if !is_token_byte(bytes[i]) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < bytes.len() && is_token_byte(bytes[i]) {
+                i += 1;
+            }
+            let token = body[start..i].trim_matches('-');
+            if !token.is_empty() {
+                *counts.entry(token).or_insert(0usize) += 1;
+            }
+        }
+        counts
+    }
+
+    fn count_of(counts: &std::collections::BTreeMap<&str, usize>, token: &str) -> usize {
+        counts.get(token).copied().unwrap_or(0)
+    }
+
+    /// Parses the `meta.name` a Workflow script declares.
+    fn parse_meta_name(script: &str) -> String {
+        let start = script
+            .find("export const meta = {")
+            .expect("workflow script declares `export const meta = {`");
+        let line = script[start..]
+            .lines()
+            .find(|line| line.trim_start().starts_with("name:"))
+            .expect("meta block declares a `name:`");
+        line.trim()
+            .trim_start_matches("name:")
+            .trim()
+            .trim_matches(|c| c == ',' || c == '\'')
+            .to_string()
+    }
+
+    #[test]
+    fn plugin_files_have_expected_layout() {
+        for mcp in [false, true] {
+            let opts = plugin_test_opts(mcp);
+            let files = generate_plugin_files(&opts);
+            let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
+            assert_eq!(
+                paths,
+                vec![
+                    ".claude-plugin/plugin.json",
+                    "skills/roadmap/SKILL.md",
+                    "skills/do/SKILL.md",
+                    "skills/review/SKILL.md",
+                    "skills/document/SKILL.md",
+                    "skills/estimate/SKILL.md",
+                    "skills/dispatch-phase/SKILL.md",
+                    "skills/autopilot/SKILL.md",
+                    "skills/land/SKILL.md",
+                    "skills/revise/SKILL.md",
+                    "skills/plan-review/SKILL.md",
+                    "skills/backlog/SKILL.md",
+                    "workflows/rdm-wf-dispatch-phase.js",
+                    "workflows/rdm-wf-review-refute-fix.js",
+                ],
+                "mcp={mcp}"
+            );
+            assert_eq!(files.len(), 14, "mcp={mcp}");
+
+            for path in &paths {
+                let p = std::path::Path::new(path);
+                assert!(p.is_relative(), "mcp={mcp}: {path} is not relative");
+                assert!(
+                    !p.components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir)),
+                    "mcp={mcp}: {path} contains a `..` component"
+                );
+                assert!(
+                    !path.starts_with(".claude-plugin/workflows")
+                        && !path.starts_with(".claude-plugin/skills"),
+                    "mcp={mcp}: {path} nests a plugin component inside `.claude-plugin/`"
+                );
+                assert!(!path.is_empty(), "mcp={mcp}: emitted an empty path");
+            }
+
+            // Skill-count parity with the raw surface.
+            assert_eq!(
+                generate_plugin_skills(&opts).len(),
+                generate_skills(&opts).len(),
+                "mcp={mcp}: plugin/raw skill count parity"
+            );
+            assert_eq!(generate_plugin_skills(&opts).len(), 11, "mcp={mcp}");
+        }
+    }
+
+    #[test]
+    fn plugin_skill_table_covers_exactly_the_raw_skill_set() {
+        let mut raw: Vec<&str> = generate_skills(&plugin_test_opts(false))
+            .iter()
+            .map(|s| s.relative_path.split('/').next().unwrap())
+            .collect();
+        let mut table: Vec<&str> = PLUGIN_SKILL_NAMES.iter().map(|(raw, _)| *raw).collect();
+        assert_eq!(
+            raw, table,
+            "PLUGIN_SKILL_NAMES must list the raw skill directories in emission order"
+        );
+        raw.sort_unstable();
+        raw.dedup();
+        table.sort_unstable();
+        table.dedup();
+        assert_eq!(raw.len(), 11);
+        assert_eq!(table.len(), 11);
+    }
+
+    #[test]
+    fn plugin_skill_bodies_use_namespaced_workflow_refs() {
+        let engine_stems: Vec<String> = generate_plugin_workflows()
+            .iter()
+            .map(|w| {
+                w.relative_path
+                    .trim_start_matches("workflows/")
+                    .trim_end_matches(".js")
+                    .to_string()
+            })
+            .collect();
+
+        for mcp in [false, true] {
+            for principles in [None, Some("PRINCIPLES.md".to_string())] {
+                let opts = SkillOptions {
+                    project: Some("demo".to_string()),
+                    principles_file: principles.clone(),
+                    mcp,
+                };
+                let skills = generate_plugin_skills(&opts);
+                let joined: String = skills
+                    .iter()
+                    .map(|s| s.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                assert_eq!(
+                    joined.matches(".claude/workflows/").count(),
+                    0,
+                    "mcp={mcp}: a plugin skill body still carries a `.claude/workflows/` path"
+                );
+                assert_eq!(
+                    joined.matches("`rdm:rdm-wf-dispatch-phase`").count(),
+                    3,
+                    "mcp={mcp}: expected the 3 raw engine path literals to become namespaced refs"
+                );
+                assert_eq!(
+                    joined.matches("${CLAUDE_PLUGIN_ROOT}").count(),
+                    0,
+                    "mcp={mcp}: the scriptPath branch was not the Phase-1 decision"
+                );
+                assert_eq!(joined.matches("scriptPath").count(), 0, "mcp={mcp}");
+                assert_eq!(
+                    joined.matches("provisioned automatically by").count(),
+                    0,
+                    "mcp={mcp}: plugin shims are not provisioned by `agent-config --skills`"
+                );
+
+                // Every namespaced engine reference the rewrite emits names a
+                // real emitted engine. Scoped to the backticked ``rdm:…``
+                // invocation form the rewrite produces — the templates also
+                // carry unrelated pre-existing `<!-- rdm:review-spec:… -->`
+                // generator markers, which are not engine references.
+                let mut namespaced = 0usize;
+                for (idx, _) in joined.match_indices("`rdm:") {
+                    let rest = &joined[idx + "`rdm:".len()..];
+                    let end = rest
+                        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                        .unwrap_or(rest.len());
+                    let named = &rest[..end];
+                    assert!(
+                        engine_stems.iter().any(|s| s == named),
+                        "mcp={mcp}: `rdm:{named}` names no emitted engine"
+                    );
+                    namespaced += 1;
+                }
+                assert_eq!(
+                    namespaced, 3,
+                    "mcp={mcp}: expected 3 namespaced engine references"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rewrite_workflow_refs_is_total_over_both_raw_phrasings() {
+        let with_clause = "Invoke the `rdm-wf-dispatch-phase` Workflow (`.claude/workflows/rdm-wf-dispatch-phase.js`, provisioned automatically by `rdm agent-config claude --skills`) via the tool.";
+        let bare = "Invoke the `rdm-wf-dispatch-phase` Workflow (`.claude/workflows/rdm-wf-dispatch-phase.js`) via the tool.";
+        for input in [with_clause, bare] {
+            let out = rewrite_workflow_refs(input);
+            assert_eq!(
+                out.matches(".claude/workflows/").count(),
+                0,
+                "rewrite left a source-tree path behind: {out}"
+            );
+            assert!(out.contains("`rdm:rdm-wf-dispatch-phase`"), "{out}");
+        }
+        assert!(
+            rewrite_workflow_refs(with_clause).contains(", installed by the `rdm` plugin"),
+            "the false provisioning clause was not replaced"
+        );
+        // The other shipped engine is handled by the same table-driven loop.
+        assert_eq!(
+            rewrite_workflow_refs("see `.claude/workflows/rdm-wf-review-refute-fix.js`"),
+            "see `rdm:rdm-wf-review-refute-fix`"
+        );
+    }
+
+    #[test]
+    fn rewrite_skill_names_is_token_exact() {
+        // `rdm-do` is a strict prefix of `rdm-document`: the maximal-token
+        // scan must rename the whole token, never the prefix.
+        assert_eq!(rewrite_skill_names("`rdm-document`"), "`document`");
+        assert_eq!(rewrite_skill_names("`rdm-do`"), "`do`");
+        assert_eq!(rewrite_skill_names("rdm-do/SKILL.md"), "do/SKILL.md");
+        assert_eq!(
+            rewrite_skill_names("name: rdm-plan-review"),
+            "name: plan-review"
+        );
+
+        // Non-skill `rdm-*` identifiers survive verbatim.
+        for preserved in [
+            "rdm-wf-dispatch-phase",
+            "rdm-wf-estimate",
+            "rdm-mechanical",
+            "rdm-next",
+            "rdm-side",
+            "rdm-review-on-finalize",
+            "rdm-plan-review-on-create",
+        ] {
+            assert_eq!(
+                rewrite_skill_names(preserved),
+                preserved,
+                "{preserved} must not be rewritten"
+            );
+        }
+
+        // The preceding-byte guard.
+        assert_eq!(rewrite_skill_names("--rdm-bin"), "--rdm-bin");
+        assert_eq!(rewrite_skill_names("librdm-do"), "librdm-do");
+        assert_eq!(rewrite_skill_names("x_rdm-land"), "x_rdm-land");
+
+        // Trailing `-` is trimmed off the token, not swallowed.
+        assert_eq!(rewrite_skill_names("rdm-land- "), "land- ");
+
+        // Multi-byte content around a match survives.
+        assert_eq!(
+            rewrite_skill_names("— `rdm-land` — `rdm-autopilot` —"),
+            "— `land` — `autopilot` —"
+        );
+    }
+
+    #[test]
+    fn plugin_rewrites_are_order_independent() {
+        for mcp in [false, true] {
+            for skill in generate_skills(&plugin_test_opts(mcp)) {
+                let a = rewrite_skill_names(&rewrite_workflow_refs(&skill.content));
+                let b = rewrite_workflow_refs(&rewrite_skill_names(&skill.content));
+                assert_eq!(
+                    a, b,
+                    "mcp={mcp}: {} is order-sensitive",
+                    skill.relative_path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plugin_skill_bodies_preserve_non_skill_rdm_identifiers() {
+        // CLI surface counts, then MCP. `rdm-side` appears only in the CLI
+        // prose, so the pair is deliberately asymmetric.
+        let expected: [(&str, usize, usize); 5] = [
+            ("rdm-wf-dispatch-phase", 17, 17),
+            ("rdm-wf-estimate", 2, 2),
+            ("rdm-mechanical", 1, 1),
+            ("rdm-next", 1, 1),
+            ("rdm-side", 1, 0),
+        ];
+
+        for mcp in [false, true] {
+            let opts = plugin_test_opts(mcp);
+            let raw_joined: String = generate_skills(&opts)
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let plugin_joined: String = generate_plugin_skills(&opts)
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let raw_counts = rdm_tokens(&raw_joined);
+            let plugin_counts = rdm_tokens(&plugin_joined);
+
+            for (token, cli_count, mcp_count) in expected {
+                let want = if mcp { mcp_count } else { cli_count };
+                assert_eq!(
+                    count_of(&raw_counts, token),
+                    want,
+                    "mcp={mcp}: raw occurrence count for {token} moved — update the literal deliberately"
+                );
+                assert_eq!(
+                    count_of(&plugin_counts, token),
+                    want,
+                    "mcp={mcp}: plugin emission changed the occurrence count of the non-skill identifier {token}"
+                );
+            }
+
+            // And the rename is total in the other direction: not one of the
+            // eleven raw skill names survives anywhere in a plugin body.
+            for (raw_name, _) in PLUGIN_SKILL_NAMES {
+                assert_eq!(
+                    count_of(&plugin_counts, raw_name),
+                    0,
+                    "mcp={mcp}: {raw_name} survived the plugin rename"
+                );
+                assert!(
+                    count_of(&raw_counts, raw_name) > 0,
+                    "mcp={mcp}: {raw_name} is absent from raw emission — the check would be vacuous"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plugin_skill_rename_is_total_by_token_delta() {
+        // Every occurrence of a raw skill name must REAPPEAR as its plugin
+        // name, not merely vanish. Counting the delta against the raw body
+        // cancels prose words like "land" and "do" that legitimately occur in
+        // both.
+        for mcp in [false, true] {
+            let opts = plugin_test_opts(mcp);
+            let raw_joined: String = generate_skills(&opts)
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let plugin_joined: String = generate_plugin_skills(&opts)
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let raw_counts = kebab_tokens(&raw_joined);
+            let plugin_counts = kebab_tokens(&plugin_joined);
+
+            let mut renamed_total = 0usize;
+            for (raw_name, plugin_name) in PLUGIN_SKILL_NAMES {
+                let raw_old = count_of(&raw_counts, raw_name);
+                assert!(
+                    raw_old > 0,
+                    "mcp={mcp}: {raw_name} absent from raw emission"
+                );
+                let delta = count_of(&plugin_counts, plugin_name) as i64
+                    - count_of(&raw_counts, plugin_name) as i64;
+                assert_eq!(
+                    delta, raw_old as i64,
+                    "mcp={mcp}: {raw_name} -> {plugin_name} gained {delta} occurrences but had {raw_old}"
+                );
+                renamed_total += raw_old;
+            }
+            assert_eq!(
+                renamed_total, 46,
+                "mcp={mcp}: expected 46 skill-name occurrences per surface"
+            );
+
+            // The directory name and the frontmatter `name:` line are covered
+            // by the same pass.
+            for file in generate_plugin_skills(&opts) {
+                let dir = file
+                    .relative_path
+                    .trim_start_matches("skills/")
+                    .trim_end_matches("/SKILL.md");
+                assert!(
+                    file.content.contains(&format!("\nname: {dir}\n")),
+                    "mcp={mcp}: frontmatter name of {} does not match its directory",
+                    file.relative_path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plugin_skill_bodies_carry_the_rdm_bin_resolution_note() {
+        for mcp in [false, true] {
+            let opts = plugin_test_opts(mcp);
+            let raw = generate_skills(&opts);
+            let plugin = generate_plugin_skills(&opts);
+            let mut noted = 0usize;
+            for (raw_skill, plugin_skill) in raw.iter().zip(plugin.iter()) {
+                let needs_note = raw_skill.content.contains("rdmBin");
+                let has_note = plugin_skill
+                    .content
+                    .contains("## Resolving `rdmBin` (plugin install)");
+                assert_eq!(
+                    needs_note, has_note,
+                    "mcp={mcp}: {} note presence does not match its rdmBin usage",
+                    plugin_skill.relative_path
+                );
+                if has_note {
+                    noted += 1;
+                    assert!(
+                        plugin_skill
+                            .content
+                            .contains("`RDM_BIN` environment variable")
+                    );
+                    assert!(plugin_skill.content.contains("--rdm-bin"));
+                    assert!(plugin_skill.content.contains("rdm binary not found."));
+                }
+            }
+            assert_eq!(
+                noted, 3,
+                "mcp={mcp}: expected the 3 rdmBin-carrying shims (autopilot, dispatch-phase, do)"
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_workflow_bytes_are_byte_identical_to_source() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("rdm-core manifest dir has a parent");
+        let raw = generate_workflows();
+        let plugin = generate_plugin_workflows();
+        assert_eq!(plugin.len(), 2);
+        assert_eq!(raw.len(), plugin.len());
+
+        let expected_provenance_literals = [6usize, 3];
+        let expected_meta_names = ["rdm-wf-dispatch-phase", "rdm-wf-review-refute-fix"];
+
+        for (idx, (raw_wf, plugin_wf)) in raw.iter().zip(plugin.iter()).enumerate() {
+            assert_eq!(
+                plugin_wf.relative_path,
+                format!("workflows/{}", raw_wf.relative_path)
+            );
+            assert_eq!(
+                plugin_wf.content, raw_wf.content,
+                "{} is not byte-identical to the raw emission",
+                plugin_wf.relative_path
+            );
+            let source_path = repo_root
+                .join(".claude/workflows")
+                .join(raw_wf.relative_path);
+            let source = std::fs::read_to_string(&source_path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", source_path.display()));
+            assert_eq!(
+                plugin_wf.content, source,
+                "{} drifted from the dogfood copy",
+                plugin_wf.relative_path
+            );
+            // The generator-provenance comments are byte-frozen; AC2's
+            // ".claude/workflows/-free" rule is scoped to SKILL.md bodies.
+            assert_eq!(
+                plugin_wf.content.matches(".claude/workflows/").count(),
+                expected_provenance_literals[idx],
+                "{} lost or gained a provenance literal",
+                plugin_wf.relative_path
+            );
+            // Transform 2 (the `meta.name` rewrite) was NOT selected.
+            assert_eq!(
+                parse_meta_name(&plugin_wf.content),
+                expected_meta_names[idx],
+                "{} had its meta.name rewritten",
+                plugin_wf.relative_path
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_skill_and_engine_names_are_disjoint() {
+        let skill_names: std::collections::BTreeSet<String> =
+            generate_plugin_skills(&plugin_test_opts(false))
+                .iter()
+                .map(|f| {
+                    f.relative_path
+                        .trim_start_matches("skills/")
+                        .trim_end_matches("/SKILL.md")
+                        .to_string()
+                })
+                .collect();
+        assert_eq!(skill_names.len(), 11);
+
+        let engine_names: std::collections::BTreeSet<String> = generate_plugin_workflows()
+            .iter()
+            .map(|w| parse_meta_name(&w.content))
+            .collect();
+        // Non-vacuity: pin the engine names, which is what proves the
+        // `rdm-wf-` disambiguator survived plugin emission.
+        assert_eq!(
+            engine_names,
+            ["rdm-wf-dispatch-phase", "rdm-wf-review-refute-fix"]
+                .into_iter()
+                .map(String::from)
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+
+        assert!(
+            skill_names.is_disjoint(&engine_names),
+            "plugin skill names and engine meta.names collide: {:?}",
+            skill_names.intersection(&engine_names).collect::<Vec<_>>()
+        );
+
+        // Planted collision: the check must bite.
+        let mut colliding = engine_names.clone();
+        colliding.insert("dispatch-phase".to_string());
+        assert!(
+            !skill_names.is_disjoint(&colliding),
+            "the disjointness check does not detect a planted collision"
+        );
+    }
+
+    #[test]
+    fn plugin_manifest_round_trips_with_independent_version() {
+        let manifest = generate_plugin_manifest();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&manifest).expect("manifest is valid JSON");
+
+        assert_eq!(parsed["name"], "rdm");
+        assert!(
+            parsed["description"]
+                .as_str()
+                .is_some_and(|d| !d.is_empty()),
+            "manifest description must be a non-empty string"
+        );
+        assert!(
+            parsed["author"]["name"]
+                .as_str()
+                .is_some_and(|n| !n.is_empty()),
+            "manifest author.name must be a non-empty string"
+        );
+        assert!(
+            parsed["author"]["url"]
+                .as_str()
+                .is_some_and(|u| !u.is_empty()),
+            "manifest author.url must be a non-empty string"
+        );
+        assert!(
+            parsed["workflows"].is_null(),
+            "the `workflows` key must be absent — the directory is convention-discovered"
+        );
+
+        let version = parsed["version"]
+            .as_str()
+            .expect("manifest version is a JSON string");
+        assert!(!version.is_empty(), "manifest version must be non-empty");
+        let components: Vec<&str> = version.split('.').collect();
+        assert_eq!(
+            components.len(),
+            3,
+            "manifest version {version} is not a 3-component semver"
+        );
+        for component in &components {
+            component
+                .parse::<u64>()
+                .unwrap_or_else(|e| panic!("semver component {component:?} of {version}: {e}"));
+        }
+
+        // Compared against a value read independently from the workspace
+        // manifest, never against `env!("CARGO_PKG_VERSION")` — that would be
+        // the tautology this test exists to avoid.
+        let workspace_manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("rdm-core manifest dir has a parent")
+            .join("Cargo.toml");
+        let text = std::fs::read_to_string(&workspace_manifest)
+            .unwrap_or_else(|e| panic!("read {}: {e}", workspace_manifest.display()));
+        let workspace: toml::Value =
+            toml::from_str(&text).expect("workspace Cargo.toml parses as TOML");
+        let workspace_version = workspace["workspace"]["package"]["version"]
+            .as_str()
+            .expect("workspace.package.version is a string");
+        assert_eq!(version, workspace_version);
+    }
+
+    /// Extracts the brace-balanced body of the function whose signature
+    /// starts with `anchor`, panicking loudly (rather than passing
+    /// vacuously) if the anchor cannot be located.
+    fn fn_body(source: &str, anchor: &str) -> String {
+        let start = source.find(anchor).unwrap_or_else(|| {
+            panic!(
+                "anchor {anchor:?} not found in agent_config.rs — this guard would pass vacuously"
+            )
+        });
+        let open = start
+            + source[start..]
+                .find('{')
+                .unwrap_or_else(|| panic!("no body brace after {anchor:?}"));
+        let mut depth = 0usize;
+        for (offset, ch) in source[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return source[open..open + offset + 1].to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces after {anchor:?}");
+    }
+
+    #[test]
+    fn plugin_mode_adds_no_call_site_in_raw_emitters() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent_config.rs"),
+        )
+        .expect("read agent_config.rs");
+        for anchor in ["fn generate_skills(", "fn render_skill("] {
+            let body = fn_body(&source, anchor);
+            assert!(
+                !body.to_lowercase().contains("plugin"),
+                "{anchor} body mentions plugin — plugin mode must stay a post-processing pass over the raw surface"
+            );
+            assert!(
+                body.len() > 20,
+                "{anchor} body extraction looks degenerate: {body:?}"
+            );
+        }
     }
 }
