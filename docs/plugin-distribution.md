@@ -45,7 +45,7 @@ The `claude plugin details` command shows Skills / Agents / Hooks / MCP servers 
 rdm's raw-skills distribution includes both skills and workflow engines:
 
 - **Emitted skills (11 total):** autopilot, backlog, dispatch-phase, do, document, estimate, land, plan-review, review, revise, roadmap
-- **Emitted workflow engines (2 total):** dispatch-phase, review-refute-fix
+- **Emitted workflow engines (2 total):** rdm-wf-dispatch-phase, rdm-wf-review-refute-fix
 
 Note: `dispatch-phase` appears in **both** lists — it is a thin skill shim that invokes the `rdm-wf-dispatch-phase` workflow engine.
 
