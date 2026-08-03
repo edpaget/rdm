@@ -1187,3 +1187,203 @@ fn agent_config_user_mcp_writes_instructions_and_mcp_json() {
         serde_json::from_str(&std::fs::read_to_string(&mcp_json).unwrap()).unwrap();
     assert!(mcp_content["mcpServers"]["rdm"].is_object());
 }
+
+// --- --plugin: the new emission mode this phase adds ------------------------
+
+#[test]
+fn agent_config_plugin_writes_manifest_skills_and_workflows() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--plugin")
+        .arg("--out")
+        .arg(dir.path())
+        .arg("--project")
+        .arg("distro-check")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote").count(14));
+
+    let manifest_path = dir.path().join(".claude-plugin/plugin.json");
+    assert!(
+        manifest_path.exists(),
+        "expected {}",
+        manifest_path.display()
+    );
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["name"], "rdm");
+    assert!(manifest["version"].is_string());
+    assert!(manifest["workflows"].is_null());
+
+    let skills_dir = dir.path().join("skills");
+    for name in [
+        "roadmap",
+        "do",
+        "review",
+        "document",
+        "estimate",
+        "dispatch-phase",
+        "autopilot",
+        "land",
+        "revise",
+        "plan-review",
+        "backlog",
+    ] {
+        let path = skills_dir.join(name).join("SKILL.md");
+        assert!(path.exists(), "expected {}", path.display());
+    }
+
+    let workflows_dir = dir.path().join("workflows");
+    assert!(workflows_dir.join("rdm-wf-dispatch-phase.js").exists());
+    assert!(workflows_dir.join("rdm-wf-review-refute-fix.js").exists());
+
+    // Plugin skill directory names never carry the raw `rdm-` prefix.
+    assert!(!skills_dir.join("rdm-roadmap").exists());
+}
+
+#[test]
+fn agent_config_plugin_and_skills_conflict() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--plugin")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn agent_config_plugin_requires_out() {
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--plugin")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--plugin requires --out"));
+}
+
+#[test]
+fn agent_config_plugin_and_user_rejected_with_distinct_message() {
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--plugin")
+        .arg("--user")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--plugin cannot be combined with --user",
+        ))
+        .stderr(predicate::str::contains("claude plugin marketplace add"));
+}
+
+#[test]
+fn agent_config_plugin_rejected_on_agents_md() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("agents-md")
+        .arg("--plugin")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--plugin is only supported for the claude platform",
+        ));
+}
+
+#[test]
+fn agent_config_plugin_rejected_on_cursor() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("cursor")
+        .arg("--plugin")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--plugin is only supported for the claude platform",
+        ));
+}
+
+#[test]
+fn agent_config_plugin_rejected_on_copilot() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("copilot")
+        .arg("--plugin")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--plugin is only supported for the claude platform",
+        ));
+}
+
+#[test]
+fn agent_config_plugin_rejected_on_pi() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--plugin")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--plugin is only supported for the claude platform",
+        ));
+}
+
+#[test]
+fn agent_config_plugin_pi_mcp_precedence_is_plugin_message() {
+    // Both --plugin and --mcp are wrong for Pi; the plugin-specific message
+    // must win rather than falling through to the unrelated Pi+--mcp message.
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--plugin")
+        .arg("--mcp")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--plugin is only supported for the claude platform",
+        ))
+        .stderr(predicate::str::contains("Pi does not support MCP").not());
+}
+
+#[test]
+fn agent_config_skills_and_user_still_works_unaffected_by_plugin() {
+    // Positive control: --skills --user's pre-existing --out-only exclusivity
+    // is unchanged by adding --plugin.
+    let home = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", home.path())
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--user")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote").count(11));
+
+    assert!(!home.path().join(".claude/workflows").exists());
+}

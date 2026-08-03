@@ -161,7 +161,7 @@ pub(crate) enum Command {
         #[arg(long)]
         principles_file: Option<String>,
         /// Generate Claude Code skill files instead of an instruction file.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "plugin")]
         skills: bool,
         /// Generate MCP-oriented instructions (referencing MCP tool names instead of CLI commands).
         /// When combined with --out, also writes .mcp.json alongside.
@@ -171,6 +171,11 @@ pub(crate) enum Command {
         /// Mutually exclusive with --out.
         #[arg(long, conflicts_with = "out")]
         user: bool,
+        /// Generate a Claude Code plugin tree (manifest + skills/ + workflows/) instead of an
+        /// instruction file or raw skills. Claude-only, and mutually exclusive with --skills.
+        /// Requires --out (not --user — a plugin is installed into ~/.claude, not written there).
+        #[arg(long, conflicts_with = "skills")]
+        plugin: bool,
     },
     /// Describe the rdm data model (entities and their fields).
     Describe {

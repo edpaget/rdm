@@ -19,8 +19,29 @@ pub fn run(
     skills: bool,
     mcp: bool,
     user: bool,
+    plugin: bool,
 ) -> Result<()> {
     let platform: Platform = platform.parse().map_err(|e: String| anyhow!(e))?;
+
+    // `--plugin`'s two hand-rolled checks run BEFORE the pre-existing Pi+`--mcp`
+    // check below: `--plugin --mcp` on a non-Claude platform must surface the
+    // plugin-specific "only supported for claude" message, never fall through to
+    // the Pi/`--mcp` message meant for a different, unrelated combination.
+    if plugin && platform != Platform::Claude {
+        bail!(
+            "--plugin is only supported for the claude platform (plugins are a Claude Code \
+             mechanism)."
+        );
+    }
+
+    if plugin && user {
+        bail!(
+            "--plugin cannot be combined with --user: a plugin reaches ~/.claude by \
+             installation (`claude plugin marketplace add` / `claude plugin install`), not by \
+             rdm writing into the user directory. Use --out <dir> and install the emitted tree \
+             instead."
+        );
+    }
 
     if platform == Platform::Pi && mcp {
         bail!(
@@ -29,7 +50,9 @@ pub fn run(
         );
     }
 
-    if skills {
+    if plugin {
+        write_plugin(project, principles_file, mcp, &out)?;
+    } else if skills {
         write_skills(
             platform,
             project,
@@ -186,6 +209,48 @@ fn write_skills(
     // When --mcp, also write .mcp.json at the project (or user-level) root.
     if mcp {
         write_mcp_json(&base_dir, root)?;
+    }
+    Ok(())
+}
+
+/// Writes the Claude Code plugin tree (manifest + `skills/` + `workflows/`) to `--out <dir>`.
+///
+/// `--user` is rejected earlier in [`run`], so the only destination this
+/// function resolves is `out`. Modeled on [`write_skills`], but simpler: the
+/// plugin bytes are already fully computed by
+/// [`agent_config::generate_plugin_files`], so this is a single write loop
+/// with no platform branching, no workflow-directory special-casing, and no
+/// superseded-file cleanup pass.
+///
+/// `mcp` is threaded straight through to [`SkillOptions`], exactly as
+/// [`write_skills`] does — it controls whether the plugin's skill bodies
+/// reference MCP tool names or CLI commands, which is orthogonal to the
+/// plugin-vs-raw distribution question this phase adds. Unlike
+/// `write_skills`, this never writes a companion `.mcp.json`: that file
+/// belongs to a project or user config directory, not a plugin tree, and
+/// plugin MCP-server bundling is out of this phase's scope (installability
+/// is phase 4's).
+///
+/// # Errors
+///
+/// Returns an error if `--out` was not supplied, or a file write fails.
+fn write_plugin(
+    project: Option<String>,
+    principles_file: Option<String>,
+    mcp: bool,
+    out: &Option<PathBuf>,
+) -> Result<()> {
+    let dir = out
+        .as_ref()
+        .ok_or_else(|| anyhow!("--plugin requires --out to specify the output directory"))?;
+    let files = agent_config::generate_plugin_files(&SkillOptions {
+        project,
+        principles_file,
+        mcp,
+    });
+    for file in &files {
+        let path = dir.join(&file.relative_path);
+        write_output(&path, file.content.as_bytes())?;
     }
     Ok(())
 }
@@ -353,5 +418,105 @@ mod tests {
         write_output(&path, b"first").unwrap();
         write_output(&path, b"second").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+    }
+
+    #[test]
+    fn write_plugin_requires_out() {
+        let err = write_plugin(None, None, false, &None).unwrap_err();
+        assert!(
+            err.to_string().contains("--plugin requires --out"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn write_plugin_writes_manifest_skills_and_workflows() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = Some(dir.path().to_path_buf());
+        write_plugin(Some("distro-check".to_string()), None, false, &out).unwrap();
+
+        let manifest_path = dir.path().join(".claude-plugin/plugin.json");
+        assert!(manifest_path.exists());
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["name"], "rdm");
+
+        assert!(dir.path().join("skills/roadmap/SKILL.md").exists());
+        assert!(!dir.path().join("skills/rdm-roadmap").exists());
+        assert!(
+            dir.path()
+                .join("workflows/rdm-wf-dispatch-phase.js")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn run_rejects_plugin_on_non_claude_platform() {
+        let err = run(
+            Path::new("."),
+            "pi".to_string(),
+            None,
+            None,
+            None,
+            false,
+            false,
+            false,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--plugin is only supported for the claude platform"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn run_rejects_plugin_with_user() {
+        let err = run(
+            Path::new("."),
+            "claude".to_string(),
+            None,
+            None,
+            None,
+            false,
+            false,
+            true,
+            true,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--plugin cannot be combined with --user"),
+            "unexpected error: {msg}"
+        );
+        // Distinct from the --skills-without-destination message: guard
+        // against an accidental copy-paste reuse of that string.
+        assert!(!msg.contains("--skills requires --out or --user"));
+    }
+
+    #[test]
+    fn run_plugin_pi_mcp_precedence_is_plugin_message() {
+        // Both --plugin and --mcp are individually wrong for Pi; the
+        // plugin-specific rejection must win over the pre-existing Pi+--mcp
+        // check, since it runs first in `run`.
+        let err = run(
+            Path::new("."),
+            "pi".to_string(),
+            None,
+            None,
+            None,
+            false,
+            true,
+            false,
+            true,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--plugin is only supported for the claude platform"),
+            "unexpected error: {msg}"
+        );
+        assert!(!msg.contains("Pi does not support MCP"));
     }
 }

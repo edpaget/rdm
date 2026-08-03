@@ -158,6 +158,7 @@ fn run() -> Result<()> {
             skills,
             mcp,
             user,
+            plugin,
         } => commands::agent_config::run(
             &root,
             platform,
@@ -167,6 +168,7 @@ fn run() -> Result<()> {
             skills,
             mcp,
             user,
+            plugin,
         )?,
 
         Command::Search {
