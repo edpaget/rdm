@@ -171,7 +171,7 @@ claude plugin marketplace add edpaget/rdm
 claude plugin install rdm@rdm
 ```
 
-This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc.) and 2 workflow engines (`rdm:rdm-wf-dispatch-phase`, `rdm:rdm-wf-review-refute-fix`). The skills invoke bare `rdm` at runtime; the plugin shims resolve the rdm binary via `RDM_BIN` environment variable, PATH lookup, or standard installation locations.
+This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc.) and 2 workflow engines (`rdm:rdm-wf-dispatch-phase`, `rdm:rdm-wf-review-refute-fix`). The skills invoke bare `rdm` at runtime; the plugin shims resolve the rdm binary via the `--rdm-bin` flag, the `RDM_BIN` environment variable, or PATH lookup.
 
 **This repo does not install its own plugin.** It runs the local `.claude/` lane instead — a deliberately divergent surface that supports development and testing. See `docs/plugin-distribution.md` § "Which copy runs?" for the three surfaces and why this repo's configuration differs from downstream consumers.
 

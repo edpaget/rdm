@@ -85,7 +85,7 @@ claude plugin marketplace add edpaget/rdm
 claude plugin install rdm@rdm
 ```
 
-This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, `rdm:do`, etc.) and 2 workflow engines, with automatic namespace prefixing and workflow discovery. No manual path resolution or binary discovery required — the plugin shims handle `rdm` binary resolution at runtime via `RDM_BIN` environment variable, PATH lookup, or standard installation locations.
+This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, `rdm:do`, etc.) and 2 workflow engines, with automatic namespace prefixing and workflow discovery. No manual path resolution or binary discovery required — the plugin shims handle `rdm` binary resolution at runtime via the `--rdm-bin` flag, the `RDM_BIN` environment variable, or PATH lookup.
 
 **This is the recommended distribution path for downstream consumers.**
 
