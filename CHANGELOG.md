@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.18.1] - 2026-08-03
 ### Added
 
 - The autonomous lane `rdm agent-config claude --skills --out <dir>` emits is now **verified to work in an arbitrary consumer repo**, not merely verified to match this repo's own copies byte-for-byte. `scripts/verify-agent-config-distribution.sh` stands up a hermetic non-rdm, **non-Rust** fixture repo — a Python/TypeScript source tree with real feature branches, its own `rdm init`-seeded plan repo, its own project name, and its own rdm executable path — emits the lane into it, extracts importable modules from the **emitted** engine scripts (with an inverse transform proving each copy is byte-identical to the emitted file, and a proof that the untransformed file genuinely does not import), and then executes their pipeline logic there: every review signal fires on the fixture's own diff and all seven code dimensions are selected (against a docs-only control that selects only the always-on pair), every rdm command the engines build names the fixture's binary and honors the project-flag allow-list with zero `./target/debug/rdm` or `--project rdm`, and three of those built commands are really run against the fixture plan repo and must exit 0 with the expected JSON shape. Four planted corruptions in the emitted bytes prove none of it is vacuous. The harness now requires `node` (on `PATH` or via `mise exec node --`).
