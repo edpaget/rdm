@@ -57,6 +57,19 @@ fail() {
     printf '\n\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2
     exit 1
 }
+# Multi-line diagnostic: $1 is the headline, every later argument is printed on
+# its own indented continuation line. printf expands backslash escapes only in
+# its FORMAT string, never in %s data, so a literal "\n" embedded in a fail()
+# message would render as the two characters \n rather than a line break. Use
+# this helper whenever a failure carries an expected-vs-actual payload.
+fail_lines() {
+    printf '\n\033[1;31m[FAIL]\033[0m %s\n' "$1" >&2
+    shift
+    for _line in "$@"; do
+        printf '  %s\n' "$_line" >&2
+    done
+    exit 1
+}
 pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 
 # --- 0. missing-claude notice (must precede any setup) ---------------------
@@ -235,7 +248,9 @@ INSTALLED_SKILLS=$(dir_names "$INSTALL_PATH/skills")
 [ "$(word_count "$EXPECTED_SKILLS")" -ge 1 ] ||
     fail "the emitted tree declares zero skills — this comparison would be vacuous"
 [ "$EXPECTED_SKILLS" = "$INSTALLED_SKILLS" ] ||
-    fail "installed skill inventory differs from the emitted one.\n  expected: $EXPECTED_SKILLS\n  actual:   $INSTALLED_SKILLS"
+    fail_lines "installed skill inventory differs from the emitted one." \
+        "expected: $EXPECTED_SKILLS" \
+        "actual:   $INSTALLED_SKILLS"
 pass "$(word_count "$INSTALLED_SKILLS") skills installed: $INSTALLED_SKILLS"
 
 say "5c. Installed workflow scripts, asserted ON THE FILESYSTEM (never via plugin details — see gap 2)"
@@ -251,7 +266,9 @@ for wf in $EXPECTED_WORKFLOWS; do
 done
 INSTALLED_WORKFLOWS=$(file_names "$INSTALL_PATH/workflows")
 [ "$EXPECTED_WORKFLOWS" = "$INSTALLED_WORKFLOWS" ] ||
-    fail "installed workflow file set differs from the emitted one.\n  expected: $EXPECTED_WORKFLOWS\n  actual:   $INSTALLED_WORKFLOWS"
+    fail_lines "installed workflow file set differs from the emitted one." \
+        "expected: $EXPECTED_WORKFLOWS" \
+        "actual:   $INSTALLED_WORKFLOWS"
 pass "$(word_count "$INSTALLED_WORKFLOWS") workflow scripts installed byte-identical: $INSTALLED_WORKFLOWS"
 
 say "5d. Corroboration only: claude plugin details rdm"

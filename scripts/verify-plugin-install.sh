@@ -88,6 +88,20 @@ fail() {
     printf '\n\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2
     exit 1
 }
+# Multi-line diagnostic: $1 is the headline, every later argument is printed on
+# its own indented continuation line. printf expands backslash escapes only in
+# its FORMAT string, never in %s data, so a literal "\n" embedded in a fail()
+# message would render as the two characters \n rather than a line break. Use
+# this helper (or an explicit multi-line printf) whenever a failure carries a
+# remediation payload a developer has to read or copy out of a CI log.
+fail_lines() {
+    printf '\n\033[1;31m[FAIL]\033[0m %s\n' "$1" >&2
+    shift
+    for _line in "$@"; do
+        printf '  %s\n' "$_line" >&2
+    done
+    exit 1
+}
 pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 
 [ -x "$RDM_BIN" ] || fail "$RDM_BIN not found or not executable — run 'cargo build' first."
@@ -402,7 +416,8 @@ say "2. Drift (version-normalized): plugins/rdm/ == fresh emission, modulo the m
 if check_drift "$PLUGIN_DIR" "$FRESH"; then
     pass "checked-in tree is byte-identical to generator output (manifest version normalized on both sides)"
 else
-    fail "checked-in plugin tree has drifted — regenerate with:\n  env -u RDM_ROOT -u RDM_PROJECT cargo run -q -- agent-config claude --plugin --out plugins/rdm"
+    fail_lines "checked-in plugin tree has drifted — regenerate with:" \
+        "env -u RDM_ROOT -u RDM_PROJECT cargo run -q -- agent-config claude --plugin --out plugins/rdm"
 fi
 
 # --- 3. runtime version assertion (FRESH output only) ----------------------
@@ -639,8 +654,14 @@ pass "self-test 7l: both count floors go red independently of the name-set equal
 # --- 8. hermeticity guard --------------------------------------------------
 say "8. Confirming $REPO_ROOT git status is unchanged after the whole run"
 AFTER_STATUS=$(git -C "$REPO_ROOT" status --porcelain)
-[ "$BEFORE_STATUS" = "$AFTER_STATUS" ] ||
-    fail "repo git status changed during this run — every write must land in \$TMP.\nbefore:\n$BEFORE_STATUS\nafter:\n$AFTER_STATUS"
+if [ "$BEFORE_STATUS" != "$AFTER_STATUS" ]; then
+    # Both blobs are themselves multi-line, so they get their own printf with
+    # real \n in the FORMAT string rather than fail_lines' per-argument indent.
+    printf '\n\033[1;31m[FAIL]\033[0m %s\n' \
+        "repo git status changed during this run — every write must land in \$TMP." >&2
+    printf 'before:\n%s\nafter:\n%s\n' "$BEFORE_STATUS" "$AFTER_STATUS" >&2
+    exit 1
+fi
 pass "repo git status unchanged"
 
 say "All plugin-install checks passed."
