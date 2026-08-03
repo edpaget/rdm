@@ -402,7 +402,19 @@ pub struct SupersededWorkflow {
 /// mechanism yet, so [`resolve_superseded_workflows`] is a structural no-op
 /// against this table no matter what the output directory contains. A
 /// future rename (or retirement) populates this constant with real entries
-/// and content fingerprints.
+/// and content fingerprints, alongside the canonical engine-name table that
+/// same phase builds.
+///
+/// That pairing target is **phase 7** of the `project-agnostic-lane`
+/// roadmap, not phase 4: this phase's own body corrects an earlier
+/// "phase 4 step 8" reference (phase 4 has no step 8 — engine-name
+/// single-sourcing moved to phase 7 via
+/// `split-step-8-engine-name-single-sourcing`), but the phase's Acceptance
+/// Criteria bullet for this table still reads "paired with phase 4's
+/// canonical engine-name table" verbatim — a stale copy of the same error
+/// that the phase body explicitly says not to go looking for in phase 4.
+/// Recorded here, next to the table, so the next reader (and phase 7 itself)
+/// doesn't have to re-discover the correction.
 pub const SUPERSEDED_WORKFLOWS: &[SupersededWorkflow] = &[];
 
 /// The outcome of resolving one [`SupersededWorkflow`] table entry against
