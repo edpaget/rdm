@@ -628,6 +628,45 @@ if check_meta_name_parity "$SCRATCH/2d" 2>/dev/null; then
 fi
 pass "2d self-test: a planted bare meta.name correctly turns the parity check red"
 
+# The rendered listing entry for an engine is its meta.name and for a skill its
+# frontmatter name, drawn into ONE namespace. The whole point of the rdm-wf-
+# prefix is that no reader can mistake one for the other, so assert the two
+# name sets are disjoint. This is the mechanical, re-derivable half of "the
+# listing shows the prefixed names"; the rendered listing itself was observed
+# directly and recorded in the phase's commit message.
+collect_listing_names() {
+    # $1 = workflows dir, $2 = skills dir. Emits every listing entry name.
+    for engine in "$1"/*.js; do
+        [ -f "$engine" ] || continue
+        sed -n "s/^  name: '\(.*\)',$/\1/p" "$engine" | head -1
+    done
+    for skill in "$2"/*/SKILL.md; do
+        [ -f "$skill" ] || continue
+        sed -n 's/^name: *\(.*\)$/\1/p' "$skill" | head -1
+    done
+}
+check_listing_disjoint() {
+    dup=$(collect_listing_names "$1" "$2" | sort | uniq -d)
+    [ -z "$dup" ] || {
+        echo "  colliding listing entry name(s): $dup" >&2
+        return 1
+    }
+    return 0
+}
+check_listing_disjoint "$WF_DIR" "$REPO_ROOT/.claude/skills" ||
+    fail "2d: an engine and a skill render the SAME listing entry name — the rdm-wf- prefix exists precisely to make this impossible (see lines above)"
+pass "2d: engine and skill listing entry names are disjoint (no front-door/engine collision)"
+
+# Non-vacuity: plant a scratch skill whose frontmatter name collides with an
+# engine's meta.name and confirm the disjointness check turns red.
+mkdir -p "$SCRATCH/2d-listing/skills/colliding"
+printf -- '---\nname: rdm-wf-backlog\ndescription: planted collision\n---\n' \
+    >"$SCRATCH/2d-listing/skills/colliding/SKILL.md"
+if check_listing_disjoint "$WF_DIR" "$SCRATCH/2d-listing/skills" 2>/dev/null; then
+    fail "2d self-test: a planted name collision did NOT turn the disjointness check red"
+fi
+pass "2d self-test: a planted engine/skill name collision correctly turns the check red"
+
 # The two SHIPPED copies must stay byte-identical to their local counterparts.
 for shipped in rdm-wf-dispatch-phase.js rdm-wf-review-refute-fix.js; do
     diff -q "$WF_DIR/$shipped" "$REPO_ROOT/rdm-core/src/templates/workflows/$shipped" >/dev/null ||

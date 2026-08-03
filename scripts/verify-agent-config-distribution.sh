@@ -514,38 +514,58 @@ check_changelog "$UNRELEASED" ||
     fail "5i: CHANGELOG.md [Unreleased] must name all six rdm-wf-* engines, the word BREAKING, and the phrase 'removes the superseded'"
 pass "5i: CHANGELOG [Unreleased] records the rename as BREAKING with automatic superseded-file removal"
 
-# Non-vacuity: the same check must FAIL against the pre-change CHANGELOG.
-PREV_CHANGELOG=$(git -C "$REPO_ROOT" show HEAD:CHANGELOG.md 2>/dev/null || true)
-if [ -n "$PREV_CHANGELOG" ]; then
-    PREV_UNRELEASED=$(printf '%s\n' "$PREV_CHANGELOG" | awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f')
-    if check_changelog "$PREV_UNRELEASED"; then
-        fail "5i: the CHANGELOG check also passes against HEAD's CHANGELOG — it is not actually testing this change"
+# Non-vacuity: each requirement the check makes must be independently
+# load-bearing. Prove it by planting a mutation that removes exactly one of
+# them from a SCRATCH COPY of the body and asserting the check turns red.
+#
+# This is deliberately NOT "compare against the CHANGELOG at some git ref".
+# The pre-rename state is not addressable by a moving ref: once this phase's
+# commit is HEAD, `git show HEAD:CHANGELOG.md` yields the post-change file and
+# the self-test inverts, failing forever. A planted mutation is a fixed
+# baseline that holds on every future checkout.
+plant_changelog_mutation() {
+    # $1 = a grep -E pattern; drops every matching line from $UNRELEASED.
+    printf '%s\n' "$UNRELEASED" | grep -vE "$1" || true
+}
+for mutation in 'BREAKING' 'removes the superseded' 'rdm-wf-plan-review'; do
+    if check_changelog "$(plant_changelog_mutation "$mutation")"; then
+        fail "5i self-test: dropping '$mutation' from the CHANGELOG body did NOT turn the check red — that requirement is not load-bearing"
     fi
-    pass "5i: the CHANGELOG check correctly fails against HEAD's CHANGELOG (non-vacuous)"
-fi
+done
+pass "5i self-test: dropping BREAKING, the cleanup sentence, or one rdm-wf-* name each turns the check red (non-vacuous)"
 
 # --- 5j. END-TO-END: a downstream re-emit removes the superseded files -----
 say "5j. Superseded cleanup end-to-end: a stale downstream tree is cleaned, a custom file is not"
 STALE="$TMP/stale"
 STALE_WF="$STALE/.claude/workflows"
 mkdir -p "$STALE_WF"
-# Seed the tree with the exact PRE-RENAME bodies a past release emitted, taken
-# verbatim from git rather than reconstructed: the rename changed more than the
-# meta.name line, so only history holds the real bytes a downstream repo would
-# be carrying.
+# Seed the tree with real PRE-REMOVAL bodies a past release emitted, taken
+# verbatim from history rather than reconstructed: the cleanup is
+# fingerprint-gated, so only a body this repo genuinely once shipped hashes to
+# an entry in SUPERSEDED_WORKFLOWS.
+#
+# Recover each one from the parent of the last commit that touched its old
+# path — NOT from `HEAD:<old path>`. `HEAD` is a moving ref: the moment the
+# rename lands, the old paths no longer exist there and a `HEAD:`-anchored
+# read hard-fails on every future checkout. Walking to the last commit that
+# touched the path works whether or not the rename is committed yet, since
+# every historical body is fingerprinted.
+recover_pre_removal_body() {
+    # $1 = repo-relative path as it was BEFORE removal; $2 = destination file.
+    _path=$1
+    _dest=$2
+    _last=$(git -C "$REPO_ROOT" rev-list -n1 HEAD -- "$_path")
+    [ -n "$_last" ] ||
+        fail "5j: could not locate any commit in HEAD's history that touched $_path (a shallow clone cannot run this section)"
+    git -C "$REPO_ROOT" show "$_last^:$_path" >"$_dest" 2>/dev/null ||
+        fail "5j: could not recover a pre-removal body for $_path from $_last^"
+    [ -s "$_dest" ] || fail "5j: recovered an empty body for $_path"
+}
 for stale_pair in "dispatch-phase.js" "review-refute-fix.js"; do
-    git -C "$REPO_ROOT" show "HEAD:rdm-core/src/templates/workflows/$stale_pair" \
-        >"$STALE_WF/$stale_pair" 2>/dev/null ||
-        fail "5j: could not recover the pre-rename $stale_pair body from HEAD — this harness must run against a tree where the rename is not yet committed, or the fingerprints must be regenerated"
+    recover_pre_removal_body "rdm-core/src/templates/workflows/$stale_pair" "$STALE_WF/$stale_pair"
 done
-# The retired orphan: no successor, recovered from the commit that removed it.
-AUTOPILOT_PATH=rdm-core/src/templates/workflows/autopilot.js
-AUTOPILOT_DELETED_AT=$(git -C "$REPO_ROOT" rev-list -n1 --all -- "$AUTOPILOT_PATH")
-[ -n "$AUTOPILOT_DELETED_AT" ] ||
-    fail "5j: could not locate the commit that retired $AUTOPILOT_PATH"
-git -C "$REPO_ROOT" show "$AUTOPILOT_DELETED_AT^:$AUTOPILOT_PATH" \
-    >"$STALE_WF/autopilot.js" 2>/dev/null ||
-    fail "5j: could not recover the retired autopilot.js body from git history"
+# The retired orphan: no successor, recovered the same way.
+recover_pre_removal_body rdm-core/src/templates/workflows/autopilot.js "$STALE_WF/autopilot.js"
 # Two survivors: one name the table does not carry, one purely user-authored.
 printf 'export const meta = { name: "not-superseded" };\n' >"$STALE_WF/not-superseded.js"
 printf 'my own local engine, rdm did not write this\n' >"$STALE_WF/custom-local.js"
