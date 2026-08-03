@@ -833,6 +833,69 @@ fn rewrite_skill_names(body: &str) -> String {
     out
 }
 
+/// Rewrites every **bare** mention of `stem` (or of `<stem>.js`) in `body` to
+/// the namespaced plugin form `rdm:<stem>`, leaving already-namespaced and
+/// path-embedded occurrences alone.
+///
+/// The scan is token-exact, mirroring [`rewrite_skill_names`]: an occurrence
+/// only counts when the preceding byte neither continues an identifier
+/// (`[A-Za-z0-9_-]`) nor is a `:` (already namespaced) or `/` (still inside a
+/// path literal), and when the byte following the match — after optionally
+/// absorbing a `.js` file-name suffix — does not continue an identifier.
+/// Absorbing `.js` is what turns a file-name mention such as
+/// `` `rdm-wf-dispatch-phase.js` `` into the invocation form
+/// `` `rdm:rdm-wf-dispatch-phase` `` rather than a nonsensical
+/// `` `rdm:rdm-wf-dispatch-phase.js` ``.
+fn namespace_engine_refs(body: &str, stem: &str) -> String {
+    let bytes = body.as_bytes();
+    let needle = stem.as_bytes();
+    let mut out = String::with_capacity(body.len());
+    let mut copied = 0usize;
+    let mut i = 0usize;
+    while i + needle.len() <= bytes.len() {
+        if &bytes[i..i + needle.len()] != needle {
+            i += 1;
+            continue;
+        }
+        if i > 0 {
+            let prev = bytes[i - 1];
+            if is_token_boundary_blocker(prev) || prev == b':' || prev == b'/' {
+                i += needle.len();
+                continue;
+            }
+        }
+        let mut end = i + needle.len();
+        let after_js = end + ".js".len();
+        if bytes[end..].starts_with(b".js")
+            && (after_js >= bytes.len() || !is_token_byte(bytes[after_js]))
+        {
+            end = after_js;
+        }
+        // Reject anything that continues the identifier, and anything carrying
+        // a file extension other than the `.js` absorbed above (`.json`,
+        // `.js.map`, …) — a sentence-ending `.` followed by whitespace is not
+        // an extension and does not block the match.
+        if end < bytes.len()
+            && (is_token_byte(bytes[end])
+                || (bytes[end] == b'.'
+                    && bytes.get(end + 1).is_some_and(u8::is_ascii_alphanumeric)))
+        {
+            i += needle.len();
+            continue;
+        }
+        // `i` and `end` bound a run of ASCII bytes, so both are UTF-8 char
+        // boundaries and slicing here can never panic.
+        out.push_str(&body[copied..i]);
+        out.push_str(PLUGIN_NAME);
+        out.push(':');
+        out.push_str(stem);
+        copied = end;
+        i = end;
+    }
+    out.push_str(&body[copied..]);
+    out
+}
+
 /// Rewrites every reference a skill body makes to a shipped workflow engine
 /// into the plugin-mode invocation form, and drops the raw-surface
 /// provisioning clause that plugin installs make false.
@@ -844,12 +907,27 @@ fn rewrite_skill_names(body: &str) -> String {
 /// `rdm-wf-` prefix (Decision 2), which is exactly what keeps the emitted
 /// skill names and the emitted engine names disjoint.
 ///
+/// The rewrite is **total over every mention**, not just over the source-tree
+/// path literals: a plugin-installed shim reaches its engine only through the
+/// namespace, so a bare `` `rdm-wf-dispatch-phase` `` left in an operative
+/// "invoke the Workflow with …" instruction would not resolve. Both passes run
+/// here:
+///
+/// 1. `.claude/workflows/<file>.js` path literals collapse to `rdm:<stem>`;
+/// 2. every remaining bare `<stem>` / `<stem>.js` token is namespaced by
+///    [`namespace_engine_refs`], which skips the ones pass 1 already produced.
+///
+/// Only [`SHIPPED_WORKFLOWS`] stems are namespaced. Engines this
+/// distribution does **not** ship — `rdm-wf-estimate`, referenced in prose
+/// explaining why the shipped autopilot has no estimate pre-pass — stay bare,
+/// because namespacing them would name a plugin entry that does not exist.
+///
 /// Applied BEFORE [`rewrite_skill_names`]. The two are in fact
 /// order-independent — the `rdm:<engine>` this produces has the kebab token
 /// `rdm-wf-…`, which is not a [`PLUGIN_SKILL_NAMES`] key, and
-/// `rewrite_skill_names` never produces a `.claude/workflows/` literal — but
-/// the order is pinned here (and asserted by a test) so it cannot drift into
-/// mattering unnoticed.
+/// `rewrite_skill_names` never produces a `.claude/workflows/` literal or an
+/// engine stem — but the order is pinned here (and asserted by a test) so it
+/// cannot drift into mattering unnoticed.
 fn rewrite_workflow_refs(body: &str) -> String {
     let mut out = body.to_string();
     for (file_name, _) in SHIPPED_WORKFLOWS {
@@ -858,6 +936,7 @@ fn rewrite_workflow_refs(body: &str) -> String {
             &format!(".claude/workflows/{file_name}"),
             &format!("{PLUGIN_NAME}:{stem}"),
         );
+        out = namespace_engine_refs(&out, stem);
     }
     out.replace(
         ", provisioned automatically by `rdm agent-config claude --skills`",
@@ -5050,11 +5129,6 @@ mod tests {
                     "mcp={mcp}: a plugin skill body still carries a `.claude/workflows/` path"
                 );
                 assert_eq!(
-                    joined.matches("`rdm:rdm-wf-dispatch-phase`").count(),
-                    3,
-                    "mcp={mcp}: expected the 3 raw engine path literals to become namespaced refs"
-                );
-                assert_eq!(
                     joined.matches("${CLAUDE_PLUGIN_ROOT}").count(),
                     0,
                     "mcp={mcp}: the scriptPath branch was not the Phase-1 decision"
@@ -5066,12 +5140,45 @@ mod tests {
                     "mcp={mcp}: plugin shims are not provisioned by `agent-config --skills`"
                 );
 
-                // Every namespaced engine reference the rewrite emits names a
-                // real emitted engine. Scoped to the backticked ``rdm:…``
-                // invocation form the rewrite produces — the templates also
-                // carry unrelated pre-existing `<!-- rdm:review-spec:… -->`
-                // generator markers, which are not engine references.
-                let mut namespaced = 0usize;
+                // EVERY mention of a shipped engine is namespaced, not just
+                // the ones that happened to sit inside a `.claude/workflows/`
+                // path literal. A plugin-installed shim reaches its engine
+                // only through the `rdm:` namespace, so a bare stem left in an
+                // operative "invoke the Workflow with …" instruction would not
+                // resolve at runtime.
+                let plugin_tokens = rdm_tokens(&joined);
+                for stem in &engine_stems {
+                    let total = count_of(&plugin_tokens, stem.as_str());
+                    let namespaced = joined.matches(&format!("{PLUGIN_NAME}:{stem}")).count();
+                    assert_eq!(
+                        total - namespaced,
+                        0,
+                        "mcp={mcp}: {total} mentions of {stem} but only {namespaced} namespaced — \
+                         a bare engine reference survives in a plugin skill body"
+                    );
+                }
+
+                // Non-vacuity: the shim engine really is referenced, and by
+                // every mention the raw surface makes of it.
+                let raw_joined: String = generate_skills(&opts)
+                    .iter()
+                    .map(|s| s.content.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let raw_dispatch = count_of(&rdm_tokens(&raw_joined), "rdm-wf-dispatch-phase");
+                assert!(raw_dispatch > 0, "mcp={mcp}: the check would be vacuous");
+                assert_eq!(
+                    joined.matches("rdm:rdm-wf-dispatch-phase").count(),
+                    raw_dispatch,
+                    "mcp={mcp}: expected all {raw_dispatch} raw engine mentions to be namespaced"
+                );
+
+                // Every namespaced reference the rewrite emits names a real
+                // emitted engine — no `rdm:` prefix is ever attached to a
+                // stem the plugin does not ship. Scoped to the invocation form
+                // the rewrite produces; the templates also carry unrelated
+                // pre-existing `<!-- rdm:review-spec:… -->` generator markers,
+                // which are HTML comments rather than engine references.
                 for (idx, _) in joined.match_indices("`rdm:") {
                     let rest = &joined[idx + "`rdm:".len()..];
                     let end = rest
@@ -5082,13 +5189,102 @@ mod tests {
                         engine_stems.iter().any(|s| s == named),
                         "mcp={mcp}: `rdm:{named}` names no emitted engine"
                     );
-                    namespaced += 1;
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn plugin_engine_refs_are_namespaced_by_token_delta() {
+        // The engine-name counterpart of `plugin_skill_rename_is_total_by_token
+        // _delta`: every raw mention of a SHIPPED engine stem must REAPPEAR
+        // namespaced, and none may survive bare. Counting the delta against the
+        // raw body is what makes this total rather than a spot check.
+        let engine_stems: Vec<String> = generate_plugin_workflows()
+            .iter()
+            .map(|w| {
+                w.relative_path
+                    .trim_start_matches("workflows/")
+                    .trim_end_matches(".js")
+                    .to_string()
+            })
+            .collect();
+
+        for mcp in [false, true] {
+            let opts = plugin_test_opts(mcp);
+            let raw_joined: String = generate_skills(&opts)
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let plugin_joined: String = generate_plugin_skills(&opts)
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            for stem in &engine_stems {
+                let raw_total = count_of(&rdm_tokens(&raw_joined), stem.as_str());
+                let plugin_total = count_of(&rdm_tokens(&plugin_joined), stem.as_str());
+                let plugin_namespaced = plugin_joined
+                    .matches(&format!("{PLUGIN_NAME}:{stem}"))
+                    .count();
                 assert_eq!(
-                    namespaced, 3,
-                    "mcp={mcp}: expected 3 namespaced engine references"
+                    plugin_total, raw_total,
+                    "mcp={mcp}: plugin emission changed how often {stem} occurs"
+                );
+                assert_eq!(
+                    plugin_namespaced, raw_total,
+                    "mcp={mcp}: {plugin_namespaced} of {raw_total} {stem} mentions were namespaced"
+                );
+                assert_eq!(
+                    raw_joined.matches(&format!("{PLUGIN_NAME}:{stem}")).count(),
+                    0,
+                    "mcp={mcp}: the RAW surface must stay un-namespaced"
                 );
             }
+
+            // The per-skill view: the three shim skills that actually dispatch
+            // must each carry only namespaced references. `autopilot` is the
+            // regression this pins — it never contained a `.claude/workflows/`
+            // path literal, so a path-literal-only rewrite left all of its
+            // mentions bare.
+            for file in generate_plugin_skills(&opts) {
+                for stem in &engine_stems {
+                    let total = count_of(&rdm_tokens(&file.content), stem.as_str());
+                    let namespaced = file
+                        .content
+                        .matches(&format!("{PLUGIN_NAME}:{stem}"))
+                        .count();
+                    assert_eq!(
+                        total,
+                        namespaced,
+                        "mcp={mcp}: {} has {} bare mentions of {stem}",
+                        file.relative_path,
+                        total - namespaced
+                    );
+                }
+            }
+            let autopilot = generate_plugin_skills(&opts)
+                .into_iter()
+                .find(|f| f.relative_path == "skills/autopilot/SKILL.md")
+                .expect("the autopilot shim is emitted");
+            assert!(
+                autopilot
+                    .content
+                    .matches("rdm:rdm-wf-dispatch-phase")
+                    .count()
+                    > 0,
+                "mcp={mcp}: autopilot must namespace the engine it dispatches"
+            );
+
+            // Engines this distribution does NOT ship stay bare — namespacing
+            // them would name a plugin entry that does not exist.
+            assert_eq!(
+                plugin_joined.matches("rdm:rdm-wf-estimate").count(),
+                0,
+                "mcp={mcp}: rdm-wf-estimate is not shipped and must not be namespaced"
+            );
         }
     }
 
@@ -5103,7 +5299,17 @@ mod tests {
                 0,
                 "rewrite left a source-tree path behind: {out}"
             );
-            assert!(out.contains("`rdm:rdm-wf-dispatch-phase`"), "{out}");
+            // BOTH mentions — the prose one and the path one — are namespaced.
+            assert_eq!(
+                out.matches("rdm:rdm-wf-dispatch-phase").count(),
+                2,
+                "both engine mentions must be namespaced: {out}"
+            );
+            assert_eq!(
+                count_of(&rdm_tokens(&out), "rdm-wf-dispatch-phase"),
+                2,
+                "the stem must survive inside the namespaced form: {out}"
+            );
         }
         assert!(
             rewrite_workflow_refs(with_clause).contains(", installed by the `rdm` plugin"),
@@ -5114,6 +5320,95 @@ mod tests {
             rewrite_workflow_refs("see `.claude/workflows/rdm-wf-review-refute-fix.js`"),
             "see `rdm:rdm-wf-review-refute-fix`"
         );
+        // A bare mention with no path literal anywhere — the shape the
+        // autopilot shim uses at its single operative invocation step.
+        assert_eq!(
+            rewrite_workflow_refs("invoke the **`rdm-wf-dispatch-phase` Workflow** via the tool"),
+            "invoke the **`rdm:rdm-wf-dispatch-phase` Workflow** via the tool"
+        );
+    }
+
+    #[test]
+    fn namespace_engine_refs_is_token_exact() {
+        let stem = "rdm-wf-dispatch-phase";
+
+        // Bare mentions, possessives, and file-name mentions all collapse to
+        // the namespaced invocation form.
+        assert_eq!(
+            namespace_engine_refs("`rdm-wf-dispatch-phase`", stem),
+            "`rdm:rdm-wf-dispatch-phase`"
+        );
+        assert_eq!(
+            namespace_engine_refs("`rdm-wf-dispatch-phase`'s budgets", stem),
+            "`rdm:rdm-wf-dispatch-phase`'s budgets"
+        );
+        assert_eq!(
+            namespace_engine_refs("the pipeline `rdm-wf-dispatch-phase.js` embeds", stem),
+            "the pipeline `rdm:rdm-wf-dispatch-phase` embeds"
+        );
+
+        // Idempotent: an already-namespaced reference is never double-prefixed.
+        let once = namespace_engine_refs("`rdm-wf-dispatch-phase`", stem);
+        assert_eq!(namespace_engine_refs(&once, stem), once);
+
+        // Path-embedded and identifier-embedded occurrences are left alone.
+        assert_eq!(
+            namespace_engine_refs(".claude/workflows/rdm-wf-dispatch-phase.js", stem),
+            ".claude/workflows/rdm-wf-dispatch-phase.js"
+        );
+        assert_eq!(
+            namespace_engine_refs("x-rdm-wf-dispatch-phase", stem),
+            "x-rdm-wf-dispatch-phase"
+        );
+        assert_eq!(
+            namespace_engine_refs("rdm-wf-dispatch-phase-v2", stem),
+            "rdm-wf-dispatch-phase-v2"
+        );
+        assert_eq!(
+            namespace_engine_refs("rdm-wf-dispatch-phase.json", stem),
+            "rdm-wf-dispatch-phase.json"
+        );
+
+        // A stem that is not this one is untouched.
+        assert_eq!(
+            namespace_engine_refs("`rdm-wf-estimate`", stem),
+            "`rdm-wf-estimate`"
+        );
+
+        // Multi-byte content around a match survives.
+        assert_eq!(
+            namespace_engine_refs("— `rdm-wf-dispatch-phase` —", stem),
+            "— `rdm:rdm-wf-dispatch-phase` —"
+        );
+    }
+
+    #[test]
+    fn append_plugin_rdm_bin_note_separates_the_note_in_both_newline_cases() {
+        // No-op when the body never mentions `rdmBin`.
+        assert_eq!(
+            append_plugin_rdm_bin_note("no binary argument here\n".to_string()),
+            "no binary argument here\n"
+        );
+
+        // Both branches of the trailing-newline guard must yield exactly one
+        // blank line between the body's last line and the appended heading.
+        for body in ["…pass `rdmBin`.\n", "…pass `rdmBin`."] {
+            let out = append_plugin_rdm_bin_note(body.to_string());
+            assert!(
+                out.starts_with(body.trim_end_matches('\n')),
+                "the original body was altered: {out}"
+            );
+            assert!(
+                out.contains("…pass `rdmBin`.\n\n## Resolving `rdmBin` (plugin install)\n"),
+                "expected exactly one blank line before the note: {out:?}"
+            );
+            assert_eq!(
+                out.matches("## Resolving `rdmBin` (plugin install)")
+                    .count(),
+                1,
+                "the note must be appended exactly once: {out:?}"
+            );
+        }
     }
 
     #[test]
