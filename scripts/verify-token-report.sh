@@ -123,10 +123,7 @@
 #      counted as a second review round, disposition read BEFORE
 #      severity-eligibility, and an inverted kills-cap comparison — each
 #      proven to flip its check to FAIL.
-#   8. CHANGELOG HYGIENE — the same commit that touches
-#      scripts/lib/token-report.mjs / scripts/measure-lane-tokens.mjs /
-#      scripts/measure-refuter-severity.mjs also touches CHANGELOG.md, so a
-#      user-facing change is never landed without its changelog entry.
+#   8. (removed — asserting on CHANGELOG.md is forbidden; see CLAUDE.md)
 #
 # Node is stdlib-only (node:assert, node:fs, node:path); no package.json /
 # node_modules / third-party packages anywhere. node is pinned in .mise.toml.
@@ -1682,24 +1679,10 @@ rank_driver_mutant capverdict-logic \
 pass "planted-mutation self-test (l): inverting the kills-cap comparison flips the synthetic branch table to FAIL"
 
 # ==============================================================================
-say "8. Changelog hygiene: the code change is staged/committed alongside CHANGELOG.md"
+# Section 8 (changelog hygiene: a staged token-report script must be co-staged
+# with CHANGELOG.md) is REMOVED — CLAUDE.md categorically forbids asserting on
+# CHANGELOG.md from a harness. The section number is left as a gap.
 # ==============================================================================
-
-if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    STAGED_FILES=$(git -C "$REPO_ROOT" diff --cached --name-only 2>/dev/null || true)
-    LIB_REL="scripts/lib/token-report.mjs"
-    CLI_REL="scripts/measure-lane-tokens.mjs"
-    REFSEV_REL="scripts/measure-refuter-severity.mjs"
-    if printf '%s\n' "$STAGED_FILES" | grep -qx "$LIB_REL\|$CLI_REL\|$REFSEV_REL"; then
-        printf '%s\n' "$STAGED_FILES" | grep -qx 'CHANGELOG.md' ||
-            fail "a token-measurement script (token-report.mjs / measure-lane-tokens.mjs / measure-refuter-severity.mjs) is staged without a corresponding CHANGELOG.md update in the same change"
-        pass "CHANGELOG.md is staged alongside the token-report code change"
-    else
-        pass "no staged token-report code change to check for a changelog entry (skipping — nothing staged right now)"
-    fi
-else
-    pass "not inside a git work tree — skipping changelog-staged check"
-fi
 
 # ==============================================================================
 say "verify-token-report.sh: ALL GREEN"

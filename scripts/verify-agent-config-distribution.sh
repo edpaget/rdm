@@ -519,42 +519,17 @@ pass "5h: both real generator consumer lists are still a single list each"
     fail "5h: scripts/lib/mechanical-tier-check.sh gained a .js/.mjs reference — it must stay engine-name-free"
 pass "5h: gen-skill-review.sh and mechanical-tier-check.sh carry no engine list (confirmed, untouched)"
 
-# --- 5i. CHANGELOG records the rename as a breaking change -----------------
-say "5i. CHANGELOG: the engine rename is recorded as BREAKING with automatic cleanup"
-CHANGELOG="$REPO_ROOT/CHANGELOG.md"
-UNRELEASED=$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' "$CHANGELOG")
-check_changelog() {
-    body=$1
-    printf '%s' "$body" | grep -q 'BREAKING' || return 1
-    printf '%s' "$body" | grep -q 'removes the superseded' || return 1
-    for engine in dispatch-phase review-refute-fix backlog document estimate plan-review; do
-        printf '%s' "$body" | grep -q "rdm-wf-$engine" || return 1
-    done
-    return 0
-}
-check_changelog "$UNRELEASED" ||
-    fail "5i: CHANGELOG.md [Unreleased] must name all six rdm-wf-* engines, the word BREAKING, and the phrase 'removes the superseded'"
-pass "5i: CHANGELOG [Unreleased] records the rename as BREAKING with automatic superseded-file removal"
-
-# Non-vacuity: each requirement the check makes must be independently
-# load-bearing. Prove it by planting a mutation that removes exactly one of
-# them from a SCRATCH COPY of the body and asserting the check turns red.
-#
-# This is deliberately NOT "compare against the CHANGELOG at some git ref".
-# The pre-rename state is not addressable by a moving ref: once this phase's
-# commit is HEAD, `git show HEAD:CHANGELOG.md` yields the post-change file and
-# the self-test inverts, failing forever. A planted mutation is a fixed
-# baseline that holds on every future checkout.
-plant_changelog_mutation() {
-    # $1 = a grep -E pattern; drops every matching line from $UNRELEASED.
-    printf '%s\n' "$UNRELEASED" | grep -vE "$1" || true
-}
-for mutation in 'BREAKING' 'removes the superseded' 'rdm-wf-plan-review'; do
-    if check_changelog "$(plant_changelog_mutation "$mutation")"; then
-        fail "5i self-test: dropping '$mutation' from the CHANGELOG body did NOT turn the check red — that requirement is not load-bearing"
-    fi
-done
-pass "5i self-test: dropping BREAKING, the cleanup sentence, or one rdm-wf-* name each turns the check red (non-vacuous)"
+# --- 5i. REMOVED -----------------------------------------------------------
+# 5i used to assert CHANGELOG.md's [Unreleased] section named all six engines,
+# the word BREAKING, and a cleanup sentence — with a planted-mutation
+# self-test over the changelog body. It was a release time-bomb, not a code
+# gate: prepare-release.yml moves the whole [Unreleased] body into a versioned
+# section, so the check went red on main the moment v0.18.1 landed. CLAUDE.md
+# now categorically forbids asserting on CHANGELOG.md content anywhere. The
+# rename itself is gated by sections 3 (byte-identity), 5g/5h (no stale engine
+# references anywhere in-tree) and 5j (end-to-end superseded cleanup), none of
+# which read prose. The section number is kept as a gap so 5j's numbering and
+# the header's section list stay stable.
 
 # --- 5j. END-TO-END: a downstream re-emit removes the superseded files -----
 say "5j. Superseded cleanup end-to-end: a stale downstream tree is cleaned, a custom file is not"

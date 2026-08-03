@@ -47,7 +47,7 @@
 #      only ever carry decision "no-measurement".
 #   9  Planted-mutation self-tests proving 2, 2c, 3, 4, 4b, 5, 5c, 6, and 7b are
 #      not vacuous.
-#  10  CHANGELOG hygiene, mirroring scripts/verify-token-report.sh.
+#  10  (removed — asserting on CHANGELOG.md content is forbidden; see CLAUDE.md)
 #  11  The AC9 XOR: either a changed model binding is reflected in a new
 #      verify-workflow-review.sh criterion, or the unchanged binding carries the
 #      pointer comment to the decision doc. Exactly one must hold.
@@ -1855,23 +1855,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-say "10. CHANGELOG hygiene"
-
-grep -q '## \[Unreleased\]' CHANGELOG.md || fail "CHANGELOG.md has no [Unreleased] section"
-UNREL="$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md)"
-# Herestrings, not `printf ... | grep`: this script runs under `pipefail`, and
-# the [Unreleased] section is ~59 KB while the first match lands ~6.7 KB in.
-# `grep -q` exits the moment it matches, so `printf` takes SIGPIPE on the
-# ~52 KB it has not written yet, and `pipefail` promotes that into a failed
-# pipeline — turning a check that MATCHED into a spurious FAIL. A herestring
-# has no reader to disappear.
-grep -q 'refuter-agreement' <<<"$UNREL" ||
-    fail "CHANGELOG.md's [Unreleased] section does not mention the refuter-agreement harness"
-grep -q "$DOC" <<<"$UNREL" ||
-    fail "CHANGELOG.md's [Unreleased] section does not point at $DOC"
-grep -q "$BATCH_DOC" <<<"$UNREL" ||
-    fail "CHANGELOG.md's [Unreleased] section does not point at $BATCH_DOC"
-pass "CHANGELOG.md's [Unreleased] section describes the harness and names both decision docs"
+# Section 10 (CHANGELOG hygiene) is REMOVED. It asserted CHANGELOG.md's
+# [Unreleased] section mentioned this harness and named both decision docs — a
+# release time-bomb rather than a code gate, since prepare-release.yml empties
+# [Unreleased] into a versioned section on every release (it went red on main
+# with v0.18.1). CLAUDE.md now categorically forbids asserting on CHANGELOG.md
+# content. The section number is left as a gap so 11's numbering is stable.
 
 # ---------------------------------------------------------------------------
 say "11. AC9 XOR: a changed binding is gated, or the unchanged one is recorded"
