@@ -33,7 +33,7 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 tabled = { version = "0.21", default-features = false, features = ["std"] }
 terminal_size = "0.4"
-rmcp = { version = "2.0", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "3.0", features = ["server", "transport-io", "macros"] }
 tracing = "0.1"
 ratatui = "0.30.1"
 sha2 = "0.10"
