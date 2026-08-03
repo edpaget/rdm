@@ -632,8 +632,14 @@ pass "2d self-test: a planted bare meta.name correctly turns the parity check re
 # frontmatter name, drawn into ONE namespace. The whole point of the rdm-wf-
 # prefix is that no reader can mistake one for the other, so assert the two
 # name sets are disjoint. This is the mechanical, re-derivable half of "the
-# listing shows the prefixed names"; the rendered listing itself was observed
-# directly and recorded in the phase's commit message.
+# listing shows the prefixed names". The other half — that a real client
+# RENDERS what the tree declares — cannot be checked hermetically, because the
+# listing is produced by the Claude Code client rather than by anything in this
+# repo. `scripts/observe-workflow-listing.sh` closes it: it captures the
+# listing from a live `claude -p` rooted at this repo and asserts the same
+# contract against it. Its assertion logic is exercised here (below) so CI
+# still gates it; the captured before/after is recorded in
+# docs/workflow-schemas.md § "Observing the rendered listing".
 collect_listing_names() {
     # $1 = workflows dir, $2 = skills dir. Emits every listing entry name.
     for engine in "$1"/*.js; do
@@ -666,6 +672,17 @@ if check_listing_disjoint "$WF_DIR" "$SCRATCH/2d-listing/skills" 2>/dev/null; th
     fail "2d self-test: a planted name collision did NOT turn the disjointness check red"
 fi
 pass "2d self-test: a planted engine/skill name collision correctly turns the check red"
+
+# The live listing observer's ASSERTION logic is gated here, hermetically. Its
+# --self-test-only mode needs no `claude`, no network and no credentials: it
+# requires the assertions to reject a pinned PRE-rename listing and to accept
+# one built from what the tree declares. Running it here means a change that
+# renders those assertions vacuous fails CI, rather than lying dormant until
+# someone next runs the non-hermetic live capture by hand.
+sh "$REPO_ROOT/scripts/observe-workflow-listing.sh" --self-test-only >/dev/null ||
+    fail "2d: scripts/observe-workflow-listing.sh --self-test-only failed — the rendered-listing assertions no longer discriminate.
+  Run it directly to see which half broke."
+pass "2d: the rendered-listing observer's assertions still discriminate (hermetic self-test)"
 
 # The two SHIPPED copies must stay byte-identical to their local counterparts.
 for shipped in rdm-wf-dispatch-phase.js rdm-wf-review-refute-fix.js; do

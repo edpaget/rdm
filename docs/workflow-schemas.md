@@ -44,6 +44,48 @@ shared source module, never a listing entry, so its name is deliberately
 unprefixed and frozen. `spike-agent-type.js` is an exempt spike artifact and
 keeps its bare name.
 
+### Observing the rendered listing
+
+The prefix only pays off if the **rendered** listing shows it, and that listing
+is produced by the Claude Code client from `.claude/`, not by anything in this
+repo — so no hermetic check here can confirm it. What this repo gates
+hermetically (`verify-workflow-review.sh` § 2d) is that the tree *declares* the
+right names: engine filenames, `meta.name`-equals-stem parity, and engine/skill
+name disjointness. Confirming the client agrees is a separate, deliberate step:
+
+```sh
+scripts/observe-workflow-listing.sh                  # live capture + assert
+scripts/observe-workflow-listing.sh --self-test-only # hermetic; what CI runs
+```
+
+The script derives the expected names from the tree (never a hardcoded list),
+spawns a fresh `claude -p` rooted at this repo, and asserts four things against
+what comes back: every declared engine renders under its `rdm-wf-` name, no
+bare pre-rename name survives, every `rdm-*` front door still renders under its
+original name, and nothing is double-prefixed.
+
+Two properties make the result trustworthy rather than decorative:
+
+- **It discriminates.** Run against `main` and against the renamed tree at the
+  same moment on the same machine, the identical command returned different
+  listings — bare `backlog`, `dispatch-phase`, `document`, `estimate`,
+  `plan-review`, `review-refute-fix` in the first, and the `rdm-wf-`-prefixed
+  entries in the second, with all eleven `rdm-*` front doors unchanged in both
+  and no double-prefixed entry (a doubled `rdm-`, or the engine prefix stacked
+  in front of a front-door name) in either. The cwd is the only variable, so
+  the listing genuinely tracks the tree.
+- **Its assertions are not vacuous.** `--self-test-only` requires them to
+  *reject* a pinned pre-rename listing and to *accept* one built from the
+  tree's own declarations, and the script refuses to run at all if a derivation
+  yields an empty name set — the failure mode where "no bare name was found" is
+  true only because nothing was looked for. § 2d runs that half, so CI catches
+  an observer that has stopped discriminating.
+
+A stale listing is not evidence of a failed rename: a client only watches
+directories that existed at *its* session start, so a long-running session can
+render pre-rename names indefinitely. The script sidesteps this by spawning a
+new client per run — a failure from it is real.
+
 ### Known-intentional survivors of an engine-name grep
 
 Several tokens read like engine names but are **not** listing entries or
