@@ -35,7 +35,12 @@
 #      the emitted one, each with a valid SKILL.md frontmatter.
 #   7. PLANTED-CORRUPTION SELF-TESTS: one per assertion above, each calling
 #      the REAL check function against a corrupted scratch copy, proving none
-#      of sections 2-6 is vacuous.
+#      of sections 2-6 is vacuous. Coverage is per-ASSERTION, not per-section:
+#      7k plants each required marketplace field's omission and blank value
+#      individually (7b only exercises the zero-entry branch), and 7l isolates
+#      the two count floors behind MATCHED name sets, since the name-set
+#      equality checks in 7d/7f would otherwise fail first and leave the floors
+#      themselves unproven.
 #
 # ---------------------------------------------------------------------------
 # FORBIDDEN — two rules a future editor must not reintroduce:
@@ -567,6 +572,69 @@ if check_drift "$ST_EXTRA" "$FRESH" >/dev/null 2>&1; then
     fail "self-test 7j: an added stray file was NOT detected — the drift gate misses additions"
 fi
 pass "self-test 7j: an added stray file correctly turns the drift gate red"
+
+# Self-test 7b above exercises ONLY check_marketplace_shape's zero-entry
+# branch; its fixture carries valid name/description/owner fields, so the four
+# per-field assertions were previously unproven. 7k plants each field's
+# omission and each field's empty value in turn.
+say "7k. Self-test: omitting or emptying any required marketplace field turns the shape gate red"
+st_shape_red() {
+    # $1 = human label, $2 = scratch manifest path
+    if check_marketplace_shape "$2" >/dev/null 2>&1; then
+        fail "self-test 7k: $1 was NOT detected — that marketplace field assertion is vacuous"
+    fi
+    printf '  - %s correctly turns the shape gate red\n' "$1"
+}
+# Deleting the line: the "missing" case.
+sed '/^  "name": /d' "$MARKETPLACE" >"$TMP/st-shape-no-name.json"
+st_shape_red "a missing top-level \"name\"" "$TMP/st-shape-no-name.json"
+sed '/^  "description": /d' "$MARKETPLACE" >"$TMP/st-shape-no-desc.json"
+st_shape_red "a missing top-level \"description\"" "$TMP/st-shape-no-desc.json"
+sed '/^    "name": /d' "$MARKETPLACE" >"$TMP/st-shape-no-owner-name.json"
+st_shape_red "a missing owner.\"name\"" "$TMP/st-shape-no-owner-name.json"
+sed '/^    "url": /d' "$MARKETPLACE" >"$TMP/st-shape-no-owner-url.json"
+st_shape_red "a missing owner.\"url\"" "$TMP/st-shape-no-owner-url.json"
+# Emptying the value: the "present but blank" case, still valid JSON.
+sed 's/^\(  "description": "\)[^"]*\(".*\)$/\1\2/' "$MARKETPLACE" >"$TMP/st-shape-empty-desc.json"
+grep -q '^  "description": ""' "$TMP/st-shape-empty-desc.json" ||
+    fail "self-test 7k setup failed — the planted empty description was not written"
+st_shape_red "an empty top-level \"description\"" "$TMP/st-shape-empty-desc.json"
+sed 's/^\(    "url": "\)[^"]*\(".*\)$/\1\2/' "$MARKETPLACE" >"$TMP/st-shape-empty-owner-url.json"
+grep -q '^    "url": ""' "$TMP/st-shape-empty-owner-url.json" ||
+    fail "self-test 7k setup failed — the planted empty owner.url was not written"
+st_shape_red "an empty owner.\"url\"" "$TMP/st-shape-empty-owner-url.json"
+pass "self-test 7k: every required marketplace field assertion is non-vacuous (6 plants)"
+
+# Self-tests 7d/7f mutate the NAME SET, which already fails the equality check
+# before either count floor is consulted. 7l isolates the floors: matched name
+# sets on both sides, so equality passes and ONLY the count check can go red.
+say "7l. Self-test: the workflow and skill count floors are non-vacuous in isolation"
+ST_FLOOR="$TMP/st-floors"
+rm -rf "$ST_FLOOR"
+mkdir -p "$ST_FLOOR/wf-checked/workflows" "$ST_FLOOR/wf-fresh/workflows"
+FLOOR_WF=$(file_names "$FRESH/workflows" | awk '{print $1}')
+[ -n "$FLOOR_WF" ] || fail "self-test 7l setup failed — no emitted workflow to copy"
+cp "$FRESH/workflows/$FLOOR_WF" "$ST_FLOOR/wf-checked/workflows/"
+cp "$FRESH/workflows/$FLOOR_WF" "$ST_FLOOR/wf-fresh/workflows/"
+if check_workflow_identity "$ST_FLOOR/wf-checked" "$ST_FLOOR/wf-fresh" >/dev/null 2>&1; then
+    fail "self-test 7l: a matched-but-undersized workflow set (1 < $MIN_WORKFLOW_COUNT) was NOT detected — the workflow floor is vacuous"
+fi
+printf '  - a matched workflow name set below the floor correctly turns the gate red\n'
+mkdir -p "$ST_FLOOR/sk-checked/skills" "$ST_FLOOR/sk-fresh/skills"
+for name in land revise; do
+    cp -R "$FRESH/skills/$name" "$ST_FLOOR/sk-checked/skills/$name"
+    cp -R "$FRESH/skills/$name" "$ST_FLOOR/sk-fresh/skills/$name"
+done
+if check_skill_inventory "$ST_FLOOR/sk-checked" "$ST_FLOOR/sk-fresh" >/dev/null 2>&1; then
+    fail "self-test 7l: a matched-but-undersized skill set (2 != $EXPECTED_SKILL_COUNT) was NOT detected — the exact-count floor is vacuous"
+fi
+printf '  - a matched skill name set below the exact count correctly turns the gate red\n'
+mkdir -p "$ST_FLOOR/sk-empty-checked/skills" "$ST_FLOOR/sk-empty-fresh/skills"
+if check_skill_inventory "$ST_FLOOR/sk-empty-checked" "$ST_FLOOR/sk-empty-fresh" >/dev/null 2>&1; then
+    fail "self-test 7l: two empty skills/ trees vacuously satisfied the inventory gate — the >= 1 floor is vacuous"
+fi
+printf '  - two empty (but equal) skill sets correctly turn the gate red\n'
+pass "self-test 7l: both count floors go red independently of the name-set equality checks"
 
 # --- 8. hermeticity guard --------------------------------------------------
 say "8. Confirming $REPO_ROOT git status is unchanged after the whole run"
