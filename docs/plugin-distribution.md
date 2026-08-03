@@ -276,6 +276,80 @@ This convention keeps documentation independent of the distribution channel. A c
 | **rdmBin resolution** | Required; resolve via flag, env var, PATH, or standard locations; fail with actionable error if not found. | Enables plugin use in environments without repo-local binaries; clear error message guides consumer setup. |
 | **Disambiguator** | `rdm-wf-` prefix survives | Prevents collision between `rdm-dispatch-phase` skill and `rdm-wf-dispatch-phase` engine. |
 
+## Marketplace Distribution
+
+### The Checked-In Plugin Tree
+
+The generated plugin tree is checked into this repo at a single canonical path:
+
+| Artifact | Path |
+|----------|------|
+| Plugin tree | `plugins/rdm/` |
+| Plugin manifest | `plugins/rdm/.claude-plugin/plugin.json` |
+| Marketplace manifest | `.claude-plugin/marketplace.json` (repo root) |
+
+Two distinct `.claude-plugin/` directories therefore exist, and they are not interchangeable: the **repo-root** one holds the *marketplace* manifest, and the one **inside `plugins/rdm/`** holds the *plugin* manifest. `claude plugin validate` is pointed at the containing directory, not at the JSON file.
+
+The marketplace entry's `source` is `./plugins/rdm`, resolved relative to the repo root. The entry deliberately carries **no `version` field** — that would re-couple the repo to the crate version (see below).
+
+### Canonical Regeneration Command
+
+**Never hand-edit anything under `plugins/rdm/`.** It is generator output. Regenerate it with exactly:
+
+```bash
+env -u RDM_ROOT -u RDM_PROJECT cargo run -q -- agent-config claude --plugin --out plugins/rdm
+```
+
+(equivalently `env -u RDM_ROOT -u RDM_PROJECT ./target/debug/rdm agent-config claude --plugin --out plugins/rdm`).
+
+Two details are load-bearing:
+
+- **`env -u RDM_ROOT -u RDM_PROJECT`** — a developer with those variables set in their shell would otherwise produce a different tree and see false drift.
+- **No `--project` flag.** Emission is `--project`-sensitive: passing `--project rdm` bakes this repo's own project name into all 11 `SKILL.md` bodies. Omitting it emits the generic `--project <PROJECT>` placeholder a downstream consumer needs.
+
+Emission is deterministic — two runs are byte-identical — and needs no plan repo.
+
+This adds a **third** in-repo copy of the two Workflow engine scripts, alongside `.claude/workflows/` and `rdm-core/src/templates/workflows/`. After regenerating, re-run `scripts/verify-agent-config-distribution.sh` and `scripts/verify-workflow-review.sh` as well as the two harnesses below.
+
+### Why the Drift Gate is Version-Normalized
+
+The plugin manifest's `version` comes from `env!("CARGO_PKG_VERSION")`, which inherits the workspace version from `Cargo.toml`. `.github/workflows/prepare-release.yml` sed-bumps that version and stages exactly `Cargo.toml Cargo.lock CHANGELOG.md` (line 104) before committing and pushing to `main` — **it regenerates nothing**. So `plugins/rdm/.claude-plugin/plugin.json` goes stale on every release *by design*.
+
+A naive byte-identity gate over a version-bearing checked-in tree would therefore go red on `main` the moment a release lands. That is the same failure class as asserting on `CHANGELOG.md` prose, and it is what blocked v0.18.1 (CI run 30815546603).
+
+The resolution, implemented in `scripts/verify-plugin-install.sh`:
+
+- The checked-in tree is treated as **version-agnostic**. The drift gate replaces the manifest `version` value with a fixed placeholder on **both** sides before diffing, so a crate-version bump can never move the diff. Everything else — every other manifest field, every `SKILL.md` byte, every workflow byte, and the file set itself — stays under exact byte-identity.
+- Version currency is asserted **only against freshly generated output**, never against committed bytes.
+- The expected version is read from `Cargo.toml`'s `[workspace.package] version`. Note that **`rdm --version` does not exist** (clap rejects the flag), so Cargo.toml is the source of truth.
+
+A paired self-test proves both halves: a planted `99.99.99` bump leaves the drift gate green while turning the runtime version assertion red, and a mutated non-version manifest field turns the drift gate red (proving the normalization is surgical rather than a blanket neuter).
+
+### Consumer Installation
+
+```bash
+claude plugin marketplace add edpaget/rdm
+claude plugin install rdm@rdm
+```
+
+This installs the 11 `rdm:<name>` skills and the two `rdm:rdm-wf-<engine>` Workflow engines. A local checkout can be installed the same way by pointing `marketplace add` at the repo directory.
+
+### The Two Harnesses
+
+| Script | Hermetic? | Run by CI? |
+|--------|-----------|------------|
+| `scripts/verify-plugin-install.sh` | Yes — pure POSIX shell + coreutils, no `python3`/`node`/`jq`/`claude` | **Yes**, via `.github/workflows/ci.yml`'s `for f in scripts/verify-*.sh` glob |
+| `scripts/observe-plugin-install.sh` | No — requires the `claude` CLI | **No.** The `observe-` name keeps it outside the glob; it is developer-run |
+
+`verify-plugin-install.sh` gates the version-normalized drift of `plugins/rdm/` against generator output, the runtime manifest-version assertion (fresh output only), marketplace shape plus `source` resolution with a non-empty-entry floor, workflow byte-identity, and the 11-skill inventory with frontmatter validity — each behind a planted-corruption self-test proving it is non-vacuous.
+
+`observe-plugin-install.sh` performs a real offline install (`validate --strict` → `marketplace add` → `install rdm@rdm` → assert the installed tree) into an mktemp'd `CLAUDE_CONFIG_DIR`, and proves the invoking user's real `~/.claude` is byte-unchanged. It exits **2** with a NOTICE — deliberately distinguishable from both pass (0) and fail (1) — when `claude` is absent from `PATH`.
+
+Two CLI gaps shape that split, both verified against `claude` 2.1.220:
+
+1. `claude plugin validate --strict` **false-passes** a marketplace whose plugin `source` points at a nonexistent directory (exit 0 on `"source": "./does-not-exist"`, with all other warnings cleared). Source resolution is therefore owned by our own harness, with a non-empty-entry floor so "every entry resolves" cannot be vacuously true of an empty list.
+2. `claude plugin details` reports Skills / Agents / Hooks / MCP servers / LSP servers and has **no Workflows category at all** — confirmed against the official `claude-security` plugin, which ships workflows and shows none. Workflows *are* fully supported by the runtime; the inventory simply does not enumerate them. So workflow presence is asserted **on the filesystem**, never via `plugin details`.
+
 ## Next Steps for Later Phases
 
 - **Phase 2:** Implement the plugin manifest generator in `rdm-core/src/agent_config.rs` and the `--plugin` CLI in `rdm-cli`. Apply the name transformations at emission time.
@@ -284,3 +358,121 @@ This convention keeps documentation independent of the distribution channel. A c
 - **Phase 5:** Document the dogfood resolution and recommended distribution path.
 
 All path examples in code, CLI output, and documentation must continue to use the source-tree prefix (`rdm-wf-`), even in plugin contexts, to maintain consistency across distribution channels.
+
+## Local run transcript: `scripts/observe-plugin-install.sh`
+
+Landing evidence for the real-install half. Captured 2026-08-03 on macOS (darwin 25.5.0) against `claude` **2.1.220 (Claude Code)** and rdm crate version **0.18.1**, fully offline — no network, no auth, no `ANTHROPIC_API_KEY`.
+
+What it proves: the committed plugin manifest and the marketplace manifest both pass `claude plugin validate --strict`; the marketplace adds and the plugin installs cleanly into an isolated `CLAUDE_CONFIG_DIR`; `plugin list --json` reports exactly one entry, `id=rdm@rdm`, `enabled=true`, at the crate version; the installed tree carries all 11 skills and both Workflow engines byte-identical to the emitted bytes; and the invoking user's real `~/.claude` config is byte-unchanged with no `rdm` cache or marketplace directory created.
+
+This script is **developer-run and carries no CI coverage** — CI runs only `scripts/verify-plugin-install.sh`.
+
+```
+
+==> 1. Snapshotting the invoking user's real ~/.claude config (before)
+    FILE 2750462618 1528 /Users/edward/.claude/settings.json
+    FILE 616204153 24 /Users/edward/.claude/plugins/config.json
+    FILE 1133680374 1419 /Users/edward/.claude/plugins/installed_plugins.json
+    FILE 553281503 277 /Users/edward/.claude/plugins/known_marketplaces.json
+    ABSENT-DIR /Users/edward/.claude/plugins/cache/rdm
+    ABSENT-DIR /Users/edward/.claude/plugins/marketplaces/rdm
+[ok] before-snapshot captured
+
+==> 1b. Isolation: CLAUDE_CONFIG_DIR=/var/folders/wh/d1mw3dm11z1_pglt1_w9t0mw0000gn/T/tmp.jeP0c4ERm3 (mktemp'd, trap-cleaned)
+[ok] config isolated
+
+==> 2. Building a temp marketplace at /var/folders/wh/d1mw3dm11z1_pglt1_w9t0mw0000gn/T/tmp.4Q36fgK5Gk
+[ok] marketplace manifest copied and a fresh plugin tree emitted into /var/folders/wh/d1mw3dm11z1_pglt1_w9t0mw0000gn/T/tmp.4Q36fgK5Gk/plugins/rdm
+
+==> 3. claude plugin validate --strict on the COMMITTED plugin tree (read-only, in place)
+Validating plugin manifest: /Users/edward/Projects/rdm__worktrees/roadmap-plugin-distribution/plugins/rdm/.claude-plugin/plugin.json
+
+✔ Validation passed
+[ok] committed plugin manifest validates under --strict
+
+==> 3b. claude plugin validate --strict on the temp marketplace
+Validating marketplace manifest: /var/folders/wh/d1mw3dm11z1_pglt1_w9t0mw0000gn/T/tmp.4Q36fgK5Gk/.claude-plugin/marketplace.json
+
+✔ Validation passed
+[ok] marketplace manifest validates under --strict
+
+==> 4. claude plugin marketplace add /var/folders/wh/d1mw3dm11z1_pglt1_w9t0mw0000gn/T/tmp.4Q36fgK5Gk
+Adding marketplace…✔ Successfully added marketplace: rdm (declared in user settings)
+[ok] marketplace added into the isolated config
+
+==> 4b. claude plugin install rdm@rdm
+Installing plugin "rdm@rdm"...✔ Successfully installed plugin: rdm@rdm (scope: user)
+[ok] plugin installed
+
+==> 5. claude plugin list --json: exactly one entry, enabled, at the crate version
+    [
+      {
+        "id": "rdm@rdm",
+        "version": "0.18.1",
+        "scope": "user",
+        "enabled": true,
+        "installPath": "/var/folders/wh/d1mw3dm11z1_pglt1_w9t0mw0000gn/T/tmp.jeP0c4ERm3/plugins/cache/rdm/rdm/0.18.1",
+        "installedAt": "2026-08-03T20:11:21.254Z",
+        "lastUpdated": "2026-08-03T20:11:21.254Z"
+      }
+    ]
+[ok] one entry: id=rdm@rdm, enabled=true, version=0.18.1
+[ok] installPath resolves inside the isolated config: /var/folders/wh/d1mw3dm11z1_pglt1_w9t0mw0000gn/T/tmp.jeP0c4ERm3/plugins/cache/rdm/rdm/0.18.1
+
+==> 5b. Installed skill inventory equals the emitted inventory
+[ok] 11 skills installed: autopilot backlog dispatch-phase do document estimate land plan-review review revise roadmap 
+
+==> 5c. Installed workflow scripts, asserted ON THE FILESYSTEM (never via plugin details — see gap 2)
+[ok] 2 workflow scripts installed byte-identical: rdm-wf-dispatch-phase.js rdm-wf-review-refute-fix.js 
+
+==> 5d. Corroboration only: claude plugin details rdm
+    rdm 0.18.1
+      rdm's planning lane for Claude Code: skills for creating roadmaps, implementing and reviewing phases and tasks, and landing finished work, plus the Workflow engines they dispatch.
+      Source: rdm@rdm
+    
+    Component inventory
+      Skills (11)  autopilot, backlog, dispatch-phase, do, document, estimate, land, plan-review, review, revise, roadmap
+      Agents (0)
+      Hooks (0)
+      MCP servers (0)
+      LSP servers (0)
+    
+    Projected token cost
+      Always-on:   ~367 tok   added to every session
+    
+    Per-component (rounded)
+      component       always-on  on-invoke
+      land                  ~60      ~1.8k
+      do                    ~30      ~4.5k
+      roadmap              < 20       ~540
+      backlog               ~50      ~1.7k
+      document             < 20       ~480
+      review               < 20      ~6.4k
+      estimate              ~20       ~760
+      revise                ~30      ~1.4k
+      autopilot             ~60      ~3.8k
+      dispatch-phase        ~60      ~2.3k
+      plan-review           ~20      ~6.7k
+    
+      On-invoke cost is paid each time a skill or agent fires.
+      Token counts are estimates and may differ from actual usage.
+[ok] details rendered (note: it has no Workflows category — 5c is the authority)
+
+==> 6. Snapshotting the real ~/.claude config (after) and requiring it byte-unchanged
+[ok] real ~/.claude config is byte-identical before and after, with no rdm cache or marketplace directory
+
+==> 6b. Positive proof the write landed in the isolated dir instead
+[ok] /var/folders/wh/d1mw3dm11z1_pglt1_w9t0mw0000gn/T/tmp.jeP0c4ERm3/plugins/cache/rdm/rdm/0.18.1 exists
+
+==> All plugin-install observations passed (developer-run; NOT covered by CI).
+```
+
+The missing-`claude` path is likewise exercised locally:
+
+```
+$ env PATH=/usr/bin:/bin sh scripts/observe-plugin-install.sh; echo "EXIT=$?"
+[NOTICE] claude was not found on PATH — the real-install observation was SKIPPED.
+          This is NOT a pass. Install the Claude Code CLI and re-run to observe.
+          The hermetic half (scripts/verify-plugin-install.sh) covers everything CI gates.
+EXIT=2
+```

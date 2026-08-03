@@ -1,0 +1,15 @@
+{
+  "name": "rdm",
+  "description": "rdm's planning lane for Claude Code, distributed as an installable plugin.",
+  "owner": {
+    "name": "Edward Paget",
+    "url": "https://github.com/edpaget/rdm"
+  },
+  "plugins": [
+    {
+      "name": "rdm",
+      "source": "./plugins/rdm",
+      "description": "Skills for creating roadmaps, implementing and reviewing phases and tasks, and landing finished work, plus the Workflow engines they dispatch."
+    }
+  ]
+}
