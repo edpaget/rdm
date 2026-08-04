@@ -1945,9 +1945,9 @@ function parseDispatchArgs(args) {
   if (!dispatchArgs || typeof dispatchArgs !== 'object') dispatchArgs = {};
   // The two ENVIRONMENT axes are resolved BEFORE the returned object literal, so
   // validation order is deterministic and independent of property-evaluation
-  // order: rdmBin first (fail-closed — no ambient default), then the optional
-  // project name. Like the budgets, both are validated HERE, at parse time, so a
-  // mis-invocation costs zero tokens.
+  // order: rdmBin first (defaulting to `rdm` when absent — see resolveRdmBin
+  // above), then the optional project name. Like the budgets, both are validated
+  // HERE, at parse time, so a mis-invocation costs zero tokens.
   const rdmBin = resolveRdmBin(dispatchArgs.rdmBin);
   const project = parseProjectArg(dispatchArgs.project);
   return {

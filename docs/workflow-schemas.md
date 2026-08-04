@@ -1745,11 +1745,21 @@ filesystem and no environment access, so no workflow JS reads `process.env` —
 `resolveRdmBin`-bearing file, with a planted `process.env.RDM_BIN` self-test.
 Resolution happens in the **calling skill**, a live agent with Bash, which passes
 the result down as an argument; the JS-side change is only the absent-value
-default. `PLUGIN_RDM_BIN_NOTE` in `rdm-core/src/agent_config.rs` is the canonical
-statement of the three-step order (`--rdm-bin` → `RDM_BIN` → `rdm`) and is
-appended to every emitted plugin skill whose body mentions `rdmBin`; the base
-skill templates state the default and point at it rather than restating the
-order, so the two cannot drift.
+default. The three-step order is `--rdm-bin` → `RDM_BIN` → a plain `rdm` on
+`PATH`, and it is stated in exactly **two** places, never in a skill body:
+
+- `PLUGIN_RDM_BIN_NOTE` in `rdm-core/src/agent_config.rs`, appended verbatim by
+  `append_plugin_rdm_bin_note()` to every emitted **plugin** skill whose body
+  mentions `rdmBin`. That appended section is authoritative for a
+  plugin-installed consumer.
+- this section, which the repo-local `.claude/skills/` copies cite by name.
+
+Every skill body — the `rdm-core/src/templates/skill-*.md` base templates, their
+emitted `--skills`/`--plugin` renderings, and this repo's dogfood copies — states
+only the **default** (`rdmBin` is optional; omitted, a plain `rdm` on `PATH` is
+used), that an explicit value wins verbatim, and a pointer to one of the two
+sources above. None of them re-lists the ordered steps, so a change to the order
+has two call sites rather than thirteen.
 
 **Every caller still threads `rdmBin`, and every per-shim assertion stays.** What
 changed is the consequence of omitting it: an un-threaded caller now **degrades**

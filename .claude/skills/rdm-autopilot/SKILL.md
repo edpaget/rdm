@@ -12,7 +12,7 @@ Decisions and blockers are **batched, not raised mid-run**: a phase that cannot 
 
 ## Contract
 
-**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--rdm-bin <path>`, `--project <name>`, `--max-phases N`, `--plan-only`, `--max-plan-revise N`, and/or `--max-code-rework N`. The slug names the single roadmap this run drives. If no slug is given, stop before invoking anything and say so — do not attempt a partial estimate or drive-loop start. `--rdm-bin` is **optional** and has no pre-flight stop of its own: resolve an explicitly supplied `--rdm-bin <path>` first, then `$RDM_BIN` if it is set, then a plain `rdm` on `PATH`, using the first that resolves (this repo's `.mise.toml` sets `RDM_BIN` to its local development build, so a bare invocation here still uses that build rather than a stale global one).
+**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--rdm-bin <path>`, `--project <name>`, `--max-phases N`, `--plan-only`, `--max-plan-revise N`, and/or `--max-code-rework N`. The slug names the single roadmap this run drives. If no slug is given, stop before invoking anything and say so — do not attempt a partial estimate or drive-loop start. `--rdm-bin` is **optional** and has no pre-flight stop of its own; when it is not supplied, use `$RDM_BIN`, which this repo's `.mise.toml` sets to its local development build, so a bare invocation here still uses that build rather than a stale global one. `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" is the canonical resolution order — do not restate it here.
 
 Every Bash command and Workflow payload below is written against two placeholders resolved once in step 1: `<rdmBin>` — the executable resolved by that order — and `<proj-flag>` — ` --project <project>` when `--project` was given, or nothing at all when it was omitted (never an empty `--project` value).
 
@@ -30,7 +30,7 @@ This skill is **non-interactive**.
 ### 1. Parse `$ARGUMENTS`
 
 - `roadmap` — the required slug (first positional argument). Missing → stop immediately, before step 2, and say so.
-- `rdmBin` — the **optional** executable path following `--rdm-bin`. There is **no** pre-flight stop for it: use the explicit path when given, else `$RDM_BIN` when that is set, else a plain `rdm` on `PATH`. The literal sentinel `rdm` requests `PATH` resolution deliberately. This resolves the `<rdmBin>` placeholder used everywhere below.
+- `rdmBin` — the **optional** executable path following `--rdm-bin`. There is **no** pre-flight stop for it: when it is not supplied, use `$RDM_BIN` (this repo's development build). The literal sentinel `rdm` requests `PATH` resolution deliberately, and the workflow's own default when the key is absent is a plain `rdm` on `PATH`; see `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" for the canonical order. This resolves the `<rdmBin>` placeholder used everywhere below.
 - `project` — the optional project name following `--project`. Omitted → the `<proj-flag>` placeholder used everywhere below renders as nothing (no `--project` flag at all, never an empty value).
 - `maxPhases` — the positive integer following `--max-phases`, when present (omit otherwise — unbounded by phase count).
 - `planOnly` — `true` when `--plan-only` is present (omit otherwise).

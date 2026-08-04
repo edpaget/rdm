@@ -3227,6 +3227,75 @@ if assert_schemas_doc_records_default "$TMP/schemas-mut.md"; then
 fi
 pass "9c-dogfood(iii): the doc detector fires on a reinstated required-rdmBin row"
 
+# --- 9c-single-source. The resolution ORDER lives in exactly two places -------
+# `--rdm-bin` -> `RDM_BIN` -> plain `rdm` is stated by PLUGIN_RDM_BIN_NOTE
+# (appended to emitted PLUGIN skills as a `## Resolving \`rdmBin\`` section) and
+# by docs/workflow-schemas.md. Skill BODIES state only the default and point at
+# one of those two. Restating the ordered steps in every body would give a future
+# change to the order a dozen hand-maintained call sites with no gate — which is
+# exactly the drift this check exists to prevent.
+say "9c-single-source: no skill body restates the rdmBin resolution order"
+
+# A restatement is an RDM_BIN mention carrying precedence language. The appended
+# plugin note is one of the two canonical statements, so it (and everything after
+# it) is stripped before the check.
+assert_no_restated_rdm_bin_order() {
+    _ss_file=$1
+    awk '/^## Resolving `rdmBin`/ { exit } { print }' "$_ss_file" >"$TMP/ss-body.md"
+    if grep -E 'RDM_BIN' "$TMP/ss-body.md" | grep -qiE 'then|first|else'; then
+        return 1
+    fi
+    return 0
+}
+
+SS_FILES=$(
+    grep -rl 'rdmBin' \
+        "$REPO_ROOT/.claude/skills" \
+        "$REPO_ROOT/rdm-core/src/templates" \
+        "$REPO_ROOT/plugins/rdm/skills" \
+        --include='SKILL.md' --include='skill-*.md' 2>/dev/null | sort
+)
+SS_COUNT=$(printf '%s\n' "$SS_FILES" | grep -c . || true)
+if [ "$SS_COUNT" -lt 12 ]; then
+    fail "9c-single-source: expected at least 12 rdmBin-bearing skill bodies, found $SS_COUNT — the inventory grep drifted"
+fi
+for f in $SS_FILES; do
+    assert_no_restated_rdm_bin_order "$f" ||
+        fail "9c-single-source: $f restates the rdmBin resolution order — state the default and point at PLUGIN_RDM_BIN_NOTE or docs/workflow-schemas.md instead"
+done
+pass "9c-single-source: none of the $SS_COUNT rdmBin-bearing skill bodies restates the order"
+
+# Self-test: plant a restatement and the detector must fire.
+SS_VICTIM="$REPO_ROOT/rdm-core/src/templates/skill-dispatch-phase-cli.md"
+cp "$SS_VICTIM" "$TMP/ss-mutant.md"
+# shellcheck disable=SC2016  # literal prose, deliberately unexpanded
+printf '\nResolve an explicit `--rdm-bin <path>` first, then `$RDM_BIN` if set, then a plain `rdm`.\n' >>"$TMP/ss-mutant.md"
+if cmp -s "$SS_VICTIM" "$TMP/ss-mutant.md"; then
+    fail "9c-single-source: the restatement mutation did not apply — the self-test is not exercising anything"
+fi
+if assert_no_restated_rdm_bin_order "$TMP/ss-mutant.md"; then
+    fail "9c-single-source: the detector missed a planted restatement of the resolution order — the gate is vacuous"
+fi
+pass "9c-single-source: the detector fires on a planted restatement of the order"
+
+# Positive control on an emitted PLUGIN skill: its appended note DOES state the
+# order, and stripping it must not make the check vacuous — the body above the
+# note is still scanned.
+SS_PLUGIN="$REPO_ROOT/plugins/rdm/skills/dispatch-phase/SKILL.md"
+if [ -f "$SS_PLUGIN" ]; then
+    # shellcheck disable=SC2016  # a literal markdown heading, not a shell expansion
+    grep -q '^## Resolving `rdmBin`' "$SS_PLUGIN" ||
+        fail "9c-single-source: the emitted plugin skill lost its appended \`## Resolving \`rdmBin\`\` note — that note is one of the two canonical statements of the order"
+    cp "$SS_PLUGIN" "$TMP/ss-plugin-mutant.md"
+    # shellcheck disable=SC2016  # literal prose, deliberately unexpanded
+    awk 'NR==1 { print; print "Resolve `--rdm-bin` first, then `$RDM_BIN`."; next } { print }' \
+        "$SS_PLUGIN" >"$TMP/ss-plugin-mutant.md"
+    if assert_no_restated_rdm_bin_order "$TMP/ss-plugin-mutant.md"; then
+        fail "9c-single-source: stripping the appended note also hid a restatement ABOVE it — the strip is too greedy"
+    fi
+    pass "9c-single-source: the appended plugin note survives, and stripping it does not hide a restatement above it"
+fi
+
 # --- 9d. Planted-mutation self-tests for 9b -----------------------------------
 say "9d. Planted-mutation self-tests: the allow-list assertion is not vacuous"
 
