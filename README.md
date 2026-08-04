@@ -17,7 +17,7 @@ Work with your assistant to plan and implement large changes in a structured, re
 curl -fsSL https://github.com/edpaget/rdm/releases/latest/download/install.sh | sh
 
 # Pin a specific release
-curl -fsSL https://github.com/edpaget/rdm/releases/download/v0.6.2/install.sh | sh
+curl -fsSL https://github.com/edpaget/rdm/releases/download/v0.18.2/install.sh | sh
 
 # Homebrew (macOS)
 brew install edpaget/rdm/rdm-cli
@@ -31,7 +31,18 @@ npm install -g @edpaget/rdm       # or install globally so `rdm` is on PATH
 cargo install --path rdm-cli
 ```
 
-Open your coding assistant and ask it to run `rdm --help` and initialize the tool. Tell it whether you want to use the CLI or MCP server so it installs the correct prompts and configuration.
+### Wire it into your coding assistant
+
+For Claude Code, install the plugin — it is the recommended distribution path and needs no per-project file generation:
+
+```bash
+claude plugin marketplace add edpaget/rdm
+claude plugin install rdm@rdm
+```
+
+This installs 11 skills (`rdm:roadmap`, `rdm:do`, `rdm:dispatch-phase`, …) and 2 workflow engines, namespaced so they cannot collide with your own. The skills invoke the `rdm` binary you installed above via `PATH`; see [Claude Code Plugin Marketplace](#claude-code-plugin-marketplace-recommended) for overriding that and for the fallback path.
+
+For other assistants, or if you cannot use the plugin marketplace, ask your assistant to run `rdm --help` and initialize the tool. Tell it whether you want to use the CLI or MCP server so it installs the correct prompts and configuration.
 
 ### Manual Initialization
 
@@ -85,7 +96,15 @@ claude plugin marketplace add edpaget/rdm
 claude plugin install rdm@rdm
 ```
 
-This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, `rdm:do`, etc.) and 2 workflow engines, with automatic namespace prefixing and workflow discovery. The plugin shims handle `rdm` binary resolution at runtime via the `--rdm-bin` flag, the `RDM_BIN` environment variable, or PATH lookup — supply one of these options to resolve the binary.
+This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, `rdm:do`, etc.) and 2 workflow engines, with automatic namespace prefixing and workflow discovery.
+
+The plugin shims resolve the `rdm` binary at runtime, using the first of these that resolves:
+
+1. an explicitly supplied `--rdm-bin <path>`;
+2. the `RDM_BIN` environment variable;
+3. a plain `rdm` on `PATH`.
+
+So a normally installed `rdm` needs no configuration — the flag and env var are overrides for a non-`PATH` binary (a repo-local build, say). If none resolves, the shim stops with an actionable error rather than guessing a path.
 
 **This is the recommended distribution path for downstream consumers.**
 
@@ -104,11 +123,11 @@ rdm agent-config claude --skills --project fbm --out ~/Projects/fbm
 rdm agent-config pi --skills --project fbm --out ~/Projects/fbm
 ```
 
-The raw skills emission (`--skills --out <dir>`) is a fallback for environments without plugin marketplace access. It emits 11 skills and 2 workflow engines to a target directory with no collision protection or namespace prefixing, requiring manual binary path resolution and workflow discovery.
+The raw skills emission (`--skills --out <dir>`) is a fallback for environments without plugin marketplace access. It emits the same 11 skills and 2 workflow engines to a target directory, but as 13 loose file copies with no collision protection and no namespace prefixing, and you manage workflow discovery yourself. The emitted shims bake in the `--project` you passed and invoke a bare `rdm`, so they assume rdm is on `PATH`; unlike the plugin shims they carry no `--rdm-bin`/`RDM_BIN` resolution section.
 
 rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), reviewing a plan before implementation begins (`rdm-plan-review`), implementation and task work (`rdm-do`), review (`rdm-review`), acting on document reviews that request changes (`rdm-revise`) — which works a submitted review comment by comment, applying edits through rdm and landing each with `rdm commit`, recording per-comment commit provenance until the review is `addressed` — documentation generation (`rdm-document`), autonomous roadmap execution (`rdm-autopilot`) — which drives one roadmap to `reviewed` unattended (see [`docs/autonomous-loop.md`](docs/autonomous-loop.md)) — and landing (`rdm-land`), which integrates a reviewed item into `main` with linear history and then prunes its worktree (see [`docs/landing.md`](docs/landing.md)). There is also backlog grooming (`rdm-backlog`), a propose-only pass that reads `rdm backlog report` and emits a batched, human-reviewable plan of consolidate/merge/retire/archive actions — each paired with the exact `rdm` command that would carry it out — without mutating the plan repo. The same skill set is emitted for Pi under `.pi/skills/`.
 
-For Claude Code, `--skills --out <dir>` also writes a `.claude/workflows/` directory alongside `.claude/skills/`, containing the Claude Code Workflow-tool scripts (`rdm-wf-dispatch-phase.js`, `rdm-wf-review-refute-fix.js`) that back the autonomous `rdm-autopilot`/`rdm-dispatch-phase` lane. Both scripts are project- and binary-agnostic: they name no rdm executable and no rdm project of their own, taking a **required** `rdmBin` runtime argument (the exact executable to invoke — pass the sentinel `"rdm"` to opt into `PATH` resolution) and an optional `project` applied only to project-scoped subcommands. The emitted skill shims that invoke them still carry rdm's own dogfood values, so adjust those two arguments for the target repo. This is Claude-only (Pi has no Workflow-tool runtime) and only applies with `--out` (not `--user`, since the scripts are project-scoped).
+For Claude Code, `--skills --out <dir>` also writes a `.claude/workflows/` directory alongside `.claude/skills/`, containing the Claude Code Workflow-tool scripts (`rdm-wf-dispatch-phase.js`, `rdm-wf-review-refute-fix.js`) that back the autonomous `rdm-autopilot`/`rdm-dispatch-phase` lane. Both scripts are project- and binary-agnostic: they name no rdm executable and no rdm project of their own, taking an optional `rdmBin` runtime argument (the exact executable to invoke — an explicit value is used verbatim, and omitting it falls back to a plain `rdm` on `PATH`) and an optional `project` applied only to project-scoped subcommands — the emitted skill shims supply both from the `--project` you passed at emission time. This is Claude-only (Pi has no Workflow-tool runtime) and only applies with `--out` (not `--user`, since the scripts are project-scoped).
 
 #### Plan-review Stop hook (retired)
 

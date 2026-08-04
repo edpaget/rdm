@@ -139,20 +139,22 @@ Official precedent: `claude-security` plugin uses `Workflow({ name: "claude-secu
 
 **Decision:** Shims must resolve `rdmBin` and optional `project` arguments for the engines.
 
-Workflow engines (e.g., `rdm-wf-dispatch-phase.js`) require these arguments:
+Workflow engines (e.g., `rdm-wf-dispatch-phase.js`) accept these arguments:
 
-- **`rdmBin` (REQUIRED):** Path to the rdm binary. No ambient fallback; an absent key throws before the first `agent()` call.
+- **`rdmBin` (OPTIONAL):** Path to the rdm binary. An absent key defaults to a plain `rdm` on `PATH`; an explicit string is used verbatim, and the sentinel `"rdm"` requests PATH resolution deliberately. A present-but-non-string value still throws, since degrading a typo to PATH would reintroduce the silent-wrong-binary hazard. The engine never probes the filesystem. Canonical contract: [`docs/workflow-schemas.md`](workflow-schemas.md) § "Environment args: `rdmBin` and `project`".
 - **`project` (OPTIONAL):** The rdm project name. If absent, rdm uses `RDM_PROJECT` environment variable or the `default_project` configured in `rdm.toml`.
+
+This reverses an earlier fail-closed stance recorded in this document. That stance guarded a real hazard — inside the rdm source repo a bare `rdm` is a stale installed build the development-build rule forbids — but the hazard is dogfood-scoped, and a plugin consumer has no repo-local build path to pass. The compensating control now lives where the hazard does: `RDM_BIN` in this repo's `.mise.toml` pins the local development build and the calling skill resolves it, gated by `scripts/verify-workflow-dispatch.sh` § 9c-dogfood.
 
 ### Resolution Strategy for Plugin-Installed Shims
 
-When rdm is installed as a plugin, the consumer tree has no repo-local `./target/debug/rdm` path. The emitted skill shim must resolve `rdmBin` at runtime using these strategies, in order of precedence:
+When rdm is installed as a plugin, the consumer tree has no repo-local `./target/debug/rdm` path. The emitted skill shim carries a "Resolving `rdmBin` (plugin install)" section resolving it at runtime using these strategies, in order of precedence:
 
 1. **Explicit `--rdm-bin` CLI flag** (if the skill supports it): Consumer passes the path explicitly.
 2. **`RDM_BIN` environment variable:** Consumer has set `RDM_BIN=/path/to/rdm` in their environment.
 3. **`rdm` in `PATH`:** Shim executes `rdm` directly, relying on PATH lookup (requires global installation or consumer having rdm in PATH).
 
-If all strategies fail, the shim must emit a **clear, actionable error message:**
+Strategy 3 is also the engine's own default for an omitted `rdmBin`, so a normally installed rdm needs no configuration — strategies 1 and 2 are overrides for a binary that is not on `PATH`. If all strategies fail, the shim must emit a **clear, actionable error message:**
 
 ```
 Error: rdm binary not found. Install rdm, then set RDM_BIN=/path/to/rdm, put rdm on your PATH, or pass --rdm-bin /path/to/rdm.
@@ -171,7 +173,7 @@ If rdm cannot resolve the project, it emits a clear error message directing the 
 ### Notes on Implementation
 
 - The skill shim (e.g., `rdm-dispatch-phase`) is generated in Phase 2 and must contain the `rdmBin` resolution logic at the point where it invokes the Workflow tool.
-- This does not change the Workflow engines themselves (e.g., `rdm-wf-dispatch-phase.js`). They continue to fail fast if `rdmBin` is missing, exactly as they do in the raw-skills distribution.
+- This does not change the Workflow engines themselves (e.g., `rdm-wf-dispatch-phase.js`). They treat `rdmBin` identically in the plugin and raw-skills distributions: absent means a plain `rdm` on `PATH`, and only a non-string value is refused.
 - Error messages must be tested as part of Phase 3's integration tests (the harness that validates plugin installation and command execution).
 
 ## Fixed Plugin Layout
@@ -268,7 +270,7 @@ This convention keeps documentation independent of the distribution channel. A c
 | **Skill names** | Drop `rdm-` → `rdm:roadmap` | Plugin namespace provides collision protection; reduces verbosity; aligns with thin-shim naming. |
 | **Engine names** | Keep `rdm-wf-` → `/rdm:rdm-wf-dispatch-phase` | Preserves disjointness invariant; requires zero source-tree changes; all existing gates pass unchanged. |
 | **Shim invocation** | Namespaced form: `Workflow({ name: "rdm:rdm-wf-dispatch-phase" })` | Idiomatic for Claude Code plugins; native Workflow-tool support; reduces file-system coupling. |
-| **rdmBin resolution** | Required; resolve via flag, env var, PATH, or standard locations; fail with actionable error if not found. | Enables plugin use in environments without repo-local binaries; clear error message guides consumer setup. |
+| **rdmBin resolution** | Optional, defaulting to `rdm` on PATH; shim resolves via flag, then env var, then PATH; fail with actionable error if none resolves. | Enables plugin use in environments without repo-local binaries; PATH is the right answer for nearly every consumer, and the flag/env var cover the rest. |
 | **Disambiguator** | `rdm-wf-` prefix survives | Prevents collision between `rdm-dispatch-phase` skill and `rdm-wf-dispatch-phase` engine. |
 
 ## Marketplace Distribution
