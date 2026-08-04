@@ -1672,7 +1672,7 @@ already apply to `rdm-wf-review-refute-fix` / `rdm-wf-estimate` and to the prose
 
 | arg       | required | shape                                            | applies to |
 | --------- | -------- | ------------------------------------------------ | ---------- |
-| `rdmBin`  | **yes**  | non-empty, non-whitespace string                 | every emitted `rdm` invocation |
+| `rdmBin`  | no (defaults to `rdm`) | non-empty, non-whitespace string; absent → a plain `rdm` on `PATH`; a present-but-non-string value throws | every emitted `rdm` invocation |
 | `project` | no       | plain name matching `/^[A-Za-z0-9._-]+$/`, or absent | PROJECT-SCOPED subcommands only |
 
 An emit-time `{rdm_bin}` placeholder is not workable here:
@@ -1700,54 +1700,83 @@ checks each against the allow-list expressed **as data** — flag present iff th
 subcommand is not on the list, and zero `--project` occurrences at all when no
 project was configured.
 
-#### Why `rdmBin` is fail-closed, with no ambient default
+#### Why `rdmBin` defaults to `rdm`, and how this repo overrides it
 
-`resolveRdmBin(value)` has exactly two states: it returns a non-empty string
-verbatim, or it **throws**. There is deliberately no PATH fallback for an absent
-key:
+`resolveRdmBin(value)` has three states: it returns a non-empty string
+**verbatim**, it returns a plain `'rdm'` for an **absent** value (`undefined`,
+`null`, `''`, whitespace-only), or it **throws** on a present-but-wrong-**type**
+value (`42`, `{}`, `[]`, `true`).
 
-- A default of bare `rdm` would silently run whichever global rdm is first on
-  `PATH`. In the rdm repo itself that is a stale installed build, which the
-  project's development-build rule forbids.
-- An **existence preflight does not close this**. `which -a rdm` resolves to the
-  stale global, so the check passes while running exactly the wrong binary.
-  `verify-workflow-dispatch.sh` § 9c greps (over non-comment lines) to prove the
-  guard was not implemented that way.
-- An identity check against a caller-supplied path is not viable either: in the
-  case being guarded the caller supplied **nothing**, so there is no path to
-  compare against — and detecting "we are in the rdm repo" is precisely the
-  repo-specific knowledge this parameterization removes.
+The shipped default is a plain `rdm` on `PATH`. A consumer who installs the
+`rdm` plugin has no repo-local build path to pass, and `PATH` is the right answer
+for essentially all of them, so a required arg made every downstream consumer pay
+for a hazard that belongs to exactly one repo.
 
-A caller that genuinely wants `PATH` resolution opts in **explicitly** by
-passing the sentinel `rdmBin: 'rdm'`, which is accepted verbatim. Validation
-runs inside `parseDispatchArgs`, which the driver executes as its very first
-statement, so a mis-invocation throws before any `agent()` call and costs zero
-tokens (the same discipline as `parseBudget`).
+That hazard is real, and it is **dogfood-scoped**: inside the rdm repo a bare
+`rdm` is a stale installed build, which the project's development-build rule
+forbids. The compensating control therefore lives where the hazard does —
+`RDM_BIN = "{{config_root}}/target/debug/rdm"` in this repo's `.mise.toml`,
+beside `RDM_ROOT`/`RDM_PROJECT`. `verify-workflow-dispatch.sh` § 9c-dogfood gates
+that entry (with planted-mutation self-tests for a deleted line and for a
+downgrade to the bare `rdm` default), so the control cannot silently rot.
 
-**A fail-closed required arg obliges rewiring every caller in the same change
-that makes it required.** Because there is no ambient default, a caller left
-un-threaded does not degrade — it throws on first dispatch. The verified callers
-of the `rdm-wf-dispatch-phase` Workflow are `.claude/skills/rdm-dispatch-phase`,
-`.claude/skills/rdm-do` (both `--auto` flows), `.claude/skills/rdm-autopilot`,
-and the shipped `skill-dispatch-phase-{cli,mcp}.md` /
-`skill-do-{cli,mcp}.md` / `skill-autopilot-{cli,mcp}.md` templates. All of them
-pass `rdmBin`, asserted per-shim by `verify-workflow-do-auto.sh`,
-`verify-workflow-do-auto-task.sh`, `verify-skill-autopilot.sh`, and
-`verify-agent-config-distribution.sh` § 6d, each with a planted-removal
-self-test. The MCP shims are included on purpose: an MCP shim runs no CLI
-commands of its own, but the workflow it invokes still shells out through Bash
-agents, so omitting `rdmBin` "because MCP" would hard-break the downstream MCP
-lane on first dispatch.
+Two rules survive the reversal unchanged:
+
+- **An existence preflight is still forbidden.** The default must be a plain
+  fallback, never a probe. `which -a rdm` resolves to the stale global, so a
+  probe passes while running exactly the wrong binary — it would hide the
+  dogfood hazard rather than close it. `verify-workflow-dispatch.sh` § 9c greps
+  (over non-comment lines) across every `resolveRdmBin`-bearing copy to prove no
+  copy was implemented that way, with a planted-probe self-test.
+- **An explicitly passed value still wins verbatim**, and the sentinel
+  `rdmBin: 'rdm'` remains valid — it requests `PATH` resolution deliberately
+  rather than falling into the default branch. A trailing-space assertion in
+  § 9c keeps the two paths discriminable.
+
+The wrong-type throw is deliberate: degrading a `rdmBin: 42` typo to `PATH` would
+reintroduce exactly the silent-wrong-binary failure the absent-value default does
+not need. Validation still runs inside `parseDispatchArgs`, which the driver
+executes as its very first statement, so a mis-typed payload costs zero tokens
+(the same discipline as `parseBudget`).
+
+**Where `$RDM_BIN` is actually read.** Not here. The Workflow runtime has no
+filesystem and no environment access, so no workflow JS reads `process.env` —
+`verify-workflow-dispatch.sh` § 9c-inventory asserts this across every
+`resolveRdmBin`-bearing file, with a planted `process.env.RDM_BIN` self-test.
+Resolution happens in the **calling skill**, a live agent with Bash, which passes
+the result down as an argument; the JS-side change is only the absent-value
+default. `PLUGIN_RDM_BIN_NOTE` in `rdm-core/src/agent_config.rs` is the canonical
+statement of the three-step order (`--rdm-bin` → `RDM_BIN` → `rdm`) and is
+appended to every emitted plugin skill whose body mentions `rdmBin`; the base
+skill templates state the default and point at it rather than restating the
+order, so the two cannot drift.
+
+**Every caller still threads `rdmBin`, and every per-shim assertion stays.** What
+changed is the consequence of omitting it: an un-threaded caller now **degrades**
+to a `PATH`-resolved `rdm` rather than hard-breaking on first dispatch. In this
+repo that degradation is the wrong-binary hazard above, which is why the per-shim
+greps are worth keeping — they now guard a silent-wrong-binary failure rather
+than a loud one. The verified callers of the `rdm-wf-dispatch-phase` Workflow are
+`.claude/skills/rdm-dispatch-phase`, `.claude/skills/rdm-do` (both `--auto`
+flows), `.claude/skills/rdm-autopilot`, and the shipped
+`skill-dispatch-phase-{cli,mcp}.md` / `skill-do-{cli,mcp}.md` /
+`skill-autopilot-{cli,mcp}.md` templates. All of them pass `rdmBin`, asserted
+per-shim by `verify-workflow-do-auto.sh`, `verify-workflow-do-auto-task.sh`,
+`verify-skill-autopilot.sh`, and `verify-agent-config-distribution.sh` § 6d, each
+with a planted-removal self-test. The MCP shims are included on purpose: an MCP
+shim runs no CLI commands of its own, but the workflow it invokes still shells
+out through Bash agents, so `rdmBin` remains meaningful there.
 
 The `rdm-autopilot` shims were originally in that list only because of the
 fail-closed rule on the one `rdm-wf-dispatch-phase` call payload. Their own
 drive-loop prose has since been de-literalized too (phase 10 of
-`project-agnostic-lane`): the skill parses a required `--rdm-bin <path>` and an
-optional `--project <name>` and threads them through every Bash step it runs
-itself, as well as into both the `rdm-wf-estimate` and `rdm-wf-dispatch-phase`
-payloads. `verify-skill-autopilot.sh` bounds both directions — it asserts each
-payload carries `rdmBin`, and asserts the skill carries zero binary/project
-literals of its own.
+`project-agnostic-lane`): the skill parses an **optional** `--rdm-bin <path>`
+(there is no pre-flight stop for it — the missing-roadmap-slug stop is unrelated
+and stays) and an optional `--project <name>`, and threads them through every
+Bash step it runs itself, as well as into both the `rdm-wf-estimate` and
+`rdm-wf-dispatch-phase` payloads. `verify-skill-autopilot.sh` bounds both
+directions — it asserts each payload carries `rdmBin`, and asserts the skill
+carries zero binary/project literals of its own.
 
 #### The other two engines: `rdm-wf-review-refute-fix` and `rdm-wf-estimate`
 
@@ -1867,9 +1896,10 @@ classification rule behind them, and the measured delta live in
 | `rdm-wf-document` | `roadmapMeta` | `fetch:roadmap-meta` | object with `found === true` and an array `phases` |
 | `rdm-wf-review-refute-fix` | `diff` | `diff:signals` | object with an array `changedFiles` |
 
-`rdmBin` is **not** a hoist and is **not** optional — it is an environment arg
-with no fallback path at all (see "Environment args" above); `project` is
-optional but is likewise an environment arg rather than a mechanical-agent hoist.
+`rdmBin` is **not** a hoist — it is an environment arg, and it is optional: an
+absent value falls back to a plain `rdm` on `PATH` (see "Environment args"
+above). `project` is optional too and is likewise an environment arg rather than
+a mechanical-agent hoist.
 
 ### The invariant: every hoist is optional
 

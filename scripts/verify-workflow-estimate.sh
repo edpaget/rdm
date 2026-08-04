@@ -978,9 +978,12 @@ assert_shim_gathers() {
     # workflow-invocation arg object, so a single stray mention cannot satisfy it.
     [ "$(grep -cF 'mechanicalModel' "$1")" -ge 2 ] || return 1
     [ "$(grep -cF 'phaseList' "$1")" -ge 2 ] || return 1
-    # ENVIRONMENT ARGS (§ 9): `rdmBin` is fail-closed and REQUIRED, so a shim
-    # that omits it hard-errors on first dispatch instead of degrading. Both
-    # keys are named in the config bullet AND in the invocation payload.
+    # ENVIRONMENT ARGS (§ 9): `rdmBin` now DEFAULTS to a plain `rdm` on PATH, so
+    # a shim that omits it degrades silently to whatever global rdm is first on
+    # PATH — inside this repo, the stale build the development-build rule
+    # forbids. That is why this check survives the contract reversal unchanged:
+    # it guards a silent wrong-binary failure rather than a loud one. Both keys
+    # are named in the config bullet AND in the invocation payload.
     grep -qF 'rdmBin' "$1" || return 1
     grep -qF 'project' "$1" || return 1
     [ "$(grep -cF 'rdmBin' "$1")" -ge 2 ] || return 1
@@ -1200,7 +1203,7 @@ else
 fi
 
 # --- 9c. Fail-closed rdmBin ---------------------------------------------------
-say "9c. Fail-closed rdmBin: an absent arg throws, and the guard is not an existence preflight"
+say "9c. Defaulted rdmBin: an absent arg resolves to a plain 'rdm', a wrong-TYPE arg still throws, and neither is an existence preflight"
 
 cat >"$TMP/rdmbin.mjs" <<'NODE_RDMBIN'
 import assert from 'node:assert/strict';
@@ -1212,34 +1215,48 @@ const libPath = process.argv[2];
 const wfPath = process.argv[3];
 const { parseEstimateArgs, projectFlag, resolveRdmBin, parseProjectArg } = await import('file://' + libPath);
 
-// (1) The ABSENCE of the argument is what throws — not the unresolvability of a
-// path. An existence preflight cannot express this: the stale global rdm this
-// rule exists to block EXISTS, so `which rdm` would pass.
-for (const bad of [undefined, null, '', '   ', '\t', 42, {}, [], true]) {
+// (1a) An ABSENT-ish value DEFAULTS to a plain `rdm` on PATH. A plugin-installed
+// consumer has no repo-local build path to pass; this repo's own stale-global
+// hazard is handled by RDM_BIN in .mise.toml (gated by
+// verify-workflow-dispatch.sh § 9c-dogfood), not by refusing to resolve.
+for (const absent of [undefined, null, '', '   ', '\t']) {
+  assert.equal(resolveRdmBin(absent), 'rdm', 'an absent rdmBin (' + JSON.stringify(absent) + ') must default to "rdm"');
+  assert.equal(
+    parseEstimateArgs({ roadmap: 'rm', rdmBin: absent }).rdmBin,
+    'rdm',
+    'parseEstimateArgs must default an absent rdmBin (' + JSON.stringify(absent) + ') to "rdm"'
+  );
+}
+assert.equal(parseEstimateArgs({ roadmap: 'rm' }).rdmBin, 'rdm', 'a missing rdmBin key defaults to "rdm"');
+assert.equal(parseEstimateArgs(JSON.stringify({ roadmap: 'rm' })).rdmBin, 'rdm', 'a stringified payload defaults rdmBin to "rdm"');
+
+// (1b) A present-but-wrong-TYPE value STILL throws — degrading a `rdmBin: 42`
+// typo to PATH would reintroduce the silent-wrong-binary hazard.
+for (const bad of [42, {}, [], true]) {
   assert.throws(
     () => parseEstimateArgs({ roadmap: 'rm', rdmBin: bad }),
     /rdmBin/,
-    'an absent/empty/non-string rdmBin (' + JSON.stringify(bad) + ') must throw'
+    'a non-string rdmBin (' + JSON.stringify(bad) + ') must still throw'
   );
 }
-assert.throws(() => parseEstimateArgs({ roadmap: 'rm' }), /rdmBin/, 'a missing rdmBin key must throw');
-assert.throws(() => parseEstimateArgs(JSON.stringify({ roadmap: 'rm' })), /rdmBin/, 'a stringified payload must still require rdmBin');
 
-// ORDERING: the pre-existing required-roadmap throw still runs FIRST, so the
-// most common mis-invocation keeps its actionable message rather than being
-// masked by the newer rdmBin error.
+// ORDERING: the pre-existing required-roadmap throw still runs FIRST. This
+// assertion is UNCHANGED and deliberately kept: it now holds for a weaker
+// reason (an absent rdmBin no longer competes to throw at all), but it is the
+// only guard that the far more common missing-roadmap mis-invocation keeps its
+// actionable message, and it must not be collateral damage of the rdmBin edit.
 assert.throws(() => parseEstimateArgs({}), /roadmap slug is required/, 'a payload missing BOTH reports the roadmap first');
 assert.throws(() => parseEstimateArgs({ rdmBin: 'rdm' }), /roadmap slug is required/, 'roadmap is still checked first');
 
-// The error must be actionable: it names the sentinel opt-in and says why no
-// default is chosen.
+// The wrong-TYPE error must stay actionable: it names the sentinel and the
+// default that omitting the arg entirely would take.
 try {
-  parseEstimateArgs({ roadmap: 'rm' });
+  parseEstimateArgs({ roadmap: 'rm', rdmBin: 42 });
   assert.fail('expected a throw');
 } catch (e) {
-  assert.match(e.message, /rdmBin is required/, 'the message names the missing arg');
+  assert.match(e.message, /rdmBin must be a string/, 'the message names the type requirement');
   assert.match(e.message, /"rdm"/, 'the message names the explicit PATH sentinel');
-  assert.match(e.message, /PATH/, 'the message explains what an absent value would silently do');
+  assert.match(e.message, /PATH/, 'the message names what omitting the arg entirely does');
 }
 
 // (2) The explicit sentinel is accepted VERBATIM — a downstream repo that wants
@@ -1247,6 +1264,9 @@ try {
 assert.equal(parseEstimateArgs({ roadmap: 'rm', rdmBin: 'rdm' }).rdmBin, 'rdm', "the 'rdm' sentinel is accepted verbatim");
 assert.equal(parseEstimateArgs({ roadmap: 'rm', rdmBin: '/opt/x/rdm' }).rdmBin, '/opt/x/rdm', 'an absolute path is accepted verbatim');
 assert.equal(resolveRdmBin('rdm'), 'rdm', 'resolveRdmBin passes the sentinel through');
+// DISCRIMINATING: the sentinel path is VERBATIM pass-through, not the default
+// branch — a trailing space survives, which `return 'rdm'` could not produce.
+assert.equal(resolveRdmBin('rdm '), 'rdm ', 'a non-empty value is returned verbatim, not normalized to the default');
 
 // (3) `project` is OPTIONAL, falsy means NO flag, and a hostile value is
 // rejected rather than escaped (it is interpolated into a Bash-agent prompt).
@@ -1263,32 +1283,61 @@ for (const hostile of ['a b', 'a;rm -rf /', '$(x)', '`x`', 'a\nb', 'a|b', 7, {}]
 }
 assert.equal(parseEstimateArgs({ roadmap: 'rm', rdmBin: 'rdm', project: 'rdm-atlas.v2_x' }).project, 'rdm-atlas.v2_x', 'a plain project name survives');
 
-// (4) The throw happens BEFORE any agent() call — driving the wrapped workflow
-// with no rdmBin must reject rather than run, and must not have spawned a
-// single agent.
+// (4) Driving the wrapped workflow with NO rdmBin must now RESOLVE, and every
+// rdm command it emits must name the bare `rdm` default — never a repo-local
+// build path leaking back in as a hardcoded literal.
 const src = fs.readFileSync(wfPath, 'utf8').replace(/^export /m, '');
 const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-estimate-rdmbin-wrapped.mjs');
 fs.writeFileSync(wrapperPath, 'export default async function(args, agent, parallel, log) {\n' + src + '\n}\n');
 const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
+const PHASES = [{ number: 1, stem: 'phase-1-x', title: 'X', status: 'not-started' }];
+const prompts = [];
 let agentCalls = 0;
-const spy = async () => {
+const spy = async (prompt, opts) => {
   agentCalls++;
+  prompts.push(String(prompt));
+  const label = (opts && opts.label) || '';
+  if (label === 'model:mechanical') return { model: 'm-mech' };
+  if (label === 'estimate:list') return { phases: PHASES };
+  if (label.startsWith('estimate:rate:')) {
+    return { stem: label.slice('estimate:rate:'.length), difficulty: 'moderate', justification: 'j' };
+  }
+  if (label.startsWith('estimate:write:')) return { ok: true };
+  if (label.startsWith('estimate:tier:')) return { model: 'medium' };
   return null;
 };
-await assert.rejects(
-  () => mod.default({ roadmap: 'rm' }, spy, async () => [], () => {}),
-  /rdmBin/,
-  'a direct Workflow invocation with no rdmBin must reject, not silently run a global rdm'
-);
-assert.equal(agentCalls, 0, 'the rdmBin throw must precede every agent() call — a mis-invocation costs zero tokens');
+const refParallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+const out = await mod.default({ roadmap: 'rm' }, spy, refParallel, () => {});
+assert.ok(out !== undefined, 'a Workflow invocation with no rdmBin must resolve, not throw');
+assert.ok(agentCalls > 0, 'the run must actually have dispatched agents — otherwise this assertion is vacuous');
 
-console.log('all fail-closed rdmBin assertions passed');
+// Same command-line filter as § 9b: only indented or backtick-quoted lines are
+// invocations; flush-left prose merely naming the tool is not.
+const INVOCATION = /(^|[\s`])((?:[^\s`]*\/)?rdm)\s+[a-z][a-z-]*/g;
+let invocations = 0;
+for (const p of prompts) {
+  for (const line of p.split('\n')) {
+    if (!(/^\s{2,}\S/.test(line) || line.includes('`'))) continue;
+    INVOCATION.lastIndex = 0;
+    let m;
+    while ((m = INVOCATION.exec(line)) !== null) {
+      invocations++;
+      assert.equal(m[2], 'rdm', 'an emitted command used ' + m[2] + ' instead of the bare `rdm` default: ' + line);
+    }
+  }
+}
+assert.ok(invocations > 0, 'the scan found no rdm invocations at all — it cannot pass vacuously');
+for (const p of prompts) {
+  assert.ok(!p.includes('./target/debug/rdm'), 'a repo-local build path leaked into a prompt under the bare default');
+}
+
+console.log('all defaulted rdmBin assertions passed');
 NODE_RDMBIN
 
 if run_node "$TMP/rdmbin.mjs" "$LIB" "$WF"; then
-    pass "9c: rdmBin is fail-closed (absent/empty/non-string throws before any agent call); the 'rdm' sentinel opts into PATH explicitly; project is validated"
+    pass "9c: rdmBin defaults to a bare 'rdm' when absent (every emitted command uses it), a wrong-TYPE value still throws, the 'rdm' sentinel passes through verbatim, the roadmap throw still runs first, and project is validated"
 else
-    fail "9c: fail-closed rdmBin assertions failed"
+    fail "9c: defaulted rdmBin assertions failed"
 fi
 
 # The guard must NOT be an existence preflight. `which -a rdm` resolves to the

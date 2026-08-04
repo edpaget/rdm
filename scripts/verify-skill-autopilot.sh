@@ -239,9 +239,12 @@ grep -q '^name: rdm-autopilot$' "$AP_MUT_B_DIR/SKILL.md" &&
 pass "3a self-test B: a renamed skill directory and frontmatter name correctly turn half (b) red"
 
 # PER-CALLER rdmBin/project assertion (project-agnostic-lane, phase 10).
-# dispatch-phase's `rdmBin` arg is REQUIRED and FAIL-CLOSED: there is no
-# ambient/PATH fallback, so a caller that passes no `rdmBin` throws before the
-# workflow's first agent() call. This skill IS such a caller, so its
+# dispatch-phase's `rdmBin` arg now DEFAULTS to a plain `rdm` on PATH, so a
+# caller that passes none no longer throws — it silently runs whichever global
+# rdm is first on PATH, which inside this repo is the stale build the
+# development-build rule forbids. The assertion therefore survives the contract
+# reversal unchanged; only the consequence it guards did. This skill IS such a
+# caller, so its
 # dispatch-phase invocation line must carry both keys. Phase 10 de-literalized
 # the local loop entirely, so the payload now carries BARE `rdmBin`/`project`
 # variable names (resolved from this skill's own `--rdm-bin`/`--project` args
@@ -256,7 +259,7 @@ assert_autopilot_dispatch_rdmbin() {
     return 0
 }
 assert_autopilot_dispatch_rdmbin "$SKILL" ||
-    fail "the dispatch-phase invocation line must pass bare rdmBin/project keys — dispatch-phase requires rdmBin and errors without it (no PATH fallback)"
+    fail "the dispatch-phase invocation line must pass bare rdmBin/project keys — omitting rdmBin silently falls back to a PATH-resolved rdm, which is the wrong binary in this repo"
 pass "the dispatch-phase invocation line passes rdmBin and project"
 
 # Self-test: prove the assertion is not vacuous.
@@ -268,8 +271,8 @@ pass "autopilot rdmBin detector fires on a mangled key"
 
 # NEW estimate-payload assertion (project-agnostic-lane, phase 10): the
 # `rdm-wf-estimate` Workflow invocation line must ALSO carry both rdmBin and project —
-# rdm-wf-estimate.js's own parseEstimateArgs validates them via
-# resolveRdmBin/parseProjectArg, same fail-closed contract as dispatch-phase.
+# rdm-wf-estimate.js's own parseEstimateArgs resolves them via
+# resolveRdmBin/parseProjectArg, same defaulting contract as dispatch-phase.
 # Line-scoped, mirroring the dispatch-phase assertion above.
 assert_autopilot_estimate_rdmbin() {
     grep -F 'estimate` Workflow**' "$1" >"$TMP/ap-estimate-line" 2>/dev/null || return 1
@@ -279,7 +282,7 @@ assert_autopilot_estimate_rdmbin() {
     return 0
 }
 assert_autopilot_estimate_rdmbin "$SKILL" ||
-    fail "the estimate invocation line must pass rdmBin and project — rdm-wf-estimate.js requires rdmBin and errors without it (no PATH fallback)"
+    fail "the estimate invocation line must pass rdmBin and project — omitting rdmBin silently falls back to a PATH-resolved rdm, which is the wrong binary in this repo"
 pass "the estimate invocation line passes rdmBin and project"
 
 # Self-test: prove the estimate assertion is not vacuous.
@@ -288,6 +291,36 @@ if assert_autopilot_estimate_rdmbin "$TMP/ap-estimate-mutant.md"; then
     fail "the autopilot estimate rdmBin detector missed a mangled key — the check is vacuous"
 fi
 pass "autopilot estimate rdmBin detector fires on a mangled key"
+
+# NO PRE-FLIGHT STOP ON A MISSING --rdm-bin (plugin-distribution, phase 6).
+# `rdmBin` is optional now and defaults to a plain `rdm` on PATH, so the loop
+# must NOT refuse to start when `--rdm-bin` is absent. The missing-ROADMAP-SLUG
+# stop is unrelated and must survive — this pairs a negative with a positive so
+# a blanket deletion of the whole pre-flight paragraph cannot go green.
+assert_no_rdm_bin_preflight_stop() {
+    grep -inE '(--)?rdm-?bin' "$1" |
+        grep -iE 'missing.*stop|stop.*missing|Missing +→' >"$TMP/ap-preflight-hits" 2>/dev/null || true
+    [ ! -s "$TMP/ap-preflight-hits" ]
+}
+if ! assert_no_rdm_bin_preflight_stop "$SKILL"; then
+    cat "$TMP/ap-preflight-hits" >&2
+    fail "SKILL.md still refuses to start on a missing --rdm-bin — the arg is optional now and defaults to a plain 'rdm'"
+fi
+grep -qF 'required roadmap slug' "$SKILL" ||
+    fail "the missing-ROADMAP-SLUG pre-flight stop must SURVIVE — only the --rdm-bin stop was retired"
+pass "no missing---rdm-bin pre-flight stop remains, and the roadmap-slug stop survives"
+
+# Self-test: re-insert the retired stop and the detector must fire.
+cp "$SKILL" "$TMP/ap-preflight-mutant.md"
+# shellcheck disable=SC2016  # literal prose, deliberately unexpanded
+printf '\nIf `--rdm-bin` is missing, stop before invoking anything and say so.\n' >>"$TMP/ap-preflight-mutant.md"
+if cmp -s "$SKILL" "$TMP/ap-preflight-mutant.md"; then
+    fail "the pre-flight-stop mutation did not apply — the self-test is not exercising anything"
+fi
+if assert_no_rdm_bin_preflight_stop "$TMP/ap-preflight-mutant.md"; then
+    fail "the pre-flight-stop detector missed a re-inserted missing---rdm-bin stop — the gate is vacuous"
+fi
+pass "the pre-flight-stop detector fires on a re-inserted missing---rdm-bin stop"
 
 # ZERO-LITERAL assertion (project-agnostic-lane, phase 10): the local drive
 # loop's own Bash steps (`rdm next`, advance/park, model resolve, phase list,

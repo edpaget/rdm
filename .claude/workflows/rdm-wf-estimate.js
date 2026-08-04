@@ -73,15 +73,22 @@ function projectFlag(cfg) {
   return cfg && cfg.project ? ' --project ' + cfg.project : '';
 }
 
-// resolveRdmBin(value) — FAIL-CLOSED resolution of the rdm executable to
-// invoke. No ambient/PATH fallback: a caller that wants PATH resolution opts in
-// explicitly with the sentinel `rdmBin: 'rdm'`, accepted verbatim.
+// resolveRdmBin(value) — resolve the rdm executable to invoke. An ABSENT value
+// DEFAULTS to a plain `rdm` on PATH, because a plugin-installed consumer has no
+// repo-local build path to pass. The stale-global-build hazard the earlier
+// fail-closed stance guarded is real but DOGFOOD-SCOPED to this repo, where
+// `RDM_BIN` in `.mise.toml` (gated by verify-workflow-dispatch.sh § 9c-dogfood)
+// is the compensating control the calling skill resolves. A present-but-wrong-
+// TYPE value still throws rather than silently degrading to PATH. No existence
+// preflight — a plain fallback only. See docs/workflow-schemas.md § "Environment
+// args: `rdmBin` and `project`" for the full contract and resolution order.
 function resolveRdmBin(value) {
   if (typeof value === 'string' && value.trim() !== '') return value;
+  if (value === undefined || value === null || typeof value === 'string') return 'rdm';
   throw new Error(
-    'estimate: rdmBin is required — pass the exact rdm executable to invoke (a repo-local ' +
-      'build path, or the explicit sentinel "rdm" to opt into PATH resolution). Refusing to guess: ' +
-      'an absent rdmBin would silently run whatever global rdm is on PATH.'
+    'estimate: rdmBin must be a string path to the rdm executable (a repo-local build path, or ' +
+      'the sentinel "rdm" to request PATH resolution explicitly). Omit it entirely to default to ' +
+      '`rdm` on PATH; a non-string value is a caller bug and is refused rather than guessed.'
   );
 }
 
@@ -132,9 +139,9 @@ function parseEstimateArgs(args) {
   // statement because it has no earlier required field; estimate does, and a
   // payload missing BOTH should surface the actionable "a roadmap slug is
   // required" message for the far more common mis-invocation. Order among the
-  // two is still deterministic: rdmBin first (fail-closed — no ambient
-  // default), then the optional project name. Both are validated HERE, at parse
-  // time, so a mis-invocation costs zero tokens.
+  // two is still deterministic: rdmBin first (defaulting to `rdm` when absent),
+  // then the optional project name. Both are validated HERE, at parse time, so a
+  // mis-invocation costs zero tokens.
   const rdmBin = resolveRdmBin(a.rdmBin);
   const project = parseProjectArg(a.project);
   return { roadmap: roadmap, phase: phase, rdmBin: rdmBin, project: project };

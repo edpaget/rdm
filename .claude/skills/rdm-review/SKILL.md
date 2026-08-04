@@ -55,7 +55,7 @@ args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false,
 args: { mode: "code", task: "<slug>", gate: false, rdmBin: "./target/debug/rdm", project: "rdm", diff: <the object captured in step 3, or omitted> }
 ```
 
-`rdmBin` is REQUIRED on this path and the workflow errors without it — it names no rdm executable of its own and refuses to guess (pass the explicit sentinel `"rdm"` to opt into PATH resolution instead of a build path). `project` is optional and applies only to project-scoped subcommands.
+`rdmBin` is optional and defaults to a plain `rdm` on `PATH` when omitted — resolve an explicit `--rdm-bin <path>` first, then `$RDM_BIN` if set (this repo's `.mise.toml` sets it to `./target/debug/rdm`), then the default; an explicitly passed value always wins verbatim. Pass the development build here rather than relying on the default, per the development-build rule. `project` is optional and applies only to project-scoped subcommands.
 
 Always pass `gate: false` (or omit `gate`) — this skill owns the gate (step 5 below), never the workflow's own mechanical status-persist path, which is reserved for headless/ad hoc callers. The workflow returns the dispatch-shaped OUTCOME: `{ roadmap, phase, outcome, status, writesCompletion, summary, reason, findings }` (or `{ task, ... }`), with `outcome` ∈ `reviewed | rework | escalated` and `findings` already ranked survivors. Treat this as the one canonical review pass — do not additionally dispatch your own finder/refuter agents.
 

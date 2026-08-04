@@ -16,3 +16,8 @@ node = "24"
 RUSTFLAGS = "-D warnings"
 RDM_ROOT = "{{env.HOME}}/Projects/rdm-atlas-repo"
 RDM_PROJECT = "rdm"
+# Dogfood-only compensating control for `rdmBin` defaulting to a plain `rdm` on
+# PATH: inside this repo that default would be a stale global build, which the
+# development-build rule forbids. Skills resolve $RDM_BIN before invoking a
+# workflow. Gated by scripts/verify-workflow-dispatch.sh § 9c-dogfood.
+RDM_BIN = "{{config_root}}/target/debug/rdm"

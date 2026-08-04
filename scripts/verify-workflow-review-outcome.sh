@@ -188,7 +188,7 @@ pass "self-test: planted duplicate classifyOutcome( call site in the driver regi
 # Self-test B: planted duplicate buildReviewPipeline('code') BINDING.
 awk -v m="$MARKER_END" '
     { print }
-    $0 ~ m && !done { print "const _plantedRunReview = buildReviewPipeline(\x27code\x27)"; done = 1 }
+    $0 ~ m && !done { print "const _plantedRunReview = buildReviewPipeline(\047code\047)"; done = 1 }
 ' "$WF" >"$TMP/planted-dup2.js"
 extract_driver_region "$TMP/planted-dup2.js" >"$TMP/planted-dup2-region.js"
 DUP_PIPELINE=$(grep -cE "= *buildReviewPipeline\('code'\)" "$TMP/planted-dup2-region.js" | tr -d ' ')
@@ -267,11 +267,13 @@ async function refPipeline(items, ...stages) {
 }
 
 // The standalone code-review path shells out (worktree add; the optional gate's
-// phase/task update), so it requires the fail-closed `rdmBin` environment arg.
-// The two LEGACY survivors-only shapes below — run({ mode: 'plan' }) and
+// phase/task update), so it resolves the `rdmBin` environment arg — optional,
+// defaulting to a plain `rdm` on PATH. Every run here injects an explicit fake
+// binary so its assertions stay independent of the defaulting behavior § 6c
+// owns. The two LEGACY survivors-only shapes below — run({ mode: 'plan' }) and
 // run({ mode: 'code' }) with no item identifiers — deliberately do NOT get it:
-// they emit zero rdm invocations, so the rule has no referent there, and that
-// carve-out is asserted in both directions (see the fail-closed section).
+// they emit zero rdm invocations and never call resolveRdmBin, and that
+// carve-out is asserted in both directions (see the defaulted-rdmBin section).
 const RDM_BIN_ARG = '/fake/bin/rdm';
 
 const ALL_CODE_DIMS = ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'];
@@ -665,10 +667,12 @@ grep -qF 'git commit --amend' "$SKILL" ||
 grep -qE 'gate: ?false' "$SKILL" ||
     fail "$SKILL must invoke the workflow with gate: false — it must own its own gate, not delegate to the workflow's mechanical one"
 
-# ENVIRONMENT ARGS (§ 6): `rdmBin` is fail-closed and REQUIRED on the standalone
-# code-review path, so a shim that omits it hard-errors on first dispatch
-# instead of degrading. Occurrence floor of 2 because the phase and task
-# invocation shapes are separate arg lines and BOTH must carry it.
+# ENVIRONMENT ARGS (§ 6): `rdmBin` now DEFAULTS to a plain `rdm` on PATH, so a
+# shim that omits it degrades silently to whatever global rdm is first on PATH —
+# inside this repo, the stale build the development-build rule forbids. That is
+# why this check survives the contract reversal unchanged: it guards a silent
+# wrong-binary failure rather than a loud one. Occurrence floor of 2 because the
+# phase and task invocation shapes are separate arg lines and BOTH must carry it.
 assert_skill_passes_rdmbin() {
     grep -qF 'rdmBin' "$1" || return 1
     [ "$(grep -cF 'rdmBin: "./target/debug/rdm"' "$1")" -ge 2 ] || return 1
@@ -936,8 +940,8 @@ else
     fail "6b: parameterization prompt-capture assertions failed"
 fi
 
-# --- 6c. Fail-closed rdmBin + the legacy-path carve-out -----------------------
-say "6c. Fail-closed rdmBin on the standalone path; both legacy shapes still succeed without it"
+# --- 6c. Defaulted rdmBin + the legacy-path carve-out -------------------------
+say "6c. Defaulted rdmBin on the standalone path (wrong-TYPE still throws); both legacy shapes still succeed without it"
 
 cat >"$TMP/rdmbin.mjs" <<'NODE_RDMBIN'
 import assert from 'node:assert/strict';
@@ -982,42 +986,58 @@ const spy = async (prompt, opts) => {
   return { ok: true };
 };
 
-// (1) The STANDALONE code-review path shells out, so an absent/empty/non-string
-// rdmBin throws — BEFORE any agent() call, so a mis-invocation costs zero
-// tokens.
-for (const bad of [undefined, null, '', '   ', '\t', 42, {}, [], true]) {
+// (1a) The STANDALONE code-review path shells out, but an ABSENT rdmBin now
+// DEFAULTS to a plain `rdm` on PATH and the run PROCEEDS. A plugin-installed
+// consumer has no repo-local build path to pass; this repo's own stale-global
+// hazard is handled by RDM_BIN in .mise.toml (gated by
+// verify-workflow-dispatch.sh § 9c-dogfood), not by refusing to resolve.
+for (const absent of [undefined, null, '', '   ', '\t']) {
   agentCalls = 0;
   const args = { mode: 'code', roadmap: 'rm', phase: '1' };
-  if (bad !== undefined) args.rdmBin = bad;
-  await assert.rejects(
-    () => run(args, spy, refPipeline, refParallel, () => {}),
-    /rdmBin/,
-    'an absent/empty/non-string rdmBin (' + JSON.stringify(bad) + ') must throw on the standalone path'
+  if (absent !== undefined) args.rdmBin = absent;
+  const out = await run(args, spy, refPipeline, refParallel, () => {});
+  assert.equal(
+    out.outcome,
+    'reviewed',
+    'an absent rdmBin (' + JSON.stringify(absent) + ') must default and let the standalone path reach an outcome'
   );
-  assert.equal(agentCalls, 0, 'the rdmBin throw must precede every agent() call');
+  assert.ok(agentCalls > 0, 'the run must actually have dispatched agents — otherwise this assertion is vacuous');
 }
 agentCalls = 0;
-await assert.rejects(
-  () => run({ mode: 'code', task: 'my-task' }, spy, refPipeline, refParallel, () => {}),
-  /rdmBin/,
-  'the standalone TASK path must require rdmBin too'
-);
-assert.equal(agentCalls, 0, 'the task-path rdmBin throw also precedes every agent() call');
-
-// The error must be actionable.
-try {
-  await run({ mode: 'code', roadmap: 'rm', phase: '1' }, spy, refPipeline, refParallel, () => {});
-  assert.fail('expected a throw');
-} catch (e) {
-  assert.match(e.message, /rdmBin is required/, 'the message names the missing arg');
-  assert.match(e.message, /"rdm"/, 'the message names the explicit PATH sentinel');
-  assert.match(e.message, /PATH/, 'the message explains what an absent value would silently do');
+{
+  const out = await run({ mode: 'code', task: 'my-task' }, spy, refPipeline, refParallel, () => {});
+  assert.equal(out.outcome, 'reviewed', 'the standalone TASK path defaults rdmBin too');
+  assert.equal(out.task, 'my-task', 'the task-mode OUTCOME is keyed by task');
 }
 
-// (2) THE CARVE-OUT, asserted in the other direction: BOTH legacy
-// survivors-only shapes emit ZERO rdm invocations, so the fail-closed rule has
-// no referent there. They must still succeed with NO rdmBin at all, and still
-// return the exact legacy { mode, survivors, budget } shape.
+// (1b) A present-but-wrong-TYPE value STILL throws, before any agent() call —
+// degrading a `rdmBin: 42` typo to PATH would reintroduce the silent-wrong-
+// binary hazard the absent-value default does not need.
+for (const bad of [42, {}, [], true]) {
+  agentCalls = 0;
+  await assert.rejects(
+    () => run({ mode: 'code', roadmap: 'rm', phase: '1', rdmBin: bad }, spy, refPipeline, refParallel, () => {}),
+    /rdmBin/,
+    'a non-string rdmBin (' + JSON.stringify(bad) + ') must still throw on the standalone path'
+  );
+  assert.equal(agentCalls, 0, 'the rdmBin type throw must precede every agent() call');
+}
+
+// The type error must stay actionable.
+try {
+  await run({ mode: 'code', roadmap: 'rm', phase: '1', rdmBin: 42 }, spy, refPipeline, refParallel, () => {});
+  assert.fail('expected a throw');
+} catch (e) {
+  assert.match(e.message, /rdmBin must be a string/, 'the message names the type requirement');
+  assert.match(e.message, /"rdm"/, 'the message names the explicit PATH sentinel');
+  assert.match(e.message, /PATH/, 'the message names what omitting the arg entirely does');
+}
+
+// (2) THE CARVE-OUT, UNCHANGED and deliberately preserved through the contract
+// reversal: BOTH legacy survivors-only shapes emit ZERO rdm invocations and
+// never call resolveRdmBin at all. They must still succeed with NO rdmBin, and
+// still return the exact legacy { mode, survivors, budget } shape — with no
+// rdmBin key smuggled in by the new defaulting branch.
 for (const legacy of [{ mode: 'plan' }, { mode: 'code' }]) {
   const out = await run(legacy, spy, refPipeline, refParallel, () => {});
   assert.deepEqual(
@@ -1043,13 +1063,13 @@ for (const hostile of ['a b', 'a;rm -rf /', '$(x)', '`x`', 'a|b']) {
   assert.equal(out.outcome, 'reviewed', "the 'rdm' PATH sentinel is accepted verbatim and the run proceeds");
 }
 
-console.log('all fail-closed rdmBin + legacy-carve-out assertions passed');
+console.log('all defaulted rdmBin + legacy-carve-out assertions passed');
 NODE_RDMBIN
 
 if run_node "$TMP/rdmbin.mjs" "$WF"; then
-    pass "6c: rdmBin is fail-closed on the standalone path (throws before any agent call); both legacy shapes still succeed without it"
+    pass "6c: an absent rdmBin defaults to a bare 'rdm' on the standalone path (phase and task), a wrong-TYPE value still throws before any agent call, and both legacy shapes still succeed without it"
 else
-    fail "6c: fail-closed rdmBin / legacy-carve-out assertions failed"
+    fail "6c: defaulted rdmBin / legacy-carve-out assertions failed"
 fi
 
 # The guard must NOT be an existence preflight. `which -a rdm` resolves to the

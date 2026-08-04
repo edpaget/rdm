@@ -4,13 +4,14 @@
 //   Plan → PlanReview → Implement → CodeReview → OUTCOME.
 // It replaces rdm-dispatch-phase's prose orchestration with a mechanical driver.
 //
-// Invoke with args: { roadmap: '<roadmap-slug>', phase: '<stem-or-number>', rdmBin, project? } (phase mode)
-// or { task: '<slug>', rdmBin, project? } (task mode).
-//   rdmBin  — REQUIRED. The exact rdm executable every Bash-agent prompt shells
-//             out to. There is NO ambient/PATH fallback: an absent key throws
-//             before the first agent() call rather than silently running
-//             whichever global rdm is first on PATH. Pass the sentinel 'rdm' to
-//             opt into PATH resolution explicitly.
+// Invoke with args: { roadmap: '<roadmap-slug>', phase: '<stem-or-number>', rdmBin?, project? } (phase mode)
+// or { task: '<slug>', rdmBin?, project? } (task mode).
+//   rdmBin  — optional. The rdm executable every Bash-agent prompt shells out
+//             to. An absent key DEFAULTS to a plain `rdm` on PATH; the sentinel
+//             'rdm' requests the same resolution explicitly, and an explicitly
+//             passed path always wins verbatim. A caller that needs a specific
+//             build resolves it itself and passes it down (this repo pins its
+//             development build via `RDM_BIN` in .mise.toml).
 //   project — optional. Appended as ` --project <name>` to PROJECT-SCOPED
 //             subcommands only; `rdm model resolve` and `rdm commit` never carry
 //             it. Omitted entirely when unset, so rdm's own resolution chain
@@ -1848,27 +1849,39 @@ function projectFlag(cfg) {
   return cfg && cfg.project ? ' --project ' + cfg.project : '';
 }
 
-// resolveRdmBin(value) — FAIL-CLOSED resolution of the rdm executable to invoke.
+// resolveRdmBin(value) — resolve the rdm executable to invoke. An ABSENT value
+// DEFAULTS to a plain `rdm` on PATH.
 //
-// There is NO ambient/PATH fallback for an absent key, deliberately. Defaulting
-// to a bare `rdm` would silently run whichever global rdm happens to be first on
-// PATH; inside the rdm repo that is a stale installed build, which the project's
-// development-build rule forbids outright. An existence preflight (`which rdm`,
-// `command -v`, an fs check) does NOT close this: the stale global EXISTS, so
-// the check passes while running exactly the wrong binary. Nor can the guard
-// compare against a caller-supplied path — in the case being guarded the caller
-// supplied nothing. So the guard is on the ABSENCE of the argument itself.
+// This deliberately reverses an earlier fail-closed stance. That stance guarded
+// a REAL hazard — inside THIS repo a bare `rdm` is a stale installed build the
+// development-build rule forbids — but the hazard is DOGFOOD-SCOPED. A
+// downstream consumer who installs the plugin has no repo-local build path to
+// pass, and PATH is the right answer for essentially all of them, so charging
+// every consumer for this repo's hazard was the wrong trade.
 //
-// A caller that genuinely wants PATH resolution opts in EXPLICITLY with the
-// sentinel `rdmBin: 'rdm'`, which is accepted verbatim. Because there is no
-// fallback, EVERY caller must pass this arg in the same change that makes it
-// required — an un-threaded caller throws before the first agent() call.
+// The compensating control now lives where the hazard does: `RDM_BIN` in this
+// repo's `.mise.toml` pins the local development build, and the CALLING SKILL
+// resolves it before invoking a workflow (the Workflow runtime has no env or
+// filesystem access, so this function never reads it). That entry is gated by
+// scripts/verify-workflow-dispatch.sh § 9c-dogfood.
+//
+// An existence preflight remains FORBIDDEN and the default must stay a plain
+// fallback, never a probe. A probe would not close the dogfood hazard anyway:
+// the stale global EXISTS, so the check passes while running the wrong binary.
+//
+// A present-but-wrong-TYPE value still throws. Degrading a `rdmBin: 42` typo to
+// PATH would reintroduce exactly the silent-wrong-binary hazard this contract
+// exists to avoid, and the absent-value default does not need it. Canonical
+// write-up, including the three-step resolution order the calling skill
+// implements: docs/workflow-schemas.md § "Environment args: `rdmBin` and
+// `project`".
 function resolveRdmBin(value) {
   if (typeof value === 'string' && value.trim() !== '') return value;
+  if (value === undefined || value === null || typeof value === 'string') return 'rdm';
   throw new Error(
-    'dispatch-phase: rdmBin is required — pass the exact rdm executable to invoke (a repo-local ' +
-      'build path, or the explicit sentinel "rdm" to opt into PATH resolution). Refusing to guess: ' +
-      'an absent rdmBin would silently run whatever global rdm is on PATH.'
+    'dispatch-phase: rdmBin must be a string path to the rdm executable (a repo-local build path, ' +
+      'or the sentinel "rdm" to request PATH resolution explicitly). Omit it entirely to default to ' +
+      '`rdm` on PATH; a non-string value is a caller bug and is refused rather than guessed.'
   );
 }
 
@@ -1967,9 +1980,10 @@ function parseDispatchArgs(args) {
     // --plan-only invocation (the workflow suppresses the stamp there anyway).
     alreadyInProgress: !!dispatchArgs.alreadyInProgress,
     // --- Environment axes (see the contract block above).
-    // `rdmBin` is REQUIRED — the exact rdm executable every Bash-agent prompt
-    // shells out to. `project` is OPTIONAL and applies ONLY to project-scoped
-    // subcommands; '' means "emit no project flag".
+    // `rdmBin` is OPTIONAL — the rdm executable every Bash-agent prompt shells
+    // out to, defaulting to a plain `rdm` on PATH when absent. `project` is
+    // OPTIONAL and applies ONLY to project-scoped subcommands; '' means "emit
+    // no project flag".
     rdmBin: rdmBin,
     project: project,
   };
@@ -2837,9 +2851,9 @@ const maxRefutations = dispatchArgs.maxRefutations
 const hoistedMeta = isTask ? dispatchArgs.taskMeta : dispatchArgs.phaseMeta
 const alreadyInProgress = dispatchArgs.alreadyInProgress
 // The two ENVIRONMENT axes, already resolved and validated by parseDispatchArgs:
-// `rdmBin` is REQUIRED (fail-closed — an absent key threw above, before any
-// agent() call, rather than falling back to whatever `rdm` is on PATH) and
-// `project` is optional (''  means "emit no project flag"). Bundled once as
+// `rdmBin` is optional (an absent key resolved above to a plain `rdm` on PATH;
+// an explicitly passed path won verbatim) and `project` is optional ('' means
+// "emit no project flag"). Bundled once as
 // `cfg` and threaded into every prompt builder that shells out.
 const rdmBin = dispatchArgs.rdmBin
 const project = dispatchArgs.project

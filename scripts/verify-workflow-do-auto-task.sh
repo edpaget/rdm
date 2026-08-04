@@ -187,8 +187,11 @@ grep -qF 'Auto phase dispatch' "$TMP/task-section" &&
 pass "the --auto --task section reads outcome.status/reason/writesCompletion and defers the trailer to rdm-land"
 
 # PER-SHIM rdmBin assertion (project-agnostic-lane): dispatch-phase's `rdmBin`
-# arg is REQUIRED and fail-closed — there is NO ambient/PATH fallback, so a
-# caller that stops passing it hard-breaks on first dispatch. Asserted on the
+# arg now DEFAULTS to a plain `rdm` on PATH, so a caller that stops passing it
+# does not hard-break — it silently runs whichever global rdm is first on PATH,
+# which inside this repo is the stale build the development-build rule forbids.
+# The check survives the contract reversal unchanged; only the failure it guards
+# changed from loud to silent. Asserted on the
 # TASK section specifically, independently of the sibling phase-flow assertion in
 # verify-workflow-do-auto.sh, so one flow carrying it cannot cover for the other.
 assert_task_flow_rdmbin() {
@@ -197,7 +200,7 @@ assert_task_flow_rdmbin() {
     return 0
 }
 assert_task_flow_rdmbin "$TMP/task-section" ||
-    fail "'## Auto task dispatch' must pass rdmBin: \"./target/debug/rdm\" into the dispatch-phase Workflow (it is REQUIRED — the workflow errors without it rather than falling back to a global rdm)"
+    fail "'## Auto task dispatch' must pass rdmBin: \"./target/debug/rdm\" into the dispatch-phase Workflow (omitting it silently falls back to a PATH-resolved global rdm, which is the wrong binary in this repo)"
 pass "'## Auto task dispatch' passes rdmBin with this repo's development-build path"
 
 sed 's/rdmBin/rdmBn/g' "$TMP/task-section" >"$TMP/task-section-mutant"

@@ -702,10 +702,12 @@ assert_shim_hoists() {
     # `next` must be documented as one-shot on both variants, or a caller could
     # cache it and re-dispatch the same phase forever.
     _need "$ap" 'one-shot, on the first loop iteration only' || return 1
-    # dispatch-phase's `rdmBin` arg is REQUIRED and fail-closed (no ambient PATH
-    # fallback), so an emitted shim that omits it hard-breaks the downstream lane
-    # on its first dispatch. Asserted on BOTH variants and for ALL THREE shims —
-    # it is not a model-derived hoist, so it sits outside the cli-only guards.
+    # dispatch-phase's `rdmBin` arg now DEFAULTS to a plain `rdm` on PATH, so an
+    # emitted shim that omits it degrades to whatever rdm the downstream consumer
+    # has on PATH rather than hard-breaking. The check is kept for exactly that
+    # reason: a shim that names the arg lets a consumer pin a specific build.
+    # Asserted on BOTH variants and for ALL THREE shims — it is not a
+    # model-derived hoist, so it sits outside the cli-only guards.
     _need "$ap" 'rdmBin' || return 1
     if [ "$variant" = mcp ]; then
         # MCP has no `rdm phase show` CLI command to read a write back with, so
@@ -755,7 +757,7 @@ for variant in cli mcp; do
     fi
     # Occurrence floor, so the check can never pass vacuously: CLI asserts
     # >= 16 references, MCP >= 9 (raised from 13/6 by the project-agnostic-lane
-    # roadmap, which added one REQUIRED `rdmBin` needle to each of the three
+    # roadmap, which added one `rdmBin` needle to each of the three
     # shims on both variants; recomputed after the `rdm-wf-estimate` pre-pass —
     # and its mechanicalModel/phaseList hoist — was dropped from the
     # distributed rdm-autopilot template; MCP retains the rdm_phase_show
@@ -798,7 +800,7 @@ if assert_shim_hoists "$TMP/cli-hoist-typo" cli; then
 fi
 pass "6e: hoist-arg check detects a typo'd arg key ($HOIST_FAILURE)"
 
-# Self-test: mangling the REQUIRED rdmBin key in each of the three emitted shims
+# Self-test: mangling the rdmBin key in each of the three emitted shims
 # in turn must be caught — one shim carrying it cannot cover for another.
 for shim in rdm-dispatch-phase rdm-do rdm-autopilot; do
     rm -rf "$TMP/cli-rdmbin-typo"
@@ -1416,8 +1418,12 @@ if (stage === 'logic') {
   const noProject = buildAllPrompts(dispatch, review, { rdmBin: fixtureBin });
   assert.ok(!noProject.join('\n').includes('--project'), 'with no project configured, no built command may carry a --project flag');
 
-  // Fail-closed guards, on the EMITTED artifact.
-  assert.throws(() => dispatch.parseDispatchArgs({ roadmap: 'r', phase: 'p' }), /rdmBin/, 'parseDispatchArgs must fail closed without rdmBin');
+  // Environment-arg guards, on the EMITTED artifact. `rdmBin` DEFAULTS to a
+  // plain `rdm` on PATH when absent — the shipped contract a plugin-installed
+  // consumer relies on, since it has no repo-local build path to pass — while a
+  // present-but-wrong-TYPE value still throws rather than silently degrading.
+  assert.equal(dispatch.parseDispatchArgs({ roadmap: 'r', phase: 'p' }).rdmBin, 'rdm', 'the emitted engine must default an absent rdmBin to "rdm"');
+  assert.throws(() => dispatch.parseDispatchArgs({ roadmap: 'r', phase: 'p', rdmBin: 42 }), /rdmBin/, 'the emitted engine must still reject a non-string rdmBin');
   for (const bad of ['a b', 'a;rm -rf /', '$(x)']) {
     assert.throws(() => dispatch.parseProjectArg(bad), /project/, 'parseProjectArg must reject "' + bad + '"');
     assert.throws(() => review.parseProjectArg(bad), /project/, 'the review engine must reject "' + bad + '" too');

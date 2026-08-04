@@ -2046,12 +2046,12 @@ const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-dispatch-hoist-wrapp
 fs.writeFileSync(wrapperPath, 'export default async function(args, agent, pipeline, parallel, log) {\n' + src + '\n}\n');
 const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
 const rawRun = mod.default;
-// dispatch-phase's environment contract makes `rdmBin` REQUIRED and FAIL-CLOSED
-// — there is no ambient PATH fallback, and an absent key throws before the first
-// agent() call (gated independently by section 9c). This section is about the
-// HOIST args, not the environment axes, so every run here gets the explicit
-// `'rdm'` PATH sentinel injected rather than repeating it at 19 call sites. A
-// caller-supplied `rdmBin`/`project` still wins.
+// dispatch-phase's environment contract makes `rdmBin` OPTIONAL: an absent key
+// defaults to a plain `rdm` on PATH (gated independently by section 9c). This
+// section is about the HOIST args, not the environment axes, so every run here
+// gets the explicit `'rdm'` PATH sentinel injected rather than relying on the
+// default at 19 call sites — keeping this section's assertions independent of
+// the defaulting behavior 9c owns. A caller-supplied `rdmBin`/`project` wins.
 const run = (args, ...rest) => rawRun({ rdmBin: 'rdm', ...args }, ...rest);
 
 async function refParallel(thunks) {
@@ -2610,8 +2610,11 @@ pass "8: --check still accepts the real doc (the self-tests are discriminating, 
 #        (phase/task x project/no-project) under a capturing fake agent, tokenize
 #        every emitted `rdm <subcommand>` occurrence, and check it against the
 #        project-agnostic allow-list expressed AS DATA.
-#   9c — the fail-closed `rdmBin` rule, plus a grep proving it was NOT
-#        implemented as an existence preflight.
+#   9c — the `rdmBin` defaulting rule (absent -> a plain `rdm`, wrong-type still
+#        throws), plus a grep proving the default is a plain fallback and NOT an
+#        existence preflight; 9c-inventory checks every copy in the tree carries
+#        it and none reads the environment; 9c-dogfood gates the compensating
+#        `RDM_BIN` control in .mise.toml and the contract doc.
 #   9d — planted-mutation self-tests for 9b.
 #   9e — the repo-wide nested-`workflow()` negative, comment-filtered.
 say "9. Parameterization: no hardcoded rdm binary or project; the environment axes are runtime args"
@@ -2838,8 +2841,8 @@ else
     fail "9b: parameterization prompt-capture assertions failed"
 fi
 
-# --- 9c. Fail-closed rdmBin ---------------------------------------------------
-say "9c. Fail-closed rdmBin: an absent arg throws, and the guard is not an existence preflight"
+# --- 9c. Defaulted rdmBin -----------------------------------------------------
+say "9c. Defaulted rdmBin: an absent arg resolves to a plain 'rdm', a wrong-TYPE arg still throws, and neither is an existence preflight"
 
 cat >"$TMP/rdmbin.mjs" <<'NODE_RDMBIN'
 import assert from 'node:assert/strict';
@@ -2851,31 +2854,46 @@ const libPath = process.argv[2];
 const wfPath = process.argv[3];
 const { parseDispatchArgs, projectFlag, resolveRdmBin, parseProjectArg } = await import('file://' + libPath);
 
-// (1) The ABSENCE of the argument is what throws — not the unresolvability of a
-// path. An existence preflight cannot express this: the stale global rdm this
-// rule exists to block EXISTS, so `which rdm` would pass.
-for (const bad of [undefined, null, '', '   ', '\t', 42, {}, [], true]) {
+// (1a) An ABSENT-ish value DEFAULTS to a plain `rdm` on PATH. A plugin-installed
+// consumer has no repo-local build path to pass, so PATH is the shipped default;
+// this repo's own stale-global hazard is handled by RDM_BIN in .mise.toml
+// (asserted in § 9c-dogfood below), not by refusing to resolve.
+for (const absent of [undefined, null, '', '   ', '\t']) {
+  assert.equal(resolveRdmBin(absent), 'rdm', 'an absent rdmBin (' + JSON.stringify(absent) + ') must default to "rdm"');
+  assert.equal(
+    parseDispatchArgs({ roadmap: 'r', phase: 'p', rdmBin: absent }).rdmBin,
+    'rdm',
+    'parseDispatchArgs must default an absent rdmBin (' + JSON.stringify(absent) + ') to "rdm"'
+  );
+}
+// An args payload with no rdmBin KEY AT ALL defaults too, in both modes.
+assert.equal(parseDispatchArgs({ roadmap: 'r', phase: 'p' }).rdmBin, 'rdm', 'a missing rdmBin key defaults to "rdm"');
+assert.equal(parseDispatchArgs({ task: 't' }).rdmBin, 'rdm', 'task mode defaults rdmBin too');
+// A stringified payload is coerced first, then defaulted the same way.
+assert.equal(
+  parseDispatchArgs(JSON.stringify({ roadmap: 'r', phase: 'p' })).rdmBin,
+  'rdm',
+  'a stringified payload defaults rdmBin to "rdm"'
+);
+
+// (1b) A present-but-wrong-TYPE value STILL throws. Degrading a `rdmBin: 42`
+// typo to PATH would reintroduce exactly the silent-wrong-binary hazard the
+// absent-value default does not need.
+for (const bad of [42, {}, [], true]) {
   assert.throws(
     () => parseDispatchArgs({ roadmap: 'r', phase: 'p', rdmBin: bad }),
     /rdmBin/,
-    'an absent/empty/non-string rdmBin (' + JSON.stringify(bad) + ') must throw'
+    'a non-string rdmBin (' + JSON.stringify(bad) + ') must still throw'
   );
 }
-// An args payload with no rdmBin KEY AT ALL throws too.
-assert.throws(() => parseDispatchArgs({ roadmap: 'r', phase: 'p' }), /rdmBin/, 'a missing rdmBin key must throw');
-assert.throws(() => parseDispatchArgs({ task: 't' }), /rdmBin/, 'task mode must require rdmBin too');
-// A stringified payload is coerced first, then still validated.
-assert.throws(() => parseDispatchArgs(JSON.stringify({ roadmap: 'r', phase: 'p' })), /rdmBin/, 'a stringified payload must still require rdmBin');
-
-// The error must be actionable: it names the sentinel opt-in and says why no
-// default is chosen.
+// The type error must stay actionable: it names the sentinel and the default.
 try {
-  parseDispatchArgs({ roadmap: 'r', phase: 'p' });
+  parseDispatchArgs({ roadmap: 'r', phase: 'p', rdmBin: 42 });
   assert.fail('expected a throw');
 } catch (e) {
-  assert.match(e.message, /rdmBin is required/, 'the message names the missing arg');
+  assert.match(e.message, /rdmBin must be a string/, 'the message names the type requirement');
   assert.match(e.message, /"rdm"/, 'the message names the explicit PATH sentinel');
-  assert.match(e.message, /PATH/, 'the message explains what an absent value would silently do');
+  assert.match(e.message, /PATH/, 'the message names what omitting the arg entirely does');
 }
 
 // (2) The explicit sentinel is accepted VERBATIM — a downstream repo that wants
@@ -2883,6 +2901,10 @@ try {
 assert.equal(parseDispatchArgs({ roadmap: 'r', phase: 'p', rdmBin: 'rdm' }).rdmBin, 'rdm', "the 'rdm' sentinel is accepted verbatim");
 assert.equal(parseDispatchArgs({ roadmap: 'r', phase: 'p', rdmBin: '/opt/x/rdm' }).rdmBin, '/opt/x/rdm', 'an absolute path is accepted verbatim');
 assert.equal(resolveRdmBin('rdm'), 'rdm', 'resolveRdmBin passes the sentinel through');
+// DISCRIMINATING: the sentinel path is VERBATIM pass-through, not the default
+// branch. A trailing space survives, which the `return 'rdm'` default could not
+// produce — so this assertion fails if the two paths are ever conflated.
+assert.equal(resolveRdmBin('rdm '), 'rdm ', 'a non-empty value is returned verbatim, not normalized to the default');
 
 // (3) `project` is OPTIONAL, falsy means NO flag, and a hostile value is
 // rejected rather than escaped (it is interpolated into a Bash-agent prompt).
@@ -2898,37 +2920,94 @@ for (const hostile of ['a b', 'a;rm -rf /', '$(x)', '`x`', 'a\nb', 'a|b', 7, {}]
 }
 assert.equal(parseDispatchArgs({ roadmap: 'r', phase: 'p', rdmBin: 'rdm', project: 'rdm-atlas.v2_x' }).project, 'rdm-atlas.v2_x', 'a plain project name survives');
 
-// (4) The throw happens BEFORE any agent() call — driving the wrapped workflow
-// with no rdmBin must reject rather than resolve to an OUTCOME, and must not
-// have spawned a single agent.
+// (4) Driving the wrapped workflow with NO rdmBin at all must now RESOLVE (it no
+// longer throws), and every rdm command it emits must name a bare `rdm` — never
+// a repo-local build path leaking back in as a hardcoded literal.
 const src = fs.readFileSync(wfPath, 'utf8').replace(/^export /m, '');
 const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-dispatch-rdmbin-wrapped.mjs');
 fs.writeFileSync(wrapperPath, 'export default async function(args, agent, pipeline, parallel, log) {\n' + src + '\n}\n');
 const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
+
+// The same capturing-spy idiom § 9b uses, kept minimal: record every prompt and
+// answer every label the driver can emit.
+const MODELS = { plan: 'm-plan', implement: 'm-impl', review_find: 'm-find', review_verify: 'm-verify', mechanical: 'm-mech' };
+const PHASE_META = { roadmap: 'rm', phase: 'phase-1-x', stem: 'phase-1-x', model: 'medium', body: 'BODY', models: MODELS };
+const PLAN_DOC = {
+  steps_per_ac: [{ ac: 'AC1', steps: ['do it'] }],
+  file_map: [{ path: 'a.rs', change: 'edit' }],
+  tests_per_ac: [{ ac: 'AC1', test: 't' }],
+  edge_cases: [],
+  cross_phase_deps: [],
+  summary: 'plan',
+};
+const prompts = [];
 let agentCalls = 0;
-const spy = async () => {
+const spy = async (prompt, opts) => {
   agentCalls++;
+  prompts.push(String(prompt));
+  const label = (opts && opts.label) || '';
+  if (label === 'fetch:phase-meta') return PHASE_META;
+  if (label === 'stamp:in-progress') return { ok: true };
+  if (label === 'plan:author' || label === 'plan:revise') return PLAN_DOC;
+  if (label === 'act:code') return { handled: [] };
+  if (label === 'diff:signals') return { changedFiles: ['rdm-core/src/lib.rs'], diffText: '' };
+  if (label === 'implement:worktree' || label === 'implement:rework') return undefined;
+  const parts = label.split(':');
+  if (parts[0] === 'find') return parts[2] === 'ac' ? { ac: [], findings: [] } : { findings: [] };
+  if (parts[0] === 'refute') return { refuted: false, confidence: 95 };
   return null;
 };
-await assert.rejects(
-  () => mod.default({ roadmap: 'rm', phase: 'phase-1-x' }, spy, async () => [], async () => [], () => {}),
-  /rdmBin/,
-  'a direct Workflow invocation with no rdmBin must reject, not silently run a global rdm'
-);
-assert.equal(agentCalls, 0, 'the rdmBin throw must precede every agent() call — a mis-invocation costs zero tokens');
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+const out = await mod.default({ roadmap: 'rm', phase: 'phase-1-x' }, spy, refPipeline, refParallel, () => {});
+assert.ok(out && typeof out === 'object', 'a Workflow invocation with no rdmBin must resolve to an OUTCOME, not throw');
+assert.ok(agentCalls > 0, 'the run must actually have dispatched agents — otherwise this assertion is vacuous');
 
-console.log('all fail-closed rdmBin assertions passed');
+// Every rdm invocation in every captured prompt names the bare default.
+const INVOCATION = /(^|[\s`])((?:[^\s`]*\/)?rdm)\s+[a-z][a-z-]*/g;
+let invocations = 0;
+for (const p of prompts) {
+  INVOCATION.lastIndex = 0;
+  let m;
+  while ((m = INVOCATION.exec(p)) !== null) {
+    invocations++;
+    assert.equal(m[2], 'rdm', 'an emitted command used ' + m[2] + ' instead of the bare `rdm` default');
+  }
+}
+assert.ok(invocations > 0, 'the scan found no rdm invocations at all — it cannot pass vacuously');
+for (const p of prompts) {
+  assert.ok(!p.includes('./target/debug/rdm'), 'a repo-local build path leaked into a prompt under the bare default');
+}
+
+console.log('all defaulted rdmBin assertions passed');
 NODE_RDMBIN
 
 if run_node "$TMP/rdmbin.mjs" "$LIB" "$WF"; then
-    pass "9c: rdmBin is fail-closed (absent/empty/non-string throws before any agent call); the 'rdm' sentinel opts into PATH explicitly; project is validated"
+    pass "9c: rdmBin defaults to a bare 'rdm' when absent (every emitted command uses it), a wrong-TYPE value still throws, the 'rdm' sentinel passes through verbatim, and project is validated"
 else
-    fail "9c: fail-closed rdmBin assertions failed"
+    fail "9c: defaulted rdmBin assertions failed"
 fi
 
-# The guard must NOT be an existence preflight. `which -a rdm` resolves to the
+# The default must NOT be an existence preflight. `which -a rdm` resolves to the
 # stale global build in this repo, so an existence check passes while running
-# exactly the binary the development-build rule forbids.
+# exactly the binary the development-build rule forbids — a probe would not close
+# the dogfood hazard, it would only hide it. The default stays a plain fallback.
 # COMMENT LINES ARE STRIPPED FIRST: the contract's own rationale prose names
 # `which rdm` / `command -v` precisely to record why they were REJECTED, and an
 # unfiltered grep would flag that explanation as the thing it forbids.
@@ -2937,13 +3016,37 @@ assert_no_existence_preflight() {
         grep -nE 'which +(-a +)?rdm|command -v|existsSync|accessSync|statSync' >"$TMP/preflight-hits" 2>/dev/null || true
     [ ! -s "$TMP/preflight-hits" ]
 }
-for f in "$LIB" "$WF" "$TEMPLATE_WF"; do
+# Widened beyond the three dispatch-phase copies: the estimate and
+# review-refute-fix engines carry their own resolveRdmBin and are subject to the
+# same no-probe rule, so a probe planted in any of them must be caught here too.
+cat >"$TMP/preflight-files" <<EOF
+$LIB
+$WF
+$TEMPLATE_WF
+$REPO_ROOT/.claude/workflows/lib/estimate.mjs
+$REPO_ROOT/.claude/workflows/rdm-wf-estimate.js
+$REPO_ROOT/.claude/workflows/rdm-wf-review-refute-fix.js
+$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js
+EOF
+PREFLIGHT_COUNT=0
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ -f "$f" ] || fail "9c: expected preflight-checked file is missing: $f"
     if ! assert_no_existence_preflight "$f"; then
         cat "$TMP/preflight-hits" >&2
-        fail "9c: $f must not implement the rdmBin guard as an existence preflight — the guard is on the ABSENCE of the argument"
+        fail "9c: $f must not resolve rdmBin via an existence preflight — the default is a plain fallback"
     fi
-done
-pass "9c: no existence preflight (which rdm / command -v / existsSync) in any dispatch-phase copy"
+    PREFLIGHT_COUNT=$((PREFLIGHT_COUNT + 1))
+done <"$TMP/preflight-files"
+pass "9c: no existence preflight (which rdm / command -v / existsSync) in any of the $PREFLIGHT_COUNT resolveRdmBin-bearing copies"
+
+# Self-test on a NEWLY-COVERED file, proving the widened list is non-vacuous.
+cp "$REPO_ROOT/.claude/workflows/rdm-wf-review-refute-fix.js" "$TMP/preflight-mutant-widened.js"
+printf "\nconst ok = accessSync(rdmBin)\n" >>"$TMP/preflight-mutant-widened.js"
+if assert_no_existence_preflight "$TMP/preflight-mutant-widened.js"; then
+    fail "9c: the widened existence-preflight coverage missed a planted accessSync in review-refute-fix — the widening is vacuous"
+fi
+pass "9c: the existence-preflight detector fires on a planted probe in a newly-covered copy"
 
 # Self-test: a planted preflight in executable (non-comment) code must fire.
 cp "$WF" "$TMP/preflight-mutant.js"
@@ -2952,6 +3055,177 @@ if assert_no_existence_preflight "$TMP/preflight-mutant.js"; then
     fail "9c: the existence-preflight detector missed a planted existsSync call — the gate is vacuous"
 fi
 pass "9c: the existence-preflight detector fires on planted code while ignoring the rationale prose"
+
+# --- 9c-inventory. EVERY resolveRdmBin copy carries the new default -----------
+say "9c-inventory: every resolveRdmBin copy in the tree defaults to 'rdm', and none reads the environment"
+
+# The contract reversal spans three canonical sources and several byte-identical
+# copies across three different propagation mechanisms (generator-stamped,
+# hand-copied, and plugin-regenerated). A missed copy would keep throwing on an
+# absent value while the rest of the lane defaults — so the inventory is derived
+# MECHANICALLY here rather than hand-listed, and every hit must carry the default.
+(
+    cd "$REPO_ROOT" &&
+        grep -rl "function resolveRdmBin" \
+            --include=*.js --include=*.mjs \
+            .claude/workflows rdm-core/src/templates/workflows plugins 2>/dev/null | sort
+) >"$TMP/rdmbin-files"
+RDMBIN_COUNT=$(grep -c . <"$TMP/rdmbin-files" || true)
+# Floor: 5 under .claude/workflows + 2 template twins + 2 in the emitted plugin
+# tree. A deleted copy must surface as a failure, not as a smaller green run.
+if [ "$RDMBIN_COUNT" -lt 9 ]; then
+    cat "$TMP/rdmbin-files" >&2
+    fail "9c-inventory: expected at least 9 resolveRdmBin-bearing files, found $RDMBIN_COUNT — a copy was deleted or the inventory grep drifted"
+fi
+# The first listed copy is the fixture both planted-mutation self-tests mutate.
+RDMBIN_FIRST=$(head -n 1 "$TMP/rdmbin-files")
+
+# Extract each resolveRdmBin body and require the literal default in it.
+assert_defaults_to_rdm() {
+    awk '
+        /^function resolveRdmBin\(/ { inside = 1 }
+        inside { print }
+        inside && /^}/ { exit }
+    ' "$1" | grep -q "return 'rdm';"
+}
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if ! assert_defaults_to_rdm "$REPO_ROOT/$f"; then
+        fail "9c-inventory: $f's resolveRdmBin does not default an absent value to 'rdm' — the contract reversal missed this copy"
+    fi
+done <"$TMP/rdmbin-files"
+pass "9c-inventory: all $RDMBIN_COUNT resolveRdmBin copies default an absent value to 'rdm'"
+
+# Self-test: revert ONE copy to the old throw-only body (drop the default branch
+# outright, exactly as a missed copy would look) and the check must fire.
+sed "/^  if (value === undefined .*return 'rdm';/d" \
+    "$REPO_ROOT/$RDMBIN_FIRST" >"$TMP/rdmbin-inventory-mutant.js"
+if cmp -s "$REPO_ROOT/$RDMBIN_FIRST" "$TMP/rdmbin-inventory-mutant.js"; then
+    fail "9c-inventory: the revert-to-throw mutation did not apply — the self-test is not exercising anything"
+fi
+if assert_defaults_to_rdm "$TMP/rdmbin-inventory-mutant.js"; then
+    fail "9c-inventory: the detector missed a copy reverted to the old fail-closed body — the gate is vacuous"
+fi
+pass "9c-inventory: the detector fires on a copy reverted to the old fail-closed body"
+
+# The Workflow runtime has no env access, so the JS must never try to read
+# RDM_BIN itself — resolution happens in the CALLING SKILL and arrives as an
+# argument. Comment lines are stripped first (the rationale prose names RDM_BIN
+# precisely to say where it IS read).
+assert_no_env_read() {
+    grep -vE '^[[:space:]]*(//|\*|/\*|#)' "$1" |
+        grep -nE 'process\.env|RDM_BIN' >"$TMP/envread-hits" 2>/dev/null || true
+    [ ! -s "$TMP/envread-hits" ]
+}
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if ! assert_no_env_read "$REPO_ROOT/$f"; then
+        cat "$TMP/envread-hits" >&2
+        fail "9c-inventory: $f reads the environment — the Workflow runtime has none; the calling skill resolves \$RDM_BIN and passes it down"
+    fi
+done <"$TMP/rdmbin-files"
+pass "9c-inventory: no resolveRdmBin-bearing workflow file reads process.env / RDM_BIN in executable code"
+
+# Self-test: a planted env read in executable code must fire.
+cp "$REPO_ROOT/$RDMBIN_FIRST" "$TMP/envread-mutant.js"
+printf "\nconst b = process.env.RDM_BIN\n" >>"$TMP/envread-mutant.js"
+if assert_no_env_read "$TMP/envread-mutant.js"; then
+    fail "9c-inventory: the env-read detector missed a planted process.env.RDM_BIN — the gate is vacuous"
+fi
+pass "9c-inventory: the env-read detector fires on planted code while ignoring the rationale prose"
+
+# --- 9c-dogfood. The compensating control for the removed fail-closed guard ----
+# Numbered 9c-dogfood rather than 9d so the existing 9d/9e sections — which carry
+# their own planted-mutation self-tests — are not renumbered.
+say "9c-dogfood. .mise.toml pins RDM_BIN to this repo's debug build, and docs record the new contract"
+
+# rdmBin now defaults to a plain `rdm` on PATH. Inside THIS repo that default is
+# a stale global build the development-build rule forbids, so `RDM_BIN` in
+# .mise.toml is the compensating control that keeps dogfood sessions on the
+# development binary. A compensating control that is not itself gated is not a
+# control, hence this assertion.
+#
+# It asserts the VALUE SHAPE, statically, and never shells out to $RDM_BIN: CI
+# runs these harnesses without a mise environment, so a runtime dependency on the
+# exported variable would be red on every runner.
+assert_mise_sets_rdm_bin() {
+    _mise_file=$1
+    env_section=$(awk '/^\[env\]/{inenv=1;next} /^\[/{inenv=0} inenv' "$_mise_file")
+    printf '%s\n' "$env_section" | grep -qE '^[[:space:]]*RDM_BIN[[:space:]]*=' || return 1
+    # The value must be a REPO-LOCAL BUILD PATH — not a bare `rdm` (the shipped
+    # default, i.e. the exact regression this control guards) and not some
+    # arbitrary absolute path outside the repo.
+    printf '%s\n' "$env_section" |
+        grep -E '^[[:space:]]*RDM_BIN[[:space:]]*=' |
+        grep -qE 'target/debug/rdm"?[[:space:]]*$'
+}
+
+MISE_TOML="$REPO_ROOT/.mise.toml"
+[ -f "$MISE_TOML" ] || fail "9c-dogfood: $MISE_TOML is missing"
+if ! assert_mise_sets_rdm_bin "$MISE_TOML"; then
+    fail "9c-dogfood: .mise.toml [env] must set RDM_BIN to a repo-local target/debug/rdm path — it is the compensating control for rdmBin defaulting to a PATH-resolved rdm"
+fi
+pass "9c-dogfood: .mise.toml [env] pins RDM_BIN to a repo-local target/debug/rdm build"
+
+# Self-test (i): the RDM_BIN line deleted entirely -> the detector must FAIL.
+sed '/^[[:space:]]*RDM_BIN[[:space:]]*=/d' "$MISE_TOML" >"$TMP/mise-mut-deleted.toml"
+if cmp -s "$MISE_TOML" "$TMP/mise-mut-deleted.toml"; then
+    fail "9c-dogfood(i): the RDM_BIN deletion did not apply — the self-test is not exercising anything"
+fi
+if assert_mise_sets_rdm_bin "$TMP/mise-mut-deleted.toml"; then
+    fail "9c-dogfood(i): the detector accepted a .mise.toml with no RDM_BIN at all — the gate is vacuous"
+fi
+pass "9c-dogfood(i): the detector fires when RDM_BIN is removed"
+
+# Self-test (ii): RDM_BIN set to the bare shipped default -> the detector must
+# FAIL. This is the exact regression the control exists to prevent: a dogfood
+# session silently running whichever global rdm is first on PATH.
+sed 's|^[[:space:]]*RDM_BIN[[:space:]]*=.*|RDM_BIN = "rdm"|' "$MISE_TOML" >"$TMP/mise-mut-bare.toml"
+if cmp -s "$MISE_TOML" "$TMP/mise-mut-bare.toml"; then
+    fail "9c-dogfood(ii): the bare-rdm mutation did not apply — the self-test is not exercising anything"
+fi
+if assert_mise_sets_rdm_bin "$TMP/mise-mut-bare.toml"; then
+    fail "9c-dogfood(ii): the detector accepted RDM_BIN=\"rdm\" — it does not distinguish the repo-local build from the shipped default"
+fi
+pass "9c-dogfood(ii): the detector fires when RDM_BIN is downgraded to the bare shipped default"
+
+# Positive control: the detector still passes on the real file, so the two
+# self-tests above cannot be satisfied by a detector that always fails.
+if ! assert_mise_sets_rdm_bin "$MISE_TOML"; then
+    fail "9c-dogfood: the detector rejects the real .mise.toml — it always fails and proves nothing"
+fi
+pass "9c-dogfood: positive control — the detector still accepts the real .mise.toml"
+
+# The contract doc must describe the new default and the override. (An assertion
+# on a CONTRACT DOC is permitted; the categorical ban is on CHANGELOG.md alone.)
+SCHEMAS_DOC="$REPO_ROOT/docs/workflow-schemas.md"
+assert_schemas_doc_records_default() {
+    _doc_file=$1
+    grep -q 'RDM_BIN' "$_doc_file" || return 1
+    # No surviving claim that rdmBin is a required arg with no fallback.
+    # shellcheck disable=SC2016  # a literal markdown/backtick pattern, not a shell expansion
+    grep -qE '`rdmBin`[^|]*\| *\*\*yes\*\*|no fallback path at all' "$_doc_file" && return 1
+    # The no-existence-preflight rule must survive the rewrite.
+    grep -q 'existence preflight' "$_doc_file" || return 1
+    return 0
+}
+[ -f "$SCHEMAS_DOC" ] || fail "9c-dogfood: $SCHEMAS_DOC is missing"
+if ! assert_schemas_doc_records_default "$SCHEMAS_DOC"; then
+    fail "9c-dogfood: docs/workflow-schemas.md must name RDM_BIN, drop the required/no-fallback claims, and keep the no-existence-preflight rule"
+fi
+pass "9c-dogfood: docs/workflow-schemas.md records the rdm default, the RDM_BIN override, and the surviving no-preflight rule"
+
+# Self-test: reinstating the old required-arg table row must fire the detector.
+cp "$SCHEMAS_DOC" "$TMP/schemas-mut.md"
+# shellcheck disable=SC2016  # literal markdown, deliberately unexpanded
+printf '\n| `rdmBin`  | **yes**  | the executable |\n' >>"$TMP/schemas-mut.md"
+if cmp -s "$SCHEMAS_DOC" "$TMP/schemas-mut.md"; then
+    fail "9c-dogfood(iii): the schemas-doc mutation did not apply"
+fi
+if assert_schemas_doc_records_default "$TMP/schemas-mut.md"; then
+    fail "9c-dogfood(iii): the doc detector missed a reinstated required-rdmBin table row — the gate is vacuous"
+fi
+pass "9c-dogfood(iii): the doc detector fires on a reinstated required-rdmBin row"
 
 # --- 9d. Planted-mutation self-tests for 9b -----------------------------------
 say "9d. Planted-mutation self-tests: the allow-list assertion is not vacuous"

@@ -80,8 +80,11 @@ grep -q '^## Auto phase dispatch' "$SKILL" || fail "missing '## Auto phase dispa
 pass "'## Auto phase dispatch' section header present"
 
 # PER-SHIM rdmBin assertion (project-agnostic-lane): dispatch-phase's `rdmBin`
-# arg is REQUIRED and fail-closed — there is NO ambient/PATH fallback, so a
-# caller that stops passing it hard-breaks on first dispatch. Zeroing the
+# arg now DEFAULTS to a plain `rdm` on PATH, so a caller that stops passing it
+# does not hard-break — it silently runs whichever global rdm is first on PATH,
+# which inside this repo is the stale build the development-build rule forbids.
+# The check survives the contract reversal unchanged; only the failure it guards
+# changed from loud to silent. Zeroing the
 # workflow's own literals is therefore not enough; this asserts the PHASE flow's
 # own section still passes it, with this repo's development-build path. Scoped
 # to the section with awk so the sibling task flow cannot cover for it.
@@ -96,7 +99,7 @@ assert_phase_flow_rdmbin() {
     return 0
 }
 assert_phase_flow_rdmbin "$TMP/phase-dispatch-section" ||
-    fail "'## Auto phase dispatch' must pass rdmBin: \"./target/debug/rdm\" into the dispatch-phase Workflow (it is REQUIRED — the workflow errors without it rather than falling back to a global rdm)"
+    fail "'## Auto phase dispatch' must pass rdmBin: \"./target/debug/rdm\" into the dispatch-phase Workflow (omitting it silently falls back to a PATH-resolved global rdm, which is the wrong binary in this repo)"
 pass "'## Auto phase dispatch' passes rdmBin with this repo's development-build path"
 
 # Self-test: prove the assertion is not vacuous.
