@@ -14,9 +14,12 @@
 #![warn(missing_docs)]
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use rdm_core::conflict::ConflictItem;
 use rdm_core::error::{Error, Result};
+use rdm_core::session::journal::{JournalEntry, JournalKind};
+use rdm_core::session::{self, ResolvedSession, SessionPaths};
 use rdm_core::store::{DirEntry, RelPath, Store, VersionedStore};
 use rdm_store_fs::FsStore;
 
@@ -245,6 +248,11 @@ pub struct ResolveResult {
 pub struct GitStore {
     inner: FsStore,
     git: GitRepo,
+    /// Lazily resolved once per store; see [`GitStore::session`].
+    session: OnceLock<ResolvedSession>,
+    /// Where this repo's session state lives, or `None` when no state
+    /// directory could be determined at all.
+    session_paths: Option<SessionPaths>,
 }
 
 impl GitStore {
@@ -284,10 +292,7 @@ impl GitStore {
         if let Err(e) = git.ensure_gitattributes() {
             eprintln!("warning: could not install INDEX.md merge attributes: {e}");
         }
-        Ok(Self {
-            inner: FsStore::new(&root),
-            git,
-        })
+        Ok(Self::compose(FsStore::new(&root), git))
     }
 
     /// Initializes a new git repository and opens a `GitStore` for it.
@@ -325,10 +330,7 @@ impl GitStore {
         let git = GitRepo::new(root.clone(), repo.into_sync());
         git.ensure_gitattributes()?;
         git.ensure_merge_driver_config()?;
-        Ok(Self {
-            inner: FsStore::new(&root),
-            git,
-        })
+        Ok(Self::compose(FsStore::new(&root), git))
     }
 
     /// Clones a remote git repository and opens a `GitStore` for it.
@@ -398,10 +400,72 @@ impl GitStore {
         if let Err(e) = git.ensure_gitattributes() {
             eprintln!("warning: could not install INDEX.md merge attributes: {e}");
         }
-        Ok(Self {
-            inner: FsStore::new(&root),
+        Ok(Self::compose(FsStore::new(&root), git))
+    }
+
+    /// Composes a store from its two collaborators, resolving where session
+    /// state lives.
+    ///
+    /// The state directory is `<git-dir>/rdm/`: both whole-tree walks
+    /// (`build_tree_from_dir` and `collect_working_tree`) skip exactly the
+    /// name `.git`, and neither consults `.gitignore`, so this is the only
+    /// placement that is invisible to an rdm commit without changing either
+    /// walk. Nothing is created here — directories appear lazily on first
+    /// write, so a read-only plan repo still opens.
+    fn compose(inner: FsStore, git: GitRepo) -> Self {
+        let session_paths = Some(SessionPaths::for_git_dir(git.git_dir()));
+        Self {
+            inner,
             git,
-        })
+            session: OnceLock::new(),
+            session_paths,
+        }
+    }
+
+    /// Returns this process's resolved session identity for this repo.
+    ///
+    /// Resolved at most once per store and never fails; see
+    /// [`rdm_core::session::resolve_session`] for the rung chain and its
+    /// degradation guarantee. `None` only when no state directory could be
+    /// determined at all.
+    pub fn session(&self) -> Option<&ResolvedSession> {
+        let paths = self.session_paths.as_ref()?;
+        Some(
+            self.session
+                .get_or_init(|| session::resolve_system_session(paths)),
+        )
+    }
+
+    /// Returns where this repo's session state lives, if anywhere.
+    pub fn session_paths(&self) -> Option<&SessionPaths> {
+        self.session_paths.as_ref()
+    }
+
+    /// Records a flushed batch in this session's changeset journal.
+    ///
+    /// Best-effort and non-fatal, mirroring the hook logger's
+    /// swallow-failures contract: an unwritable state directory must never
+    /// fail a mutation, because this phase changes no commit or mutation
+    /// behavior. Called only *after* a successful flush, so the journal can
+    /// never claim a path that was not written.
+    fn record_journal(&self, touched: &[(RelPath, JournalKind)]) {
+        if touched.is_empty() {
+            return;
+        }
+        let Some(paths) = self.session_paths.as_ref() else {
+            return;
+        };
+        let Some(resolved) = self.session() else {
+            return;
+        };
+        let entries: Vec<JournalEntry> = touched
+            .iter()
+            .map(|(path, kind)| JournalEntry {
+                path: path.as_str().to_string(),
+                kind: *kind,
+            })
+            .collect();
+        let _ = session::journal::record(paths, &resolved.id, &entries);
     }
 
     /// Returns the root path of this store.
@@ -465,7 +529,16 @@ impl Store for GitStore {
         // Staging is the only workflow now: flush to disk and never create a
         // git commit. Use `commit_now` when a commit must land unconditionally
         // (see its docs).
-        self.inner.commit()
+        //
+        // The batch's membership is snapshotted *before* the flush (which
+        // drains the staging overlay) and journaled *after* it succeeds, so
+        // the journal can be neither a superset of what landed nor a claim
+        // about a batch that failed. Journaling writes only inside
+        // `<git-dir>/rdm/` and is best-effort — commit behavior is unchanged.
+        let touched = self.inner.staged_paths();
+        self.inner.commit()?;
+        self.record_journal(&touched);
+        Ok(())
     }
 
     fn discard(&mut self) {
@@ -2494,6 +2567,124 @@ mod tests {
             Err(e) => assert!(e.to_string().contains("not empty"), "got: {e}"),
             Ok(_) => panic!("expected error for non-empty dir"),
         }
+    }
+
+    // ---- session state: sited so both whole-tree walks miss it ----
+
+    /// Journal a real batch the way `Store::commit` does, under a pinned
+    /// explicit id so the test never depends on the runner's process tree.
+    fn journal_a_batch(store: &mut GitStore, key: &str) -> RelPath {
+        let path = RelPath::new(key).unwrap();
+        store.write(&path, "body".to_string()).unwrap();
+        store.commit().unwrap();
+        path
+    }
+
+    #[test]
+    fn commit_journals_exactly_the_flushed_paths() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        journal_a_batch(&mut store, "a.md");
+
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+        let entries = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, vec!["a.md"], "not a superset, not empty");
+        assert_eq!(entries[0].kind, JournalKind::Write);
+
+        // A staged delete journals as a delete, so the removal stays
+        // reproducible from the journal alone.
+        let path = RelPath::new("a.md").unwrap();
+        store.delete(&path).unwrap();
+        store.commit().unwrap();
+        let entries = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        assert_eq!(entries[0].kind, JournalKind::Delete);
+    }
+
+    #[test]
+    fn an_empty_flush_journals_nothing() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store.commit().unwrap();
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+        assert!(
+            !rdm_core::session::journal::changeset_path(&paths, &id).exists(),
+            "an empty batch must not leave a journal claiming it happened"
+        );
+    }
+
+    #[test]
+    fn session_state_lives_inside_the_git_dir() {
+        let dir = TempDir::new().unwrap();
+        let store = GitStore::init(dir.path()).unwrap();
+        let base = store.session_paths().unwrap().base().to_path_buf();
+        assert!(
+            base.starts_with(store.git_dir()),
+            "session state must sit inside the git dir, which both tree walks skip; got {}",
+            base.display()
+        );
+        assert!(
+            !base.exists(),
+            "state directories are created lazily on first write, never at open"
+        );
+    }
+
+    #[test]
+    fn git_status_ignores_session_state_dir() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        journal_a_batch(&mut store, "a.md");
+        store.commit_now("seed").unwrap();
+
+        // The only on-disk difference from HEAD is now the lease + journal.
+        let paths = store.session_paths().unwrap().clone();
+        assert!(
+            paths.changesets_dir().exists(),
+            "the journal really was written"
+        );
+        journal_a_batch(&mut store, "a.md"); // same content: no tree change
+        let report = store.git().git_status_report().unwrap();
+        assert!(
+            report.is_clean(),
+            "session state must be invisible to status, got {:?}",
+            report.all()
+        );
+    }
+
+    #[test]
+    fn journal_presence_does_not_change_commit_tree_or_message() {
+        fn tree_and_message(with_journal: bool) -> (String, String) {
+            let dir = TempDir::new().unwrap();
+            let mut store = GitStore::init(dir.path()).unwrap();
+            let path = RelPath::new("a.md").unwrap();
+            store.write(&path, "body".to_string()).unwrap();
+            store.commit().unwrap();
+            if !with_journal {
+                // Delete the whole state dir: the commit path must not notice.
+                let base = store.session_paths().unwrap().base().to_path_buf();
+                std::fs::remove_dir_all(&base).unwrap();
+            }
+            let statuses = store.git().git_status_report().unwrap().all();
+            let message = GitRepo::default_commit_message(&statuses);
+            store.commit_now(&message).unwrap();
+            let out = git_cmd()
+                .args(["rev-parse", "HEAD^{tree}"])
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            (
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                message,
+            )
+        }
+
+        let (with_tree, with_message) = tree_and_message(true);
+        let (without_tree, without_message) = tree_and_message(false);
+        assert_eq!(with_tree, without_tree, "journal presence changed the tree");
+        assert_eq!(with_message, without_message);
+        assert!(!with_tree.is_empty());
     }
 
     #[test]

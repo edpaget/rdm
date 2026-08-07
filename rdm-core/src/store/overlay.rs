@@ -124,6 +124,16 @@ impl StagedOverlay {
         self.staged.iter()
     }
 
+    /// Iterates over the staged keys in key order.
+    ///
+    /// Exists so a backend can snapshot the pending key set *before*
+    /// [`StagedOverlay::drain`] consumes it — a backend that journals what a
+    /// commit flushed has no other way to learn the batch's membership, since
+    /// `drain` leaves the overlay empty.
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.staged.keys()
+    }
+
     /// Removes and returns all staged entries, leaving the overlay empty.
     ///
     /// Intended for backend `commit` implementations, which apply the drained
@@ -242,6 +252,18 @@ mod tests {
             .unwrap();
         assert_eq!(content, "resurrected");
         assert!(overlay.exists("f.md", || panic!("not consulted when staged")));
+    }
+
+    #[test]
+    fn keys_snapshot_the_pending_set_before_drain_consumes_it() {
+        let mut overlay = StagedOverlay::new();
+        overlay.write("b.md", "b".to_string());
+        overlay.write("a.md", "a".to_string());
+        overlay.delete("c.md", || true).unwrap();
+        let snapshot: Vec<String> = overlay.keys().cloned().collect();
+        assert_eq!(snapshot, vec!["a.md", "b.md", "c.md"]);
+        overlay.drain();
+        assert_eq!(overlay.keys().count(), 0);
     }
 
     #[test]

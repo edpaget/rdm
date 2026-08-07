@@ -260,6 +260,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
+    /// Inspect this session's changeset identity and journal.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
     /// Author document reviews and inspect items awaiting implementation review.
     #[cfg(feature = "git")]
     #[command(
@@ -1152,6 +1157,41 @@ impl From<ReviewTransitionArg> for rdm_core::ops::reviews::ReviewTransition {
             ReviewTransitionArg::Dismissed => Self::Dismissed,
         }
     }
+}
+
+/// Observation and orphan-recovery surface over session identity.
+///
+/// Every subcommand is read-only except `adopt`, `discard`, and `gc`, and none
+/// of them touch plan data — session state lives outside the committable tree.
+#[derive(Subcommand)]
+pub(crate) enum SessionCommand {
+    /// Print this session's changeset id (add `--format json` for the rung and
+    /// resolution cost).
+    Id,
+    /// Print the paths a changeset has journaled.
+    Journal {
+        /// Changeset to read. Defaults to this session's own.
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// List every changeset on disk, flagging orphans.
+    List,
+    /// Re-point this session at an existing (usually orphaned) changeset.
+    Adopt {
+        /// Changeset id to adopt.
+        id: String,
+    },
+    /// Delete a changeset's journal.
+    Discard {
+        /// Changeset id to discard.
+        id: String,
+        /// Confirm the deletion. Required — discarding a journal is
+        /// irreversible.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove leases whose owning process is gone or whose pid was recycled.
+    Gc,
 }
 
 #[cfg(feature = "git")]

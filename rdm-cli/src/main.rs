@@ -243,6 +243,10 @@ fn run() -> Result<()> {
             commands::worktree::run(command, &root, &repo_config, format)?;
         }
 
+        Command::Session { command } => {
+            commands::session::run(&root, format, command)?;
+        }
+
         #[cfg(feature = "git")]
         Command::Review { command } => {
             let mut store = commands::make_store(&root)?;

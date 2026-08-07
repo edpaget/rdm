@@ -11,6 +11,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use rdm_core::error::{Error, Result};
+use rdm_core::session::journal::JournalKind;
 use rdm_core::store::{
     DirEntry, DirEntryKind, RelPath, StagedEntry, StagedOverlay, Store, VersionedStore,
 };
@@ -40,6 +41,30 @@ impl FsStore {
     /// Returns the root path of this store.
     pub fn root(&self) -> &std::path::Path {
         &self.root
+    }
+
+    /// Snapshots the pending (staged, not yet flushed) paths and what will
+    /// happen to each.
+    ///
+    /// This is an inherent method, deliberately not part of the [`Store`]
+    /// trait: it exists so a wrapping backend can journal exactly what a
+    /// [`Store::commit`] flushed, and it must be called *before* `commit`,
+    /// which drains the staging overlay. It reads nothing and changes nothing.
+    ///
+    /// Unparsable keys are skipped — which cannot happen in practice, since
+    /// every key entered the overlay through a validated [`RelPath`].
+    pub fn staged_paths(&self) -> Vec<(RelPath, JournalKind)> {
+        self.staged
+            .iter()
+            .filter_map(|(key, entry)| {
+                let path = RelPath::new(key).ok()?;
+                let kind = match entry {
+                    StagedEntry::Write(_) => JournalKind::Write,
+                    StagedEntry::Delete => JournalKind::Delete,
+                };
+                Some((path, kind))
+            })
+            .collect()
     }
 
     /// Resolves a `RelPath` to an absolute filesystem path.

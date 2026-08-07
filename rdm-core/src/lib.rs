@@ -43,6 +43,8 @@ pub mod paths;
 pub mod root;
 /// Fuzzy search across plan repo content (roadmaps, phases, and tasks).
 pub mod search;
+/// Session identity and the per-session changeset journal.
+pub mod session;
 /// Storage abstraction layer for plan repo data.
 pub mod store;
 /// Reserved-tag primitives (e.g. the `needs-plan-review` sentinel).
