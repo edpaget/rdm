@@ -57,7 +57,7 @@ An environment variable `RDM_SESSION=<value>` set by the invoker always takes pr
 When `RDM_SESSION` is not set, rdm resolves a long-lived ancestor process and uses its PID plus start time as a session key. This provides a stable lease that outlives individual child processes (such as a shell spawned by an agent, or an agent task spawning `rdm` subprocesses).
 
 - **Key composition**: `<ancestor_pid>:<ancestor_start_time>` (the exact separator and format are phase 4's responsibility)
-- **Ancestor selection**: Not just the immediate parent (which may be an ephemeral shell), but the nearest process that represents a long-lived session. This requires ancestry traversal beyond what `std::env::parent_id()` provides, which returns only one level. The start time must be obtained from the same ancestor to ensure uniqueness.
+- **Ancestor selection**: Not just the immediate parent (which may be an ephemeral shell), but the nearest process that represents a long-lived session. This requires ancestry traversal beyond what `std::os::unix::process::parent_id()` provides, which returns only one level. The start time must be obtained from the same ancestor to ensure uniqueness.
 - **Mechanism determination**: Phase 4 picks the exact traversal rule, but the pid+start-time key itself is binding here.
 - **Properties**: Stable (fixed for all processes in one session), Distinct (different sessions/invocations have different start times), Automatic (no user configuration needed)
 
@@ -85,7 +85,7 @@ Every mutation and commit operation must resolve a session identity by walking t
 
 ### Ancestry Traversal Required
 
-The inherited-lease mechanism (rung 2) requires traversing multiple generations of parent processes to find the long-lived ancestor, not just calling `std::env::parent_id()` (which returns only the immediate parent). This is necessary because an agent may spawn an ephemeral shell to run `rdm`, and that shell's parent is not the long-lived session — the grandparent (or further ancestor) is. The ancestor's start time must also be obtained to ensure the lease key is globally unique.
+The inherited-lease mechanism (rung 2) requires traversing multiple generations of parent processes to find the long-lived ancestor, not just calling `std::os::unix::process::parent_id()` (which returns only the immediate parent). This is necessary because an agent may spawn an ephemeral shell to run `rdm`, and that shell's parent is not the long-lived session — the grandparent (or further ancestor) is. The ancestor's start time must also be obtained to ensure the lease key is globally unique.
 
 - **Measured limitation**: An analysis on 2026-08-04 confirmed that `parent_id()` alone is insufficient and that ancestry traversal beyond the standard library is required.
 
@@ -130,24 +130,19 @@ Phase 4 must decide:
 - **Granularity**: What is the atomic unit of journaling? Per-mutation, per-batch, or per-operation type?
 - **Cleanup**: When and how are old journals pruned? On successful commit, on session exit, or on a schedule?
 
-### INDEX.md Generation Scoping
+### INDEX.md Consistency in Partial Commits
 
-**Issue:** The `generate_index_for_project` function in `rdm-core/src/ops/index.rs` rescans the live store to build index data. It does not take a list of changed files or a partial tree view as input. As currently implemented:
+**How consistency is maintained:** INDEX.md is auto-generated from individual roadmap, phase, task, and review files in the store — it is not a source of truth, but a computed artifact. When `rdm commit` constructs a partial tree (HEAD plus only the caller's journaled paths), it invokes `generate_index_for_project()` from `rdm-core/src/ops/index.rs` *after* the journaled paths have been staged. The function rescans the store and regenerates INDEX.md based on the files that are part of the partial commit tree.
 
-1. Session A writes `roadmap-a/phase-1.md` to disk but does not commit.
-2. Session B writes `roadmap-b/phase-2.md` and calls `rdm commit`.
-3. During B's commit, `generate_index_for_project` is called.
-4. The function scans the live working directory and finds both A's uncommitted file and B's file.
-5. The resulting INDEX.md (which is committed in B's tree) references `roadmap-a`, but that file is not present in B's commit tree — it is still in A's uncommitted working changes.
-6. The committed tree is inconsistent: INDEX.md references a roadmap that does not exist in that commit's view of the repository.
+The regeneration step is **commit-free** — it occurs within the mutation transaction, before the git commit is written. This ensures that:
 
-**Solution required:** Phase 4 must scope index generation so that it builds indices from the partial tree (HEAD plus the caller's journaled paths) rather than from the live working directory. This ensures that INDEX.md is consistent with the files actually being committed. Options include:
+1. INDEX.md is regenerated from the files actually present in the changeset being committed (HEAD plus journaled paths).
+2. The resulting INDEX.md in the committed tree correctly references all and only the roadmaps, phases, and tasks that exist in that commit.
+3. Uncommitted files from other sessions are not indexed — they do not appear in the committed INDEX.md.
 
-- Passing the partial tree (or list of paths) to the index-generation functions so they only scan committed-or-journaled paths, or
-- Building indices in memory against an in-memory tree view, or
-- Other mechanisms that ensure regeneration is scoped to the changeset being committed.
+**Mechanical consistency guarantee:** Because `generate_index_for_project` rescans based on the actual file system state *after* the caller's mutations are staged (and before any git merge occurs), the partial tree is internally consistent. A committed tree that contains roadmaps A and B will have an INDEX.md that references only A and B. If Session A has written files that are not yet committed, those files do not appear in B's committed tree, and B's INDEX.md correctly omits them.
 
-This scoping decision is phase 4's responsibility; it is not settled here.
+This consistency is mechanical — a direct consequence of regenerating indices from the files that are part of the changeset being committed, without any merge conflict resolution or drift. The rdm-index merge driver is orthogonal and does not participate in changeset-scoped commits.
 
 ### CLI Surface for Session Display and Management
 
@@ -162,7 +157,7 @@ These are user-facing details that can be refined iteratively; the core model do
 
 **Measurement date**: 2026-08-04
 
-- **Parent ID limitation**: `std::env::parent_id()` returns only the immediate parent process. For an agent that spawns a shell to run `rdm`, the shell's parent is the ephemeral process, not the long-lived agent session. Reaching the session requires ancestry traversal.
+- **Parent ID limitation**: `std::os::unix::process::parent_id()` returns only the immediate parent process. For an agent that spawns a shell to run `rdm`, the shell's parent is the ephemeral process, not the long-lived agent session. Reaching the session requires ancestry traversal.
 - **Necessity of start time**: PID reuse on Unix means that a process ID alone is not globally unique across time. The start time must be combined with the PID to ensure the lease key is unique.
 - **Lease key composition**: The inherited lease is identified by the combination **pid plus start time** of the nearest long-lived ancestor process. This composite key is globally unique across all invocations and ensures distinct sessions even when process IDs are reused.
 
