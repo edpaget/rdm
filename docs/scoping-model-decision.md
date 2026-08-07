@@ -1,332 +1,194 @@
-# Session-Scoped Changeset Attribution: Decision Record
+# Scoping Model Decision: Session-Scoped Changeset Attribution
 
 ## Executive Summary
 
-This decision record documents the chosen design for handling concurrent sessions sharing one plan repository (`$RDM_ROOT`). The core problem: two concurrent agents can race when both mutate and commit to the same git repository, with no isolation between their changesets. The solution is **Option A: session-scoped changeset identity** — each session journals the paths it touches, and `rdm commit` builds a tree from HEAD plus only the caller's journaled paths. Another session's dirty tree is irrelevant to what lands.
-
-This is a decision-level document; implementation details (journal format, CLI surface granularity, stopping rule exact logic) are phase 4's responsibility.
+This document records the decision to implement **Option A: Changeset Attribution** for handling concurrent sessions sharing a single `$RDM_ROOT` plan repository. Sessions are identified by a four-rung resolution chain (highest precedence first: explicit `RDM_SESSION`, inherited lease, harness variables, per-process fallback), and mutations are journaled by session so that `rdm commit` builds git trees from HEAD plus only the caller's journaled paths. Another session's uncommitted changes do not affect what lands. This approach is chosen over Option B (commit per mutation) because it preserves readability of the git history while still eliminating session cross-contamination.
 
 ## Problem Statement
 
-### The Race Condition
+The rdm CLI mutates a shared plan repository (`$RDM_ROOT`) that may be accessed by multiple concurrent sessions or agents. Without session scoping:
 
-When multiple concurrent sessions (e.g., parallel agent invocations, human and agent working together) share one plan repository:
+- **Race condition (session cross-contamination)**: Session A stages mutations (writes files to disk) but does not commit. Session B stages its own mutations and commits. The git commit captures both A's and B's changes, even though B's `rdm commit` should only land B's work. This violates the principle that each session controls only its own work product.
 
-1. Session A creates a task, writes to disk, then waits to call `rdm commit`
-2. Session B creates a different task, writes to disk, then calls `rdm commit` first
-3. Session B's commit lands both its task AND any uncommitted changes from Session A's workspace
-4. Session A's subsequent `rdm commit` now lands work that was already committed by Session B
+- **Staging area semantics**: The current system uses disk-based staging (mutations write directly to the shared working tree). Without session scoping, there is no way to distinguish which uncommitted changes belong to which session.
 
-This violates the principle that each session controls only its own work. The changeset attribution model solves this by making each session's mutations traceable and independently committable.
+- **Requirement**: The model must satisfy three properties simultaneously:
+  1. **Stable** across processes in one session
+  2. **Distinct** between concurrent sessions sharing one `$RDM_ROOT`
+  3. **Automatic** when unset (no burden on users or agents to manually configure)
 
-### Requirements
+## Option A: Changeset Attribution (Chosen)
 
-Any solution must satisfy three binding properties:
+**Design:** Each session is assigned a stable, unique changeset identity that outlives individual processes. Mutations are journaled by session — each mutation records the file paths it touches. When `rdm commit` is invoked, it:
 
-- **Stable** across processes within one session — a session identity persists even when spawning subprocesses
-- **Distinct** between concurrent sessions sharing one `$RDM_ROOT` — no cross-contamination
-- **Automatic** when unset — operators should not be required to manually set session IDs for normal workflows
+1. Identifies the caller's session identity (resolving the four-rung chain below)
+2. Retrieves the journal of paths mutated by that session
+3. Builds a git tree from HEAD plus only the caller's journaled paths
+4. Commits that partial tree
 
-## Option A: Session-Scoped Changeset Identity
+**Consequence:** Another session's uncommitted changes are irrelevant to what lands. If Session A has written `roadmap-a/phase-1.md` to disk but not committed, and Session B commits, the resulting git tree contains only the paths Session B journaled — roadmap-a's uncommitted file is excluded, even though it exists in the working directory. The git log shows a clean history: each commit reflects exactly one session's batch of work.
 
-### Design Overview
+**Status display:** `rdm status` can be configured to show either the caller's own journaled changeset or the entire working tree, depending on context.
 
-**Session-scoped changeset identity** outlives a single process. Each session maintains a durable identity for the duration of its work, independent of any individual process's lifetime.
+## Option B: Commit Per Mutation (Rejected)
 
-Mutations journal the file paths they touch. When a session calls `rdm commit`, it:
+One commit per `task create`, `phase create`, `task update`, etc. This eliminates the staging area entirely and makes cross-session contamination impossible by definition — there is nothing to race on.
 
-1. Stages only the paths journaled by that session since the last commit
-2. Commits those paths to git
-3. Leaves other sessions' dirty working-tree changes untouched
+**Rejection rationale:**
 
-The key insight: another session's dirty tree is irrelevant to what lands. Session B can call `rdm commit` while Session A has uncommitted changes in the working tree — Session B's commit includes only the paths Session B touched.
+The strongest argument for this option is real and must be recorded exactly as follows:
 
-### `rdm status` Visibility
+> There is no staging area, so there is nothing to race on and nothing for an agent to misunderstand — the confusion goes away by deletion rather than by better documentation.
 
-The `rdm status` command can provide two views:
+This simplification by deletion is genuine. However, Option B loses on history quality, not on implementation cost. The rdm project has had this behavior and dropped it because one commit per `task create` makes the log unreadable as a narrative. Users expect to batch related mutations (a roadmap plus all its phases, or a status update plus a follow-on task) into a single commit message that describes the unit of work. Option A preserves that quality while still solving the concurrency problem.
 
-- **Caller's view**: show only the paths this session has journaled since the last commit
-- **Tree view**: show all uncommitted changes in the working tree (useful for debugging cross-session state)
+## Session Identity Chain
 
-This flexibility allows operators to see both focused session progress and the full repository state when needed.
+Session identity is resolved in this order (highest precedence first). The spellings below are **binding**, not examples; implementations must use these exact terms.
 
-### Practical Example
+### Rung 1: Explicit `RDM_SESSION` (Always Wins)
 
-1. Session A: `rdm task create fix-bug-1 ...` → journals `tasks/fix-bug-1.md`
-2. Session B: `rdm task create fix-bug-2 ...` → journals `tasks/fix-bug-2.md`
-3. Session B: `rdm commit -m "..."` → commits only `tasks/fix-bug-2.md` (Session B's journal)
-4. Session A: `rdm commit -m "..."` → commits only `tasks/fix-bug-1.md` (Session A's journal)
+An environment variable `RDM_SESSION=<value>` set by the invoker always takes precedence. This is the escape hatch for scripts and CI systems that need deterministic, reproducible identities.
 
-Both commits land cleanly; there is no race.
-
-## Option B (Rejected): Commit Per Mutation
-
-### The Proposal
-
-An alternative approach: every mutation (`task create`, `roadmap update`, etc.) immediately commits to git. No staging area, no deferred commit, no multi-step workflow.
-
-### Strongest Argument for Option B
-
-From the phase direction: "Its strongest argument is real and must be recorded in these terms: there is no staging area, so there is nothing to race on and nothing for an agent to misunderstand — the confusion goes away by deletion rather than by better documentation."
-
-This argument is sound in isolation: by eliminating the staging area altogether, the conceptual model becomes simpler. An agent cannot accidentally conflate its staged changes with another session's work because staging does not exist. The race condition is deleted, not solved.
-
-### Why Option A Wins
-
-Option B loses on **history quality**, not implementation cost.
-
-rdm's original behavior was exactly this: one commit per mutation. The model was simple, but the git log became unreadable. A roadmap creation followed by four phase creations would produce five separate commits, obscuring the logical unit-of-work (one roadmap + its phases, created together). Operators reviewing the history could not see the cohesive story of what was built.
-
-Option A allows batching related mutations into one narrative commit:
-
-```
-feat(plan): implement auth-flow roadmap with 3 phases
-
-Done: auth-flow/phase-1-login
-Done: auth-flow/phase-2-session-mgmt
-Done: auth-flow/phase-3-logout
-```
-
-This reads as a coherent change. Option B would have produced seven commits (one roadmap + three phases + three Done: directives on merge).
-
-**The choice: readable history (Option A) over algorithmic simplicity (Option B).**
-
-## Session Identity Resolution Chain
-
-The session identity is determined by a four-rung resolution chain, evaluated in strict precedence order. Each rung must satisfy the three properties (stable, distinct, automatic). This chain is **binding on all implementations** — the exact spellings and precedence listed below are not examples; they are the contract.
-
-### Rung 1: Explicit `RDM_SESSION` Environment Variable
-
-**Highest precedence.** If `RDM_SESSION` is set, use its value as the session identity. This is the escape hatch for scripts, CI pipelines, and cases where explicit identity is required.
-
-- **Stable**: yes — operator-supplied, does not change within the session
-- **Distinct**: yes — operator can supply different values for different sessions
-- **Automatic**: no — requires explicit setup, but opt-in
+- **Properties**: Stable (caller controls it), Distinct (each caller can pick a unique value), Automatic (only if explicitly set; optional)
 
 ### Rung 2: Inherited Lease (Pid + Start Time)
 
-If `RDM_SESSION` is not set, attempt to identify a long-lived parent process that represents the session. The key is **pid plus start time** (not pid alone).
+When `RDM_SESSION` is not set, rdm resolves a long-lived ancestor process and uses its PID plus start time as a session key. This provides a stable lease that outlives individual child processes (such as a shell spawned by an agent, or an agent task spawning `rdm` subprocesses).
 
-- **Why both?** Pid alone is reusable; processes terminate and their pids are recycled. A child process needs a stable anchor. Start time (when the process was spawned) is immutable and makes each process incarnation unique. The combination of pid + start time forms a stable identifier for the session's root ancestor.
-- **Ancestry traversal**: reaching the session ancestor requires traversal beyond direct parent — the immediate parent of an rdm invocation in an agent context is often an ephemeral shell, not the session root. The true session anchor is the grandparent or higher. This requires custom ancestry logic beyond standard library functions.
-- **Lease semantics**: the inherited lease outlives the process that inherited it. If a session spawns process A, then A spawns process B, both B and its children inherit A's session identity until the session ends.
-
-- **Stable**: yes — determined once at the session root, inherited by all descendants
-- **Distinct**: yes — different session roots have different pids or start times
-- **Automatic**: yes — inferred from process ancestry
+- **Key composition**: `<ancestor_pid>:<ancestor_start_time>` (the exact separator and format are phase 4's responsibility)
+- **Ancestor selection**: Not just the immediate parent (which may be an ephemeral shell), but the nearest process that represents a long-lived session. This requires ancestry traversal beyond what `std::env::parent_id()` provides, which returns only one level. The start time must be obtained from the same ancestor to ensure uniqueness.
+- **Mechanism determination**: Phase 4 picks the exact traversal rule, but the pid+start-time key itself is binding here.
+- **Properties**: Stable (fixed for all processes in one session), Distinct (different sessions/invocations have different start times), Automatic (no user configuration needed)
 
 ### Rung 3: Documented Harness Session Variables
 
-If no inherited lease is found (e.g., a top-level process with no long-lived parent), check for documented harness-specific session variables. These provide an adoption path for different execution environments (CI systems, IDE plugins, orchestration tools).
+An extensible list of harness-specific environment variables (e.g., `CLAUDE_CODE_SESSION_ID` from Claude Code) can provide session identity if set. This is an adoption path: tools that already track their own session IDs can be wired in here.
 
-Example: `CLAUDE_CODE_SESSION_ID` — if set by Claude Code, use it as the session identity.
+- **Precedence**: Lower than explicit `RDM_SESSION` and inherited lease, higher than the fallback
+- **Properties**: Stable (harness maintains it), Distinct (harness-specific, not reused across tools), Automatic (if the harness sets it)
 
-Other harnesses may define additional variables (e.g., `GITHUB_ACTIONS_RUN_ID`, `TERRAFORM_STATE_SESSION`, etc.). The set of recognized variables is extensible and must be documented.
+### Rung 4: Per-Process Changeset (Always Resolves)
 
-- **Stable**: yes — provided by the harness for the duration of the session
-- **Distinct**: yes — each harness invocation gets a unique id
-- **Automatic**: yes — harness supplies it
+When none of the above provide a session identity, each process gets a fresh, unique changeset. This is the fallback that always resolves and ensures the model never fails to make progress.
 
-### Rung 4: Fresh Per-Process Changeset (Fallback)
+- **Consequence**: Mutations from this process are never combined with other processes' work in a single `rdm commit` (since they have no shared session identity), and they will not be committed if another session calls `rdm commit` first.
+- **Properties**: Stable (for a single process only), Distinct (by definition, each process is unique), Automatic (requires no configuration; rung 4 always resolves)
 
-If all else fails, treat each process as its own session. Create a fresh session identity for this process alone.
+## Key Decisions (Binding on Phase 4)
 
-- This rung **always resolves** — there is never a case where identity resolution fails entirely.
-- A fresh per-process changeset means the mutations from this process will be journaled separately and can only be committed by this process (or a session that inherits its identity).
-- If a process creates mutations and never calls `rdm commit`, those mutations are journaled but not landed. A subsequent process cannot land them (different session identity).
+The following decisions are binding and constrain phase 4's implementation. Phase 4 is responsible for the items marked "phase 4 to decide" below.
 
-- **Stable**: only within a single process (identity ends when process exits)
-- **Distinct**: yes — each process gets a distinct identity
-- **Automatic**: yes — default fallback
+### Session Identity is Mandatory
 
-### Binding Decisions
+Every mutation and commit operation must resolve a session identity by walking the four-rung chain above. The identity must be stable across the lifetime of that session, distinct from other concurrent sessions, and automatically determined without user intervention.
 
-The four-rung chain above is **binding**. The exact spellings (`RDM_SESSION`, the reference to pid+start_time, `CLAUDE_CODE_SESSION_ID` as the first harness example) are not guidelines; they are the contract that implementations and downstream consumers can rely on.
+### Ancestry Traversal Required
 
-The precedence order is also binding: explicit env var always wins, inherited lease is checked before harness variables, fallback is last.
+The inherited-lease mechanism (rung 2) requires traversing multiple generations of parent processes to find the long-lived ancestor, not just calling `std::env::parent_id()` (which returns only the immediate parent). This is necessary because an agent may spawn an ephemeral shell to run `rdm`, and that shell's parent is not the long-lived session — the grandparent (or further ancestor) is. The ancestor's start time must also be obtained to ensure the lease key is globally unique.
 
-## Key Decisions Binding on All Implementations
+- **Measured limitation**: An analysis on 2026-08-04 confirmed that `parent_id()` alone is insufficient and that ancestry traversal beyond the standard library is required.
 
-### Pid + Start Time is Required
+### Stopping Rule (Phase 4 to Decide)
 
-**Measured:** 2026-08-04. Testing confirmed that `parent_id()` (retrieving the immediate parent pid) is insufficient. The session anchor is often the grandparent or higher in the ancestry chain, not the direct parent.
+At some point in the ancestry chain, traversal must stop — we cannot walk all the way to PID 1. The choice of where to stop involves asymmetric failure modes:
 
-**Why ancestry traversal matters:** an agent invocation typically has this structure:
+- **Stopping too HIGH** (walking too far up, toward the root): Merges concurrent sessions into one session identity. Two independent agents would share the same lease key and their work would be combined in a single `rdm commit`. This reintroduces the race condition this roadmap exists to eliminate. ⚠️ Unacceptable.
+- **Stopping too LOW** (stopping early, staying close to the invoking process): Fragments a single session's work across multiple changesets. If the session has multiple child processes (e.g., an agent spawning multiple tool invocations), each might get its own session identity by accident, and their work would be committed separately. This is suboptimal but does not reintroduce cross-contamination. ✓ Acceptable.
 
-```
-agent (long-lived) — pid: 1000, start: T0
-  └─ shell invocation (ephemeral) — pid: 1001, start: T1
-    └─ rdm process (ephemeral) — pid: 1002, start: T2
-```
+**Preferred asymmetry**: Prefer stopping low. Fragmenting one session's batch is less harmful than merging two sessions' work.
 
-The rdm process should inherit the agent's session (pid 1000, start T0), not the shell's (pid 1001, start T1). Reaching the agent requires traversal beyond the immediate parent.
+**Who decides**: Phase 4 determines the exact stopping rule (e.g., "stop at the first process with a session variable set", "stop at the session leader", "traverse up to a known harness boundary"), but the asymmetric-failure principle above is binding.
 
-**Standard library limitation:** Rust's `std::process` and `std` do not expose process ancestry traversal or start times. Phase 4 must implement this with platform-specific code (likely via `libc` or equivalent).
+### Git Hooks and Session Identity
 
-**Binding decision:** The session identity mechanism MUST use pid + start time from an inherited long-lived ancestor, not direct parent alone. Phase 4 picks the exact stopping rule and ancestry traversal implementation.
+When a git hook (such as `post-merge` or `post-commit`) is spawned as a subprocess of an rdm operation (e.g., `rdm commit` runs `git merge --ff-only`, which triggers the `post-merge` hook), the hook inherits the session identity from its parent rdm process and joins the same session's changeset. This is correct behavior — the hook's work is part of the same logical transaction.
 
-### Stopping Rule: Asymmetric Failure Modes
+When a git hook is spawned outside of any rdm-initiated git operation (e.g., a user runs `git merge` manually), the hook has no inherited session identity and resolves to rung 4 (per-process changeset). In this case, the hook's mutations are isolated to that process and are not combined with other sessions' work.
 
-The stopping rule determines where to halt ancestry traversal — when to decide "this is the session root" and go no higher.
+**Degradation guarantee**: The identity resolution chain must not assume the `RDM_GIT_SUBPROCESS` environment variable or any other short-circuit flag was fired. If a hook cannot determine a session identity through the normal four-rung chain, it must degrade gracefully to rung 4, not error or hang. This is critical for reliability on the bounded `hook_timeout_secs` path.
 
-**Two failure directions:**
+### Which Interaction Layers Are Covered
 
-1. **Stopping too high** (traversing beyond the session root): This merges concurrent sessions. If Session A's root is pid 1000 and Session B's root is pid 2000, but we traverse past both to find a common ancestor (e.g., the invoking shell or init), both sessions are treated as the same identity and their changesets are merged. **This reproduces the original race bug.** Severity: catastrophic.
+**CLI**: Fully covered. The `rdm` command-line tool reads/mutates/commits, and all three operations are scoped to the caller's session identity.
 
-2. **Stopping too low** (traversing too little): We decide the session root earlier than the true root, so some processes that should share a session get separate identities. A single batch of work might be split across two commits instead of one. **This only fragments one batch.** Severity: suboptimal, but not broken.
+**MCP**: Fully covered. The MCP server exposes read/mutate/commit operations with the same session identity semantics as the CLI. An MCP client can batch its mutations and commit them under a single session.
 
-**The asymmetry is clear:** HIGH is dangerous (reproduces the bug), LOW is acceptable (single-batch fragmentation).
+**rdm-server**: Open question for phase 5. The REST API server mutates the same plan repository but does not expose a commit endpoint (it is stateless and never commits). Mutations are written to disk immediately. The question of whether `rdm-server` should journal mutations and provide session scoping (and what "commit" means for a stateless server) is an operational/deployment decision that phase 5 will settle. For now, assume `rdm-server` bypasses the session model entirely.
 
-**Binding decision:** Prefer stopping low. The exact stopping rule (e.g., "stop when you reach a process that was spawned more than N seconds ago" or "stop at the first non-shell process") is phase 4's to decide, informed by this asymmetry.
+### Merge Driver (Out of Scope)
 
-### Git Hooks Under Agent Spawns
+The rdm-index merge driver (`rdm-store-git/src/repo.rs`) automatically regenerates `INDEX.md` when git detects conflicts during a merge. However, changesets never merge — a changeset-scoped commit constructs its tree from HEAD plus the caller's journaled paths (a linear operation, no merge conflict resolution). Therefore, the rdm-index merge driver is not involved in changeset-scoped commits and is orthogonal to this decision.
 
-When `rdm hook post-merge` or `rdm hook post-commit` fires as a result of an agent's own `git merge` or `git commit`:
+## Open Questions (Deferred to Phase 4 or Later)
 
-- **The hook inherits the agent's session identity** (via the inherited lease mechanism above or via environment variables).
-- **The hook's mutations are journaled to the same session** as the agent.
-- This is **correct behavior**: the hook is part of the same session's work; its changes should land in the same commit batch.
+### Journal Implementation Details
 
-When a git hook fires outside any session context (e.g., a manual `git merge` from a terminal, or a commit from a different CI system):
+Phase 4 must decide:
+- **On-disk layout**: Where and how are journals stored? Per-session file, in-memory structure, or other?
+- **Serialization format**: JSON, JSONL, binary, or?
+- **Granularity**: What is the atomic unit of journaling? Per-mutation, per-batch, or per-operation type?
+- **Cleanup**: When and how are old journals pruned? On successful commit, on session exit, or on a schedule?
 
-- The hook gets a fresh per-process changeset identity (rung 4 fallback).
-- The hook's mutations are journaled separately and can only be committed by that hook process itself.
-- **Graceful degradation:** the hook must not assume the `RDM_GIT_SUBPROCESS` short-circuit already fired (see CLAUDE.md for the short-circuit semantics). Identity resolution must re-run and pick rung 4 independently.
+### INDEX.md Generation Scoping
 
-**Binding decision:** Hooks must support both paths (in-session via inherited identity, and out-of-session via rung 4 fallback) and degrade gracefully. The `hook_timeout_secs`-bounded execution path must never assume a prior identity resolution succeeded.
+**Issue:** The `generate_index_for_project` function in `rdm-core/src/ops/index.rs` rescans the live store to build index data. It does not take a list of changed files or a partial tree view as input. As currently implemented:
 
-## Open Questions (Phase 4 & Phase 5 Responsibilities)
+1. Session A writes `roadmap-a/phase-1.md` to disk but does not commit.
+2. Session B writes `roadmap-b/phase-2.md` and calls `rdm commit`.
+3. During B's commit, `generate_index_for_project` is called.
+4. The function scans the live working directory and finds both A's uncommitted file and B's file.
+5. The resulting INDEX.md (which is committed in B's tree) references `roadmap-a`, but that file is not present in B's commit tree — it is still in A's uncommitted working changes.
+6. The committed tree is inconsistent: INDEX.md references a roadmap that does not exist in that commit's view of the repository.
 
-### Journal On-Disk Layout and Serialization
+**Solution required:** Phase 4 must scope index generation so that it builds indices from the partial tree (HEAD plus the caller's journaled paths) rather than from the live working directory. This ensures that INDEX.md is consistent with the files actually being committed. Options include:
 
-Phase 4 decides:
+- Passing the partial tree (or list of paths) to the index-generation functions so they only scan committed-or-journaled paths, or
+- Building indices in memory against an in-memory tree view, or
+- Other mechanisms that ensure regeneration is scoped to the changeset being committed.
 
-- **Storage format**: how are journaled paths written to disk? (e.g., `.rdm-session-<id>.journal` files, a single `$RDM_ROOT/.rdm/journal.json`, or embedded in a `.git` object)
-- **Granularity**: do we journal individual file paths, or path prefixes, or something coarser?
-- **Serialization**: plain text, JSON, binary, or other?
+This scoping decision is phase 4's responsibility; it is not settled here.
 
-These decisions are phase 4's; the scoping model itself does not depend on them.
+### CLI Surface for Session Display and Management
 
-### Stopping Rule Exact Threshold
+Phase 4 must decide how users and agents interact with the session model:
+- Does `rdm status` show only the caller's changeset, the whole tree, or both with flags?
+- Is there an `rdm session info` or similar command to inspect the current session identity?
+- Can users or scripts inspect the journal (for debugging) with a command like `rdm status --debug-journal`?
 
-Phase 4 decides the specific stopping condition for ancestry traversal — the rule that determines "when have we reached the session root?"
+These are user-facing details that can be refined iteratively; the core model does not depend on them.
 
-Possible approaches:
+## Appendix A: Measured Data
 
-- Timing-based: stop when you reach a process older than N seconds
-- Structure-based: stop at the first non-ephemeral process (not a shell, not an rdm subprocess)
-- Combination: reach a process that is both old AND non-shell-like
+**Measurement date**: 2026-08-04
 
-Phase 4 picks the rule, informed by the asymmetry analysis (prefer low).
+- **Parent ID limitation**: `std::env::parent_id()` returns only the immediate parent process. For an agent that spawns a shell to run `rdm`, the shell's parent is the ephemeral process, not the long-lived agent session. Reaching the session requires ancestry traversal.
+- **Necessity of start time**: PID reuse on Unix means that a process ID alone is not globally unique across time. The start time must be combined with the PID to ensure the lease key is unique.
+- **Lease key composition**: The inherited lease is identified by the combination **pid plus start time** of the nearest long-lived ancestor process. This composite key is globally unique across all invocations and ensures distinct sessions even when process IDs are reused.
 
-### CLI Surface for Session Debugging
+## Appendix B: Implementation Notes
 
-Phase 4 decides how operators can inspect and debug session identity:
+### Binding Spellings
 
-- Does `rdm status --session-only` show the caller's journaled changes?
-- Does `rdm config show session` display the current session identity?
-- Are there any `--session <id>` override flags?
+The following environment variable names and terms are **not** up for reinterpretation:
+- `RDM_SESSION` — the explicit escape hatch
+- `CLAUDE_CODE_SESSION_ID` — example of harness variable; extensible list in phase 4
+- `inherited lease` — rung 2's mechanism name
+- `per-process changeset` — rung 4's mechanism name
 
-These are usability and observability decisions; the scoping model is independent of the CLI surface.
+### Journal Isolation
 
-### Which Interaction Layers Are Covered?
+Once a session's journal is created (or inherited from a parent), all mutations within that session are written to the same journal. The journal is not shared across sessions. This is the core isolation mechanism.
 
-The scoping model is designed to work with the **CLI** and **MCP** interfaces (both read and mutate the plan repo and call `rdm commit`).
+### Partial Tree Commitment
 
-**rdm-server** is an **open question**:
+When `rdm commit` is called:
+1. The git tree is constructed from two sources:
+   - The current HEAD tree (the baseline)
+   - The caller's journaled paths (the additions/changes)
+2. This hybrid tree is what is committed to git. It is a clean snapshot of the work from one session only.
+3. Any uncommitted changes from other sessions are excluded from this tree by definition.
 
-- rdm-server provides a REST API over the plan repository. It mutates the same store as the CLI and MCP interfaces.
-- However, rdm-server typically runs as a daemon and **never calls `rdm commit`** — commits are deferred to the orchestrating layer.
-- Should rdm-server's mutations be journaled and attributed to a session? Or should rdm-server operate outside the session model, leaving journaling to the application layer?
+### Determinism and Idempotency
 
-**This is a phase 5 decision**, informed by rdm-server's deployment model and the operator's choice of orchestration.
-
-Current assumption: the scoping model fully covers CLI and MCP. rdm-server's disposition is deferred to phase 5.
-
-## INDEX.md Consistency Under Partial Commits
-
-### Auto-Generated INDEX.md is Not a Merge Conflict Source
-
-`INDEX.md` is auto-generated from the individual roadmap/phase/task/review markdown files. It is never edited by hand; it is a derived artifact. The source of truth is the individual files.
-
-When `rdm commit` builds a partial tree (only the caller's journaled paths):
-
-1. The individual roadmap/phase/task files that were mutated by this session are included in the commit.
-2. After staging the caller's paths, **rdm automatically regenerates INDEX.md from those files** (via `generate_index_for_project` in `rdm-core/src/ops/index.rs`).
-3. `INDEX.md` is then included in the same commit as the individual files.
-
-### Mechanical Consistency Guarantee
-
-The partial commit's INDEX.md is **automatically consistent** with the individual files that were just committed, because it is regenerated from them. There is no manual merge conflict risk and no possibility of drift.
-
-Consider the sequence:
-
-1. Session A commits phase file `roadmap-a/phase-1-foo.md`
-2. Session B commits phase file `roadmap-b/phase-2-bar.md`
-3. Session A's commit regenerates INDEX.md from its committed files (includes roadmap-a entries)
-4. Session B's commit regenerates INDEX.md from its committed files (includes roadmap-b entries)
-
-If Session A's commit lands first, then Session B's commit lands second, Session B's regeneration of INDEX.md will include entries from both roadmap-a (unchanged in HEAD since Session A committed) and roadmap-b (newly committed by Session B). Consistency is maintained because INDEX.md is regenerated from the live files, not from a prior snapshot.
-
-### Key Insight
-
-Partial commits do not require special conflict-resolution logic for INDEX.md, because INDEX.md is not a source of truth — it is a cacheable output. Regenerate it from the source files at commit time, and it is always correct.
-
-## The rdm-index Merge Driver is Out of Scope
-
-### What is the rdm-index Merge Driver?
-
-The rdm-index merge driver is custom git merge logic (defined in `rdm-store-git/src/repo.rs` and configured via `.gitattributes`) that fires during `git merge` to automatically regenerate `INDEX.md` when there are conflicts. It ensures that `INDEX.md` is always consistent after a merge.
-
-### Why It Doesn't Apply to Changesets
-
-**Changesets never perform git merges.** The session-scoped changeset model commits from HEAD plus the caller's journaled paths. There is no merge operation — the tree is built directly from HEAD by including only the changed files.
-
-Therefore, the merge driver is not involved in changeset-scoped commits. It is orthogonal.
-
-### Separate Concern
-
-The merge driver is relevant to other scenarios:
-
-- Manual `git merge` of branches
-- Multi-party development where different branches are merged into main
-
-But it is not part of the session-scoped changeset model. It is a separate mechanism for a separate problem (merge conflict resolution during integration).
-
-**Binding decision:** The rdm-index merge driver is explicitly out of scope for changesets. Implementations must not invoke merge logic during a changeset-scoped `rdm commit`.
-
-## Appendices
-
-### Measurement Data
-
-- **pid+start-time sufficiency**: confirmed 2026-08-04 via testing that `parent_id()` alone is insufficient for identifying session ancestors in agent contexts. Custom ancestry traversal is required.
-
-### Related Concepts (Not Decided Here)
-
-- **`RDM_GIT_SUBPROCESS` short-circuit** (mentioned in CLAUDE.md): a separate mechanism that prevents `rdm hook post-merge`/`post-commit` from re-triggering themselves when fired by rdm's own git operations. This is distinct from session identity resolution but related in hook execution flow.
-
-- **Phase Commit Hook (`Done:` convention)**: unrelated to session identity. The `Done: <roadmap>/<phase>` directive in commit messages is a separate mechanism for marking phase completion. It operates independently of session boundaries.
-
-### Implementation Notes for Phase 4
-
-When implementing this decision:
-
-1. **Session identity is separate from changeset journaling.** The identity is determined first (via the four-rung chain), then used as a key for the journal.
-
-2. **Journal persistence.** The session identity and journaled paths must persist across process boundaries (e.g., if Process A is a shell that spawns Process B, both must see the same journal). File system storage (e.g., `.git` or a `.rdm` directory) is likely necessary.
-
-3. **Transaction semantics.** A single `rdm commit` is a transaction: stage the caller's paths, regenerate INDEX.md, and commit all together. If any step fails, roll back the entire operation.
-
-4. **Backward compatibility.** Non-session contexts (e.g., a user running rdm manually) should still work. Rung 4 (per-process changeset) ensures this.
-
-### References
-
-- **rdm-core/src/ops/index.rs**: houses `generate_index_for_project` and the INDEX.md regeneration logic.
-- **rdm-store-git/src/repo.rs**: defines the rdm-index merge driver configuration.
-- **CLAUDE.md (project instructions)**: Session identity resolution and git hook behavior are discussed in the "Hard rule — no direct access to the plan repo" section and surrounding content.
-
----
-
-**Decision:** Session-scoped changeset identity (Option A) is the chosen design.
-
-**Status:** Documentation only. No implementation code or behavior changes in this phase. Phase 4 carries the implementation; Phase 5 decides rdm-server's scope.
+The session identity resolution must be deterministic: invoking `rdm` twice in the same process context must resolve to the same session identity. This is necessary for batching and for reliable error recovery.
