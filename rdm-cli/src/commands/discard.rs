@@ -40,15 +40,8 @@ pub fn run(root: &Path, force: bool) -> Result<()> {
             .git()
             .git_discard()
             .context("failed to discard changes")?;
-        let derived = report.derived.len();
-        if derived > 0 {
-            println!(
-                "Discarded {} file(s) (plus {derived} regenerated index file(s)).",
-                report.user.len()
-            );
-        } else {
-            println!("Discarded {} file(s).", report.user.len());
-        }
+        // Shared with the MCP `rdm_discard` tool so the two can never disagree.
+        println!("{}", report.discard_summary());
         for fs in &report.user {
             let prefix = match fs.change {
                 rdm_store_git::FileChange::Added => "  removed:  ",

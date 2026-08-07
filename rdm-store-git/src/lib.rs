@@ -111,6 +111,52 @@ impl StatusReport {
         all.sort_by(|a, b| a.path.cmp(&b.path));
         all
     }
+
+    /// Returns the one-line summary a caller prints after committing this
+    /// report's changes.
+    ///
+    /// Lives here, not in each interface, so `rdm commit` and the MCP
+    /// `rdm_commit` tool can never disagree about how the same report is
+    /// summarized. Follows the crate rule above: the count is `user`, and
+    /// `derived` is named separately rather than folded in or hidden.
+    ///
+    /// Only meaningful when the report is not [`is_clean`](Self::is_clean) —
+    /// callers gate on that first and print their own no-op message.
+    pub fn commit_summary(&self) -> String {
+        let derived = self.derived.len();
+        if self.user.is_empty() {
+            format!("Committed {derived} regenerated index file(s).")
+        } else if derived > 0 {
+            format!(
+                "Committed {} file(s) (plus {derived} regenerated index file(s)).",
+                self.user.len()
+            )
+        } else {
+            format!("Committed {} file(s).", self.user.len())
+        }
+    }
+
+    /// Returns the one-line summary a caller prints after discarding this
+    /// report's changes.
+    ///
+    /// The discard counterpart to [`commit_summary`](Self::commit_summary),
+    /// shared by `rdm discard` and the MCP `rdm_discard` tool for the same
+    /// reason. There is no user-empty branch here: `git_discard` restores
+    /// everything, so a derived-only discard still reports `0 file(s)` plus
+    /// the named regenerated count.
+    ///
+    /// Only meaningful when the report is not [`is_clean`](Self::is_clean).
+    pub fn discard_summary(&self) -> String {
+        let derived = self.derived.len();
+        if derived > 0 {
+            format!(
+                "Discarded {} file(s) (plus {derived} regenerated index file(s)).",
+                self.user.len()
+            )
+        } else {
+            format!("Discarded {} file(s).", self.user.len())
+        }
+    }
 }
 
 /// Information about a configured git remote.
@@ -742,6 +788,46 @@ mod tests {
             !report.is_clean(),
             "a derived-only tree must still be committable — gating commit on \
              user.is_empty() would leave it dirty forever"
+        );
+    }
+
+    fn report_of(user: usize, derived: usize) -> StatusReport {
+        let mk = |n: usize, prefix: &str| {
+            (0..n)
+                .map(|i| FileStatus {
+                    path: format!("{prefix}{i}.md"),
+                    change: FileChange::Modified,
+                })
+                .collect()
+        };
+        StatusReport {
+            user: mk(user, "user-"),
+            derived: mk(derived, "derived-"),
+        }
+    }
+
+    // The CLI's `rdm commit`/`rdm discard` and the MCP `rdm_commit`/`rdm_discard`
+    // tools both render their summary through these two methods, so covering the
+    // methods covers both interfaces and pins them to the same wording.
+    #[test]
+    fn commit_summary_covers_all_three_branches() {
+        assert_eq!(report_of(2, 0).commit_summary(), "Committed 2 file(s).");
+        assert_eq!(
+            report_of(1, 2).commit_summary(),
+            "Committed 1 file(s) (plus 2 regenerated index file(s))."
+        );
+        assert_eq!(
+            report_of(0, 2).commit_summary(),
+            "Committed 2 regenerated index file(s)."
+        );
+    }
+
+    #[test]
+    fn discard_summary_covers_both_branches() {
+        assert_eq!(report_of(2, 0).discard_summary(), "Discarded 2 file(s).");
+        assert_eq!(
+            report_of(1, 2).discard_summary(),
+            "Discarded 1 file(s) (plus 2 regenerated index file(s))."
         );
     }
 

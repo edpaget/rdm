@@ -28,17 +28,8 @@ pub fn run(root: &Path, message: Option<String>) -> Result<()> {
             .git()
             .git_commit(&msg)
             .context("failed to create git commit")?;
-        let derived = report.derived.len();
-        if report.user.is_empty() {
-            println!("Committed {derived} regenerated index file(s).");
-        } else if derived > 0 {
-            println!(
-                "Committed {} file(s) (plus {derived} regenerated index file(s)).",
-                report.user.len()
-            );
-        } else {
-            println!("Committed {} file(s).", report.user.len());
-        }
+        // Shared with the MCP `rdm_commit` tool so the two can never disagree.
+        println!("{}", report.commit_summary());
     }
     Ok(())
 }

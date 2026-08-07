@@ -1729,18 +1729,8 @@ impl RdmMcpServer {
             return core_err(e);
         }
         let sha = store.head_sha().ok();
-        let derived = report.derived.len();
-        let summary = if report.user.is_empty() {
-            format!("Committed {derived} regenerated index file(s).")
-        } else if derived > 0 {
-            format!(
-                "Committed {} file(s) (plus {derived} regenerated index file(s)).",
-                report.user.len()
-            )
-        } else {
-            format!("Committed {} file(s).", report.user.len())
-        };
-        ok_text(with_commit_trailer(summary, sha))
+        // Shared with the CLI's `rdm commit` so the two can never disagree.
+        ok_text(with_commit_trailer(report.commit_summary(), sha))
     }
 
     /// Discard all staged changes, reverting the plan repo to HEAD.
@@ -1770,15 +1760,8 @@ impl RdmMcpServer {
         if let Err(e) = store.git().git_discard() {
             return core_err(e);
         }
-        let derived = report.derived.len();
-        if derived > 0 {
-            ok_text(format!(
-                "Discarded {} file(s) (plus {derived} regenerated index file(s)).",
-                report.user.len()
-            ))
-        } else {
-            ok_text(format!("Discarded {} file(s).", report.user.len()))
-        }
+        // Shared with the CLI's `rdm discard` so the two can never disagree.
+        ok_text(report.discard_summary())
     }
 }
 
