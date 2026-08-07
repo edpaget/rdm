@@ -32,7 +32,7 @@ mod repo;
 pub use rdm_git::HeadCommitInfo;
 pub use repo::GitRepo;
 
-/// The kind of file change detected by [`GitRepo::git_status`].
+/// The kind of file change detected by [`GitRepo::git_status_report`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileChange {
     /// A new file not present in HEAD.
@@ -43,13 +43,74 @@ pub enum FileChange {
     Deleted,
 }
 
-/// A single file's status as reported by [`GitRepo::git_status`].
+/// A single file's status as reported by [`GitRepo::git_status_report`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileStatus {
     /// The relative path of the file within the repository.
     pub path: String,
     /// The kind of change detected.
     pub change: FileChange,
+}
+
+/// Uncommitted working-tree changes, split into what a user authored and what
+/// rdm generated.
+///
+/// Returned by [`GitRepo::git_status_report`], the only way to observe
+/// working-tree changes from outside this crate. The split exists because the
+/// generated `INDEX.md` files are rewritten by every mutation: without it a
+/// session cannot tell its own edits from derived output, and so cannot
+/// predict what its `rdm commit` will sweep up.
+///
+/// # The one rule every consumer follows
+///
+/// **Gate on [`total`](Self::total) / [`is_clean`](Self::is_clean); report on
+/// [`user`](Self::user).**
+///
+/// An action that rewrites the whole working tree — `rdm commit`,
+/// `rdm discard` — must be gated by the raw truth, because a tree holding
+/// *only* regenerated indexes is still dirty and must still be committable
+/// (otherwise it stays dirty forever and `rdm remote pull` refuses to run).
+/// But every count and listing shown to a human or an agent comes from `user`,
+/// with `derived` surfaced separately and by name so nothing is hidden.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatusReport {
+    /// Changes the user authored — everything that is not generated output.
+    pub user: Vec<FileStatus>,
+    /// Changes to files rdm generates, per
+    /// [`rdm_core::paths::is_derived_path`].
+    pub derived: Vec<FileStatus>,
+}
+
+impl StatusReport {
+    /// Returns whether the working tree matches HEAD exactly — no user changes
+    /// **and** no regenerated output.
+    ///
+    /// This, not `user.is_empty()`, is the correct gate for `rdm commit` and
+    /// `rdm discard`.
+    pub fn is_clean(&self) -> bool {
+        self.user.is_empty() && self.derived.is_empty()
+    }
+
+    /// Returns the total number of changed files across both lists.
+    pub fn total(&self) -> usize {
+        self.user.len() + self.derived.len()
+    }
+
+    /// Returns the path-sorted union of both lists.
+    ///
+    /// This is the raw truth about what a commit will contain — feed it to
+    /// [`GitRepo::default_commit_message`], never `user` alone, since a
+    /// derived-only tree has an empty `user` list.
+    pub fn all(&self) -> Vec<FileStatus> {
+        let mut all: Vec<FileStatus> = self
+            .user
+            .iter()
+            .chain(self.derived.iter())
+            .cloned()
+            .collect();
+        all.sort_by(|a, b| a.path.cmp(&b.path));
+        all
+    }
 }
 
 /// Information about a configured git remote.
@@ -143,6 +204,20 @@ pub struct GitStore {
 impl GitStore {
     /// Opens a `GitStore` for an existing git repository.
     ///
+    /// Both halves of the `INDEX.md` merge driver are ensured on every open:
+    /// the `.gitattributes` entries in the worktree and the
+    /// `[merge "rdm-index"]` section in the repo-local `.git/config`. Both are
+    /// idempotent no-ops once installed, and both are **best-effort** here —
+    /// an installation failure warns and the open still succeeds, so a
+    /// read-only mount or restrictive CI checkout can still be read. (Only the
+    /// explicit [`GitStore::init`] hard-fails on them.)
+    ///
+    /// Ensuring `.gitattributes` here is what backfills repos created or
+    /// cloned before the merge driver shipped, with no user action. The write
+    /// is a normal working-tree change: it shows up in `rdm status` until the
+    /// next `rdm commit` lands it, at which point the mapping travels with
+    /// clones.
+    ///
     /// # Errors
     ///
     /// Returns `Error::Git` if the path is not inside a git repository.
@@ -157,6 +232,11 @@ impl GitStore {
         // merge driver is a convenience, not a prerequisite for the store.
         if let Err(e) = git.ensure_merge_driver_config() {
             eprintln!("warning: could not install INDEX.md merge driver: {e}");
+        }
+        // Best-effort for the same reason. This is the backfill path: repos
+        // opened (rather than `rdm init`ed) never got the worktree half.
+        if let Err(e) = git.ensure_gitattributes() {
+            eprintln!("warning: could not install INDEX.md merge attributes: {e}");
         }
         Ok(Self {
             inner: FsStore::new(&root),
@@ -212,6 +292,12 @@ impl GitStore {
     /// is `Some`, `--branch <name>` is passed to `git clone` so the specified
     /// branch is checked out.
     ///
+    /// As with [`GitStore::new`], both merge-driver halves are ensured
+    /// best-effort once the clone is opened — an installation failure warns
+    /// rather than failing the clone. A clone inherits `.gitattributes` when
+    /// the source committed it; when the source never did, it is re-created
+    /// here, so the clone is mapped from its first command.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Git`] if:
@@ -260,6 +346,11 @@ impl GitStore {
         // clone over an unwritable .git/config.
         if let Err(e) = git.ensure_merge_driver_config() {
             eprintln!("warning: could not install INDEX.md merge driver: {e}");
+        }
+        // Covers cloning from a source that never committed `.gitattributes`
+        // — inheritance alone does not map such a clone.
+        if let Err(e) = git.ensure_gitattributes() {
+            eprintln!("warning: could not install INDEX.md merge attributes: {e}");
         }
         Ok(Self {
             inner: FsStore::new(&root),
@@ -445,6 +536,227 @@ mod tests {
         );
         assert!(attrs.contains("INDEX.md merge=rdm-index"));
         assert!(attrs.contains("**/INDEX.md merge=rdm-index"));
+    }
+
+    /// Builds a repo whose HEAD deliberately has no `.gitattributes` at all,
+    /// so the backfill paths have something to backfill.
+    fn repo_without_committed_gitattributes() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        // `init` writes it; remove it before the seed commit so HEAD lacks it.
+        std::fs::remove_file(dir.path().join(".gitattributes")).unwrap();
+        store
+            .write(&RelPath::new("seed.md").unwrap(), "seed".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store.commit_now("seed: add seed.md").unwrap();
+        assert!(!dir.path().join(".gitattributes").exists());
+        dir
+    }
+
+    #[test]
+    fn new_backfills_gitattributes_when_absent() {
+        let dir = repo_without_committed_gitattributes();
+
+        // Opening (not initializing) must install the worktree half.
+        let _store = GitStore::new(dir.path()).unwrap();
+
+        let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+        assert!(
+            attrs.contains("INDEX.md merge=rdm-index"),
+            "expected root INDEX.md merge entry after open, got: {attrs}"
+        );
+        assert!(
+            attrs.contains("**/INDEX.md merge=rdm-index"),
+            "expected wildcard INDEX.md merge entry after open, got: {attrs}"
+        );
+    }
+
+    #[test]
+    fn open_is_idempotent_and_preserves_existing_gitattributes_content() {
+        let dir = repo_without_committed_gitattributes();
+        std::fs::write(dir.path().join(".gitattributes"), "*.bin binary\n").unwrap();
+
+        let _s1 = GitStore::new(dir.path()).unwrap();
+        let _s2 = GitStore::new(dir.path()).unwrap();
+
+        let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+        assert!(
+            attrs.contains("*.bin binary"),
+            "expected hand-written content to survive, got: {attrs}"
+        );
+        assert_eq!(
+            attrs.matches("merge=rdm-index").count(),
+            2,
+            "expected exactly two merge=rdm-index entries after two opens, got: {attrs}"
+        );
+    }
+
+    #[test]
+    fn new_does_not_fail_when_gitattributes_is_unwritable() {
+        let dir = TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        // A directory at that path makes the write deterministically fail —
+        // no chmod/root-user flakiness.
+        std::fs::create_dir(dir.path().join(".gitattributes")).unwrap();
+
+        let store = GitStore::new(dir.path());
+        assert!(
+            store.is_ok(),
+            "a repo whose .gitattributes cannot be written must still open for reads"
+        );
+    }
+
+    #[test]
+    fn discard_reinstates_gitattributes_it_removed() {
+        // Shape 1: untracked (`Added`) — the restore loop deletes it outright.
+        let dir = repo_without_committed_gitattributes();
+        let store = GitStore::new(dir.path()).unwrap();
+        assert!(dir.path().join(".gitattributes").exists());
+
+        store.git().git_discard().unwrap();
+
+        let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap_or_default();
+        assert!(
+            attrs.contains("merge=rdm-index"),
+            "discarding an untracked .gitattributes must not un-map the repo, got: {attrs}"
+        );
+    }
+
+    #[test]
+    fn discard_reinstates_gitattributes_when_head_predates_the_mapping() {
+        // Shape 2: tracked, but HEAD's blob predates the mapping — the restore
+        // loop reverts to a version without the marker.
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join(".gitattributes"), "*.bin binary\n").unwrap();
+        store
+            .write(&RelPath::new("seed.md").unwrap(), "seed".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store
+            .commit_now("seed: pre-mapping .gitattributes")
+            .unwrap();
+
+        // Reopen: the mapping is appended, making the file `Modified`.
+        let store = GitStore::new(dir.path()).unwrap();
+        store.git().git_discard().unwrap();
+
+        let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+        assert!(
+            attrs.contains("*.bin binary"),
+            "HEAD's own content must still be restored, got: {attrs}"
+        );
+        assert!(
+            attrs.contains("merge=rdm-index"),
+            "discarding to a pre-mapping HEAD must not un-map the repo, got: {attrs}"
+        );
+    }
+
+    #[test]
+    fn git_status_report_partitions_generated_indexes_from_user_changes() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("INDEX.md").unwrap(), "# Index\n".to_string())
+            .unwrap();
+        store
+            .write(
+                &RelPath::new("projects/demo/INDEX.md").unwrap(),
+                "# demo\n".to_string(),
+            )
+            .unwrap();
+        store
+            .write(
+                &RelPath::new("projects/demo/roadmaps/auth/roadmap.md").unwrap(),
+                "seed".to_string(),
+            )
+            .unwrap();
+        store.commit().unwrap();
+        store.commit_now("seed: plan repo").unwrap();
+
+        // One user edit plus the two indexes a mutation regenerates.
+        std::fs::write(
+            dir.path().join("projects/demo/roadmaps/auth/roadmap.md"),
+            "edited",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("INDEX.md"), "# Index (regenerated)\n").unwrap();
+        std::fs::write(
+            dir.path().join("projects/demo/INDEX.md"),
+            "# demo (regenerated)\n",
+        )
+        .unwrap();
+
+        let report = store.git().git_status_report().unwrap();
+        assert_eq!(
+            report.user.len(),
+            1,
+            "expected exactly the one user edit, got: {:?}",
+            report.user
+        );
+        assert_eq!(
+            report.user[0].path,
+            "projects/demo/roadmaps/auth/roadmap.md"
+        );
+        assert_eq!(
+            report.derived.len(),
+            2,
+            "expected both regenerated indexes, got: {:?}",
+            report.derived
+        );
+        assert_eq!(report.total(), 3);
+        assert!(!report.is_clean());
+
+        let all = report.all();
+        let paths: Vec<&str> = all.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "INDEX.md",
+                "projects/demo/INDEX.md",
+                "projects/demo/roadmaps/auth/roadmap.md",
+            ],
+            "all() must be the path-sorted union"
+        );
+    }
+
+    #[test]
+    fn status_report_is_clean_only_when_nothing_at_all_differs() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        store
+            .write(&RelPath::new("INDEX.md").unwrap(), "# Index\n".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store.commit_now("seed: plan repo").unwrap();
+
+        assert!(store.git().git_status_report().unwrap().is_clean());
+
+        // Derived-only dirty tree: no user changes, but decidedly not clean.
+        std::fs::write(dir.path().join("INDEX.md"), "# Index (regenerated)\n").unwrap();
+        let report = store.git().git_status_report().unwrap();
+        assert!(report.user.is_empty());
+        assert_eq!(report.derived.len(), 1);
+        assert!(
+            !report.is_clean(),
+            "a derived-only tree must still be committable — gating commit on \
+             user.is_empty() would leave it dirty forever"
+        );
+    }
+
+    #[test]
+    fn git_status_report_treats_gitattributes_as_a_user_change() {
+        let dir = repo_without_committed_gitattributes();
+        let store = GitStore::new(dir.path()).unwrap();
+
+        let report = store.git().git_status_report().unwrap();
+        assert!(
+            report.user.iter().any(|s| s.path == ".gitattributes"),
+            "the merge mapping must be landable, so it is a user change: {:?}",
+            report.user
+        );
+        assert!(report.derived.is_empty());
     }
 
     #[test]
@@ -658,7 +970,7 @@ mod tests {
         std::fs::write(dir.path().join("added.md"), "new file").unwrap();
         std::fs::remove_file(dir.path().join("doomed.md")).unwrap();
 
-        let status = store.git().git_status().unwrap();
+        let status = store.git().git_status_all().unwrap();
         assert_eq!(status.len(), 3);
 
         let added = status.iter().find(|s| s.path == "added.md").unwrap();
@@ -706,7 +1018,7 @@ mod tests {
         assert!(!dir.path().join("added.md").exists());
 
         // Status should be clean
-        let status = store.git().git_status().unwrap();
+        let status = store.git().git_status_all().unwrap();
         assert!(status.is_empty());
     }
 
@@ -1776,6 +2088,46 @@ mod tests {
         assert!(
             attrs.contains("merge=rdm-index"),
             "expected cloned .gitattributes to carry the merge entries from source, got: {attrs}"
+        );
+    }
+
+    #[test]
+    fn clone_remote_backfills_gitattributes_when_source_lacks_it() {
+        // Complements `clone_remote_adds_merge_driver_config`, which only
+        // covers inheriting a committed `.gitattributes` from the source.
+        let source = TempDir::new().unwrap();
+        let mut store = GitStore::init(source.path()).unwrap();
+        std::fs::remove_file(source.path().join(".gitattributes")).unwrap();
+        store
+            .write(&RelPath::new("INDEX.md").unwrap(), "# Index\n".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store.commit_now("seed: no gitattributes").unwrap();
+
+        let bare = TempDir::new().unwrap();
+        std::process::Command::new("git")
+            .args(["clone", "--bare"])
+            .arg(source.path())
+            .arg(bare.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+
+        let target = TempDir::new().unwrap();
+        let target_path = target.path().join("cloned");
+        let _clone =
+            GitStore::clone_remote(bare.path().to_str().unwrap(), &target_path, None).unwrap();
+
+        let attrs = std::fs::read_to_string(target_path.join(".gitattributes")).unwrap();
+        assert!(
+            attrs.contains("INDEX.md merge=rdm-index"),
+            "expected root INDEX.md merge entry in the clone, got: {attrs}"
+        );
+        assert!(
+            attrs.contains("**/INDEX.md merge=rdm-index"),
+            "expected wildcard INDEX.md merge entry in the clone, got: {attrs}"
         );
     }
 

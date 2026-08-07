@@ -2595,11 +2595,19 @@ fn status_empty_on_clean_tree() {
     let mut h = McpTestHarness::spawn(tmp.path());
 
     let response = h.call_tool("rdm_status", serde_json::json!({}));
-    let statuses = result_json(&response);
+    let report = result_json(&response);
     assert_eq!(
-        statuses.as_array().unwrap().len(),
+        report["changes"].as_array().expect("changes array").len(),
         0,
-        "expected no staged changes on a freshly committed repo: {statuses}"
+        "expected no staged changes on a freshly committed repo: {report}"
+    );
+    assert_eq!(
+        report["generated"]
+            .as_array()
+            .expect("generated array")
+            .len(),
+        0,
+        "expected no regenerated indexes on a freshly committed repo: {report}"
     );
 }
 
@@ -2619,14 +2627,110 @@ fn status_reports_staged_changes() {
     );
 
     let response = h.call_tool("rdm_status", serde_json::json!({}));
-    let statuses = result_json(&response);
-    let arr = statuses.as_array().expect("array of statuses");
+    let report = result_json(&response);
+    let arr = report["changes"].as_array().expect("changes array");
     assert_eq!(arr.len(), 1, "expected exactly one staged change: {arr:?}");
     assert!(
         arr[0]["path"].as_str().unwrap().contains("fix-login-bug"),
         "expected the task file path: {arr:?}"
     );
     assert_eq!(arr[0]["change"], "modified");
+}
+
+#[test]
+fn status_splits_generated_indexes_from_changes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    // Creating a roadmap regenerates BOTH indexes (the root index carries
+    // per-project roadmap counts).
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "billing",
+            "title": "Billing System",
+            "body": "Implement billing and invoicing."
+        }),
+    );
+
+    let response = h.call_tool("rdm_status", serde_json::json!({}));
+    let report = result_json(&response);
+    let changes = report["changes"].as_array().expect("changes array");
+    assert_eq!(
+        changes.len(),
+        1,
+        "an agent must see exactly its own edit: {report}"
+    );
+    assert!(
+        changes[0]["path"].as_str().unwrap().contains("billing"),
+        "expected the roadmap file path: {report}"
+    );
+    let generated: Vec<&str> = report["generated"]
+        .as_array()
+        .expect("generated array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        generated.contains(&"INDEX.md") && generated.contains(&"projects/test-proj/INDEX.md"),
+        "the regenerated indexes must be listed separately, not hidden: {report}"
+    );
+    assert!(
+        !changes
+            .iter()
+            .any(|c| c["path"].as_str().unwrap().ends_with("INDEX.md")),
+        "generated indexes must not be counted as changes: {report}"
+    );
+}
+
+#[test]
+fn commit_counts_only_user_changes_but_lands_generated_indexes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_roadmap_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "billing",
+            "title": "Billing System",
+            "body": "Implement billing and invoicing."
+        }),
+    );
+
+    let response = h.call_tool(
+        "rdm_commit",
+        serde_json::json!({"message": "feat: add billing roadmap"}),
+    );
+    let text = result_text(&response);
+    assert!(
+        text.contains("Committed 1 file(s) (plus 2 regenerated index file(s))."),
+        "expected the user count with the generated suffix: {text}"
+    );
+
+    drop(h);
+    let out = std::process::Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(["show", "--stat", "--name-only", "--pretty=format:", "HEAD"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let files = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        files.lines().any(|l| l.trim() == "INDEX.md"),
+        "the regenerated root index must be in the commit: {files}"
+    );
+    assert!(
+        files
+            .lines()
+            .any(|l| l.trim() == "projects/test-proj/INDEX.md"),
+        "the regenerated project index must be in the commit: {files}"
+    );
 }
 
 #[test]
@@ -2872,10 +2976,10 @@ fn stage_status_commit_discard_roundtrip() {
 
     // rdm_status is non-empty.
     let status = h.call_tool("rdm_status", serde_json::json!({}));
-    let arr = result_json(&status);
+    let report = result_json(&status);
     assert!(
-        !arr.as_array().unwrap().is_empty(),
-        "expected staged changes: {arr}"
+        !report["changes"].as_array().unwrap().is_empty(),
+        "expected staged changes: {report}"
     );
 
     // rdm_commit lands one commit; status empties.
@@ -2889,9 +2993,11 @@ fn stage_status_commit_discard_roundtrip() {
     assert_eq!(landed_sha, git_head_sha(tmp.path()));
 
     let status = h.call_tool("rdm_status", serde_json::json!({}));
+    let report = result_json(&status);
     assert!(
-        result_json(&status).as_array().unwrap().is_empty(),
-        "status must be empty right after commit"
+        report["changes"].as_array().unwrap().is_empty()
+            && report["generated"].as_array().unwrap().is_empty(),
+        "status must be empty right after commit: {report}"
     );
 
     // A separate mutate...

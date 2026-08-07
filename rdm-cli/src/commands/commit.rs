@@ -12,20 +12,33 @@ use crate::commands;
 /// commit fails.
 pub fn run(root: &Path, message: Option<String>) -> Result<()> {
     let store = commands::make_store(root)?;
-    let statuses = store
+    let report = store
         .git()
-        .git_status()
+        .git_status_report()
         .context("failed to get git status")?;
-    if statuses.is_empty() {
+    // Gated on the raw truth, not on `user`: a tree holding only regenerated
+    // indexes must still be committable, or it stays dirty forever and
+    // `rdm remote pull` refuses to run.
+    if report.is_clean() {
         println!("Nothing to commit.");
     } else {
-        let msg =
-            message.unwrap_or_else(|| rdm_store_git::GitRepo::default_commit_message(&statuses));
+        let all = report.all();
+        let msg = message.unwrap_or_else(|| rdm_store_git::GitRepo::default_commit_message(&all));
         store
             .git()
             .git_commit(&msg)
             .context("failed to create git commit")?;
-        println!("Committed {} file(s).", statuses.len());
+        let derived = report.derived.len();
+        if report.user.is_empty() {
+            println!("Committed {derived} regenerated index file(s).");
+        } else if derived > 0 {
+            println!(
+                "Committed {} file(s) (plus {derived} regenerated index file(s)).",
+                report.user.len()
+            );
+        } else {
+            println!("Committed {} file(s).", report.user.len());
+        }
     }
     Ok(())
 }

@@ -268,14 +268,18 @@ pub fn commit_mutation<T>(
 ///
 /// Called after read-only commands (list, show, search) so the user is aware
 /// that the data they see includes uncommitted staged mutations.
+///
+/// Counts only user-authored changes: regenerated `INDEX.md` files are derived
+/// output, and hinting about them made every read-only command report
+/// uncommitted changes after any mutation.
 #[cfg(feature = "git")]
 pub fn maybe_print_uncommitted_hint(store: &AppStore) {
-    if let Ok(statuses) = store.git().git_status()
-        && !statuses.is_empty()
+    if let Ok(report) = store.git().git_status_report()
+        && !report.user.is_empty()
     {
         eprintln!(
             "\n  ({} uncommitted change(s) — run `rdm status` for details)",
-            statuses.len()
+            report.user.len()
         );
     }
 }

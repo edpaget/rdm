@@ -64,6 +64,24 @@ impl GitRepo {
     /// two entries are appended, preserving any existing content and
     /// inserting a newline separator first if the file doesn't already end
     /// with one.
+    ///
+    /// # Call sites
+    ///
+    /// - [`GitStore::init`](crate::GitStore::init) — hard-fails, which is
+    ///   correct for an explicit `rdm init`.
+    /// - [`GitStore::new`](crate::GitStore::new) and
+    ///   [`GitStore::clone_remote`](crate::GitStore::clone_remote) —
+    ///   **best-effort**: a failure warns and the open/clone still succeeds,
+    ///   so a read-only mount still opens for reads. This is the backfill that
+    ///   maps repos created or cloned before the merge driver shipped, with no
+    ///   user action.
+    /// - [`git_discard`](Self::git_discard) — best-effort, after the restore
+    ///   loop, because discarding an as-yet-uncommitted `.gitattributes`
+    ///   would otherwise silently un-map the repo.
+    ///
+    /// The write lands in the worktree, so it appears in `rdm status` as an
+    /// ordinary change until the next `rdm commit` tracks it — which it must
+    /// be, for the mapping to travel with clones.
     pub(crate) fn ensure_gitattributes(&self) -> Result<()> {
         let path = self.root.join(".gitattributes");
         let existing = std::fs::read_to_string(&path).unwrap_or_default();

@@ -1674,17 +1674,18 @@ impl RdmMcpServer {
 impl RdmMcpServer {
     /// Report staged-but-uncommitted changes in the plan repo.
     #[rmcp::tool(
-        description = "List staged-but-uncommitted changes in the plan repo, each as {path, change} where change is \"added\", \"modified\", or \"deleted\". MCP mutation tools only stage to disk — call this to see what a batch of edits touched before landing it with rdm_commit.",
+        description = "List staged-but-uncommitted changes in the plan repo. Returns an object {changes, generated}: `changes` holds your own edits, each as {path, change} where change is \"added\", \"modified\", or \"deleted\"; `generated` holds the paths of rdm-generated INDEX.md files that were regenerated as a side effect. Generated indexes are excluded from `changes` so you can see your own edits, but they ARE still written into the commit rdm_commit creates — an empty `changes` with a non-empty `generated` is not a no-op. MCP mutation tools only stage to disk — call this to see what a batch of edits touched before landing it with rdm_commit.",
         annotations(read_only_hint = true)
     )]
     async fn rdm_status(&self) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
         let store = self.store.lock().unwrap();
-        let statuses = match store.git().git_status() {
-            Ok(s) => s,
+        let report = match store.git().git_status_report() {
+            Ok(r) => r,
             Err(e) => return core_err(e),
         };
-        let arr: Vec<serde_json::Value> = statuses
+        let changes: Vec<serde_json::Value> = report
+            .user
             .iter()
             .map(|s| {
                 let change = match s.change {
@@ -1695,13 +1696,14 @@ impl RdmMcpServer {
                 serde_json::json!({ "path": s.path, "change": change })
             })
             .collect();
-        let value = serde_json::Value::Array(arr);
+        let generated: Vec<&str> = report.derived.iter().map(|s| s.path.as_str()).collect();
+        let value = serde_json::json!({ "changes": changes, "generated": generated });
         ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
     }
 
     /// Commit all currently staged changes as a single git commit.
     #[rmcp::tool(
-        description = "Land every currently staged change as one git commit. Mutate freely across as many tool calls as you need, then call rdm_commit once per logical batch of work — do not commit after every single edit. Omit `message` to auto-generate a summary from the changed files (matching the CLI's `rdm commit` default). No-op (`Nothing to commit.`) if the working tree is already clean. Returns a `Commit: <sha>` line — thread that value into `applied_commit` on rdm_review_address_comment.",
+        description = "Land every currently staged change as one git commit. Mutate freely across as many tool calls as you need, then call rdm_commit once per logical batch of work — do not commit after every single edit. Omit `message` to auto-generate a summary from the changed files (matching the CLI's `rdm commit` default). The reported count covers your own edits only; rdm-generated INDEX.md files (the `generated` list from rdm_status) are ALWAYS included in the commit and are reported separately as a `(plus N regenerated index file(s))` suffix — your index regeneration is never dropped. No-op (`Nothing to commit.`) only when nothing at all differs from HEAD, generated files included. Returns a `Commit: <sha>` line — thread that value into `applied_commit` on rdm_review_address_comment.",
         annotations(read_only_hint = false)
     )]
     async fn rdm_commit(
@@ -1710,29 +1712,40 @@ impl RdmMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
         let store = self.store.lock().unwrap();
-        let statuses = match store.git().git_status() {
-            Ok(s) => s,
+        let report = match store.git().git_status_report() {
+            Ok(r) => r,
             Err(e) => return core_err(e),
         };
-        if statuses.is_empty() {
+        // Gated on the raw truth: a tree holding only regenerated indexes must
+        // still be committable.
+        if report.is_clean() {
             return ok_text("Nothing to commit.".to_string());
         }
+        let all = report.all();
         let message = params
             .message
-            .unwrap_or_else(|| rdm_store_git::GitRepo::default_commit_message(&statuses));
+            .unwrap_or_else(|| rdm_store_git::GitRepo::default_commit_message(&all));
         if let Err(e) = store.commit_now(&message) {
             return core_err(e);
         }
         let sha = store.head_sha().ok();
-        ok_text(with_commit_trailer(
-            format!("Committed {} file(s).", statuses.len()),
-            sha,
-        ))
+        let derived = report.derived.len();
+        let summary = if report.user.is_empty() {
+            format!("Committed {derived} regenerated index file(s).")
+        } else if derived > 0 {
+            format!(
+                "Committed {} file(s) (plus {derived} regenerated index file(s)).",
+                report.user.len()
+            )
+        } else {
+            format!("Committed {} file(s).", report.user.len())
+        };
+        ok_text(with_commit_trailer(summary, sha))
     }
 
     /// Discard all staged changes, reverting the plan repo to HEAD.
     #[rmcp::tool(
-        description = "Discard every staged-but-uncommitted change, reverting the plan repo's working tree to its last commit. Irreversible — requires confirm: true, and rejects the call before touching anything if it is missing or false. No-op (`Nothing to discard.`) if the working tree is already clean.",
+        description = "Discard every staged-but-uncommitted change, reverting the plan repo's working tree to its last commit. Irreversible — requires confirm: true, and rejects the call before touching anything if it is missing or false. Everything is restored, rdm-generated INDEX.md files included; the reported count covers your own edits only, with generated files reported separately as a `(plus N regenerated index file(s))` suffix. No-op (`Nothing to discard.`) only when nothing at all differs from HEAD, generated files included.",
         annotations(read_only_hint = false)
     )]
     async fn rdm_discard(
@@ -1746,17 +1759,26 @@ impl RdmMcpServer {
         }
         self.maybe_auto_init();
         let store = self.store.lock().unwrap();
-        let statuses = match store.git().git_status() {
-            Ok(s) => s,
+        let report = match store.git().git_status_report() {
+            Ok(r) => r,
             Err(e) => return core_err(e),
         };
-        if statuses.is_empty() {
+        // Gated on the raw truth: `git_discard` restores everything.
+        if report.is_clean() {
             return ok_text("Nothing to discard.".to_string());
         }
         if let Err(e) = store.git().git_discard() {
             return core_err(e);
         }
-        ok_text(format!("Discarded {} file(s).", statuses.len()))
+        let derived = report.derived.len();
+        if derived > 0 {
+            ok_text(format!(
+                "Discarded {} file(s) (plus {derived} regenerated index file(s)).",
+                report.user.len()
+            ))
+        } else {
+            ok_text(format!("Discarded {} file(s).", report.user.len()))
+        }
     }
 }
 

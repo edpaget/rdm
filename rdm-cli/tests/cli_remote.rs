@@ -856,8 +856,24 @@ fn remote_pull_regenerates_index() {
     let _ = bare_dir;
 }
 
-#[test]
-fn pull_with_conflicting_index_md_auto_resolves_via_merge_driver() {
+/// The sentinel line committed into the local side's `projects/demo/INDEX.md`,
+/// making the committed `ours` blob deliberately STALE relative to its own
+/// source markdown.
+///
+/// This is what makes the merge-driver tests below discriminating: git
+/// pre-loads `%A` with the `ours` content, so a driver that regenerates the
+/// file on disk but never writes `%A` (i.e. one missing `--merge-output %A
+/// --merge-path %P`) leaves this sentinel in the merge result, while the real
+/// driver's regeneration cannot contain it.
+const STALE_OURS_SENTINEL: &str = "<!-- STALE-OURS-SENTINEL -->";
+
+/// Seeds a two-sided `projects/demo/INDEX.md` conflict in which the local
+/// side's committed index is deliberately stale.
+///
+/// Returns the local plan repo, the bare remote (kept alive by the caller),
+/// and a `PATH` with the test `rdm` binary prepended — git spawns the merge
+/// driver as a plain subprocess and must resolve `rdm` from `PATH`.
+fn seed_stale_ours_index_conflict() -> (TempDir, TempDir, String) {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
 
@@ -929,6 +945,34 @@ fn pull_with_conflicting_index_md_auto_resolves_via_merge_driver() {
         .assert()
         .success();
 
+    // Now make the local side's COMMITTED index stale relative to its own
+    // source markdown, by appending a sentinel line and committing that
+    // tampered file. `rdm commit` commits the working tree verbatim and
+    // performs no regeneration, so the sentinel survives into HEAD.
+    //
+    // Both sides still modify the same index, so the conflict and the driver
+    // invocation are unchanged — but `ours` is no longer what a regeneration
+    // would produce, which is exactly what the assertions below rely on.
+    let index_path = dir.path().join("projects/demo/INDEX.md");
+    let mut index = std::fs::read_to_string(&index_path).unwrap();
+    index.push_str(&format!("\n{STALE_OURS_SENTINEL}\n"));
+    std::fs::write(&index_path, index).unwrap();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "chore: tamper with the committed index"])
+        .assert()
+        .success();
+    let committed = git_cmd()
+        .args(["show", "HEAD:projects/demo/INDEX.md"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&committed.stdout).contains(STALE_OURS_SENTINEL),
+        "the stale-ours fixture must actually be committed"
+    );
+
     // The merge driver is configured as a bare `rdm index ...` command, so
     // the `rdm` binary must be resolvable on PATH for git to invoke it.
     let bin_dir = std::path::Path::new(env!("CARGO_BIN_EXE_rdm"))
@@ -940,14 +984,13 @@ fn pull_with_conflicting_index_md_auto_resolves_via_merge_driver() {
         std::env::var("PATH").unwrap_or_default()
     );
 
-    // Re-fetch so the tracking ref sees the just-pushed clone-roadmap commit,
-    // then merge directly via `git merge` (bypassing `rdm remote pull`'s own
-    // porcelain, which — independent of the merge driver, and unrelated to
-    // this phase — always regenerates INDEX.md again after a successful pull
-    // and flushes it straight to disk without re-staging into git; that step
-    // would otherwise mask what we're isolating here). This exercises AC1-3
-    // directly: the auto-installed driver must resolve the INDEX.md/
-    // projects/demo/INDEX.md conflict without leaving the merge blocked.
+    // Re-fetch so the tracking ref sees the just-pushed clone-roadmap commit.
+    // The merge itself is left to the caller, which merges directly via
+    // `git merge` (bypassing `rdm remote pull`'s own porcelain, which —
+    // independent of the merge driver — always regenerates INDEX.md again
+    // after a successful pull and flushes it straight to disk without
+    // re-staging into git; that step would otherwise mask what is isolated
+    // here).
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -958,8 +1001,14 @@ fn pull_with_conflicting_index_md_auto_resolves_via_merge_driver() {
         .assert()
         .success();
 
+    (dir, bare_dir, path)
+}
+
+/// Runs `git merge origin/main` with the driver resolvable on `PATH` and
+/// returns the merge commit's `projects/demo/INDEX.md` blob.
+fn merge_and_read_merged_index(dir: &TempDir, path: &str) -> String {
     let merge_output = git_cmd()
-        .env("PATH", &path)
+        .env("PATH", path)
         .args(["merge", "--no-edit", "origin/main"])
         .current_dir(dir.path())
         .output()
@@ -970,17 +1019,41 @@ fn pull_with_conflicting_index_md_auto_resolves_via_merge_driver() {
         String::from_utf8_lossy(&merge_output.stderr)
     );
 
-    // Consistency check: with the driver installed, the working tree is
-    // self-consistent with what git just committed — no leftover conflict
-    // markers, no diff between the merge commit and disk. Note this
-    // assertion is NOT by itself a regression guard for the %A/%P design:
-    // in this scenario (both sides create brand-new roadmaps) the driver's
-    // regeneration coincides with the stale "ours" blob because the sibling
-    // roadmap file isn't materialized when the driver runs, so a bare
-    // `driver = rdm index` would produce the same clean status here. The
-    // %A/%P wiring is guarded by `init_writes_merge_driver_git_config`
-    // (rdm-store-git) asserting the placeholders are present, and by the
-    // `index_merge_output_*` CLI tests exercising the flags behaviorally.
+    let blob = git_cmd()
+        .args(["show", "HEAD:projects/demo/INDEX.md"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(blob.status.success());
+    String::from_utf8_lossy(&blob.stdout).to_string()
+}
+
+#[test]
+fn pull_with_conflicting_index_md_auto_resolves_via_merge_driver() {
+    let (dir, bare_dir, path) = seed_stale_ours_index_conflict();
+
+    let merged = merge_and_read_merged_index(&dir, &path);
+
+    // THE discriminating assertion. This blob is exactly the `%A` content git
+    // copied back into the merge result, so it can only be sentinel-free if
+    // the driver wrote `%A` via `--merge-output %A --merge-path %P`. A bare
+    // `driver = rdm index` regenerates on disk but leaves `%A` holding the
+    // stale `ours` blob — see the negative control below.
+    assert!(
+        !merged.contains(STALE_OURS_SENTINEL),
+        "the merge commit must hold the driver's regeneration, not the stale \
+         `ours` blob, got: {merged}"
+    );
+    assert!(
+        merged.contains("local-roadmap"),
+        "the driver's regeneration must still carry the local roadmap, got: {merged}"
+    );
+
+    // With the driver installed, the working tree is self-consistent with what
+    // git just committed — no leftover conflict markers, no diff between the
+    // merge commit and disk. Under the stale-ours fixture this is
+    // discriminating too: with a bare driver the committed blob is the stale
+    // `ours` while disk holds the regenerated content, so the tree is dirty.
     let status = git_cmd()
         .args(["status", "--porcelain"])
         .current_dir(dir.path())
@@ -1017,6 +1090,40 @@ fn pull_with_conflicting_index_md_auto_resolves_via_merge_driver() {
     assert!(
         project_index.contains("local-roadmap"),
         "expected local-roadmap in the fully-converged project index, got: {project_index}"
+    );
+
+    let _ = bare_dir;
+}
+
+/// Negative control for the test above: proves its sentinel assertion is not
+/// vacuous by removing ONLY the `%A`/`%P` wiring from the driver command.
+///
+/// `--root .` is deliberately kept — dropping it too would make this test pass
+/// for the wrong reason (root resolution rather than the merge-output wiring).
+#[test]
+fn bare_index_merge_driver_leaves_the_stale_ours_blob_in_the_merge_result() {
+    let (dir, bare_dir, path) = seed_stale_ours_index_conflict();
+
+    // Strip `--merge-output %A --merge-path %P` from the installed driver.
+    let config_path = dir.path().join(".git").join("config");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        config.contains("driver = rdm --root . index --merge-output %A --merge-path %P"),
+        "expected the shipped driver command, got: {config}"
+    );
+    let bare = config.replace(
+        "driver = rdm --root . index --merge-output %A --merge-path %P",
+        "driver = rdm --root . index",
+    );
+    std::fs::write(&config_path, &bare).unwrap();
+
+    let merged = merge_and_read_merged_index(&dir, &path);
+
+    assert!(
+        merged.contains(STALE_OURS_SENTINEL),
+        "without --merge-output %A --merge-path %P the merge result must be \
+         the stale `ours` blob — if this ever stops holding, the positive \
+         test's assertion has stopped discriminating, got: {merged}"
     );
 
     let _ = bare_dir;

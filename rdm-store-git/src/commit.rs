@@ -12,7 +12,7 @@ use rdm_core::error::{Error, Result};
 use rdm_core::store::RelPath;
 
 use crate::repo::GitRepo;
-use crate::{FileChange, FileStatus, HeadCommitInfo};
+use crate::{FileChange, FileStatus, HeadCommitInfo, StatusReport};
 
 impl GitRepo {
     /// Information about the HEAD commit: SHA and full message.
@@ -217,7 +217,9 @@ impl GitRepo {
     /// [`Store::commit`]: rdm_core::store::Store::commit
     /// [`GitStore::commit_now`]: crate::GitStore::commit_now
     pub fn git_commit(&self, message: &str) -> Result<()> {
-        let status = self.git_status()?;
+        // Deliberately the raw list: a commit rewrites the whole tree, so it
+        // is gated by the raw truth, not by what a user authored.
+        let status = self.git_status_all()?;
         if status.is_empty() {
             return Ok(());
         }
@@ -271,15 +273,23 @@ impl GitRepo {
         }
     }
 
-    /// Compares the working directory to HEAD and returns a list of changes.
+    /// Compares the working directory to HEAD and returns the raw, unfiltered
+    /// list of changes.
     ///
     /// Walks the working directory tree and the HEAD tree, reporting files
     /// that are added, modified, or deleted.
     ///
+    /// Deliberately `pub(crate)`: outside this crate the only entry point is
+    /// [`git_status_report`](Self::git_status_report), so no CLI or MCP call
+    /// site can reacquire a list that conflates generated `INDEX.md` output
+    /// with the user's own edits. The three legitimate raw callers are all
+    /// in-crate whole-tree operations — [`git_commit`](Self::git_commit),
+    /// [`git_discard`](Self::git_discard), and the pull clean-tree guard.
+    ///
     /// # Errors
     ///
     /// Returns `Error::Git` if the repository state cannot be read.
-    pub fn git_status(&self) -> Result<Vec<FileStatus>> {
+    pub(crate) fn git_status_all(&self) -> Result<Vec<FileStatus>> {
         let repo = self.repo.to_thread_local();
         let head_files = self.collect_head_tree(&repo)?;
         let work_files = self.collect_working_tree(&repo, &self.root, "")?;
@@ -318,18 +328,60 @@ impl GitRepo {
         Ok(statuses)
     }
 
+    /// Compares the working directory to HEAD, splitting the result into
+    /// user-authored changes and rdm-generated output.
+    ///
+    /// This is the sole entry point for observing working-tree changes from
+    /// outside this crate. See [`StatusReport`] for the contract every
+    /// consumer follows: gate destructive whole-tree actions on
+    /// [`StatusReport::is_clean`], but report counts and listings from
+    /// [`StatusReport::user`].
+    ///
+    /// Membership of `derived` is decided by
+    /// [`rdm_core::paths::is_derived_path`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if the repository state cannot be read.
+    pub fn git_status_report(&self) -> Result<StatusReport> {
+        let (derived, user) = self
+            .git_status_all()?
+            .into_iter()
+            .partition(|fs| rdm_core::paths::is_derived_path(&fs.path));
+        Ok(StatusReport { user, derived })
+    }
+
     /// Restores the working directory to match HEAD.
     ///
     /// Overwrites modified files, deletes added files, and restores deleted
     /// files. This is a destructive operation.
+    ///
+    /// # Behavior note — not literally HEAD-exact
+    ///
+    /// After the restore loop this re-ensures the rdm-managed
+    /// `.gitattributes` merge-driver mapping (best-effort, errors swallowed so
+    /// a discard can never fail on it). Without that, a discard would silently
+    /// un-map the repo from the `INDEX.md` merge driver in both failure
+    /// shapes: an as-yet-uncommitted `.gitattributes` is `Added` and would be
+    /// deleted outright, and a tracked one whose HEAD blob predates the
+    /// mapping would be reverted to a version without it. The mapping is
+    /// re-appended either way, so the post-discard tree may differ from HEAD
+    /// by exactly that file.
+    ///
+    /// Doing this here rather than in the CLI command is what makes the MCP
+    /// `rdm_discard` tool inherit the fix.
     ///
     /// # Errors
     ///
     /// Returns `Error::Git` if the HEAD tree cannot be read or files cannot
     /// be written.
     pub fn git_discard(&self) -> Result<()> {
-        let status = self.git_status()?;
+        // Deliberately the raw list: a discard restores the whole tree.
+        let status = self.git_status_all()?;
         if status.is_empty() {
+            // Still re-ensure: a clean tree can nevertheless be un-mapped if
+            // HEAD's `.gitattributes` predates the mapping.
+            let _ = self.ensure_gitattributes();
             return Ok(());
         }
 
@@ -364,6 +416,11 @@ impl GitRepo {
                 }
             }
         }
+
+        // Reinstate the merge-driver mapping the restore may have just
+        // removed (see the behavior note above). Best-effort by design: a
+        // discard must never fail because of it.
+        let _ = self.ensure_gitattributes();
 
         Ok(())
     }

@@ -297,8 +297,10 @@ impl GitRepo {
 
         if ahead > 0 {
             // Diverged — attempt a real merge
-            // Check working tree is clean first
-            let statuses = self.git_status()?;
+            // Check working tree is clean first. Deliberately the raw list:
+            // `git merge` refuses on a dirty tree regardless of whether the
+            // dirt is user-authored or a regenerated index.
+            let statuses = self.git_status_all()?;
             if !statuses.is_empty() {
                 return Err(GitError::Git(
                     "cannot pull with uncommitted changes — commit or discard first".to_string(),

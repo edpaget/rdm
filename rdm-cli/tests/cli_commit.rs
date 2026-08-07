@@ -251,10 +251,11 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
         .assert()
         .success();
 
-    // Status should report uncommitted changes including both entity files.
-    // INDEX regeneration also stages top-level INDEX.md and
-    // projects/test/INDEX.md, so don't assert an exact count of 2.
-    rdm()
+    // Status reports exactly the two entity files as user changes. INDEX
+    // regeneration also rewrites the top-level INDEX.md and
+    // projects/test/INDEX.md, but those are generated output and are reported
+    // on their own line rather than counted.
+    let status_out = rdm()
         .arg("--root")
         .arg(dir.path())
         .arg("status")
@@ -262,7 +263,31 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
         .success()
         .stdout(predicate::str::contains("Uncommitted changes"))
         .stdout(predicate::str::contains("roadmap.md"))
-        .stdout(predicate::str::contains("phase-1-e2e-phase.md"));
+        .stdout(predicate::str::contains("phase-1-e2e-phase.md"))
+        .stdout(predicate::str::contains("2 file(s) changed"))
+        .get_output()
+        .stdout
+        .clone();
+    let status_out = String::from_utf8(status_out).unwrap();
+    let listed: Vec<&str> = status_out
+        .lines()
+        .filter(|l| {
+            l.starts_with("  added:") || l.starts_with("  modified:") || l.starts_with("  deleted:")
+        })
+        .collect();
+    assert_eq!(
+        listed.len(),
+        2,
+        "expected exactly the two entity files listed, got: {listed:?}"
+    );
+    assert!(
+        !listed.iter().any(|l| l.contains("INDEX.md")),
+        "generated indexes must not appear in the change listing, got: {listed:?}"
+    );
+    assert!(
+        status_out.contains("2 generated index file(s) will be included in the next commit"),
+        "generated indexes must still be named, got: {status_out}"
+    );
 
     // Commit lands exactly one new commit.
     rdm()
@@ -271,7 +296,9 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
         .args(["commit", "-m", "feat: add e2e roadmap and phase"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Committed"));
+        .stdout(predicate::str::contains(
+            "Committed 2 file(s) (plus 2 regenerated index file(s)).",
+        ));
 
     let commits_after = count_git_commits(dir.path());
     assert_eq!(
@@ -289,5 +316,15 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
     assert!(
         files.iter().any(|f| f.ends_with("phase-1-e2e-phase.md")),
         "commit should include phase-1-e2e-phase.md, got: {files:?}"
+    );
+    // The generated indexes are excluded from the count but NOT from the
+    // commit — that is the whole contract.
+    assert!(
+        files.iter().any(|f| f == "INDEX.md"),
+        "commit should include the regenerated root INDEX.md, got: {files:?}"
+    );
+    assert!(
+        files.iter().any(|f| f == "projects/test/INDEX.md"),
+        "commit should include the regenerated project INDEX.md, got: {files:?}"
     );
 }

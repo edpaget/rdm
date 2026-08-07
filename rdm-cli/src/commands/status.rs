@@ -36,15 +36,15 @@ pub fn run(root: &Path, fetch: bool) -> Result<()> {
         println!();
     }
 
-    let statuses = store
+    let report = store
         .git()
-        .git_status()
+        .git_status_report()
         .context("failed to get git status")?;
-    if statuses.is_empty() {
+    if report.user.is_empty() {
         println!("No uncommitted changes.");
     } else {
         println!("Uncommitted changes:");
-        for fs in &statuses {
+        for fs in &report.user {
             let prefix = match fs.change {
                 rdm_store_git::FileChange::Added => "  added:    ",
                 rdm_store_git::FileChange::Modified => "  modified: ",
@@ -54,7 +54,17 @@ pub fn run(root: &Path, fetch: bool) -> Result<()> {
         }
         println!(
             "\n{} file(s) changed. Run `rdm commit` to persist or `rdm discard --force` to reset.",
-            statuses.len()
+            report.user.len()
+        );
+    }
+    // Generated indexes are not user changes, but they are not hidden either:
+    // name them so it is obvious what the next `rdm commit` will sweep up.
+    if !report.derived.is_empty() {
+        let paths: Vec<&str> = report.derived.iter().map(|fs| fs.path.as_str()).collect();
+        println!(
+            "  ({} generated index file(s) will be included in the next commit: {})",
+            report.derived.len(),
+            paths.join(", ")
         );
     }
 

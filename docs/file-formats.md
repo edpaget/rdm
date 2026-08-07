@@ -206,9 +206,30 @@ Index files are regenerated automatically after every mutation (create, update, 
 rdm index
 ```
 
+### Generated files in `rdm status`
+
+Because index files are generated rather than authored, `rdm status`, `rdm commit`, `rdm discard` and the corresponding MCP tools (`rdm_status`, `rdm_commit`, `rdm_discard`) report them **separately** from your own changes. Counts and listings cover only user-authored files; regenerated indexes are named on their own line (or, over MCP, in a separate `generated` array).
+
+They are still included in every commit. This is why a `rdm status` that says `No uncommitted changes.` can be immediately followed by a `rdm commit` that lands index files: `status` is telling you that *you* changed nothing, while `commit` is gated on whether anything at all differs from `HEAD`. A tree holding only regenerated indexes must stay committable — otherwise it would remain dirty forever and `rdm remote pull` would refuse to run.
+
+Only the two paths the generator writes count as generated: the root `INDEX.md` and each `projects/<name>/INDEX.md`. An `INDEX.md` you authored anywhere else in the tree is an ordinary user file.
+
 ### Merge driver
 
-Because `INDEX.md` is generated, it can cause merge conflicts when multiple branches modify plan data. `rdm init` and `rdm init --remote` (and every command that opens the plan repo) automatically configure a git merge driver so conflicts on `INDEX.md` and `projects/*/INDEX.md` are resolved by regenerating the file from source-of-truth markdown instead of a three-way text merge. No setup command is needed — this is fully automatic. The configuration lives in `.gitattributes` (tracked, so it travels with clones) and the repo-local `.git/config` (untracked, added on open if missing).
+Because `INDEX.md` is generated, it can cause merge conflicts when multiple branches modify plan data. `rdm` configures a git merge driver so conflicts on `INDEX.md` and `projects/*/INDEX.md` are resolved by regenerating the file from source-of-truth markdown instead of a three-way text merge. No setup command is needed — this is fully automatic.
+
+The driver has two halves, and **every command that opens the plan repo ensures both**:
+
+- The mapping in the worktree's `.gitattributes` — the lines `INDEX.md merge=rdm-index` and `**/INDEX.md merge=rdm-index`. Existing content in the file is preserved; the entries are appended only if they are not already there.
+- The `[merge "rdm-index"]` section in the repo-local `.git/config`, which defines the driver command.
+
+Practical consequences:
+
+- The `.gitattributes` write is an ordinary working-tree change. It appears in `rdm status` until your next `rdm commit` lands it — at which point it is tracked and travels with clones. Committing it is what makes the mapping available to everyone who clones the repo.
+- A repo created or cloned before the merge driver shipped — or by any path other than `rdm init` — is backfilled automatically on the next command. There is nothing to run.
+- A clone inherits `.gitattributes` when the source committed it, and otherwise re-creates it on first open.
+- `rdm discard --force` reverts the working tree to `HEAD`, but the mapping is re-ensured immediately afterwards, so a discard can never silently un-map the repo.
+- Installation is best-effort on open and on clone: against a read-only repo `rdm` prints a warning and continues rather than failing the command. Only the explicit `rdm init` treats an installation failure as fatal.
 
 ## Dates
 

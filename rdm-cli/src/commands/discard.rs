@@ -27,19 +27,29 @@ pub fn run(root: &Path, force: bool) -> Result<()> {
             .context("failed to abort merge")?;
         println!("Aborted in-progress merge.");
     }
-    let statuses = store
+    let report = store
         .git()
-        .git_status()
+        .git_status_report()
         .context("failed to get git status")?;
-    if statuses.is_empty() {
+    // Gated on the raw truth: `git_discard` restores everything, including
+    // regenerated indexes. Only the reporting below narrows to user changes.
+    if report.is_clean() {
         println!("Nothing to discard.");
     } else {
         store
             .git()
             .git_discard()
             .context("failed to discard changes")?;
-        println!("Discarded {} file(s).", statuses.len());
-        for fs in &statuses {
+        let derived = report.derived.len();
+        if derived > 0 {
+            println!(
+                "Discarded {} file(s) (plus {derived} regenerated index file(s)).",
+                report.user.len()
+            );
+        } else {
+            println!("Discarded {} file(s).", report.user.len());
+        }
+        for fs in &report.user {
             let prefix = match fs.change {
                 rdm_store_git::FileChange::Added => "  removed:  ",
                 rdm_store_git::FileChange::Modified => "  restored: ",
