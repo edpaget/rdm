@@ -14,6 +14,35 @@ use std::path::{Path, PathBuf};
 
 use rdm_core::error::{Error, Result};
 
+/// The relative path of the file carrying the merge-driver mapping.
+pub(crate) const GITATTRIBUTES_PATH: &str = ".gitattributes";
+
+/// The substring whose presence anywhere in `.gitattributes` means the mapping
+/// is already installed. Also the idempotence short-circuit.
+const GITATTRIBUTES_MARKER: &str = "merge=rdm-index";
+
+/// The two entries [`GitRepo::ensure_gitattributes`] appends.
+const GITATTRIBUTES_MAPPING: &str = "INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n";
+
+/// Returns what [`GitRepo::ensure_gitattributes`] would leave on disk given
+/// `existing` as the file's current content (`""` when the file is absent).
+///
+/// Pure, so the same rule can be *recognized* as well as applied: the pull
+/// guard in [`remote`](crate::remote) uses it to decide whether a dirty
+/// `.gitattributes` is rdm's own mapping write and nothing else. Keeping one
+/// definition means the guard can never drift from the writer.
+pub(crate) fn gitattributes_with_mapping(existing: &str) -> String {
+    if existing.contains(GITATTRIBUTES_MARKER) {
+        return existing.to_string();
+    }
+    let mut content = existing.to_string();
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(GITATTRIBUTES_MAPPING);
+    content
+}
+
 /// The git capability: a gix handle paired with the repository root.
 ///
 /// Owns all git logic — low-level plumbing and high-level porcelain — so that
@@ -78,22 +107,20 @@ impl GitRepo {
     /// - [`git_discard`](Self::git_discard) — best-effort, after the restore
     ///   loop, because discarding an as-yet-uncommitted `.gitattributes`
     ///   would otherwise silently un-map the repo.
+    /// - `git_pull`'s diverged branch — best-effort, immediately after the
+    ///   merge subprocess, putting back the mapping the pull guard restored
+    ///   to HEAD so `git merge` would accept the tree.
     ///
     /// The write lands in the worktree, so it appears in `rdm status` as an
     /// ordinary change until the next `rdm commit` tracks it — which it must
     /// be, for the mapping to travel with clones.
     pub(crate) fn ensure_gitattributes(&self) -> Result<()> {
-        let path = self.root.join(".gitattributes");
+        let path = self.root.join(GITATTRIBUTES_PATH);
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        if existing.contains("merge=rdm-index") {
+        let content = gitattributes_with_mapping(&existing);
+        if content == existing {
             return Ok(());
         }
-
-        let mut content = existing;
-        if !content.is_empty() && !content.ends_with('\n') {
-            content.push('\n');
-        }
-        content.push_str("INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n");
 
         std::fs::write(&path, content)
             .map_err(|e| Error::Git(format!("failed to write .gitattributes: {e}")))?;

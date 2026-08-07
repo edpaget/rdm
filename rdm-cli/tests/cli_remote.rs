@@ -1160,3 +1160,96 @@ fn status_with_fetch_flag() {
 
     let _ = bare_dir;
 }
+
+/// End-to-end guard for the pull carve-out: rdm's own backfilled
+/// `.gitattributes` must never wedge a diverged `rdm remote pull`.
+///
+/// Before the carve-out this refused with "cannot pull with uncommitted
+/// changes — commit or discard first", and the instruction was unfollowable:
+/// `rdm discard --force` re-ensures the mapping, so the tree could never come
+/// clean again.
+#[test]
+fn diverged_pull_is_not_wedged_by_the_backfilled_merge_mapping() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Make this a repo that predates the mapping: drop it from HEAD entirely.
+    git_cmd()
+        .args(["rm", "--cached", "--quiet", ".gitattributes"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::fs::remove_file(dir.path().join(".gitattributes")).unwrap();
+    git_cmd()
+        .args(["commit", "-q", "-m", "legacy: drop .gitattributes"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+    git_cmd()
+        .args(["push", "-q", "origin", "HEAD:refs/heads/main"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Remote moves ahead on its own file.
+    let clone_dir = TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone", "-q"])
+        .arg(bare_dir.path())
+        .arg(clone_dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+    for args in [
+        vec!["add", "."],
+        vec!["commit", "-q", "-m", "remote work"],
+        vec!["push", "-q"],
+    ] {
+        git_cmd()
+            .args(&args)
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+    }
+
+    // Local moves ahead too, so the pull takes the diverged merge path.
+    std::fs::write(dir.path().join("local.md"), "local").unwrap();
+    git_cmd()
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args(["commit", "-q", "-m", "local work"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Any rdm command reopens the store and backfills the mapping, dirtying a
+    // tree the user never touched.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("status")
+        .assert()
+        .success();
+    assert!(dir.path().join(".gitattributes").exists());
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["remote", "pull", "origin"])
+        .assert()
+        .success();
+
+    assert!(dir.path().join("remote.md").exists());
+    let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+    assert!(
+        attrs.contains("merge=rdm-index"),
+        "the pull must leave the mapping installed, got: {attrs}"
+    );
+
+    let _ = bare_dir;
+}

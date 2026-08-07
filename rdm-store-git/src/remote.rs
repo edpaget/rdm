@@ -300,17 +300,43 @@ impl GitRepo {
             // Check working tree is clean first. Deliberately the raw list:
             // `git merge` refuses on a dirty tree regardless of whether the
             // dirt is user-authored or a regenerated index.
+            //
+            // One exception, and only one: rdm writes the `.gitattributes`
+            // merge mapping itself on every repo open, so a repo predating the
+            // mapping is dirty through no act of the user's. Refusing on that
+            // would hand them an instruction they cannot follow — `rdm discard`
+            // re-ensures the mapping, so the tree could never come clean and
+            // the diverged pull would stay wedged forever. Restore exactly that
+            // file to HEAD for the duration of the merge; it is re-ensured
+            // immediately afterwards. `is_rdm_mapping_write` matches only rdm's
+            // own byte-for-byte write, so nothing user-authored is dropped.
             let statuses = self.git_status_all()?;
-            if !statuses.is_empty() {
+            let mut mapping_write = Vec::new();
+            let mut blocking = Vec::new();
+            for fs in statuses {
+                if self.is_rdm_mapping_write(&fs)? {
+                    mapping_write.push(fs);
+                } else {
+                    blocking.push(fs);
+                }
+            }
+            if !blocking.is_empty() {
                 return Err(GitError::Git(
                     "cannot pull with uncommitted changes — commit or discard first".to_string(),
                 ));
+            }
+            if !mapping_write.is_empty() {
+                self.restore_paths_to_head(&mapping_write)?;
             }
 
             // Sync the git index with HEAD (GitStore commits bypass the index)
             self.sync_index_to_head()?;
 
             let output = self.run_git(&["merge", "--no-edit", &tracking_ref])?;
+
+            // Put back the mapping restored above. A no-op when nothing was
+            // restored, or when the merge brought its own committed copy.
+            let _ = self.ensure_gitattributes();
 
             if !output.status.success() {
                 // Check if this is a merge conflict

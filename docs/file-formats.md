@@ -228,7 +228,8 @@ Practical consequences:
 - The `.gitattributes` write is an ordinary working-tree change. It appears in `rdm status` until your next `rdm commit` lands it — at which point it is tracked and travels with clones. Committing it is what makes the mapping available to everyone who clones the repo.
 - A repo created or cloned before the merge driver shipped — or by any path other than `rdm init` — is backfilled automatically on the next command. There is nothing to run.
 - A clone inherits `.gitattributes` when the source committed it, and otherwise re-creates it on first open.
-- `rdm discard --force` reverts the working tree to `HEAD`, but the mapping is re-ensured immediately afterwards, so a discard can never silently un-map the repo.
+- `rdm discard --force` reverts the working tree to `HEAD`, but the mapping is re-ensured immediately afterwards, so a discard can never silently un-map the repo. It reports that file as `reinstalled:` rather than `removed:`, since it is back on disk by the time the command returns.
+- A diverged `rdm remote pull` normally refuses to run against a dirty working tree, but it makes one exception: an untracked or modified `.gitattributes` whose content is *exactly* rdm's own mapping write. That file is restored to `HEAD` for the duration of the merge and re-ensured afterwards. Without the exception a repo that predates the mapping could never pull — the error tells you to "commit or discard first", and discard puts the mapping straight back. The exception is byte-exact, so a `.gitattributes` you edited yourself still blocks the pull and is never discarded on your behalf.
 - Installation is best-effort on open and on clone: against a read-only repo `rdm` prints a warning and continues rather than failing the command. Only the explicit `rdm init` treats an installation failure as fatal.
 
 ## Dates

@@ -327,7 +327,7 @@ fn discard_force_leaves_the_mapping_installed() {
         .success();
     assert!(dir.path().join(".gitattributes").exists());
 
-    rdm()
+    let out = rdm()
         .arg("--root")
         .arg(dir.path())
         .args(["discard", "--force"])
@@ -338,6 +338,17 @@ fn discard_force_leaves_the_mapping_installed() {
     assert!(
         attrs.contains("merge=rdm-index"),
         "a discard must never silently un-map the repo, got: {attrs}"
+    );
+
+    // ...and it must not claim it removed a file that is sitting right there.
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(
+        stdout.contains("reinstalled: .gitattributes"),
+        "the mapping rdm put straight back must be reported as reinstalled, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("removed:  .gitattributes"),
+        "reporting the still-present mapping as removed is a false statement, got: {stdout}"
     );
 }
 

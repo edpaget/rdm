@@ -42,7 +42,21 @@ pub fn run(root: &Path, force: bool) -> Result<()> {
             .context("failed to discard changes")?;
         // Shared with the MCP `rdm_discard` tool so the two can never disagree.
         println!("{}", report.discard_summary());
+        // `git_discard` re-installs the INDEX.md merge mapping after restoring
+        // the tree, so a `.gitattributes` it just deleted is back on disk.
+        // Re-reading tells us which paths that actually applies to, so the
+        // per-file lines below never claim a file was removed while it is
+        // sitting right there.
+        let still_changed: Vec<String> = store
+            .git()
+            .git_status_report()
+            .map(|after| after.all().iter().map(|fs| fs.path.clone()).collect())
+            .unwrap_or_default();
         for fs in &report.user {
+            if still_changed.contains(&fs.path) {
+                println!("  reinstalled: {} (rdm-managed)", fs.path);
+                continue;
+            }
             let prefix = match fs.change {
                 rdm_store_git::FileChange::Added => "  removed:  ",
                 rdm_store_git::FileChange::Modified => "  restored: ",

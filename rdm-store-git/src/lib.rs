@@ -1852,6 +1852,163 @@ mod tests {
         let _ = bare_dir;
     }
 
+    /// Seeds a diverged legacy repo: HEAD carries no `.gitattributes` at all,
+    /// the remote is one commit ahead, and the local side is one commit ahead
+    /// of the fork point. Returns the repo dir and the bare remote.
+    ///
+    /// The caller reopens the store (which backfills `.gitattributes`) and
+    /// pulls.
+    fn seed_diverged_legacy_repo() -> (TempDir, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        // Drop the worktree half before the seed commit, so HEAD is a repo
+        // that predates the merge mapping.
+        std::fs::remove_file(dir.path().join(".gitattributes")).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+        store.git_mut().git_fetch("origin").unwrap();
+
+        // Local side moves ahead.
+        store
+            .write(&RelPath::new("local.md").unwrap(), "local".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store.commit_now("add local.md").unwrap();
+
+        // Remote side moves ahead too, on a different file — so the merge
+        // itself is clean and the only thing that can block is the tree.
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+        for args in [
+            vec!["add", "."],
+            vec!["commit", "-m", "remote commit"],
+            vec!["push"],
+        ] {
+            git_cmd()
+                .args(&args)
+                .current_dir(clone_dir.path())
+                .output()
+                .unwrap();
+        }
+
+        assert!(
+            !dir.path().join(".gitattributes").exists(),
+            "fixture must start without the mapping on disk"
+        );
+        (dir, bare_dir)
+    }
+
+    #[test]
+    fn pull_is_not_blocked_by_the_backfilled_merge_mapping() {
+        let (dir, bare_dir) = seed_diverged_legacy_repo();
+
+        // Reopening is what backfills `.gitattributes`, dirtying a tree the
+        // user never touched.
+        let mut store = GitStore::new(dir.path()).unwrap();
+        assert!(
+            !store.git().git_status_all().unwrap().is_empty(),
+            "the backfill must genuinely dirty the tree, or this proves nothing"
+        );
+
+        // Before the guard existed this returned "cannot pull with
+        // uncommitted changes — commit or discard first", and `rdm discard`
+        // could not clear it because discard re-ensures the mapping.
+        let outcome = store.git_mut().git_pull("origin").unwrap();
+        match outcome {
+            PullOutcome::Success(result) => assert!(result.changed),
+            PullOutcome::Conflict(_) => panic!("expected a clean merge, got conflict"),
+        }
+
+        assert!(dir.path().join("local.md").exists());
+        assert!(dir.path().join("remote.md").exists());
+        let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+        assert!(
+            attrs.contains("merge=rdm-index"),
+            "the mapping restored for the merge must be re-ensured after it, got: {attrs}"
+        );
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn pull_still_refuses_when_the_user_edited_gitattributes() {
+        let (dir, bare_dir) = seed_diverged_legacy_repo();
+        let mut store = GitStore::new(dir.path()).unwrap();
+
+        // A user line alongside rdm's mapping. The carve-out is byte-exact, so
+        // this file is no longer "rdm's own write" and must still block —
+        // otherwise the pull would silently discard the user's edit.
+        let path = dir.path().join(".gitattributes");
+        let mut attrs = std::fs::read_to_string(&path).unwrap();
+        attrs.push_str("*.bin binary\n");
+        std::fs::write(&path, &attrs).unwrap();
+
+        let err = store.git_mut().git_pull("origin").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot pull with uncommitted changes"),
+            "a user-edited .gitattributes must still block the pull, got: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            attrs,
+            "the refused pull must leave the user's edit untouched"
+        );
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn is_rdm_mapping_write_matches_only_rdms_own_write() {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        std::fs::remove_file(dir.path().join(".gitattributes")).unwrap();
+        store
+            .write(&RelPath::new("seed.md").unwrap(), "seed".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store.commit_now("seed: no gitattributes").unwrap();
+
+        let store = GitStore::new(dir.path()).unwrap();
+        let mapping = store
+            .git()
+            .git_status_all()
+            .unwrap()
+            .into_iter()
+            .find(|fs| fs.path == ".gitattributes")
+            .expect("the backfill must have written it");
+        assert!(store.git().is_rdm_mapping_write(&mapping).unwrap());
+
+        // Any other path is never rdm's mapping write, whatever its content.
+        std::fs::write(dir.path().join("seed.md"), "edited").unwrap();
+        let seed = store
+            .git()
+            .git_status_all()
+            .unwrap()
+            .into_iter()
+            .find(|fs| fs.path == "seed.md")
+            .unwrap();
+        assert!(!store.git().is_rdm_mapping_write(&seed).unwrap());
+
+        // A user line appended to the mapping takes it out of the carve-out.
+        let path = dir.path().join(".gitattributes");
+        let mut attrs = std::fs::read_to_string(&path).unwrap();
+        attrs.push_str("*.bin binary\n");
+        std::fs::write(&path, attrs).unwrap();
+        assert!(!store.git().is_rdm_mapping_write(&mapping).unwrap());
+    }
+
     #[test]
     fn pull_diverged_conflicting_detects_conflicts() {
         let dir = TempDir::new().unwrap();

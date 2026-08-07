@@ -385,11 +385,37 @@ impl GitRepo {
             return Ok(());
         }
 
+        self.restore_paths_to_head(&status)?;
+
+        // Reinstate the merge-driver mapping the restore may have just
+        // removed (see the behavior note above). Best-effort by design: a
+        // discard must never fail because of it.
+        let _ = self.ensure_gitattributes();
+
+        Ok(())
+    }
+
+    /// Restores exactly the listed paths to their HEAD content.
+    ///
+    /// The restore half of [`git_discard`](Self::git_discard), *without* its
+    /// re-ensure of the `.gitattributes` mapping — a caller that wants the
+    /// file left at HEAD (the pull guard, which restores it only so
+    /// `git merge` will accept the tree) would be defeated by it.
+    ///
+    /// `status` entries must come from [`git_status_all`](Self::git_status_all)
+    /// on this same repo. A `Modified`/`Deleted` path absent from HEAD is
+    /// skipped rather than treated as an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if the HEAD tree cannot be read or a file cannot
+    /// be written or removed.
+    pub(crate) fn restore_paths_to_head(&self, status: &[FileStatus]) -> Result<()> {
         let repo = self.repo.to_thread_local();
         let head_files = self.collect_head_blobs(&repo)?;
         let root = self.root.as_path();
 
-        for fs in &status {
+        for fs in status {
             let file_path = root.join(&fs.path);
             match fs.change {
                 FileChange::Added => {
@@ -417,12 +443,34 @@ impl GitRepo {
             }
         }
 
-        // Reinstate the merge-driver mapping the restore may have just
-        // removed (see the behavior note above). Best-effort by design: a
-        // discard must never fail because of it.
-        let _ = self.ensure_gitattributes();
-
         Ok(())
+    }
+
+    /// Returns whether `fs` is the `.gitattributes` merge-driver mapping rdm
+    /// wrote itself, and nothing else.
+    ///
+    /// True only when the path is `.gitattributes` and its working-tree
+    /// content is *exactly* what
+    /// [`ensure_gitattributes`](Self::ensure_gitattributes) produces from
+    /// HEAD's content. A user's own edit to the file — whether or not the
+    /// mapping is also present — therefore answers `false` and is never
+    /// discarded on their behalf.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if the HEAD tree cannot be read.
+    pub(crate) fn is_rdm_mapping_write(&self, fs: &FileStatus) -> Result<bool> {
+        if fs.path != crate::repo::GITATTRIBUTES_PATH {
+            return Ok(false);
+        }
+        let repo = self.repo.to_thread_local();
+        let head_files = self.collect_head_blobs(&repo)?;
+        let head_content = head_files
+            .get(&fs.path)
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .unwrap_or_default();
+        let working = std::fs::read_to_string(self.root.join(&fs.path)).unwrap_or_default();
+        Ok(working == crate::repo::gitattributes_with_mapping(&head_content))
     }
 
     /// Syncs the git index with HEAD.
