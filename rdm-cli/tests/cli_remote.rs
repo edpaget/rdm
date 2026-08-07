@@ -1253,3 +1253,100 @@ fn diverged_pull_is_not_wedged_by_the_backfilled_merge_mapping() {
 
     let _ = bare_dir;
 }
+
+/// The fast-forward-only sibling of the guard above, and the commoner case: a
+/// legacy repo that is merely *behind* a peer which has already committed the
+/// mapping.
+///
+/// This path used to skip the working-tree guard entirely, so the backfilled
+/// *untracked* `.gitattributes` collided with the incoming committed one and
+/// git refused with "the following untracked working tree files would be
+/// overwritten by merge". Like the diverged case, it was unrecoverable through
+/// the CLI: `rdm discard --force` reinstalls the file.
+#[test]
+fn fast_forward_pull_is_not_wedged_by_the_backfilled_merge_mapping() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Make this a repo that predates the mapping: drop it from HEAD entirely.
+    git_cmd()
+        .args(["rm", "--cached", "--quiet", ".gitattributes"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::fs::remove_file(dir.path().join(".gitattributes")).unwrap();
+    git_cmd()
+        .args(["commit", "-q", "-m", "legacy: drop .gitattributes"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let bare_dir = setup_bare_remote(&dir, "origin");
+    git_cmd()
+        .args(["push", "-q", "origin", "HEAD:refs/heads/main"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // The remote moves ahead and commits its own mapping, exactly as any peer's
+    // `rdm commit` does once the backfill has shipped.
+    let clone_dir = TempDir::new().unwrap();
+    git_cmd()
+        .args(["clone", "-q"])
+        .arg(bare_dir.path())
+        .arg(clone_dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(
+        clone_dir.path().join(".gitattributes"),
+        "INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n",
+    )
+    .unwrap();
+    std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+    for args in [
+        vec!["add", "."],
+        vec!["commit", "-q", "-m", "remote work"],
+        vec!["push", "-q"],
+    ] {
+        git_cmd()
+            .args(&args)
+            .current_dir(clone_dir.path())
+            .output()
+            .unwrap();
+    }
+
+    // The local side stays put, so the pull takes the fast-forward-only path.
+    // Any rdm command reopens the store and backfills the mapping as an
+    // untracked file, right where the incoming commit wants to write.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("status")
+        .assert()
+        .success();
+    let porcelain = git_cmd()
+        .args(["status", "--porcelain"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&porcelain.stdout).contains("?? .gitattributes"),
+        "the backfill must leave an untracked .gitattributes, or this proves nothing"
+    );
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["remote", "pull", "origin"])
+        .assert()
+        .success();
+
+    assert!(dir.path().join("remote.md").exists());
+    let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+    assert!(
+        attrs.contains("merge=rdm-index"),
+        "the pull must leave the mapping installed, got: {attrs}"
+    );
+
+    let _ = bare_dir;
+}

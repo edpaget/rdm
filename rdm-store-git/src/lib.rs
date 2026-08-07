@@ -1941,6 +1941,114 @@ mod tests {
         let _ = bare_dir;
     }
 
+    /// Seeds a *behind-only* legacy repo: HEAD carries no `.gitattributes`, and
+    /// the remote is one commit ahead — a commit that adds its own mapping,
+    /// exactly as any peer's `rdm commit` does once the backfill has shipped.
+    /// The local side never moves, so the pull takes the fast-forward path.
+    fn seed_behind_legacy_repo() -> (TempDir, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let mut store = GitStore::init(dir.path()).unwrap();
+        std::fs::remove_file(dir.path().join(".gitattributes")).unwrap();
+        store
+            .write(&RelPath::new("init.md").unwrap(), "init".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store.commit_now("seed: add init.md").unwrap();
+
+        let bare_dir = setup_bare_remote(&mut store, "origin");
+
+        let clone_dir = TempDir::new().unwrap();
+        git_cmd()
+            .args(["clone"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(
+            clone_dir.path().join(".gitattributes"),
+            "INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n",
+        )
+        .unwrap();
+        std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+        for args in [
+            vec!["add", "."],
+            vec!["commit", "-m", "remote commit"],
+            vec!["push"],
+        ] {
+            git_cmd()
+                .args(&args)
+                .current_dir(clone_dir.path())
+                .output()
+                .unwrap();
+        }
+
+        assert!(
+            !dir.path().join(".gitattributes").exists(),
+            "fixture must start without the mapping on disk"
+        );
+        (dir, bare_dir)
+    }
+
+    #[test]
+    fn fast_forward_pull_is_not_blocked_by_the_backfilled_merge_mapping() {
+        let (dir, bare_dir) = seed_behind_legacy_repo();
+
+        // Reopening backfills `.gitattributes` as an untracked file — right
+        // where the incoming fast-forward wants to write its committed copy.
+        let mut store = GitStore::new(dir.path()).unwrap();
+        assert!(
+            store
+                .git()
+                .git_status_all()
+                .unwrap()
+                .iter()
+                .any(|fs| fs.path == ".gitattributes"),
+            "the backfill must genuinely dirty the tree, or this proves nothing"
+        );
+
+        // Before the guard covered this path, git refused the fast-forward with
+        // "untracked working tree files would be overwritten by merge", and
+        // `rdm discard` could not clear it — the repo was wedged for good.
+        let outcome = store.git_mut().git_pull("origin").unwrap();
+        match outcome {
+            PullOutcome::Success(result) => assert!(result.changed),
+            PullOutcome::Conflict(_) => panic!("expected a clean fast-forward, got conflict"),
+        }
+
+        assert!(dir.path().join("remote.md").exists());
+        let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+        assert!(
+            attrs.contains("merge=rdm-index"),
+            "the mapping restored for the merge must be re-ensured after it, got: {attrs}"
+        );
+
+        let _ = bare_dir;
+    }
+
+    #[test]
+    fn fast_forward_pull_still_tolerates_unrelated_user_dirt() {
+        let (dir, bare_dir) = seed_behind_legacy_repo();
+        let mut store = GitStore::new(dir.path()).unwrap();
+
+        // The guard partitions the tree on the fast-forward path too, but must
+        // not start *refusing* on user dirt there: git has always allowed a
+        // fast-forward whose incoming changes do not collide with local edits.
+        std::fs::write(dir.path().join("scratch.md"), "mine").unwrap();
+
+        let outcome = store.git_mut().git_pull("origin").unwrap();
+        match outcome {
+            PullOutcome::Success(result) => assert!(result.changed),
+            PullOutcome::Conflict(_) => panic!("expected a clean fast-forward, got conflict"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("scratch.md")).unwrap(),
+            "mine",
+            "the user's uncommitted file must survive the fast-forward untouched"
+        );
+
+        let _ = bare_dir;
+    }
+
     #[test]
     fn pull_still_refuses_when_the_user_edited_gitattributes() {
         let (dir, bare_dir) = seed_diverged_legacy_repo();
