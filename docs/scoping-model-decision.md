@@ -120,53 +120,53 @@ When a git hook is spawned outside of any rdm-initiated git operation (e.g., a u
 
 **rdm-server**: Open question for phase 5. The REST API server mutates the same plan repository but does not expose a commit endpoint (it is stateless and never commits). Mutations are written to disk immediately. The question of whether `rdm-server` should journal mutations and provide session scoping (and what "commit" means for a stateless server) is an operational/deployment decision that phase 5 will settle. For now, assume `rdm-server` bypasses the session model entirely.
 
-## Open Questions (Deferred to Phase 4 or Later)
+## Phase 4 Implementation (Completed)
 
-### Journal Implementation Details
+### Journal Implementation Details (Decided)
 
-Phase 4 must decide:
-- **On-disk layout**: Where and how are journals stored? Per-session file, in-memory structure, or other? (Constrained by the requirement to place the journal outside `$RDM_ROOT` committable tree, e.g., `$RDM_ROOT/.git/rdm/` or an XDG state dir.)
-- **Serialization format**: JSON, JSONL, binary, or?
-- **Granularity**: What is the atomic unit of journaling? Per-mutation, per-batch, or per-operation type?
-- **Cleanup and lifecycle**: When and how are old journals pruned? On successful commit, on session exit, or on a schedule? How are orphaned changesets (from sessions that were killed) discovered and recovered?
+Phase 4 has implemented the session-scoped journal mechanism with the following concrete decisions:
+
+- **On-disk layout**: Journals are stored in the `.git/rdm/` directory (outside the `$RDM_ROOT` committable tree), alongside git metadata. This placement ensures journals are not accidentally committed and are tied to the repository's lifecycle.
+- **Serialization format**: JSONL (JSON Lines) is the format. Each line is a complete JSON record representing one journaled mutation, enabling streaming and append-only writes.
+- **Implementation**: Core session and journal logic resides in `rdm-core/src/session/` (see `journal.rs`, `lease.rs`, `process.rs`, `mod.rs`), and CLI surface is in `rdm-cli/src/commands/session.rs`.
+- **Granularity**: The atomic unit is per-mutation — each create, update, or delete operation writes a journal entry recording the file paths it touched.
+- **Cleanup and lifecycle**: Journals are retained until explicitly discarded. The `rdm session gc` command (CLI surface) provides cleanup and orphaned changeset recovery. Cleanup behavior can be refined in later phases based on operational experience.
+- **CLI surface for session management**: 
+  - `rdm session id` — display the current session identity
+  - `rdm session journal` — inspect journaled paths for the current session
+  - `rdm session list` — list all known sessions and their metadata
+  - `rdm session adopt <session-id>` — adopt an existing session identity
+  - `rdm session discard` — mark the current session for cleanup
+  - `rdm session gc` — garbage-collect orphaned sessions
+
+## Open Questions (Deferred to Phase 5 or Later)
 
 ### INDEX.md Consistency in Partial Commits
 
-**How consistency is maintained:** INDEX.md is auto-generated from individual roadmap, phase, task, and review files — it is a computed artifact, not a source of truth. When a partial commit (from HEAD + caller's journaled paths) is created, the INDEX.md in that commit reflects exactly the entities that exist in that tree. This is guaranteed by the phase 4/5 split below:
+**How consistency is maintained:** INDEX.md is auto-generated from individual roadmap, phase, task, and review files — it is a computed artifact, not a source of truth. When a partial commit (from HEAD + caller's journaled paths) is created, the INDEX.md in that commit reflects exactly the entities that exist in that tree.
 
-- **Phase 4:** Journals INDEX.md like any other path. Every mutation regenerates INDEX.md, and it is recorded in the caller's session journal, ensuring every partial commit includes an up-to-date INDEX.md.
-- **Phase 5:** Scopes INDEX.md generation to only see HEAD + journaled paths. When `generate_index_for_project()` is invoked during a commit preparation, it will read from a view constrained to that session's journaled paths, not the live filesystem. The resulting INDEX.md will reference only entities that exist in the partial tree.
+**Phase 4's contribution:** The session journal (described above) records all paths touched by each mutation, including INDEX.md itself. When a partial tree is built from HEAD + journaled paths, INDEX.md is included if and only if this session regenerated it.
 
-**Consequence:** INDEX.md never contains dangling references. When Session A has written a task file to disk but not committed, and Session B commits:
+**Phase 5's task:** To ensure complete INDEX.md consistency, Phase 5 must scope INDEX.md generation to only see HEAD + journaled paths. When `generate_index_for_project()` is invoked during a commit preparation, it should read from a view constrained to that session's journaled paths, not the live filesystem. The resulting INDEX.md will reference only entities that exist in the partial tree. This requires introducing a journal-scoped Store view or similar mechanism so that `build_project_index` and its subroutines read only from the visible (committed or journaled) state, not the transient filesystem.
 
+**Consequence:** Without this Phase 5 scoping, INDEX.md could contain dangling references. When Session A has written a task file to disk but not committed, and Session B commits:
 1. Session B's partial tree correctly excludes Session A's task file (it was not in B's journal).
-2. Session B's INDEX.md (regenerated from the constrained view in step 2 above) contains no reference to A's task entity.
-3. The committed tree is internally consistent: every entity in INDEX.md has a corresponding file in the tree.
+2. If Session B's INDEX.md was regenerated by scanning the *live* filesystem, it would include A's task entity.
+3. The resulting committed tree would be inconsistent: INDEX.md references an entity whose file is absent.
 
-**Problem it solves:** Without this scoping, Session B's INDEX.md would be generated by scanning the *live* filesystem (which includes A's uncommitted task file), creating the dangling reference described below. The scoping ensures that what INDEX.md describes and what is actually committed are always aligned.
-
-**Current limitation (to be fixed in phase 5):** Today, every mutation invokes `ops::mutate` (rdm-core/src/ops/mod.rs:70–78), which calls `index::generate_index_for_project()` (rdm-core/src/ops/index.rs:113–133). This function scans **the entire on-disk store** via `list_projects` → `build_project_index` → `list_roadmaps`/`list_phases`/`list_tasks`, with no filtering for session-scoped paths. The generated INDEX.md can therefore include references to uncommitted files from other sessions.
-
-When `git commit` is later called (whether via `rdm commit` or a git hook), the current implementation (rdm-store-git/src/commit.rs:166–199) recursively builds a tree from the entire working directory via `build_tree_from_dir`, staging whatever files are currently on disk. If Session A has written a new task file to disk but has not yet committed, and Session B then calls `rdm commit`:
-
-1. Session B's partial tree correctly excludes Session A's task file (journaled paths are unknown in today's disk-only staging).
-2. However, Session B's INDEX.md (regenerated by `ops::mutate` during B's own mutations) was built by scanning the live filesystem, which includes A's task file.
-3. The resulting committed tree contains Session B's INDEX.md with a reference to Session A's task entity, but the task file itself is absent from that tree — a dangling reference.
-
-**Phase 5's task:** Introduce a journal-scoped Store view or similar mechanism so that `generate_index_for_project` (and its `build_project_index` subroutines) read only from HEAD + the caller's journaled paths, not from the live filesystem. This change must happen during commit preparation (in the `rdm commit` path or in the `ops::mutate` path when called from commit), not during normal mutations, so that INDEX.md reflects the tree being committed, not the transient live state.
+**Phase 5's scope:** Introduce the journal-scoped view so that INDEX.md is regenerated from only the paths that will actually be committed, ensuring alignment between what INDEX.md describes and what exists in the tree.
 
 ### Merge Driver: Out of Scope (Correctly)
 
 The rdm-index merge driver (`rdm-store-git/src/repo.rs`) automatically regenerates `INDEX.md` when git detects conflicts during a merge. However, changesets never perform a merge — a changeset-scoped commit constructs its tree from HEAD plus the caller's journaled paths (a direct write operation, no three-way merge). Therefore, the rdm-index merge driver is not involved in changeset-scoped commits and is orthogonal to this decision. It remains orthogonal as long as phase 4's partial-tree mechanism avoids merging.
 
-### CLI Surface for Session Display and Management
+### Future Refinements (Phase 5 or Later)
 
-Phase 4 must decide how users and agents interact with the session model:
-- Does `rdm status` show only the caller's changeset, the whole tree, or both with flags?
-- Is there an `rdm session info` or similar command to inspect the current session identity?
-- Can users or scripts inspect the journal (for debugging) with a command like `rdm status --debug-journal`?
+The `rdm status` command behavior with session changesets is an area for future refinement:
+- Should `rdm status` show only the caller's changeset, the whole tree, or both with flags?
+- What debug commands (e.g., `rdm status --debug-journal`) are useful for diagnosing session-scoping issues?
 
-These are user-facing details that can be refined iteratively; the core model does not depend on them.
+These are user-facing details that can be refined iteratively; the core session identity and journal model do not depend on them.
 
 ## Appendix A: Measured Data
 
