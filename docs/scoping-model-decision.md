@@ -75,6 +75,10 @@ When none of the above provide a session identity, each process gets a fresh, un
 - **Consequence**: Mutations from this process are never combined with other processes' work in a single `rdm commit` (since they have no shared session identity), and they will not be committed if another session calls `rdm commit` first.
 - **Properties**: Stable (for a single process only), Distinct (by definition, each process is unique), Automatic (requires no configuration; rung 4 always resolves)
 
+### Why Not the RDM_PROJECT Model for Session Identity
+
+The `RDM_PROJECT` precedence chain (flag > env > config, terminating in repo-global `default_project`) is **not** a suitable model for session identity. When two concurrent sessions resolve to the same `default_project`, they both get the same project identifier — but they are distinct sessions and must have distinct session identities. Session identity instead must use a mechanism that is globally unique across all invocations (explicit override or process ancestry), ensuring that every session gets a distinct identity unless the user explicitly opts into grouping via rung 1. This asymmetry is intentional: project selection is user-scoped (one user may work on multiple projects), whereas session identity is session-scoped (one session is one session, period).
+
 ## Key Decisions (Binding on Phase 4)
 
 The following decisions are binding and constrain phase 4's implementation. Phase 4 is responsible for the items marked "phase 4 to decide" below.
