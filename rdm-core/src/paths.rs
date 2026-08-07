@@ -37,9 +37,10 @@ pub fn project_index_path(project: &str) -> RelPath {
 /// - one per-project index per project, [`project_index_path`] —
 ///   `projects/<name>/INDEX.md`
 ///
-/// The check round-trips through those two builders rather than sniffing the
-/// string, so it cannot drift into matching paths the generator never writes.
-/// In particular it is **not** a suffix match on `INDEX.md`: the
+/// The check round-trips through the same construction those two builders use
+/// rather than sniffing the string, so it cannot drift into matching paths the
+/// generator never writes. In particular it is **not** a suffix match on
+/// `INDEX.md`: the
 /// `**/INDEX.md merge=rdm-index` line rdm installs in `.gitattributes` is
 /// deliberately broader than the generator's write set, and an `INDEX.md` a
 /// user authored anywhere else in the tree (say
@@ -59,6 +60,21 @@ pub fn project_index_path(project: &str) -> RelPath {
 /// index, say), it must be added here in the same change — otherwise
 /// `rdm status` will report generated output as a user change again.
 ///
+/// # Panics
+///
+/// Never. This function is **total** over arbitrary `&str` input, which is
+/// load-bearing: it is applied to every path a filesystem walk yields, so a
+/// panic here would take out `rdm status`, `rdm commit`, `rdm discard`, the
+/// post-command uncommitted hint, and the three MCP tools at once — including
+/// `rdm discard`, the very command a user would reach for to remove an
+/// offending path. It deliberately does **not** call [`project_index_path`],
+/// whose `expect` would panic on a middle segment [`RelPath::new`] rejects
+/// (empty, `.`, `..`, or a literal `\`, which is an ordinary filename
+/// character on Unix); it builds the candidate through the fallible
+/// [`RelPath::new`] instead, so every current *and future* `RelPath`
+/// restriction is handled by construction rather than by re-enumerating those
+/// rules here.
+///
 /// # Examples
 ///
 /// ```
@@ -69,6 +85,8 @@ pub fn project_index_path(project: &str) -> RelPath {
 /// // A user-authored INDEX.md elsewhere in the tree is not derived.
 /// assert!(!is_derived_path("projects/demo/roadmaps/auth/INDEX.md"));
 /// assert!(!is_derived_path(".gitattributes"));
+/// // Segments RelPath rejects are answered `false`, not a panic.
+/// assert!(!is_derived_path(r"projects/a\b/INDEX.md"));
 /// ```
 pub fn is_derived_path(path: &str) -> bool {
     if path == index_path().as_str() {
@@ -76,14 +94,15 @@ pub fn is_derived_path(path: &str) -> bool {
     }
     let segments: Vec<&str> = path.split('/').collect();
     if segments.len() == 3 && segments[0] == "projects" && segments[2] == "INDEX.md" {
-        let project = segments[1];
-        // Guard the middle segment before round-tripping: `project_index_path`
-        // panics on a component `RelPath` rejects, and these segments come
-        // from an arbitrary caller-supplied string.
-        if project.is_empty() || project == "." || project == ".." {
-            return false;
-        }
-        return project_index_path(project).as_str() == path;
+        // Round-trip through the fallible `RelPath::new` rather than through
+        // `project_index_path`, which `expect`s. `path` arrives from a
+        // filesystem walk, so the middle segment is arbitrary: it can be
+        // empty, `.`, `..`, or contain a literal `\` (a legal filename
+        // character on Unix that `RelPath` rejects). Constructing the
+        // candidate fallibly answers `false` for every such segment — and for
+        // any rule `RelPath` gains later — instead of panicking.
+        return RelPath::new(&format!("projects/{}/INDEX.md", segments[1]))
+            .is_ok_and(|candidate| candidate.as_str() == path);
     }
     false
 }
@@ -213,6 +232,22 @@ mod tests {
         assert!(!is_derived_path("projects/../INDEX.md"));
         assert!(!is_derived_path("projects/./INDEX.md"));
         assert!(!is_derived_path("projects//INDEX.md"));
+    }
+
+    #[test]
+    fn is_derived_path_does_not_panic_on_segments_relpath_rejects() {
+        // A literal backslash is an ordinary filename character on Unix, so a
+        // filesystem walk can hand this to `is_derived_path` — but `RelPath`
+        // rejects it. Answering `false` (rather than panicking through
+        // `project_index_path`'s `expect`) is what keeps `rdm status` /
+        // `commit` / `discard` and the MCP tools alive on such a tree.
+        assert!(!is_derived_path(r"projects/a\b/INDEX.md"));
+        assert!(!is_derived_path("projects/a\\/INDEX.md"));
+        assert!(!is_derived_path(r"projects/\/INDEX.md"));
+        // A leading slash makes the whole path absolute, which `RelPath` also
+        // rejects; the leading empty segment means this is not even 3
+        // segments, but assert it is total here regardless.
+        assert!(!is_derived_path("/projects/demo/INDEX.md"));
     }
 
     #[test]
