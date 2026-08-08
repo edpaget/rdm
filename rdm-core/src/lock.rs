@@ -14,6 +14,16 @@
 //! Living here rather than in each backend means the wait/staleness state
 //! machine exists once. The *durations* stay with the caller, since the commit
 //! path shortens them under `cfg(test)` and the flush path does not.
+//!
+//! # Why this touches the filesystem directly
+//!
+//! This module is category (b) of the direct-I/O carve-out in
+//! `docs/principles.md` § 1 — *out-of-band coordination state*. It is
+//! mechanism, not plan data: it knows no domain type, holds no
+//! [`Store`](crate::store::Store), and its lock files live outside the plan
+//! tree and are never committed. It cannot route through a `Store` even in
+//! principle, because one of its two callers is the filesystem store's own
+//! flush — a lock taken through the flush it guards would be circular.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

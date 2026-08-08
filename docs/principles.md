@@ -6,15 +6,21 @@ This document codifies the architectural principles that govern the rdm codebase
 
 ## 1. Core Is the Source of Truth
 
-All business logic, data models, parsing, and domain rules live in `rdm-core`. The core crate performs **no filesystem or network I/O** — all storage is abstracted behind the `Store` trait, and I/O implementations live in separate crates (`rdm-store-fs`, `rdm-store-git`). CLI and server crates are thin layers that wire a concrete store to core and format output.
+All business logic, data models, parsing, and domain rules live in `rdm-core`. **All plan-repo persistence is abstracted behind the `Store` trait** — core never reads or writes a plan document directly, and the storage implementations live in separate crates (`rdm-store-fs`, `rdm-store-git`). CLI and server crates are thin layers that wire a concrete store to core and format output.
 
 - **New interfaces call core.** Whether it's a TUI, an MCP server, or a WASM module, new frontends import and call `rdm-core`. They do not duplicate logic.
-- **Core has no knowledge of its consumers or its storage backend.** `rdm-core` must never depend on `rdm-cli`, `rdm-server`, `rdm-store-fs`, or any interaction-layer crate. Dependencies flow strictly downward. Core operates on the `Store` trait, never on concrete I/O types.
+- **Core has no knowledge of its consumers or its storage backend.** `rdm-core` must never depend on `rdm-cli`, `rdm-server`, `rdm-store-fs`, or any interaction-layer crate. Dependencies flow strictly downward. Core reads and writes plan data through the `Store` trait, never through concrete I/O types.
 - **Formatting belongs in core when reusable.** Display logic that multiple interfaces need (e.g., `format_index()`, `format_search_results()`) lives in `rdm-core::display`. Interface-specific formatting (e.g., terminal colors, HTML templates) stays in the consuming crate.
+- **Direct I/O in core is confined to three non-plan-data categories.** The `Store` trait abstracts *plan documents*; it was never the seam for machinery that must exist before, around, or outside a store. Core therefore touches `std::fs` directly in exactly three cases, and no others:
+  - **(a) Locating the plan repo** — `root.rs` and global-config resolution. The root has to be resolved before a `Store` can be constructed, so this cannot go through one.
+  - **(b) Out-of-band coordination state** — `session/{lease,journal,process}.rs` and `lock.rs`. These are records under `.git/rdm/`, deliberately never committed, whose whole job is to *guard* a store flush. Routing them through the store would both stage coordination bookkeeping as plan data and be circular: a flush lock cannot be acquired through the flush it protects.
+  - **(c) Emitting artifacts outside a plan repo** — `agent_config.rs`, which writes skill and plugin trees into a *consumer's* source repo. That repo is not a plan repo and has no store.
+
+  Anything representing plan data goes through the `Store`, without exception. A new direct-I/O module in core must fall into one of these three categories and name which one in its module docs; anything else belongs in an I/O crate.
 
 ### Why
 
-A single source of truth prevents logic drift between interfaces. When the rules for parsing a phase document or validating a status transition live in one place, every consumer gets the fix or feature automatically. Duplicated logic is a bug waiting to diverge. Keeping I/O out of core makes the library pure and testable — every core test runs in-memory with no filesystem setup or cleanup.
+A single source of truth prevents logic drift between interfaces. When the rules for parsing a phase document or validating a status transition live in one place, every consumer gets the fix or feature automatically. Duplicated logic is a bug waiting to diverge. Keeping plan-data I/O out of core makes the domain logic pure and testable — every test of it runs in-memory with no filesystem setup or cleanup. The three carve-outs are drawn narrowly for the same reason the rule exists: each one is machinery a store depends on rather than data a store holds, so pushing it behind the trait would buy no testability and would invert the dependency.
 
 ---
 
@@ -34,12 +40,13 @@ Thin adapters are easy to test, easy to replace, and impossible to accidentally 
 
 ## 3. I/O Lives Behind the Store Trait
 
-All persistence in `rdm-core` goes through the `Store` trait. Core never touches `std::fs`, `std::io`, or any concrete I/O type. Storage implementations live in dedicated crates outside core.
+All **plan-repo** persistence in `rdm-core` goes through the `Store` trait. Core never touches `std::fs`, `std::io`, or any concrete I/O type to read or write a plan document. Storage implementations live in dedicated crates outside core.
 
-- **`Store` is the only I/O seam.** `PlanRepo<S: Store>` is generic over any `Store` implementation. Core reads, writes, and deletes through this trait — it has no other path to the outside world.
+- **`Store` is the only seam for plan data.** `PlanRepo<S: Store>` is generic over any `Store` implementation. Core reads, writes, and deletes plan documents through this trait — it has no other path to them.
 - **Implementations are separate crates.** `rdm-store-fs` provides `FsStore` (filesystem with atomic writes via temp-file + rename). `rdm-store-git` provides `GitStore` (wraps `FsStore` and adds git commits). New backends (e.g., S3, SQLite) would be new crates implementing `Store`.
 - **Staging semantics are built in.** `Store::write()` and `Store::delete()` stage changes; `Store::commit()` flushes them atomically. Reads see staged changes before commit (read-your-own-writes). This lets core batch mutations without partial writes hitting disk.
 - **`MemoryStore` is a first-class implementation.** The in-memory store in core is not a test mock — it is a complete `Store` implementation with full staging semantics. Core tests use it directly.
+- **Store *machinery* is not store *data*.** The §1 carve-outs — repo-root resolution, the `.git/rdm/` session lease/journal, the `lock::AdvisoryLock` primitive, and `agent_config`'s emission of artifacts into a consumer's repo — reach the filesystem directly and are closed to extension without amending this document. They live in core rather than in a backend crate because more than one backend needs the same behavior and duplicating a concurrency state machine across `rdm-store-fs` and `rdm-store-git` is the failure mode this rule exists to prevent. They are deliberately mechanism-only: no domain types, no plan-document knowledge, no `Store` access.
 
 ### Why
 
@@ -53,7 +60,7 @@ Every behavior must be covered by automated tests. There are no exceptions for g
 
 - **Follow TDD.** Write a failing test first, then the minimum code to make it pass, then refactor.
 - **Unit tests live next to the code.** Use `#[cfg(test)] mod tests` in the same file. Test internal logic through the module's public interface.
-- **Core tests use `MemoryStore`.** Since core is I/O-free, all core tests run against the in-memory `Store` implementation. This makes tests fast, deterministic, and free of filesystem setup/cleanup. No mocking — `MemoryStore` is a real `Store` implementation, not a mock.
+- **Core tests use `MemoryStore`.** Since core's plan-data path is I/O-free, tests of it run against the in-memory `Store` implementation. This makes tests fast, deterministic, and free of filesystem setup/cleanup. No mocking — `MemoryStore` is a real `Store` implementation, not a mock. The §1 direct-I/O carve-outs are the exception, and necessarily so: they test against a `TempDir`, because real filesystem behavior — an interrupted lock holder, a stale lease, a partially written journal — is the thing under test.
 - **Integration tests use real artifacts.** CLI integration tests spawn the compiled binary with `assert_cmd`, write to a `TempDir`, and assert on stdout/stderr with `predicates`. Server integration tests start a real TCP listener and make HTTP requests with `reqwest`. These tests exercise the full stack including real filesystem I/O through `FsStore`/`GitStore`.
 - **Doctests are encouraged for public API.** Examples in `///` doc comments are compiled and run by `cargo test`. They serve as both documentation and regression tests.
 
