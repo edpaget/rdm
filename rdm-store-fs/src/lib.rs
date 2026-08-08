@@ -20,10 +20,13 @@
 //! was derived from content someone else has since changed, and the whole
 //! flush is refused with [`Error::StaleWrite`] and nothing written.
 //!
-//! Keying on *content* rather than on a session id is what makes a session's
-//! own sequential writes safe: after a clean flush each path's baseline is
-//! re-seeded to the bytes just written, so the next flush compares against
-//! what this process itself put there.
+//! A baseline lives for exactly one read-modify-write cycle: it is recorded
+//! on first touch and dropped by the flush (or the [`Store::discard`]) that
+//! ends the cycle, so the next touch observes the world afresh. That is what
+//! makes a session's own sequential writes safe — no session id is consulted
+//! anywhere, and a store that outlives one flush (the MCP server holds one for
+//! its whole session) keeps re-observing rather than staying pinned to what it
+//! last wrote.
 
 #![warn(missing_docs)]
 
@@ -168,11 +171,14 @@ impl FsStore {
         self.baselines.lock().map(|b| b.clone()).unwrap_or_default()
     }
 
-    /// Records `observed` as `key`'s baseline **if this is the first touch**.
+    /// Records `observed` as `key`'s baseline **if this is the first touch of
+    /// the current cycle**.
     ///
     /// First touch wins. A later read served from the staging overlay must
     /// never re-seed the baseline, or the flush would compare this process's
-    /// own staged content against itself and never detect anything.
+    /// own staged content against itself and never detect anything. "First"
+    /// is scoped to the cycle, not to the store's lifetime: `commit` and
+    /// `discard` both clear the map, so the next touch observes disk again.
     fn note_baseline(&self, key: &str, observed: impl FnOnce() -> Baseline) {
         let Ok(mut baselines) = self.baselines.lock() else {
             return;
@@ -456,7 +462,6 @@ impl Store for FsStore {
         self.verify_baselines()?;
 
         let staged = self.staged.drain();
-        let mut flushed: Vec<(String, Baseline)> = Vec::with_capacity(staged.len());
         for (key, entry) in staged {
             let rel = if key.is_empty() {
                 RelPath::root()
@@ -484,25 +489,30 @@ impl Store for FsStore {
                             "failed to persist temp file: {e}"
                         )))
                     })?;
-                    flushed.push((key, Baseline::Present(content_digest(&content))));
                 }
                 StagedEntry::Delete => {
                     if full.exists() {
                         fs::remove_file(&full)?;
                     }
-                    flushed.push((key, Baseline::Absent));
                 }
             }
         }
 
-        // Re-seed baselines to what this process just wrote, so a second
-        // flush in the same process compares against its own output. This is
-        // what makes a session's own sequential writes unable to trip the
-        // check — no session id is consulted anywhere.
+        // A flush ends the cycle those baselines described, so drop all of
+        // them — the same thing `discard` does, for the same reason. The next
+        // touch of any path re-observes disk, which is what makes a session's
+        // own sequential writes unable to trip the check (no session id is
+        // consulted anywhere) *and* what keeps a store that outlives one
+        // flush honest. Re-seeding only the flushed subset would instead pin
+        // every previously written path to what this store last wrote: after
+        // another session edited such a path, every later write to it — read
+        // from disk, correctly derived, and retried exactly as the error
+        // message advises — would be refused forever, because a plain read
+        // never re-seeds an already-recorded baseline. That wedges any
+        // long-lived store, and the MCP server holds one for its whole
+        // session.
         if let Ok(mut baselines) = self.baselines.lock() {
-            for (key, observed) in flushed {
-                baselines.insert(key, observed);
-            }
+            baselines.clear();
         }
         Ok(())
     }
@@ -900,9 +910,9 @@ mod tests {
 
     #[test]
     fn a_sessions_own_sequential_flushes_never_trip_the_check() {
-        // The AC3 shape in miniature: after a clean flush, baselines are
-        // re-seeded to what this process just wrote, so the next flush
-        // compares against its own output rather than against a stale read.
+        // The AC3 shape in miniature: a clean flush ends the cycle its
+        // baselines described, so the next cycle observes disk afresh rather
+        // than comparing against a stale read.
         let (dir, mut store) = setup();
         let path = RelPath::new("projects/demo/tasks/a.md").unwrap();
 
@@ -919,6 +929,72 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.path().join(path.as_str())).unwrap(),
             "three"
+        );
+    }
+
+    #[test]
+    fn a_long_lived_store_re_observes_after_each_flush() {
+        // A store that outlives one flush — the MCP server holds exactly one
+        // for its whole session and flushes on every tool call — must not
+        // stay pinned to what it wrote last time. Otherwise the first
+        // external edit to a path this store once wrote would refuse every
+        // later write to it forever, including the retry the error message
+        // itself recommends.
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/a.md").unwrap();
+
+        // Cycle 1: this store writes the path and flushes.
+        store.write(&path, "mine-one".to_string()).unwrap();
+        store.commit().unwrap();
+
+        // Someone else edits it between cycles.
+        other_session_writes(&dir, path.as_str(), "theirs");
+
+        // Cycle 2: a fresh read observes their content, and a write derived
+        // from that read is legitimate — nothing changed between the read and
+        // this flush.
+        let current = store.read(&path).unwrap();
+        assert_eq!(current, "theirs");
+        store.write(&path, format!("{current}+mine")).unwrap();
+        store.commit().unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join(path.as_str())).unwrap(),
+            "theirs+mine"
+        );
+
+        // And the recovery path stays open: a third cycle after another
+        // external edit works the same way, rather than wedging permanently.
+        other_session_writes(&dir, path.as_str(), "theirs-again");
+        let current = store.read(&path).unwrap();
+        store.write(&path, format!("{current}+mine")).unwrap();
+        store.commit().unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join(path.as_str())).unwrap(),
+            "theirs-again+mine"
+        );
+    }
+
+    #[test]
+    fn a_stale_write_is_still_refused_on_a_reused_store() {
+        // The flush-scoped baseline must not become a way to lose the
+        // protection: within one cycle on a store that has already flushed
+        // once, a genuine drift is still caught.
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/a.md").unwrap();
+
+        store.write(&path, "mine-one".to_string()).unwrap();
+        store.commit().unwrap();
+
+        // Cycle 2: read, then someone else lands an edit before this flush.
+        let current = store.read(&path).unwrap();
+        store.write(&path, format!("{current}+mine")).unwrap();
+        other_session_writes(&dir, path.as_str(), "theirs");
+
+        let err = store.commit().unwrap_err();
+        assert_eq!(stale_write_item(err), "task/a");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(path.as_str())).unwrap(),
+            "theirs"
         );
     }
 

@@ -827,6 +827,105 @@ fn task_update() {
 }
 
 #[test]
+fn task_update_survives_an_external_edit_between_tool_calls() {
+    // The server holds ONE store for its whole session and flushes on every
+    // tool call, so it is the surface where a per-store (rather than
+    // per-read-modify-write) staleness baseline would wedge: after another
+    // session edited a path this server had already written, every later
+    // update to that path would be refused for the rest of the session —
+    // including the retry the error itself recommends. Each tool call reads
+    // fresh, so each must be accepted.
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+    let root_str = tmp.path().to_str().unwrap();
+    let binary = env!("CARGO_MANIFEST_DIR").replace("rdm-mcp", "target/debug/rdm");
+
+    let not_an_error = |response: &serde_json::Value| -> bool {
+        !response["result"]["isError"].as_bool().unwrap_or(false)
+    };
+    let external_edit = |body: &str| {
+        let status = Command::new(&binary)
+            .args([
+                "--root",
+                root_str,
+                "task",
+                "update",
+                "fix-login-bug",
+                "--body",
+                body,
+                "--no-edit",
+                "--project",
+                "test-proj",
+            ])
+            .status()
+            .expect("failed to run the external edit");
+        assert!(status.success(), "the external edit itself must succeed");
+    };
+
+    // Tool call 1: this server writes the task and flushes.
+    let first = h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "status": "in-progress"
+        }),
+    );
+    assert!(
+        not_an_error(&first),
+        "first update must succeed: {}",
+        result_text(&first)
+    );
+
+    // A genuinely different process edits the same task in between.
+    external_edit("Edited by another session entirely.");
+
+    // Tool call 2 reads fresh and must be accepted, not refused as stale.
+    let second = h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "status": "done"
+        }),
+    );
+    assert!(
+        not_an_error(&second),
+        "an update derived from a fresh read must not be refused as stale: {}",
+        result_text(&second)
+    );
+
+    // And the recovery path stays open across further external edits, rather
+    // than the server wedging permanently on this path.
+    external_edit("Edited by another session again.");
+
+    let third = h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "status": "in-progress"
+        }),
+    );
+    assert!(
+        not_an_error(&third),
+        "the server must not wedge permanently: {}",
+        result_text(&third)
+    );
+
+    let show = h.call_tool(
+        "rdm_task_show",
+        serde_json::json!({"project": "test-proj", "task": "fix-login-bug"}),
+    );
+    let show_text = result_text(&show);
+    assert!(
+        show_text.contains("in-progress"),
+        "the last write must have landed: {show_text}"
+    );
+}
+
+#[test]
 fn task_promote() {
     let tmp = tempfile::TempDir::new().unwrap();
     setup_plan_repo(tmp.path());

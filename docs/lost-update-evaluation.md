@@ -130,23 +130,35 @@ One notion — the sha256 of a file's content, `rdm_core::store::content_digest`
 ### Flush-time precondition (the primary half)
 
 `FsStore` records a `Baseline` (`Absent` | `Present(digest)` | `Unknown`) for a
-store path the **first** time this process touches it: a read, an existence
-probe, a delete, or a blind staged write. First touch wins, so a later read
-served from the staging overlay cannot overwrite the baseline with this
-process's own content.
+store path the **first** time it touches it in the current read-modify-write
+cycle: a read, an existence probe, a delete, or a blind staged write. First
+touch wins within the cycle, so a later read served from the staging overlay
+cannot overwrite the baseline with this process's own content.
 
 At flush, **before any disk mutation**, every staged path is re-observed on
 disk and compared to its baseline. Any mismatch aborts the whole flush with
 nothing written and returns `Error::StaleWrite`, whose message names the item
 in the `task/<slug>` vocabulary users already use, states that nothing was
-written, and says to re-run the command. On a clean flush, each path's baseline
-is re-seeded to the content just written.
+written, and says to re-run the command.
 
-The check is keyed on **content, never on session id**. That is precisely what
-makes a session's own sequential writes safe — the second flush compares
-against what the first flush wrote — while still rejecting a genuinely stale
-read taken by the same session id in a different process. The two are
-different situations and the mechanism must not confuse them.
+**A baseline's lifetime is one cycle, not the store's.** A clean flush clears
+every baseline, exactly as `discard` does, so the next touch of any path
+observes disk afresh. Re-seeding only the flushed paths instead would be a
+subtle trap: a plain read never overwrites an already-recorded baseline, so a
+store that had once written a path would stay pinned to *its own* last bytes.
+The first time another session edited that path, every subsequent write to it
+would be refused forever — including the re-read-and-retry the error message
+recommends — until the process was restarted. Single-shot CLI invocations would
+never notice, but a store is not always single-shot: the MCP server holds one
+`GitStore` for its entire session and flushes on every tool call. Clearing keeps
+the protection intact (a drift *within* a cycle is still caught on a reused
+store) while keeping the recovery path open.
+
+The check is keyed on **content, never on session id**. That is what makes a
+session's own sequential writes safe — each cycle compares against what that
+cycle actually observed — while still rejecting a genuinely stale read taken by
+the same session id in a different process. The two are different situations and
+the mechanism must not confuse them.
 
 ### Commit-time check (the second half, closing phase 5's residual)
 
@@ -224,6 +236,17 @@ content-keyed, not identity-keyed), gates the sequential-writes-never-trip
 property with real back-to-back invocations, gates the commit-time half, checks
 the `Done:` hook path still exits 0, and carries planted-mutation self-tests
 proving each section can fail.
+
+**What the shell gate structurally cannot reach.** Every invocation it drives is
+a fresh `rdm` process with a brand-new store, so it can never exercise a store
+that outlives one flush — the shape the baseline lifetime above exists for. That
+is gated in Rust instead, at both layers: `rdm-store-fs`'s
+`a_long_lived_store_re_observes_after_each_flush` (with
+`a_stale_write_is_still_refused_on_a_reused_store` proving the protection
+survives the clearing), and `rdm-mcp`'s
+`task_update_survives_an_external_edit_between_tool_calls`, which drives the
+real production surface: two tool calls against one long-lived server with a
+separate `rdm` process editing the same task in between.
 
 ## Interaction with phase 5
 
