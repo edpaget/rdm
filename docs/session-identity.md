@@ -9,14 +9,21 @@ binding. This document covers only what that record explicitly delegated: the
 stopping rule that ships, the on-disk layout, the serialization format, the
 lifecycle, the CLI surface, and the measured cost.
 
-**Boundary note: no commit behavior changed here.** Nothing routes a committer
-through the journal. `GitRepo::git_commit`, `commit_now`, `git_status`,
-`default_commit_message`, and `apply_done_directives` are untouched, and
-`rdm-store-git/src/commit.rs` was not edited at all — a structural grep in
-`scripts/verify-session-identity.sh` § I gates that it stays that way. Routing
-the five committers, reconciling the journaled derived index against HEAD, and
-scoping `rdm status` / `rdm discard` are the *scoped commit choke point*
-phase's work.
+**Boundary note: commit behavior is now built on this.** Through phase 4 it was
+not — nothing routed a committer through the journal, and
+`scripts/verify-session-identity.sh` § I gated that `rdm-store-git/src/commit.rs`
+stayed uncoupled. The *scoped commit choke point* phase is that later work, and
+it inverted the boundary: `GitRepo::create_git_commit` now takes an explicit
+commit scope, `commit_now` is gone in favor of `GitStore::commit_changeset` /
+`commit_whole_tree`, `git_status` is now the three-bucket `git_status_report`,
+and all five committers — `rdm commit`, `apply_done_directives` (the `Done:`
+hooks), the MCP `rdm_commit` tool, `bootstrap`, and `init` — build their tree
+from a changeset. § I is inverted to match and now asserts the coupling *is*
+present while `commit.rs` still resolves no session identity of its own. What
+each surface does with a changeset is described under
+[*What a changeset does at commit / status / discard time*](#what-a-changeset-does-at-commit--status--discard-time)
+below; the commit-side design record is
+[`docs/scoping-model-decision.md`](scoping-model-decision.md).
 
 ## The shipped stopping rule
 

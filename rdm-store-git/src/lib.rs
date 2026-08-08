@@ -912,6 +912,27 @@ impl ScopedCommit {
     pub fn unattributed_dirt(&self) -> bool {
         self.sha.is_none() && !self.report.others.is_empty()
     }
+
+    /// The one-line note naming journaled paths whose working-tree file has
+    /// vanished, or `None` when none did.
+    ///
+    /// Every porcelain must print this on **every** branch, the `sha: None`
+    /// ones included. Skipping a vanished path is deliberately not fatal, but
+    /// it must never be silent: the journal is truncated only on a *successful*
+    /// commit, so those paths are still claimed by this changeset while the
+    /// files backing them are gone. A caller told nothing but
+    /// `Nothing to commit.` would have no way to learn that its own tracked
+    /// work had disappeared underneath it.
+    pub fn skipped_summary(&self) -> Option<String> {
+        if self.skipped_missing.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "skipped {} journaled path(s) no longer on disk (still in this changeset's journal): {}",
+            self.skipped_missing.len(),
+            self.skipped_missing.join(", ")
+        ))
+    }
 }
 
 impl Store for GitStore {
@@ -1314,6 +1335,23 @@ mod tests {
             report_of(1, 2).discard_summary(),
             "Discarded 1 file(s) (plus 2 regenerated index file(s))."
         );
+    }
+
+    #[test]
+    fn skipped_summary_is_none_only_when_nothing_vanished() {
+        let clean = ScopedCommit::default();
+        assert_eq!(clean.skipped_summary(), None);
+
+        let vanished = ScopedCommit {
+            skipped_missing: vec!["projects/demo/tasks/a.md".into()],
+            ..ScopedCommit::default()
+        };
+        let note = vanished.skipped_summary().expect("a skip must be reported");
+        assert!(note.contains("projects/demo/tasks/a.md"), "{note}");
+        // The journal is truncated only on a successful commit, so the caller
+        // must be told the path is still claimed — otherwise "skipped" reads as
+        // "dropped", and the recovery route is invisible.
+        assert!(note.contains("journal"), "{note}");
     }
 
     #[test]

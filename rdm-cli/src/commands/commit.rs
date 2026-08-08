@@ -67,12 +67,8 @@ pub fn run(
             if let Some(id) = &outcome.changeset {
                 println!("  changeset: {id}");
             }
-            if !outcome.skipped_missing.is_empty() {
-                println!(
-                    "  skipped {} journaled path(s) no longer on disk: {}",
-                    outcome.skipped_missing.len(),
-                    outcome.skipped_missing.join(", ")
-                );
+            if let Some(note) = outcome.skipped_summary() {
+                println!("  {note}");
             }
             if let Some(note) = outcome.report.others_summary() {
                 println!("  {note}");
@@ -94,8 +90,20 @@ pub fn run(
             println!("  rdm session list                 # find the owning changeset");
             println!("  rdm commit --changeset <id>      # commit that changeset");
             println!("  rdm commit --all                 # commit the whole working tree");
+            if let Some(note) = outcome.skipped_summary() {
+                println!("\n{note}");
+            }
         }
-        None => println!("Nothing to commit."),
+        // A changeset can reduce to nothing *because* its files vanished — the
+        // regenerated indexes then reconcile straight back to HEAD and the tree
+        // matches. Reporting only `Nothing to commit.` there would tell a
+        // session its work was a no-op when in fact the work is gone.
+        None => {
+            println!("Nothing to commit.");
+            if let Some(note) = outcome.skipped_summary() {
+                println!("{note}");
+            }
+        }
     }
     Ok(())
 }

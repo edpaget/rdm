@@ -461,6 +461,93 @@ fn commit_reports_unattributed_dirt_instead_of_sweeping_or_going_quiet() {
     );
 }
 
+/// A journaled path whose file has vanished must be reported even when the
+/// commit lands nothing.
+///
+/// This is the branch that used to go quiet. Removing the only file a
+/// changeset owns leaves nothing to skip *around*: the regenerated indexes
+/// reconcile straight back to HEAD, the scoped tree equals HEAD, and the commit
+/// correctly returns no SHA. Printing a bare `Nothing to commit.` there tells
+/// the session its work was a no-op when in fact the work is gone — so the skip
+/// note has to survive onto this branch too.
+#[test]
+fn commit_reports_a_vanished_journaled_path_even_when_it_lands_nothing() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm_as("cs-vanish", &dir)
+        .args([
+            "task",
+            "create",
+            "vanishing",
+            "--title",
+            "V",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+
+    let path = dir.path().join("projects/test/tasks/vanishing.md");
+    assert!(path.exists(), "precondition: the task file was created");
+    std::fs::remove_file(&path).unwrap();
+
+    let before = count_git_commits(dir.path());
+    rdm_as("cs-vanish", &dir)
+        .args(["commit", "-m", "land the vanished task"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no longer on disk"))
+        .stdout(predicate::str::contains("projects/test/tasks/vanishing.md"));
+
+    assert_eq!(
+        count_git_commits(dir.path()),
+        before,
+        "a changeset whose files all vanished must not create an empty commit"
+    );
+}
+
+/// The same note must also ride along on the branch that *does* land a commit,
+/// so a partially-vanished changeset is not reported as a clean win.
+#[test]
+fn commit_reports_a_vanished_journaled_path_alongside_the_paths_it_landed() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    for slug in ["survivor", "casualty"] {
+        rdm_as("cs-partial", &dir)
+            .args([
+                "task",
+                "create",
+                slug,
+                "--title",
+                "T",
+                "--no-edit",
+                "--project",
+                "test",
+            ])
+            .assert()
+            .success();
+    }
+    std::fs::remove_file(dir.path().join("projects/test/tasks/casualty.md")).unwrap();
+
+    rdm_as("cs-partial", &dir)
+        .args(["commit", "-m", "land what survived"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no longer on disk"))
+        .stdout(predicate::str::contains("projects/test/tasks/casualty.md"));
+
+    let files = last_commit_files(dir.path());
+    assert!(
+        files.iter().any(|f| f == "projects/test/tasks/survivor.md"),
+        "the surviving path must still land: {files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f == "projects/test/tasks/casualty.md"),
+        "a vanished path must never be committed: {files:?}"
+    );
+}
+
 #[test]
 fn status_defaults_to_the_callers_changeset_and_all_shows_everything() {
     let dir = TempDir::new().unwrap();

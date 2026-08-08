@@ -1723,26 +1723,39 @@ impl RdmMcpServer {
             Ok(o) => o,
             Err(e) => return core_err(e),
         };
+        // Shared with the CLI's `rdm commit` so the two can never disagree —
+        // on every branch, including the ones that land nothing. A vanished
+        // journaled path is not fatal, but an agent that is told only
+        // "Nothing to commit." cannot tell a genuine no-op from its own tracked
+        // work having disappeared off disk.
+        let skipped = outcome.skipped_summary();
         let Some(sha) = outcome.sha else {
             // Deliberately not silence when the tree is dirty: those paths
             // belong to another changeset and are not this session's to land.
-            if outcome.unattributed_dirt() {
+            let mut text = if outcome.unattributed_dirt() {
                 let paths: Vec<&str> = outcome
                     .report
                     .others
                     .iter()
                     .map(|s| s.path.as_str())
                     .collect();
-                return ok_text(format!(
-                    "Nothing in this session's changeset to commit.                      {} uncommitted path(s) belong to another changeset and were left                      untouched: {}",
+                format!(
+                    "Nothing in this session's changeset to commit. {} uncommitted path(s) belong to another changeset and were left untouched: {}",
                     paths.len(),
                     paths.join(", ")
-                ));
+                )
+            } else {
+                "Nothing to commit.".to_string()
+            };
+            if let Some(note) = skipped {
+                text.push_str(&format!("\n{note}"));
             }
-            return ok_text("Nothing to commit.".to_string());
+            return ok_text(text);
         };
-        // Shared with the CLI's `rdm commit` so the two can never disagree.
         let mut text = with_commit_trailer(outcome.report.commit_summary(), Some(sha));
+        if let Some(note) = skipped {
+            text.push_str(&format!("\n{note}"));
+        }
         if let Some(note) = outcome.report.others_summary() {
             text.push_str(&format!("\n{note}"));
         }

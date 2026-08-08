@@ -379,7 +379,20 @@ impl AppState {
                             self.changeset_label(),
                             self.reconcile_command()
                         ),
-                        Ok(_) => {}
+                        // A commit that landed *and* skipped is a partial
+                        // success, and the silent half is the dangerous one:
+                        // the skipped path is still claimed by the changeset
+                        // (truncation covers only what landed) while the file
+                        // backing it is gone. Reporting only on total failure
+                        // would let that pass as a clean autocommit.
+                        Ok(commit) => {
+                            if let Some(note) = commit.skipped_summary() {
+                                eprintln!(
+                                    "WARN: autocommit {note}. Land them with {} once restored",
+                                    self.reconcile_command()
+                                );
+                            }
+                        }
                         Err(e) => eprintln!(
                             "ERROR: autocommit failed: {e}. The write is on disk and \
                              journaled — land it with {}",
