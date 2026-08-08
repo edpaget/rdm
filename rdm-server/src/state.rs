@@ -349,64 +349,102 @@ impl AppState {
     /// Never fails a request: a commit failure warns on stderr. The write is
     /// on disk and attributed either way, so the mutation is not lost.
     pub fn post_mutate(&self) {
-        if self.mutation_policy != MutationPolicy::Autocommit {
-            if let Some(notice) = self.staged_notice() {
-                eprintln!("{notice}");
-            }
-            return;
+        for notice in self.post_mutate_notices() {
+            eprintln!("{notice}");
         }
-        #[cfg(feature = "git")]
-        {
-            match rdm_store_git::GitStore::new(&self.plan_root) {
-                Ok(store) => {
-                    // Commit the changeset this server resolved at startup and
-                    // advertises on every response — not whatever the ambient
-                    // process environment happens to resolve to now. Under
-                    // `--changeset <id>` those differ, and committing the
-                    // wrong one would land nothing while reporting success.
-                    let id = self
-                        .changeset
-                        .as_deref()
-                        .and_then(rdm_core::session::SessionId::new);
-                    match store.commit_changeset_id(id.as_ref(), None, &[]) {
-                        // A changeset that landed nothing is the "fails
-                        // loudly" half of the acceptance criterion: the write
-                        // is on disk, attributed to nobody the commit could
-                        // see, and would otherwise vanish without a word.
-                        Ok(commit) if commit.sha.is_none() => eprintln!(
+    }
+
+    /// What [`AppState::post_mutate`] performs and would print, as text.
+    ///
+    /// [`AppState::post_mutate`] is the printing shell over this: the commit
+    /// (under [`MutationPolicy::Autocommit`]) happens here, and the returned
+    /// lines are exactly what it writes to stderr, in order. Split out because
+    /// stderr from an in-process handler is not capturable from a test, and
+    /// the loud-failure branches — "landed nothing", a partially-vanished
+    /// changeset, a failed commit — are the whole substance of the "a server
+    /// mutation reaches a commit or fails loudly" acceptance criterion. A
+    /// branch nothing can assert on is a branch free to regress into silence.
+    ///
+    /// An empty vector means there was nothing to say: a clean autocommit.
+    #[must_use]
+    pub fn post_mutate_notices(&self) -> Vec<String> {
+        if self.mutation_policy != MutationPolicy::Autocommit {
+            return self.staged_notice().into_iter().collect();
+        }
+        self.autocommit_notices()
+    }
+
+    /// Commits this session's changeset and reports what happened.
+    #[cfg(feature = "git")]
+    fn autocommit_notices(&self) -> Vec<String> {
+        match rdm_store_git::GitStore::new(&self.plan_root) {
+            Ok(store) => {
+                // Commit the changeset this server resolved at startup and
+                // advertises on every response — not whatever the ambient
+                // process environment happens to resolve to now. Under
+                // `--changeset <id>` those differ, and committing the
+                // wrong one would land nothing while reporting success.
+                let id = self
+                    .changeset
+                    .as_deref()
+                    .and_then(rdm_core::session::SessionId::new);
+                match store.commit_changeset_id(id.as_ref(), None, &[]) {
+                    // A changeset that landed nothing is the "fails
+                    // loudly" half of the acceptance criterion: the write
+                    // is on disk, attributed to nobody the commit could
+                    // see, and would otherwise vanish without a word.
+                    Ok(commit) if commit.sha.is_none() => {
+                        let mut notices = vec![format!(
                             "ERROR: autocommit landed nothing — changeset '{}' claims no \
                              paths. The write is on disk; land it with {}",
                             self.changeset_label(),
                             self.reconcile_command()
-                        ),
-                        // A commit that landed *and* skipped is a partial
-                        // success, and the silent half is the dangerous one:
-                        // the skipped path is still claimed by the changeset
-                        // (truncation covers only what landed) while the file
-                        // backing it is gone. Reporting only on total failure
-                        // would let that pass as a clean autocommit.
-                        Ok(commit) => {
-                            if let Some(note) = commit.skipped_summary() {
-                                eprintln!(
-                                    "WARN: autocommit {note}. Land them with {} once restored",
-                                    self.reconcile_command()
-                                );
-                            }
-                        }
-                        Err(e) => eprintln!(
-                            "ERROR: autocommit failed: {e}. The write is on disk and \
-                             journaled — land it with {}",
-                            self.reconcile_command()
-                        ),
+                        )];
+                        // Landing nothing *because* the files vanished is a
+                        // different situation from landing nothing because the
+                        // changeset was empty, and only this note distinguishes
+                        // them.
+                        notices.extend(self.skipped_notice(&commit));
+                        notices
                     }
+                    // A commit that landed *and* skipped is a partial
+                    // success, and the silent half is the dangerous one:
+                    // the skipped path is still claimed by the changeset
+                    // (truncation covers only what landed) while the file
+                    // backing it is gone. Reporting only on total failure
+                    // would let that pass as a clean autocommit.
+                    Ok(commit) => self.skipped_notice(&commit).into_iter().collect(),
+                    Err(e) => vec![format!(
+                        "ERROR: autocommit failed: {e}. The write is on disk and \
+                         journaled — land it with {}",
+                        self.reconcile_command()
+                    )],
                 }
-                Err(e) => eprintln!(
-                    "ERROR: autocommit could not open the plan repo: {e}. The write is on \
-                     disk and journaled — land it with {}",
-                    self.reconcile_command()
-                ),
             }
+            Err(e) => vec![format!(
+                "ERROR: autocommit could not open the plan repo: {e}. The write is on \
+                 disk and journaled — land it with {}",
+                self.reconcile_command()
+            )],
         }
+    }
+
+    /// Without the `git` feature there is no commit primitive to reach, so an
+    /// autocommit policy has nothing to do and nothing to report.
+    #[cfg(not(feature = "git"))]
+    fn autocommit_notices(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The WARN naming journaled paths whose files vanished before the commit.
+    #[cfg(feature = "git")]
+    fn skipped_notice(&self, commit: &rdm_store_git::ScopedCommit) -> Option<String> {
+        commit.skipped_summary().map(|note| {
+            format!(
+                "WARN: autocommit {note}. Land them with {} once restored",
+                self.reconcile_command()
+            )
+        })
     }
 
     /// Build the [`QuickFilterView`] list for a given page path.

@@ -271,3 +271,183 @@ async fn autocommit_lands_a_review_verdict_submitted_with_no_summary() {
         "a verdict submitted with no summary must still reach a commit"
     );
 }
+
+// ==================== Loud-failure branches of post_mutate ====================
+//
+// These drive `AppState::post_mutate_notices` directly rather than over HTTP.
+// The notices are stderr writes from an in-process handler, which a reqwest
+// client cannot see and libtest cannot hand back — but they are the entire
+// substance of the "or fails loudly" half of the acceptance criterion, so they
+// have to be assertable. `post_mutate` is the printing shell over exactly this
+// function, so what is asserted here is what an operator reads.
+
+/// Seeds a committed plan repo (no server) for the direct-`post_mutate` tests.
+fn seed_repo() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let mut store = GitStore::init(dir.path()).unwrap();
+    rdm_core::ops::init::init(&mut store).unwrap();
+    rdm_core::ops::project::create_project(&mut store, "demo", "Demo Project").unwrap();
+    Store::commit(&mut store).unwrap();
+    store.commit_whole_tree("seed").unwrap();
+    dir
+}
+
+/// Creates a task the way a handler does — through a store pinned to the
+/// server's changeset, so the write is journaled under it.
+fn journal_task(root: &Path, changeset: &str, slug: &str) {
+    let mut store =
+        GitStore::new(root)
+            .unwrap()
+            .with_session_id(SessionId::new(changeset).unwrap_or_else(|| {
+                panic!("'{changeset}' must be a usable changeset id");
+            }));
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "demo",
+            slug,
+            title: "A Task",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    Store::commit(&mut store).unwrap();
+}
+
+/// An autocommit `AppState` over `root`, pinned to `changeset`.
+fn autocommit_state(root: &Path, changeset: &str) -> AppState {
+    AppState {
+        plan_root: root.to_path_buf(),
+        quick_filters: Vec::new(),
+        mutation_policy: MutationPolicy::Autocommit,
+        ..Default::default()
+    }
+    .with_resolved_changeset(Some(changeset.to_string()))
+}
+
+#[tokio::test]
+async fn autocommit_is_silent_when_it_lands_cleanly() {
+    // The baseline the two tests below are read against: without this, a
+    // notice asserted there could just be unconditional noise.
+    let dir = seed_repo();
+    journal_task(dir.path(), "server-cs", "clean-task");
+
+    let notices = autocommit_state(dir.path(), "server-cs").post_mutate_notices();
+    assert!(
+        notices.is_empty(),
+        "a clean autocommit has nothing to report: {notices:?}"
+    );
+}
+
+#[tokio::test]
+async fn autocommit_reports_a_vanished_journaled_path_even_when_it_lands_nothing() {
+    // The dangerous branch: the changeset's only path is gone from disk, so
+    // the scoped tree reconciles straight back to HEAD and the commit
+    // correctly produces no SHA. Reporting only "landed nothing" would read as
+    // "the changeset was empty" when in fact the server's write disappeared.
+    let dir = seed_repo();
+    journal_task(dir.path(), "server-cs", "vanishing-task");
+    let path = dir.path().join("projects/demo/tasks/vanishing-task.md");
+    assert!(path.exists(), "precondition: the task file was written");
+    std::fs::remove_file(&path).unwrap();
+
+    let before = head_sha(dir.path());
+    let notices = autocommit_state(dir.path(), "server-cs").post_mutate_notices();
+    let joined = notices.join("\n");
+    assert!(
+        joined.contains("ERROR: autocommit landed nothing"),
+        "the operator must be told nothing landed: {joined}"
+    );
+    assert!(
+        joined.contains("no longer on disk") && joined.contains("vanishing-task.md"),
+        "and must be told WHY — which path vanished: {joined}"
+    );
+    assert!(
+        joined.contains("rdm commit --changeset server-cs"),
+        "every loud branch must carry the reconciliation command: {joined}"
+    );
+    assert_eq!(
+        head_sha(dir.path()),
+        before,
+        "a changeset whose files all vanished must not create an empty commit"
+    );
+}
+
+#[tokio::test]
+async fn autocommit_reports_a_vanished_journaled_path_alongside_what_it_landed() {
+    // A partial success is still a success, so this branch used to be silent
+    // — the skipped path stays claimed by the changeset (truncation covers
+    // only what landed) while the file backing it is gone.
+    let dir = seed_repo();
+    journal_task(dir.path(), "server-cs", "survivor");
+    journal_task(dir.path(), "server-cs", "casualty");
+    std::fs::remove_file(dir.path().join("projects/demo/tasks/casualty.md")).unwrap();
+
+    let before = head_sha(dir.path());
+    let notices = autocommit_state(dir.path(), "server-cs").post_mutate_notices();
+    let joined = notices.join("\n");
+    assert!(
+        joined.contains("WARN: autocommit") && joined.contains("casualty.md"),
+        "a partial success must still name the vanished path: {joined}"
+    );
+    assert!(
+        !joined.contains("landed nothing"),
+        "this commit DID land — it must not be reported as a total failure: {joined}"
+    );
+
+    assert_ne!(head_sha(dir.path()), before, "the survivor must land");
+    let paths = head_paths(dir.path());
+    assert!(
+        paths.iter().any(|p| p == "projects/demo/tasks/survivor.md"),
+        "the surviving path must be in the commit, got {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p == "projects/demo/tasks/casualty.md"),
+        "a vanished path must never be committed, got {paths:?}"
+    );
+}
+
+#[tokio::test]
+async fn autocommit_is_loud_when_it_cannot_reach_the_plan_repo_at_all() {
+    // The remaining loud branch: the write is on disk and journaled, but no
+    // commit is possible. Silence here would lose the mutation with no trace.
+    let dir = TempDir::new().unwrap(); // not a git repo
+    let notices = autocommit_state(dir.path(), "server-cs").post_mutate_notices();
+    let joined = notices.join("\n");
+    assert!(
+        joined.starts_with("ERROR: autocommit"),
+        "an unusable plan repo must be an ERROR, not a shrug: {joined}"
+    );
+    assert!(
+        joined.contains("rdm commit --changeset server-cs"),
+        "and must still name how to reconcile: {joined}"
+    );
+}
+
+#[tokio::test]
+async fn staging_only_notices_are_exactly_the_per_mutation_staged_warning() {
+    // `post_mutate` is the printing shell over `post_mutate_notices`, so the
+    // staging branch must be represented here too — otherwise a regression
+    // that silenced it would only show up in the header assertion above.
+    let dir = seed_repo();
+    let state = AppState {
+        plan_root: dir.path().to_path_buf(),
+        quick_filters: Vec::new(),
+        mutation_policy: MutationPolicy::StagingOnly,
+        ..Default::default()
+    }
+    .with_resolved_changeset(Some("server-cs".to_string()));
+
+    assert_eq!(
+        state.post_mutate_notices(),
+        state.staged_notice().into_iter().collect::<Vec<_>>(),
+        "staging-only must say the same thing on stderr that it puts on the response"
+    );
+    assert!(
+        state
+            .post_mutate_notices()
+            .join("\n")
+            .contains("NOT committed"),
+        "and it must be unmistakable"
+    );
+}

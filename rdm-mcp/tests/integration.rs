@@ -2750,6 +2750,111 @@ fn commit_clean_tree_is_noop() {
     assert_eq!(before, git_head_sha(tmp.path()), "HEAD must not move");
 }
 
+/// A journaled path whose backing file vanished must be reported to the agent
+/// even when the commit lands nothing.
+///
+/// This is the branch that used to be silent on this surface specifically: an
+/// MCP client saw a bare `Nothing to commit.`, indistinguishable from a genuine
+/// no-op, while the changeset still claimed a path whose file was gone. The
+/// journal is truncated only by a commit that actually lands, so nothing else
+/// would ever tell the agent.
+#[test]
+fn commit_reports_a_vanished_journaled_path_even_when_it_lands_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let before = git_head_sha(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    h.call_tool(
+        "rdm_task_create",
+        serde_json::json!({
+            "project": "test-proj",
+            "slug": "vanishing",
+            "title": "Vanishing Task",
+        }),
+    );
+    let path = tmp.path().join("projects/test-proj/tasks/vanishing.md");
+    assert!(path.exists(), "precondition: the task file was created");
+    std::fs::remove_file(&path).unwrap();
+
+    let response = h.call_tool("rdm_commit", serde_json::json!({}));
+    let text = result_text(&response);
+    assert!(
+        text.contains("Nothing to commit."),
+        "the commit still lands nothing: {text}"
+    );
+    assert!(
+        text.contains("no longer on disk"),
+        "the vanished path must be reported, not swallowed: {text}"
+    );
+    assert!(
+        text.contains("projects/test-proj/tasks/vanishing.md"),
+        "the note must name the path so it can be recovered: {text}"
+    );
+
+    drop(h);
+    assert_eq!(
+        before,
+        git_head_sha(tmp.path()),
+        "a changeset whose files all vanished must not create an empty commit"
+    );
+}
+
+/// The same note must ride along on the branch that *does* land a commit, so a
+/// partially-vanished changeset is never reported to the agent as a clean win.
+#[test]
+fn commit_reports_a_vanished_journaled_path_alongside_the_paths_it_landed() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+    let mut h = McpTestHarness::spawn(tmp.path());
+
+    for slug in ["survivor", "casualty"] {
+        h.call_tool(
+            "rdm_task_create",
+            serde_json::json!({
+                "project": "test-proj",
+                "slug": slug,
+                "title": "T",
+            }),
+        );
+    }
+    std::fs::remove_file(tmp.path().join("projects/test-proj/tasks/casualty.md")).unwrap();
+
+    let response = h.call_tool("rdm_commit", serde_json::json!({}));
+    let text = result_text(&response);
+    assert!(
+        text.contains("Committed"),
+        "the surviving path must still land: {text}"
+    );
+    assert!(
+        text.contains("no longer on disk") && text.contains("casualty.md"),
+        "a partial success must still name the vanished path: {text}"
+    );
+
+    drop(h);
+    let out = std::process::Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(["show", "--name-only", "--pretty=format:", "HEAD"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let files = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        files
+            .lines()
+            .any(|l| l.trim() == "projects/test-proj/tasks/survivor.md"),
+        "the surviving path must be in the commit: {files}"
+    );
+    assert!(
+        !files
+            .lines()
+            .any(|l| l.trim() == "projects/test-proj/tasks/casualty.md"),
+        "a vanished path must never be committed: {files}"
+    );
+}
+
 #[test]
 fn commit_lands_real_commit() {
     let tmp = tempfile::TempDir::new().unwrap();
