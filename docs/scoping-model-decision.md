@@ -130,17 +130,27 @@ Three dispositions were considered:
 
 What ships:
 
-- `MutationPolicy::StagingOnly` (default) / `MutationPolicy::Autocommit` (`--autocommit`, or `RDM_SERVER_AUTOCOMMIT=1`), in `rdm-server/src/state.rs`.
-- The changeset id is resolved at startup (`--changeset <id>`, else `RDM_SESSION`, else the ordinary rung chain) and is **surfaced twice**: a boot `WARN` naming it and the reconciliation command, and an `X-Rdm-Changeset` response header set on every response from one place in the router.
-- All 22 handler sites call ONE shared `AppState::post_mutate()` helper rather than a commit primitive, so the policy lives in a single place and the commit-call-site gate stays satisfied.
+- `MutationPolicy::StagingOnly` (default) / `MutationPolicy::Autocommit` (`--autocommit`, or `RDM_SERVER_AUTOCOMMIT=1`), in `rdm-server/src/state.rs`. The argv/env precedence lives in `ServerOptions::resolve`, split out of `main` so it is unit-testable rather than hand-verified.
+- The changeset id is resolved at startup (`--changeset <id>`, else `RDM_SESSION`, else the ordinary rung chain). It is not merely *advertised*: `AppState::store()` passes it to the store factory, which pins it via `GitStore::with_session_id`, so the writes really do journal to the id the responses name. (Passing it down rather than exporting `RDM_SESSION` is deliberate — mutating process-global environment state is `unsafe` on a running server, and racy besides.)
+- All 22 handler sites call ONE shared `AppState::post_mutate()` helper rather than a commit primitive, so the policy lives in a single place and the commit-call-site gate stays satisfied. It is called **after** `ops::mutate` returns (the store holds staged writes in memory until `ops::mutate`'s own `Store::commit` flushes them, so a commit attempted from inside the closure would see neither the write nor its journal entry) and **unconditionally** for a mutation.
+
+**Loud per mutation, not per process.** The acceptance criterion this disposition answers to is that a server mutation *reaches a commit or fails loudly*. Under the staging-only default it does not reach a commit, so the "loudly" half has to carry the whole weight — and a boot line alone does not, because a server that has been up for a week has long scrolled it away. Staging is therefore reported on three surfaces:
+
+1. **At boot** — a `WARN` naming the changeset and the reconciliation command.
+2. **On every mutation** — `post_mutate` emits the same warning to stderr for *that* mutation.
+3. **On every mutating response** — the `X-Rdm-Staged` header carries that warning text verbatim, so an HTTP client that never sees the server's stderr is told anyway. Safe methods (`GET`/`HEAD`/`OPTIONS`) staged nothing and are not tagged.
+
+Under `--autocommit` the mutation does reach a commit, so none of the three fire. An autocommit that *fails*, or that lands nothing because the changeset claims no paths, is reported as an `ERROR` naming the reconciliation command — the write is on disk and attributed either way, so a failure degrades to the staging-only case rather than losing anything, and never fails the request.
 
 **The consequence surfaced to the operator**, verbatim from the boot line:
 
 ```text
 WARN: mutations are staged, not committed. They are attributed to changeset
-'<id>' and are surfaced on every response as X-Rdm-Changeset.
-Reconcile with: rdm commit --changeset <id>
+'<id>' and are surfaced on every mutating response as X-Rdm-Changeset /
+X-Rdm-Staged. Reconcile with: rdm commit --changeset <id>
 ```
+
+Gated by `rdm-server/tests/mutation_policy.rs` (a real bound listener over a real git-backed plan repo: the staging default does not advance HEAD and does report itself; `--autocommit` lands a commit scoped to this changeset's own paths) and by `ServerOptions`' unit tests in `rdm-server/src/state.rs`. `scripts/verify-scoped-commit.sh` § E3 gates the reconciliation half with real separate processes.
 
 Phase 7 owns the agent-facing instruction rewrite for this surface.
 

@@ -324,6 +324,22 @@ disk state** so another session's still-uncommitted rows survive.
 `--force --all` retains the whole-tree destruction, and prints the other live
 changesets it is about to destroy before doing it.
 
+### `rdm-server`
+
+A long-lived server is **one session**: it resolves a single changeset at
+startup (`--changeset <id>`, else `RDM_SESSION`, else the ordinary rung
+chain), pins its store to it so every write really is journaled there, and by
+default commits nothing. That default is loud on three surfaces rather than
+one — a boot `WARN`, a stderr warning per mutation, and an `X-Rdm-Staged`
+response header on every mutating response carrying the same text — because
+"reported once at boot" is indistinguishable from "not reported" on a server
+that has been up for a week. Every response also carries `X-Rdm-Changeset`,
+so the id needed for `rdm commit --changeset <id>` is always in reach.
+`--autocommit` (or `RDM_SERVER_AUTOCOMMIT=1`) makes each mutation land a
+scoped commit instead. The full disposition, including the alternatives
+rejected, is in `docs/scoping-model-decision.md` § "Which Interaction Layers
+Are Covered".
+
 ### Reads are not scoped
 
 Deliberately. `rdm task show`, `rdm search`, and every other read see the

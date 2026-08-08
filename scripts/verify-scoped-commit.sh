@@ -349,6 +349,9 @@ PRIMITIVES='[.:]\(create_git_commit\|git_commit\|git_commit_changeset\|commit_wh
 
 # The sanctioned sites, by file. Adding a legitimate caller is a deliberate
 # edit to this list — which is printed on failure so the reason is obvious.
+# The two `rdm-server/tests/` entries are test-seeding callers, which are a
+# legitimate whole-tree class rather than an oversight: seeding a fixture
+# genuinely wants the sweep.
 ALLOWLIST='rdm-store-git/src/commit.rs
 rdm-store-git/src/lib.rs
 rdm-cli/src/commands/commit.rs
@@ -357,7 +360,8 @@ rdm-cli/src/commands/bootstrap.rs
 rdm-cli/src/commands/init.rs
 rdm-mcp/src/server.rs
 rdm-server/src/state.rs
-rdm-server/tests/git_history.rs'
+rdm-server/tests/git_history.rs
+rdm-server/tests/mutation_policy.rs'
 
 scan_primitives() {
     # $1: root to scan. Prints "file" for every hit outside the allowlist.
@@ -453,6 +457,14 @@ ok "a backfilled .gitattributes reaches a scoped commit"
 # a startup changeset and reconciled with `rdm commit --changeset <id>`. Drive
 # exactly that contract with the real binary: a mutation under a known
 # changeset id, committed later by id from a DIFFERENT session.
+#
+# This arm gates the *reconciliation* half — that a changeset written by one
+# process lands intact from another. The HTTP half (that a server mutation
+# reaches a commit under `--autocommit`, and fails loudly under the
+# staging-only default: a per-mutation stderr WARN plus an `X-Rdm-Staged`
+# response header carrying this exact command) is gated by
+# `rdm-server/tests/mutation_policy.rs`, which needs a bound listener and so
+# lives with the Rust tests rather than here. CI runs both.
 REPO_E3="$TMP/repo-e3"
 seed_repo "$REPO_E3"
 RDM_SESSION=server-session "$RDM_BIN" --root "$REPO_E3" task create server-task \

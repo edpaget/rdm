@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use rdm_server::router::build_router;
-use rdm_server::state::{AppState, MutationPolicy};
+use rdm_server::state::{AppState, ServerOptions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -14,32 +14,19 @@ async fn main() -> anyhow::Result<()> {
     let plan_root = rdm_core::root::expand_root(plan_root)?;
 
     // The operator decision, wired: staging-only by default, autocommit as an
-    // explicit opt-in. See `docs/scoping-model-decision.md`.
+    // explicit opt-in. The precedence rules live in `ServerOptions::resolve`
+    // (unit-tested there) so `main` stays an extractor. See
+    // `docs/scoping-model-decision.md`.
     let args: Vec<String> = std::env::args().collect();
-    let autocommit = args.iter().any(|a| a == "--autocommit")
-        || matches!(
-            std::env::var("RDM_SERVER_AUTOCOMMIT").as_deref(),
-            Ok("1" | "true")
-        );
-    let explicit_changeset = args
-        .iter()
-        .position(|a| a == "--changeset")
-        .and_then(|i| args.get(i + 1))
-        .cloned()
-        .or_else(|| std::env::var("RDM_SESSION").ok())
-        .filter(|s| !s.trim().is_empty());
+    let options = ServerOptions::resolve(&args, |key| std::env::var(key).ok());
 
     let state = AppState {
         plan_root,
         quick_filters: Vec::new(),
-        mutation_policy: if autocommit {
-            MutationPolicy::Autocommit
-        } else {
-            MutationPolicy::StagingOnly
-        },
+        mutation_policy: options.mutation_policy,
         ..Default::default()
     }
-    .with_resolved_changeset(explicit_changeset);
+    .with_resolved_changeset(options.changeset);
 
     if let Some(notice) = state.boot_notice() {
         eprintln!("{notice}");

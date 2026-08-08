@@ -525,6 +525,27 @@ impl GitStore {
         )
     }
 
+    /// Pins this store's session to an explicitly-chosen changeset id.
+    ///
+    /// Overrides the rung chain for **this store only**, without touching
+    /// process-global environment state (which is both `unsafe` to mutate on
+    /// a running server and inherently racy). Writes journal to `id`, and
+    /// [`session`](Self::session) reports it at [`Rung::Explicit`].
+    ///
+    /// The motivating caller is a long-lived server told `--changeset <id>`:
+    /// it advertises that id on every response, so its writes had better
+    /// land there. Pinning after the session has already been resolved is a
+    /// no-op — pin at construction.
+    #[must_use]
+    pub fn with_session_id(self, id: session::SessionId) -> Self {
+        let _ = self.session.set(ResolvedSession {
+            id,
+            rung: session::Rung::Explicit,
+            resolve_micros: 0,
+        });
+        self
+    }
+
     /// Returns where this repo's session state lives, if anywhere.
     pub fn session_paths(&self) -> Option<&SessionPaths> {
         self.session_paths.as_ref()

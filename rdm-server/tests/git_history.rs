@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use rdm_core::model::Priority;
 use rdm_core::ops::{BodyUpdate, PriorityUpdate, TagsUpdate, TitleUpdate};
+use rdm_core::session::SessionId;
 use rdm_core::store::{Store, VersionedStore};
 use rdm_store_git::GitStore;
 use reqwest::Client;
@@ -133,7 +134,7 @@ async fn spawn_git_backed_server() -> (TempDir, SocketAddr, Client, String) {
         quick_filters: Vec::new(),
         ..Default::default()
     }
-    .with_store_factory(Arc::new(|root: &Path| {
+    .with_store_factory(Arc::new(|root: &Path, _changeset: Option<&SessionId>| {
         // Only ever invoked against the git-initialized temp dir created by
         // `GitStore::init` above, so `GitStore::new` cannot realistically
         // fail here.

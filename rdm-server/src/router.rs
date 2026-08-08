@@ -11,9 +11,33 @@ use crate::state::AppState;
 /// staging-only default, where the server never commits on its own.
 pub const CHANGESET_HEADER: &str = "x-rdm-changeset";
 
+/// Header carrying the "this was staged, not committed" warning and the
+/// exact command that lands it.
+///
+/// Set on **mutating** responses only (anything that is not a safe method),
+/// and only under the staging-only default: under `--autocommit` the write
+/// did reach a commit, so there is nothing pending to report. Together with
+/// the per-mutation stderr warning this is what makes staging loud per
+/// *mutation* rather than per *process* — a boot line has long scrolled away
+/// by the time a week-old server stages a write.
+pub const STAGED_HEADER: &str = "x-rdm-staged";
+
+/// Whether a request method can have mutated the plan repo.
+///
+/// The safe methods (RFC 9110 § 9.2.1) never reach a handler that calls
+/// [`AppState::post_mutate`], so tagging their responses as "staged" would
+/// be noise on every page load.
+fn is_mutating(method: &axum::http::Method) -> bool {
+    !matches!(
+        *method,
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    )
+}
+
 /// Builds the application router with all routes and shared state.
 pub fn build_router(state: AppState) -> Router {
     let changeset = state.changeset.clone();
+    let staged_notice = state.staged_notice();
     Router::new()
         .route("/", get(handlers::root::index))
         .route("/healthz", get(handlers::health::healthz))
@@ -127,12 +151,20 @@ pub fn build_router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn(
             move |req: axum::extract::Request, next: axum::middleware::Next| {
                 let changeset = changeset.clone();
+                let staged_notice = staged_notice.clone();
                 async move {
+                    let mutating = is_mutating(req.method());
                     let mut response = next.run(req).await;
                     if let Some(id) = changeset
                         && let Ok(value) = axum::http::HeaderValue::from_str(&id)
                     {
                         response.headers_mut().insert(CHANGESET_HEADER, value);
+                    }
+                    if mutating
+                        && let Some(notice) = staged_notice
+                        && let Ok(value) = axum::http::HeaderValue::from_str(&notice)
+                    {
+                        response.headers_mut().insert(STAGED_HEADER, value);
                     }
                     response
                 }

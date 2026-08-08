@@ -715,13 +715,16 @@ pub async fn submit_review_form(
                 &review_id,
                 BodyUpdate::Set(req.summary.clone()),
             )?;
-            // One shared post-mutate helper for all 22 handler mutation
-            // sites — the policy lives in `AppState`, and no handler ever
-            // touches a commit primitive itself.
-            state.post_mutate();
         }
         rdm_core::ops::reviews::submit_review(s, &project, &review_id, verdict)
     });
+    // One shared post-mutate helper for all 22 handler mutation sites — the
+    // policy lives in `AppState`, and no handler ever touches a commit
+    // primitive itself. It runs *after* `ops::mutate` returns (so the store's
+    // staged writes are flushed and journaled before anything tries to commit
+    // them) and *unconditionally* (a verdict submission with no summary is
+    // still a mutation), exactly like the other 21 sites.
+    state.post_mutate();
     match result {
         Ok(_) => redirect_ok(&target_href, &format!("review-{review_id}")),
         Err(e) => redirect_err(&target_href, DRAFT_FRAGMENT, &e.to_string()),
