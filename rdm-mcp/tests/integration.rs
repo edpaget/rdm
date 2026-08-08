@@ -2609,6 +2609,13 @@ fn status_empty_on_clean_tree() {
         0,
         "expected no regenerated indexes on a freshly committed repo: {report}"
     );
+    // The `others` bucket is part of the tool's contract even when empty: an
+    // agent reads it to decide whether dirt it can see is its own to commit.
+    assert_eq!(
+        report["others"].as_array().expect("others array").len(),
+        0,
+        "expected no foreign changeset paths on a freshly committed repo: {report}"
+    );
 }
 
 #[test]
@@ -3636,5 +3643,80 @@ fn mcp_discard_leaves_another_changeset_intact() {
     assert!(
         index.contains("survivor-task"),
         "the regenerated index dropped the other session's row: {index}"
+    );
+}
+
+#[test]
+fn mcp_status_names_another_changesets_paths_under_others() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    // A concurrent CLI session leaves an uncommitted task on disk.
+    rdm_as_other_session(
+        tmp.path(),
+        &[
+            "task",
+            "create",
+            "foreign-task",
+            "--title",
+            "Foreign",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+
+    let mut h =
+        McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_SESSION", "mcp-server-session")]);
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "status": "in-progress",
+        }),
+    );
+
+    let response = h.call_tool("rdm_status", serde_json::json!({}));
+    let report = result_json(&response);
+
+    let changes: Vec<&str> = report["changes"]
+        .as_array()
+        .expect("changes array")
+        .iter()
+        .map(|v| v["path"].as_str().unwrap())
+        .collect();
+    let others: Vec<&str> = report["others"]
+        .as_array()
+        .expect("others array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+
+    // The server sees its own edit as committable...
+    assert_eq!(
+        changes,
+        vec!["projects/test-proj/tasks/fix-login-bug.md"],
+        "the server's own changeset must be exactly its own edit: {report}"
+    );
+    // ...and the concurrent session's dirt as visible but not its own. This is
+    // the one place an MCP client can observe the scoping without mutating.
+    assert!(
+        others.contains(&"projects/test-proj/tasks/foreign-task.md"),
+        "the concurrent session's uncommitted task must be named under `others`: {report}"
+    );
+    assert!(
+        !changes.contains(&"projects/test-proj/tasks/foreign-task.md"),
+        "a foreign changeset's path leaked into this session's committable changes: {report}"
+    );
+    let generated: Vec<&str> = report["generated"]
+        .as_array()
+        .expect("generated array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        !generated.contains(&"projects/test-proj/tasks/foreign-task.md"),
+        "a foreign changeset's path was misfiled as generated output: {report}"
     );
 }
