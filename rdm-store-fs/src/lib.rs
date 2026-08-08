@@ -2,6 +2,28 @@
 //!
 //! Writes are buffered in memory until [`Store::commit`] flushes them to disk.
 //! [`Store::discard`] drops the buffer without touching the filesystem.
+//!
+//! # The flush precondition
+//!
+//! The filesystem is *shared committed state*: two `rdm` processes see the
+//! same bytes, and the staging overlay above them does not span a process. So
+//! two sessions can each read an item, each edit it, and each flush — and the
+//! second flush silently destroys the first session's edit. `--tags` replacing
+//! the whole list on update makes that concrete: a reserved tag disappears
+//! with no error anywhere.
+//!
+//! [`FsStore`] closes that window with optimistic concurrency keyed on
+//! content. The first time a process touches a path — reading it, probing it,
+//! deleting it, or blindly staging a write over it — it records a
+//! [`Baseline`]: what was there. At flush time, before anything is written,
+//! every staged path is re-observed and compared. A mismatch means this flush
+//! was derived from content someone else has since changed, and the whole
+//! flush is refused with [`Error::StaleWrite`] and nothing written.
+//!
+//! Keying on *content* rather than on a session id is what makes a session's
+//! own sequential writes safe: after a clean flush each path's baseline is
+//! re-seeded to the bytes just written, so the next flush compares against
+//! what this process itself put there.
 
 #![warn(missing_docs)]
 
@@ -9,12 +31,41 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use rdm_core::error::{Error, Result};
+use rdm_core::lock::AdvisoryLock;
+use rdm_core::paths::{describe_path, is_derived_path};
 use rdm_core::session::journal::JournalKind;
 use rdm_core::store::{
-    DirEntry, DirEntryKind, RelPath, StagedEntry, StagedOverlay, Store, VersionedStore,
+    Baseline, DirEntry, DirEntryKind, RelPath, StagedEntry, StagedOverlay, Store, VersionedStore,
+    content_digest,
 };
+
+/// How long a flush waits for the advisory lock before proceeding unlocked.
+///
+/// Sized like the scoped-commit lock and for the same reason: the `Done:` hook
+/// path reaches this code under `hook_timeout_secs` (default 30s), and a lock
+/// must never be what makes it miss its deadline. The lock is an optimization
+/// — the content check is the correctness mechanism — so giving up is safe.
+const FLUSH_LOCK_WAIT: Duration = Duration::from_secs(5);
+
+/// How stale a flush lock must be before another process takes it over.
+const FLUSH_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
+
+/// The environment variable naming a harness barrier file.
+///
+/// A read → write window inside one `rdm` invocation is sub-millisecond, so a
+/// harness cannot interleave two real processes at it by racing them. When
+/// this is set, a flush blocks until the named file appears, letting a harness
+/// park one process mid-flush and drive another to completion. Documented
+/// alongside `RDM_HARNESS_SESSION_ID`, whose precedent it follows: inert when
+/// unset, and bounded when set, so it can never wedge a real run.
+const HARNESS_FLUSH_BARRIER: &str = "RDM_HARNESS_FLUSH_BARRIER";
+
+/// How long the harness barrier waits before proceeding regardless.
+const HARNESS_BARRIER_CEILING: Duration = Duration::from_secs(60);
 
 /// A [`Store`] backed by the local filesystem with in-memory staging.
 ///
@@ -22,11 +73,36 @@ use rdm_core::store::{
 /// (read-your-own-writes). Call [`Store::commit`] to flush staged changes to
 /// disk, or [`Store::discard`] to drop them.
 ///
-/// Commit uses write-to-temp + rename for best-effort atomicity on each file.
-#[derive(Clone, Debug)]
+/// Commit verifies every staged path against the [`Baseline`] this process
+/// first observed (see the module docs), then uses write-to-temp + rename for
+/// best-effort atomicity on each file.
+#[derive(Debug)]
 pub struct FsStore {
     root: PathBuf,
     staged: StagedOverlay,
+    /// What this process first saw at each touched path.
+    ///
+    /// A `Mutex` rather than a `RefCell` because `FsStore` must stay
+    /// `Send + Sync` (it is stored behind `Box<dyn VersionedStore + Send +
+    /// Sync>`), and interior mutability is required because baselines are
+    /// recorded from `&self` methods (`read`, `exists`).
+    baselines: Mutex<BTreeMap<String, Baseline>>,
+}
+
+impl Clone for FsStore {
+    /// Deep-copies the baselines rather than sharing them.
+    ///
+    /// Hand-written because `Mutex` is not `Clone`. Sharing would be wrong
+    /// regardless: cloning an `FsStore` already yields independent staging, so
+    /// the two clones are logically separate stores and must observe the world
+    /// separately too.
+    fn clone(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            staged: self.staged.clone(),
+            baselines: Mutex::new(self.snapshot_baselines()),
+        }
+    }
 }
 
 impl FsStore {
@@ -35,6 +111,7 @@ impl FsStore {
         Self {
             root: root.into(),
             staged: StagedOverlay::new(),
+            baselines: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -43,26 +120,32 @@ impl FsStore {
         &self.root
     }
 
-    /// Snapshots the pending (staged, not yet flushed) paths and what will
-    /// happen to each.
+    /// Snapshots the pending (staged, not yet flushed) paths, what will happen
+    /// to each, and — for a write — the content identity about to be flushed.
     ///
     /// This is an inherent method, deliberately not part of the [`Store`]
     /// trait: it exists so a wrapping backend can journal exactly what a
     /// [`Store::commit`] flushed, and it must be called *before* `commit`,
     /// which drains the staging overlay. It reads nothing and changes nothing.
     ///
+    /// The digest travels with the path so a later scoped commit can tell
+    /// "the bytes this changeset wrote" from "whatever is on disk now". It is
+    /// `None` for a delete, which has no bytes.
+    ///
     /// Unparsable keys are skipped — which cannot happen in practice, since
     /// every key entered the overlay through a validated [`RelPath`].
-    pub fn staged_paths(&self) -> Vec<(RelPath, JournalKind)> {
+    pub fn staged_paths(&self) -> Vec<(RelPath, JournalKind, Option<String>)> {
         self.staged
             .iter()
             .filter_map(|(key, entry)| {
                 let path = RelPath::new(key).ok()?;
-                let kind = match entry {
-                    StagedEntry::Write(_) => JournalKind::Write,
-                    StagedEntry::Delete => JournalKind::Delete,
+                let (kind, digest) = match entry {
+                    StagedEntry::Write(content) => {
+                        (JournalKind::Write, Some(content_digest(content)))
+                    }
+                    StagedEntry::Delete => (JournalKind::Delete, None),
                 };
-                Some((path, kind))
+                Some((path, kind, digest))
             })
             .collect()
     }
@@ -75,18 +158,147 @@ impl FsStore {
             self.root.join(path.as_str())
         }
     }
+
+    /// Returns a copy of the recorded baselines.
+    ///
+    /// A poisoned lock reads as empty, which degrades the check to a no-op
+    /// rather than making every mutation fail: the guarantee is best-effort
+    /// protection, never a new way to brick the store.
+    fn snapshot_baselines(&self) -> BTreeMap<String, Baseline> {
+        self.baselines.lock().map(|b| b.clone()).unwrap_or_default()
+    }
+
+    /// Records `observed` as `key`'s baseline **if this is the first touch**.
+    ///
+    /// First touch wins. A later read served from the staging overlay must
+    /// never re-seed the baseline, or the flush would compare this process's
+    /// own staged content against itself and never detect anything.
+    fn note_baseline(&self, key: &str, observed: impl FnOnce() -> Baseline) {
+        let Ok(mut baselines) = self.baselines.lock() else {
+            return;
+        };
+        if !baselines.contains_key(key) {
+            baselines.insert(key.to_string(), observed());
+        }
+    }
+
+    /// Observes `key`'s current on-disk state as a [`Baseline`].
+    fn observe(&self, path: &RelPath) -> Baseline {
+        Self::observe_at(&self.resolve(path))
+    }
+
+    /// Observes an absolute filesystem path as a [`Baseline`].
+    fn observe_at(full: &std::path::Path) -> Baseline {
+        match fs::read_to_string(full) {
+            Ok(content) => Baseline::Present(content_digest(&content)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Baseline::Absent,
+            // Unreadable, non-UTF8, a directory: fail open. An unreadable
+            // neighbour must never brick an unrelated mutation.
+            Err(_) => Baseline::Unknown,
+        }
+    }
+
+    /// Blocks until the harness barrier file appears, or the ceiling elapses.
+    ///
+    /// Inert unless [`HARNESS_FLUSH_BARRIER`] is set. Bounded unconditionally:
+    /// a harness that dies without releasing the barrier delays this flush by
+    /// at most [`HARNESS_BARRIER_CEILING`], it does not wedge it.
+    fn harness_barrier() {
+        let Ok(marker) = std::env::var(HARNESS_FLUSH_BARRIER) else {
+            return;
+        };
+        if marker.is_empty() {
+            return;
+        }
+        let marker = std::path::PathBuf::from(marker);
+        let deadline = std::time::Instant::now() + HARNESS_BARRIER_CEILING;
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Verifies every staged path still matches the baseline this process
+    /// first observed.
+    ///
+    /// Runs before any disk mutation, so a rejection leaves the tree
+    /// untouched and the staging overlay intact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::StaleWrite`] naming the first drifted path.
+    fn verify_baselines(&self) -> Result<()> {
+        let baselines = self.snapshot_baselines();
+        for key in self.staged.keys() {
+            // Derived indexes are regenerated from disk by every mutation, so
+            // two concurrent sessions legitimately rewrite them; without this
+            // exemption every concurrent mutation would falsely trip. Their
+            // commit-time correctness is owned by the scoped commit's
+            // in-memory reconciliation, not by this check.
+            if is_derived_path(key) {
+                continue;
+            }
+            let Some(baseline) = baselines.get(key) else {
+                continue;
+            };
+            if matches!(baseline, Baseline::Unknown) {
+                continue;
+            }
+            let Ok(rel) = RelPath::new(key) else {
+                continue;
+            };
+            let current = self.observe(&rel);
+            // An unreadable file *now* is also fail-open: the write is about
+            // to replace it anyway, and erroring would be a new way to wedge.
+            if matches!(current, Baseline::Unknown) {
+                continue;
+            }
+            if &current != baseline {
+                return Err(Error::StaleWrite {
+                    item: describe_path(key),
+                    path: key.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Store for FsStore {
     fn read(&self, path: &RelPath) -> Result<String> {
         let full = self.resolve(path);
-        self.staged
-            .read(path.as_str(), || Ok(fs::read_to_string(&full)?))
+        self.staged.read(path.as_str(), || {
+            // Only the committed fall-through observes the world; a read
+            // served from the overlay saw this process's own staged content
+            // and must not be mistaken for an observation of disk.
+            match fs::read_to_string(&full) {
+                Ok(content) => {
+                    self.note_baseline(path.as_str(), || {
+                        Baseline::Present(content_digest(&content))
+                    });
+                    Ok(content)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    self.note_baseline(path.as_str(), || Baseline::Absent);
+                    Err(Error::Io(e))
+                }
+                Err(e) => {
+                    // Unreadable for some other reason: fail open rather than
+                    // guessing, so the flush check skips this path.
+                    self.note_baseline(path.as_str(), || Baseline::Unknown);
+                    Err(Error::Io(e))
+                }
+            }
+        })
     }
 
     fn exists(&self, path: &RelPath) -> bool {
         let full = self.resolve(path);
-        self.staged.exists(path.as_str(), || full.exists())
+        self.staged.exists(path.as_str(), || {
+            // A create only ever probes; recording the probe is what lets a
+            // create racing another create on the same path be rejected.
+            self.note_baseline(path.as_str(), || Self::observe_at(&full));
+            full.exists()
+        })
     }
 
     fn list(&self, path: &RelPath) -> Result<Vec<DirEntry>> {
@@ -208,17 +420,43 @@ impl Store for FsStore {
     }
 
     fn write(&mut self, path: &RelPath, content: String) -> Result<()> {
+        // A blind write — one with no prior read or probe — still has a
+        // baseline: whatever is on disk right now. Without it, a caller that
+        // constructs content from nothing could clobber a concurrent write.
+        self.note_baseline(path.as_str(), || self.observe(path));
         self.staged.write(path.as_str(), content);
         Ok(())
     }
 
     fn delete(&mut self, path: &RelPath) -> Result<()> {
         let full = self.resolve(path);
+        self.note_baseline(path.as_str(), || Self::observe_at(&full));
         self.staged.delete(path.as_str(), || full.exists())
     }
 
     fn commit(&mut self) -> Result<()> {
+        // Test seam, inert unless the harness variable is set.
+        Self::harness_barrier();
+
+        // Best-effort and age-bounded: the content check below is what makes
+        // this correct; the lock only narrows the residual window between the
+        // check and the rename. Skipped when there is no `.git` to put it
+        // under, since that is the one directory the tree walkers ignore.
+        let git_dir = self.root.join(".git");
+        let _lock = git_dir.is_dir().then(|| {
+            AdvisoryLock::acquire(
+                git_dir.join("rdm").join("flush.lock"),
+                FLUSH_LOCK_WAIT,
+                FLUSH_LOCK_STALE_AFTER,
+            )
+        });
+
+        // Verify BEFORE draining: a rejection must leave the overlay intact
+        // and zero files touched, so the caller can retry or discard.
+        self.verify_baselines()?;
+
         let staged = self.staged.drain();
+        let mut flushed: Vec<(String, Baseline)> = Vec::with_capacity(staged.len());
         for (key, entry) in staged {
             let rel = if key.is_empty() {
                 RelPath::root()
@@ -246,12 +484,24 @@ impl Store for FsStore {
                             "failed to persist temp file: {e}"
                         )))
                     })?;
+                    flushed.push((key, Baseline::Present(content_digest(&content))));
                 }
                 StagedEntry::Delete => {
                     if full.exists() {
                         fs::remove_file(&full)?;
                     }
+                    flushed.push((key, Baseline::Absent));
                 }
+            }
+        }
+
+        // Re-seed baselines to what this process just wrote, so a second
+        // flush in the same process compares against its own output. This is
+        // what makes a session's own sequential writes unable to trip the
+        // check — no session id is consulted anywhere.
+        if let Ok(mut baselines) = self.baselines.lock() {
+            for (key, observed) in flushed {
+                baselines.insert(key, observed);
             }
         }
         Ok(())
@@ -259,6 +509,12 @@ impl Store for FsStore {
 
     fn discard(&mut self) {
         self.staged.discard();
+        // Baselines describe reads that fed the discarded writes. Keeping
+        // them would make a later flush compare against an observation this
+        // store has disowned.
+        if let Ok(mut baselines) = self.baselines.lock() {
+            baselines.clear();
+        }
     }
 
     fn modified(&self, path: &RelPath) -> Result<Option<std::time::SystemTime>> {
@@ -571,6 +827,296 @@ mod tests {
             fs::read_to_string(dir.path().join("f.md")).unwrap(),
             "second"
         );
+    }
+
+    // --- Flush precondition (optimistic concurrency on content) ---
+
+    /// Simulates the other session: a write straight to disk, bypassing this
+    /// store entirely — which is exactly what another `rdm` process is, from
+    /// this process's point of view.
+    fn other_session_writes(dir: &TempDir, path: &str, content: &str) {
+        write_disk(dir, path, content);
+    }
+
+    fn stale_write_item(err: Error) -> String {
+        match err {
+            Error::StaleWrite { item, .. } => item,
+            other => panic!("expected StaleWrite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_write_derived_from_a_stale_read_is_refused() {
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/fix-bug.md").unwrap();
+        write_disk(&dir, path.as_str(), "tags: [alpha]");
+
+        // This session reads, then edits — the read-modify-write shape.
+        assert_eq!(store.read(&path).unwrap(), "tags: [alpha]");
+        store
+            .write(&path, "tags: [alpha, from-a]".to_string())
+            .unwrap();
+
+        // Another session lands its own edit in between.
+        other_session_writes(&dir, path.as_str(), "tags: [alpha, from-b]");
+
+        let err = store.commit().unwrap_err();
+        assert_eq!(stale_write_item(err), "task/fix-bug");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(path.as_str())).unwrap(),
+            "tags: [alpha, from-b]",
+            "the other session's content must survive untouched"
+        );
+    }
+
+    #[test]
+    fn a_refused_flush_writes_nothing_at_all() {
+        // All-or-nothing: a partial flush would leave the repo in a state
+        // neither session intended, and the caller could not tell which half
+        // landed.
+        let (dir, mut store) = setup();
+        let conflicted = RelPath::new("projects/demo/tasks/a.md").unwrap();
+        let innocent = RelPath::new("projects/demo/tasks/b.md").unwrap();
+        write_disk(&dir, conflicted.as_str(), "one");
+
+        store.read(&conflicted).unwrap();
+        store.write(&conflicted, "mine".to_string()).unwrap();
+        store.write(&innocent, "unrelated".to_string()).unwrap();
+
+        other_session_writes(&dir, conflicted.as_str(), "theirs");
+
+        assert!(store.commit().is_err());
+        assert!(
+            !dir.path().join(innocent.as_str()).exists(),
+            "an unrelated staged path must not land when the flush is refused"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(conflicted.as_str())).unwrap(),
+            "theirs"
+        );
+        // And the staging overlay survives, so the caller can retry.
+        assert_eq!(store.read(&innocent).unwrap(), "unrelated");
+    }
+
+    #[test]
+    fn a_sessions_own_sequential_flushes_never_trip_the_check() {
+        // The AC3 shape in miniature: after a clean flush, baselines are
+        // re-seeded to what this process just wrote, so the next flush
+        // compares against its own output rather than against a stale read.
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/a.md").unwrap();
+
+        store.write(&path, "one".to_string()).unwrap();
+        store.commit().unwrap();
+
+        let read = store.read(&path).unwrap();
+        store.write(&path, format!("{read}-two")).unwrap();
+        store.commit().unwrap();
+
+        store.write(&path, "three".to_string()).unwrap();
+        store.commit().unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join(path.as_str())).unwrap(),
+            "three"
+        );
+    }
+
+    #[test]
+    fn a_create_racing_another_create_on_the_same_path_is_refused() {
+        // A create only ever probes for existence; recording that probe is
+        // what makes the second creator lose rather than silently clobber.
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/new.md").unwrap();
+
+        assert!(!store.exists(&path));
+        store.write(&path, "mine".to_string()).unwrap();
+
+        other_session_writes(&dir, path.as_str(), "theirs");
+
+        let err = store.commit().unwrap_err();
+        assert_eq!(stale_write_item(err), "task/new");
+    }
+
+    #[test]
+    fn a_delete_racing_an_edit_is_refused() {
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/doomed.md").unwrap();
+        write_disk(&dir, path.as_str(), "original");
+
+        store.delete(&path).unwrap();
+        other_session_writes(&dir, path.as_str(), "edited by someone else");
+
+        let err = store.commit().unwrap_err();
+        assert_eq!(stale_write_item(err), "task/doomed");
+        assert!(
+            dir.path().join(path.as_str()).exists(),
+            "the other session's edit must not be destroyed"
+        );
+    }
+
+    #[test]
+    fn a_byte_identical_concurrent_write_is_not_a_conflict() {
+        // There is no lost update when both sessions produced the same bytes.
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/a.md").unwrap();
+        write_disk(&dir, path.as_str(), "same");
+
+        store.read(&path).unwrap();
+        store.write(&path, "mine".to_string()).unwrap();
+        other_session_writes(&dir, path.as_str(), "same");
+
+        store.commit().unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join(path.as_str())).unwrap(),
+            "mine"
+        );
+    }
+
+    #[test]
+    fn derived_indexes_are_exempt_from_the_check() {
+        // Every mutation regenerates the indexes from disk, so two concurrent
+        // sessions legitimately rewrite them. Without the exemption, every
+        // concurrent mutation would falsely trip.
+        let (dir, mut store) = setup();
+        let root_index = RelPath::new("INDEX.md").unwrap();
+        let project_index = RelPath::new("projects/demo/INDEX.md").unwrap();
+        write_disk(&dir, root_index.as_str(), "old root");
+        write_disk(&dir, project_index.as_str(), "old project");
+
+        store.read(&root_index).unwrap();
+        store.read(&project_index).unwrap();
+        store.write(&root_index, "new root".to_string()).unwrap();
+        store
+            .write(&project_index, "new project".to_string())
+            .unwrap();
+
+        other_session_writes(&dir, root_index.as_str(), "their root");
+        other_session_writes(&dir, project_index.as_str(), "their project");
+
+        store.commit().unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("INDEX.md")).unwrap(),
+            "new root"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_target_fails_open_rather_than_bricking_the_mutation() {
+        // A path whose baseline could not be observed is skipped: the check
+        // exists to prevent lost updates, never to become a new way to wedge
+        // an unrelated write.
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/weird.md").unwrap();
+        // A directory where a file is expected: `read_to_string` fails with
+        // something other than NotFound, so the baseline is `Unknown`.
+        fs::create_dir_all(dir.path().join(path.as_str())).unwrap();
+
+        assert!(store.read(&path).is_err());
+        store.write(&path, "content".to_string()).unwrap();
+
+        // The flush is attempted rather than refused. Whether the rename
+        // succeeds over a directory is the filesystem's business; what
+        // matters here is that the *precondition* did not reject it.
+        let flushed = store.commit();
+        assert!(
+            !matches!(flushed, Err(Error::StaleWrite { .. })),
+            "an Unknown baseline must be skipped, not treated as drift"
+        );
+    }
+
+    #[test]
+    fn a_staged_read_does_not_overwrite_the_first_touch_baseline() {
+        // First touch wins. If a later read served from the overlay re-seeded
+        // the baseline, the flush would compare this process's own staged
+        // content against itself and never detect anything.
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/a.md").unwrap();
+        write_disk(&dir, path.as_str(), "original");
+
+        store.read(&path).unwrap();
+        store.write(&path, "mine".to_string()).unwrap();
+        assert_eq!(store.read(&path).unwrap(), "mine"); // served from overlay
+
+        other_session_writes(&dir, path.as_str(), "theirs");
+
+        assert!(
+            store.commit().is_err(),
+            "the baseline must still be the original disk content"
+        );
+    }
+
+    #[test]
+    fn discard_clears_baselines_along_with_staging() {
+        // Baselines describe reads that fed the discarded writes; keeping
+        // them would make a later flush compare against an observation this
+        // store has disowned.
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/a.md").unwrap();
+        write_disk(&dir, path.as_str(), "original");
+
+        store.read(&path).unwrap();
+        store.write(&path, "abandoned".to_string()).unwrap();
+        store.discard();
+
+        other_session_writes(&dir, path.as_str(), "theirs");
+
+        // A fresh read-modify-write after the discard is legitimate.
+        let current = store.read(&path).unwrap();
+        assert_eq!(current, "theirs");
+        store.write(&path, format!("{current}+mine")).unwrap();
+        store.commit().unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join(path.as_str())).unwrap(),
+            "theirs+mine"
+        );
+    }
+
+    #[test]
+    fn a_cloned_store_gets_its_own_baselines() {
+        let (dir, mut store) = setup();
+        let path = RelPath::new("projects/demo/tasks/a.md").unwrap();
+        write_disk(&dir, path.as_str(), "original");
+        store.read(&path).unwrap();
+
+        let mut clone = store.clone();
+        // The clone inherits the observation but not the identity: writing
+        // through the clone must not disturb the original's baselines.
+        clone.write(&path, "via clone".to_string()).unwrap();
+        clone.commit().unwrap();
+
+        // The original still believes it saw "original", so its own write is
+        // correctly refused as stale.
+        store.write(&path, "via original".to_string()).unwrap();
+        assert!(store.commit().is_err());
+    }
+
+    #[test]
+    fn staged_paths_carries_the_digest_of_the_content_about_to_flush() {
+        let (_dir, mut store) = setup();
+        let write = RelPath::new("a.md").unwrap();
+        store.write(&write, "hello".to_string()).unwrap();
+
+        let staged = store.staged_paths();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, write);
+        assert_eq!(staged[0].1, JournalKind::Write);
+        assert_eq!(
+            staged[0].2.as_deref(),
+            Some(content_digest("hello").as_str())
+        );
+    }
+
+    #[test]
+    fn staged_paths_reports_no_digest_for_a_delete() {
+        let (dir, mut store) = setup();
+        write_disk(&dir, "gone.md", "x");
+        store.delete(&RelPath::new("gone.md").unwrap()).unwrap();
+
+        let staged = store.staged_paths();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].1, JournalKind::Delete);
+        assert_eq!(staged[0].2, None, "a delete has no bytes to identify");
     }
 
     #[test]

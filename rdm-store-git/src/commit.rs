@@ -24,11 +24,12 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gix::object::tree::EntryKind;
 use gix::objs::tree::EntryMode;
 use rdm_core::error::{Error, Result};
+use rdm_core::lock::AdvisoryLock;
 use rdm_core::store::{RelPath, Store};
 
 use crate::repo::GitRepo;
@@ -61,6 +62,16 @@ pub struct ChangesetScope {
     /// wrote them (e.g. a back-filled `.gitattributes`), and nothing persists
     /// between commits.
     pub extra_writes: Vec<String>,
+    /// The content identity this changeset journaled for each write, when the
+    /// journal recorded one.
+    ///
+    /// Base-blob identity per journaled path: a path whose working-tree
+    /// content no longer matches what this changeset wrote belongs to whoever
+    /// overwrote it, and committing it here would land their bytes under this
+    /// message. A path absent from this map — a legacy journal line, or an
+    /// [`extra_writes`](Self::extra_writes) entry that never entered the
+    /// store — is committed unchecked, which is the fail-open answer.
+    pub digests: std::collections::BTreeMap<String, String>,
 }
 
 impl ChangesetScope {
@@ -129,7 +140,7 @@ const COMMIT_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 
 /// Where the advisory commit lock lives for a given git dir.
 ///
-/// Shared by [`CommitLock::acquire`] and its tests so the two can never
+/// Shared by [`acquire_commit_lock`] and its tests so the two can never
 /// disagree about which file is the lock.
 pub(crate) fn commit_lock_path(git_dir: &Path) -> PathBuf {
     git_dir.join("rdm").join("commit.lock")
@@ -179,63 +190,25 @@ use test_hooks::fire_pre_ref_update;
 #[inline]
 fn fire_pre_ref_update() {}
 
-/// A best-effort advisory lock guarding the read-HEAD → build-tree →
+/// Takes the best-effort advisory lock guarding the read-HEAD → build-tree →
 /// update-ref window of a scoped commit.
 ///
 /// Best-effort by construction: failing to take the lock **proceeds anyway**
 /// rather than erroring, because the compare-and-swap on HEAD is the actual
 /// correctness mechanism and the lock is only there to make the common case
 /// avoid a wasted rebuild.
-struct CommitLock {
-    path: Option<PathBuf>,
-}
-
-impl CommitLock {
-    fn acquire(git_dir: &Path) -> Self {
-        let dir = git_dir.join("rdm");
-        if std::fs::create_dir_all(&dir).is_err() {
-            return Self { path: None };
-        }
-        let path = commit_lock_path(git_dir);
-        let deadline = Instant::now() + COMMIT_LOCK_WAIT;
-        loop {
-            match std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&path)
-            {
-                Ok(_) => return Self { path: Some(path) },
-                Err(_) => {
-                    // Age-bounded takeover: a lock left by a killed process
-                    // must never block the bounded hook path forever.
-                    let stale = std::fs::metadata(&path)
-                        .and_then(|md| md.modified())
-                        .map(|m| {
-                            m.elapsed()
-                                .map(|d| d > COMMIT_LOCK_STALE_AFTER)
-                                .unwrap_or(false)
-                        })
-                        .unwrap_or(false);
-                    if stale {
-                        let _ = std::fs::remove_file(&path);
-                        continue;
-                    }
-                    if Instant::now() >= deadline {
-                        return Self { path: None };
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-        }
-    }
-}
-
-impl Drop for CommitLock {
-    fn drop(&mut self) {
-        if let Some(path) = self.path.take() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
+///
+/// The wait/staleness state machine itself lives in
+/// [`rdm_core::lock::AdvisoryLock`], shared with the filesystem store's flush
+/// precondition so the repo cannot carry two divergent lock implementations.
+/// The *durations* stay here, because this path shortens them under
+/// `cfg(test)` and that one does not.
+fn acquire_commit_lock(git_dir: &Path) -> AdvisoryLock {
+    AdvisoryLock::acquire(
+        commit_lock_path(git_dir),
+        COMMIT_LOCK_WAIT,
+        COMMIT_LOCK_STALE_AFTER,
+    )
 }
 
 /// Sorts tree entries the way git requires: by name, with directory names
@@ -554,7 +527,7 @@ impl GitRepo {
         changeset: &ChangesetScope,
     ) -> Result<CommitReport> {
         // Best-effort: the compare-and-swap below is what makes this correct.
-        let _lock = CommitLock::acquire(self.git_dir());
+        let _lock = acquire_commit_lock(self.git_dir());
 
         let mut attempt = 0u8;
         loop {
@@ -726,6 +699,21 @@ impl GitRepo {
                     continue;
                 }
             };
+            // Content-level attribution. Path-level attribution alone commits
+            // whatever is at the path now, which after a concurrent overwrite
+            // is another session's work landing under this message. Fail open
+            // on a digest-less entry (a legacy journal line, a caller-vouched
+            // extra write) and on non-UTF8 content, which the digest cannot
+            // describe.
+            if let Some(journaled) = changeset.digests.get(path)
+                && let Ok(text) = std::str::from_utf8(&content)
+                && &rdm_core::store::content_digest(text) != journaled
+            {
+                return Err(Error::ChangesetPathOverwritten {
+                    item: rdm_core::paths::describe_path(path),
+                    path: path.clone(),
+                });
+            }
             let blob = repo
                 .write_blob(&content)
                 .map_err(|e| Error::Git(format!("failed to write blob for {path}: {e}")))?
@@ -1427,6 +1415,7 @@ impl GitRepo {
 #[cfg(test)]
 mod commit_lock_tests {
     use super::*;
+    use std::time::Instant;
     use tempfile::TempDir;
 
     /// Backdates `path`'s mtime by `age`, so the staleness branch can be
@@ -1442,8 +1431,8 @@ mod commit_lock_tests {
         let dir = TempDir::new().unwrap();
         let lock_path = commit_lock_path(dir.path());
         {
-            let lock = CommitLock::acquire(dir.path());
-            assert!(lock.path.is_some(), "a free lock should have been taken");
+            let lock = acquire_commit_lock(dir.path());
+            assert!(lock.held(), "a free lock should have been taken");
             assert!(lock_path.exists(), "the lock file should exist while held");
         }
         assert!(
@@ -1461,9 +1450,9 @@ mod commit_lock_tests {
         backdate(&lock_path, COMMIT_LOCK_STALE_AFTER + Duration::from_secs(5));
 
         let started = Instant::now();
-        let lock = CommitLock::acquire(dir.path());
+        let lock = acquire_commit_lock(dir.path());
         assert!(
-            lock.path.is_some(),
+            lock.held(),
             "a lock older than COMMIT_LOCK_STALE_AFTER must be taken over, \
              not waited out — otherwise a killed process blocks the bounded \
              hook path"
@@ -1487,9 +1476,9 @@ mod commit_lock_tests {
         std::fs::write(&lock_path, b"held by a live process").unwrap();
 
         {
-            let lock = CommitLock::acquire(dir.path());
+            let lock = acquire_commit_lock(dir.path());
             assert!(
-                lock.path.is_none(),
+                !lock.held(),
                 "a fresh foreign lock must not be stolen; the caller proceeds \
                  unlocked instead"
             );
@@ -1507,9 +1496,9 @@ mod commit_lock_tests {
         // `<git_dir>/rdm` occupied by a regular file: `create_dir_all` fails.
         std::fs::write(dir.path().join("rdm"), b"not a directory").unwrap();
 
-        let lock = CommitLock::acquire(dir.path());
+        let lock = acquire_commit_lock(dir.path());
         assert!(
-            lock.path.is_none(),
+            !lock.held(),
             "failing to create the lock directory must degrade to unlocked, \
              never error or hang — the compare-and-swap is the correctness \
              mechanism, the lock is only an optimization"

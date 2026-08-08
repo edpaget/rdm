@@ -175,6 +175,18 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("'{slug}' already exists")),
                 instance: None,
             },
+            // Both are lost-update refusals: the client's write was derived
+            // from content that has since changed, so 409 is the answer and
+            // re-read-then-retry is the remedy. The `Display` text already
+            // names the item and states that nothing was written, so it is
+            // carried through verbatim rather than re-worded here.
+            Error::StaleWrite { .. } | Error::ChangesetPathOverwritten { .. } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
             Error::TaskAlreadyConsolidated(slug) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),

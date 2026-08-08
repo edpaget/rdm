@@ -26,6 +26,9 @@ pub mod hook;
 pub mod io;
 /// Serializable JSON output types for CLI and API consumers.
 pub mod json;
+/// A best-effort, age-bounded advisory file lock, shared by the store's flush
+/// precondition and the scoped-commit path.
+pub mod lock;
 
 /// Markdown frontmatter splitting and joining utilities.
 pub mod markdown;

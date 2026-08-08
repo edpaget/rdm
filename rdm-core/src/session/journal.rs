@@ -5,8 +5,12 @@
 //! [`Store::commit`](crate::store::Store::commit) batch:
 //!
 //! ```text
-//! {"paths":[{"path":"projects/demo/tasks/a.md","kind":"write"}]}
+//! {"paths":[{"path":"projects/demo/tasks/a.md","kind":"write","digest":"<sha256-hex>"}]}
 //! ```
+//!
+//! The `digest` is the content identity of the bytes that batch flushed. It is
+//! optional — absent on a delete, and absent on lines written before the field
+//! existed — so an older journal stays readable.
 //!
 //! Two properties fall out of the layout rather than out of discipline:
 //!
@@ -68,6 +72,17 @@ pub struct JournalEntry {
     pub path: String,
     /// Whether the path was written or deleted.
     pub kind: JournalKind,
+    /// The [`content_digest`](crate::store::content_digest) of the bytes this
+    /// batch flushed to `path` — base-blob identity, so a scoped commit can
+    /// tell "the content I wrote" from "whatever happens to be there now".
+    ///
+    /// `None` on a delete (there are no bytes), and `None` on journal lines
+    /// written before this field existed. A missing digest must never make an
+    /// otherwise-good line unparsable, so the field is `#[serde(default)]`
+    /// and every consumer skips its check rather than failing when it is
+    /// absent — an in-flight changeset from an older rdm keeps working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
 }
 
 /// A summary of one changeset on disk.
@@ -125,8 +140,10 @@ pub fn record(paths: &SessionPaths, id: &SessionId, entries: &[JournalEntry]) ->
 /// batch.
 ///
 /// A path written and later deleted (or vice versa) reports its **last**
-/// recorded kind. Unparsable lines are skipped rather than failing the read, so
-/// a torn tail cannot make an otherwise-recoverable changeset unreadable.
+/// recorded kind, and likewise its last recorded
+/// [`digest`](JournalEntry::digest). Unparsable lines are skipped rather than
+/// failing the read, so a torn tail cannot make an otherwise-recoverable
+/// changeset unreadable.
 ///
 /// # Errors
 ///
@@ -139,19 +156,19 @@ pub fn read_journal(paths: &SessionPaths, id: &SessionId) -> Result<Vec<JournalE
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(Error::Io(e)),
     };
-    let mut merged: BTreeMap<String, JournalKind> = BTreeMap::new();
+    let mut merged: BTreeMap<String, JournalEntry> = BTreeMap::new();
     for line in raw.lines() {
         let Ok(parsed) = serde_json::from_str::<JournalLine>(line) else {
             continue;
         };
         for entry in parsed.paths {
-            merged.insert(entry.path, entry.kind);
+            // Last write wins for the digest exactly as it does for the kind:
+            // a path this session flushed twice is owned by its most recent
+            // content, not its first.
+            merged.insert(entry.path.clone(), entry);
         }
     }
-    Ok(merged
-        .into_iter()
-        .map(|(path, kind)| JournalEntry { path, kind })
-        .collect())
+    Ok(merged.into_values().collect())
 }
 
 /// Drops `landed` from `id`'s journal, rewriting it with whatever remains.
@@ -292,7 +309,95 @@ mod tests {
         JournalEntry {
             path: path.to_string(),
             kind,
+            digest: None,
         }
+    }
+
+    fn entry_with_digest(path: &str, kind: JournalKind, digest: &str) -> JournalEntry {
+        JournalEntry {
+            path: path.to_string(),
+            kind,
+            digest: Some(digest.to_string()),
+        }
+    }
+
+    #[test]
+    fn a_journal_line_written_before_digests_existed_still_parses() {
+        // Back-compat is correctness, not politeness: a changeset in flight
+        // when rdm upgrades must stay committable. An unparsable line is
+        // silently skipped by `read_journal`, so a required field here would
+        // make an older changeset quietly lose its paths.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-legacy").unwrap();
+        std::fs::create_dir_all(p.changesets_dir()).unwrap();
+        std::fs::write(
+            changeset_path(&p, &id),
+            "{\"paths\":[{\"path\":\"projects/demo/tasks/a.md\",\"kind\":\"write\"}]}\n",
+        )
+        .unwrap();
+
+        let read = read_journal(&p, &id).unwrap();
+        assert_eq!(
+            read,
+            vec![entry("projects/demo/tasks/a.md", JournalKind::Write)]
+        );
+        assert_eq!(read[0].digest, None, "a legacy line carries no digest");
+    }
+
+    #[test]
+    fn a_digest_round_trips_and_the_last_one_recorded_wins() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-digest").unwrap();
+        let path = "projects/demo/tasks/a.md";
+
+        record(
+            &p,
+            &id,
+            &[entry_with_digest(path, JournalKind::Write, "aaa")],
+        )
+        .unwrap();
+        assert_eq!(
+            read_journal(&p, &id).unwrap()[0].digest.as_deref(),
+            Some("aaa")
+        );
+
+        // A path this session flushed twice is owned by its most recent
+        // content, exactly as it is owned by its most recent kind.
+        record(
+            &p,
+            &id,
+            &[entry_with_digest(path, JournalKind::Write, "bbb")],
+        )
+        .unwrap();
+        let read = read_journal(&p, &id).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].digest.as_deref(), Some("bbb"));
+    }
+
+    #[test]
+    fn a_delete_recorded_over_a_write_drops_the_digest() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-del").unwrap();
+        let path = "projects/demo/tasks/a.md";
+
+        record(
+            &p,
+            &id,
+            &[entry_with_digest(path, JournalKind::Write, "aaa")],
+        )
+        .unwrap();
+        record(&p, &id, &[entry(path, JournalKind::Delete)]).unwrap();
+
+        let read = read_journal(&p, &id).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].kind, JournalKind::Delete);
+        assert_eq!(
+            read[0].digest, None,
+            "a delete has no bytes, so it must not inherit the write's digest"
+        );
     }
 
     #[test]

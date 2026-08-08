@@ -239,10 +239,12 @@ A successful scoped commit removes the landed paths from the journal (`journal::
 
 The ref update is a compare-and-swap against the HEAD the tree was seeded from, with one rebuild-and-retry; a second mismatch is an explicit, actionable error, never a lost commit. A best-effort, age-bounded advisory lock under the git dir (5 s wait, 30 s staleness takeover — both far inside the default 30 s `hook_timeout_secs`) narrows the window in the common case; failing to take it proceeds rather than erroring, because the compare-and-swap is the actual correctness mechanism.
 
-Two residuals are deliberately left to **phase 6**:
+Two residuals were deliberately left to **phase 6**:
 
-- A concurrent committer can land between a successful compare-and-swap and this process's post-commit index sync.
-- Attribution is **path-level, not content-level**: if another session overwrites a path this changeset journaled, the scoped commit commits the other session's bytes for that path.
+- **Still open.** A concurrent committer can land between a successful compare-and-swap and this process's post-commit index sync.
+- **Closed by phase 6.** Attribution was **path-level, not content-level**: if another session overwrote a path this changeset journaled, the scoped commit committed the other session's bytes for that path. Phase 6 added base-blob identity to the journal (`JournalEntry::digest`) and a matching check in the scoped tree builder, which now refuses with `Error::ChangesetPathOverwritten` rather than committing another session's content. That is the commit-time half of a two-part mechanism; the flush-time half prevents the overwrite happening at all. The evaluation that selected it is [`docs/lost-update-evaluation.md`](lost-update-evaluation.md).
+
+The advisory lock described above is now `rdm_core::lock::AdvisoryLock`, shared with the filesystem store's flush lock so the two cannot diverge. Its durations still live at each call site, because the commit path shortens them under `cfg(test)` and the flush path does not.
 
 ## Appendix A: Measured Data
 

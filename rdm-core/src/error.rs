@@ -175,6 +175,33 @@ pub enum Error {
         /// The field name (`"body"`, `"priority"`, or `"tags"`).
         field: String,
     },
+    /// A staged write was derived from content another process has since
+    /// changed, so flushing it would silently drop that other work.
+    ///
+    /// Raised by the filesystem store's flush precondition *before* anything
+    /// is written: the whole flush is refused, all-or-nothing, and the staged
+    /// changes stay staged. The fix is always to re-run the command so it
+    /// re-reads the current content.
+    StaleWrite {
+        /// The item, in the `task/<slug>` vocabulary users already know.
+        item: String,
+        /// The store-relative path, for the case where the item name alone is
+        /// not enough to locate it.
+        path: String,
+    },
+    /// A path this changeset journaled has since been overwritten by another
+    /// session, so committing it would land the other session's bytes under
+    /// this changeset's message.
+    ///
+    /// The commit-time half of the same content check: the flush precondition
+    /// covers a write derived from a stale read; this covers the window
+    /// between a successful flush and the scoped commit that lands it.
+    ChangesetPathOverwritten {
+        /// The item, in the `task/<slug>` vocabulary users already know.
+        item: String,
+        /// The store-relative path.
+        path: String,
+    },
     /// The plan repo root could not be determined from any source in the
     /// priority chain (explicit override, global config `root`, XDG data dir).
     RootNotDetermined,
@@ -417,6 +444,23 @@ impl std::fmt::Display for Error {
             }
             Error::ConflictingUpdate { field } => {
                 write!(f, "cannot set both '{field}' and 'clear_{field}'")
+            }
+            Error::StaleWrite { item, path } => {
+                write!(
+                    f,
+                    "refusing to write {item}: it changed on disk after this command read it \
+                     (another session wrote it concurrently). Nothing was written — re-run the \
+                     command so your change applies on top of the current content. Path: {path}"
+                )
+            }
+            Error::ChangesetPathOverwritten { item, path } => {
+                write!(
+                    f,
+                    "refusing to commit {item}: another session overwrote it after this changeset \
+                     wrote it, so committing would land their content under your message. Nothing \
+                     was committed — re-run the command that produced your change, then commit. \
+                     Path: {path}"
+                )
             }
             Error::RootNotDetermined => {
                 write!(

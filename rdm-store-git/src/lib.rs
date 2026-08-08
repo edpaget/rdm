@@ -562,7 +562,7 @@ impl GitStore {
     /// was not written.
     ///
     /// [`commit_changeset`]: Self::commit_changeset
-    fn record_journal(&self, touched: &[(RelPath, JournalKind)]) {
+    fn record_journal(&self, touched: &[(RelPath, JournalKind, Option<String>)]) {
         if touched.is_empty() {
             return;
         }
@@ -574,9 +574,12 @@ impl GitStore {
         };
         let entries: Vec<JournalEntry> = touched
             .iter()
-            .map(|(path, kind)| JournalEntry {
+            .map(|(path, kind, digest)| JournalEntry {
                 path: path.as_str().to_string(),
                 kind: *kind,
+                // Base-blob identity per journaled path: the scoped commit
+                // uses it to refuse another session's bytes.
+                digest: digest.clone(),
             })
             .collect();
         let _ = session::journal::record(paths, &resolved.id, &entries);
@@ -709,6 +712,11 @@ impl GitStore {
                 }
             } else if entry.kind == JournalKind::Write {
                 scope.writes.push(entry.path.clone());
+                // Carry the base-blob identity through so the tree builder can
+                // refuse a path another session has overwritten since.
+                if let Some(digest) = &entry.digest {
+                    scope.digests.insert(entry.path.clone(), digest.clone());
+                }
             } else {
                 scope.deletes.push(entry.path.clone());
             }
@@ -841,7 +849,10 @@ impl GitStore {
     /// merge-driver back-fill entirely.
     fn journal_side_write(&self, path: &str) {
         let Ok(rel) = RelPath::new(path) else { return };
-        self.record_journal(&[(rel, JournalKind::Write)]);
+        // No digest: this write did not go through the store, so there is no
+        // staged content to identify. The commit-time check fails open on a
+        // digest-less entry, which is the right answer here.
+        self.record_journal(&[(rel, JournalKind::Write, None)]);
     }
 
     /// Journals any `.gitattributes` write latched by a site that has no
@@ -3071,6 +3082,102 @@ mod tests {
         store.commit().unwrap();
         let entries = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
         assert_eq!(entries[0].kind, JournalKind::Delete);
+    }
+
+    #[test]
+    fn commit_journals_the_content_identity_of_what_it_flushed() {
+        // Base-blob identity per journaled path: without it the scoped commit
+        // can only say "this changeset touched this path", which after a
+        // concurrent overwrite commits someone else's bytes.
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        journal_a_batch(&mut store, "a.md");
+
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+        let entries = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        assert_eq!(
+            entries[0].digest.as_deref(),
+            Some(rdm_core::store::content_digest("body").as_str())
+        );
+
+        // A delete carries no digest — there are no bytes to identify.
+        let path = RelPath::new("a.md").unwrap();
+        store.delete(&path).unwrap();
+        store.commit().unwrap();
+        let entries = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        assert_eq!(entries[0].kind, JournalKind::Delete);
+        assert_eq!(entries[0].digest, None);
+    }
+
+    #[test]
+    fn a_side_write_journals_without_a_digest_so_the_commit_check_fails_open() {
+        // `.gitattributes` is written outside the store, so there is no
+        // staged content to identify. It must still be committable.
+        let dir = TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let store = GitStore::new(dir.path()).unwrap();
+
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+        let entries = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        let attrs = entries
+            .iter()
+            .find(|e| e.path == crate::repo::GITATTRIBUTES_PATH)
+            .expect("the back-filled .gitattributes must be journaled");
+        assert_eq!(
+            attrs.digest, None,
+            "a store-bypassing write has no staged content to identify"
+        );
+    }
+
+    #[test]
+    fn a_changeset_path_another_session_overwrote_is_refused_rather_than_committed() {
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        let path = RelPath::new("projects/demo/tasks/fix-bug.md").unwrap();
+        store.write(&path, "mine".to_string()).unwrap();
+        store.commit().unwrap();
+
+        // Another session lands its own bytes at the same path after this
+        // changeset flushed but before it committed.
+        std::fs::write(dir.path().join(path.as_str()), "theirs").unwrap();
+
+        let err = store.commit_changeset(Some("mine"), &[]).unwrap_err();
+        match err {
+            Error::ChangesetPathOverwritten { item, .. } => assert_eq!(item, "task/fix-bug"),
+            other => panic!("expected ChangesetPathOverwritten, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_legacy_journal_line_without_a_digest_still_commits() {
+        // An in-flight changeset created before digests existed must not be
+        // bricked by the new check.
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        let path = RelPath::new("projects/demo/tasks/legacy.md").unwrap();
+        store.write(&path, "content".to_string()).unwrap();
+        store.commit().unwrap();
+
+        // Rewrite the journal in the pre-digest format.
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+        let line = format!(
+            "{{\"paths\":[{{\"path\":\"{}\",\"kind\":\"write\"}}]}}\n",
+            path.as_str()
+        );
+        std::fs::write(
+            rdm_core::session::journal::changeset_path(&paths, &id),
+            line,
+        )
+        .unwrap();
+
+        let committed = store.commit_changeset(Some("legacy"), &[]).unwrap();
+        assert!(
+            committed.sha.is_some(),
+            "a digest-less entry must fail open, not block the commit"
+        );
     }
 
     #[test]

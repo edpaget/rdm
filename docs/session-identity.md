@@ -130,11 +130,29 @@ of splitting the session.
 One line per `Store::commit` batch:
 
 ```json
-{"paths":[{"path":"projects/demo/tasks/a.md","kind":"write"},{"path":"INDEX.md","kind":"write"}]}
+{"paths":[{"path":"projects/demo/tasks/a.md","kind":"write","digest":"<sha256-hex>"},{"path":"INDEX.md","kind":"write","digest":"<sha256-hex>"}]}
 ```
 
 `kind` is `write` or `delete`. Recording a delete as a delete is load-bearing:
 a scoped tree build cannot reproduce a removal it was told was a write.
+
+`digest` is the sha256 of the bytes that batch flushed to the path — base-blob
+identity, added in phase 6 so a scoped commit can tell "the content this
+changeset wrote" from "whatever is at that path now" and refuse to land another
+session's bytes under this changeset's message (see
+[`lost-update-evaluation.md`](lost-update-evaluation.md)). It is **optional**,
+in both directions:
+
+- absent on a `delete`, which has no bytes to identify;
+- absent on lines written before the field existed, and on paths written
+  outside the store entirely (`.gitattributes`), which have no staged content.
+
+A line without it stays parsable — the field is `#[serde(default)]` — and every
+consumer skips its check rather than failing, so a changeset in flight when rdm
+upgrades is not bricked. That is not politeness: `read_journal` silently skips
+an unparsable line, so a required field would have made an older changeset
+quietly lose its paths. On a path recorded twice, the last digest wins, exactly
+as the last kind does.
 
 Two properties fall out of the layout rather than out of discipline:
 
@@ -207,6 +225,21 @@ usable survives or the result is only dots. A blank or all-punctuation
 Nothing special-cases `RDM_GIT_SUBPROCESS`. The decision record requires
 resolution not to assume that short-circuit fired, so a git hook resolves
 through the same chain whether or not rdm spawned it.
+
+### `RDM_HARNESS_FLUSH_BARRIER`
+
+Not an identity variable — it appears here because it is the second member of
+the documented harness-variable family, and it follows
+`RDM_HARNESS_SESSION_ID`'s contract exactly: inert when unset, and bounded when
+set, so it can never wedge a real run.
+
+It names a file. When set, `FsStore::commit` blocks at the top of the flush
+until that file exists, or 60 seconds pass — whichever comes first. It exists
+because the read → write window inside one `rdm` invocation is sub-millisecond,
+so two racing processes cannot be made to interleave at it by timing alone, and
+the lost-update gate (`scripts/verify-lost-update.sh`) needs a *deterministic*
+interleave of two real processes. See
+[`lost-update-evaluation.md`](lost-update-evaluation.md) § "Harness design".
 
 ## Degradation
 

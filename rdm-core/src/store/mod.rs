@@ -11,6 +11,51 @@ pub use overlay::{StagedEntry, StagedOverlay};
 
 use crate::error::{Error, Result};
 
+/// Returns the content identity of `content`: its sha256, lowercase hex.
+///
+/// This is the single notion of "same bytes" the optimistic-concurrency check
+/// is built on, and it lives here — not in a backend — so the filesystem store
+/// and the changeset journal can never disagree about what identity means.
+/// It is keyed on **content only**, never on who wrote it: that is exactly
+/// what lets a session's own sequential writes pass while a genuinely stale
+/// read is rejected, even from the same session id in a different process.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::store::content_digest;
+///
+/// assert_eq!(content_digest("a"), content_digest("a"));
+/// assert_ne!(content_digest("a"), content_digest("b"));
+/// assert_eq!(content_digest("").len(), 64);
+/// ```
+#[must_use]
+pub fn content_digest(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// What a process observed at a store path the *first* time it touched it.
+///
+/// Captured on the first read, existence probe, delete, or blind write of a
+/// path within one process, and compared against the path's on-disk state at
+/// flush time. First touch wins: a later staged read must never overwrite the
+/// baseline, or the check would compare a write against itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Baseline {
+    /// The path did not exist when this process first looked.
+    Absent,
+    /// The path held content with this [`content_digest`].
+    Present(String),
+    /// The path could not be observed (unreadable, non-UTF8, a directory).
+    ///
+    /// The check is **skipped** for such a path — it fails open, so an
+    /// unreadable neighbour can never brick an unrelated mutation.
+    Unknown,
+}
+
 /// A validated relative path within a store.
 ///
 /// `RelPath` guarantees the path contains no leading `/`, no `..` components,
@@ -193,9 +238,23 @@ pub trait Store {
 
     /// Commits all staged changes atomically, merging them into the committed state.
     ///
+    /// # Preconditions
+    ///
+    /// A backend that shares its committed state with other processes (the
+    /// filesystem store) verifies, before touching anything, that every staged
+    /// path still holds the content this process first observed — its
+    /// [`Baseline`]. A path another process changed in the meantime means this
+    /// flush was derived from stale content, and the whole flush is refused
+    /// with nothing written. Derived indexes are exempt (every mutation
+    /// regenerates them from disk), as are paths whose baseline is
+    /// [`Baseline::Unknown`].
+    ///
     /// # Errors
     ///
-    /// Returns an error if the commit fails.
+    /// Returns [`Error::StaleWrite`] if a staged path changed on disk since
+    /// this process first observed it — nothing is written in that case, and
+    /// the staged changes remain staged. Otherwise returns an error if the
+    /// commit fails.
     fn commit(&mut self) -> Result<()>;
 
     /// Discards all staged changes without committing.

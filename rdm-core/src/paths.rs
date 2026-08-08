@@ -107,6 +107,72 @@ pub fn is_derived_path(path: &str) -> bool {
     false
 }
 
+/// Names the plan item a store path holds, in the `<kind>/<id>` vocabulary the
+/// CLI already uses everywhere else.
+///
+/// The inverse of the builders below, for the one situation that needs it: an
+/// error message about a path. Users address items as `task/fix-bug`, not as
+/// `projects/rdm/tasks/fix-bug.md`, and an error naming only the raw path
+/// makes them translate it themselves.
+///
+/// The spellings are deliberately identical to
+/// [`ReviewTarget::label`](crate::model::ReviewTarget::label) so the two
+/// surfaces cannot drift into two vocabularies:
+///
+/// - `projects/<p>/tasks/<slug>.md` → `task/<slug>`
+/// - `projects/<p>/roadmaps/<r>/roadmap.md` → `roadmap/<r>`
+/// - `projects/<p>/roadmaps/<r>/<stem>.md` → `phase/<r>/<stem>`
+/// - `projects/<p>/reviews/<id>.md` → `review/<id>`
+///
+/// Archived variants (`projects/<p>/archive/roadmaps/…`) map to the same
+/// roadmap/phase spellings — an archived roadmap is still that roadmap.
+/// Anything else returns the path unchanged, which is the honest answer for
+/// `rdm.toml` or a file rdm does not own.
+///
+/// # Panics
+///
+/// Never. Like [`is_derived_path`], this is applied to arbitrary paths from a
+/// filesystem walk or a journal line, so it is **total**: an unrecognized
+/// shape falls back to the raw path rather than panicking.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::paths::describe_path;
+///
+/// assert_eq!(describe_path("projects/rdm/tasks/fix-bug.md"), "task/fix-bug");
+/// assert_eq!(describe_path("projects/rdm/roadmaps/auth/roadmap.md"), "roadmap/auth");
+/// assert_eq!(
+///     describe_path("projects/rdm/roadmaps/auth/phase-1-design.md"),
+///     "phase/auth/phase-1-design"
+/// );
+/// assert_eq!(describe_path("rdm.toml"), "rdm.toml");
+/// ```
+#[must_use]
+pub fn describe_path(path: &str) -> String {
+    let segments: Vec<&str> = path.split('/').collect();
+    // Every recognized shape is `projects/<project>/…`.
+    if segments.len() < 4 || segments[0] != "projects" {
+        return path.to_string();
+    }
+    // Skip an `archive` segment so an archived roadmap keeps its own name.
+    let rest: &[&str] = if segments[2] == "archive" {
+        &segments[3..]
+    } else {
+        &segments[2..]
+    };
+    let described = match rest {
+        ["tasks", file] => file.strip_suffix(".md").map(|s| format!("task/{s}")),
+        ["reviews", file] => file.strip_suffix(".md").map(|s| format!("review/{s}")),
+        ["roadmaps", roadmap, "roadmap.md"] => Some(format!("roadmap/{roadmap}")),
+        ["roadmaps", roadmap, file] => file
+            .strip_suffix(".md")
+            .map(|stem| format!("phase/{roadmap}/{stem}")),
+        _ => None,
+    };
+    described.unwrap_or_else(|| path.to_string())
+}
+
 /// Returns the path to a project's `project.md` file.
 pub(crate) fn project_md_path(project: &str) -> RelPath {
     RelPath::new(&format!("projects/{project}/project.md")).expect("valid path")
@@ -203,6 +269,86 @@ mod tests {
     #[test]
     fn project_index_path_is_correct() {
         assert_eq!(project_index_path("fbm").as_str(), "projects/fbm/INDEX.md");
+    }
+
+    #[test]
+    fn describe_path_uses_the_cli_item_vocabulary() {
+        use crate::model::ReviewTarget;
+
+        assert_eq!(
+            describe_path(task_path("rdm", "fix-bug").as_str()),
+            "task/fix-bug"
+        );
+        assert_eq!(
+            describe_path(roadmap_path("rdm", "auth").as_str()),
+            "roadmap/auth"
+        );
+        assert_eq!(
+            describe_path(phase_path("rdm", "auth", "phase-1-design").as_str()),
+            "phase/auth/phase-1-design"
+        );
+        assert_eq!(
+            describe_path(review_path("rdm", "rv-abc123").as_str()),
+            "review/rv-abc123"
+        );
+
+        // The spellings must match `ReviewTarget::label` exactly, or the CLI
+        // ends up with two vocabularies for the same items.
+        assert_eq!(
+            describe_path(task_path("rdm", "fix-bug").as_str()),
+            ReviewTarget::Task {
+                slug: "fix-bug".to_string()
+            }
+            .label()
+        );
+        assert_eq!(
+            describe_path(roadmap_path("rdm", "auth").as_str()),
+            ReviewTarget::Roadmap {
+                roadmap: "auth".to_string()
+            }
+            .label()
+        );
+        assert_eq!(
+            describe_path(phase_path("rdm", "auth", "phase-1-design").as_str()),
+            ReviewTarget::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-1-design".to_string()
+            }
+            .label()
+        );
+    }
+
+    #[test]
+    fn describe_path_maps_archived_items_to_their_own_names() {
+        assert_eq!(
+            describe_path(archived_roadmap_path("rdm", "auth").as_str()),
+            "roadmap/auth"
+        );
+        assert_eq!(
+            describe_path(archived_phase_path("rdm", "auth", "phase-2-ship").as_str()),
+            "phase/auth/phase-2-ship"
+        );
+    }
+
+    #[test]
+    fn describe_path_is_total_and_falls_back_to_the_raw_path() {
+        // Files rdm does not own, and shapes it does not recognize, answer
+        // with the path itself rather than panicking or inventing an item.
+        for path in [
+            "",
+            "rdm.toml",
+            ".gitattributes",
+            "INDEX.md",
+            "projects",
+            "projects/rdm",
+            "projects/rdm/INDEX.md",
+            "projects/rdm/tasks/no-extension",
+            "projects/rdm/tasks/nested/deep.md",
+            "projects/rdm/roadmaps/auth/nested/deep.md",
+            "projects/../rdm/tasks/x.md",
+        ] {
+            assert_eq!(describe_path(path), path, "unrecognized shape: {path:?}");
+        }
     }
 
     #[test]
