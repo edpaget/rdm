@@ -331,6 +331,10 @@ pub async fn create_task(
         )
     })
     .map_err(|e| error_response(e, format))?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let location = format!("/projects/{project}/tasks/{}", req.slug);
     match format {
@@ -408,6 +412,10 @@ pub async fn update_task(
         )
     })
     .map_err(|e| error_response(e, format))?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let self_href = format!("/projects/{project}/tasks/{task_slug}");
     match format {
@@ -447,6 +455,10 @@ pub async fn promote_task(
         rdm_core::ops::task::promote_task(s, &project, &task_slug, &req.roadmap_slug)
     })
     .map_err(|e| error_response(e, format))?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let location = format!("/projects/{project}/roadmaps/{}", req.roadmap_slug);
     match format {

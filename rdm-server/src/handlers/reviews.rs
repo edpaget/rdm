@@ -268,6 +268,10 @@ pub async fn create_review(
         )
     })
     .map_err(core_error)?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let id = doc.frontmatter.id.clone();
     let location = format!("/projects/{project}/reviews/{id}");
@@ -339,6 +343,10 @@ pub async fn add_comment(
         )
     })
     .map_err(core_error)?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let comment_id = doc
         .frontmatter
@@ -439,6 +447,10 @@ pub async fn update_comment(
         )
     })
     .map_err(core_error)?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let resolutions = rdm_core::anchor::resolve_comments(&store, &project, &doc.frontmatter);
     Ok(hal_response(review_resource(
@@ -494,6 +506,10 @@ pub async fn submit_review(
                 &review_id,
                 BodyUpdate::Set(summary.clone()),
             )?;
+            // One shared post-mutate helper for all 22 handler mutation
+            // sites — the policy lives in `AppState`, and no handler ever
+            // touches a commit primitive itself.
+            state.post_mutate();
         }
         rdm_core::ops::reviews::submit_review(s, &project, &review_id, req.verdict)
     })
@@ -538,6 +554,10 @@ pub async fn update_review(
         rdm_core::ops::reviews::update_review(s, &project, &review_id, transition)
     })
     .map_err(core_error)?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let resolutions = rdm_core::anchor::resolve_comments(&store, &project, &doc.frontmatter);
     Ok(hal_response(review_resource(
@@ -561,6 +581,10 @@ pub async fn delete_review(
         rdm_core::ops::reviews::delete_review(s, &project, &review_id, false)
     })
     .map_err(core_error)?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

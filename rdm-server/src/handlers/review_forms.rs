@@ -296,6 +296,10 @@ pub async fn start_review_form(
                 },
             )
         });
+        // One shared post-mutate helper for all 22 handler mutation
+        // sites — the policy lives in `AppState`, and no handler ever
+        // touches a commit primitive itself.
+        state.post_mutate();
         if let Err(e) = created {
             return redirect_err(&target_href, DRAFT_FRAGMENT, &e.to_string());
         }
@@ -361,6 +365,10 @@ pub async fn add_comment_form(
             },
         )
     });
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
     match result {
         Ok(_) if json => json_panel_response(&store, &project, &target, &headers, None),
         Ok(_) => redirect_ok(&target_href, DRAFT_FRAGMENT),
@@ -505,6 +513,10 @@ pub async fn anchor_comment_form(
             },
         )
     });
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
     match result {
         Ok(_) if json => {
             json_panel_response(&store, &project, &target, &headers, Some(outcome_label))
@@ -605,6 +617,10 @@ pub async fn edit_comment_form(
             },
         )
     });
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
     match result {
         Ok(_) if json => json_panel_response(&store, &project, &target, &headers, None),
         Ok(_) => redirect_ok(&target_href, DRAFT_FRAGMENT),
@@ -640,6 +656,10 @@ pub async fn remove_comment_form(
     let result = rdm_core::ops::mutate(&mut store, &project, |s| {
         rdm_core::ops::reviews::remove_comment(s, &project, &review_id, comment_id)
     });
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
     match result {
         Ok(_) if json => json_panel_response(&store, &project, &target, &headers, None),
         Ok(_) => redirect_ok(&target_href, DRAFT_FRAGMENT),
@@ -695,6 +715,10 @@ pub async fn submit_review_form(
                 &review_id,
                 BodyUpdate::Set(req.summary.clone()),
             )?;
+            // One shared post-mutate helper for all 22 handler mutation
+            // sites — the policy lives in `AppState`, and no handler ever
+            // touches a commit primitive itself.
+            state.post_mutate();
         }
         rdm_core::ops::reviews::submit_review(s, &project, &review_id, verdict)
     });
@@ -719,6 +743,10 @@ pub async fn dismiss_review_form(
     let result = rdm_core::ops::mutate(&mut store, &project, |s| {
         rdm_core::ops::reviews::update_review(s, &project, &review_id, ReviewTransition::Dismissed)
     });
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
     match result {
         Ok(_) => redirect_ok(&target_href, &fragment),
         Err(e) => redirect_err(&target_href, &fragment, &e.to_string()),
@@ -741,6 +769,10 @@ pub async fn delete_review_form(
     let result = rdm_core::ops::mutate(&mut store, &project, |s| {
         rdm_core::ops::reviews::delete_review(s, &project, &review_id, false)
     });
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
     match result {
         Ok(()) => redirect_ok(&target_href, DRAFT_FRAGMENT),
         Err(e) => redirect_err(&target_href, DRAFT_FRAGMENT, &e.to_string()),

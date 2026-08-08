@@ -245,7 +245,19 @@ pub fn resolve_config_value(
     None
 }
 
-/// Saves a repo config to `<root>/rdm.toml`.
+/// Saves a repo config to `<root>/rdm.toml` with a raw filesystem write.
+///
+/// **Non-store contexts only.** This bypasses the `Store`, so the write is
+/// never journaled and therefore belongs to no changeset — a scoped
+/// `rdm commit` cannot land it. Any caller that has (or can open) a
+/// `GitStore` must use [`rdm_core::io::save_config`] instead, which writes
+/// through the store and journals. The split is deliberate: routing the write
+/// is the fix, and an exemption list inside the commit path is the failure
+/// mode it avoids.
+///
+/// What legitimately remains here is config writing against a directory that
+/// is not a git-backed plan repo at all (`rdm config set` on a
+/// filesystem-only root).
 ///
 /// # Errors
 ///

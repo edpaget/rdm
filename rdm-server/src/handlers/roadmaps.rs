@@ -511,6 +511,10 @@ pub async fn create_roadmap(
         )
     })
     .map_err(|e| error_response(e, format))?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let location = format!("/projects/{project}/roadmaps/{}", doc.frontmatter.roadmap);
     match format {
@@ -578,6 +582,10 @@ pub async fn update_roadmap(
         )
     })
     .map_err(|e| error_response(e, format))?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let phases = rdm_core::ops::phase::list_phases(&store, &project, &roadmap)
         .map_err(|e| error_response(e, format))?;

@@ -26,6 +26,28 @@ pub fn load_config(store: &impl Store) -> Result<Config> {
     Config::from_toml(&content)
 }
 
+/// Writes `rdm.toml` **through the store**, so the write is journaled like
+/// any other.
+///
+/// This exists because `rdm.toml` used to be written by a raw `fs::write`
+/// that bypassed the `Store` entirely. Under session-scoped committing a
+/// store-bypassing write belongs to no changeset, so `rdm init --remote`'s
+/// config commit would have become a silent no-op. Routing the write is the
+/// fix; an exemption list is not.
+///
+/// Flushes immediately via [`Store::commit`], so the caller's very next
+/// scoped commit carries the file.
+///
+/// # Errors
+///
+/// Returns [`Error::ConfigParse`] if the config cannot be serialized, or
+/// [`Error::Io`] if the write or flush fails.
+pub fn save_config(store: &mut impl Store, config: &Config) -> Result<()> {
+    let toml_str = config.to_toml()?;
+    store.write(&crate::paths::config_path(), toml_str)?;
+    store.commit()
+}
+
 /// Loads and parses a project document from the store.
 ///
 /// # Errors

@@ -32,8 +32,9 @@ pub fn run(
 
     #[cfg(feature = "git")]
     if let Some(ref url) = remote {
-        // Clone path: fetch remote repo into root.
-        let store = rdm_store_git::GitStore::clone_remote(url, root, None)
+        // Clone path: fetch remote repo into root. Opening the store FIRST is
+        // load-bearing: the config write below must go through it.
+        let mut store = rdm_store_git::GitStore::clone_remote(url, root, None)
             .context("failed to clone remote plan repo")?;
 
         // Validate and load config: must be a valid rdm plan repo (has rdm.toml).
@@ -42,12 +43,14 @@ pub fn run(
         config.remote = Some(rdm_core::config::RemoteConfig {
             default: Some("origin".to_string()),
         });
-        paths::save_repo_config(root, &config).context("failed to update repo config")?;
 
-        // Commit the config update.
-        let store = rdm_store_git::GitStore::new(root).context("failed to open cloned repo")?;
+        // Write `rdm.toml` THROUGH the store so the write is journaled. A raw
+        // `fs::write` here would belong to no changeset, and the scoped commit
+        // below would then be a silent no-op — the config change would sit on
+        // disk, uncommitted, forever.
+        rdm_core::io::save_config(&mut store, &config).context("failed to update repo config")?;
         store
-            .commit_now("rdm: configure remote.default = origin")
+            .commit_changeset(Some("rdm: configure remote.default = origin"), &[])
             .context("failed to commit remote config")?;
 
         // Save global config (best-effort, required if --default-format).

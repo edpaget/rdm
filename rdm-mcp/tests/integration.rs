@@ -3406,3 +3406,130 @@ fn rdm_backlog_report_defaults_match_cli() {
         "MCP rdm_backlog_report must match `rdm backlog report --format json` byte-for-byte in shape"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Session-scoped MCP tools
+//
+// The server process is ONE session, so its `rdm_commit`/`rdm_discard` must
+// land/restore exactly its own changeset and leave a concurrent CLI session's
+// uncommitted work alone.
+// ---------------------------------------------------------------------------
+
+/// The HEAD commit's path listing.
+fn git_show_name_only(root: &std::path::Path) -> String {
+    let output = git_cmd(root, &["show", "--name-only", "--pretty=format:", "HEAD"]);
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+/// Runs a `rdm` CLI command under an explicit foreign changeset id.
+fn rdm_as_other_session(root: &std::path::Path, args: &[&str]) {
+    build_once();
+    let binary = env!("CARGO_MANIFEST_DIR").replace("rdm-mcp", "target/debug/rdm");
+    let mut full = vec!["--root", root.to_str().unwrap()];
+    full.extend_from_slice(args);
+    let status = Command::new(&binary)
+        .args(&full)
+        .env("RDM_SESSION", "foreign-cli-session")
+        .status()
+        .unwrap_or_else(|e| panic!("failed to run rdm {}: {e}", args.join(" ")));
+    assert!(status.success(), "rdm {} failed", args.join(" "));
+}
+
+#[test]
+fn mcp_commit_lands_only_the_servers_own_changeset() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    // A concurrent CLI session leaves an uncommitted task on disk.
+    rdm_as_other_session(
+        tmp.path(),
+        &[
+            "task",
+            "create",
+            "foreign-task",
+            "--title",
+            "Foreign",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+
+    let mut h =
+        McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_SESSION", "mcp-server-session")]);
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "status": "in-progress",
+        }),
+    );
+    let response = h.call_tool("rdm_commit", serde_json::json!({}));
+    let text = result_text(&response);
+    assert!(text.contains("Commit:"), "expected a real commit: {text}");
+    drop(h);
+
+    let files = git_show_name_only(tmp.path());
+    assert!(
+        files.contains("projects/test-proj/tasks/fix-login-bug.md"),
+        "the server's own change is missing from its commit: {files}"
+    );
+    assert!(
+        !files.contains("foreign-task"),
+        "the MCP commit tool swept a concurrent session's uncommitted task: {files}"
+    );
+    assert!(
+        tmp.path()
+            .join("projects/test-proj/tasks/foreign-task.md")
+            .exists(),
+        "the concurrent session's file must survive on disk"
+    );
+}
+
+#[test]
+fn mcp_discard_leaves_another_changeset_intact() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    rdm_as_other_session(
+        tmp.path(),
+        &[
+            "task",
+            "create",
+            "survivor-task",
+            "--title",
+            "Survivor",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+
+    let mut h =
+        McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_SESSION", "mcp-server-session")]);
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "status": "in-progress",
+        }),
+    );
+    let response = h.call_tool("rdm_discard", serde_json::json!({ "confirm": true }));
+    let text = result_text(&response);
+    assert!(text.contains("Discarded"), "expected a discard: {text}");
+    drop(h);
+
+    assert!(
+        tmp.path()
+            .join("projects/test-proj/tasks/survivor-task.md")
+            .exists(),
+        "the MCP discard tool destroyed a concurrent session's uncommitted task"
+    );
+    let index = std::fs::read_to_string(tmp.path().join("projects/test-proj/INDEX.md")).unwrap();
+    assert!(
+        index.contains("survivor-task"),
+        "the regenerated index dropped the other session's row: {index}"
+    );
+}

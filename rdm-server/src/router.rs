@@ -4,8 +4,16 @@ use axum::routing::{get, patch, post};
 use crate::handlers;
 use crate::state::AppState;
 
+/// Header naming the changeset every mutation this server makes belongs to.
+///
+/// Set on **every** response from one place, so a client that just POSTed a
+/// mutation can always name the changeset to reconcile — even under the
+/// staging-only default, where the server never commits on its own.
+pub const CHANGESET_HEADER: &str = "x-rdm-changeset";
+
 /// Builds the application router with all routes and shared state.
 pub fn build_router(state: AppState) -> Router {
+    let changeset = state.changeset.clone();
     Router::new()
         .route("/", get(handlers::root::index))
         .route("/healthz", get(handlers::health::healthz))
@@ -114,4 +122,20 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/favicon.ico", get(handlers::static_assets::favicon))
         .with_state(state)
+        // Surfacing the pending changeset happens in exactly one place, so a
+        // handler can never forget it.
+        .layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let changeset = changeset.clone();
+                async move {
+                    let mut response = next.run(req).await;
+                    if let Some(id) = changeset
+                        && let Ok(value) = axum::http::HeaderValue::from_str(&id)
+                    {
+                        response.headers_mut().insert(CHANGESET_HEADER, value);
+                    }
+                    response
+                }
+            },
+        ))
 }

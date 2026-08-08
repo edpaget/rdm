@@ -213,13 +213,17 @@ fn run() -> Result<()> {
         } => commands::serve::run(root, &repo_config, port, bind, quick_filter)?,
 
         #[cfg(feature = "git")]
-        Command::Status { fetch } => commands::status::run(&root, fetch)?,
+        Command::Status { fetch, all } => commands::status::run(&root, fetch, all)?,
 
         #[cfg(feature = "git")]
-        Command::Commit { message } => commands::commit::run(&root, message)?,
+        Command::Commit {
+            message,
+            all,
+            changeset,
+        } => commands::commit::run(&root, message, all, changeset)?,
 
         #[cfg(feature = "git")]
-        Command::Discard { force } => commands::discard::run(&root, force)?,
+        Command::Discard { force, all } => commands::discard::run(&root, force, all)?,
 
         #[cfg(feature = "git")]
         Command::Conflicts => commands::conflicts::run(&root)?,

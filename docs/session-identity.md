@@ -266,12 +266,86 @@ applies its directive, and journals its own writes.
 The JSON field names (`id`, `rung`, `resolve_micros`, `orphaned`, `paths`) are
 a stable target for the agent-surface phase; do not rename them casually.
 
+## What a changeset does at commit / status / discard time
+
+Identity and the journal are the *mechanism*; these are the user-facing
+surfaces built on them.
+
+### `rdm commit`
+
+Commits **this session's changeset**: the tree is HEAD plus exactly the paths
+this session journaled, with its regenerated `INDEX.md` files reconciled in
+memory against HEAD (never taken from disk — the on-disk index already holds
+every session's rows). A path another session left dirty is structurally
+unreachable, not filtered out late.
+
+| Flag | Meaning |
+| --- | --- |
+| *(none)* | Commit this session's changeset. |
+| `--all` | Whole-tree commit, including every other session's uncommitted work. The machine-global escape hatch. |
+| `--changeset <id>` | Commit a *named* changeset — the orphan-recovery path. Find ids with `rdm session list`. |
+
+On success the landed paths are truncated out of the journal, so a second
+commit cannot re-commit a path another session has since edited.
+
+**The empty-changeset-but-dirty-tree diagnostic.** When this session's
+changeset is empty but the working tree is not — a rung-4 fragmented session,
+a raw `fs::write` outside rdm, or work done before this feature shipped —
+`rdm commit` does **not** print `Nothing to commit.` and does **not** sweep.
+It names the unattributed paths and prints all three recovery routes:
+
+```text
+Nothing in this session's changeset to commit.
+
+1 uncommitted path(s) are attributed to another changeset:
+  projects/demo/tasks/orphan.md
+
+Recover them with one of:
+  rdm session list                 # find the owning changeset
+  rdm commit --changeset <id>      # commit that changeset
+  rdm commit --all                 # commit the whole working tree
+```
+
+A journaled path whose working-tree file has since vanished (a concurrent
+discard, a manual `rm`) is skipped and reported, never fatal.
+
+### `rdm status`
+
+Shows this session's changeset by default, `--all` for the whole tree. Output
+is one partition into three buckets: this session's own edits, this session's
+regenerated indexes (named separately), and a trailing line counting what
+belongs to other changesets and pointing at `rdm session list` / `--all`.
+
+### `rdm discard`
+
+Changeset-scoped by default: restores only this session's journaled paths to
+HEAD, clears its journal, and regenerates the indexes **from the resulting
+disk state** so another session's still-uncommitted rows survive.
+`--force --all` retains the whole-tree destruction, and prints the other live
+changesets it is about to destroy before doing it.
+
+### Reads are not scoped
+
+Deliberately. `rdm task show`, `rdm search`, and every other read see the
+whole working tree, including other sessions' uncommitted items. Scoping
+applies to what a *write* action lands or destroys, never to what you can see.
+
 ## Gating
 
 - `cargo nextest run` — unit tests in `rdm-core/src/session/**` (the rung chain
   over an injected `ProcessTable`/`EnvSource`, including the pid-recycle case,
   which is otherwise unconstructible), `rdm-store-git` tests for journal
-  exactness and commit/status invisibility, and `rdm-cli/tests/cli_session.rs`
-  end to end against the real binary.
-- `bash scripts/verify-session-identity.sh` — the multi-process harness:
-  sections A–I as described above.
+  exactness, scoped-commit/discard behavior and determinism, and
+  `rdm-cli/tests/cli_session.rs` / `cli_commit.rs` end to end against the real
+  binary.
+- `bash scripts/verify-session-identity.sh` — the identity harness: sections
+  A–I as described above. § I is inverted as of phase 5: it now asserts that
+  `rdm-store-git/src/commit.rs` *carries* the changeset commit scope while
+  resolving no session identity of its own.
+- `bash scripts/verify-scoped-commit.sh` — the multi-process scoping harness:
+  disjoint concurrent commits (A), the same with no session id set plus
+  rung-2 continuity and rung-4 degradation (B/B2/B3), the `Done:` hook path
+  (C, distinct — every other section can pass while the hook still sweeps),
+  the commit-primitive call-site allowlist (D), `init --remote` /
+  `.gitattributes` back-fill / server reconciliation (E), committed-index
+  reconciliation (F), scoped discard (G), and shared reads (H).

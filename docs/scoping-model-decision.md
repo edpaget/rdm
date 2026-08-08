@@ -118,7 +118,31 @@ When a git hook is spawned outside of any rdm-initiated git operation (e.g., a u
 
 **MCP**: Fully covered. The MCP server exposes read/mutate/commit operations with the same session identity semantics as the CLI. An MCP client can batch its mutations and commit them under a single session.
 
-**rdm-server**: Open question for phase 5. The REST API server mutates the same plan repository but does not expose a commit endpoint (it is stateless and never commits). Mutations are written to disk immediately. The question of whether `rdm-server` should journal mutations and provide session scoping (and what "commit" means for a stateless server) is an operational/deployment decision that phase 5 will settle. For now, assume `rdm-server` bypasses the session model entirely.
+**rdm-server**: **Settled by phase 5 — staging-only by default, autocommit opt-in.**
+
+The REST API server mutates the same plan repository through `ops::mutate`, at 22 call sites across six handler modules, and had zero production committers. Left alone under session scoping its writes would have been journaled, excluded from every CLI commit, and stripped from the committed index while staying readable on disk forever — landed never, with no error. The commit-call-site gate cannot catch that: a surface with zero committers passes it vacuously.
+
+Three dispositions were considered:
+
+- **(a) Commit per request through the scoped path.** Rejected as the *default*: a viewer/editor that commits on every PATCH turns ordinary browsing into history noise, and an operator running the server against a shared plan repo has no way to batch. Retained as an explicit opt-in, because a headless deployment with no human at a CLI genuinely needs it.
+- **(b) Staging-only with a documented reconciliation command.** **Chosen as the default.** The server is one long-lived process and therefore one session: it resolves a changeset id at startup, journals every mutation to it, and never commits on its own.
+- **(c) Deliberately excluded from the model.** Rejected: exclusion is exactly the silent-loss shape above.
+
+What ships:
+
+- `MutationPolicy::StagingOnly` (default) / `MutationPolicy::Autocommit` (`--autocommit`, or `RDM_SERVER_AUTOCOMMIT=1`), in `rdm-server/src/state.rs`.
+- The changeset id is resolved at startup (`--changeset <id>`, else `RDM_SESSION`, else the ordinary rung chain) and is **surfaced twice**: a boot `WARN` naming it and the reconciliation command, and an `X-Rdm-Changeset` response header set on every response from one place in the router.
+- All 22 handler sites call ONE shared `AppState::post_mutate()` helper rather than a commit primitive, so the policy lives in a single place and the commit-call-site gate stays satisfied.
+
+**The consequence surfaced to the operator**, verbatim from the boot line:
+
+```text
+WARN: mutations are staged, not committed. They are attributed to changeset
+'<id>' and are surfaced on every response as X-Rdm-Changeset.
+Reconcile with: rdm commit --changeset <id>
+```
+
+Phase 7 owns the agent-facing instruction rewrite for this surface.
 
 ## Phase 4 Implementation (Completed)
 
@@ -141,32 +165,74 @@ Phase 4 has implemented the session-scoped journal mechanism with the following 
 
 ## Open Questions (Deferred to Phase 5 or Later)
 
-### INDEX.md Consistency in Partial Commits
+### INDEX.md Consistency in Partial Commits — **resolved by phase 5**
 
 **How consistency is maintained:** INDEX.md is auto-generated from individual roadmap, phase, task, and review files — it is a computed artifact, not a source of truth. When a partial commit (from HEAD + caller's journaled paths) is created, the INDEX.md in that commit reflects exactly the entities that exist in that tree.
 
 **Phase 4's contribution:** The session journal (described above) records all paths touched by each mutation, including INDEX.md itself. When a partial tree is built from HEAD + journaled paths, INDEX.md is included if and only if this session regenerated it.
 
-**Phase 5's task:** To ensure complete INDEX.md consistency, Phase 5 must scope INDEX.md generation to only see HEAD + journaled paths. When `generate_index_for_project()` is invoked during a commit preparation, it should read from a view constrained to that session's journaled paths, not the live filesystem. The resulting INDEX.md will reference only entities that exist in the partial tree. This requires introducing a journal-scoped Store view or similar mechanism so that `build_project_index` and its subroutines read only from the visible (committed or journaled) state, not the transient filesystem.
-
-**Consequence:** Without this Phase 5 scoping, INDEX.md could contain dangling references. When Session A has written a task file to disk but not committed, and Session B commits:
+**The hazard.** Without this scoping, INDEX.md would carry dangling references. When Session A has written a task file to disk but not committed, and Session B commits:
 1. Session B's partial tree correctly excludes Session A's task file (it was not in B's journal).
-2. If Session B's INDEX.md was regenerated by scanning the *live* filesystem, it would include A's task entity.
-3. The resulting committed tree would be inconsistent: INDEX.md references an entity whose file is absent.
+2. If Session B's INDEX.md were taken from the *live filesystem*, it would include A's task entity — the on-disk index is regenerated by every mutation and so already holds every session's rows.
+3. The committed tree would be inconsistent: INDEX.md references an entity whose file is absent.
 
-**Phase 5's scope:** Introduce the journal-scoped view so that INDEX.md is regenerated from only the paths that will actually be committed, ensuring alignment between what INDEX.md describes and what exists in the tree.
+**The shipped mechanism (`GitRepo::reconcile_derived`, `rdm-store-git/src/commit.rs`).** A derived blob is **never read from disk**. Before the scoped tree is built:
+
+1. HEAD's document bytes are materialized (`collect_blobs_at`); non-UTF-8 blobs are skipped for the projection but keep their HEAD oid in the tree, so nothing is dropped from the commit.
+2. This changeset's non-derived writes and deletes are applied on top, in memory.
+3. That projection seeds a `rdm_core::store::MemoryStore`, and `rdm_core::ops::index::generate_index` runs against it.
+4. **Only** the derived paths this changeset journaled are taken back and written into the tree.
+
+Derived paths the changeset did **not** journal stay at their HEAD oid, so an unrelated project's index is never silently rewritten by an unrelated session's commit.
+
+The mechanism is deliberately a *projection*, not a journal-scoped `Store` view: the projection is HEAD + this changeset, which is exactly the tree being committed, so what the index describes and what the tree contains cannot diverge. It is deterministic by construction — ordered maps throughout, no timestamps, no hash-iteration ordering — pinned by a unit test asserting that committing the same changeset twice against the same HEAD yields identical tree oids, and gated end-to-end by `scripts/verify-scoped-commit.sh` § F (including a self-test proving a disk-sourced derived blob would be caught).
 
 ### Merge Driver: Out of Scope (Correctly)
 
 The rdm-index merge driver (`rdm-store-git/src/repo.rs`) automatically regenerates `INDEX.md` when git detects conflicts during a merge. However, changesets never perform a merge — a changeset-scoped commit constructs its tree from HEAD plus the caller's journaled paths (a direct write operation, no three-way merge). Therefore, the rdm-index merge driver is not involved in changeset-scoped commits and is orthogonal to this decision. It remains orthogonal as long as phase 4's partial-tree mechanism avoids merging.
 
-### Future Refinements (Phase 5 or Later)
+### `rdm status` and `rdm discard` — **resolved by phase 5**
 
-The `rdm status` command behavior with session changesets is an area for future refinement:
-- Should `rdm status` show only the caller's changeset, the whole tree, or both with flags?
-- What debug commands (e.g., `rdm status --debug-journal`) are useful for diagnosing session-scoping issues?
+**`rdm status`** shows the caller's changeset by default, with `--all` for the whole tree. The two views come from ONE `StatusReport` partitioned in ONE pass into `user` / `derived` / `others` — deliberately not a changeset filter stacked on top of the derived filter, so the view a user reads and the set `rdm commit` will land cannot drift apart. `is_clean()` still means "nothing at all differs" (the correct gate for the whole-tree actions); `is_changeset_clean()` is the new scoped gate. `others` is named in the output rather than hidden.
 
-These are user-facing details that can be refined iteratively; the core session identity and journal model do not depend on them.
+**`rdm discard` — the design that shipped.** Default `rdm discard --force` is **changeset-scoped**:
+
+1. restore only this changeset's journaled non-derived paths to HEAD (added ones removed, modified/deleted ones written back);
+2. clear this changeset's journal;
+3. regenerate the derived indexes **from the resulting disk state**, so another session's still-uncommitted rows survive — and journal that regeneration to this (now empty) changeset, so the session owns what it just rewrote;
+4. re-ensure the `.gitattributes` merge-driver mapping, reported as `reinstalled:` exactly as before.
+
+The whole-tree behavior is retained behind an explicit `--all`, which requires `--force` as well and **first names every other live changeset it is about to destroy** (from `journal::list_changesets`). The scoped path lives on `GitStore`, not in the CLI, so the MCP `rdm_discard` tool inherits identical behavior.
+
+Rejected alternative: leaving discard whole-tree and warning. A destructive default that silently deletes a concurrent session's added files is the same class of defect as a sweeping commit, and a warning does not undo it.
+
+## Phase 5 Implementation (Completed)
+
+### The choke point is `create_git_commit`, not `commit_now`
+
+Attribution lives in the tree builder itself. `GitRepo::create_git_commit` takes an explicit `CommitScope`:
+
+- `CommitScope::WholeTree` preserves the historical behavior byte-for-byte (rebuild from disk, one attempt, no compare-and-swap), and is reachable from outside `rdm-store-git` only through the explicitly-named `GitStore::commit_whole_tree`.
+- `CommitScope::Changeset(&ChangesetScope)` seeds a flat `path -> blob oid` map from HEAD and applies only the named changeset. A path no one named is never read, never blobbed, and never enters the tree — unreachable rather than filtered.
+
+Both tree builders share one entry-sort comparator (`sort_tree_entries`), so identical content yields an identical tree oid either way and the `treeNotSorted` hazard cannot be re-derived in the new path.
+
+`GitRepo::git_commit` was demoted to `pub(crate)`, so a new out-of-crate committer fails to compile. `scripts/verify-scoped-commit.sh` § D backs that with an allowlist grep (with both self-test arms) that also catches new in-crate callers and callers of the escape hatch, which the compiler cannot object to. Test-seeding callers (`rdm-store-git`'s `#[cfg(test)]` module, `rdm-server/tests/git_history.rs`) are a legitimate whole-tree class and are on the allowlist by name.
+
+`rdm resolve`/pull paths that shell out to a real `git commit`/`git merge` still create whole-tree commits outside this mechanism. That is correct — they are *merge* operations, not session commits — and is stated here so the allowlist is understood rather than quietly widened.
+
+### Journal truncation is correctness
+
+A successful scoped commit removes the landed paths from the journal (`journal::truncate`). Without it, a session's *second* commit would re-include an already-landed path — and by then another session may have edited it, so the re-commit would sweep work this session never did.
+
+### Concurrency: what phase 5 closes, and what it does not
+
+The ref update is a compare-and-swap against the HEAD the tree was seeded from, with one rebuild-and-retry; a second mismatch is an explicit, actionable error, never a lost commit. A best-effort, age-bounded advisory lock under the git dir (5 s wait, 30 s staleness takeover — both far inside the default 30 s `hook_timeout_secs`) narrows the window in the common case; failing to take it proceeds rather than erroring, because the compare-and-swap is the actual correctness mechanism.
+
+Two residuals are deliberately left to **phase 6**:
+
+- A concurrent committer can land between a successful compare-and-swap and this process's post-commit index sync.
+- Attribution is **path-level, not content-level**: if another session overwrites a path this changeset journaled, the scoped commit commits the other session's bytes for that path.
 
 ## Appendix A: Measured Data
 

@@ -212,26 +212,48 @@ pub(crate) enum Command {
         #[arg(long, default_value = "0.25")]
         min_score_ratio: f64,
     },
-    /// Show uncommitted changes and sync status in the plan repo.
+    /// Show this session's uncommitted changes and sync status in the plan repo.
     #[cfg(feature = "git")]
     Status {
         /// Fetch from the default remote before checking sync status.
         #[arg(long)]
         fetch: bool,
+        /// Show every uncommitted change in the plan repo, including other
+        /// sessions' — not just this session's changeset.
+        #[arg(long)]
+        all: bool,
     },
-    /// Commit staged changes to git.
+    /// Commit this session's changeset to git.
+    ///
+    /// By default the commit contains only the paths this session wrote (plus
+    /// its own regenerated indexes, reconciled against HEAD). Another
+    /// session's uncommitted work is never swept in.
     #[cfg(feature = "git")]
     Commit {
         /// Commit message (auto-generated if omitted).
         #[arg(short, long)]
         message: Option<String>,
+        /// Commit the whole working tree, including other sessions' changes.
+        #[arg(long)]
+        all: bool,
+        /// Commit a specific changeset instead of this session's — the
+        /// recovery path for an orphaned changeset (`rdm session list`).
+        #[arg(long, value_name = "ID", conflicts_with = "all")]
+        changeset: Option<String>,
     },
-    /// Discard uncommitted changes, restoring the working directory to HEAD.
+    /// Discard this session's uncommitted changes, restoring them to HEAD.
+    ///
+    /// Other sessions' uncommitted work — and their rows in the shared
+    /// indexes — survive.
     #[cfg(feature = "git")]
     Discard {
         /// Confirm the destructive operation.
         #[arg(long)]
         force: bool,
+        /// Discard the whole working tree, destroying every session's
+        /// uncommitted work. Requires --force as well.
+        #[arg(long)]
+        all: bool,
     },
     /// List unresolved merge conflicts with rdm item context.
     #[cfg(feature = "git")]

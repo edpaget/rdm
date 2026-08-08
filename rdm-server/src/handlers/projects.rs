@@ -100,6 +100,10 @@ pub async fn create_project(
         rdm_core::ops::project::create_project(s, &req.name, &req.title)
     })
     .map_err(|e| error_response(e, format))?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let location = format!("/projects/{}/roadmaps", doc.frontmatter.name);
     match format {

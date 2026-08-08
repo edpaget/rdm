@@ -143,6 +143,18 @@ pub fn generate_index_for_project(store: &mut impl Store, project: &str) -> Resu
 /// per-mutation index upkeep happens automatically inside
 /// [`crate::ops::mutate`] and need not call this.
 ///
+/// # Also driven over an in-memory projection
+///
+/// The session-scoped commit path in `rdm-store-git` runs this against a
+/// [`MemoryStore`](crate::store::MemoryStore) seeded with HEAD's blobs plus
+/// exactly the committing changeset, and takes back only the derived paths
+/// that changeset journaled. It must therefore stay free of filesystem
+/// assumptions — every read and write here goes through the `Store` trait,
+/// and nothing may reach for `std::fs`, a real path, or a clock. Breaking
+/// that would silently reintroduce the defect scoping exists to fix: an index
+/// regenerated from the live filesystem already carries every other session's
+/// rows.
+///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if directory reads or the final write fail,

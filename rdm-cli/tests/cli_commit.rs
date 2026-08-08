@@ -328,3 +328,299 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
         "commit should include the regenerated project INDEX.md, got: {files:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Session-scoped commit / status / discard
+//
+// Each test drives the real binary with two distinct explicit `RDM_SESSION`
+// values, so a single working tree carries two concurrent changesets — the
+// arrangement every assertion below is about.
+// ---------------------------------------------------------------------------
+
+fn rdm_as(session: &str, dir: &TempDir) -> Command {
+    let mut cmd = rdm();
+    cmd.env("RDM_SESSION", session);
+    cmd.arg("--root").arg(dir.path());
+    cmd
+}
+
+fn seed_two_changesets(dir: &TempDir) {
+    init_repo(dir);
+    rdm_as("cs-a", dir)
+        .args([
+            "task",
+            "create",
+            "a-task",
+            "--title",
+            "A",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+    rdm_as("cs-b", dir)
+        .args([
+            "task",
+            "create",
+            "b-task",
+            "--title",
+            "B",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn commit_lands_only_the_callers_changeset() {
+    let dir = TempDir::new().unwrap();
+    seed_two_changesets(&dir);
+
+    rdm_as("cs-a", &dir)
+        .args(["commit", "-m", "land a"])
+        .assert()
+        .success();
+
+    let files = last_commit_files(dir.path());
+    assert!(
+        files.iter().any(|f| f == "projects/test/tasks/a-task.md"),
+        "own file missing: {files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f == "projects/test/tasks/b-task.md"),
+        "the other changeset's file was swept in: {files:?}"
+    );
+    assert!(
+        dir.path().join("projects/test/tasks/b-task.md").exists(),
+        "the other changeset's file must survive on disk"
+    );
+}
+
+#[test]
+fn commit_all_is_the_whole_tree_opt_in() {
+    let dir = TempDir::new().unwrap();
+    seed_two_changesets(&dir);
+
+    rdm_as("cs-a", &dir)
+        .args(["commit", "--all", "-m", "land everything"])
+        .assert()
+        .success();
+
+    let files = last_commit_files(dir.path());
+    assert!(
+        files.iter().any(|f| f == "projects/test/tasks/b-task.md"),
+        "--all did not include the other changeset: {files:?}"
+    );
+}
+
+#[test]
+fn commit_by_changeset_id_is_the_orphan_recovery_path() {
+    let dir = TempDir::new().unwrap();
+    seed_two_changesets(&dir);
+
+    // A third session lands B's orphaned changeset by name.
+    rdm_as("cs-c", &dir)
+        .args(["commit", "--changeset", "cs-b", "-m", "recover b"])
+        .assert()
+        .success();
+
+    let files = last_commit_files(dir.path());
+    assert!(
+        files.iter().any(|f| f == "projects/test/tasks/b-task.md"),
+        "the named changeset did not land: {files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f == "projects/test/tasks/a-task.md"),
+        "committing one changeset by name swept another: {files:?}"
+    );
+}
+
+#[test]
+fn commit_reports_unattributed_dirt_instead_of_sweeping_or_going_quiet() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    // A raw write outside rdm: it can belong to no changeset.
+    std::fs::write(dir.path().join("projects/test/stray.md"), "stray\n").unwrap();
+
+    rdm_as("cs-empty", &dir)
+        .args(["commit", "-m", "nothing of mine"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("stray.md"))
+        .stdout(predicate::str::contains("rdm session list"))
+        .stdout(predicate::str::contains("rdm commit --changeset"))
+        .stdout(predicate::str::contains("rdm commit --all"));
+
+    let files = last_commit_files(dir.path());
+    assert!(
+        !files.iter().any(|f| f == "projects/test/stray.md"),
+        "an unattributed path was swept into a commit: {files:?}"
+    );
+}
+
+#[test]
+fn status_defaults_to_the_callers_changeset_and_all_shows_everything() {
+    let dir = TempDir::new().unwrap();
+    seed_two_changesets(&dir);
+
+    rdm_as("cs-a", &dir)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("a-task.md"))
+        .stdout(predicate::str::contains("b-task.md").not())
+        .stdout(predicate::str::contains("belong to other changesets"));
+
+    rdm_as("cs-a", &dir)
+        .args(["status", "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("a-task.md"))
+        .stdout(predicate::str::contains("b-task.md"));
+}
+
+#[test]
+fn discard_defaults_to_the_callers_changeset() {
+    let dir = TempDir::new().unwrap();
+    seed_two_changesets(&dir);
+
+    rdm_as("cs-a", &dir)
+        .args(["discard", "--force"])
+        .assert()
+        .success();
+
+    assert!(
+        !dir.path().join("projects/test/tasks/a-task.md").exists(),
+        "the caller's own file survived its discard"
+    );
+    assert!(
+        dir.path().join("projects/test/tasks/b-task.md").exists(),
+        "a scoped discard destroyed another changeset's file"
+    );
+    let index = std::fs::read_to_string(dir.path().join("projects/test/INDEX.md")).unwrap();
+    assert!(
+        index.contains("b-task"),
+        "the regenerated index dropped the other changeset's row: {index}"
+    );
+}
+
+#[test]
+fn discard_all_is_the_whole_tree_opt_in_and_still_needs_force() {
+    let dir = TempDir::new().unwrap();
+    seed_two_changesets(&dir);
+
+    rdm_as("cs-a", &dir)
+        .args(["discard", "--all"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force"));
+
+    rdm_as("cs-a", &dir)
+        .args(["discard", "--force", "--all"])
+        .assert()
+        .success()
+        // Names what it is about to destroy, before destroying it.
+        .stderr(predicate::str::contains("cs-b"));
+
+    assert!(
+        !dir.path().join("projects/test/tasks/b-task.md").exists(),
+        "--all did not destroy the other changeset's work"
+    );
+}
+
+#[test]
+fn init_remote_still_lands_its_config_commit() {
+    let src = TempDir::new().unwrap();
+    init_repo(&src);
+    let bare = TempDir::new().unwrap();
+    let bare_path = bare.path().join("plan.git");
+    let out = std::process::Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(["clone", "--quiet", "--bare"])
+        .arg(src.path())
+        .arg(&bare_path)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "bare clone failed: {out:?}");
+
+    let clone = TempDir::new().unwrap();
+    let target = clone.path().join("plan");
+    rdm()
+        .arg("--root")
+        .arg(&target)
+        .args([
+            "init",
+            "--remote",
+            &format!("file://{}", bare_path.display()),
+        ])
+        .assert()
+        .success();
+
+    let files = last_commit_files(&target);
+    assert!(
+        files.iter().any(|f| f == "rdm.toml"),
+        "rdm init --remote did not land its rdm.toml commit: {files:?}"
+    );
+}
+
+#[test]
+fn a_backfilled_gitattributes_reaches_a_scoped_commit() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Rewrite HEAD so it predates the merge mapping. Raw git deliberately:
+    // every rdm command re-ensures the mapping on open.
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            // Clear the whole inherited git env, not just GIT_DIR: this suite
+            // runs from inside the pre-commit hook, where GIT_INDEX_FILE also
+            // points at the outer repo.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(
+        git(&["rm", "--cached", "--quiet", ".gitattributes"])
+            .status
+            .success()
+    );
+    assert!(
+        git(&["commit", "--quiet", "-m", "pre-driver"])
+            .status
+            .success()
+    );
+    std::fs::remove_file(dir.path().join(".gitattributes")).unwrap();
+
+    rdm_as("cs-attrs", &dir)
+        .args([
+            "task",
+            "create",
+            "x",
+            "--title",
+            "X",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+    rdm_as("cs-attrs", &dir)
+        .args(["commit", "-m", "land x"])
+        .assert()
+        .success();
+
+    let files = last_commit_files(dir.path());
+    assert!(
+        files.iter().any(|f| f == ".gitattributes"),
+        "the backfilled mapping never reached a commit: {files:?}"
+    );
+}

@@ -252,11 +252,15 @@ fn status_shows_sync_info() {
     // Set default remote in rdm.toml before cloning to bare
     // so the bare has it and local matches after fetch.
     set_default_remote(&dir, "origin");
-    // Commit the rdm.toml change so it's part of HEAD
+    // Commit the rdm.toml change so it's part of HEAD. `--all` is
+    // load-bearing: `set_default_remote` is a raw `fs::write` outside rdm, so
+    // the write belongs to no changeset and the scoped default deliberately
+    // refuses to sweep it.
     rdm()
         .arg("--root")
         .arg(dir.path())
         .arg("commit")
+        .arg("--all")
         .arg("-m")
         .arg("set default remote")
         .assert()
@@ -957,10 +961,18 @@ fn seed_stale_ours_index_conflict() -> (TempDir, TempDir, String) {
     let mut index = std::fs::read_to_string(&index_path).unwrap();
     index.push_str(&format!("\n{STALE_OURS_SENTINEL}\n"));
     std::fs::write(&index_path, index).unwrap();
+    // `--all` is load-bearing: the tampering above is a raw `fs::write`
+    // outside rdm, so it belongs to no changeset and the scoped default
+    // deliberately refuses to sweep it.
     rdm()
         .arg("--root")
         .arg(dir.path())
-        .args(["commit", "-m", "chore: tamper with the committed index"])
+        .args([
+            "commit",
+            "--all",
+            "-m",
+            "chore: tamper with the committed index",
+        ])
         .assert()
         .success();
     let committed = git_cmd()
@@ -1134,12 +1146,16 @@ fn status_with_fetch_flag() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
 
-    // Set default remote before cloning
+    // Set default remote before cloning. `--all` is load-bearing:
+    // `set_default_remote` is a raw `fs::write` outside rdm, so the write
+    // belongs to no changeset and the scoped default deliberately refuses to
+    // sweep it.
     set_default_remote(&dir, "origin");
     rdm()
         .arg("--root")
         .arg(dir.path())
         .arg("commit")
+        .arg("--all")
         .arg("-m")
         .arg("set default remote")
         .assert()

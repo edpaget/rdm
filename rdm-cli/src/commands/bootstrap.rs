@@ -391,8 +391,11 @@ fn clone_fresh(
     let mut store = rdm_store_git::GitStore::new(target).context("failed to open cloned repo")?;
     rdm_core::ops::init::init_with_config(&mut store, rdm_core::config::Config::default())
         .context("failed to initialize cloned repo as a plan repo")?;
+    // Scoped: everything `init_with_config` wrote is journaled to this
+    // process's changeset, as is the `.gitattributes` back-fill the store
+    // performed on open.
     store
-        .commit_now("rdm: initialize plan repo via bootstrap --init")
+        .commit_changeset(Some("rdm: initialize plan repo via bootstrap --init"), &[])
         .context("failed to commit initial plan repo state")?;
     Ok(BootstrapOutcome {
         path: target.to_path_buf(),

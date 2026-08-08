@@ -2,17 +2,267 @@
 //!
 //! These methods build commits by writing tree objects directly (bypassing the
 //! git index) and compare the working tree against HEAD for status/discard.
+//!
+//! # Two commit scopes
+//!
+//! Attribution lives in the tree builder itself, not in a late filter. Every
+//! commit declares a [`CommitScope`]:
+//!
+//! - [`CommitScope::WholeTree`] rebuilds the tree from the working directory,
+//!   exactly as rdm always did. It is the machine-global escape hatch, and it
+//!   sweeps up whatever any other session left dirty.
+//! - [`CommitScope::Changeset`] builds `HEAD` plus **only** the paths the
+//!   caller names in a [`ChangesetScope`]. A path this caller did not write is
+//!   structurally unreachable — it is never read, never blobbed, and never
+//!   enters the tree.
+//!
+//! The `ChangesetScope` a `GitStore` passes here comes from
+//! [`rdm_core::session::journal`], which records exactly which paths each
+//! session flushed. This module does not resolve session identity itself: it
+//! takes the path list it is given, so it stays testable without any ambient
+//! process state.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use gix::object::tree::EntryKind;
 use gix::objs::tree::EntryMode;
 use rdm_core::error::{Error, Result};
-use rdm_core::store::RelPath;
+use rdm_core::store::{RelPath, Store};
 
 use crate::repo::GitRepo;
 use crate::{FileChange, FileStatus, HeadCommitInfo, StatusReport};
+
+/// Exactly the paths one changeset covers, split by what happened to them.
+///
+/// Built by [`GitStore`](crate::GitStore) from a session's journal, or by a
+/// caller that wrote paths outside the `Store` entirely (see
+/// [`extra_writes`](Self::extra_writes)). Nothing else is committable through
+/// [`CommitScope::Changeset`] — a scoped commit is inexpressible without
+/// naming the paths it covers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChangesetScope {
+    /// Non-derived paths whose working-tree content this changeset wrote.
+    pub writes: Vec<String>,
+    /// Paths this changeset removed.
+    pub deletes: Vec<String>,
+    /// Derived paths (`INDEX.md`) this changeset journaled.
+    ///
+    /// These are **never** read from disk: the on-disk index already carries
+    /// other sessions' rows. They are reconciled in memory as HEAD plus this
+    /// changeset — see [`GitRepo::create_git_commit`].
+    pub derived: Vec<String>,
+    /// Paths a caller wrote outside the `Store` and is vouching for on this
+    /// commit only.
+    ///
+    /// This is the explicit include-these-paths capability, not a standing
+    /// exemption list: the paths are supplied per commit by the caller that
+    /// wrote them (e.g. a back-filled `.gitattributes`), and nothing persists
+    /// between commits.
+    pub extra_writes: Vec<String>,
+}
+
+impl ChangesetScope {
+    /// Returns whether the scope names no paths at all.
+    pub fn is_empty(&self) -> bool {
+        self.writes.is_empty()
+            && self.deletes.is_empty()
+            && self.derived.is_empty()
+            && self.extra_writes.is_empty()
+    }
+
+    /// Returns every non-derived write, journaled or caller-supplied.
+    fn all_writes(&self) -> impl Iterator<Item = &String> {
+        self.writes.iter().chain(self.extra_writes.iter())
+    }
+}
+
+/// What a commit's tree is built from.
+#[derive(Clone, Copy, Debug)]
+pub enum CommitScope<'a> {
+    /// Rebuild the tree from the whole working directory.
+    ///
+    /// The machine-global escape hatch: this commits whatever is on disk,
+    /// including paths other sessions left dirty. Reserved for fixture
+    /// seeding and the explicit `--all` opt-ins.
+    WholeTree,
+    /// Build `HEAD` plus exactly the named changeset.
+    Changeset(&'a ChangesetScope),
+}
+
+/// What a commit actually did, reported from one place so every porcelain
+/// (CLI, MCP, server) states the same facts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitReport {
+    /// The new commit's SHA, or `None` when there was nothing to commit.
+    pub sha: Option<String>,
+    /// Repo-relative paths this commit landed, sorted.
+    pub committed: Vec<String>,
+    /// Journaled paths skipped because their working-tree file is gone.
+    ///
+    /// A concurrent discard, or a manual `rm`. Skipping is deliberate: a
+    /// vanished path must never fail an otherwise-good commit.
+    pub skipped_missing: Vec<String>,
+}
+
+/// How long a scoped commit will wait for the advisory lock before giving up
+/// and proceeding unlocked.
+///
+/// Deliberately far below the default 30s `hook_timeout_secs`: the `Done:`
+/// hook path reaches this code, and a lock must never be what makes it miss
+/// its deadline.
+const COMMIT_LOCK_WAIT: Duration = Duration::from_secs(5);
+
+/// How stale a lock file must be before another process takes it over.
+///
+/// Bounds the damage from a process killed between acquiring and releasing.
+const COMMIT_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
+
+/// A best-effort advisory lock guarding the read-HEAD → build-tree →
+/// update-ref window of a scoped commit.
+///
+/// Best-effort by construction: failing to take the lock **proceeds anyway**
+/// rather than erroring, because the compare-and-swap on HEAD is the actual
+/// correctness mechanism and the lock is only there to make the common case
+/// avoid a wasted rebuild.
+struct CommitLock {
+    path: Option<PathBuf>,
+}
+
+impl CommitLock {
+    fn acquire(git_dir: &Path) -> Self {
+        let dir = git_dir.join("rdm");
+        if std::fs::create_dir_all(&dir).is_err() {
+            return Self { path: None };
+        }
+        let path = dir.join("commit.lock");
+        let deadline = Instant::now() + COMMIT_LOCK_WAIT;
+        loop {
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)
+            {
+                Ok(_) => return Self { path: Some(path) },
+                Err(_) => {
+                    // Age-bounded takeover: a lock left by a killed process
+                    // must never block the bounded hook path forever.
+                    let stale = std::fs::metadata(&path)
+                        .and_then(|md| md.modified())
+                        .map(|m| {
+                            m.elapsed()
+                                .map(|d| d > COMMIT_LOCK_STALE_AFTER)
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+                    if stale {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    if Instant::now() >= deadline {
+                        return Self { path: None };
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for CommitLock {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Sorts tree entries the way git requires: by name, with directory names
+/// compared as if they carried a trailing `/`.
+///
+/// A plain byte comparison gets this wrong (e.g. a `foo` directory vs a
+/// `foo.md` blob) and produces trees `git fsck` rejects with `treeNotSorted`.
+/// Shared by both tree builders so the hazard cannot be re-derived in one of
+/// them: identical content must yield an identical tree either way.
+fn sort_tree_entries(entries: &mut [gix::objs::tree::Entry]) {
+    entries.sort_by(|a, b| {
+        let sort_key = |e: &gix::objs::tree::Entry| -> Vec<u8> {
+            let name = &*e.filename;
+            if e.mode == EntryMode::from(EntryKind::Tree) {
+                name.iter().chain(b"/").copied().collect()
+            } else {
+                name.to_vec()
+            }
+        };
+        sort_key(a).cmp(&sort_key(b))
+    });
+}
+
+/// An in-memory nested tree assembled from a flat `path -> blob oid` map.
+#[derive(Default)]
+struct TreeNode {
+    blobs: BTreeMap<String, gix::ObjectId>,
+    dirs: BTreeMap<String, TreeNode>,
+}
+
+impl TreeNode {
+    fn insert(&mut self, path: &str, oid: gix::ObjectId) {
+        match path.split_once('/') {
+            None => {
+                self.blobs.insert(path.to_string(), oid);
+            }
+            Some((head, rest)) => {
+                self.dirs
+                    .entry(head.to_string())
+                    .or_default()
+                    .insert(rest, oid);
+            }
+        }
+    }
+
+    fn write(&self, repo: &gix::Repository) -> Result<gix::ObjectId> {
+        let mut entries: Vec<gix::objs::tree::Entry> = Vec::new();
+        for (name, oid) in &self.blobs {
+            entries.push(gix::objs::tree::Entry {
+                mode: EntryMode::from(EntryKind::Blob),
+                filename: name.clone().into(),
+                oid: *oid,
+            });
+        }
+        for (name, node) in &self.dirs {
+            let subtree = node.write(repo)?;
+            entries.push(gix::objs::tree::Entry {
+                mode: EntryMode::from(EntryKind::Tree),
+                filename: name.clone().into(),
+                oid: subtree,
+            });
+        }
+        sort_tree_entries(&mut entries);
+        let tree = gix::objs::Tree { entries };
+        Ok(repo
+            .write_object(&tree)
+            .map_err(|e| Error::Git(format!("failed to write tree: {e}")))?
+            .detach())
+    }
+}
+
+/// Builds nested trees from a flat `path -> blob oid` map.
+///
+/// The scoped counterpart to
+/// [`build_tree_from_dir`](GitRepo::build_tree_from_dir). Both share
+/// [`sort_tree_entries`], so identical content produces an identical tree oid
+/// through either builder.
+fn write_tree_from_map(
+    repo: &gix::Repository,
+    entries: &BTreeMap<String, gix::ObjectId>,
+) -> Result<gix::ObjectId> {
+    let mut root = TreeNode::default();
+    for (path, oid) in entries {
+        root.insert(path, *oid);
+    }
+    root.write(repo)
+}
 
 impl GitRepo {
     /// Information about the HEAD commit: SHA and full message.
@@ -163,22 +413,51 @@ impl GitRepo {
     /// re-entrancy path (a *real* subprocess `git commit`/`git merge`,
     /// e.g. via [`GitRepo::git_resolve_conflict`]) and the guard that handles
     /// it.
-    pub(crate) fn create_git_commit(&self, message: &str) -> Result<()> {
+    ///
+    /// # Scope
+    ///
+    /// [`CommitScope::WholeTree`] preserves the historical behavior
+    /// byte-for-byte: rebuild from disk, one attempt, no compare-and-swap.
+    ///
+    /// [`CommitScope::Changeset`] instead seeds a flat `path -> blob oid` map
+    /// from HEAD and applies **only** the named changeset on top — writes read
+    /// from the working tree, deletes removed, derived indexes reconciled in
+    /// memory. A path no one named is not filtered out late; it is never
+    /// reachable. The ref update is a compare-and-swap against the HEAD the
+    /// map was seeded from, with one rebuild-and-retry.
+    ///
+    /// # Residual race
+    ///
+    /// A concurrent committer can still land between the successful
+    /// compare-and-swap and this process's post-commit index sync, and a path
+    /// this changeset journaled may have been overwritten by another session
+    /// between the journal write and the read here (attribution is
+    /// path-level, not content-level). Closing that window is
+    /// `plan-repo-concurrency`'s phase 6 and is deliberately **not** attempted
+    /// here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Git`] if the tree cannot be built, the derived
+    /// indexes cannot be reconciled, or the ref update fails twice in a row
+    /// against a moving HEAD.
+    pub(crate) fn create_git_commit(
+        &self,
+        message: &str,
+        scope: CommitScope<'_>,
+    ) -> Result<CommitReport> {
+        match scope {
+            CommitScope::WholeTree => self.create_whole_tree_commit(message),
+            CommitScope::Changeset(changeset) => self.create_scoped_commit(message, changeset),
+        }
+    }
+
+    /// The historical whole-tree commit: rebuild the tree from disk and move
+    /// HEAD to it.
+    fn create_whole_tree_commit(&self, message: &str) -> Result<CommitReport> {
         let repo = self.repo.to_thread_local();
         let root = self.root.clone();
         let tree_id = self.build_tree_from_dir(&repo, &root)?;
-
-        let default_sig = || gix::actor::Signature {
-            name: "rdm".into(),
-            email: "rdm@localhost".into(),
-            time: gix::date::Time::now_local_or_utc(),
-        };
-        let sig = match repo.committer() {
-            Some(Ok(s)) => s.to_owned().unwrap_or_else(|_| default_sig()),
-            _ => default_sig(),
-        };
-        let mut time_buf = gix::date::parse::TimeBuf::default();
-        let sig_ref = sig.to_ref(&mut time_buf);
 
         let parents: Vec<gix::ObjectId> = repo
             .head()
@@ -188,7 +467,12 @@ impl GitRepo {
             .into_iter()
             .collect();
 
-        repo.commit_as(sig_ref, sig_ref, "HEAD", message, tree_id, parents)
+        let sig = self.commit_signature(&repo);
+        let mut time_buf = gix::date::parse::TimeBuf::default();
+        let sig_ref = sig.to_ref(&mut time_buf);
+
+        let id = repo
+            .commit_as(sig_ref, sig_ref, "HEAD", message, tree_id, parents)
             .map_err(|e| Error::Git(format!("failed to create commit: {e}")))?;
 
         // We built the tree directly, bypassing the git index.  Sync the index
@@ -196,34 +480,348 @@ impl GitRepo {
         // modified.
         self.sync_index_to_head()?;
 
-        Ok(())
+        Ok(CommitReport {
+            sha: Some(id.detach().to_string()),
+            committed: self.git_status_all()?.into_iter().map(|s| s.path).collect(),
+            skipped_missing: Vec::new(),
+        })
     }
 
-    /// Creates an explicit git commit with the given message.
+    /// Builds and lands a commit containing HEAD plus exactly `changeset`.
+    fn create_scoped_commit(
+        &self,
+        message: &str,
+        changeset: &ChangesetScope,
+    ) -> Result<CommitReport> {
+        let repo = self.repo.to_thread_local();
+        // Best-effort: the compare-and-swap below is what makes this correct.
+        let _lock = CommitLock::acquire(self.git_dir());
+
+        let mut attempt = 0u8;
+        loop {
+            let head = self.head_commit_oid(&repo);
+            let head_tree = head.and_then(|oid| {
+                repo.find_object(oid)
+                    .ok()
+                    .and_then(|o| o.try_into_commit().ok())
+                    .and_then(|c| c.tree_id().ok())
+                    .map(|t| t.detach())
+            });
+
+            let (tree_id, committed, skipped_missing) =
+                self.build_changeset_tree(&repo, changeset, head)?;
+
+            if Some(tree_id) == head_tree {
+                // Nothing this changeset owns differs from HEAD.
+                return Ok(CommitReport {
+                    sha: None,
+                    committed: Vec::new(),
+                    skipped_missing,
+                });
+            }
+
+            let sig = self.commit_signature(&repo);
+            let commit = gix::objs::Commit {
+                tree: tree_id,
+                parents: head.into_iter().collect(),
+                author: sig.clone(),
+                committer: sig,
+                encoding: None,
+                message: message.into(),
+                extra_headers: Vec::new(),
+            };
+            let commit_id = repo
+                .write_object(&commit)
+                .map_err(|e| Error::Git(format!("failed to write commit object: {e}")))?
+                .detach();
+
+            if self.compare_and_swap_head(&repo, head, commit_id, message)? {
+                self.sync_index_to_head()?;
+                return Ok(CommitReport {
+                    sha: Some(commit_id.to_string()),
+                    committed,
+                    skipped_missing,
+                });
+            }
+
+            attempt += 1;
+            if attempt > 1 {
+                return Err(Error::Git(
+                    "another session moved HEAD twice while this commit was being built — \
+                     nothing was lost; re-run `rdm commit` to retry against the new HEAD"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+
+    /// Resolves the committer/author signature, falling back to rdm's own.
+    fn commit_signature(&self, repo: &gix::Repository) -> gix::actor::Signature {
+        let default_sig = || gix::actor::Signature {
+            name: "rdm".into(),
+            email: "rdm@localhost".into(),
+            time: gix::date::Time::now_local_or_utc(),
+        };
+        match repo.committer() {
+            Some(Ok(s)) => s.to_owned().unwrap_or_else(|_| default_sig()),
+            _ => default_sig(),
+        }
+    }
+
+    /// Returns HEAD's commit oid, or `None` on an unborn HEAD.
+    fn head_commit_oid(&self, repo: &gix::Repository) -> Option<gix::ObjectId> {
+        repo.head()
+            .ok()
+            .and_then(|mut h| h.peel_to_commit().ok())
+            .map(|c| c.id().detach())
+    }
+
+    /// Points HEAD at `new` only if it still points at `expected`.
     ///
-    /// This is the low-level commit primitive. Prefer the blessed
-    /// caller-facing API [`GitStore::commit_now`], which delegates here, when
-    /// a commit must land unconditionally (e.g. hook handlers applying
-    /// `Done:` directives or `rdm bootstrap --init`). Unlike [`Store::commit`],
-    /// which only ever stages (flushes to disk) and never creates a git
-    /// commit, this always commits from the current working directory state.
+    /// Returns `Ok(false)` when HEAD moved under us (the caller rebuilds and
+    /// retries once), `Ok(true)` on success.
+    fn compare_and_swap_head(
+        &self,
+        repo: &gix::Repository,
+        expected: Option<gix::ObjectId>,
+        new: gix::ObjectId,
+        message: &str,
+    ) -> Result<bool> {
+        use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+
+        let previous = match expected {
+            Some(oid) => PreviousValue::MustExistAndMatch(gix::refs::Target::Object(oid)),
+            None => PreviousValue::MustNotExist,
+        };
+        let summary = message.lines().next().unwrap_or("commit");
+        let edit = RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    mode: RefLog::AndReference,
+                    force_create_reflog: false,
+                    message: format!("commit: {summary}").into(),
+                },
+                expected: previous,
+                new: gix::refs::Target::Object(new),
+            },
+            name: "HEAD"
+                .try_into()
+                .map_err(|e| Error::Git(format!("invalid ref name HEAD: {e}")))?,
+            deref: true,
+        };
+        match repo.edit_reference(edit) {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                // Distinguish "HEAD moved" from a genuine failure by looking
+                // at HEAD itself rather than parsing an error string.
+                let fresh = gix::open(&self.root)
+                    .ok()
+                    .and_then(|r| self.head_commit_oid(&r));
+                if fresh != expected {
+                    Ok(false)
+                } else {
+                    Err(Error::Git(format!("failed to update HEAD: {e}")))
+                }
+            }
+        }
+    }
+
+    /// Builds the scoped tree: HEAD's entries plus exactly this changeset.
     ///
-    /// Returns `Ok(())` if the working directory matches HEAD (no-op).
+    /// Returns the tree oid, the paths that landed, and the journaled paths
+    /// skipped because their working-tree file has since vanished.
+    fn build_changeset_tree(
+        &self,
+        repo: &gix::Repository,
+        changeset: &ChangesetScope,
+        head: Option<gix::ObjectId>,
+    ) -> Result<(gix::ObjectId, Vec<String>, Vec<String>)> {
+        let mut entries = self.collect_tree_at(repo, head)?;
+        let mut committed: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+
+        // Derived paths are reconciled from HEAD-plus-this-changeset in
+        // memory, never read from disk: the on-disk index already carries
+        // other sessions' rows, which is precisely the defect this scoping
+        // exists to fix.
+        let derived = self.reconcile_derived(repo, changeset, head)?;
+
+        for path in changeset.all_writes() {
+            if rdm_core::paths::is_derived_path(path) {
+                continue;
+            }
+            let file = self.root.join(path);
+            let content = match std::fs::read(&file) {
+                Ok(c) => c,
+                Err(_) => {
+                    // Vanished under us (a concurrent discard, or a manual
+                    // rm). Report it; never fail the commit over it.
+                    skipped.push(path.clone());
+                    continue;
+                }
+            };
+            let blob = repo
+                .write_blob(&content)
+                .map_err(|e| Error::Git(format!("failed to write blob for {path}: {e}")))?
+                .detach();
+            if entries.get(path) != Some(&blob) {
+                committed.push(path.clone());
+            }
+            entries.insert(path.clone(), blob);
+        }
+
+        for path in &changeset.deletes {
+            if entries.remove(path).is_some() {
+                committed.push(path.clone());
+            }
+        }
+
+        for (path, content) in &derived {
+            let blob = repo
+                .write_blob(content)
+                .map_err(|e| Error::Git(format!("failed to write blob for {path}: {e}")))?
+                .detach();
+            if entries.get(path) != Some(&blob) {
+                committed.push(path.clone());
+            }
+            entries.insert(path.clone(), blob);
+        }
+
+        committed.sort();
+        committed.dedup();
+        skipped.sort();
+        let tree_id = write_tree_from_map(repo, &entries)?;
+        Ok((tree_id, committed, skipped))
+    }
+
+    /// Regenerates the derived indexes this changeset journaled, from HEAD
+    /// plus this changeset only.
+    ///
+    /// Projects HEAD's document bytes into an in-memory store, applies this
+    /// changeset's non-derived writes and deletes, re-runs
+    /// [`rdm_core::ops::index::generate_index`] there, and returns **only**
+    /// the derived paths this changeset journaled. Every other index stays at
+    /// its HEAD oid, so an unrelated project's index is never silently
+    /// rewritten by an unrelated session's commit.
+    ///
+    /// The `rdm-index` merge driver is ruled out by name here: it fires only
+    /// during a merge, and a scoped commit performs none.
+    ///
+    /// Deterministic by construction — ordered maps throughout, no timestamps,
+    /// no hash-iteration ordering — so committing the same changeset twice
+    /// against the same HEAD yields the same tree oid.
+    fn reconcile_derived(
+        &self,
+        repo: &gix::Repository,
+        changeset: &ChangesetScope,
+        head: Option<gix::ObjectId>,
+    ) -> Result<BTreeMap<String, Vec<u8>>> {
+        if changeset.derived.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        // Non-UTF-8 blobs are skipped when projecting into the in-memory
+        // store (documents are text), but they keep their HEAD oid in the
+        // tree, so nothing is dropped from the commit.
+        let mut files: BTreeMap<String, String> = self
+            .collect_blobs_at(repo, head)?
+            .into_iter()
+            .filter_map(|(path, bytes)| String::from_utf8(bytes).ok().map(|s| (path, s)))
+            .collect();
+
+        for path in changeset.all_writes() {
+            if rdm_core::paths::is_derived_path(path) {
+                continue;
+            }
+            match std::fs::read_to_string(self.root.join(path)) {
+                Ok(content) => {
+                    files.insert(path.clone(), content);
+                }
+                Err(_) => {
+                    files.remove(path);
+                }
+            }
+        }
+        for path in &changeset.deletes {
+            files.remove(path);
+        }
+
+        let seed: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let mut mem = rdm_core::store::MemoryStore::with_contents(seed);
+        rdm_core::ops::index::generate_index(&mut mem).map_err(|e| {
+            Error::Git(format!(
+                "failed to reconcile the generated indexes against HEAD: {e}"
+            ))
+        })?;
+        mem.commit()?;
+
+        let mut out = BTreeMap::new();
+        for path in &changeset.derived {
+            let Ok(rel) = RelPath::new(path) else {
+                continue;
+            };
+            if let Ok(content) = mem.read(&rel) {
+                out.insert(path.clone(), content.into_bytes());
+            }
+        }
+        Ok(out)
+    }
+
+    /// Creates a whole-tree git commit with the given message.
+    ///
+    /// This is the low-level machine-global commit primitive.
+    /// **`pub(crate)` on purpose**: outside this crate the only commit entry
+    /// points are [`GitStore::commit_changeset`] (the scoped default) and
+    /// [`GitStore::commit_whole_tree`] (the explicitly-named escape hatch), so
+    /// a new out-of-crate committer that tries to sweep the tree fails to
+    /// compile rather than drifting in silently.
+    ///
+    /// Unlike [`Store::commit`], which only ever stages (flushes to disk) and
+    /// never creates a git commit, this always commits from the current
+    /// working-directory state — including paths other sessions left dirty.
+    ///
+    /// Returns a `CommitReport` with `sha: None` if the working directory
+    /// already matches HEAD (no-op).
     ///
     /// # Errors
     ///
     /// Returns `Error::Git` if the commit cannot be created.
     ///
     /// [`Store::commit`]: rdm_core::store::Store::commit
-    /// [`GitStore::commit_now`]: crate::GitStore::commit_now
-    pub fn git_commit(&self, message: &str) -> Result<()> {
-        // Deliberately the raw list: a commit rewrites the whole tree, so it
-        // is gated by the raw truth, not by what a user authored.
+    /// [`GitStore::commit_changeset`]: crate::GitStore::commit_changeset
+    /// [`GitStore::commit_whole_tree`]: crate::GitStore::commit_whole_tree
+    pub(crate) fn git_commit(&self, message: &str) -> Result<CommitReport> {
+        // Deliberately the raw list: a whole-tree commit rewrites the whole
+        // tree, so it is gated by the raw truth, not by what a user authored.
         let status = self.git_status_all()?;
         if status.is_empty() {
-            return Ok(());
+            return Ok(CommitReport::default());
         }
-        self.create_git_commit(message)
+        self.create_git_commit(message, CommitScope::WholeTree)
+    }
+
+    /// Creates a commit containing HEAD plus exactly `changeset`.
+    ///
+    /// The scoped counterpart to [`git_commit`](Self::git_commit), and the
+    /// path every ordinary committer takes. See
+    /// [`create_git_commit`](Self::create_git_commit) for the mechanism and
+    /// the documented residual race.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if the tree cannot be built, the derived indexes
+    /// cannot be reconciled, or HEAD moves twice under the commit.
+    pub(crate) fn git_commit_changeset(
+        &self,
+        message: &str,
+        changeset: &ChangesetScope,
+    ) -> Result<CommitReport> {
+        if changeset.is_empty() {
+            return Ok(CommitReport::default());
+        }
+        self.create_git_commit(message, CommitScope::Changeset(changeset))
     }
 
     /// Generates a default commit message summarizing a set of file statuses.
@@ -235,9 +833,10 @@ impl GitRepo {
     /// blank-line-separated `<verb> <path>` bullet per file. `<verb>` is
     /// `add`, `update`, or `delete` depending on [`FileChange`].
     ///
-    /// Used by [`GitStore::commit_now`](crate::GitStore::commit_now) callers
-    /// (the CLI's `rdm commit` and the MCP `rdm_commit` tool) to generate a
-    /// message when none is supplied explicitly.
+    /// Used to generate a message when none is supplied explicitly. A scoped
+    /// commit feeds it [`StatusReport::changeset`](crate::StatusReport::changeset)
+    /// — never [`all`](crate::StatusReport::all) — so an auto-generated
+    /// message can never name another session's file.
     ///
     /// # Examples
     ///
@@ -348,7 +947,49 @@ impl GitRepo {
             .git_status_all()?
             .into_iter()
             .partition(|fs| rdm_core::paths::is_derived_path(&fs.path));
-        Ok(StatusReport { user, derived })
+        Ok(StatusReport {
+            user,
+            derived,
+            others: Vec::new(),
+        })
+    }
+
+    /// Compares the working directory to HEAD and partitions the result into
+    /// **three** buckets in ONE pass: this changeset's user-authored edits,
+    /// this changeset's regenerated indexes, and everything else another
+    /// session left dirty.
+    ///
+    /// `owned` is exactly the path set the calling session's journal claims.
+    /// The changeset filter and the derived filter are deliberately not two
+    /// independent filters over the same list — one partition, so the view a
+    /// user reads and the set a commit lands can never drift apart.
+    ///
+    /// [`StatusReport::is_clean`] still means "nothing at all differs" and
+    /// [`StatusReport::all`] still covers everything, so the destructive-action
+    /// gates keep working against the raw truth.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if the repository state cannot be read.
+    pub(crate) fn git_status_report_scoped(
+        &self,
+        owned: &std::collections::BTreeSet<String>,
+    ) -> Result<StatusReport> {
+        let mut report = StatusReport {
+            user: Vec::new(),
+            derived: Vec::new(),
+            others: Vec::new(),
+        };
+        for fs in self.git_status_all()? {
+            if !owned.contains(&fs.path) {
+                report.others.push(fs);
+            } else if rdm_core::paths::is_derived_path(&fs.path) {
+                report.derived.push(fs);
+            } else {
+                report.user.push(fs);
+            }
+        }
+        Ok(report)
     }
 
     /// Restores the working directory to match HEAD.
@@ -505,28 +1146,57 @@ impl GitRepo {
 
     /// Collects all files from the HEAD tree as `path -> blob_oid`.
     fn collect_head_tree(&self, repo: &gix::Repository) -> Result<BTreeMap<String, gix::ObjectId>> {
+        self.collect_tree_at(repo, self.head_commit_oid(repo))
+    }
+
+    /// Collects all files from an arbitrary commit's tree as
+    /// `path -> blob_oid`.
+    ///
+    /// `None` (an unborn HEAD) yields an empty map, so a scoped commit seeded
+    /// from it *is* the whole tree and lands with zero parents.
+    fn collect_tree_at(
+        &self,
+        repo: &gix::Repository,
+        commit: Option<gix::ObjectId>,
+    ) -> Result<BTreeMap<String, gix::ObjectId>> {
         let mut files = BTreeMap::new();
-        let head = match repo.head().ok().and_then(|mut h| h.peel_to_commit().ok()) {
-            Some(commit) => commit,
-            None => return Ok(files), // No commits yet
+        let Some(oid) = commit else {
+            return Ok(files);
         };
-        let tree = head
+        let tree = repo
+            .find_object(oid)
+            .map_err(|e| Error::Git(format!("failed to find commit {oid}: {e}")))?
+            .try_into_commit()
+            .map_err(|e| Error::Git(format!("{oid} is not a commit: {e}")))?
             .tree()
-            .map_err(|e| Error::Git(format!("failed to get HEAD tree: {e}")))?;
+            .map_err(|e| Error::Git(format!("failed to get tree for {oid}: {e}")))?;
         self.walk_tree(repo, &tree, "", &mut files)?;
         Ok(files)
     }
 
     /// Collects all file contents from the HEAD tree as `path -> bytes`.
     fn collect_head_blobs(&self, repo: &gix::Repository) -> Result<BTreeMap<String, Vec<u8>>> {
+        self.collect_blobs_at(repo, self.head_commit_oid(repo))
+    }
+
+    /// Collects all file contents from an arbitrary commit's tree as
+    /// `path -> bytes`.
+    fn collect_blobs_at(
+        &self,
+        repo: &gix::Repository,
+        commit: Option<gix::ObjectId>,
+    ) -> Result<BTreeMap<String, Vec<u8>>> {
         let mut files = BTreeMap::new();
-        let head = match repo.head().ok().and_then(|mut h| h.peel_to_commit().ok()) {
-            Some(commit) => commit,
-            None => return Ok(files),
+        let Some(oid) = commit else {
+            return Ok(files);
         };
-        let tree = head
+        let tree = repo
+            .find_object(oid)
+            .map_err(|e| Error::Git(format!("failed to find commit {oid}: {e}")))?
+            .try_into_commit()
+            .map_err(|e| Error::Git(format!("{oid} is not a commit: {e}")))?
             .tree()
-            .map_err(|e| Error::Git(format!("failed to get HEAD tree: {e}")))?;
+            .map_err(|e| Error::Git(format!("failed to get tree for {oid}: {e}")))?;
         self.walk_tree_blobs(repo, &tree, "", &mut files)?;
         Ok(files)
     }

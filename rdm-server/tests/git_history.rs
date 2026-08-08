@@ -80,7 +80,7 @@ async fn spawn_git_backed_server() -> (TempDir, SocketAddr, Client, String) {
     )
     .unwrap();
     Store::commit(&mut store).unwrap();
-    store.commit_now("seed original bodies").unwrap();
+    store.commit_whole_tree("seed original bodies").unwrap();
     let old_sha = VersionedStore::head_sha(&store).unwrap();
 
     // Second commit that changes all three bodies, so the "current" read
@@ -125,7 +125,7 @@ async fn spawn_git_backed_server() -> (TempDir, SocketAddr, Client, String) {
     .unwrap();
     Store::commit(&mut store).unwrap();
     store
-        .commit_now("overwrite bodies with new markers")
+        .commit_whole_tree("overwrite bodies with new markers")
         .unwrap();
 
     let state = rdm_server::state::AppState {
@@ -290,7 +290,7 @@ async fn default_store_factory_uses_git_store_for_git_repo() {
     )
     .unwrap();
     Store::commit(&mut store).unwrap();
-    store.commit_now("seed original body").unwrap();
+    store.commit_whole_tree("seed original body").unwrap();
     let old_sha = VersionedStore::head_sha(&store).unwrap();
 
     // Second commit changes the body, so the "current" read (no ?at=) would
@@ -306,7 +306,9 @@ async fn default_store_factory_uses_git_store_for_git_repo() {
     )
     .unwrap();
     Store::commit(&mut store).unwrap();
-    store.commit_now("overwrite body with new marker").unwrap();
+    store
+        .commit_whole_tree("overwrite body with new marker")
+        .unwrap();
 
     // No `.with_store_factory(...)` override: exercises
     // `default_store_factory` exactly as `rdm serve` would.

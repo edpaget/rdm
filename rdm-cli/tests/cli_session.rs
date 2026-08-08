@@ -215,6 +215,11 @@ fn session_state_is_invisible_to_status_and_to_a_whole_tree_commit() {
         );
     }
 
+    // Captured BEFORE the commit: a successful scoped commit truncates the
+    // paths it landed out of the journal, so reading it afterwards would be
+    // empty for the right reason and make the assertion vacuous.
+    assert!(!journal_paths(&dir, "alpha").is_empty());
+
     rdm(&dir)
         .env("RDM_SESSION", "alpha")
         .args(["commit", "-m", "add alpha-one"])
@@ -233,8 +238,9 @@ fn session_state_is_invisible_to_status_and_to_a_whole_tree_commit() {
             "a whole-tree commit swept up session state ({needle}): {tracked}"
         );
     }
-    // …and the journal really did exist while that commit was taken.
-    assert!(!journal_paths(&dir, "alpha").is_empty());
+    // …and the landed paths were truncated out of the journal, so a second
+    // commit cannot re-commit them over another session's later edit.
+    assert!(journal_paths(&dir, "alpha").is_empty());
 }
 
 #[test]

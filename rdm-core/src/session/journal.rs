@@ -18,7 +18,10 @@
 //!   lock and no read-modify-write race.
 //!
 //! Recording is best-effort at every call site: an unwritable state directory
-//! must never fail a mutation, because this phase changes no commit behavior.
+//! must never fail a mutation. The cost of a lost record is bounded and
+//! reported rather than silent — the paths simply become unattributed, and a
+//! scoped `rdm commit` names them and points at its recovery routes instead
+//! of sweeping them.
 //!
 //! Journals are never garbage-collected. A session killed mid-batch leaves an
 //! *orphaned* changeset, which [`list_changesets`] flags and
@@ -149,6 +152,45 @@ pub fn read_journal(paths: &SessionPaths, id: &SessionId) -> Result<Vec<JournalE
         .into_iter()
         .map(|(path, kind)| JournalEntry { path, kind })
         .collect())
+}
+
+/// Drops `landed` from `id`'s journal, rewriting it with whatever remains.
+///
+/// **This is correctness, not cleanup.** A journal that still claims a path
+/// after that path has been committed lets this session's *next* commit
+/// re-commit it — and by then another session may have edited it, so the
+/// re-commit would sweep up work this session never did. Truncating on a
+/// successful commit is what keeps attribution honest across a session's
+/// second and subsequent commits.
+///
+/// Rewrites the file as a single line holding the surviving entries (or
+/// removes it when nothing survives). Unlike [`record`], this is a
+/// read-modify-write, which is safe because a changeset is by construction
+/// owned by one session: the only appender is the same shell that is
+/// committing.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if the journal cannot be read back or rewritten.
+/// Callers on the commit path swallow this: the commit itself has already
+/// landed, and failing afterwards would be worse than a stale journal.
+pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[String]) -> Result<()> {
+    let remaining: Vec<JournalEntry> = read_journal(paths, id)?
+        .into_iter()
+        .filter(|e| !landed.contains(&e.path))
+        .collect();
+    let path = changeset_path(paths, id);
+    if remaining.is_empty() {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::Io(e)),
+        };
+    }
+    let line = serde_json::to_string(&JournalLine { paths: remaining })
+        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+    std::fs::write(&path, format!("{line}\n"))?;
+    Ok(())
 }
 
 /// Lists every changeset on disk, flagging the ones no live session owns.
@@ -338,6 +380,62 @@ mod tests {
         assert_eq!(
             read_journal(&p, &id).unwrap(),
             vec![entry("a.md", JournalKind::Write)]
+        );
+    }
+
+    #[test]
+    fn truncate_drops_only_the_landed_paths() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-trunc").unwrap();
+        record(
+            &p,
+            &id,
+            &[
+                entry("a.md", JournalKind::Write),
+                entry("b.md", JournalKind::Write),
+            ],
+        )
+        .unwrap();
+
+        truncate(&p, &id, &["a.md".to_string()]).unwrap();
+        assert_eq!(
+            read_journal(&p, &id).unwrap(),
+            vec![entry("b.md", JournalKind::Write)],
+            "only the landed path is dropped"
+        );
+    }
+
+    #[test]
+    fn truncating_every_path_removes_the_journal_entirely() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-trunc-all").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        truncate(&p, &id, &["a.md".to_string()]).unwrap();
+        assert!(!changeset_path(&p, &id).exists());
+        // Idempotent: truncating an already-gone journal is not an error.
+        truncate(&p, &id, &["a.md".to_string()]).unwrap();
+    }
+
+    #[test]
+    fn a_truncated_changeset_cannot_re_claim_a_landed_path() {
+        // The correctness property, stated directly: after truncation the
+        // journal no longer claims the path, so a later commit built from it
+        // cannot re-commit — and therefore cannot sweep another session's
+        // subsequent edit to that same path.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-reclaim").unwrap();
+        record(&p, &id, &[entry("shared.md", JournalKind::Write)]).unwrap();
+        truncate(&p, &id, &["shared.md".to_string()]).unwrap();
+        assert!(
+            !read_journal(&p, &id)
+                .unwrap()
+                .iter()
+                .any(|e| e.path == "shared.md"),
+            "a landed path must not survive in the journal"
         );
     }
 

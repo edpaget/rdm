@@ -299,6 +299,10 @@ pub async fn create_phase(
         )
     })
     .map_err(|e| error_response(e, format))?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let stem = format!("phase-{}-{}", doc.frontmatter.phase, req.slug);
     let location = format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}");
@@ -376,6 +380,10 @@ pub async fn update_phase(
         )
     })
     .map_err(|e| error_response(e, format))?;
+    // One shared post-mutate helper for all 22 handler mutation
+    // sites — the policy lives in `AppState`, and no handler ever
+    // touches a commit primitive itself.
+    state.post_mutate();
 
     let self_href = format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}");
     match format {

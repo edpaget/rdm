@@ -43,6 +43,48 @@ pub struct AppState {
     /// non-default backend); it reads as intent ("inject a store backend")
     /// rather than a raw field assignment.
     pub store_factory: StoreFactory,
+    /// What happens to a mutation's writes after they are flushed to disk.
+    ///
+    /// See [`MutationPolicy`]. The shipped default is
+    /// [`MutationPolicy::StagingOnly`].
+    pub mutation_policy: MutationPolicy,
+    /// The changeset every mutation this process makes is attributed to.
+    ///
+    /// Resolved once at startup, because a long-lived server is **one
+    /// session**: every request shares this id. That is the correct model
+    /// (one server = one session), and it is surfaced — at boot, and on every
+    /// response as `X-Rdm-Changeset` — so an operator can always name the
+    /// changeset to reconcile.
+    pub changeset: Option<String>,
+}
+
+/// What the server does with a mutation's writes once they are on disk.
+///
+/// **The operator decision this phase records.** A server mutation must
+/// either reach a commit or fail loudly; what it must never do is sit on disk
+/// forever, readable by everyone and landed by no one, with nothing said
+/// about it. See `docs/scoping-model-decision.md` §
+/// "Which Interaction Layers Are Covered".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MutationPolicy {
+    /// **The default.** Writes are flushed and journaled to the server's
+    /// startup changeset, never committed by the server itself.
+    ///
+    /// Loud rather than silent: the changeset id is printed at boot with the
+    /// reconciliation command, and returned on every response as
+    /// `X-Rdm-Changeset`. Reconcile with:
+    ///
+    /// ```text
+    /// rdm commit --changeset <id>
+    /// ```
+    #[default]
+    StagingOnly,
+    /// Opt-in: commit this session's changeset (scoped) after every mutation.
+    ///
+    /// Chosen with `--autocommit` / `RDM_SERVER_AUTOCOMMIT=1`. Still scoped —
+    /// a server commit can no more sweep a CLI session's dirty paths than a
+    /// CLI commit can sweep the server's.
+    Autocommit,
 }
 
 /// Constructs the server's default [`VersionedStore`] backend for `root`.
@@ -81,6 +123,8 @@ impl Default for AppState {
             plan_root: PathBuf::new(),
             quick_filters: Vec::new(),
             store_factory: Arc::new(default_store_factory),
+            mutation_policy: MutationPolicy::default(),
+            changeset: None,
         }
     }
 }
@@ -107,6 +151,76 @@ impl AppState {
     pub fn with_store_factory(mut self, factory: StoreFactory) -> Self {
         self.store_factory = factory;
         self
+    }
+
+    /// Resolves this server's changeset id and returns `self`.
+    ///
+    /// Prefers an explicit id (`--changeset` / `RDM_SESSION`); otherwise
+    /// resolves the ordinary rung chain against the plan repo, so the id
+    /// matches what a `rdm` CLI run inside the same process tree would use.
+    #[must_use]
+    pub fn with_resolved_changeset(mut self, explicit: Option<String>) -> Self {
+        self.changeset = explicit.or_else(|| self.resolve_changeset());
+        self
+    }
+
+    #[cfg(feature = "git")]
+    fn resolve_changeset(&self) -> Option<String> {
+        let store = rdm_store_git::GitStore::new(&self.plan_root).ok()?;
+        store.session().map(|s| s.id.to_string())
+    }
+
+    #[cfg(not(feature = "git"))]
+    fn resolve_changeset(&self) -> Option<String> {
+        None
+    }
+
+    /// The one-line notice a `StagingOnly` server prints at boot.
+    ///
+    /// Returns `None` under [`MutationPolicy::Autocommit`], where nothing is
+    /// left pending.
+    #[must_use]
+    pub fn boot_notice(&self) -> Option<String> {
+        if self.mutation_policy == MutationPolicy::Autocommit {
+            return None;
+        }
+        let id = self.changeset.as_deref().unwrap_or("<unresolved>");
+        Some(format!(
+            "WARN: mutations are staged, not committed. They are attributed to \
+             changeset '{id}' and are surfaced on every response as X-Rdm-Changeset. \
+             Reconcile with: rdm commit --changeset {id}"
+        ))
+    }
+
+    /// **The one post-mutate helper every handler calls.**
+    ///
+    /// Deliberately the *only* place in `rdm-server` that can reach a commit
+    /// primitive: the 22 `ops::mutate` sites call this, never
+    /// `commit_changeset`/`commit_whole_tree` directly, so the commit-call-site
+    /// gate stays satisfied and the policy lives in exactly one place.
+    ///
+    /// Under [`MutationPolicy::StagingOnly`] this is a no-op — the write is
+    /// already flushed and journaled, and the pending changeset is reported
+    /// at boot and on every response. Under [`MutationPolicy::Autocommit`] it
+    /// lands this session's changeset, scoped.
+    ///
+    /// Never fails a request: a commit failure warns on stderr. The write is
+    /// on disk and attributed either way, so the mutation is not lost.
+    pub fn post_mutate(&self) {
+        if self.mutation_policy != MutationPolicy::Autocommit {
+            return;
+        }
+        #[cfg(feature = "git")]
+        {
+            match rdm_store_git::GitStore::new(&self.plan_root) {
+                Ok(store) => {
+                    if let Err(e) = store.commit_changeset(None, &[]) {
+                        eprintln!("warning: autocommit failed: {e}");
+                    }
+                }
+                Err(e) => eprintln!("warning: autocommit could not open the plan repo: {e}"),
+            }
+        }
     }
 
     /// Build the [`QuickFilterView`] list for a given page path.

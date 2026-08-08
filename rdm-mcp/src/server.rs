@@ -1674,13 +1674,15 @@ impl RdmMcpServer {
 impl RdmMcpServer {
     /// Report staged-but-uncommitted changes in the plan repo.
     #[rmcp::tool(
-        description = "List staged-but-uncommitted changes in the plan repo. Returns an object {changes, generated}: `changes` holds your own edits, each as {path, change} where change is \"added\", \"modified\", or \"deleted\"; `generated` holds the paths of rdm-generated INDEX.md files that were regenerated as a side effect. Generated indexes are excluded from `changes` so you can see your own edits, but they ARE still written into the commit rdm_commit creates — an empty `changes` with a non-empty `generated` is not a no-op. MCP mutation tools only stage to disk — call this to see what a batch of edits touched before landing it with rdm_commit.",
+        description = "List THIS server session's staged-but-uncommitted changes in the plan repo. Returns an object {changes, generated, others}: `changes` holds your own edits, each as {path, change} where change is \"added\", \"modified\", or \"deleted\"; `generated` holds the paths of rdm-generated INDEX.md files regenerated as a side effect of YOUR edits; `others` holds paths another concurrent session left uncommitted, which rdm_commit will NOT touch. Generated indexes are excluded from `changes` so you can see your own edits, but they ARE written into the commit rdm_commit creates — an empty `changes` with a non-empty `generated` is not a no-op. A non-empty `others` is not yours to land: it belongs to another changeset. MCP mutation tools only stage to disk — call this to see what a batch of edits touched before landing it with rdm_commit.",
         annotations(read_only_hint = true)
     )]
     async fn rdm_status(&self) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
         let store = self.store.lock().unwrap();
-        let report = match store.git().git_status_report() {
+        // Scoped: this long-lived process is ONE session, so the changeset it
+        // reports is exactly what its own rdm_commit will land.
+        let report = match store.status_report_scoped() {
             Ok(r) => r,
             Err(e) => return core_err(e),
         };
@@ -1697,13 +1699,18 @@ impl RdmMcpServer {
             })
             .collect();
         let generated: Vec<&str> = report.derived.iter().map(|s| s.path.as_str()).collect();
-        let value = serde_json::json!({ "changes": changes, "generated": generated });
+        let others: Vec<&str> = report.others.iter().map(|s| s.path.as_str()).collect();
+        let value = serde_json::json!({
+            "changes": changes,
+            "generated": generated,
+            "others": others,
+        });
         ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
     }
 
     /// Commit all currently staged changes as a single git commit.
     #[rmcp::tool(
-        description = "Land every currently staged change as one git commit. Mutate freely across as many tool calls as you need, then call rdm_commit once per logical batch of work — do not commit after every single edit. Omit `message` to auto-generate a summary from the changed files (matching the CLI's `rdm commit` default). The reported count covers your own edits only; rdm-generated INDEX.md files (the `generated` list from rdm_status) are ALWAYS included in the commit and are reported separately as a `(plus N regenerated index file(s))` suffix — your index regeneration is never dropped. No-op (`Nothing to commit.`) only when nothing at all differs from HEAD, generated files included. Returns a `Commit: <sha>` line — thread that value into `applied_commit` on rdm_review_address_comment.",
+        description = "Land THIS server session's staged changes as one git commit. The commit contains only the paths this session wrote, plus its own regenerated INDEX.md files reconciled against HEAD — a concurrent session's uncommitted work (the `others` list from rdm_status) is never swept in. Mutate freely across as many tool calls as you need, then call rdm_commit once per logical batch of work — do not commit after every single edit. Omit `message` to auto-generate a summary from your own changed files (matching the CLI's `rdm commit` default). The reported count covers your own edits only; your regenerated INDEX.md files are ALWAYS included and reported separately as a `(plus N regenerated index file(s))` suffix — your index regeneration is never dropped. Reports `Nothing to commit.` when this session's changeset is empty; if the tree is nevertheless dirty with another session's work, that is reported rather than committed. Returns a `Commit: <sha>` line — thread that value into `applied_commit` on rdm_review_address_comment.",
         annotations(read_only_hint = false)
     )]
     async fn rdm_commit(
@@ -1712,30 +1719,39 @@ impl RdmMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         self.maybe_auto_init();
         let store = self.store.lock().unwrap();
-        let report = match store.git().git_status_report() {
-            Ok(r) => r,
+        let outcome = match store.commit_changeset(params.message.as_deref(), &[]) {
+            Ok(o) => o,
             Err(e) => return core_err(e),
         };
-        // Gated on the raw truth: a tree holding only regenerated indexes must
-        // still be committable.
-        if report.is_clean() {
+        let Some(sha) = outcome.sha else {
+            // Deliberately not silence when the tree is dirty: those paths
+            // belong to another changeset and are not this session's to land.
+            if outcome.unattributed_dirt() {
+                let paths: Vec<&str> = outcome
+                    .report
+                    .others
+                    .iter()
+                    .map(|s| s.path.as_str())
+                    .collect();
+                return ok_text(format!(
+                    "Nothing in this session's changeset to commit.                      {} uncommitted path(s) belong to another changeset and were left                      untouched: {}",
+                    paths.len(),
+                    paths.join(", ")
+                ));
+            }
             return ok_text("Nothing to commit.".to_string());
-        }
-        let all = report.all();
-        let message = params
-            .message
-            .unwrap_or_else(|| rdm_store_git::GitRepo::default_commit_message(&all));
-        if let Err(e) = store.commit_now(&message) {
-            return core_err(e);
-        }
-        let sha = store.head_sha().ok();
+        };
         // Shared with the CLI's `rdm commit` so the two can never disagree.
-        ok_text(with_commit_trailer(report.commit_summary(), sha))
+        let mut text = with_commit_trailer(outcome.report.commit_summary(), Some(sha));
+        if let Some(note) = outcome.report.others_summary() {
+            text.push_str(&format!("\n{note}"));
+        }
+        ok_text(text)
     }
 
     /// Discard all staged changes, reverting the plan repo to HEAD.
     #[rmcp::tool(
-        description = "Discard every staged-but-uncommitted change, reverting the plan repo's working tree to its last commit. Irreversible — requires confirm: true, and rejects the call before touching anything if it is missing or false. Everything is restored, rdm-generated INDEX.md files included; the reported count covers your own edits only, with generated files reported separately as a `(plus N regenerated index file(s))` suffix. No-op (`Nothing to discard.`) only when nothing at all differs from HEAD, generated files included.",
+        description = "Discard THIS server session's staged-but-uncommitted changes, restoring only those paths to their last commit. Irreversible — requires confirm: true, and rejects the call before touching anything if it is missing or false. Another concurrent session's uncommitted work (the `others` list from rdm_status) is left on disk untouched, and the shared INDEX.md files are regenerated from the resulting disk state so that session's rows survive. The reported count covers your own edits only, with your regenerated index files reported separately as a `(plus N regenerated index file(s))` suffix. No-op (`Nothing to discard.`) when this session's changeset is empty, even if the tree is dirty with someone else's work.",
         annotations(read_only_hint = false)
     )]
     async fn rdm_discard(
@@ -1748,20 +1764,25 @@ impl RdmMcpServer {
             );
         }
         self.maybe_auto_init();
-        let store = self.store.lock().unwrap();
-        let report = match store.git().git_status_report() {
+        let mut store = self.store.lock().unwrap();
+        let report = match store.status_report_scoped() {
             Ok(r) => r,
             Err(e) => return core_err(e),
         };
-        // Gated on the raw truth: `git_discard` restores everything.
-        if report.is_clean() {
+        // Gated on this changeset, not the raw truth: another session's dirt
+        // is not ours to restore.
+        if report.is_changeset_clean() {
             return ok_text("Nothing to discard.".to_string());
         }
-        if let Err(e) = store.git().git_discard() {
+        if let Err(e) = store.discard_changeset() {
             return core_err(e);
         }
         // Shared with the CLI's `rdm discard` so the two can never disagree.
-        ok_text(report.discard_summary())
+        let mut text = report.discard_summary();
+        if let Some(note) = report.others_summary() {
+            text.push_str(&format!("\n{note}"));
+        }
+        ok_text(text)
     }
 }
 

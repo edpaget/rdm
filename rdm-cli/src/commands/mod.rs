@@ -464,9 +464,37 @@ fn build_batch_commit_message(
 /// directive. The resulting commit's message enumerates each successfully
 /// applied directive as a `Done: <target> (<sha>)` line, so per-directive
 /// provenance survives the collapse into a single commit. That commit is
-/// produced via [`rdm_store_git::GitStore`]'s low-level git primitive, which
-/// bypasses git porcelain/hooks entirely, so it can never recursively
-/// re-trigger this same hook.
+/// produced via [`rdm_store_git::GitStore::commit_changeset`], which bypasses
+/// git porcelain/hooks entirely, so it can never recursively re-trigger this
+/// same hook.
+///
+/// # The hook commits its own changeset, and only its own
+///
+/// This is the one committer that fires with no human or agent deciding to
+/// commit — on every merge and every default-branch commit, including
+/// `rdm-land`'s fast-forward. It therefore commits **scoped**, exactly like
+/// every other committer: the tree is HEAD plus this hook run's journaled
+/// paths, so a session that happens to be holding uncommitted work on the
+/// same plan repo does not get it swept into a `Done:` commit it never asked
+/// for.
+///
+/// Whose changeset that is follows the ordinary identity chain, and both
+/// cases are correct:
+///
+/// - **Rung 2 (inherited lease)** — the hook was spawned by a shell that
+///   already holds a lease, so `mutate_batch`'s `Store::commit` appends to
+///   that session's changeset and the commit lands that session's work
+///   together with the status flips. This is the usual `rdm-land` shape.
+/// - **Rung 4 (per-process)** — no lease is reachable (a bare `git merge` in
+///   a fresh process tree), so the hook resolves a fresh id and its changeset
+///   contains *only* what the hook itself just wrote: the status flips and
+///   their regenerated indexes. Nothing else can ride along.
+///
+/// Bounded exactly as before: the `RDM_GIT_SUBPROCESS` short-circuit still
+/// returns before any of this, and the added work (one journal read plus a
+/// tree build over HEAD's entries) sits well inside `hook_timeout_secs`. A
+/// journal that cannot be read degrades to an empty changeset — reported,
+/// never a whole-tree sweep and never a hang.
 ///
 /// Silently skips directives whose phase or task cannot be found. A single
 /// directive's mutation failing does not abort the rest of the batch — every
@@ -493,7 +521,7 @@ pub fn apply_done_directives(
     // Each per-directive `ops::mutate` → `Store::commit` only flushes to
     // disk — that's the only thing `Store::commit` ever does now. After the
     // loop we land exactly one real commit via the blessed always-commit
-    // pathway (`commit_now`).
+    // pathway (`commit_changeset`).
     let mut store = match make_store(root) {
         Ok(s) => s,
         Err(e) => {
@@ -672,16 +700,35 @@ pub fn apply_done_directives(
         return Err(e.into());
     }
 
-    // Land exactly one real git commit for the whole batch via the blessed
-    // always-commit pathway. `mutate_batch` only flushed to disk (the store's
-    // `commit` never touches git); `commit_message` is `Some` iff at least one
-    // directive applied, so an all-skipped batch produces no empty commit.
-    if let Some(message) = outcome.commit_message.take()
-        && let Err(e) = store.commit_now(&message)
-    {
-        let msg = format!("{e}");
-        logger.log(hook, "batch-commit-error", &[("error", msg.as_str())]);
-        return Err(e.into());
+    // Land exactly one real git commit for the whole batch through the
+    // blessed *scoped* pathway. `mutate_batch` only flushed to disk (the
+    // store's `commit` stages and journals, never touching git);
+    // `commit_message` is `Some` iff at least one directive applied, so an
+    // all-skipped batch produces no empty commit.
+    if let Some(message) = outcome.commit_message.take() {
+        match store.commit_changeset(Some(&message), &[]) {
+            Ok(scoped) => {
+                // Attributable after the fact: which changeset the hook
+                // committed, and how many paths it actually landed.
+                let count = scoped.committed.len().to_string();
+                let changeset = scoped.changeset.clone().unwrap_or_default();
+                let sha = scoped.sha.clone().unwrap_or_default();
+                logger.log(
+                    hook,
+                    "batch-commit",
+                    &[
+                        ("changeset", changeset.as_str()),
+                        ("paths", count.as_str()),
+                        ("sha", sha.as_str()),
+                    ],
+                );
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                logger.log(hook, "batch-commit-error", &[("error", msg.as_str())]);
+                return Err(e.into());
+            }
+        }
     }
 
     Ok(())

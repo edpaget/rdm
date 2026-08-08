@@ -51,12 +51,32 @@ pub(crate) fn gitattributes_with_mapping(existing: &str) -> String {
 pub struct GitRepo {
     pub(crate) root: PathBuf,
     pub(crate) repo: gix::ThreadSafeRepository,
+    /// Set whenever [`ensure_gitattributes`](Self::ensure_gitattributes)
+    /// actually wrote the file.
+    ///
+    /// This is the "report upward" channel: `ensure_gitattributes` runs at
+    /// sites with no `Store` in reach (the pull re-ensure, the whole-tree
+    /// discard) whose callers historically swallowed its result. Rather than
+    /// let the write go unjournaled — and therefore, under session scoping,
+    /// become permanently uncommittable — the fact is latched here and
+    /// drained by `GitStore` before it commits.
+    pub(crate) gitattributes_written: std::sync::atomic::AtomicBool,
 }
 
 impl GitRepo {
     /// Creates a `GitRepo` from a repository root and an opened gix handle.
     pub(crate) fn new(root: PathBuf, repo: gix::ThreadSafeRepository) -> Self {
-        Self { root, repo }
+        Self {
+            root,
+            repo,
+            gitattributes_written: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Takes and clears the latched `.gitattributes`-was-written flag.
+    pub(crate) fn take_gitattributes_written(&self) -> bool {
+        self.gitattributes_written
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Returns the root path of the repository.
@@ -94,37 +114,53 @@ impl GitRepo {
     /// inserting a newline separator first if the file doesn't already end
     /// with one.
     ///
+    /// # Return value — the journaling responsibility
+    ///
+    /// Returns `true` when this call actually wrote the file, `false` when it
+    /// was already mapped. **Every caller that can reach a `GitStore` must
+    /// journal a `true` result** (`GitStore::journal_side_write`). This write
+    /// has no `Store` batch behind it, so under session-scoped committing an
+    /// unjournaled `.gitattributes` belongs to no changeset and is therefore
+    /// permanently uncommittable — silently cancelling the merge-driver
+    /// back-fill this method exists to perform.
+    ///
     /// # Call sites
     ///
     /// - [`GitStore::init`](crate::GitStore::init) — hard-fails, which is
-    ///   correct for an explicit `rdm init`.
+    ///   correct for an explicit `rdm init`; journals on write.
     /// - [`GitStore::new`](crate::GitStore::new) and
     ///   [`GitStore::clone_remote`](crate::GitStore::clone_remote) —
     ///   **best-effort**: a failure warns and the open/clone still succeeds,
     ///   so a read-only mount still opens for reads. This is the backfill that
     ///   maps repos created or cloned before the merge driver shipped, with no
-    ///   user action.
-    /// - [`git_discard`](Self::git_discard) — best-effort, after the restore
-    ///   loop, because discarding an as-yet-uncommitted `.gitattributes`
-    ///   would otherwise silently un-map the repo.
+    ///   user action; both journal on write.
+    /// - [`git_discard`](Self::git_discard) and
+    ///   [`GitStore::discard_changeset`](crate::GitStore::discard_changeset) —
+    ///   best-effort, after the restore loop, because discarding an
+    ///   as-yet-uncommitted `.gitattributes` would otherwise silently un-map
+    ///   the repo. The scoped discard journals it; the whole-tree one need
+    ///   not, since a whole-tree commit takes it from disk regardless.
     /// - `git_pull`'s diverged branch — best-effort, immediately after the
     ///   merge subprocess, putting back the mapping the pull guard restored
-    ///   to HEAD so `git merge` would accept the tree.
+    ///   to HEAD so `git merge` would accept the tree. Reports upward so the
+    ///   store layer journals it instead of swallowing the write.
     ///
     /// The write lands in the worktree, so it appears in `rdm status` as an
     /// ordinary change until the next `rdm commit` tracks it — which it must
     /// be, for the mapping to travel with clones.
-    pub(crate) fn ensure_gitattributes(&self) -> Result<()> {
+    pub(crate) fn ensure_gitattributes(&self) -> Result<bool> {
         let path = self.root.join(GITATTRIBUTES_PATH);
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
         let content = gitattributes_with_mapping(&existing);
         if content == existing {
-            return Ok(());
+            return Ok(false);
         }
 
         std::fs::write(&path, content)
             .map_err(|e| Error::Git(format!("failed to write .gitattributes: {e}")))?;
-        Ok(())
+        self.gitattributes_written
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(true)
     }
 
     /// Ensures the repository-local `.git/config` defines the `rdm-index`

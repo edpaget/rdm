@@ -1,9 +1,32 @@
 //! Git-backed [`Store`] implementation, with commits created via gitoxide.
 //!
 //! [`GitStore`] wraps [`FsStore`] and only ever flushes to disk on
-//! [`Store::commit`] — it never creates a git commit. [`GitStore::commit_now`]
-//! is the only path that creates a git commit. Reads, writes, and deletes are
-//! delegated to the inner `FsStore`.
+//! [`Store::commit`] — it never creates a git commit. Reads, writes, and
+//! deletes are delegated to the inner `FsStore`.
+//!
+//! # Staging is session-scoped; committing is too
+//!
+//! [`Store::commit`] flushes a batch to disk **and journals exactly which
+//! paths it wrote** to the calling session's changeset (see
+//! [`rdm_core::session`]). Two commands in two shells sharing one `$RDM_ROOT`
+//! therefore accumulate two disjoint changesets on one working tree.
+//!
+//! Two entry points turn a changeset into a git commit, and they mean
+//! different things:
+//!
+//! - [`GitStore::commit_changeset`] — **the default.** Builds the commit tree
+//!   from HEAD plus exactly this session's journaled paths, reconciling the
+//!   generated indexes in memory. A path another session left dirty is
+//!   structurally unreachable.
+//! - [`GitStore::commit_whole_tree`] — the explicitly-named machine-global
+//!   escape hatch. Rebuilds from the whole working directory, sweeping up
+//!   whatever anyone left dirty. Reserved for fixture seeding and the user's
+//!   own `--all` opt-in.
+//!
+//! [`GitStore::discard_changeset`] / [`GitStore::discard_whole_tree`] are the
+//! same split for the destructive side. The documented contract and the
+//! implemented behavior are the same statement: nothing here is
+//! machine-global unless its name says so.
 //!
 //! All git logic — low-level plumbing and high-level porcelain — lives on the
 //! [`GitRepo`] collaborator (see the `repo`, `commit`, `remote`, and
@@ -30,6 +53,7 @@ mod merge;
 mod remote;
 mod repo;
 
+pub use commit::{ChangesetScope, CommitReport, CommitScope};
 /// HEAD/commit info, re-exported from [`rdm_git`] as the return type of
 /// [`GitRepo::head_commit_info`] / [`GitRepo::commit_messages_since`].
 pub use rdm_git::HeadCommitInfo;
@@ -55,56 +79,99 @@ pub struct FileStatus {
     pub change: FileChange,
 }
 
-/// Uncommitted working-tree changes, split into what a user authored and what
-/// rdm generated.
+/// Uncommitted working-tree changes, partitioned into what *this* changeset
+/// authored, what rdm generated for it, and what some other session left
+/// dirty.
 ///
-/// Returned by [`GitRepo::git_status_report`], the only way to observe
-/// working-tree changes from outside this crate. The split exists because the
-/// generated `INDEX.md` files are rewritten by every mutation: without it a
-/// session cannot tell its own edits from derived output, and so cannot
-/// predict what its `rdm commit` will sweep up.
+/// Returned by [`GitRepo::git_status_report`] (the whole-tree view, where
+/// `others` is always empty) and by [`GitStore::status_report_scoped`] (the
+/// changeset view). It is the only way to observe working-tree changes from
+/// outside this crate. The generated `INDEX.md` files are rewritten by every
+/// mutation, and a shared plan repo can hold several sessions' uncommitted
+/// work at once: without this partition a session cannot tell its own edits
+/// from derived output or from a neighbour's, and so cannot predict what its
+/// `rdm commit` will land.
 ///
 /// # The one rule every consumer follows
 ///
 /// **Gate on [`total`](Self::total) / [`is_clean`](Self::is_clean); report on
 /// [`user`](Self::user).**
 ///
-/// An action that rewrites the whole working tree — `rdm commit`,
-/// `rdm discard` — must be gated by the raw truth, because a tree holding
-/// *only* regenerated indexes is still dirty and must still be committable
-/// (otherwise it stays dirty forever and `rdm remote pull` refuses to run).
-/// But every count and listing shown to a human or an agent comes from `user`,
-/// with `derived` surfaced separately and by name so nothing is hidden.
+/// An action that rewrites the whole working tree — `rdm commit --all`,
+/// `rdm discard --all` — must be gated by the raw truth, because a tree
+/// holding *only* regenerated indexes is still dirty and must still be
+/// committable (otherwise it stays dirty forever and `rdm remote pull`
+/// refuses to run). But every count and listing shown to a human or an agent
+/// comes from `user`, with `derived` and `others` surfaced separately and by
+/// name so nothing is hidden.
+///
+/// **One partition, not two filters.** The changeset split and the derived
+/// split are decided together in a single pass, so the view a user reads and
+/// the set a scoped commit lands can never disagree.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StatusReport {
-    /// Changes the user authored — everything that is not generated output.
+    /// Changes this changeset authored — everything of its own that is not
+    /// generated output.
     pub user: Vec<FileStatus>,
-    /// Changes to files rdm generates, per
+    /// Changes to files rdm generates for this changeset, per
     /// [`rdm_core::paths::is_derived_path`].
     pub derived: Vec<FileStatus>,
+    /// Dirty paths this changeset does not claim: another live session's
+    /// uncommitted work, or an orphaned changeset's.
+    ///
+    /// Always empty in the whole-tree view, where by definition everything is
+    /// in scope.
+    pub others: Vec<FileStatus>,
 }
 
 impl StatusReport {
-    /// Returns whether the working tree matches HEAD exactly — no user changes
-    /// **and** no regenerated output.
+    /// Returns whether the working tree matches HEAD exactly — no changes of
+    /// any kind, this session's or anyone else's.
     ///
-    /// This, not `user.is_empty()`, is the correct gate for `rdm commit` and
-    /// `rdm discard`.
+    /// This, not `user.is_empty()`, is the correct gate for a whole-tree
+    /// commit or discard.
     pub fn is_clean(&self) -> bool {
+        self.user.is_empty() && self.derived.is_empty() && self.others.is_empty()
+    }
+
+    /// Returns whether *this changeset* has nothing to commit.
+    ///
+    /// Distinct from [`is_clean`](Self::is_clean): the tree can be dirty with
+    /// another session's work while this changeset owns nothing at all — the
+    /// case a scoped `rdm commit` must report rather than sweep.
+    pub fn is_changeset_clean(&self) -> bool {
         self.user.is_empty() && self.derived.is_empty()
     }
 
-    /// Returns the total number of changed files across both lists.
+    /// Returns the total number of changed files across every list.
     pub fn total(&self) -> usize {
-        self.user.len() + self.derived.len()
+        self.user.len() + self.derived.len() + self.others.len()
     }
 
-    /// Returns the path-sorted union of both lists.
+    /// Returns the path-sorted union of every list.
     ///
-    /// This is the raw truth about what a commit will contain — feed it to
-    /// [`GitRepo::default_commit_message`], never `user` alone, since a
-    /// derived-only tree has an empty `user` list.
+    /// This is the raw truth about what a *whole-tree* commit will contain —
+    /// feed it to [`GitRepo::default_commit_message`], never `user` alone,
+    /// since a derived-only tree has an empty `user` list. A scoped commit's
+    /// message comes from [`changeset`](Self::changeset) instead, so an
+    /// auto-generated message can never name another session's file.
     pub fn all(&self) -> Vec<FileStatus> {
+        let mut all: Vec<FileStatus> = self
+            .user
+            .iter()
+            .chain(self.derived.iter())
+            .chain(self.others.iter())
+            .cloned()
+            .collect();
+        all.sort_by(|a, b| a.path.cmp(&b.path));
+        all
+    }
+
+    /// Returns the path-sorted union of exactly this changeset's entries.
+    ///
+    /// The scoped counterpart to [`all`](Self::all), and the only correct
+    /// input to a scoped commit's default message.
+    pub fn changeset(&self) -> Vec<FileStatus> {
         let mut all: Vec<FileStatus> = self
             .user
             .iter()
@@ -159,6 +226,23 @@ impl StatusReport {
         } else {
             format!("Discarded {} file(s).", self.user.len())
         }
+    }
+
+    /// Returns the one-line note naming what this action deliberately left
+    /// alone, or `None` when nothing belongs to another session.
+    ///
+    /// Shared by `rdm status`, `rdm commit`, `rdm discard` and their MCP
+    /// counterparts so the three can never describe the same situation
+    /// differently.
+    pub fn others_summary(&self) -> Option<String> {
+        if self.others.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{} file(s) belong to other changesets and were left untouched \
+             (`rdm session list` to see them, `--all` to include them).",
+            self.others.len()
+        ))
     }
 }
 
@@ -242,9 +326,14 @@ pub struct ResolveResult {
 /// A [`Store`] backed by git, wrapping [`FsStore`] for filesystem operations.
 ///
 /// Every call to [`Store::commit`] flushes staged changes to disk via the inner
-/// `FsStore` — it never creates a git commit. Use [`GitStore::commit_now`] when
-/// a commit must land unconditionally. All git logic is delegated to the
-/// composed [`GitRepo`], reachable via [`git`](Self::git)/[`git_mut`](Self::git_mut).
+/// `FsStore` **and journals the paths it wrote** to the calling session's
+/// changeset — it never creates a git commit. Turning a changeset into a git
+/// commit is [`GitStore::commit_changeset`]; sweeping the whole working tree
+/// regardless of who wrote it is the explicitly-named
+/// [`GitStore::commit_whole_tree`]. Staging is session-scoped and so is the
+/// default commit: the two no longer contradict each other. All git logic is
+/// delegated to the composed [`GitRepo`], reachable via
+/// [`git`](Self::git)/[`git_mut`](Self::git_mut).
 pub struct GitStore {
     inner: FsStore,
     git: GitRepo,
@@ -292,7 +381,7 @@ impl GitStore {
         if let Err(e) = git.ensure_gitattributes() {
             eprintln!("warning: could not install INDEX.md merge attributes: {e}");
         }
-        Ok(Self::compose(FsStore::new(&root), git))
+        Ok(Self::compose_journaling(FsStore::new(&root), git))
     }
 
     /// Initializes a new git repository and opens a `GitStore` for it.
@@ -330,7 +419,7 @@ impl GitStore {
         let git = GitRepo::new(root.clone(), repo.into_sync());
         git.ensure_gitattributes()?;
         git.ensure_merge_driver_config()?;
-        Ok(Self::compose(FsStore::new(&root), git))
+        Ok(Self::compose_journaling(FsStore::new(&root), git))
     }
 
     /// Clones a remote git repository and opens a `GitStore` for it.
@@ -400,7 +489,7 @@ impl GitStore {
         if let Err(e) = git.ensure_gitattributes() {
             eprintln!("warning: could not install INDEX.md merge attributes: {e}");
         }
-        Ok(Self::compose(FsStore::new(&root), git))
+        Ok(Self::compose_journaling(FsStore::new(&root), git))
     }
 
     /// Composes a store from its two collaborators, resolving where session
@@ -445,9 +534,13 @@ impl GitStore {
     ///
     /// Best-effort and non-fatal, mirroring the hook logger's
     /// swallow-failures contract: an unwritable state directory must never
-    /// fail a mutation, because this phase changes no commit or mutation
-    /// behavior. Called only *after* a successful flush, so the journal can
-    /// never claim a path that was not written.
+    /// fail a mutation. The failure is bounded and reported rather than
+    /// silent — the paths become unattributed, and [`commit_changeset`] names
+    /// them with recovery routes instead of sweeping them. Called only
+    /// *after* a successful flush, so the journal can never claim a path that
+    /// was not written.
+    ///
+    /// [`commit_changeset`]: Self::commit_changeset
     fn record_journal(&self, touched: &[(RelPath, JournalKind)]) {
         if touched.is_empty() {
             return;
@@ -488,19 +581,315 @@ impl GitStore {
         &mut self.git
     }
 
-    /// Always creates a git commit from the current working-directory state,
-    /// unconditionally.
+    /// Creates a git commit from the **whole** working-directory state.
     ///
-    /// Use this when a commit MUST land — the hook handlers applying `Done:`
-    /// directives and `rdm bootstrap --init` seeding a fresh plan repo — as
-    /// opposed to [`Store::commit`], which only ever stages (flushes to disk)
-    /// and never creates a git commit. No-op if the working tree already
-    /// matches HEAD.
+    /// The explicitly-named machine-global escape hatch. It sweeps up
+    /// whatever any session left dirty, so it is reserved for the two places
+    /// that legitimately want that: seeding a fixture, and the user's own
+    /// `--all` opt-in on `rdm commit`. Everything else — the CLI's default
+    /// `rdm commit`, the `Done:` hook, the MCP commit tool, `rdm init
+    /// --remote`, `rdm bootstrap --init` — goes through
+    /// [`commit_changeset`](Self::commit_changeset).
+    ///
+    /// No-op if the working tree already matches HEAD.
     ///
     /// # Errors
     /// Returns [`Error::Git`] if the commit cannot be created.
-    pub fn commit_now(&self, message: &str) -> Result<()> {
+    pub fn commit_whole_tree(&self, message: &str) -> Result<CommitReport> {
         self.git.git_commit(message)
+    }
+
+    /// Creates a git commit containing HEAD plus exactly this session's
+    /// changeset.
+    ///
+    /// This is the blessed committer. It resolves this process's session,
+    /// reads its journal, and builds the commit tree from HEAD plus only
+    /// those paths — so a path another session left dirty is structurally
+    /// unreachable rather than filtered out late.
+    ///
+    /// `extra_paths` is the explicit include-these-paths capability for
+    /// writes that genuinely cannot route through the `Store` (a back-filled
+    /// `.gitattributes`, say). It applies to **this commit only** and is
+    /// supplied by the caller that actually wrote those paths — it is not a
+    /// standing exemption list.
+    ///
+    /// On success the landed paths are removed from the journal. That is
+    /// correctness, not hygiene: see
+    /// [`journal::truncate`](rdm_core::session::journal::truncate).
+    ///
+    /// The returned [`ScopedCommit`] carries everything a porcelain needs to
+    /// report — the sha, what landed, what was skipped as missing, and
+    /// whether the changeset was empty while the tree was dirty — so no
+    /// caller has to re-derive any of it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Git`] if the tree cannot be built, the derived
+    /// indexes cannot be reconciled, or HEAD moves twice under the commit.
+    pub fn commit_changeset(
+        &self,
+        message: Option<&str>,
+        extra_paths: &[String],
+    ) -> Result<ScopedCommit> {
+        let id = self.session().map(|s| s.id.clone());
+        self.commit_changeset_id(id.as_ref(), message, extra_paths)
+    }
+
+    /// Composes the store and journals any `.gitattributes` back-fill the
+    /// constructor's `ensure_gitattributes` just performed.
+    ///
+    /// Eager on purpose. A back-fill and the commit that should carry it are
+    /// usually two *different processes* (`rdm init` writes it; a later
+    /// `rdm commit` lands it), and the second process finds the mapping
+    /// already present and so writes — and latches — nothing. Journaling at
+    /// the moment of the write is the only point at which the fact is still
+    /// known. Lazy creation still holds for every repo that is already
+    /// mapped: no write, no journal, no state directory.
+    fn compose_journaling(inner: FsStore, git: GitRepo) -> Self {
+        let store = Self::compose(inner, git);
+        store.journal_pending_side_writes();
+        store
+    }
+
+    /// Commits a *named* changeset — the orphan-recovery entry point behind
+    /// `rdm commit --changeset <id>`.
+    ///
+    /// Identical to [`commit_changeset`](Self::commit_changeset) except that
+    /// the changeset is chosen explicitly rather than resolved from this
+    /// process.
+    ///
+    /// # Errors
+    ///
+    /// As [`commit_changeset`](Self::commit_changeset).
+    pub fn commit_changeset_id(
+        &self,
+        id: Option<&session::SessionId>,
+        message: Option<&str>,
+        extra_paths: &[String],
+    ) -> Result<ScopedCommit> {
+        // A `.gitattributes` back-fill from a store-less site (pull's
+        // post-merge re-ensure, the whole-tree discard) must join a changeset
+        // before the journal is read, or it can never be committed at all.
+        self.journal_pending_side_writes();
+        let journal = self.read_changeset(id)?;
+        let owned = Self::owned_paths(&journal, extra_paths);
+        let report = self.git.git_status_report_scoped(&owned)?;
+
+        let mut scope = ChangesetScope {
+            extra_writes: extra_paths.to_vec(),
+            ..ChangesetScope::default()
+        };
+        for entry in &journal {
+            if rdm_core::paths::is_derived_path(&entry.path) {
+                if entry.kind == JournalKind::Write {
+                    scope.derived.push(entry.path.clone());
+                } else {
+                    scope.deletes.push(entry.path.clone());
+                }
+            } else if entry.kind == JournalKind::Write {
+                scope.writes.push(entry.path.clone());
+            } else {
+                scope.deletes.push(entry.path.clone());
+            }
+        }
+
+        if scope.is_empty() {
+            // Nothing attributed to this changeset. Deliberately NOT a
+            // whole-tree sweep and deliberately not silence: report the
+            // unattributed paths so the caller can recover them.
+            return Ok(ScopedCommit {
+                changeset: id.map(|i| i.to_string()),
+                sha: None,
+                committed: Vec::new(),
+                skipped_missing: Vec::new(),
+                report,
+            });
+        }
+
+        let message = message
+            .map(str::to_string)
+            // Derived from the changeset's own entries, never the whole tree,
+            // so an auto-generated message can never name another session's
+            // file.
+            .unwrap_or_else(|| GitRepo::default_commit_message(&report.changeset()));
+        let outcome = self.git.git_commit_changeset(&message, &scope)?;
+
+        if outcome.sha.is_some()
+            && let (Some(paths), Some(id)) = (self.session_paths.as_ref(), id)
+        {
+            let _ = session::journal::truncate(paths, id, &outcome.committed);
+        }
+
+        Ok(ScopedCommit {
+            changeset: id.map(|i| i.to_string()),
+            sha: outcome.sha,
+            committed: outcome.committed,
+            skipped_missing: outcome.skipped_missing,
+            report,
+        })
+    }
+
+    /// Returns the three-way working-tree status from this session's point of
+    /// view.
+    ///
+    /// See [`StatusReport`]: one partition into `user` / `derived` / `others`,
+    /// not two independent filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Git`] if the repository state cannot be read.
+    pub fn status_report_scoped(&self) -> Result<StatusReport> {
+        self.journal_pending_side_writes();
+        let id = self.session().map(|s| s.id.clone());
+        let journal = self.read_changeset(id.as_ref())?;
+        let owned = Self::owned_paths(&journal, &[]);
+        self.git.git_status_report_scoped(&owned)
+    }
+
+    /// Restores **only** this session's changeset to HEAD, leaving every other
+    /// session's uncommitted work — and its rows in the shared indexes —
+    /// intact.
+    ///
+    /// The shipped `rdm discard` design. Concretely:
+    ///
+    /// 1. this changeset's non-derived paths are restored to HEAD (added ones
+    ///    removed, modified/deleted ones written back);
+    /// 2. the changeset's journal is cleared;
+    /// 3. the derived indexes are regenerated **from the resulting disk
+    ///    state**, so another session's still-uncommitted rows survive — and
+    ///    that regeneration is journaled to this (now empty) changeset, so the
+    ///    session owns what it just rewrote;
+    /// 4. the `.gitattributes` merge-driver mapping is re-ensured, exactly as
+    ///    the whole-tree discard does.
+    ///
+    /// Returns the report describing what was discarded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Git`] if the HEAD tree cannot be read or files cannot
+    /// be written, or a core error if the indexes cannot be regenerated.
+    pub fn discard_changeset(&mut self) -> Result<StatusReport> {
+        let report = self.status_report_scoped()?;
+        if report.is_changeset_clean() {
+            let _ = self.git.ensure_gitattributes();
+            return Ok(report);
+        }
+        self.git.restore_paths_to_head(&report.user)?;
+
+        if let (Some(paths), Some(id)) = (
+            self.session_paths.as_ref(),
+            self.session().map(|s| s.id.clone()),
+        ) {
+            let _ = session::journal::discard_changeset(paths, &id);
+        }
+
+        // Regenerate from what is actually on disk now: the point is that
+        // another session's uncommitted rows must survive this discard.
+        rdm_core::ops::index::generate_index(self)?;
+        Store::commit(self)?;
+
+        // Reinstate the merge-driver mapping the restore may have removed.
+        // Best-effort by design: a discard must never fail because of it.
+        if self.git.ensure_gitattributes().unwrap_or(false) {
+            self.journal_side_write(crate::repo::GITATTRIBUTES_PATH);
+        }
+        Ok(report)
+    }
+
+    /// Restores the **whole** working tree to HEAD, destroying every
+    /// session's uncommitted work.
+    ///
+    /// The explicitly-named destructive escape hatch behind
+    /// `rdm discard --force --all`. Callers must warn, naming the other live
+    /// changesets, before invoking it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Git`] if the HEAD tree cannot be read or files cannot
+    /// be written.
+    pub fn discard_whole_tree(&self) -> Result<()> {
+        self.git.git_discard()
+    }
+
+    /// Records a path this store wrote outside the `Store` write path.
+    ///
+    /// The route that makes a `.gitattributes` back-fill committable: the
+    /// file is written by [`GitRepo::ensure_gitattributes`] with no `Store`
+    /// batch behind it, so without this it would be journaled by nobody and
+    /// therefore permanently uncommittable under scoping — cancelling the
+    /// merge-driver back-fill entirely.
+    fn journal_side_write(&self, path: &str) {
+        let Ok(rel) = RelPath::new(path) else { return };
+        self.record_journal(&[(rel, JournalKind::Write)]);
+    }
+
+    /// Journals any `.gitattributes` write latched by a site that has no
+    /// `Store` in reach.
+    ///
+    /// Drained at open (where the back-fill happens) and again before every
+    /// scoped commit and scoped status (which catches the re-ensures inside
+    /// the whole-tree discard and `git_pull`'s post-merge path). A repo that
+    /// is already mapped writes nothing, latches nothing, and therefore still
+    /// creates no session state on open.
+    pub fn journal_pending_side_writes(&self) {
+        if self.git.take_gitattributes_written() {
+            self.journal_side_write(crate::repo::GITATTRIBUTES_PATH);
+        }
+    }
+
+    /// Reads a changeset's journal, degrading to empty on an unreadable
+    /// state directory.
+    fn read_changeset(
+        &self,
+        id: Option<&session::SessionId>,
+    ) -> Result<Vec<session::journal::JournalEntry>> {
+        let (Some(paths), Some(id)) = (self.session_paths.as_ref(), id) else {
+            return Ok(Vec::new());
+        };
+        // A read failure degrades to "this changeset owns nothing", which
+        // reports the tree as unattributed rather than sweeping it. Never a
+        // hang, never a silent whole-tree commit.
+        Ok(session::journal::read_journal(paths, id).unwrap_or_default())
+    }
+
+    /// The path set a changeset claims: its journal plus any caller-supplied
+    /// per-commit includes.
+    fn owned_paths(
+        journal: &[session::journal::JournalEntry],
+        extra: &[String],
+    ) -> std::collections::BTreeSet<String> {
+        journal
+            .iter()
+            .map(|e| e.path.clone())
+            .chain(extra.iter().cloned())
+            .collect()
+    }
+}
+
+/// What a scoped commit did, from one source so every porcelain reports the
+/// same facts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScopedCommit {
+    /// The changeset that was committed, when one could be resolved.
+    pub changeset: Option<String>,
+    /// The new commit's SHA, or `None` when nothing was committed.
+    pub sha: Option<String>,
+    /// The paths this commit landed.
+    pub committed: Vec<String>,
+    /// Journaled paths skipped because their working-tree file has vanished.
+    pub skipped_missing: Vec<String>,
+    /// The three-way status as it was before the commit.
+    pub report: StatusReport,
+}
+
+impl ScopedCommit {
+    /// Returns whether the changeset was empty while the tree was dirty.
+    ///
+    /// The rung-4 fragmentation case, and the case of a session that mutated
+    /// before scoping shipped. A caller must NOT print "Nothing to commit."
+    /// here — the tree is dirty and those paths need recovering.
+    pub fn unattributed_dirt(&self) -> bool {
+        self.sha.is_none() && !self.report.others.is_empty()
     }
 }
 
@@ -526,9 +915,9 @@ impl Store for GitStore {
     }
 
     fn commit(&mut self) -> Result<()> {
-        // Staging is the only workflow now: flush to disk and never create a
-        // git commit. Use `commit_now` when a commit must land unconditionally
-        // (see its docs).
+        // Staging is the only workflow here: flush to disk and never create
+        // a git commit. `commit_changeset` lands exactly this journal;
+        // `commit_whole_tree` is the named machine-global escape hatch.
         //
         // The batch's membership is snapshotted *before* the flush (which
         // drains the staging overlay) and journaled *after* it succeeds, so
@@ -668,7 +1057,7 @@ mod tests {
             .write(&RelPath::new("seed.md").unwrap(), "seed".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add seed.md").unwrap();
+        store.commit_whole_tree("seed: add seed.md").unwrap();
         assert!(!dir.path().join(".gitattributes").exists());
         dir
     }
@@ -754,7 +1143,7 @@ mod tests {
             .unwrap();
         store.commit().unwrap();
         store
-            .commit_now("seed: pre-mapping .gitattributes")
+            .commit_whole_tree("seed: pre-mapping .gitattributes")
             .unwrap();
 
         // Reopen: the mapping is appended, making the file `Modified`.
@@ -792,7 +1181,7 @@ mod tests {
             )
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: plan repo").unwrap();
+        store.commit_whole_tree("seed: plan repo").unwrap();
 
         // One user edit plus the two indexes a mutation regenerates.
         std::fs::write(
@@ -848,7 +1237,7 @@ mod tests {
             .write(&RelPath::new("INDEX.md").unwrap(), "# Index\n".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: plan repo").unwrap();
+        store.commit_whole_tree("seed: plan repo").unwrap();
 
         assert!(store.git().git_status_report().unwrap().is_clean());
 
@@ -876,6 +1265,7 @@ mod tests {
         StatusReport {
             user: mk(user, "user-"),
             derived: mk(derived, "derived-"),
+            others: Vec::new(),
         }
     }
 
@@ -1021,13 +1411,13 @@ mod tests {
     }
 
     #[test]
-    fn commit_now_creates_git_commit() {
+    fn commit_whole_tree_creates_git_commit() {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
         let path = RelPath::new("hello.md").unwrap();
         store.write(&path, "world".to_string()).unwrap();
         store.commit().unwrap();
-        store.commit_now("test message").unwrap();
+        store.commit_whole_tree("test message").unwrap();
 
         let repo = gix::open(dir.path()).unwrap();
         let mut head = repo.head().unwrap();
@@ -1045,13 +1435,13 @@ mod tests {
         let path = RelPath::new("doomed.md").unwrap();
         store.write(&path, "bye".to_string()).unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add doomed.md").unwrap();
+        store.commit_whole_tree("seed: add doomed.md").unwrap();
         assert!(dir.path().join("doomed.md").exists());
 
         // Delete, then land a real commit reflecting the delete.
         store.delete(&path).unwrap();
         store.commit().unwrap();
-        store.commit_now("delete doomed.md").unwrap();
+        store.commit_whole_tree("delete doomed.md").unwrap();
         assert!(!dir.path().join("doomed.md").exists());
 
         // Verify the delete is reflected in a real commit: the latest commit
@@ -1083,7 +1473,7 @@ mod tests {
         let path = RelPath::new("init.md").unwrap();
         store.write(&path, "init".to_string()).unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let repo = gix::open(dir.path()).unwrap();
         let head_before = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
@@ -1122,7 +1512,9 @@ mod tests {
             .write(&RelPath::new("doomed.md").unwrap(), "delete me".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add keep.md and doomed.md").unwrap();
+        store
+            .commit_whole_tree("seed: add keep.md and doomed.md")
+            .unwrap();
 
         // Now make changes directly on disk (simulating staging mode)
         std::fs::write(dir.path().join("keep.md"), "modified").unwrap();
@@ -1155,7 +1547,9 @@ mod tests {
             .write(&RelPath::new("doomed.md").unwrap(), "keep me".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add keep.md and doomed.md").unwrap();
+        store
+            .commit_whole_tree("seed: add keep.md and doomed.md")
+            .unwrap();
 
         // Make changes on disk
         std::fs::write(dir.path().join("keep.md"), "modified").unwrap();
@@ -1280,13 +1674,13 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let repo = gix::open(dir.path()).unwrap();
         let head_before = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
 
         // Git commit when clean should be a no-op
-        store.git().git_commit("should not appear").unwrap();
+        store.commit_whole_tree("should not appear").unwrap();
 
         let repo = gix::open(dir.path()).unwrap();
         let head_after = repo.head().unwrap().peel_to_commit().unwrap().id().detach();
@@ -1427,7 +1821,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1449,7 +1843,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1459,12 +1853,12 @@ mod tests {
             .write(&RelPath::new("local1.md").unwrap(), "local1".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add local1.md").unwrap();
+        store.commit_whole_tree("add local1.md").unwrap();
         store
             .write(&RelPath::new("local2.md").unwrap(), "local2".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add local2.md").unwrap();
+        store.commit_whole_tree("add local2.md").unwrap();
 
         let status = store.git().git_sync_status("origin").unwrap().unwrap();
         assert_eq!(status.ahead, 2);
@@ -1480,7 +1874,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
 
@@ -1536,7 +1930,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1546,7 +1940,7 @@ mod tests {
             .write(&RelPath::new("local.md").unwrap(), "local".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add local.md").unwrap();
+        store.commit_whole_tree("add local.md").unwrap();
 
         // Push a different commit to bare from a clone
         let clone_dir = TempDir::new().unwrap();
@@ -1648,7 +2042,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1658,12 +2052,12 @@ mod tests {
             .write(&RelPath::new("a.md").unwrap(), "a".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add a.md").unwrap();
+        store.commit_whole_tree("add a.md").unwrap();
         store
             .write(&RelPath::new("b.md").unwrap(), "b".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add b.md").unwrap();
+        store.commit_whole_tree("add b.md").unwrap();
 
         let result = store.git_mut().git_push("origin", false).unwrap();
         assert_eq!(result.remote, "origin");
@@ -1685,7 +2079,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1720,7 +2114,7 @@ mod tests {
             .write(&RelPath::new("local.md").unwrap(), "local".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add local.md").unwrap();
+        store.commit_whole_tree("add local.md").unwrap();
 
         // Push should fail — diverged histories
         let result = store.git_mut().git_push("origin", false);
@@ -1743,7 +2137,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1778,7 +2172,7 @@ mod tests {
             .write(&RelPath::new("local.md").unwrap(), "local".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add local.md").unwrap();
+        store.commit_whole_tree("add local.md").unwrap();
 
         // Force push should succeed
         let result = store.git_mut().git_push("origin", true).unwrap();
@@ -1795,7 +2189,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
 
@@ -1871,7 +2265,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1881,7 +2275,7 @@ mod tests {
             .write(&RelPath::new("local.md").unwrap(), "local".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add local.md").unwrap();
+        store.commit_whole_tree("add local.md").unwrap();
 
         // Push a different file to bare from a clone
         let clone_dir = TempDir::new().unwrap();
@@ -1941,7 +2335,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -1951,7 +2345,7 @@ mod tests {
             .write(&RelPath::new("local.md").unwrap(), "local".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add local.md").unwrap();
+        store.commit_whole_tree("add local.md").unwrap();
 
         // Remote side moves ahead too, on a different file — so the merge
         // itself is clean and the only thing that can block is the tree.
@@ -2026,7 +2420,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
 
@@ -2159,7 +2553,7 @@ mod tests {
             .write(&RelPath::new("seed.md").unwrap(), "seed".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: no gitattributes").unwrap();
+        store.commit_whole_tree("seed: no gitattributes").unwrap();
 
         let store = GitStore::new(dir.path()).unwrap();
         let mapping = store
@@ -2198,7 +2592,7 @@ mod tests {
             .write(&RelPath::new("shared.md").unwrap(), "original".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add shared.md").unwrap();
+        store.commit_whole_tree("seed: add shared.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -2211,7 +2605,7 @@ mod tests {
             )
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("update shared.md locally").unwrap();
+        store.commit_whole_tree("update shared.md locally").unwrap();
 
         // Push a conflicting change to shared.md from a clone
         let clone_dir = TempDir::new().unwrap();
@@ -2268,7 +2662,7 @@ mod tests {
             .write(&RelPath::new("shared.md").unwrap(), "original".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add shared.md").unwrap();
+        store.commit_whole_tree("seed: add shared.md").unwrap();
 
         let bare_dir = setup_bare_remote(&mut store, "origin");
         store.git_mut().git_fetch("origin").unwrap();
@@ -2281,7 +2675,7 @@ mod tests {
             )
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("update shared.md locally").unwrap();
+        store.commit_whole_tree("update shared.md locally").unwrap();
 
         // Remote conflicting change
         let clone_dir = TempDir::new().unwrap();
@@ -2354,7 +2748,7 @@ mod tests {
             .write(&RelPath::new("init.md").unwrap(), "init".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add init.md").unwrap();
+        store.commit_whole_tree("seed: add init.md").unwrap();
 
         // Tag the initial commit as our anchor
         git_cmd()
@@ -2368,17 +2762,17 @@ mod tests {
             .write(&RelPath::new("a.md").unwrap(), "a".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add a.md").unwrap();
+        store.commit_whole_tree("add a.md").unwrap();
         store
             .write(&RelPath::new("b.md").unwrap(), "b".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add b.md").unwrap();
+        store.commit_whole_tree("add b.md").unwrap();
         store
             .write(&RelPath::new("c.md").unwrap(), "c".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add c.md").unwrap();
+        store.commit_whole_tree("add c.md").unwrap();
 
         let commits = store.git().commit_messages_since(Some("anchor")).unwrap();
         assert_eq!(
@@ -2459,7 +2853,7 @@ mod tests {
             .write(&RelPath::new("INDEX.md").unwrap(), "# Index\n".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: init plan repo").unwrap();
+        store.commit_whole_tree("seed: init plan repo").unwrap();
 
         let bare = TempDir::new().unwrap();
         std::process::Command::new("git")
@@ -2526,7 +2920,7 @@ mod tests {
             .write(&RelPath::new("INDEX.md").unwrap(), "# Index\n".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: no gitattributes").unwrap();
+        store.commit_whole_tree("seed: no gitattributes").unwrap();
 
         let bare = TempDir::new().unwrap();
         std::process::Command::new("git")
@@ -2580,10 +2974,27 @@ mod tests {
         path
     }
 
+    /// Opens a store on a repo whose `INDEX.md` merge mapping is ALREADY
+    /// installed, so opening performs no `.gitattributes` back-fill and
+    /// therefore journals nothing of its own.
+    ///
+    /// Without this the assertions below would be measuring the store's own
+    /// (correct, and separately tested) journaling of that back-fill rather
+    /// than the property under test.
+    fn store_already_mapped(dir: &TempDir) -> GitStore {
+        gix::init(dir.path()).unwrap();
+        std::fs::write(
+            dir.path().join(".gitattributes"),
+            "INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n",
+        )
+        .unwrap();
+        GitStore::new(dir.path()).unwrap()
+    }
+
     #[test]
     fn commit_journals_exactly_the_flushed_paths() {
         let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
+        let mut store = store_already_mapped(&dir);
         journal_a_batch(&mut store, "a.md");
 
         let paths = store.session_paths().unwrap().clone();
@@ -2605,7 +3016,7 @@ mod tests {
     #[test]
     fn an_empty_flush_journals_nothing() {
         let dir = TempDir::new().unwrap();
-        let mut store = GitStore::init(dir.path()).unwrap();
+        let mut store = store_already_mapped(&dir);
         store.commit().unwrap();
         let paths = store.session_paths().unwrap().clone();
         let id = store.session().unwrap().id.clone();
@@ -2618,7 +3029,7 @@ mod tests {
     #[test]
     fn session_state_lives_inside_the_git_dir() {
         let dir = TempDir::new().unwrap();
-        let store = GitStore::init(dir.path()).unwrap();
+        let store = store_already_mapped(&dir);
         let base = store.session_paths().unwrap().base().to_path_buf();
         assert!(
             base.starts_with(store.git_dir()),
@@ -2636,7 +3047,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
         journal_a_batch(&mut store, "a.md");
-        store.commit_now("seed").unwrap();
+        store.commit_whole_tree("seed").unwrap();
 
         // The only on-disk difference from HEAD is now the lease + journal.
         let paths = store.session_paths().unwrap().clone();
@@ -2668,7 +3079,7 @@ mod tests {
             }
             let statuses = store.git().git_status_report().unwrap().all();
             let message = GitRepo::default_commit_message(&statuses);
-            store.commit_now(&message).unwrap();
+            store.commit_whole_tree(&message).unwrap();
             let out = git_cmd()
                 .args(["rev-parse", "HEAD^{tree}"])
                 .current_dir(dir.path())
@@ -2768,7 +3179,7 @@ mod tests {
         let path = RelPath::new("a.md").unwrap();
         store.write(&path, "first".to_string()).unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add a.md").unwrap();
+        store.commit_whole_tree("seed: add a.md").unwrap();
 
         let sha = store.head_sha().unwrap();
         let info = store.git().head_commit_info().unwrap().unwrap();
@@ -2793,12 +3204,12 @@ mod tests {
         let path = RelPath::new("a.md").unwrap();
         store.write(&path, "v1".to_string()).unwrap();
         store.commit().unwrap();
-        store.commit_now("add a.md v1").unwrap();
+        store.commit_whole_tree("add a.md v1").unwrap();
         let v1_sha = store.head_sha().unwrap();
 
         store.write(&path, "v2".to_string()).unwrap();
         store.commit().unwrap();
-        store.commit_now("update a.md to v2").unwrap();
+        store.commit_whole_tree("update a.md to v2").unwrap();
         let v2_sha = store.head_sha().unwrap();
         assert_ne!(v1_sha, v2_sha);
 
@@ -2817,7 +3228,7 @@ mod tests {
             .write(&RelPath::new("seed.md").unwrap(), "seed".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("seed: add seed.md").unwrap();
+        store.commit_whole_tree("seed: add seed.md").unwrap();
         let early_sha = store.head_sha().unwrap();
 
         // Later commit: introduce later.md.
@@ -2825,7 +3236,7 @@ mod tests {
             .write(&RelPath::new("later.md").unwrap(), "later".to_string())
             .unwrap();
         store.commit().unwrap();
-        store.commit_now("add later.md").unwrap();
+        store.commit_whole_tree("add later.md").unwrap();
 
         let err = store
             .fetch_body_at(&RelPath::new("later.md").unwrap(), &early_sha)
@@ -2901,6 +3312,259 @@ mod tests {
             !reftable_dir.exists(),
             "did not expect .git/reftable/ directory (reftable format); \
              gix appears to be using reftable now"
+        );
+    }
+
+    // ---- scoped commit / discard: attribution lives in the tree builder ----
+
+    /// Seeds a plan repo with one project and an initial whole-tree commit,
+    /// then returns a store pinned to `id`.
+    fn scoped_repo(dir: &TempDir, id: &str) -> GitStore {
+        let mut store = GitStore::init(dir.path()).unwrap();
+        rdm_core::ops::init::init_with_config(&mut store, rdm_core::config::Config::default())
+            .unwrap();
+        rdm_core::ops::mutate(&mut store, "demo", |s| {
+            rdm_core::ops::project::create_project(s, "demo", "Demo")
+        })
+        .unwrap();
+        store.commit_whole_tree("seed").unwrap();
+        drop(store);
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, id) };
+        GitStore::new(dir.path()).unwrap()
+    }
+
+    fn make_task(store: &mut GitStore, slug: &str) {
+        rdm_core::ops::mutate(store, "demo", |s| {
+            rdm_core::ops::task::create_task(
+                s,
+                rdm_core::ops::task::CreateTask {
+                    project: "demo",
+                    slug,
+                    title: slug,
+                    priority: rdm_core::model::Priority::Medium,
+                    tags: None,
+                    body: Some("body"),
+                },
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+    }
+
+    /// Runs `git` against `dir` with the inherited git environment cleared.
+    ///
+    /// Load-bearing: this suite runs from inside the repo's own pre-commit
+    /// hook, where `GIT_DIR`/`GIT_INDEX_FILE` point at the outer repository —
+    /// without this, every query below silently reads the wrong repo.
+    fn git_in(dir: &TempDir, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    fn tree_paths(dir: &TempDir) -> Vec<String> {
+        let out = std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .args(["show", "--name-only", "--pretty=format:", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    // These tests pin RDM_SESSION process-globally, so they must not run
+    // concurrently with each other. `serial_scoped` is a plain mutex held for
+    // the body of each.
+    fn serial_scoped() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn a_scoped_commit_contains_only_journaled_paths() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store = scoped_repo(&dir, "unit-a");
+        make_task(&mut store, "mine");
+
+        // An unjournaled dirty path: written straight to disk, owned by no
+        // changeset. It must be structurally unreachable, not filtered late.
+        std::fs::write(dir.path().join("stranger.md"), "not mine\n").unwrap();
+
+        let outcome = store.commit_changeset(Some("scoped"), &[]).unwrap();
+        assert!(outcome.sha.is_some(), "the commit should have landed");
+        let landed = tree_paths(&dir);
+        assert!(
+            landed.iter().any(|p| p == "projects/demo/tasks/mine.md"),
+            "own path missing: {landed:?}"
+        );
+        assert!(
+            !landed.iter().any(|p| p == "stranger.md"),
+            "an unjournaled dirty path entered the tree: {landed:?}"
+        );
+        assert!(
+            dir.path().join("stranger.md").exists(),
+            "the foreign path must be left alone on disk"
+        );
+    }
+
+    #[test]
+    fn a_landed_changeset_is_truncated_out_of_its_journal() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store = scoped_repo(&dir, "unit-trunc");
+        make_task(&mut store, "once");
+        store.commit_changeset(Some("first"), &[]).unwrap();
+
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+        let left = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        assert!(
+            left.is_empty(),
+            "landed paths must be truncated out of the journal, got {left:?}"
+        );
+
+        // A second commit therefore re-commits nothing — which is what stops
+        // it from sweeping another session's later edit to the same path.
+        let again = store.commit_changeset(Some("second"), &[]).unwrap();
+        assert!(
+            again.sha.is_none(),
+            "a re-commit landed something: {again:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_changeset_twice_against_one_head_yields_one_tree_oid() {
+        let _guard = serial_scoped();
+        let mut oids = Vec::new();
+        for _ in 0..2 {
+            let dir = TempDir::new().unwrap();
+            let mut store = scoped_repo(&dir, "unit-det");
+            make_task(&mut store, "deterministic");
+            store.commit_changeset(Some("det"), &[]).unwrap();
+            oids.push(
+                git_in(&dir, &["rev-parse", "HEAD^{tree}"])
+                    .trim()
+                    .to_string(),
+            );
+        }
+        assert_eq!(
+            oids[0], oids[1],
+            "committing the same changeset against the same HEAD must be deterministic"
+        );
+    }
+
+    #[test]
+    fn a_journaled_path_that_vanished_is_skipped_not_fatal() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store = scoped_repo(&dir, "unit-missing");
+        make_task(&mut store, "vanishing");
+        std::fs::remove_file(dir.path().join("projects/demo/tasks/vanishing.md")).unwrap();
+
+        let outcome = store.commit_changeset(Some("skip"), &[]).unwrap();
+        assert!(
+            outcome
+                .skipped_missing
+                .iter()
+                .any(|p| p == "projects/demo/tasks/vanishing.md"),
+            "the vanished path was not reported as skipped: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_scoped_discard_leaves_foreign_paths_and_their_index_rows() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+
+        let mut mine = scoped_repo(&dir, "unit-disc-a");
+        make_task(&mut mine, "discarded");
+        drop(mine);
+
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-b") };
+        let mut theirs = GitStore::new(dir.path()).unwrap();
+        make_task(&mut theirs, "survivor");
+        drop(theirs);
+
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-a") };
+        let mut mine = GitStore::new(dir.path()).unwrap();
+        mine.discard_changeset().unwrap();
+
+        assert!(
+            !dir.path().join("projects/demo/tasks/discarded.md").exists(),
+            "the discarding session's own file survived"
+        );
+        assert!(
+            dir.path().join("projects/demo/tasks/survivor.md").exists(),
+            "a scoped discard destroyed another session's file"
+        );
+        let index = std::fs::read_to_string(dir.path().join("projects/demo/INDEX.md")).unwrap();
+        assert!(
+            index.contains("survivor"),
+            "the regenerated index dropped the other session's row: {index}"
+        );
+        assert!(
+            !index.contains("discarded"),
+            "the regenerated index kept the discarded row: {index}"
+        );
+    }
+
+    #[test]
+    fn status_partitions_into_three_buckets_in_one_pass() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut mine = scoped_repo(&dir, "unit-status-a");
+        make_task(&mut mine, "mine-status");
+        drop(mine);
+
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-status-b") };
+        let mut theirs = GitStore::new(dir.path()).unwrap();
+        make_task(&mut theirs, "theirs-status");
+        drop(theirs);
+
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-status-a") };
+        let mine = GitStore::new(dir.path()).unwrap();
+        let report = mine.status_report_scoped().unwrap();
+
+        assert!(
+            report
+                .user
+                .iter()
+                .any(|f| f.path.ends_with("mine-status.md")),
+            "own path missing from `user`: {report:?}"
+        );
+        assert!(
+            report
+                .others
+                .iter()
+                .any(|f| f.path.ends_with("theirs-status.md")),
+            "the other session's path is not in `others`: {report:?}"
+        );
+        assert!(
+            report
+                .derived
+                .iter()
+                .all(|f| rdm_core::paths::is_derived_path(&f.path)),
+            "a non-derived path landed in `derived`: {report:?}"
+        );
+        assert!(!report.is_clean(), "is_clean must still mean the raw truth");
+        assert!(!report.is_changeset_clean(), "this changeset does own work");
+        assert_eq!(
+            report.total(),
+            report.user.len() + report.derived.len() + report.others.len(),
+            "total must cover every bucket"
         );
     }
 }

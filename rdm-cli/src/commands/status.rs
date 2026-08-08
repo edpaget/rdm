@@ -4,13 +4,18 @@ use anyhow::{Context, Result};
 
 use crate::commands;
 
-/// Shows uncommitted changes and sync status in the plan repo.
+/// Shows this session's uncommitted changes and the repo's sync status.
+///
+/// The default view is scoped to the caller's changeset and comes from a
+/// single three-way partition (`user` / `derived` / `others`), so what is
+/// listed here and what `rdm commit` will land can never disagree. `all`
+/// switches to the whole-tree view.
 ///
 /// # Errors
 ///
 /// Returns an error if the store cannot be opened or git status/merge-state
 /// queries fail.
-pub fn run(root: &Path, fetch: bool) -> Result<()> {
+pub fn run(root: &Path, fetch: bool, all: bool) -> Result<()> {
     let mut store = commands::make_store(root)?;
 
     // Check for merge in progress
@@ -36,10 +41,16 @@ pub fn run(root: &Path, fetch: bool) -> Result<()> {
         println!();
     }
 
-    let report = store
-        .git()
-        .git_status_report()
-        .context("failed to get git status")?;
+    let report = if all {
+        store
+            .git()
+            .git_status_report()
+            .context("failed to get git status")?
+    } else {
+        store
+            .status_report_scoped()
+            .context("failed to get git status")?
+    };
     if report.user.is_empty() {
         println!("No uncommitted changes.");
     } else {
@@ -66,6 +77,11 @@ pub fn run(root: &Path, fetch: bool) -> Result<()> {
             report.derived.len(),
             paths.join(", ")
         );
+    }
+    // Other sessions' work is named, never hidden and never silently swept.
+    // Shared wording with `rdm commit`/`rdm discard` and their MCP tools.
+    if let Some(note) = report.others_summary() {
+        println!("  {note}");
     }
 
     // Show sync status if a default remote is configured

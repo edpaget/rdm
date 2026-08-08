@@ -238,6 +238,9 @@ fn commit_lands_the_regenerated_index_when_it_is_the_only_change() {
     init_repo(&dir);
 
     // Corrupt only the generated indexes; no user file differs from HEAD.
+    // These are raw `fs::write`s outside rdm, so they belong to no changeset
+    // — the scoped views must report them rather than sweep them, and the
+    // whole-tree views must still cover them.
     std::fs::write(dir.path().join("INDEX.md"), "# stale\n").unwrap();
     std::fs::write(dir.path().join("projects/test/INDEX.md"), "# stale\n").unwrap();
 
@@ -249,6 +252,16 @@ fn commit_lands_the_regenerated_index_when_it_is_the_only_change() {
         .success()
         .stdout(predicate::str::contains("No uncommitted changes."))
         .stdout(predicate::str::contains(
+            "2 file(s) belong to other changesets and were left untouched",
+        ));
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["status", "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
             "2 generated index file(s) will be included in the next commit",
         ));
 
@@ -256,11 +269,13 @@ fn commit_lands_the_regenerated_index_when_it_is_the_only_change() {
         .trim()
         .to_string();
 
-    // Gated on the raw truth: a derived-only tree must still be committable.
+    // Gated on the raw truth: a derived-only tree must still be committable
+    // through the whole-tree opt-in, which is the documented recovery for
+    // out-of-band index corruption.
     rdm()
         .arg("--root")
         .arg(dir.path())
-        .args(["commit", "-m", "chore: regenerate indexes"])
+        .args(["commit", "--all", "-m", "chore: regenerate indexes"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
