@@ -978,6 +978,7 @@ static_assertions::assert_impl_all!(GitStore: Send, Sync);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     // GitStore must be Send + Sync so it can be wrapped in Mutex for the
@@ -3484,6 +3485,177 @@ mod tests {
         assert_eq!(
             oids[0], oids[1],
             "committing the same changeset against the same HEAD must be deterministic"
+        );
+    }
+
+    // ---- compare-and-swap on HEAD: the lost-update guard ----
+
+    /// Moves HEAD forward by one commit that keeps HEAD's tree byte-for-byte.
+    ///
+    /// A tree-preserving nudge is exactly what the compare-and-swap has to
+    /// notice: nothing the committing changeset owns changed, so only the
+    /// *parent* check can catch it. Deliberately does not go through
+    /// [`GitStore`], so it cannot contend on the advisory commit lock the
+    /// commit under test is already holding.
+    fn nudge_head(root: &Path) {
+        let repo = gix::open(root).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let tree = head.tree_id().unwrap().detach();
+        let parent = head.id().detach();
+        let sig = gix::actor::Signature {
+            name: "rival".into(),
+            email: "rival@localhost".into(),
+            time: gix::date::Time::now_local_or_utc(),
+        };
+        let mut buf = gix::date::parse::TimeBuf::default();
+        let sig_ref = sig.to_ref(&mut buf);
+        repo.commit_as(sig_ref, sig_ref, "HEAD", "rival nudge", tree, [parent])
+            .unwrap();
+    }
+
+    /// Installs a pre-ref-update hook that nudges HEAD on the first
+    /// `nudge_attempts` commit attempts, and returns the fire counter.
+    fn race_head_for(root: &Path, nudge_attempts: usize) -> std::sync::Arc<AtomicUsize> {
+        let root = root.to_path_buf();
+        let fired = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = fired.clone();
+        crate::commit::test_hooks::set_pre_ref_update(Box::new(move || {
+            if counter.fetch_add(1, Ordering::SeqCst) < nudge_attempts {
+                nudge_head(&root);
+            }
+        }));
+        fired
+    }
+
+    #[test]
+    fn a_head_that_moves_mid_commit_is_rebuilt_against_and_retried_once() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store = scoped_repo(&dir, "unit-cas-retry");
+        make_task(&mut store, "racer");
+
+        // Move HEAD exactly once, inside the read-HEAD → build-tree →
+        // update-ref window, so the first compare-and-swap must lose.
+        let fired = race_head_for(dir.path(), 1);
+        let outcome = store.commit_changeset(Some("scoped"), &[]);
+        crate::commit::test_hooks::clear_pre_ref_update();
+
+        let outcome = outcome.expect("the retry after one HEAD move must succeed");
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            2,
+            "the commit should have made exactly two attempts"
+        );
+        let sha = outcome.sha.expect("nothing landed after the retry");
+
+        // The retry rebuilt against the rival commit rather than clobbering
+        // it: HEAD is ours, and the rival is in our ancestry.
+        assert_eq!(
+            git_in(&dir, &["rev-parse", "HEAD"]).trim(),
+            sha,
+            "HEAD is not the retried commit"
+        );
+        assert!(
+            git_in(&dir, &["log", "--format=%s", "-3"]).contains("rival nudge"),
+            "the rival commit was lost rather than rebuilt against"
+        );
+        assert!(
+            tree_paths(&dir)
+                .iter()
+                .any(|p| p == "projects/demo/tasks/racer.md"),
+            "the changeset did not land on the retry"
+        );
+    }
+
+    #[test]
+    fn a_head_that_moves_on_every_attempt_errors_rather_than_losing_the_commit() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store = scoped_repo(&dir, "unit-cas-give-up");
+        make_task(&mut store, "starved");
+        let before = git_in(&dir, &["rev-parse", "HEAD"]).trim().to_string();
+
+        // A hook that fires on *every* attempt: the retry loses too.
+        let fired = race_head_for(dir.path(), usize::MAX);
+        let outcome = store.commit_changeset(Some("scoped"), &[]);
+        crate::commit::test_hooks::clear_pre_ref_update();
+
+        let err = outcome.expect_err("a permanently-moving HEAD must error, not spin or clobber");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("moved HEAD twice") && msg.contains("re-run `rdm commit`"),
+            "the error must name the collision and the retry: {msg}"
+        );
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            2,
+            "the loop must give up after two attempts, not retry unboundedly"
+        );
+
+        // Nothing was lost: the rivals landed, ours did not, and the journal
+        // still holds it so the advertised re-run lands it.
+        assert!(
+            !tree_paths(&dir)
+                .iter()
+                .any(|p| p == "projects/demo/tasks/starved.md"),
+            "a failed commit must not have half-landed"
+        );
+        assert_ne!(
+            git_in(&dir, &["rev-parse", "HEAD"]).trim(),
+            before,
+            "the rival commits should still be on HEAD"
+        );
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+        let left = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        assert!(
+            left.iter()
+                .any(|e| e.path == "projects/demo/tasks/starved.md"),
+            "a failed commit must not truncate the journal: {left:?}"
+        );
+
+        let retried = store.commit_changeset(Some("scoped"), &[]).unwrap();
+        assert!(retried.sha.is_some(), "the advertised re-run did not land");
+        assert!(
+            tree_paths(&dir)
+                .iter()
+                .any(|p| p == "projects/demo/tasks/starved.md"),
+            "the re-run did not land the changeset"
+        );
+    }
+
+    #[test]
+    fn a_commit_proceeds_when_the_advisory_lock_cannot_be_taken() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store = scoped_repo(&dir, "unit-lock-busy");
+        make_task(&mut store, "unlocked");
+
+        // A fresh foreign lock: not stale, so it is never stolen. The commit
+        // must give up waiting and proceed — the compare-and-swap, not the
+        // lock, is what makes it correct, and the `Done:` hook path must never
+        // be blocked by a lock it cannot take.
+        let lock = dir.path().join(".git").join("rdm").join("commit.lock");
+        std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        std::fs::write(&lock, b"held by a live process").unwrap();
+
+        let outcome = store
+            .commit_changeset(Some("scoped"), &[])
+            .expect("a contended lock must not fail the commit");
+        assert!(
+            outcome.sha.is_some(),
+            "the commit did not land while the lock was held: {outcome:?}"
+        );
+        assert!(
+            tree_paths(&dir)
+                .iter()
+                .any(|p| p == "projects/demo/tasks/unlocked.md"),
+            "the changeset did not land while the lock was held"
+        );
+        assert_eq!(
+            std::fs::read(&lock).unwrap(),
+            b"held by a live process",
+            "the holder's lock file must be left untouched"
         );
     }
 

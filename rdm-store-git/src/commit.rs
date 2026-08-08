@@ -112,12 +112,72 @@ pub struct CommitReport {
 /// Deliberately far below the default 30s `hook_timeout_secs`: the `Done:`
 /// hook path reaches this code, and a lock must never be what makes it miss
 /// its deadline.
+#[cfg(not(test))]
 const COMMIT_LOCK_WAIT: Duration = Duration::from_secs(5);
+
+/// The test-build value of [`COMMIT_LOCK_WAIT`], shortened so the
+/// contended-lock arm (give up waiting, proceed unlocked) can be exercised
+/// without stalling the suite for the production five seconds. Only the
+/// duration differs — the arm under test is the same code.
+#[cfg(test)]
+const COMMIT_LOCK_WAIT: Duration = Duration::from_millis(120);
 
 /// How stale a lock file must be before another process takes it over.
 ///
 /// Bounds the damage from a process killed between acquiring and releasing.
 const COMMIT_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
+
+/// Where the advisory commit lock lives for a given git dir.
+///
+/// Shared by [`CommitLock::acquire`] and its tests so the two can never
+/// disagree about which file is the lock.
+pub(crate) fn commit_lock_path(git_dir: &Path) -> PathBuf {
+    git_dir.join("rdm").join("commit.lock")
+}
+
+/// Test seam fired between building the scoped tree and the compare-and-swap
+/// on HEAD.
+///
+/// The compare-and-swap is only reachable in a losing state if HEAD moves
+/// inside that window, which no test could otherwise arrange deterministically.
+/// Installing a hook here lets a test move HEAD at exactly that instant and
+/// assert both the rebuild-and-retry arm and the give-up-after-two arm.
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static PRE_REF_UPDATE: RefCell<Option<Box<dyn FnMut()>>> =
+            const { RefCell::new(None) };
+    }
+
+    /// Installs `f`, to be called once per commit attempt until cleared.
+    pub(crate) fn set_pre_ref_update(f: Box<dyn FnMut()>) {
+        PRE_REF_UPDATE.with(|h| *h.borrow_mut() = Some(f));
+    }
+
+    /// Removes any installed hook.
+    pub(crate) fn clear_pre_ref_update() {
+        PRE_REF_UPDATE.with(|h| *h.borrow_mut() = None);
+    }
+
+    pub(super) fn fire_pre_ref_update() {
+        PRE_REF_UPDATE.with(|h| {
+            if let Ok(mut slot) = h.try_borrow_mut()
+                && let Some(f) = slot.as_mut()
+            {
+                f();
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+use test_hooks::fire_pre_ref_update;
+
+#[cfg(not(test))]
+#[inline]
+fn fire_pre_ref_update() {}
 
 /// A best-effort advisory lock guarding the read-HEAD → build-tree →
 /// update-ref window of a scoped commit.
@@ -136,7 +196,7 @@ impl CommitLock {
         if std::fs::create_dir_all(&dir).is_err() {
             return Self { path: None };
         }
-        let path = dir.join("commit.lock");
+        let path = commit_lock_path(git_dir);
         let deadline = Instant::now() + COMMIT_LOCK_WAIT;
         loop {
             match std::fs::OpenOptions::new()
@@ -493,12 +553,15 @@ impl GitRepo {
         message: &str,
         changeset: &ChangesetScope,
     ) -> Result<CommitReport> {
-        let repo = self.repo.to_thread_local();
         // Best-effort: the compare-and-swap below is what makes this correct.
         let _lock = CommitLock::acquire(self.git_dir());
 
         let mut attempt = 0u8;
         loop {
+            // Re-opened per attempt: a retry exists precisely because another
+            // process moved HEAD, so this handle must not carry a snapshot of
+            // the ref state the losing attempt was built against.
+            let repo = self.repo.to_thread_local();
             let head = self.head_commit_oid(&repo);
             let head_tree = head.and_then(|oid| {
                 repo.find_object(oid)
@@ -534,6 +597,9 @@ impl GitRepo {
                 .write_object(&commit)
                 .map_err(|e| Error::Git(format!("failed to write commit object: {e}")))?
                 .detach();
+
+            // No-op outside `cfg(test)`; see `test_hooks`.
+            fire_pre_ref_update();
 
             if self.compare_and_swap_head(&repo, head, commit_id, message)? {
                 self.sync_index_to_head()?;
@@ -1355,6 +1421,99 @@ impl GitRepo {
             });
         }
         Err(Error::Git(stderr.trim().to_string()))
+    }
+}
+
+#[cfg(test)]
+mod commit_lock_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Backdates `path`'s mtime by `age`, so the staleness branch can be
+    /// exercised without waiting `COMMIT_LOCK_STALE_AFTER` real seconds.
+    fn backdate(path: &Path, age: Duration) {
+        let when = std::time::SystemTime::now() - age;
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(when).unwrap();
+    }
+
+    #[test]
+    fn a_free_lock_is_taken_and_released_on_drop() {
+        let dir = TempDir::new().unwrap();
+        let lock_path = commit_lock_path(dir.path());
+        {
+            let lock = CommitLock::acquire(dir.path());
+            assert!(lock.path.is_some(), "a free lock should have been taken");
+            assert!(lock_path.exists(), "the lock file should exist while held");
+        }
+        assert!(
+            !lock_path.exists(),
+            "dropping the guard must release the lock"
+        );
+    }
+
+    #[test]
+    fn a_stale_lock_is_taken_over_rather_than_waited_out() {
+        let dir = TempDir::new().unwrap();
+        let lock_path = commit_lock_path(dir.path());
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        std::fs::write(&lock_path, b"pid 1 (killed)").unwrap();
+        backdate(&lock_path, COMMIT_LOCK_STALE_AFTER + Duration::from_secs(5));
+
+        let started = Instant::now();
+        let lock = CommitLock::acquire(dir.path());
+        assert!(
+            lock.path.is_some(),
+            "a lock older than COMMIT_LOCK_STALE_AFTER must be taken over, \
+             not waited out — otherwise a killed process blocks the bounded \
+             hook path"
+        );
+        assert!(
+            started.elapsed() < COMMIT_LOCK_WAIT,
+            "takeover must be immediate, not after the wait deadline"
+        );
+        assert_eq!(
+            std::fs::read(&lock_path).unwrap(),
+            Vec::<u8>::new(),
+            "the stale file should have been removed and recreated empty"
+        );
+    }
+
+    #[test]
+    fn a_lock_still_fresh_is_left_alone_and_the_caller_proceeds_unlocked() {
+        let dir = TempDir::new().unwrap();
+        let lock_path = commit_lock_path(dir.path());
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        std::fs::write(&lock_path, b"held by a live process").unwrap();
+
+        {
+            let lock = CommitLock::acquire(dir.path());
+            assert!(
+                lock.path.is_none(),
+                "a fresh foreign lock must not be stolen; the caller proceeds \
+                 unlocked instead"
+            );
+        }
+        assert_eq!(
+            std::fs::read(&lock_path).unwrap(),
+            b"held by a live process",
+            "releasing an unheld lock must not delete the holder's file"
+        );
+    }
+
+    #[test]
+    fn an_unusable_lock_directory_degrades_to_proceeding_unlocked() {
+        let dir = TempDir::new().unwrap();
+        // `<git_dir>/rdm` occupied by a regular file: `create_dir_all` fails.
+        std::fs::write(dir.path().join("rdm"), b"not a directory").unwrap();
+
+        let lock = CommitLock::acquire(dir.path());
+        assert!(
+            lock.path.is_none(),
+            "failing to create the lock directory must degrade to unlocked, \
+             never error or hang — the compare-and-swap is the correctness \
+             mechanism, the lock is only an optimization"
+        );
     }
 }
 
