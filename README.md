@@ -213,6 +213,8 @@ rdm phase create search-feature/query-api --project fbm --title "Query API endpo
 rdm commit -m "feat(plan): add search-feature roadmap"  # land the roadmap + phases
 ```
 
+Mutations stage to disk and `rdm commit` lands them, scoped to your own session's changeset — a teammate or agent working concurrently in the same plan repo never has their uncommitted work swept into your commit (`--all` and `--changeset <id>` are the escape hatches; `rdm session list` names them).
+
 For one-off work that doesn't warrant a full roadmap, create a task:
 
 ```bash

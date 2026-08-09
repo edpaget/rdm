@@ -1810,6 +1810,79 @@ mod tests {
         assert!(!content.contains("<PROJECT>"));
     }
 
+    /// The emitted CLI instructions must teach the *scoped* commit model.
+    ///
+    /// `rdm status`/`commit`/`discard` have not operated on the whole plan
+    /// repo since commit scoping shipped, and an agent that believes they do
+    /// will either refuse to commit (fearing it sweeps a teammate's work) or
+    /// misread another changeset's paths as its own. The retired claim is
+    /// asserted absent so a future edit cannot quietly reintroduce it.
+    #[test]
+    fn cli_instructions_teach_session_scoped_commit() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: Some("myproj".to_string()),
+            principles_file: None,
+            mcp: false,
+        });
+        // The retired whole-tree claim.
+        assert!(
+            !content.contains("operate on the whole plan repo's git state"),
+            "emitted CLI instructions still claim whole-tree commit semantics"
+        );
+        assert!(!content.contains("land every staged change as one commit"));
+        // The concept and its vocabulary.
+        assert!(content.contains("changeset"));
+        assert!(content.contains("RDM_SESSION"));
+        // The observation and recovery surface, exactly as the binary spells it.
+        assert!(content.contains("rdm session id"));
+        assert!(content.contains("rdm session list"));
+        assert!(content.contains("rdm session journal"));
+        assert!(content.contains("rdm commit --changeset <id>"));
+        assert!(content.contains("rdm commit --all"));
+        assert!(content.contains("rdm status --all"));
+        // Batching survives — the guidance was corrected, not deleted.
+        assert!(content.contains("batching"));
+        // Self-containment: an emitted tree has none of this repo's docs.
+        assert!(!content.contains("session-identity.md"));
+        assert!(!content.contains("scoping-model-decision.md"));
+    }
+
+    /// The emitted MCP instructions must teach the three-bucket status shape.
+    ///
+    /// `rdm_status` returns `{changes, generated, others}`; an agent told it
+    /// returns a flat list cannot tell its own edits from a concurrent
+    /// session's, which is the exact confusion the scoped model removed.
+    #[test]
+    fn mcp_instructions_teach_scoped_status_buckets() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: Some("myproj".to_string()),
+            principles_file: None,
+            mcp: true,
+        });
+        // The retired whole-tree claims.
+        assert!(
+            !content.contains("it reports the whole plan repo's git state"),
+            "emitted MCP instructions still claim whole-tree status semantics"
+        );
+        assert!(!content.contains("land every currently staged change"));
+        assert!(!content.contains("reverting the working tree to its last commit"));
+        // All three buckets are named.
+        assert!(content.contains("changes"));
+        assert!(content.contains("generated"));
+        assert!(content.contains("others"));
+        assert!(content.contains("{changes, generated, others}"));
+        // Commit is described as scoped to this session.
+        assert!(content.contains("changeset"));
+        assert!(content.contains("rdm_commit"));
+        // MCP exposes no session tools, so none may be invented here.
+        assert!(!content.contains("rdm_session"));
+        // Self-containment.
+        assert!(!content.contains("session-identity.md"));
+        assert!(!content.contains("scoping-model-decision.md"));
+    }
+
     #[test]
     fn generate_without_project_name() {
         let content = generate_agent_config(&AgentConfigOptions {

@@ -43,9 +43,9 @@ For each comment with `status: "open"`, branch on the anchor:
 
 Apply the change through the matching update tool (never edit plan files directly): `rdm_phase_update` with `project: {proj_param}, roadmap: "<slug>", phase: "<stem>", body: "..."`, `rdm_task_update` with `project: {proj_param}, task: "<slug>", body: "..."`, or `rdm_roadmap_update` with `project: {proj_param}, roadmap: "<slug>", body: "..."`.
 
-Each mutation only **stages** the change — the update tool's response carries no commit trailer. Land it immediately, **before moving to the next comment**, by calling `{t_commit}` with `message: "docs(plan): address review comment"`. **Its** response ends with a `Commit: <sha>` line — capture that SHA from there, it is the provenance record for the next step.
+Each mutation only **stages** the change into this session's changeset — the update tool's response carries no commit trailer. Land it immediately, **before moving to the next comment**, by calling `{t_commit}` with `message: "docs(plan): address review comment"`. **Its** response ends with a `Commit: <sha>` line — capture that SHA from there, it is the provenance record for the next step.
 
-**Commit per comment, not per batch:** `{t_commit}` lands *every* currently staged change as one commit, so if you edited more than one comment's target before calling it, that single SHA would no longer identify which comment it resolved. Commit after **each** comment's edit, before starting the next, to keep a 1:1 comment→commit provenance trail — do not batch multiple comments' edits for efficiency here.
+**Commit per comment, not per batch:** `{t_commit}` lands *every* change in your own session's changeset as one commit, so if you edited more than one comment's target before calling it, that single SHA would no longer identify which comment it resolved. (Scoping keeps another session's work out of your commit; it does not separate your own edits from each other.) Commit after **each** comment's edit, before starting the next, to keep a 1:1 comment→commit provenance trail — do not batch multiple comments' edits for efficiency here.
 
 ### 5. Record the resolution
 

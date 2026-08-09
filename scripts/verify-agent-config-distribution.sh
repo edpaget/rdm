@@ -1733,6 +1733,175 @@ if assert_no_lib_import "$MUTANT_HARNESS" >/dev/null 2>&1; then
 fi
 pass "7f self-test: a planted canonical-source reference correctly turns the self-gate red"
 
+# --- 7g. The EMITTED instruction files teach the scoped commit model -------
+say "7g. Staging model: the emitted instructions describe the changeset that exists, not the retired whole-tree one"
+
+# `rdm status`/`commit`/`discard` have been scoped to the caller's own
+# changeset since commit scoping shipped. A downstream agent reading a stale
+# instruction file is told the three commands sweep the whole plan repo, which
+# is the precise confusion the scoped model was built to remove — and unlike a
+# skill body, the instruction file is the FIRST thing that agent reads.
+#
+# The instructions are a different emission from `--skills` (they land as a
+# single CLAUDE.md), so they get their own emit here rather than reusing
+# $TMP/cli and $TMP/mcp.
+"$RDM_BIN" agent-config claude --project distro-check --out "$TMP/inst-cli" >/dev/null
+"$RDM_BIN" agent-config claude --mcp --project distro-check --out "$TMP/inst-mcp" >/dev/null
+INST_CLI="$TMP/inst-cli/CLAUDE.md"
+INST_MCP="$TMP/inst-mcp/CLAUDE.md"
+[ -f "$INST_CLI" ] || fail "7g: no instruction file emitted at $INST_CLI"
+[ -f "$INST_MCP" ] || fail "7g: no instruction file emitted at $INST_MCP"
+
+# The retired claims, one per line. Adding a future one is a one-line edit.
+# Matched as FIXED strings (-F): they contain apostrophes and must never be
+# read as patterns.
+RETIRED_CLAIMS="operate on the whole plan repo's git state
+land every staged change as one commit
+it reports the whole plan repo's git state
+land every currently staged change
+reverting the working tree to its last commit"
+
+# Greps <file...> for every retired claim. Prints each offender and returns
+# nonzero if any matched. The count is accumulated through a file because a
+# `... | while` body runs in a subshell in POSIX sh, where an assignment
+# would not survive.
+assert_no_retired_claim() {
+    _hitfile="$TMP/.retired-hits"
+    : >"$_hitfile"
+    for _f in "$@"; do
+        [ -f "$_f" ] || continue
+        printf '%s\n' "$RETIRED_CLAIMS" | while IFS= read -r _claim; do
+            [ -n "$_claim" ] || continue
+            if grep -Fq -- "$_claim" "$_f"; then
+                echo "  retired claim survives in $_f: $_claim" >&2
+                echo "hit" >>"$_hitfile"
+            fi
+        done
+    done
+    if [ -s "$_hitfile" ]; then
+        rm -f "$_hitfile"
+        return 1
+    fi
+    rm -f "$_hitfile"
+    return 0
+}
+
+# NEGATIVE: the retired claims must survive nowhere in the emitted tree —
+# instruction files AND every skill, in both variants.
+INST_TARGETS="$INST_CLI $INST_MCP"
+for variant in cli mcp; do
+    for skill in $SKILLS; do
+        INST_TARGETS="$INST_TARGETS $TMP/$variant/.claude/skills/$skill/SKILL.md"
+    done
+done
+# shellcheck disable=SC2086
+assert_no_retired_claim $INST_TARGETS ||
+    fail "7g: a retired whole-tree staging claim survives in the emitted tree — fix the template under rdm-core/src/templates/, not the emitted copy"
+pass "7g: no retired whole-tree staging claim survives in either emitted variant"
+
+# POSITIVE FLOOR: the negative half above passes vacuously on an empty or
+# misdirected emission, so the concept must also be provably PRESENT.
+for f in "$INST_CLI" "$INST_MCP"; do
+    n=$(grep -c 'changeset' "$f" || true)
+    [ "$n" -ge 1 ] ||
+        fail "7g: $f never mentions a changeset — the negative half above would pass vacuously"
+done
+grep -Fq -- 'RDM_SESSION' "$INST_CLI" ||
+    fail "7g: the emitted CLI instructions never name RDM_SESSION — an agent cannot pin its session"
+grep -Fq -- '{changes, generated, others}' "$INST_MCP" ||
+    fail "7g: the emitted MCP instructions never name the three-bucket rdm_status shape"
+pass "7g: the session/changeset concept is present in both emitted variants"
+
+# AGREES WITH THE IMPLEMENTATION: every flag and subcommand the emitted prose
+# quotes must be accepted by the real binary. This is what makes "the docs
+# agree with the code" a test rather than a claim.
+"$RDM_BIN" commit --help 2>&1 | grep -Fq -- '--changeset' ||
+    fail "7g: the emitted prose quotes 'rdm commit --changeset' but the binary's --help does not offer it"
+"$RDM_BIN" commit --help 2>&1 | grep -Fq -- '--all' ||
+    fail "7g: the emitted prose quotes 'rdm commit --all' but the binary's --help does not offer it"
+"$RDM_BIN" status --help 2>&1 | grep -Fq -- '--all' ||
+    fail "7g: the emitted prose quotes 'rdm status --all' but the binary's --help does not offer it"
+for sub in id list journal; do
+    "$RDM_BIN" session --help 2>&1 | grep -Eq "^  $sub" ||
+        fail "7g: the emitted prose quotes 'rdm session $sub' but the binary offers no such subcommand"
+done
+pass "7g: every flag and subcommand the emitted prose quotes is accepted by the real binary"
+
+# UNIQUENESS (AC4): exactly ONE canonical statement per distribution unit. A
+# second copy inside a skill is drift waiting to happen and inflates the
+# byte-gated regeneration surface for no correctness gain.
+for variant in cli mcp; do
+    dupes=0
+    for skill in $SKILLS; do
+        md="$TMP/$variant/.claude/skills/$skill/SKILL.md"
+        [ -f "$md" ] || continue
+        if grep -Fq -- 'rdm session list' "$md" || grep -Fq -- 'RDM_SESSION' "$md"; then
+            echo "  duplicate explainer: $md restates the session/changeset model" >&2
+            dupes=$((dupes + 1))
+        fi
+    done
+    [ "$dupes" -eq 0 ] ||
+        fail "7g: $dupes emitted $variant skill(s) restate the session/changeset model — the instruction file is the single canonical statement"
+done
+pass "7g: the session/changeset explainer lives only in the instruction file, not duplicated into skills"
+
+# SELF-CONTAINMENT (AC4): a downstream tree contains none of this repo's
+# docs, so a pointer at one is a dangling reference in every install. Scoped
+# to the two doc paths THIS model would tempt a writer to cite — a blanket
+# "no docs/ references" gate would trip on long-standing, unrelated prose in
+# skills that predate this model.
+SELF_CONTAINMENT_REFS="session-identity.md
+scoping-model-decision.md"
+leakfile="$TMP/.selfcontain-hits"
+: >"$leakfile"
+for f in $INST_TARGETS; do
+    [ -f "$f" ] || continue
+    printf '%s\n' "$SELF_CONTAINMENT_REFS" | while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        if grep -Fq -- "$ref" "$f"; then
+            echo "  dangling: $f references $ref, which no downstream tree contains" >&2
+            echo "hit" >>"$leakfile"
+        fi
+    done
+done
+if [ -s "$leakfile" ]; then
+    rm -f "$leakfile"
+    fail "7g: an emitted file points at one of this repo's docs — shipped templates must stay self-contained"
+fi
+rm -f "$leakfile"
+pass "7g: no emitted file points at this repo's docs (self-contained)"
+
+# --- 7h. Self-tests: prove both halves of 7g are live ----------------------
+say "7h. Self-tests: planted staging drift in the emitted bytes must turn 7g red"
+
+MUTANT_INST="$TMP/mutant-instructions.md"
+cp "$INST_CLI" "$MUTANT_INST"
+# The backticks are literal markdown in the planted sentence, not command
+# substitution — that is exactly the text the retired claim shipped with.
+# shellcheck disable=SC2016
+printf '\n`rdm status`, `rdm commit`, and `rdm discard` operate on the whole plan repo'"'"'s git state.\n' >>"$MUTANT_INST"
+if assert_no_retired_claim "$MUTANT_INST" >/dev/null 2>&1; then
+    fail "7h self-test: a re-injected retired whole-tree sentence was NOT detected — the 7g negative half is vacuous"
+fi
+pass "7h self-test: a re-injected retired whole-tree sentence correctly turns 7g red"
+
+# Heal: the same file with only the planted line removed must pass again,
+# proving the detector keys on the planted text and not on the file at large.
+grep -Fv -- "operate on the whole plan repo's git state" "$MUTANT_INST" >"$MUTANT_INST.healed" || true
+assert_no_retired_claim "$MUTANT_INST.healed" ||
+    fail "7h self-test: the healed file still trips the detector — 7g keys on something other than the planted text"
+pass "7h self-test: removing the planted sentence heals the check"
+
+# The positive floor's own self-test: a file with the concept stripped must
+# read as zero occurrences, so "no retired claim" can never pass on an
+# emission that simply says nothing at all.
+STRIPPED_INST="$TMP/stripped-instructions.md"
+grep -Fv -- 'changeset' "$INST_CLI" >"$STRIPPED_INST" || true
+stripped_n=$(grep -c 'changeset' "$STRIPPED_INST" || true)
+[ "$stripped_n" -eq 0 ] ||
+    fail "7h self-test: stripping 'changeset' left occurrences behind — the positive floor is not testing what it claims"
+pass "7h self-test: the positive floor detects an emission with the concept stripped out"
+
 say "8. Confirming $REPO_ROOT git status is unchanged after the whole run"
 AFTER_STATUS=$(git -C "$REPO_ROOT" status --porcelain)
 if [ "$BEFORE_STATUS" != "$AFTER_STATUS" ]; then

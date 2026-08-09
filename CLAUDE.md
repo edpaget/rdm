@@ -488,11 +488,13 @@ If the task instead belongs inside an already-existing thematic roadmap, fold it
 
 Every mutation stages changes; run `rdm commit` to land them. There is no auto-commit and no opt-in flag — `roadmap`/`phase`/`task`/`review` create/update/delete commands all write to disk immediately, but the git commit is always deferred until you explicitly run `rdm commit`. Batch related mutations together, then land them in one commit.
 
+`status`/`commit`/`discard` are scoped to **your own session's changeset**, not the whole plan repo: a concurrent session's uncommitted work is never swept into your commit nor destroyed by your discard, `rdm status` names it on a separate trailing line, and `--all` / `--changeset <id>` are the escape hatches. Session identity resolves automatically and outlives a single process (override with `RDM_SESSION`); inspect it with `rdm session id|list|journal`. Canonical: [`docs/session-identity.md`](docs/session-identity.md) (implementation + CLI surface) and [`docs/scoping-model-decision.md`](docs/scoping-model-decision.md) (the binding decision record).
+
 ```bash
 ./target/debug/rdm task create fix-bug --title "Fix bug" --no-edit --project rdm  # writes file, no git commit yet
-./target/debug/rdm status                          # show staged changes
-./target/debug/rdm commit -m "batch: fix bug and update phase"  # explicit git commit — lands the batch
-./target/debug/rdm discard --force                 # reset working directory to HEAD (destructive)
+./target/debug/rdm status                          # show this session's staged changes
+./target/debug/rdm commit -m "batch: fix bug and update phase"  # lands this session's changeset
+./target/debug/rdm discard --force                 # restore this session's paths to HEAD (destructive)
 ```
 
 ## Setup

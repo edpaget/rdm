@@ -58,15 +58,30 @@ rdm task update <slug> --status done --no-edit {proj_flag}
 
 ## Committing changes
 
-Every mutating command (`roadmap`/`phase`/`task`/`review` create, update, delete, and friends) only **stages** its change to disk — it never commits to git on its own. Land a batch of staged changes explicitly:
+Every mutating command (`roadmap`/`phase`/`task`/`review` create, update, delete, and friends) only **stages** its change to disk — it never commits to git on its own. Land your staged changes explicitly:
 
 ```bash
-rdm status                                   # show what's staged (path + change kind)
-rdm commit -m "feat(plan): describe the batch"  # land every staged change as one commit
-rdm discard --force                          # discard staged changes (irreversible)
+rdm status                                   # show what YOU changed (path + change kind)
+rdm commit -m "feat(plan): describe the batch"  # land this session's changeset as one commit
+rdm discard --force                          # discard this session's changes (irreversible)
 ```
 
-`rdm status`, `rdm commit`, and `rdm discard` operate on the whole plan repo's git state, not a single project, so they take no `--project` flag. Prefer batching related mutations (e.g. a roadmap plus all its phases, or a status update plus its follow-on task) into a single `rdm commit` rather than committing after every individual command.
+**These three commands are scoped to your own session's changeset, not to the whole plan repo.** A changeset is the set of paths *this* session wrote. `rdm commit` lands exactly those paths plus the index files your edits regenerated — another session working in the same plan repo at the same time never has its uncommitted work swept into your commit, and `rdm discard --force` cannot destroy it. `rdm status` lists your own edits, names the generated index files your next commit will include, and reports any paths belonging to another changeset on a separate trailing line so they are visible but clearly not yours to land.
+
+Batching still applies, and is now safer than before: prefer batching related mutations (e.g. a roadmap plus all its phases, or a status update plus its follow-on task) into a single `rdm commit` rather than committing after every individual command. `rdm status`, `rdm commit`, and `rdm discard` take no `--project` flag — a changeset can span projects.
+
+Your session identity is resolved automatically and survives across separate `rdm` invocations, so an ordinary batch of commands shares one changeset with no setup. Set `RDM_SESSION=<id>` to pin it explicitly. Inspect and recover with:
+
+```bash
+rdm session id                               # this session's changeset id
+rdm session list                             # every changeset on disk, orphans flagged
+rdm session journal                          # the exact paths this changeset has journaled
+rdm commit --changeset <id>                  # land an orphaned changeset (recovery path)
+rdm commit --all                             # land the whole working tree, every session's work
+rdm status --all                             # view the whole working tree, not just yours
+```
+
+If `rdm commit` reports `Nothing in this session's changeset to commit.` while the tree is dirty, those paths belong to a different changeset: use `rdm session list` to find its id, then `rdm commit --changeset <id>`. Reads are never scoped — `rdm task show`, `rdm search`, and every other read see the whole working tree, including other sessions' uncommitted items.
 
 ## Document reviews
 

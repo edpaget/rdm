@@ -56,9 +56,13 @@ The `body` parameter accepts full Markdown including multiline content. The `tag
 
 ## Committing changes
 
-- `rdm_status` — list staged-but-uncommitted changes, each as `{path, change}` (`added` / `modified` / `deleted`). No `project` parameter — it reports the whole plan repo's git state, not one project.
-- `rdm_commit` with `message: "..."` — land every currently staged change as one git commit. Omit `message` to auto-generate one from the changed files. Returns a `Commit: <sha>` line.
-- `rdm_discard` with `confirm: true` — discard every staged-but-uncommitted change, reverting the working tree to its last commit. Irreversible; omitting or falsifying `confirm` is rejected.
+These three tools are scoped to **this server session's changeset** — the set of paths this session wrote — not to the whole plan repo. A concurrent session's uncommitted work is never swept into your commit and never destroyed by your discard. None of them takes a `project` parameter: a changeset can span projects.
+
+- `rdm_status` — returns an object `{changes, generated, others}`. `changes` holds your own edits, each as `{path, change}` (`added` / `modified` / `deleted`); `generated` holds the rdm-generated `INDEX.md` paths your edits regenerated, which ARE included in your commit even though they are listed separately (an empty `changes` with a non-empty `generated` is not a no-op); `others` holds paths another concurrent session left uncommitted — those belong to a different changeset and `rdm_commit` will not touch them.
+- `rdm_commit` with `message: "..."` — land this session's changeset as one git commit: exactly the paths this session wrote, plus its own regenerated indexes reconciled against HEAD. Omit `message` to auto-generate one from your own changed files. Returns a `Commit: <sha>` line. Reports `Nothing to commit.` when your changeset is empty; if the tree is nevertheless dirty with another session's work, that is reported rather than committed.
+- `rdm_discard` with `confirm: true` — discard this session's staged-but-uncommitted changes, restoring only those paths to their last commit. Irreversible; omitting or falsifying `confirm` is rejected. The `others` paths are left on disk untouched, and the shared indexes are regenerated from the resulting disk state so that session's rows survive.
+
+Mutate freely across as many tool calls as you need, then call `rdm_commit` once per logical batch — batching is still the right habit, and scoping makes it safe. The MCP surface exposes no session-management tools; a changeset this server cannot see must be recovered from the `rdm` CLI.
 
 ## Document reviews
 

@@ -54,7 +54,7 @@ rdm phase update <stem-or-number> --roadmap <slug> --body "$body" --no-edit --pr
 
 `--body` is authoritative: rdm takes the value verbatim and never touches stdin.
 
-Each mutation only **stages** the change — it does not commit. Land it immediately, before moving to the next comment:
+Each mutation only **stages** the change into this session's changeset — it does not commit. Land it immediately, before moving to the next comment:
 
 ```bash
 rdm commit -m "docs(plan): address review comment"
@@ -66,7 +66,7 @@ Then capture the SHA of that commit **immediately, before any review update** (w
 git -C "$RDM_ROOT" rev-parse HEAD
 ```
 
-**Commit per comment, not per batch:** `rdm commit` lands *every* currently staged change as one commit, so if you edited more than one comment's target before committing, that single SHA would no longer identify which comment it resolved. Commit after **each** comment's edit, before starting the next, to keep a 1:1 comment→commit provenance trail — do not batch multiple comments' edits for efficiency here.
+**Commit per comment, not per batch:** `rdm commit` lands *every* change in your own session's changeset as one commit, so if you edited more than one comment's target before committing, that single SHA would no longer identify which comment it resolved. (Scoping keeps another session's work out of your commit; it does not separate your own edits from each other.) Commit after **each** comment's edit, before starting the next, to keep a 1:1 comment→commit provenance trail — do not batch multiple comments' edits for efficiency here.
 
 ### 5. Record the resolution
 

@@ -245,7 +245,10 @@ pub fn reject_non_human(format: OutputFormat, command_name: &str) -> Result<()> 
 /// `--no-index` is honored as an escape hatch: the mutation is still applied
 /// and staged, but the index is left stale (the user can rebuild it later
 /// with `rdm index`). The trailing `rdm commit` hint is always printed —
-/// staging is now the only workflow.
+/// staging is the only workflow, and the hint names the caller's *changeset*
+/// rather than the working tree because that is what the eventual `rdm
+/// commit` will land: this is the first place an agent meets the concept, so
+/// it must not imply the whole plan repo is about to be swept up.
 pub fn commit_mutation<T>(
     store: &mut AppStore,
     project: &str,
@@ -261,7 +264,7 @@ pub fn commit_mutation<T>(
         rdm_core::ops::mutate(store, project, f).with_context(|| context.to_string())?
     };
     #[cfg(feature = "git")]
-    eprintln!("  (staged — run `rdm commit` to persist)");
+    eprintln!("  (staged in this session's changeset — run `rdm commit` to persist)");
     Ok(out)
 }
 

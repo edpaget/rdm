@@ -464,8 +464,8 @@ struct WorktreeRemoveParams {
 #[cfg(feature = "git")]
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct CommitParams {
-    /// Commit message. Omit to auto-generate a summary from the staged
-    /// changes (matching the CLI's `rdm commit` default).
+    /// Commit message. Omit to auto-generate a summary from this session's
+    /// own changed files (matching the CLI's `rdm commit` default).
     message: Option<String>,
 }
 
@@ -473,8 +473,9 @@ struct CommitParams {
 #[cfg(feature = "git")]
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct DiscardParams {
-    /// Must be `true` to confirm the (irreversible) discard of staged
-    /// changes. Omitting it is treated as `false` (rejected) rather than a
+    /// Must be `true` to confirm the (irreversible) discard of this
+    /// session's staged changes — another session's uncommitted work is left
+    /// untouched. Omitting it is treated as `false` (rejected) rather than a
     /// schema validation error, so a missing confirmation always surfaces as
     /// an ordinary tool error instead of a protocol-level one.
     confirm: Option<bool>,
@@ -1672,7 +1673,7 @@ impl RdmMcpServer {
 #[cfg(feature = "git")]
 #[rmcp::tool_router(router = git_ops_tool_router)]
 impl RdmMcpServer {
-    /// Report staged-but-uncommitted changes in the plan repo.
+    /// Report this session's staged-but-uncommitted changes in the plan repo.
     #[rmcp::tool(
         description = "List THIS server session's staged-but-uncommitted changes in the plan repo. Returns an object {changes, generated, others}: `changes` holds your own edits, each as {path, change} where change is \"added\", \"modified\", or \"deleted\"; `generated` holds the paths of rdm-generated INDEX.md files regenerated as a side effect of YOUR edits; `others` holds paths another concurrent session left uncommitted, which rdm_commit will NOT touch. Generated indexes are excluded from `changes` so you can see your own edits, but they ARE written into the commit rdm_commit creates — an empty `changes` with a non-empty `generated` is not a no-op. A non-empty `others` is not yours to land: it belongs to another changeset. MCP mutation tools only stage to disk — call this to see what a batch of edits touched before landing it with rdm_commit.",
         annotations(read_only_hint = true)
@@ -1708,7 +1709,7 @@ impl RdmMcpServer {
         ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
     }
 
-    /// Commit all currently staged changes as a single git commit.
+    /// Commit this session's changeset as a single git commit.
     #[rmcp::tool(
         description = "Land THIS server session's staged changes as one git commit. The commit contains only the paths this session wrote, plus its own regenerated INDEX.md files reconciled against HEAD — a concurrent session's uncommitted work (the `others` list from rdm_status) is never swept in. Mutate freely across as many tool calls as you need, then call rdm_commit once per logical batch of work — do not commit after every single edit. Omit `message` to auto-generate a summary from your own changed files (matching the CLI's `rdm commit` default). The reported count covers your own edits only; your regenerated INDEX.md files are ALWAYS included and reported separately as a `(plus N regenerated index file(s))` suffix — your index regeneration is never dropped. Reports `Nothing to commit.` when this session's changeset is empty; if the tree is nevertheless dirty with another session's work, that is reported rather than committed. Returns a `Commit: <sha>` line — thread that value into `applied_commit` on rdm_review_address_comment.",
         annotations(read_only_hint = false)
@@ -1762,7 +1763,7 @@ impl RdmMcpServer {
         ok_text(text)
     }
 
-    /// Discard all staged changes, reverting the plan repo to HEAD.
+    /// Discard this session's staged changes, restoring only those paths to HEAD.
     #[rmcp::tool(
         description = "Discard THIS server session's staged-but-uncommitted changes, restoring only those paths to their last commit. Irreversible — requires confirm: true, and rejects the call before touching anything if it is missing or false. Another concurrent session's uncommitted work (the `others` list from rdm_status) is left on disk untouched, and the shared INDEX.md files are regenerated from the resulting disk state so that session's rows survive. The reported count covers your own edits only, with your regenerated index files reported separately as a `(plus N regenerated index file(s))` suffix. No-op (`Nothing to discard.`) when this session's changeset is empty, even if the tree is dirty with someone else's work.",
         annotations(read_only_hint = false)
