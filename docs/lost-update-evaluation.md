@@ -204,8 +204,43 @@ observed records `Baseline::Unknown` and is skipped. The mechanism exists to
 prevent lost updates; it must never become a new way to brick an unrelated
 mutation.
 
+**Legacy digest-less journal lines fail open.** A changeset journaled before
+`JournalEntry.digest` existed carries no digest, so the commit-time check has
+nothing to compare and commits the path as it stands. An in-flight changeset
+must never be bricked by an upgrade
+(`a_legacy_journal_line_without_a_digest_still_commits` locks this).
+
 **Byte-identical concurrent writes are not conflicts.** The digests match, so
 nothing is rejected — correctly, because there is no lost update.
+
+**Journaled deletes are applied unconditionally.** The guard shipped by this
+phase covers journaled *writes* only. The two branches of
+`build_changeset_tree` (`rdm-store-git/src/commit.rs`) are asymmetric: the write
+branch compares each journaled path's current working-tree digest against
+`changeset.digests` and refuses on mismatch, while the delete branch is a bare
+`entries.remove(path)` that consults no digest at all. There is nothing for it
+to consult — a delete's `JournalEntry` carries `digest: None` by construction
+(locked by `a_delete_recorded_over_a_write_drops_the_digest` in
+`rdm-core/src/session/journal.rs`), because a deletion has no staged content to
+identify.
+
+The consequence is a real, unclosed lost-update path: session A journals a
+delete of `projects/<p>/tasks/<slug>.md`; session B then creates or recreates
+content at that same path; A commits, and the delete lands over B's content and
+destroys it. **Both sides exit 0.** Nothing is logged, nothing is refused, and
+the only trace is that B's file is absent from the landed tree while still
+sitting on disk with B's bytes.
+
+This asymmetry is known and named here rather than left implied by the word
+"write" in the sections above. Today's behavior is pinned by
+`a_stale_delete_still_destroys_a_concurrently_recreated_path`
+(`rdm-store-git/src/lib.rs`), which asserts the commit succeeds and the
+recreated content is missing from the landed tree — a lock, not an endorsement,
+so that fixing it is a deliberate and visible change to that assertion rather
+than a silent regression in either direction.
+
+**Closing this gap is phase 9 (`phase-9-content-checked-deletes`), not this
+phase.** Documenting it is this phase's.
 
 ## Harness design
 

@@ -6,7 +6,9 @@
 # acceptance criterion of
 # `plan-repo-concurrency/phase-6-close-the-lost-update-window`:
 #
-#   1   docs/lost-update-evaluation.md exists as a standalone record
+#   1   docs/lost-update-evaluation.md exists as a standalone record, and its
+#       Carve-outs section names the deletes gap (applied unconditionally,
+#       closed by phase 9) rather than leaving it implied by "write"
 #   2   two real processes interleaved mid-flush: the loser is REFUSED, not
 #       silently dropped   (2b repeats it with no session id at all)
 #   2c  planted-mutation self-tests: with the check removed the lost update
@@ -248,6 +250,37 @@ ok "the record carries verdict / options / selected-mechanism / carve-outs secti
 grep -qiE '\*\*\(A\) Do nothing\.\*\*|do nothing' "$DOC" ||
     fail "the record must state the do-nothing option and why it was not taken"
 ok "the do-nothing option is recorded"
+
+# Deletes are OUT OF SCOPE for the guard this phase ships, and that has to be
+# on the record BY NAME rather than left implied by the word "write": a stale
+# delete is applied unconditionally and destroys content another session
+# recreated at the path. Closing it is phase 9's; naming it is this phase's.
+DELETE_CARVEOUT='\*\*Journaled deletes are applied unconditionally\.\*\*'
+grep -qE "$DELETE_CARVEOUT" "$DOC" ||
+    fail "Carve-outs must name the deletes gap: **Journaled deletes are applied unconditionally.**"
+grep -qE 'phase-9-content-checked-deletes' "$DOC" ||
+    fail "the deletes carve-out must hand the fix to phase 9 (phase-9-content-checked-deletes)"
+grep -q 'a_stale_delete_still_destroys_a_concurrently_recreated_path' "$DOC" ||
+    fail "the deletes carve-out must name the test that locks today's behavior"
+ok "the deletes carve-out is named, pinned to its test, and handed to phase 9"
+
+# The delete branch itself stays comment-only in this phase, and the comment
+# must point back at the carve-out rather than at nothing.
+grep -q 'phase-9-content-checked-deletes' "$REPO_ROOT/rdm-store-git/src/commit.rs" ||
+    fail "the delete loop in rdm-store-git/src/commit.rs must point at phase 9"
+ok "the delete loop points at the carve-out and at phase 9"
+
+# Self-test: strip the carve-out heading into a copy and prove the check
+# observes its absence. Without this the greps above could pass vacuously.
+sed 's/^\*\*Journaled deletes are applied unconditionally\.\*\*/**Journaled deletes are handled.**/' \
+    "$DOC" >"$TMP/doc-mutant.md"
+if grep -qE "$DELETE_CARVEOUT" "$TMP/doc-mutant.md"; then
+    fail "self-test setup failed: the deletes carve-out survived the planted mutation"
+fi
+grep -qE "$DELETE_CARVEOUT" "$DOC" ||
+    fail "self-test failed to leave the real record intact"
+rm -f "$TMP/doc-mutant.md"
+ok "self-test: the deletes carve-out check observes the heading's removal"
 
 # Self-test: the section must go red when the record is absent.
 mv "$DOC" "$TMP/doc-hidden.md"

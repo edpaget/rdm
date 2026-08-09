@@ -3150,6 +3150,70 @@ mod tests {
         }
     }
 
+    /// LOCKS today's behavior; it is not an endorsement of it.
+    ///
+    /// The guard shipped alongside the test above covers journaled *writes*.
+    /// Journaled *deletes* are the mirror case and are applied
+    /// unconditionally: a delete's journal entry carries `digest: None` by
+    /// construction, so `build_changeset_tree`'s delete branch has nothing to
+    /// compare and removes the path regardless of what is there now. A stale
+    /// delete therefore destroys content another session recreated at that
+    /// path, with exit 0 on both sides.
+    ///
+    /// This test pins that outcome so phase 9
+    /// (`phase-9-content-checked-deletes`) closing the gap is a deliberate,
+    /// visible change to these assertions rather than a silent regression in
+    /// either direction. See docs/lost-update-evaluation.md § Carve-outs.
+    ///
+    /// No `serial_scoped()` guard: that helper serializes only tests that pin
+    /// `RDM_SESSION` process-globally, and this one passes its changeset
+    /// message and resolves its session exactly as its neighbor does.
+    #[test]
+    fn a_stale_delete_still_destroys_a_concurrently_recreated_path() {
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        let path = RelPath::new("projects/demo/tasks/doomed.md").unwrap();
+
+        // Seed the doomed file and land it, so HEAD really carries the path
+        // the delete will remove.
+        store.write(&path, "mine".to_string()).unwrap();
+        store.commit().unwrap();
+        store.commit_changeset(Some("seed"), &[]).unwrap();
+
+        // Journal the delete. No digest is recorded for it — there is no
+        // staged content to identify.
+        store.delete(&path).unwrap();
+        store.commit().unwrap();
+
+        // Another session recreates the path with its own bytes after this
+        // changeset flushed but before it commits. This is exactly the shape
+        // the write branch refuses.
+        std::fs::write(dir.path().join(path.as_str()), "theirs").unwrap();
+
+        let landed = store
+            .commit_changeset(Some("mine"), &[])
+            .expect("today the delete is applied unconditionally: no StaleWrite, no refusal");
+        assert!(
+            landed.committed.iter().any(|p| p == path.as_str()),
+            "the delete must land as part of the changeset; committed: {:?}",
+            landed.committed
+        );
+
+        let sha = landed.sha.expect("the changeset must produce a commit");
+        assert!(
+            store.fetch_body_at(&path, &sha).is_err(),
+            "the recreated content is destroyed: the path is absent from the \
+             landed tree even though it sits on disk with the other session's \
+             bytes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(path.as_str())).ok(),
+            Some("theirs".to_string()),
+            "and it is silent: the other session's bytes are still on disk, so \
+             nothing reports that they were dropped from the tree"
+        );
+    }
+
     #[test]
     fn a_legacy_journal_line_without_a_digest_still_commits() {
         // An in-flight changeset created before digests existed must not be

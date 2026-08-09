@@ -724,6 +724,15 @@ impl GitRepo {
             entries.insert(path.clone(), blob);
         }
 
+        // Deliberately unconditional, unlike the write branch above. A delete
+        // carries `digest: None` by construction, so there is no base-blob
+        // identity to compare: a stale delete lands over content another
+        // session created at this path and destroys it, exit 0 on both sides.
+        // That asymmetry is a named carve-out, not an oversight — see
+        // docs/lost-update-evaluation.md § Carve-outs ("Journaled deletes are
+        // applied unconditionally"), pinned by
+        // `a_stale_delete_still_destroys_a_concurrently_recreated_path`.
+        // Closing it belongs to phase 9 (`phase-9-content-checked-deletes`).
         for path in &changeset.deletes {
             if entries.remove(path).is_some() {
                 committed.push(path.clone());
