@@ -107,6 +107,48 @@ pub fn is_derived_path(path: &str) -> bool {
     false
 }
 
+/// Reports whether a store path is a project's `project.md` manifest.
+///
+/// The manifest is the sentinel every `list_*` op checks before enumerating a
+/// project (`list_roadmaps`, `list_tasks`, `list_reviews`): a `projects/<p>/`
+/// subtree without one is not a project rdm can read. Exposed so a caller
+/// deciding whether a project exists in some *projection* of the tree — such
+/// as the commit-time seed in `rdm-store-git` — asks this question in one
+/// place rather than re-spelling the `project.md` literal.
+///
+/// # Panics
+///
+/// Never. Like [`is_derived_path`], this is **total** over arbitrary `&str`:
+/// it is applied to paths a HEAD tree walk yields, whose middle segment can be
+/// empty, `.`, `..`, or contain a literal `\` (an ordinary filename character
+/// on Unix). It deliberately does not route through the `expect`-ing
+/// `project_md_path` builder; it round-trips the candidate through the
+/// fallible [`RelPath::new`], so every current *and future* `RelPath`
+/// restriction is handled by construction.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::paths::is_project_manifest;
+///
+/// assert!(is_project_manifest("projects/demo/project.md"));
+/// // A derived index is not a manifest.
+/// assert!(!is_project_manifest("projects/demo/INDEX.md"));
+/// // A `project.md` nested deeper is not a project's manifest.
+/// assert!(!is_project_manifest("projects/demo/roadmaps/a/project.md"));
+/// // Segments RelPath rejects are answered `false`, not a panic.
+/// assert!(!is_project_manifest(r"projects/a\b/project.md"));
+/// ```
+#[must_use]
+pub fn is_project_manifest(path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments.len() == 3 && segments[0] == "projects" && segments[2] == "project.md" {
+        return RelPath::new(&format!("projects/{}/project.md", segments[1]))
+            .is_ok_and(|candidate| candidate.as_str() == path);
+    }
+    false
+}
+
 /// Names the plan item a store path holds, in the `<kind>/<id>` vocabulary the
 /// CLI already uses everywhere else.
 ///
@@ -399,6 +441,21 @@ mod tests {
     #[test]
     fn project_md_path_is_correct() {
         assert_eq!(project_md_path("fbm").as_str(), "projects/fbm/project.md");
+    }
+
+    /// Lockstep: the sentinel every `list_*` op checks and the sentinel the
+    /// commit-time seed pruner checks must be the same path shape.
+    #[test]
+    fn is_project_manifest_matches_project_md_path() {
+        assert!(is_project_manifest(project_md_path("fbm").as_str()));
+        assert!(!is_project_manifest(project_index_path("fbm").as_str()));
+        assert!(!is_project_manifest("projects/fbm"));
+        assert!(!is_project_manifest("rdm.toml"));
+        assert!(!is_project_manifest("project.md"));
+        // Total over segments `RelPath` rejects.
+        assert!(!is_project_manifest("projects//project.md"));
+        assert!(!is_project_manifest("projects/../project.md"));
+        assert!(!is_project_manifest(r"projects/a\b/project.md"));
     }
 
     #[test]

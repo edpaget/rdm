@@ -175,7 +175,7 @@ Phase 4 has implemented the session-scoped journal mechanism with the following 
 
 ## Open Questions (Deferred to Phase 5 or Later)
 
-### INDEX.md Consistency in Partial Commits — **resolved by phase 5**
+### INDEX.md Consistency in Partial Commits — **resolved by phase 5, completed by phase 8**
 
 **How consistency is maintained:** INDEX.md is auto-generated from individual roadmap, phase, task, and review files — it is a computed artifact, not a source of truth. When a partial commit (from HEAD + caller's journaled paths) is created, the INDEX.md in that commit reflects exactly the entities that exist in that tree.
 
@@ -190,12 +190,26 @@ Phase 4 has implemented the session-scoped journal mechanism with the following 
 
 1. HEAD's document bytes are materialized (`collect_blobs_at`); non-UTF-8 blobs are skipped for the projection but keep their HEAD oid in the tree, so nothing is dropped from the commit.
 2. This changeset's non-derived writes and deletes are applied on top, in memory.
-3. That projection seeds a `rdm_core::store::MemoryStore`, and `rdm_core::ops::index::generate_index` runs against it.
-4. **Only** the derived paths this changeset journaled are taken back and written into the tree.
+3. **(phase 8)** Every `projects/<p>/` subtree whose `projects/<p>/project.md` is absent from that projection is dropped before generation. Such a parent is owned by a *third* session that has not committed yet, so it is visible to neither HEAD nor this changeset. Without the drop, `list_reviews`/`list_roadmaps`/`list_tasks` — all of which check the `project.md` sentinel before enumerating — raise `ProjectNotFound`, and the whole commit aborts with a misleading `project not found: <p>` for a project the user did just create.
+4. That projection seeds a `rdm_core::store::MemoryStore`, and `rdm_core::ops::index::generate_index` runs against it.
+5. **Only** the derived paths this changeset journaled are taken back and written into the tree. A `projects/<p>/INDEX.md` journaled for a subtree step 3 pruned was never generated, so it is simply not produced — which is what keeps the commit free of an orphan project index.
 
 Derived paths the changeset did **not** journal stay at their HEAD oid, so an unrelated project's index is never silently rewritten by an unrelated session's commit.
 
-The mechanism is deliberately a *projection*, not a journal-scoped `Store` view: the projection is HEAD + this changeset, which is exactly the tree being committed, so what the index describes and what the tree contains cannot diverge. It is deterministic by construction — ordered maps throughout, no timestamps, no hash-iteration ordering — pinned by a unit test asserting that committing the same changeset twice against the same HEAD yields identical tree oids, and gated end-to-end by `scripts/verify-scoped-commit.sh` § F (including a self-test proving a disk-sourced derived blob would be caught).
+The mechanism is deliberately a *projection*, not a journal-scoped `Store` view: the projection is HEAD + this changeset, which is exactly the tree being committed. The guarantee that buys is **one-directional**: the index can never name a path the tree does not contain — no dangling row, and no `projects/<p>/INDEX.md` for a project whose `project.md` the commit lacks. The converse does **not** hold: a document whose project is owned by an uncommitted third session lands in the tree while the index carries no row for it (see below). It is deterministic by construction — ordered maps and sets throughout, no timestamps, no hash-iteration ordering — pinned by unit tests asserting that committing the same changeset twice against the same HEAD yields identical tree oids (with and without a pruned subtree), and gated end-to-end by `scripts/verify-scoped-commit.sh` § F (a self-test proving a disk-sourced derived blob would be caught) and § I (the three-session orphaned-parent branch, with self-tests planting a dangling row and an orphan project index).
+
+#### What the drop costs, and why it was chosen
+
+The divergence step 2b introduces is `tree ⊇ index`, never the reverse. A dangling row is a corrupt artifact; an omitted row is a stale-but-valid one, and the omission is repaired with no user action: `journal::truncate` trims only the paths a commit actually landed, so the deferred `projects/<p>/INDEX.md` stays in the deferring session's changeset, and the moment the owning session commits its `project.md`, that session's own `reconcile_derived` seeds from a HEAD which now holds the deferred document and regenerates every row. (`rdm index` also rebuilds unconditionally.) This rests on truncation staying landed-paths-only — if it ever widened to cover journaled-but-unlanded paths, the heal would break and this trade would become indefensible.
+
+**The accepted consequence, stated explicitly:** the committing session's own new document is absent from the index *it* commits. That is accepted, because the alternative — emitting `projects/<p>/INDEX.md` for a project whose manifest the commit does not contain — is exactly the orphan the guarantee above forbids. Nothing is lost from the tree: the document itself still lands.
+
+Two alternatives were rejected:
+
+- **Fail accurately** — keep the hard failure but name the real cause ("another uncommitted session owns `projects/<p>/project.md`"). Rejected: an accurate error is still a blocked workflow, and the blocked workflow is a routine one (one session creates the container, another adds content under it before the first lands) whose only recovery is to go ask the other session to commit.
+- **Synthesize a placeholder `project.md` into the seed** so the project still generates. Rejected: it would emit a `projects/<p>/INDEX.md` for a project whose `project.md` the commit does not contain — the orphan case above.
+
+Two shapes are out of scope by construction rather than by defense: a `projects/<p>/INDEX.md` already in HEAD without its manifest, and a changeset that *deletes* a `project.md` while HEAD keeps the rest of the subtree. Both would leave an inherited index in the tree, and both are unreachable through rdm today — a `project.md` is always created and committed alongside its index, and rdm has no project-delete command at all. The prune is deliberately scoped to what generation sees; it never deletes an inherited path from the tree, because deleting inherited paths is precisely the sweeping behavior scoping exists to prevent.
 
 ### Merge Driver: Out of Scope (Correctly)
 

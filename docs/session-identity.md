@@ -319,6 +319,12 @@ memory against HEAD (never taken from disk — the on-disk index already holds
 every session's rows). A path another session left dirty is structurally
 unreachable, not filtered out late.
 
+The reconciled index is complete in one direction only: it never names a path
+the commit does not contain, but a document whose *project* was created by
+another session that has not committed yet lands in the tree with no index row
+for it. The row appears as soon as that session commits — see
+`docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial Commits".
+
 | Flag | Meaning |
 | --- | --- |
 | *(none)* | Commit this session's changeset. |

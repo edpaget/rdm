@@ -15,8 +15,11 @@
 #   F  committed indexes reflect HEAD plus the committing changeset only
 #   G  `rdm discard` cannot destroy another session's work
 #   H  reads stay shared — no read isolation was introduced
+#   I  a commit under a project another session has not landed still lands,
+#      with a coherent index
 #
-# Sections C, D and F carry planted-mutation self-tests proving they can fail.
+# Sections C, D, F and I carry planted-mutation self-tests proving they can
+# fail.
 #
 # Run after touching rdm-store-git's commit/status/discard paths, the
 # `GitStore` scoped entry points, `rdm_core::session::journal`, or the
@@ -100,6 +103,50 @@ assert_absent() {
     if grep -qx "$2" "$1"; then
         fail "$3 (found '$2' in: $(tr '\n' ' ' <"$1"))"
     fi
+}
+
+# index_link_targets <index-file>: every markdown `](target)` in an index, one
+# per line. Well-defined because `format_top_level_index` emits one row per
+# project whose only link target is `projects/<p>/INDEX.md`.
+#
+# The replacement below carries a LITERAL newline (a backslash-newline in the
+# sed script) rather than `\n`: BSD sed does not expand `\n` on the right-hand
+# side, and the silent result would be a helper that extracts nothing and an
+# assertion that passes vacuously.
+# The trailing `echo` is equally load-bearing: `tr` collapses the file into one
+# unterminated line, and a `while read` loop silently drops a final line with
+# no newline — which would make the LAST link in the index unchecked.
+index_link_targets() {
+    {
+        tr '\n' ' ' <"$1"
+        echo
+    } | sed 's/](/\
+](/g' | sed -n 's/^](\([^)]*\)).*/\1/p'
+}
+
+# assert_no_dangling_links <index-file> <tree-listing>: the committed index
+# must never name a path the committed tree does not contain.
+assert_no_dangling_links() {
+    index_link_targets "$1" >"$TMP/links.$$"
+    while read -r _target; do
+        [ -n "$_target" ] || continue
+        grep -qx "$_target" "$2" ||
+            fail "the committed index links '$_target', absent from the committed tree"
+    done <"$TMP/links.$$"
+    rm -f "$TMP/links.$$"
+}
+
+# assert_no_orphan_project_index <tree-listing>: no `projects/<p>/INDEX.md`
+# without a sibling `projects/<p>/project.md` in the same tree.
+assert_no_orphan_project_index() {
+    grep '^projects/[^/]*/INDEX\.md$' "$1" >"$TMP/pidx.$$" || :
+    while read -r _idx; do
+        [ -n "$_idx" ] || continue
+        _manifest=$(echo "$_idx" | sed 's|/INDEX\.md$|/project.md|')
+        grep -qx "$_manifest" "$1" ||
+            fail "the committed tree holds '$_idx' but not '$_manifest'"
+    done <"$TMP/pidx.$$"
+    rm -f "$TMP/pidx.$$"
 }
 
 # ---------------------------------------------------------------------------
@@ -622,5 +669,93 @@ RDM_SESSION=sess-h-a "$RDM_BIN" --root "$REPO_H" search "Shared Read" \
 grep -q "shared-read" "$TMP/h.search" ||
     fail "search did not find another session's uncommitted item: $(cat "$TMP/h.search")"
 ok "rdm search crosses the session boundary — no read isolation was introduced"
+
+# ---------------------------------------------------------------------------
+# Section I — a commit under a project another session has not landed
+# ---------------------------------------------------------------------------
+say "Section I: B commits under a project A created but never committed"
+
+REPO_I="$TMP/repo-i"
+seed_repo "$REPO_I"
+
+# A creates a SECOND project and leaves it staged.
+RDM_SESSION=sess-i-a "$RDM_BIN" --root "$REPO_I" project create alt \
+    --title "Alt" >"$TMP/i.a.out" 2>&1 ||
+    fail "A could not create the project: $(cat "$TMP/i.a.out")"
+
+# Vacuity guards: the manifest must be on disk and NOT in HEAD, or the whole
+# section proves nothing.
+[ -f "$REPO_I/projects/alt/project.md" ] ||
+    fail "fixture: A's project.md was never written, section I is vacuous"
+git -C "$REPO_I" ls-tree -r --name-only HEAD >"$TMP/i.tree.before"
+assert_absent "$TMP/i.tree.before" "projects/alt/project.md" \
+    "fixture: A's project already landed, section I is vacuous"
+
+RDM_SESSION=sess-i-b "$RDM_BIN" --root "$REPO_I" task create b-task \
+    --title "B" --no-edit --project alt >"$TMP/i.b.out" 2>&1 ||
+    fail "B could not create its task: $(cat "$TMP/i.b.out")"
+
+RDM_SESSION=sess-i-b "$RDM_BIN" --root "$REPO_I" commit -m "land b" >"$TMP/i.out" 2>&1 ||
+    fail "B's commit aborted over A's uncommitted project: $(cat "$TMP/i.out")"
+if grep -q "project not found" "$TMP/i.out"; then
+    fail "the misleading 'project not found' error survived: $(cat "$TMP/i.out")"
+fi
+ok "B's commit landed instead of aborting with 'project not found'"
+
+git -C "$REPO_I" ls-tree -r --name-only HEAD >"$TMP/i.tree"
+git -C "$REPO_I" show "HEAD:INDEX.md" >"$TMP/i.index"
+
+contains_path "$TMP/i.tree" "projects/alt/tasks/b-task.md" ||
+    fail "B's own document did not land: $(tr '\n' ' ' <"$TMP/i.tree")"
+assert_absent "$TMP/i.tree" "projects/alt/project.md" \
+    "A's uncommitted manifest was swept into B's commit"
+assert_absent "$TMP/i.tree" "projects/alt/INDEX.md" \
+    "an orphan project index landed in B's commit"
+assert_no_dangling_links "$TMP/i.index" "$TMP/i.tree"
+assert_no_orphan_project_index "$TMP/i.tree"
+ok "the committed tree and index are coherent: no dangling row, no orphan index"
+
+if grep -q 'projects/alt/INDEX.md' "$TMP/i.index"; then
+    fail "the root index names a project index the commit does not contain"
+fi
+ok "accepted trade: B's own document is absent from the index B commits — the divergence is one-directional (tree ⊇ index) and heals below"
+
+# Healing arm: the deferred rows return the moment A commits.
+RDM_SESSION=sess-i-a "$RDM_BIN" --root "$REPO_I" commit -m "land alt" >"$TMP/i.heal.out" 2>&1 ||
+    fail "A could not commit afterwards: $(cat "$TMP/i.heal.out")"
+
+git -C "$REPO_I" ls-tree -r --name-only HEAD >"$TMP/i.tree2"
+git -C "$REPO_I" show "HEAD:INDEX.md" >"$TMP/i.index2"
+contains_path "$TMP/i.tree2" "projects/alt/project.md" ||
+    fail "A's manifest did not land: $(tr '\n' ' ' <"$TMP/i.tree2")"
+contains_path "$TMP/i.tree2" "projects/alt/INDEX.md" ||
+    fail "the deferred project index did not return: $(tr '\n' ' ' <"$TMP/i.tree2")"
+grep -q 'projects/alt/INDEX.md' "$TMP/i.index2" ||
+    fail "the deferred root-index row did not return: $(cat "$TMP/i.index2")"
+git -C "$REPO_I" show "HEAD:projects/alt/INDEX.md" >"$TMP/i.altindex"
+grep -q 'b-task' "$TMP/i.altindex" ||
+    fail "B's task did not reappear in the reconciled project index: $(cat "$TMP/i.altindex")"
+assert_no_dangling_links "$TMP/i.index2" "$TMP/i.tree2"
+assert_no_orphan_project_index "$TMP/i.tree2"
+[ -z "$(git -C "$REPO_I" status --porcelain)" ] ||
+    fail "the reconciled indexes did not converge on disk: $(git -C "$REPO_I" status --porcelain)"
+ok "the deferred rows return once the owning session lands its project"
+
+# Self-test arm 1: a planted dangling row must be caught. Run in a subshell,
+# because `fail` exits.
+cp "$TMP/i.index" "$TMP/i.index.corrupt"
+printf '| [ghost](projects/ghost/INDEX.md) | 0 | 0 | no roadmaps |\n' >>"$TMP/i.index.corrupt"
+if (assert_no_dangling_links "$TMP/i.index.corrupt" "$TMP/i.tree") >/dev/null 2>&1; then
+    fail "self-test: the dangling-link check is blind to a planted row"
+fi
+ok "self-test: a planted dangling row IS caught"
+
+# Self-test arm 2: a planted orphan project index must be caught.
+cp "$TMP/i.tree" "$TMP/i.tree.corrupt"
+printf 'projects/ghost/INDEX.md\n' >>"$TMP/i.tree.corrupt"
+if (assert_no_orphan_project_index "$TMP/i.tree.corrupt") >/dev/null 2>&1; then
+    fail "self-test: the orphan-project-index check is blind to a planted entry"
+fi
+ok "self-test: a planted orphan project index IS caught"
 
 printf '\n\033[1;32mAll scoped-commit checks passed.\033[0m\n'

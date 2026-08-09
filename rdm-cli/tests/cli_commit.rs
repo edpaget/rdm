@@ -81,6 +81,41 @@ fn last_commit_files(dir: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
+/// Every path in HEAD's tree, not just the ones the tip commit changed.
+///
+/// Distinct from [`last_commit_files`] on purpose: assertions about what a
+/// commit *contains* (including paths inherited from HEAD) would pass
+/// vacuously against a changed-files listing. Clears the same git env vars,
+/// for the same reason.
+fn committed_tree_paths(dir: &std::path::Path) -> Vec<String> {
+    let output = std::process::Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(["ls-tree", "-r", "--name-only", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The contents of a path as of HEAD.
+fn show_at_head(dir: &std::path::Path, path: &str) -> String {
+    let output = std::process::Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(["show", &format!("HEAD:{path}")])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 #[test]
 fn status_shows_uncommitted_changes() {
     let dir = TempDir::new().unwrap();
@@ -372,6 +407,120 @@ fn seed_two_changesets(dir: &TempDir) {
         ])
         .assert()
         .success();
+}
+
+/// Session A creates a project and does not commit; session B creates a task
+/// under it and commits first. Before the seed-side prune this aborted with
+/// exit 1 and a misleading `project not found: alt`.
+#[test]
+fn commit_lands_under_a_project_another_changeset_has_not_committed() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    rdm_as("cs-a", &dir)
+        .args(["project", "create", "alt", "--title", "Alt"])
+        .assert()
+        .success();
+    // Not committed: A's manifest is on disk but in no commit.
+    assert!(
+        dir.path().join("projects/alt/project.md").exists(),
+        "fixture: A's project.md was never written"
+    );
+    assert!(
+        !committed_tree_paths(dir.path())
+            .iter()
+            .any(|p| p == "projects/alt/project.md"),
+        "fixture: A's project already landed, the scenario is vacuous"
+    );
+
+    rdm_as("cs-b", &dir)
+        .args([
+            "task",
+            "create",
+            "b-task",
+            "--title",
+            "B",
+            "--no-edit",
+            "--project",
+            "alt",
+        ])
+        .assert()
+        .success();
+    rdm_as("cs-b", &dir)
+        .args(["commit", "-m", "land b"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("project not found").not());
+
+    let tree = committed_tree_paths(dir.path());
+    assert!(
+        tree.iter().any(|p| p == "projects/alt/tasks/b-task.md"),
+        "B's own document did not land: {tree:?}"
+    );
+    assert!(
+        !tree.iter().any(|p| p == "projects/alt/project.md"),
+        "A's uncommitted manifest was swept in: {tree:?}"
+    );
+    assert!(
+        !tree.iter().any(|p| p == "projects/alt/INDEX.md"),
+        "an orphan project index landed: {tree:?}"
+    );
+    let index = show_at_head(dir.path(), "INDEX.md");
+    assert!(
+        !index.contains("projects/alt/INDEX.md"),
+        "the root index links a path the tree does not contain: {index}"
+    );
+}
+
+/// The heal: the deferred rows return the moment the owning session commits.
+#[test]
+fn a_deferred_index_row_returns_when_the_owning_changeset_commits() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm_as("cs-a", &dir)
+        .args(["project", "create", "alt", "--title", "Alt"])
+        .assert()
+        .success();
+    rdm_as("cs-b", &dir)
+        .args([
+            "task",
+            "create",
+            "b-task",
+            "--title",
+            "B",
+            "--no-edit",
+            "--project",
+            "alt",
+        ])
+        .assert()
+        .success();
+    rdm_as("cs-b", &dir)
+        .args(["commit", "-m", "land b"])
+        .assert()
+        .success();
+
+    rdm_as("cs-a", &dir)
+        .args(["commit", "-m", "land alt"])
+        .assert()
+        .success();
+
+    let tree = committed_tree_paths(dir.path());
+    for want in ["projects/alt/project.md", "projects/alt/INDEX.md"] {
+        assert!(
+            tree.iter().any(|p| p == want),
+            "{want} missing after the owning session committed: {tree:?}"
+        );
+    }
+    let index = show_at_head(dir.path(), "INDEX.md");
+    assert!(
+        index.contains("projects/alt/INDEX.md"),
+        "the deferred root-index row did not return: {index}"
+    );
+    let project_index = show_at_head(dir.path(), "projects/alt/INDEX.md");
+    assert!(
+        project_index.contains("b-task"),
+        "B's task did not reappear in the reconciled project index: {project_index}"
+    );
 }
 
 #[test]

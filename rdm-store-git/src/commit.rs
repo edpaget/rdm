@@ -22,7 +22,7 @@
 //! takes the path list it is given, so it stays testable without any ambient
 //! process state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -230,6 +230,59 @@ fn sort_tree_entries(entries: &mut [gix::objs::tree::Entry]) {
         };
         sort_key(a).cmp(&sort_key(b))
     });
+}
+
+/// Names the project a store path lives under, if any.
+///
+/// `projects/<p>/<something>/…` yields `Some(<p>)`. Everything else yields
+/// `None` — including a top-level file literally named `projects/foo` (two
+/// segments, no subtree), `projects/` alone, and any path outside `projects/`.
+/// Total and allocation-free; the returned name borrows from `path`.
+fn project_segment(path: &str) -> Option<&str> {
+    let mut segments = path.split('/');
+    if segments.next()? != "projects" {
+        return None;
+    }
+    let project = segments.next()?;
+    // A third non-empty segment is what distinguishes a project *subtree*
+    // from a top-level file that merely happens to be named `projects/foo`.
+    let third = segments.next()?;
+    if project.is_empty() || third.is_empty() {
+        return None;
+    }
+    Some(project)
+}
+
+/// Removes every `projects/<p>/**` entry whose `projects/<p>/project.md` is
+/// absent from the same map, and returns the dropped project names, sorted.
+///
+/// The `project.md` manifest is the sentinel `list_roadmaps`/`list_tasks`/
+/// `list_reviews` check before enumerating a project, so a subtree without one
+/// makes [`rdm_core::ops::index::generate_index`] raise `ProjectNotFound`.
+/// Pruning such a subtree out of the *seed* is what lets index generation
+/// succeed for every other project.
+///
+/// Deterministic by construction: ordered collections throughout, never a
+/// `HashSet`, because the caller sits on the commit's tree-oid path.
+fn drop_orphaned_project_subtrees(files: &mut BTreeMap<String, String>) -> Vec<String> {
+    let mut owned: BTreeSet<&str> = BTreeSet::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for key in files.keys() {
+        if let Some(project) = project_segment(key) {
+            seen.insert(project);
+            if rdm_core::paths::is_project_manifest(key) {
+                owned.insert(project);
+            }
+        }
+    }
+    // Collected as owned `String`s before mutating, to end the borrow of
+    // `files` that `owned`/`seen` hold.
+    let orphans: BTreeSet<String> = seen.difference(&owned).map(|p| (*p).to_string()).collect();
+    if orphans.is_empty() {
+        return Vec::new();
+    }
+    files.retain(|key, _| project_segment(key).is_none_or(|p| !orphans.contains(p)));
+    orphans.into_iter().collect()
 }
 
 /// An in-memory nested tree assembled from a flat `path -> blob oid` map.
@@ -808,6 +861,35 @@ impl GitRepo {
             files.remove(path);
         }
 
+        // `files` is now exactly `HEAD ∪ this changeset's writes − its
+        // deletes`, so "absent from both HEAD and this changeset" reduces to
+        // "absent from `files`". Drop every `projects/<p>/**` subtree whose
+        // `project.md` is missing from that projection: such a parent is owned
+        // by a *third* session that has not committed yet, and without the
+        // drop `list_reviews`/`list_roadmaps`/`list_tasks` raise
+        // `ProjectNotFound` and abort an otherwise-good commit with a
+        // misleading `project not found` for a project the user did just
+        // create.
+        //
+        // The fix point is the SEED, not the output path, and this was traced
+        // against the real code:
+        //
+        //   * `generate_index` is ONE whole-store call, so there is no
+        //     per-path regeneration to skip.
+        //   * "Skip the offending derived path and fall back to its HEAD blob"
+        //     fails twice over: the orphan has no HEAD blob (the owning
+        //     session never committed the project), and the ROOT `INDEX.md`
+        //     is not skipped at all yet still fails, because `list_projects`
+        //     enumerates `projects/*` *directories* — this changeset's own
+        //     write under the orphaned project creates that directory in the
+        //     seeded store.
+        //
+        // The cost is a one-directional divergence (`tree ⊇ index`) that is
+        // never dangling and heals on the owning session's next commit. See
+        // `docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial
+        // Commits".
+        let _deferred = drop_orphaned_project_subtrees(&mut files);
+
         let seed: Vec<(&str, &str)> = files
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -825,6 +907,12 @@ impl GitRepo {
             let Ok(rel) = RelPath::new(path) else {
                 continue;
             };
+            // This skip is load-bearing, not merely defensive: a
+            // `projects/<p>/INDEX.md` this changeset journaled for a subtree
+            // the seed pruned above was never generated, so it is simply not
+            // produced here. That is what keeps the commit free of an orphan
+            // project index — one whose `project.md` the commit does not also
+            // contain — and leaves the path journaled for the next commit.
             if let Ok(content) = mem.read(&rel) {
                 out.insert(path.clone(), content.into_bytes());
             }
@@ -1512,6 +1600,94 @@ mod commit_lock_tests {
              never error or hang — the compare-and-swap is the correctness \
              mechanism, the lock is only an optimization"
         );
+    }
+}
+
+#[cfg(test)]
+mod orphaned_subtree_tests {
+    use super::*;
+
+    fn map(paths: &[&str]) -> BTreeMap<String, String> {
+        paths
+            .iter()
+            .map(|p| ((*p).to_string(), "body".to_string()))
+            .collect()
+    }
+
+    fn keys(files: &BTreeMap<String, String>) -> Vec<String> {
+        files.keys().cloned().collect()
+    }
+
+    #[test]
+    fn drops_a_subtree_with_no_manifest() {
+        let mut files = map(&[
+            "projects/alt/tasks/b.md",
+            "projects/alt/roadmaps/r/roadmap.md",
+        ]);
+        let dropped = drop_orphaned_project_subtrees(&mut files);
+        assert_eq!(dropped, vec!["alt".to_string()]);
+        assert!(keys(&files).is_empty(), "{:?}", keys(&files));
+    }
+
+    #[test]
+    fn keeps_a_project_that_has_its_manifest() {
+        let paths = [
+            "projects/demo/project.md",
+            "projects/demo/INDEX.md",
+            "projects/demo/tasks/a.md",
+        ];
+        let mut files = map(&paths);
+        assert!(drop_orphaned_project_subtrees(&mut files).is_empty());
+        assert_eq!(keys(&files).len(), paths.len());
+    }
+
+    #[test]
+    fn never_touches_paths_outside_projects() {
+        let mut files = map(&["rdm.toml", "INDEX.md", ".gitattributes"]);
+        assert!(drop_orphaned_project_subtrees(&mut files).is_empty());
+        assert_eq!(keys(&files).len(), 3);
+    }
+
+    #[test]
+    fn ignores_a_top_level_file_named_projects_foo() {
+        // Two segments, no subtree: treating this as a project named `foo`
+        // would delete an unrelated file from the seed.
+        let mut files = map(&["projects/foo", "projects/demo/project.md"]);
+        assert!(drop_orphaned_project_subtrees(&mut files).is_empty());
+        assert!(keys(&files).iter().any(|k| k == "projects/foo"));
+    }
+
+    #[test]
+    fn is_a_no_op_on_an_empty_map() {
+        let mut files: BTreeMap<String, String> = BTreeMap::new();
+        assert!(drop_orphaned_project_subtrees(&mut files).is_empty());
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn returns_the_dropped_names_sorted() {
+        let mut files = map(&[
+            "projects/zeta/tasks/z.md",
+            "projects/alpha/tasks/a.md",
+            "projects/mid/tasks/m.md",
+            "projects/kept/project.md",
+        ]);
+        let dropped = drop_orphaned_project_subtrees(&mut files);
+        assert_eq!(dropped, vec!["alpha", "mid", "zeta"]);
+        assert_eq!(keys(&files), vec!["projects/kept/project.md"]);
+    }
+
+    #[test]
+    fn project_segment_is_total() {
+        assert_eq!(project_segment("projects/demo/project.md"), Some("demo"));
+        assert_eq!(project_segment("projects/demo/tasks/a.md"), Some("demo"));
+        assert_eq!(project_segment("projects/foo"), None);
+        assert_eq!(project_segment("projects/"), None);
+        assert_eq!(project_segment("projects"), None);
+        assert_eq!(project_segment("projects//a.md"), None);
+        assert_eq!(project_segment("projects/demo/"), None);
+        assert_eq!(project_segment("rdm.toml"), None);
+        assert_eq!(project_segment(""), None);
     }
 }
 

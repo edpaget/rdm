@@ -3565,11 +3565,17 @@ mod tests {
     }
 
     fn make_task(store: &mut GitStore, slug: &str) {
-        rdm_core::ops::mutate(store, "demo", |s| {
+        make_task_in(store, "demo", slug);
+    }
+
+    /// Like [`make_task`], but in a named project — the cross-changeset tests
+    /// need a project whose `project.md` is *not* in HEAD.
+    fn make_task_in(store: &mut GitStore, project: &str, slug: &str) {
+        rdm_core::ops::mutate(store, project, |s| {
             rdm_core::ops::task::create_task(
                 s,
                 rdm_core::ops::task::CreateTask {
-                    project: "demo",
+                    project,
                     slug,
                     title: slug,
                     priority: rdm_core::model::Priority::Medium,
@@ -3580,6 +3586,76 @@ mod tests {
             .map(|_| ())
         })
         .unwrap();
+    }
+
+    /// Every path in HEAD's tree — not just the ones the tip commit changed.
+    ///
+    /// The coherence assertions below are about what the commit's *tree*
+    /// contains (including paths inherited from HEAD such as
+    /// `projects/demo/INDEX.md`), so `show --name-only` would make the
+    /// dangling-link check pass vacuously.
+    fn head_tree_paths(dir: &TempDir) -> Vec<String> {
+        git_in(dir, &["ls-tree", "-r", "--name-only", "HEAD"])
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Every markdown link target in a rendered index body.
+    ///
+    /// Well-defined because `display::format_top_level_index` emits one row
+    /// per project whose only link target is `projects/<name>/INDEX.md`.
+    fn index_link_targets(index: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = index;
+        while let Some(open) = rest.find("](") {
+            rest = &rest[open + 2..];
+            if let Some(close) = rest.find(')') {
+                out.push(rest[..close].to_string());
+                rest = &rest[close + 1..];
+            } else {
+                break;
+            }
+        }
+        out
+    }
+
+    /// AC-3 assertion 1: the committed index names no path the tree lacks.
+    fn assert_no_dangling_links(index: &str, tree: &[String]) {
+        for target in index_link_targets(index) {
+            assert!(
+                tree.contains(&target),
+                "the committed index links {target}, absent from the committed tree: {tree:?}"
+            );
+        }
+    }
+
+    /// AC-3 assertion 2: no `projects/<p>/INDEX.md` without its manifest.
+    ///
+    /// A general scan rather than a hardcoded project name, so it also catches
+    /// a regression under some future project.
+    fn assert_no_orphan_project_index(tree: &[String]) {
+        for path in tree {
+            let segments: Vec<&str> = path.split('/').collect();
+            if segments.len() == 3 && segments[0] == "projects" && segments[2] == "INDEX.md" {
+                let manifest = format!("projects/{}/project.md", segments[1]);
+                assert!(
+                    tree.contains(&manifest),
+                    "the committed tree holds {path} but not {manifest}: {tree:?}"
+                );
+            }
+        }
+    }
+
+    /// Rebinds the process-global session id and reopens the store.
+    ///
+    /// A fresh construction is how [`scoped_repo`] binds identity, so it must
+    /// be re-done rather than reusing the previous handle — otherwise the two
+    /// "sessions" silently merge and the test proves nothing.
+    fn switch_session(dir: &TempDir, id: &str) -> GitStore {
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, id) };
+        GitStore::new(dir.path()).unwrap()
     }
 
     /// Runs `git` against `dir` with the inherited git environment cleared.
@@ -3694,6 +3770,147 @@ mod tests {
         assert_eq!(
             oids[0], oids[1],
             "committing the same changeset against the same HEAD must be deterministic"
+        );
+    }
+
+    // ---- cross-changeset derived-index dependencies ----
+    //
+    // Session A creates a project and does not commit; session B creates a
+    // document under it and commits first. B's `projects/alt/INDEX.md` has a
+    // parent entity visible in neither HEAD nor B's own changeset. See
+    // `docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial
+    // Commits".
+
+    /// Arranges the three-session fixture and returns B's store, uncommitted.
+    ///
+    /// Session `a_id` creates project `alt` and leaves it staged; session
+    /// `b_id` creates `b-task` under it. The caller commits.
+    fn arrange_orphaned_parent(dir: &TempDir, a_id: &str, b_id: &str) -> GitStore {
+        let mut store_a = scoped_repo(dir, a_id);
+        rdm_core::ops::mutate(&mut store_a, "alt", |s| {
+            rdm_core::ops::project::create_project(s, "alt", "Alt").map(|_| ())
+        })
+        .unwrap();
+        drop(store_a);
+
+        // Vacuity guards: without these, a future change that makes A's
+        // project land early would turn the whole scenario green for the
+        // wrong reason.
+        assert!(
+            dir.path().join("projects/alt/project.md").exists(),
+            "fixture: A's project.md was never written to disk"
+        );
+        assert!(
+            !head_tree_paths(dir)
+                .iter()
+                .any(|p| p == "projects/alt/project.md"),
+            "fixture: A's project already landed in HEAD, the scenario is vacuous"
+        );
+
+        let mut store_b = switch_session(dir, b_id);
+        make_task_in(&mut store_b, "alt", "b-task");
+        store_b
+    }
+
+    #[test]
+    fn a_commit_under_a_project_another_session_has_not_landed_still_lands() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let store_b = arrange_orphaned_parent(&dir, "unit-orphan-a", "unit-orphan-b");
+
+        // The `unwrap` is the reproduction: before the seed-side prune this
+        // panics on `Error::Git("failed to reconcile the generated indexes
+        // against HEAD: project not found: alt …")`.
+        let outcome = store_b.commit_changeset(Some("land b"), &[]).unwrap();
+        assert!(outcome.sha.is_some(), "B's commit should have landed");
+
+        let tree = head_tree_paths(&dir);
+        let index = git_in(&dir, &["show", "HEAD:INDEX.md"]);
+        assert_no_dangling_links(&index, &tree);
+        assert_no_orphan_project_index(&tree);
+    }
+
+    /// The accepted consequence of dropping the orphaned subtree at the seed.
+    ///
+    /// B's own task lands in the tree, but the root index B commits carries no
+    /// row for it: emitting `projects/alt/INDEX.md` for a project whose
+    /// `project.md` this commit does not contain is exactly the orphan the
+    /// coherence assertion forbids. The divergence is one-directional
+    /// (`tree ⊇ index`) and self-healing — see
+    /// `the_deferred_rows_return_once_the_owning_session_lands_its_project`
+    /// and `docs/scoping-model-decision.md` § "INDEX.md Consistency".
+    #[test]
+    fn b_task_is_deliberately_absent_from_the_index_b_commits() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let store_b = arrange_orphaned_parent(&dir, "unit-omit-a", "unit-omit-b");
+        store_b.commit_changeset(Some("land b"), &[]).unwrap();
+
+        let tree = head_tree_paths(&dir);
+        assert!(
+            tree.iter().any(|p| p == "projects/alt/tasks/b-task.md"),
+            "B's own document must still land in the tree: {tree:?}"
+        );
+        assert!(
+            !tree.iter().any(|p| p == "projects/alt/project.md"),
+            "A's uncommitted manifest must not have been swept in: {tree:?}"
+        );
+        let index = git_in(&dir, &["show", "HEAD:INDEX.md"]);
+        assert!(
+            !index.contains("projects/alt/INDEX.md"),
+            "accepted: the deferred row must be absent, not dangling: {index}"
+        );
+    }
+
+    #[test]
+    fn the_deferred_rows_return_once_the_owning_session_lands_its_project() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let store_b = arrange_orphaned_parent(&dir, "unit-heal-a", "unit-heal-b");
+        store_b.commit_changeset(Some("land b"), &[]).unwrap();
+        drop(store_b);
+
+        let store_a = switch_session(&dir, "unit-heal-a");
+        store_a.commit_changeset(Some("land alt"), &[]).unwrap();
+
+        let tree = head_tree_paths(&dir);
+        for want in ["projects/alt/project.md", "projects/alt/INDEX.md"] {
+            assert!(
+                tree.iter().any(|p| p == want),
+                "{want} missing after the owning session landed: {tree:?}"
+            );
+        }
+        let index = git_in(&dir, &["show", "HEAD:INDEX.md"]);
+        assert!(
+            index.contains("projects/alt/INDEX.md"),
+            "the deferred root-index row did not return: {index}"
+        );
+        let project_index = git_in(&dir, &["show", "HEAD:projects/alt/INDEX.md"]);
+        assert!(
+            project_index.contains("b-task"),
+            "B's task did not reappear in the reconciled project index: {project_index}"
+        );
+        assert_no_dangling_links(&index, &tree);
+        assert_no_orphan_project_index(&tree);
+    }
+
+    #[test]
+    fn the_same_orphaned_changeset_twice_against_one_head_yields_one_tree_oid() {
+        let _guard = serial_scoped();
+        let mut oids = Vec::new();
+        for _ in 0..2 {
+            let dir = TempDir::new().unwrap();
+            let store_b = arrange_orphaned_parent(&dir, "unit-odet-a", "unit-odet-b");
+            store_b.commit_changeset(Some("det"), &[]).unwrap();
+            oids.push(
+                git_in(&dir, &["rev-parse", "HEAD^{tree}"])
+                    .trim()
+                    .to_string(),
+            );
+        }
+        assert_eq!(
+            oids[0], oids[1],
+            "the seed-side prune sits on the determinism-critical path"
         );
     }
 

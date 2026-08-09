@@ -179,7 +179,11 @@ mutation via `ops::mutate`, so two concurrent sessions legitimately rewrite
 them. Without this exemption every concurrent mutation would falsely trip.
 Their commit-time correctness is already owned by phase 5's `reconcile_derived`,
 which builds them in memory as HEAD-plus-this-changeset rather than reading the
-shared on-disk copy.
+shared on-disk copy. Since phase 8, a derived index whose parent project is
+owned by an *uncommitted third session* is deferred rather than failing the
+commit: the orphaned subtree is dropped from the generation seed and its rows
+return on the owning session's next commit — see
+`docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial Commits".
 
 **Store-bypassing writers are uncovered.** `rdm.toml` is written by the raw
 `fs::write` in `rdm-cli/src/paths.rs::save_repo_config`, and `.gitattributes`
