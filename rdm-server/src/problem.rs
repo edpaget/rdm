@@ -175,12 +175,18 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("'{slug}' already exists")),
                 instance: None,
             },
-            // Both are lost-update refusals: the client's write was derived
-            // from content that has since changed, so 409 is the answer and
+            // All three are lost-update refusals — two on the write side (a
+            // write derived from content that has since changed, and a commit
+            // of a path another session overwrote) and one on the delete side
+            // (a commit of a deletion another session has since undone by
+            // recreating the path). 409 is the answer in each case and
             // re-read-then-retry is the remedy. The `Display` text already
-            // names the item and states that nothing was written, so it is
-            // carried through verbatim rather than re-worded here.
-            Error::StaleWrite { .. } | Error::ChangesetPathOverwritten { .. } => ProblemDetail {
+            // names the item and states that nothing was written or
+            // committed, so it is carried through verbatim rather than
+            // re-worded here.
+            Error::StaleWrite { .. }
+            | Error::ChangesetPathOverwritten { .. }
+            | Error::ChangesetDeletePathRecreated { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),
                 status: 409,

@@ -202,6 +202,27 @@ pub enum Error {
         /// The store-relative path.
         path: String,
     },
+    /// A path this changeset journaled a *deletion* of is present on disk
+    /// again at commit time, so another session recreated it and applying the
+    /// delete would destroy their content.
+    ///
+    /// The delete-side half of the same commit-time content check that raises
+    /// [`Error::ChangesetPathOverwritten`] for writes. It is a distinct
+    /// variant because "overwritten" describes the wrong side of a delete:
+    /// nothing this changeset wrote was overwritten — the path this changeset
+    /// left *absent* was refilled by someone else.
+    ///
+    /// The reference point is the **working tree at commit time**, never HEAD.
+    /// A session that deletes a path leaves it absent, so absent means "still
+    /// as I left it" and present means "someone else has been here". A HEAD
+    /// basis would instead refuse a session's own multi-command uncommitted
+    /// batch, which is the batching workflow rdm prescribes.
+    ChangesetDeletePathRecreated {
+        /// The item, in the `task/<slug>` vocabulary users already know.
+        item: String,
+        /// The store-relative path.
+        path: String,
+    },
     /// The plan repo root could not be determined from any source in the
     /// priority chain (explicit override, global config `root`, XDG data dir).
     RootNotDetermined,
@@ -462,6 +483,16 @@ impl std::fmt::Display for Error {
                      Path: {path}"
                 )
             }
+            Error::ChangesetDeletePathRecreated { item, path } => {
+                write!(
+                    f,
+                    "refusing to commit the deletion of {item}: it is present on disk again, so \
+                     another session recreated it after this changeset deleted it — committing \
+                     would destroy their content. Nothing was committed — re-read the item (it \
+                     exists again) and re-run your delete if it is still right, then commit. \
+                     Path: {path}"
+                )
+            }
             Error::RootNotDetermined => {
                 write!(
                     f,
@@ -519,3 +550,41 @@ impl From<toml::ser::Error> for Error {
 
 /// A convenient `Result` type for rdm-core.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    /// The refusal is a user-facing message on the `rdm commit` path, so its
+    /// two obligations — name the item, say what to do — are gated here rather
+    /// than left to whoever last edited the wording.
+    #[test]
+    fn changeset_delete_path_recreated_message_names_the_item_and_the_remedy() {
+        let rendered = Error::ChangesetDeletePathRecreated {
+            item: "task/fix-bug".to_string(),
+            path: "projects/demo/tasks/fix-bug.md".to_string(),
+        }
+        .to_string();
+
+        assert!(
+            rendered.contains("task/fix-bug"),
+            "the message must name the item in the vocabulary users know: {rendered}"
+        );
+        assert!(
+            rendered.contains("recreated"),
+            "the message must say another session recreated the path: {rendered}"
+        );
+        assert!(
+            rendered.to_lowercase().contains("nothing was committed"),
+            "the message must state that nothing landed: {rendered}"
+        );
+        assert!(
+            rendered.contains("re-run your delete"),
+            "the message must state the remedy: {rendered}"
+        );
+        assert!(
+            rendered.contains("projects/demo/tasks/fix-bug.md"),
+            "the raw path is the fallback locator: {rendered}"
+        );
+    }
+}

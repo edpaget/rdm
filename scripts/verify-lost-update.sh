@@ -4,11 +4,13 @@
 #
 # Drives REAL separate `rdm` processes against temp plan repos to gate every
 # acceptance criterion of
-# `plan-repo-concurrency/phase-6-close-the-lost-update-window`:
+# `plan-repo-concurrency/phase-6-close-the-lost-update-window`, plus phase 9's
+# delete-side half (`phase-9-content-checked-deletes`):
 #
-#   1   docs/lost-update-evaluation.md exists as a standalone record, and its
-#       Carve-outs section names the deletes gap (applied unconditionally,
-#       closed by phase 9) rather than leaving it implied by "write"
+#   1   docs/lost-update-evaluation.md exists as a standalone record, and —
+#       since phase 9 closed the deletes gap — no longer carries the deletes
+#       carve-out but DOES name the delete guard, its error variant, and its
+#       working-tree-at-commit-time basis
 #   2   two real processes interleaved mid-flush: the loser is REFUSED, not
 #       silently dropped   (2b repeats it with no session id at all)
 #   2c  planted-mutation self-tests: with the check removed the lost update
@@ -18,15 +20,21 @@
 #   4   the commit-time half: a path another session overwrote is refused
 #       rather than committed under this changeset's message
 #   5   the `Done:` hook path stays exit-0 and logs the rejection
+#   6   the commit-time DELETE half: a delayed `rdm commit` whose changeset
+#       deletes a path another session has since recreated is refused, and
+#       that session's file survives at HEAD   (6b the no-recreate self-test;
+#       6c the mutant-binary self-test)
 #
 # An in-process test with two `Store` handles cannot gate any of this: the
 # staging overlay is in-memory and discarded at process exit, which is exactly
 # the layer that does not span invocations. Hence real processes throughout,
-# interleaved at the documented `RDM_HARNESS_FLUSH_BARRIER` seam.
+# interleaved at the documented `RDM_HARNESS_FLUSH_BARRIER` seam — except
+# section 6, whose window (staging a delete, then committing it later) is
+# naturally wide enough to drive with plain sequential invocations.
 #
 # Run after touching rdm-store-fs's baseline/flush machinery, the journal's
-# `digest` field, `create_scoped_commit`'s content check, or
-# `rdm_core::paths::describe_path`.
+# `digest` field, `create_scoped_commit`'s content check, the delete guard in
+# `build_changeset_tree`'s delete loop, or `rdm_core::paths::describe_path`.
 #
 # Requires: cargo-built rdm at target/debug/rdm (from this repo). No network.
 # Every wait is bounded and fails loudly — CI runs this unattended.
@@ -251,36 +259,68 @@ grep -qiE '\*\*\(A\) Do nothing\.\*\*|do nothing' "$DOC" ||
     fail "the record must state the do-nothing option and why it was not taken"
 ok "the do-nothing option is recorded"
 
-# Deletes are OUT OF SCOPE for the guard this phase ships, and that has to be
-# on the record BY NAME rather than left implied by the word "write": a stale
-# delete is applied unconditionally and destroys content another session
-# recreated at the path. Closing it is phase 9's; naming it is this phase's.
+# Deletes WERE a named carve-out of phase 6's write-only guard. Phase 9 closed
+# them, so this section now asserts the INVERSE of what it used to: the
+# carve-out heading must be GONE, the record must name the guard's error
+# variant, and the delete loop must no longer defer to phase 9.
 DELETE_CARVEOUT='\*\*Journaled deletes are applied unconditionally\.\*\*'
-grep -qE "$DELETE_CARVEOUT" "$DOC" ||
-    fail "Carve-outs must name the deletes gap: **Journaled deletes are applied unconditionally.**"
-grep -qE 'phase-9-content-checked-deletes' "$DOC" ||
-    fail "the deletes carve-out must hand the fix to phase 9 (phase-9-content-checked-deletes)"
-grep -q 'a_stale_delete_still_destroys_a_concurrently_recreated_path' "$DOC" ||
-    fail "the deletes carve-out must name the test that locks today's behavior"
-ok "the deletes carve-out is named, pinned to its test, and handed to phase 9"
-
-# The delete branch itself stays comment-only in this phase, and the comment
-# must point back at the carve-out rather than at nothing.
-grep -q 'phase-9-content-checked-deletes' "$REPO_ROOT/rdm-store-git/src/commit.rs" ||
-    fail "the delete loop in rdm-store-git/src/commit.rs must point at phase 9"
-ok "the delete loop points at the carve-out and at phase 9"
-
-# Self-test: strip the carve-out heading into a copy and prove the check
-# observes its absence. Without this the greps above could pass vacuously.
-sed 's/^\*\*Journaled deletes are applied unconditionally\.\*\*/**Journaled deletes are handled.**/' \
-    "$DOC" >"$TMP/doc-mutant.md"
-if grep -qE "$DELETE_CARVEOUT" "$TMP/doc-mutant.md"; then
-    fail "self-test setup failed: the deletes carve-out survived the planted mutation"
+if grep -qE "$DELETE_CARVEOUT" "$DOC"; then
+    fail "the deletes carve-out is closed — **Journaled deletes are applied \
+unconditionally.** must no longer appear in the record"
 fi
-grep -qE "$DELETE_CARVEOUT" "$DOC" ||
+DELETE_VARIANT='ChangesetDeletePathRecreated'
+grep -q "$DELETE_VARIANT" "$DOC" ||
+    fail "the record must name the delete guard's error variant ($DELETE_VARIANT)"
+grep -qi 'working tree at commit time' "$DOC" ||
+    fail "the record must state the delete guard's basis (the working tree at commit time, not HEAD)"
+ok "the record replaces the carve-out with the guard, its variant, and its basis"
+
+# The delete loop itself must no longer defer to phase 9 — it IS phase 9.
+DELETE_LOOP_SRC="$REPO_ROOT/rdm-store-git/src/commit.rs"
+if grep -q 'phase-9-content-checked-deletes' "$DELETE_LOOP_SRC"; then
+    fail "the delete loop in rdm-store-git/src/commit.rs still defers to phase 9"
+fi
+grep -q "Error::$DELETE_VARIANT" "$DELETE_LOOP_SRC" ||
+    fail "the delete loop in rdm-store-git/src/commit.rs must raise Error::$DELETE_VARIANT"
+grep -q 'is_derived_path(path) && self.root.join(path).exists()' "$DELETE_LOOP_SRC" ||
+    fail "the delete loop must be a working-tree presence check exempting derived paths"
+ok "the delete loop carries the guard and exempts derived indexes"
+
+# `ChangesetScope::digests`' rustdoc must no longer imply that a path absent
+# from the map is committed unchecked: that fail-open answer is write-scoped
+# now, and deletes are guarded by a different mechanism.
+if grep -q 'store — is committed unchecked, which is the fail-open answer' "$DELETE_LOOP_SRC"; then
+    fail "ChangesetScope::digests' rustdoc still makes the unqualified \
+'is committed unchecked' claim, which is no longer true of deletes"
+fi
+grep -q 'Deletes are \*\*not\*\* committed' "$DELETE_LOOP_SRC" ||
+    fail "ChangesetScope::digests' rustdoc must cross-reference the delete guard"
+ok "ChangesetScope::digests' rustdoc is scoped to writes and names the delete guard"
+
+# Self-test: each new grep must discriminate. Strip the variant name from a
+# scratch copy of each file and prove the check observes its absence.
+sed "s/$DELETE_VARIANT/SomeOtherVariant/g" "$DOC" >"$TMP/doc-mutant.md"
+if grep -q "$DELETE_VARIANT" "$TMP/doc-mutant.md"; then
+    fail "self-test setup failed: the variant name survived the planted mutation in the doc"
+fi
+grep -q "$DELETE_VARIANT" "$DOC" ||
     fail "self-test failed to leave the real record intact"
-rm -f "$TMP/doc-mutant.md"
-ok "self-test: the deletes carve-out check observes the heading's removal"
+
+sed "s/$DELETE_VARIANT/SomeOtherVariant/g" "$DELETE_LOOP_SRC" >"$TMP/commit-mutant.rs"
+if grep -q "Error::$DELETE_VARIANT" "$TMP/commit-mutant.rs"; then
+    fail "self-test setup failed: the variant survived the planted mutation in commit.rs"
+fi
+
+# And the carve-out's absence must itself be falsifiable: a copy that DOES
+# carry the heading has to be observed by the same predicate.
+{
+    cat "$DOC"
+    printf '\n%s\n' '**Journaled deletes are applied unconditionally.** (planted)'
+} >"$TMP/doc-carveout-mutant.md"
+grep -qE "$DELETE_CARVEOUT" "$TMP/doc-carveout-mutant.md" ||
+    fail "self-test: the carve-out predicate cannot see the heading it is supposed to forbid"
+rm -f "$TMP/doc-mutant.md" "$TMP/commit-mutant.rs" "$TMP/doc-carveout-mutant.md"
+ok "self-test: each inverted check discriminates in both directions"
 
 # Self-test: the section must go red when the record is absent.
 mv "$DOC" "$TMP/doc-hidden.md"
@@ -577,6 +617,145 @@ HOOK_LOG="$REPO_5/.git/rdm-hook.log"
 grep -q 'error' "$HOOK_LOG" ||
     fail "the hook must LOG the rejection rather than swallowing it silently: $(cat "$HOOK_LOG")"
 ok "the rejection is recorded in the hook log"
+
+# ---------------------------------------------------------------------------
+# Section 6 — the commit-time DELETE half
+# ---------------------------------------------------------------------------
+say "Section 6: committing a delete of a path another session recreated is refused"
+
+# scenario_6 <repo> <bin> <outdir> <recreate: yes|no>
+#
+# Drives the delete window with plain sequential invocations — no flush
+# barrier. The window this targets is not the sub-millisecond read→write gap
+# inside one command; it is the arbitrarily wide gap rdm's own workflow
+# prescribes between staging a mutation and running `rdm commit`.
+#
+#   A  `rdm promote fix-bug` — this is the CLI-drivable delete: promote_task
+#      ends in `store.delete(&task_path)`. A does NOT commit.
+#   B  creates a task at the same slug and lands its own commit first.
+#   A  runs its delayed `rdm commit`.
+#
+# Writes A's exit status to <outdir>/a.status, stdout/stderr to a.out/a.err.
+scenario_6() {
+    _repo=$1
+    _bin=$2
+    _out=$3
+    _recreate=$4
+    mkdir -p "$_out"
+    seed_repo "$_repo" "$_bin"
+
+    RDM_SESSION=del-a "$_bin" --root "$_repo" promote fix-bug \
+        --roadmap-slug promoted --project demo >/dev/null 2>&1 ||
+        fail "A's promote must succeed (it is what stages the delete)"
+
+    # Guard against a vacuous run: if promote ever stopped journaling a
+    # DELETE of the task path, this whole section would pass with the guard
+    # never consulted.
+    RDM_SESSION=del-a "$_bin" --root "$_repo" session journal \
+        >"$_out/journal.txt" 2>&1 ||
+        fail "could not read A's changeset journal"
+    grep -qE '^[[:space:]]*delete[[:space:]]+projects/demo/tasks/fix-bug\.md$' \
+        "$_out/journal.txt" ||
+        fail "A's changeset must journal a DELETE of projects/demo/tasks/fix-bug.md, \
+or this section proves nothing; journal: $(cat "$_out/journal.txt")"
+
+    if [ "$_recreate" = "yes" ]; then
+        RDM_SESSION=del-b "$_bin" --root "$_repo" task create fix-bug \
+            --title "B's task" --body "B's bytes." --no-edit --project demo >/dev/null 2>&1 ||
+            fail "B must be able to create a task at the slug A emptied"
+        RDM_SESSION=del-b "$_bin" --root "$_repo" commit -m "B's message" >/dev/null 2>&1 ||
+            fail "B must land its own commit first"
+    fi
+
+    set +e
+    RDM_SESSION=del-a "$_bin" --root "$_repo" commit -m "A's message" \
+        >"$_out/a.out" 2>"$_out/a.err"
+    printf '%s' "$?" >"$_out/a.status"
+    set -e
+}
+
+REPO_6="$TMP/repo-6"
+scenario_6 "$REPO_6" "$RDM_BIN" "$TMP/out-6" yes
+
+[ "$(cat "$TMP/out-6/a.status")" != "0" ] ||
+    fail "A's delayed commit landed its stale delete over B's file; output: $(cat "$TMP/out-6/a.out")"
+grep -q 'task/fix-bug' "$TMP/out-6/a.err" ||
+    fail "the delete refusal must name the item; got: $(cat "$TMP/out-6/a.err")"
+grep -qi 'recreated' "$TMP/out-6/a.err" ||
+    fail "the delete refusal must say the path was recreated; got: $(cat "$TMP/out-6/a.err")"
+grep -qi 'nothing was committed' "$TMP/out-6/a.err" ||
+    fail "the delete refusal must state that nothing landed; got: $(cat "$TMP/out-6/a.err")"
+
+# The claim that actually matters: B's work is still there.
+git -C "$REPO_6" show HEAD:projects/demo/tasks/fix-bug.md 2>/dev/null |
+    grep -q "B's bytes" ||
+    fail "B's file must survive A's delayed commit at HEAD"
+if git -C "$REPO_6" log -1 --pretty=%s | grep -q "A's message"; then
+    fail "a refused commit must not have landed"
+fi
+ok "A was refused by name, nothing landed, and B's file is intact at HEAD"
+
+# Self-test 6b: the SAME sequence without B's recreate must commit cleanly and
+# genuinely remove the path — so the refusal above is caused by the recreate,
+# not by the delete path being broken.
+say "Section 6b: without the recreate, the same delayed commit succeeds"
+REPO_6B="$TMP/repo-6b"
+scenario_6 "$REPO_6B" "$RDM_BIN" "$TMP/out-6b" no
+[ "$(cat "$TMP/out-6b/a.status")" = "0" ] ||
+    fail "self-test: an un-recreated delete must still commit cleanly; \
+exit $(cat "$TMP/out-6b/a.status"): $(cat "$TMP/out-6b/a.err")"
+if git -C "$REPO_6B" show HEAD:projects/demo/tasks/fix-bug.md >/dev/null 2>&1; then
+    fail "self-test: the delete must really have removed the path from the landed tree"
+fi
+ok "self-test: the delete lands and removes the path when nobody recreated it"
+
+# Self-test 6c: neuter the guard in a scratch source tree, rebuild, and re-run
+# the scenario. The lost update must reappear — this is the only arm proving
+# section 6's pass is caused by the guard rather than by the window never
+# opening.
+say "Section 6c: a planted mutation reproduces the lost update"
+
+MUT2="$TMP/mutant-delete"
+mkdir -p "$MUT2"
+(cd "$REPO_ROOT" && git archive HEAD) | tar -x -C "$MUT2" 2>/dev/null ||
+    fail "could not export a scratch source tree (is this a git checkout?)"
+for f in rdm-store-fs/src/lib.rs rdm-core/src/store/mod.rs rdm-core/src/error.rs \
+    rdm-core/src/paths.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
+    rdm-core/src/session/journal.rs rdm-store-git/src/lib.rs \
+    rdm-store-git/src/commit.rs rdm-server/src/problem.rs; do
+    [ -f "$REPO_ROOT/$f" ] || fail "expected source file missing: $f"
+    mkdir -p "$MUT2/$(dirname "$f")"
+    cp "$REPO_ROOT/$f" "$MUT2/$f"
+done
+
+MUT2_COMMIT="$MUT2/rdm-store-git/src/commit.rs"
+grep -q 'self.root.join(path).exists()' "$MUT2_COMMIT" ||
+    fail "the delete guard's presence check moved — update this self-test to match"
+# Short-circuit the presence test rather than deleting the branch: removing the
+# `return Err(...)` outright would leave an unconstructed variant and the
+# self-test would report a build failure instead of a lost update. POSIX sed,
+# in place via a temp file (no GNU -i).
+sed 's|self.root.join(path).exists()|false /* MUTATION */|' \
+    "$MUT2_COMMIT" >"$MUT2_COMMIT.new"
+mv "$MUT2_COMMIT.new" "$MUT2_COMMIT"
+grep -q 'MUTATION' "$MUT2_COMMIT" || fail "failed to plant the delete-guard mutation"
+
+say "  building the mutant (scratch CARGO_TARGET_DIR; ~15s)"
+(cd "$MUT2" && CARGO_TARGET_DIR="$MUT2/target" cargo build -q -p rdm-cli --offline) ||
+    fail "the mutant build failed — the self-test cannot run"
+MUT2_BIN="$MUT2/target/debug/rdm"
+[ -x "$MUT2_BIN" ] || fail "the mutant binary was not produced at $MUT2_BIN"
+
+REPO_6C="$TMP/repo-6c"
+scenario_6 "$REPO_6C" "$MUT2_BIN" "$TMP/out-6c" yes
+[ "$(cat "$TMP/out-6c/a.status")" = "0" ] ||
+    fail "self-test is inconclusive: the mutant's A failed for some other \
+reason (exit $(cat "$TMP/out-6c/a.status")): $(cat "$TMP/out-6c/a.err")"
+if git -C "$REPO_6C" show HEAD:projects/demo/tasks/fix-bug.md >/dev/null 2>&1; then
+    fail "planted mutation did not reproduce the lost update — section 6 may be \
+passing for a reason other than the delete guard"
+fi
+ok "with the guard removed, B's file is silently destroyed — section 6's pass is caused by it"
 
 # ---------------------------------------------------------------------------
 say "All sections passed."

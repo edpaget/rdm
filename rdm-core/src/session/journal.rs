@@ -145,6 +145,12 @@ pub fn record(paths: &SessionPaths, id: &SessionId, entries: &[JournalEntry]) ->
 /// failing the read, so a torn tail cannot make an otherwise-recoverable
 /// changeset unreadable.
 ///
+/// That collapse is load-bearing for the scoped commit's two content guards,
+/// not just a deduplication convenience: a path deleted and then recreated
+/// within one changeset reports `Write`, so it is routed to the commit's
+/// *write* guard (digest comparison) and never reaches its *delete* guard
+/// (working-tree presence check).
+///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if the journal exists but cannot be read. A missing
@@ -397,6 +403,43 @@ mod tests {
         assert_eq!(
             read[0].digest, None,
             "a delete has no bytes, so it must not inherit the write's digest"
+        );
+    }
+
+    /// The routing fact the delete guard rests on.
+    ///
+    /// A session that deletes a path and then recreates it within one
+    /// uncommitted changeset must be handled by the scoped commit's *write*
+    /// guard, not its delete guard — and it is, because `read_journal`'s
+    /// `BTreeMap` collapse keeps only the last recorded kind per path. The
+    /// delete becomes unreachable, so `ChangesetScope::deletes` never names
+    /// the path and the delete-side presence check is never consulted for it.
+    #[test]
+    fn a_write_recorded_over_a_delete_collapses_to_write() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-recreate").unwrap();
+        let path = "projects/demo/tasks/a.md";
+
+        record(&p, &id, &[entry(path, JournalKind::Delete)]).unwrap();
+        record(
+            &p,
+            &id,
+            &[entry_with_digest(path, JournalKind::Write, "ccc")],
+        )
+        .unwrap();
+
+        let read = read_journal(&p, &id).unwrap();
+        assert_eq!(read.len(), 1, "one path, one entry: {read:?}");
+        assert_eq!(
+            read[0].kind,
+            JournalKind::Write,
+            "the recreate is the last recorded kind, so the delete is collapsed away"
+        );
+        assert_eq!(
+            read[0].digest.as_deref(),
+            Some("ccc"),
+            "and it carries the recreate's digest, so the WRITE guard can check it"
         );
     }
 

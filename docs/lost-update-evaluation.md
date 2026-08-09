@@ -1,6 +1,7 @@
 # Lost-update evaluation
 
-**Roadmap**: `plan-repo-concurrency`, phase 6
+**Roadmap**: `plan-repo-concurrency`, phase 6 (extended by phase 9, which closed
+the deletes carve-out — see § Selected mechanism, "Commit-time delete guard")
 **Date**: 2026-08-08
 **Outcome**: the window remained open. A mechanism was selected and implemented.
 
@@ -169,6 +170,86 @@ current working-tree digest to the journaled one and returns
 session's bytes under this changeset's message. This is the phase body's own
 hint — base-blob identity per journaled path — realized rather than assumed.
 
+### Commit-time delete guard (phase 9, closing phase 6's deletes carve-out)
+
+Phase 6 shipped the two halves above for journaled **writes** only, and named
+the deletes gap as a carve-out. Phase 9 closed it. The delete branch of
+`build_changeset_tree` (`rdm-store-git/src/commit.rs`) is no longer a bare
+`entries.remove(path)`.
+
+**No new state was added, and that was established before implementing.** The
+phase body required checking whether an existing mechanism already supplies the
+needed value before adding a second one. Two candidates were read and both
+rejected:
+
+* **`FsStore`'s `Baseline`** (`rdm-core/src/store/mod.rs`, recorded and verified
+  in `rdm-store-fs/src/lib.rs`) is held in `FsStore.baselines:
+  Mutex<BTreeMap<String, Baseline>>` — an **in-memory, per-process** map that
+  every clean flush and every discard clears. The window this guard closes spans
+  two separate `rdm` invocations (stage the delete in one process, `rdm commit`
+  in a later one, per rdm's explicitly batched workflow), so by the time
+  `build_changeset_tree` runs the map is empty and structurally cannot supply
+  anything. Independently, `Baseline` has **three** states (`Absent |
+  Present(digest) | Unknown`) where a journaled `Option<String>` has two, so a
+  straight reuse would lose the `Unknown` distinction.
+* **A new `JournalEntry` field** was not added either. `JournalEntry` is a
+  serialized, publicly documented type whose on-disk compatibility is a stated
+  property, so an optional field is a permanent compatibility obligation — and
+  the rule below reads nothing from the journal, so the field would have had no
+  reader. `JournalEntry::digest` was likewise not reused: it is documented as
+  "the bytes this batch flushed" and is `None` on a delete by construction.
+
+**The rule is a presence test, not a content comparison.** A session that
+deletes a path leaves it **absent**. So:
+
+* **absent at commit time → match.** The delete proceeds. This covers a
+  session's own write-then-delete and create-then-delete inside one uncommitted
+  changeset, and a path another session already deleted and landed.
+* **present at commit time → mismatch.** Refuse: something refilled a path this
+  changeset emptied, and applying the delete would destroy it.
+
+**The reference point is the working tree at commit time, never HEAD.** This
+mirrors the write guard, which compares against `std::fs::read(&file)` and never
+consults HEAD. A HEAD basis was considered and rejected outright: it conflates
+"another session changed this" with "I changed this earlier in my own
+uncommitted batch", and would therefore falsely refuse the stage-then-`rdm
+commit` batching workflow rdm prescribes.
+
+**Derived indexes are exempt**, exactly as they are in the write loop
+(`rdm_core::paths::is_derived_path`). A journaled delete of a derived path is
+routed into `ChangesetScope::deletes` by `commit_changeset_id`, and every
+mutation regenerates those files, so an index this changeset deleted is
+legitimately present again. Their commit-time correctness stays
+`reconcile_derived`'s.
+
+**Where the refusal lives.** `Error::ChangesetDeletePathRecreated { item, path }`
+is defined in `rdm-core/src/error.rs`, raised from the delete loop of
+`build_changeset_tree` in `rdm-store-git/src/commit.rs`, and rendered as HTTP
+409 by `rdm-server/src/problem.rs` alongside `StaleWrite` and
+`ChangesetPathOverwritten`. It is a **distinct variant** rather than a reuse of
+`ChangesetPathOverwritten` because "overwritten" describes the wrong side of a
+delete: nothing this changeset wrote was overwritten — the path it left absent
+was refilled by someone else. Its message names the item via
+`rdm_core::paths::describe_path` (`task/fix-bug`), states that nothing was
+committed, and says to re-read the item and re-run the delete if it is still
+right.
+
+**Delete-then-recreate never reaches this guard**, and that is asserted rather
+than assumed. `read_journal` collapses a path to its **last** recorded kind (a
+`BTreeMap` keyed on path), so a path this changeset deleted and then recreated
+journals as `Write`, lands in `ChangesetScope::writes` with a digest, and is
+owned by the write guard.
+(`a_write_recorded_over_a_delete_collapses_to_write` in
+`rdm-core/src/session/journal.rs` and
+`a_delete_then_recreate_is_routed_to_the_write_guard_not_the_delete_guard` in
+`rdm-store-git/src/lib.rs` pin both ends of that routing.)
+
+**Residual: a store-bypassing recreate still trips it.** A raw `fs::write`
+outside the store that lands on a path this changeset deleted reads as
+"present" and is refused, even when it is the same session that wrote it. This
+is consistent with — and covered by — the "Store-bypassing writers are
+uncovered" carve-out below, which stays.
+
 ## Carve-outs
 
 These are deliberate gaps, named so they are not mistaken for coverage.
@@ -217,35 +298,6 @@ must never be bricked by an upgrade
 **Byte-identical concurrent writes are not conflicts.** The digests match, so
 nothing is rejected — correctly, because there is no lost update.
 
-**Journaled deletes are applied unconditionally.** The guard shipped by this
-phase covers journaled *writes* only. The two branches of
-`build_changeset_tree` (`rdm-store-git/src/commit.rs`) are asymmetric: the write
-branch compares each journaled path's current working-tree digest against
-`changeset.digests` and refuses on mismatch, while the delete branch is a bare
-`entries.remove(path)` that consults no digest at all. There is nothing for it
-to consult — a delete's `JournalEntry` carries `digest: None` by construction
-(locked by `a_delete_recorded_over_a_write_drops_the_digest` in
-`rdm-core/src/session/journal.rs`), because a deletion has no staged content to
-identify.
-
-The consequence is a real, unclosed lost-update path: session A journals a
-delete of `projects/<p>/tasks/<slug>.md`; session B then creates or recreates
-content at that same path; A commits, and the delete lands over B's content and
-destroys it. **Both sides exit 0.** Nothing is logged, nothing is refused, and
-the only trace is that B's file is absent from the landed tree while still
-sitting on disk with B's bytes.
-
-This asymmetry is known and named here rather than left implied by the word
-"write" in the sections above. Today's behavior is pinned by
-`a_stale_delete_still_destroys_a_concurrently_recreated_path`
-(`rdm-store-git/src/lib.rs`), which asserts the commit succeeds and the
-recreated content is missing from the landed tree — a lock, not an endorsement,
-so that fixing it is a deliberate and visible change to that assertion rather
-than a silent regression in either direction.
-
-**Closing this gap is phase 9 (`phase-9-content-checked-deletes`), not this
-phase.** Documenting it is this phase's.
-
 ## Harness design
 
 **Why an in-process test cannot gate this.** A test that constructs two
@@ -275,6 +327,16 @@ content-keyed, not identity-keyed), gates the sequential-writes-never-trip
 property with real back-to-back invocations, gates the commit-time half, checks
 the `Done:` hook path still exits 0, and carries planted-mutation self-tests
 proving each section can fail.
+
+Its **section 6** gates the commit-time *delete* guard through the same
+two-real-process discipline, and needs no barrier because the window it targets
+is the naturally wide gap between staging and `rdm commit`: session A runs `rdm
+promote` (whose `store.delete` is the CLI-drivable delete) and does not commit;
+session B recreates a task at that same slug and lands its own commit first; A's
+delayed `rdm commit` must be refused by name, and B's bytes must still be at
+HEAD. Two self-tests bracket it — the same sequence *without* B's recreate must
+commit cleanly and genuinely remove the path from HEAD, and a mutant binary with
+the guard neutered must reproduce the lost update.
 
 **What the shell gate structurally cannot reach.** Every invocation it drives is
 a fresh `rdm` process with a brand-new store, so it can never exercise a store

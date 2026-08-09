@@ -68,9 +68,23 @@ pub struct ChangesetScope {
     /// Base-blob identity per journaled path: a path whose working-tree
     /// content no longer matches what this changeset wrote belongs to whoever
     /// overwrote it, and committing it here would land their bytes under this
-    /// message. A path absent from this map — a legacy journal line, or an
-    /// [`extra_writes`](Self::extra_writes) entry that never entered the
-    /// store — is committed unchecked, which is the fail-open answer.
+    /// message.
+    ///
+    /// **This map covers writes only, and its fail-open answer is scoped to
+    /// them.** A *write* absent from this map — a legacy journal line, or an
+    /// [`extra_writes`](Self::extra_writes) entry that never entered the store
+    /// — is committed without a digest comparison, which is the deliberate
+    /// fail-open answer for writes.
+    ///
+    /// It says nothing at all about [`deletes`](Self::deletes), which never
+    /// appear here by construction: a delete journals `digest: None` because
+    /// there are no bytes to identify. Deletes are **not** committed
+    /// unchecked — they are guarded by a separate commit-time *presence*
+    /// check in [`GitRepo::build_changeset_tree`]'s delete loop, which refuses
+    /// with [`Error::ChangesetDeletePathRecreated`] when a path this changeset
+    /// deleted is present on disk again at commit time.
+    ///
+    /// [`GitRepo::build_changeset_tree`]: crate::repo::GitRepo
     pub digests: std::collections::BTreeMap<String, String>,
 }
 
@@ -777,16 +791,45 @@ impl GitRepo {
             entries.insert(path.clone(), blob);
         }
 
-        // Deliberately unconditional, unlike the write branch above. A delete
-        // carries `digest: None` by construction, so there is no base-blob
-        // identity to compare: a stale delete lands over content another
-        // session created at this path and destroys it, exit 0 on both sides.
-        // That asymmetry is a named carve-out, not an oversight — see
-        // docs/lost-update-evaluation.md § Carve-outs ("Journaled deletes are
-        // applied unconditionally"), pinned by
-        // `a_stale_delete_still_destroys_a_concurrently_recreated_path`.
-        // Closing it belongs to phase 9 (`phase-9-content-checked-deletes`).
+        // The delete-side half of the same commit-time content discipline the
+        // write branch above applies — but a *presence* test, not a digest
+        // comparison. A delete journals `digest: None` by construction (there
+        // are no bytes to identify), so there is nothing to compare bytes to;
+        // what there is, is the state a deleting session leaves behind:
+        // **absent**.
+        //
+        // The reference point is the WORKING TREE AT COMMIT TIME, never HEAD —
+        // exactly as the write guard compares against `std::fs::read(&file)`
+        // above and never consults HEAD. A HEAD basis would conflate "another
+        // session changed this" with "I changed this earlier in my own
+        // uncommitted batch", and would therefore refuse the stage-then-batch
+        // workflow rdm prescribes.
+        //
+        // Two branches, both keyed on existence:
+        //
+        //   * absent at commit time → the path is as this session left it, so
+        //     the delete proceeds. This covers write-then-delete and
+        //     create-then-delete inside one uncommitted changeset, and a path
+        //     another session already deleted and landed.
+        //   * present at commit time → someone refilled a path this session
+        //     emptied. Applying the delete would destroy their content with
+        //     exit 0 on both sides, so refuse instead.
+        //
+        // Derived indexes are exempt for the same reason they are exempt from
+        // the write loop: every mutation regenerates them, so a derived index
+        // this changeset deleted is legitimately present again. Their
+        // commit-time correctness is `reconcile_derived`'s, not this loop's.
+        //
+        // A delete-then-*recreate* within one changeset never reaches here:
+        // `read_journal` collapses a path to its last recorded kind, so the
+        // recreate journals as a `Write` and the write guard above owns it.
         for path in &changeset.deletes {
+            if !rdm_core::paths::is_derived_path(path) && self.root.join(path).exists() {
+                return Err(Error::ChangesetDeletePathRecreated {
+                    item: rdm_core::paths::describe_path(path),
+                    path: path.clone(),
+                });
+            }
             if entries.remove(path).is_some() {
                 committed.push(path.clone());
             }

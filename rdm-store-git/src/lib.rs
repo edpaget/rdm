@@ -3150,26 +3150,23 @@ mod tests {
         }
     }
 
-    /// LOCKS today's behavior; it is not an endorsement of it.
+    /// The delete-side mirror of the write guard above.
     ///
-    /// The guard shipped alongside the test above covers journaled *writes*.
-    /// Journaled *deletes* are the mirror case and are applied
-    /// unconditionally: a delete's journal entry carries `digest: None` by
-    /// construction, so `build_changeset_tree`'s delete branch has nothing to
-    /// compare and removes the path regardless of what is there now. A stale
-    /// delete therefore destroys content another session recreated at that
-    /// path, with exit 0 on both sides.
+    /// A delete journals `digest: None` by construction, so there is nothing
+    /// to compare bytes against. What there is, is the state a deleting
+    /// session leaves at the path: **absent**. A path that is present again at
+    /// commit time therefore holds content this session did not put there, and
+    /// applying the delete would destroy it with exit 0 on both sides.
     ///
-    /// This test pins that outcome so phase 9
-    /// (`phase-9-content-checked-deletes`) closing the gap is a deliberate,
-    /// visible change to these assertions rather than a silent regression in
-    /// either direction. See docs/lost-update-evaluation.md § Carve-outs.
+    /// This replaces `a_stale_delete_still_destroys_a_concurrently_recreated_path`,
+    /// which locked the pre-guard behavior. See docs/lost-update-evaluation.md
+    /// § Selected mechanism.
     ///
     /// No `serial_scoped()` guard: that helper serializes only tests that pin
     /// `RDM_SESSION` process-globally, and this one passes its changeset
     /// message and resolves its session exactly as its neighbor does.
     #[test]
-    fn a_stale_delete_still_destroys_a_concurrently_recreated_path() {
+    fn a_stale_delete_over_a_concurrently_recreated_path_is_refused() {
         let dir = TempDir::new().unwrap();
         let mut store = store_already_mapped(&dir);
         let path = RelPath::new("projects/demo/tasks/doomed.md").unwrap();
@@ -3178,7 +3175,11 @@ mod tests {
         // the delete will remove.
         store.write(&path, "mine".to_string()).unwrap();
         store.commit().unwrap();
-        store.commit_changeset(Some("seed"), &[]).unwrap();
+        let seed_sha = store
+            .commit_changeset(Some("seed"), &[])
+            .unwrap()
+            .sha
+            .expect("the seed must land");
 
         // Journal the delete. No digest is recorded for it — there is no
         // staged content to identify.
@@ -3186,32 +3187,283 @@ mod tests {
         store.commit().unwrap();
 
         // Another session recreates the path with its own bytes after this
-        // changeset flushed but before it commits. This is exactly the shape
-        // the write branch refuses.
+        // changeset flushed but before it commits.
         std::fs::write(dir.path().join(path.as_str()), "theirs").unwrap();
 
-        let landed = store
-            .commit_changeset(Some("mine"), &[])
-            .expect("today the delete is applied unconditionally: no StaleWrite, no refusal");
-        assert!(
-            landed.committed.iter().any(|p| p == path.as_str()),
-            "the delete must land as part of the changeset; committed: {:?}",
-            landed.committed
-        );
+        let err = store.commit_changeset(Some("mine"), &[]).unwrap_err();
+        match &err {
+            Error::ChangesetDeletePathRecreated { item, .. } => {
+                assert_eq!(item, "task/doomed", "the refusal names the item");
+            }
+            other => panic!("expected ChangesetDeletePathRecreated, got {other:?}"),
+        }
 
-        let sha = landed.sha.expect("the changeset must produce a commit");
-        assert!(
-            store.fetch_body_at(&path, &sha).is_err(),
-            "the recreated content is destroyed: the path is absent from the \
-             landed tree even though it sits on disk with the other session's \
-             bytes"
+        // A refusal, not a partial landing: HEAD is still the seed commit and
+        // the other session's bytes are untouched on disk.
+        let head = store
+            .git
+            .head_commit_info()
+            .unwrap()
+            .expect("the seed commit")
+            .sha;
+        assert_eq!(head, seed_sha, "nothing landed: HEAD is still the seed");
+        assert_eq!(
+            store.fetch_body_at(&path, &head).unwrap(),
+            "mine",
+            "the seed's content for the path is still what HEAD carries"
         );
         assert_eq!(
             std::fs::read_to_string(dir.path().join(path.as_str())).ok(),
             Some("theirs".to_string()),
-            "and it is silent: the other session's bytes are still on disk, so \
-             nothing reports that they were dropped from the tree"
+            "and the other session's recreated bytes survive on disk"
         );
+    }
+
+    /// A multi-path delete (the `rdm roadmap delete` shape, which removes a
+    /// roadmap's whole directory) is all-or-nothing, exactly like the write
+    /// guard: one recreated path refuses the entire commit rather than landing
+    /// the siblings.
+    ///
+    /// `read_journal` returns a `BTreeMap`-sorted list, so the path the error
+    /// names is deterministic and can be asserted on directly.
+    #[test]
+    fn one_recreated_path_refuses_a_whole_multi_path_delete() {
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        let roadmap = RelPath::new("projects/demo/roadmaps/gone/roadmap.md").unwrap();
+        let phase = RelPath::new("projects/demo/roadmaps/gone/phase-1-a.md").unwrap();
+
+        store.write(&roadmap, "the roadmap".to_string()).unwrap();
+        store.write(&phase, "the phase".to_string()).unwrap();
+        store.commit().unwrap();
+        let seed_sha = store
+            .commit_changeset(Some("seed"), &[])
+            .unwrap()
+            .sha
+            .expect("the seed must land");
+
+        // The whole directory is deleted in one changeset.
+        store.delete(&roadmap).unwrap();
+        store.delete(&phase).unwrap();
+        store.commit().unwrap();
+
+        // Another session recreates only ONE of the two paths.
+        std::fs::write(dir.path().join(roadmap.as_str()), "theirs").unwrap();
+
+        let err = store.commit_changeset(Some("mine"), &[]).unwrap_err();
+        match &err {
+            Error::ChangesetDeletePathRecreated { item, .. } => {
+                assert_eq!(item, "roadmap/gone", "the refusal names the recreated item");
+            }
+            other => panic!("expected ChangesetDeletePathRecreated, got {other:?}"),
+        }
+
+        // All-or-nothing: the sibling phase is still at HEAD, because nothing
+        // landed at all.
+        assert_eq!(
+            store.fetch_body_at(&phase, &seed_sha).unwrap(),
+            "the phase",
+            "the sibling delete must not have landed on its own"
+        );
+    }
+
+    /// Case 1 of four the guard must NOT trip on: two deletes, each its own
+    /// changeset, one after the other.
+    #[test]
+    fn sequential_deletes_in_one_session_never_trip_the_delete_guard() {
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        let p1 = RelPath::new("projects/demo/tasks/one.md").unwrap();
+        let p2 = RelPath::new("projects/demo/tasks/two.md").unwrap();
+
+        store.write(&p1, "one".to_string()).unwrap();
+        store.write(&p2, "two".to_string()).unwrap();
+        store.commit().unwrap();
+        store.commit_changeset(Some("seed"), &[]).unwrap();
+
+        store.delete(&p1).unwrap();
+        store.commit().unwrap();
+        let first = store
+            .commit_changeset(Some("drop one"), &[])
+            .expect("the first delete must land");
+        assert!(first.sha.is_some());
+        assert!(first.committed.iter().any(|p| p == p1.as_str()));
+
+        store.delete(&p2).unwrap();
+        store.commit().unwrap();
+        let second = store
+            .commit_changeset(Some("drop two"), &[])
+            .expect("the second delete must land too");
+        assert!(second.sha.is_some());
+        assert!(second.committed.iter().any(|p| p == p2.as_str()));
+    }
+
+    /// Case 2: a write and then a delete of the same path inside ONE
+    /// uncommitted changeset. The session's own earlier write left the path
+    /// present; its later delete left it absent, and absent is the state the
+    /// guard reads.
+    #[test]
+    fn a_write_then_delete_in_one_uncommitted_batch_commits() {
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        let path = RelPath::new("projects/demo/tasks/edited.md").unwrap();
+
+        store.write(&path, "v1".to_string()).unwrap();
+        store.commit().unwrap();
+        store.commit_changeset(Some("seed"), &[]).unwrap();
+
+        // Flush 1: journals a Write plus its digest.
+        store.write(&path, "v2".to_string()).unwrap();
+        store.commit().unwrap();
+        // Flush 2, same changeset: journals a Delete, which collapses over
+        // the Write in `read_journal`.
+        store.delete(&path).unwrap();
+        store.commit().unwrap();
+
+        let landed = store
+            .commit_changeset(Some("edit then drop"), &[])
+            .expect("a session's own write-then-delete must commit");
+        let sha = landed.sha.expect("the changeset must produce a commit");
+        assert!(
+            store.fetch_body_at(&path, &sha).is_err(),
+            "the delete really applied: the path is gone from the landed tree"
+        );
+    }
+
+    /// Case 3: a create and then a delete of the same path inside ONE
+    /// uncommitted changeset, on a path that was never in HEAD. The changeset
+    /// is a no-op for it, so it must neither refuse nor claim to have
+    /// committed anything.
+    #[test]
+    fn a_create_then_delete_in_one_uncommitted_batch_commits() {
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        let seed = RelPath::new("projects/demo/tasks/keep.md").unwrap();
+        let path = RelPath::new("projects/demo/tasks/ephemeral.md").unwrap();
+
+        store.write(&seed, "keep".to_string()).unwrap();
+        store.commit().unwrap();
+        store.commit_changeset(Some("seed"), &[]).unwrap();
+
+        store.write(&path, "new".to_string()).unwrap();
+        store.commit().unwrap();
+        store.delete(&path).unwrap();
+        store.commit().unwrap();
+
+        // The changeset now also carries a real change so the commit is not
+        // trivially empty.
+        store.write(&seed, "kept, edited".to_string()).unwrap();
+        store.commit().unwrap();
+
+        let landed = store
+            .commit_changeset(Some("create then drop"), &[])
+            .expect("a session's own create-then-delete must commit");
+        assert!(landed.sha.is_some());
+        assert!(
+            !landed.committed.iter().any(|p| p == path.as_str()),
+            "the path was never in HEAD, so the changeset is a no-op for it; \
+             committed: {:?}",
+            landed.committed
+        );
+    }
+
+    /// Case 4: another session already deleted this path and landed the
+    /// deletion. The path is absent from disk AND from HEAD, so this
+    /// changeset's own delete is a no-op — not a conflict.
+    #[test]
+    fn a_path_another_session_already_deleted_and_landed_commits() {
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        let seed = RelPath::new("projects/demo/tasks/keep.md").unwrap();
+        let path = RelPath::new("projects/demo/tasks/shared.md").unwrap();
+
+        store.write(&seed, "keep".to_string()).unwrap();
+        store.write(&path, "shared".to_string()).unwrap();
+        store.commit().unwrap();
+        store.commit_changeset(Some("seed"), &[]).unwrap();
+
+        // This session journals the delete and flushes it: the file leaves
+        // disk here.
+        store.delete(&path).unwrap();
+        store.commit().unwrap();
+
+        // Another session's changeset lands the very same deletion first.
+        let paths = store.session_paths().unwrap().clone();
+        let other = rdm_core::session::SessionId::new("other-session").unwrap();
+        rdm_core::session::journal::record(
+            &paths,
+            &other,
+            &[rdm_core::session::journal::JournalEntry {
+                path: path.as_str().to_string(),
+                kind: JournalKind::Delete,
+                digest: None,
+            }],
+        )
+        .unwrap();
+        let theirs = store
+            .commit_changeset_id(Some(&other), Some("theirs"), &[])
+            .expect("the other session's delete lands cleanly");
+        let their_sha = theirs.sha.expect("the other session must commit");
+        assert!(
+            store.fetch_body_at(&path, &their_sha).is_err(),
+            "the other session's delete is what removed the path from HEAD"
+        );
+
+        // Give this session something of its own to land, then commit. Its
+        // journal still claims the delete; the path is absent from both disk
+        // and HEAD, so the guard must let it through as a no-op.
+        store.write(&seed, "kept, edited".to_string()).unwrap();
+        store.commit().unwrap();
+        let landed = store
+            .commit_changeset(Some("mine"), &[])
+            .expect("a delete another session already landed must not refuse");
+        assert!(landed.sha.is_some());
+        assert!(
+            !landed.committed.iter().any(|p| p == path.as_str()),
+            "the path was already gone from HEAD, so this changeset did not \
+             commit it; committed: {:?}",
+            landed.committed
+        );
+    }
+
+    /// Delete-then-recreate never reaches the delete guard.
+    ///
+    /// `read_journal` collapses a path to its **last** recorded kind (a
+    /// `BTreeMap` keyed on path, documented as last-kind-wins), so a path this
+    /// changeset deleted and then recreated journals as `Write` and lands in
+    /// `ChangesetScope::writes` with a digest. The *write* guard owns it. This
+    /// asserts that routing directly, so no delete-guard test can pass
+    /// vacuously by mistaking this shape for the delete window.
+    #[test]
+    fn a_delete_then_recreate_is_routed_to_the_write_guard_not_the_delete_guard() {
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        let path = RelPath::new("projects/demo/tasks/fix-bug.md").unwrap();
+
+        store.write(&path, "original".to_string()).unwrap();
+        store.commit().unwrap();
+        store.commit_changeset(Some("seed"), &[]).unwrap();
+
+        store.delete(&path).unwrap();
+        store.commit().unwrap();
+        store.write(&path, "a-recreated".to_string()).unwrap();
+        store.commit().unwrap();
+
+        // Another session overwrites the recreated file before this changeset
+        // commits.
+        std::fs::write(dir.path().join(path.as_str()), "theirs").unwrap();
+
+        let err = store.commit_changeset(Some("mine"), &[]).unwrap_err();
+        match &err {
+            Error::ChangesetPathOverwritten { item, .. } => {
+                assert_eq!(item, "task/fix-bug");
+            }
+            Error::ChangesetDeletePathRecreated { .. } => panic!(
+                "the delete guard must never see this path: the journal \
+                 collapsed it to a Write, so the write guard owns it"
+            ),
+            other => panic!("expected ChangesetPathOverwritten, got {other:?}"),
+        }
     }
 
     #[test]
