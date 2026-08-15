@@ -49,6 +49,32 @@ shared source module, never a listing entry, so its name is deliberately
 unprefixed and frozen. `spike-agent-type.js` is an exempt spike artifact and
 keeps its bare name.
 
+### Determinism: no `Date.now()`/`Math.random()`
+
+Every `.claude/workflows/*.js` script — all nine of them, including the four
+local-only ones that never leave this repo (`rdm-wf-backlog.js`,
+`rdm-wf-document.js`, `rdm-wf-estimate.js`, `rdm-wf-plan-review.js`) — is
+grepped for `Date.now(` / `Math.random(` by its own harness and must come
+back clean. The reason is determinism of the pipeline GENERALLY, not any one
+downstream consumer of it: `verify-workflow-backlog.sh` states the rule
+plainly ("the pipeline must be deterministic"), and
+`verify-workflow-dispatch.sh` asserts byte-identical output on identical
+input as its own reproducibility contract. Resume-cache validity (see
+[`docs/autonomous-loop.md`](autonomous-loop.md) § "Recovering a crashed
+run") is ONE consequence of that determinism, not the sole or primary
+reason for the rule: a call whose `(prompt, opts)` pair is not reproducible
+can never safely replay from a cached result, but the rule exists to keep
+every workflow's output reproducible — and its harnesses' byte-identical
+assertions meaningful — even in scripts no resume attempt ever touches.
+
+This is a **repo convention enforced by grep-based harness checks, not a
+runtime restriction** — the global-scope table above lists `Date` and
+`Math` as present in the isolate; nothing in the runtime itself stops a
+script from calling `Date.now()`. `scripts/verify-workflow-estimate.sh`'s
+own inline comment ("the runtime forbids them") is therefore inaccurate;
+this section records the correct framing rather than editing that harness,
+which is untouched in this pass.
+
 ### Observing the rendered listing
 
 The prefix only pays off if the **rendered** listing shows it, and that listing
@@ -1203,7 +1229,8 @@ crashed dimension contributes no candidates, so it never inflates
 `budget.produced` with coverage it did not provide.
 
 **Ranking (`rankFindings`).** A total order, so `OUTCOME` is deterministic across
-runs (the runtime forbids `Date.now()`/`Math.random()`): by `severity`
+runs (the convention bans `Date.now()`/`Math.random()`, see § "The
+`.claude/workflows/` convention" above): by `severity`
 (`blocking` < `concern` < `suggestion`), then `confidence` descending, then `id`
 ascending as a stable tiebreaker.
 

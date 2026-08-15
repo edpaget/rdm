@@ -116,6 +116,24 @@ Every input `parseAutopilotArgs` accepted, with its disposition here:
 - **`mechanical-model-unresolved` as a loop-level stop reason** — **narrowed, not removed**. The loop no longer resolves or depends on a mechanical model for its own bookkeeping steps, but `resolveMechanicalModel` is still run once (step 2) purely to supply the value forwarded to `rdm-wf-estimate`, and a failure there still produces the same loud, named stop (reused literally, still in the known-good allowlist) so the abnormal-termination banner still fires correctly if the estimate pre-pass can't get a model id.
 - **The triple-unwrap defense inside `interpretNext`** (an internal helper, not a top-level input, but recorded here in the same spirit) — **deliberately dropped**. It hedged against an intermediate agent re-encoding `rdm next`'s JSON as a string; that intermediate agent no longer exists once this skill reads Bash stdout directly, so a payload of that shape now falls straight through to the fail-closed `unparseable` stop instead of being unwrapped and recovered.
 
+## Recovering a crashed dispatch
+
+This skill's drive loop is itself prose, driven by plain Bash — it has no Workflow run of its own to resume. But the two Workflow-tool calls it makes (step 3's `rdm-wf-estimate` pre-pass, step 4's `rdm-wf-dispatch-phase` per-phase pipeline) are each a real `Workflow` run, and either can crash mid-flight. If one does, relaunch that same call with `resumeFromRunId` instead of re-invoking it fresh:
+
+```
+Workflow({ scriptPath: '.claude/workflows/rdm-wf-estimate.js', resumeFromRunId: '<prior runId>' })      # step 3
+Workflow({ scriptPath: '.claude/workflows/rdm-wf-dispatch-phase.js', resumeFromRunId: '<prior runId>' }) # step 4
+```
+
+Any `agent()` call inside that run whose `(prompt, opts)` are byte-unchanged from the crashed attempt replays its cached result instead of re-dispatching. Four caveats apply every time:
+
+- **Stop the prior run first** — a still-running run cannot be resumed.
+- **Same-session only** — this only resumes within the current Claude Code session; a later session cannot resume a `runId` from an earlier one.
+- **A cached result can be empty** — if the crashed agent produced nothing before dying, the resume replays that emptiness; check the run's `journal.jsonl` before assuming there is something to recover.
+- **Conservative prefix** — resume replays only the longest unchanged prefix of the call sequence; the first edited-or-new call, and every call after it, run live. Do not plan around a specific savings figure.
+
+See [`docs/autonomous-loop.md`](docs/autonomous-loop.md) § "Recovering a crashed run" for the full contract and the measured evidence motivating it.
+
 ## Relation to the other lanes
 
 - **`rdm-land`** owns landing reviewed work to `main` (rebase + `merge --ff-only`); this skill never does. Run it after a run reaches `reviewed` if you want the work on `main`.

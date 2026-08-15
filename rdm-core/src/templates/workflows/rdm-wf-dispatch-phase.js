@@ -2732,10 +2732,12 @@ function buildImplementPrompt(worktreeRef, phaseBody, planDocText, reworkNotes, 
   const bin = resolveRdmBin(cfg && cfg.rdmBin)
   const proj = projectFlag(cfg)
   const lines = [
-    'You are an implementation agent. You are seeded with ONLY the item body and the approved plan below.',
+    'You are an implementation agent. You are seeded with the item body and the approved plan below, plus whatever else is already committed in the worktree.',
     'First, create/enter the worktree for this item and work THERE:',
     '  ' + bin + ' worktree add ' + worktreeRef + proj,
     'then `cd` into the path it prints. Do all edits and the commit in that worktree.',
+    'Before making any edits, run `git log main..HEAD` and `git diff main...HEAD` in the worktree and read the output.',
+    'This worktree is shared across the whole roadmap, so commits already on this branch can mean two different things: EARLIER PHASES of the same roadmap (context to build on, not this item\'s own work — normal on a first-pass dispatch of phase N>1), or a PRIOR/PARTIAL attempt at THIS item (a rework retry, or a stalled agent that died mid-implementation after committing). Decide which by comparing the commits against the item body and the approved plan below, never by their mere presence — do not conclude this item is already done just because commits exist. Scope your own remaining work strictly by the approved plan below.',
     '--- PHASE BODY ---',
     phaseBody,
     '--- END PHASE BODY ---',

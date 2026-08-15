@@ -53,6 +53,23 @@ Run **one** rdm phase (or task) to completion by invoking the **`rdm-wf-dispatch
    - classifies the result into `reviewed | rework | escalated` and returns the OUTCOME above. It never emits a `Done:` line itself — only `writesCompletion: true`, which is `rdm-land`'s signal to synthesize the trailer at land time.
 4. **Return the OUTCOME JSON verbatim** as your final message — do not paraphrase or drop fields.
 
+## Recovering a crashed dispatch
+
+If the `rdm-wf-dispatch-phase` Workflow call in step 3 crashes mid-run, relaunch it with `resumeFromRunId` instead of invoking it fresh:
+
+```
+Workflow({ scriptPath: '.claude/workflows/rdm-wf-dispatch-phase.js', resumeFromRunId: '<prior runId>' })
+```
+
+Any `agent()` call inside that run whose `(prompt, opts)` are byte-unchanged from the crashed attempt replays its cached result instead of re-dispatching. Four caveats apply every time:
+
+- **Stop the prior run first** — a still-running run cannot be resumed.
+- **Same-session only** — this only resumes within the current Claude Code session; a later session cannot resume a `runId` from an earlier one.
+- **A cached result can be empty** — if the crashed agent produced nothing before dying, the resume replays that emptiness; check the run's `journal.jsonl` before assuming there is something to recover.
+- **Conservative prefix** — resume replays only the longest unchanged prefix of the call sequence; the first edited-or-new call, and every call after it, run live. Do not plan around a specific savings figure.
+
+See [`docs/autonomous-loop.md`](docs/autonomous-loop.md) § "Recovering a crashed run" for the full contract and the measured evidence motivating it.
+
 ## Safe operations under --permission-mode auto
 
 Unattended autonomous runs (launched with `--permission-mode auto` or equivalent) depend on explicit operational guardrails. The auto-mode permission classifier treats certain operations as **irreversible local destruction** and denies them, blocking a hands-off run indefinitely unless human intervention occurs — defeating the point of unattended execution. This skill delegates all editing to the Workflow's internally-dispatched implementer subagents (this shim itself never edits a file directly), and those subagents must follow these rules:

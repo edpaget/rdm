@@ -97,6 +97,15 @@ reviewed work is left on the roadmap/<slug> branch; main is never touched.
 - `--plan-only` — dry-run the planning half: each dispatch stops after its plan gate, so you get cheap plan vetting without writing any code.
 - `--max-plan-revise N` / `--max-code-rework N` — override `rdm:rdm-wf-dispatch-phase`'s two **in-run** retry budgets, which are counted **independently** of each other and default to **2** each (budget N = N reworks after the original attempt, i.e. N + 1 attempts). `0` is legal and means "terminate on the first blocking review" — no revise/rework agent runs at all. These are distinct from autopilot's own roadmap-level rework re-dispatch budget (step 3, capped at 1 retry per phase) and its global step budget (step 3.1, default 50); see [`docs/escalation-protocol.md`](docs/escalation-protocol.md) § Budgets for all four.
 
+## Recovering a crashed dispatch
+
+This skill's drive loop is itself prose, driven by plain Bash — it has no Workflow run of its own to resume. But the `rdm:rdm-wf-dispatch-phase` Workflow call in step 3.4 is a real `Workflow` run, and it can crash mid-flight. If it does, relaunch that same call with an added `resumeFromRunId: '<prior runId>'` argument instead of re-invoking it fresh. Any `agent()` call inside that run whose `(prompt, opts)` are byte-unchanged from the crashed attempt replays its cached result instead of re-dispatching. Four caveats apply every time:
+
+- **Stop the prior run first** — a still-running run cannot be resumed.
+- **Same-session only** — this only resumes within the current Claude Code session; a later session cannot resume a `runId` from an earlier one.
+- **A cached result can be empty** — if the crashed agent produced nothing before dying, the resume replays that emptiness; check the run's `journal.jsonl` before assuming there is something to recover.
+- **Conservative prefix** — resume replays only the longest unchanged prefix of the call sequence; the first edited-or-new call, and every call after it, run live. Do not plan around a specific savings figure.
+
 ## Relation to the other lanes
 
 - **`land`** owns landing reviewed work to `main` (rebase + `merge --ff-only`); this skill never does. Run it after a run reaches `reviewed` if you want the work on `main`.

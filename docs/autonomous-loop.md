@@ -156,6 +156,56 @@ The loop stops when **any** of these holds:
 - All remaining work is `blocked`/escalated.
 - `--max-phases` or the global step budget is reached.
 
+## Recovering a crashed run
+
+The Workflow tool can relaunch a dead or crashed run instead of starting
+over: pass the prior run's id back in as `resumeFromRunId`, alongside the
+same `scriptPath`:
+
+```
+Workflow({ scriptPath: '.claude/workflows/rdm-wf-dispatch-phase.js', resumeFromRunId: '<prior runId>' })
+```
+
+Any `agent()` call whose `(prompt, opts)` are byte-unchanged from the crashed
+run replays its cached result instead of re-dispatching a fresh subagent.
+Four caveats govern whether that actually saves anything:
+
+- **Stop the prior run first.** A still-running run cannot be resumed.
+- **Same-session only.** `resumeFromRunId` resumes within the Claude Code
+  session that produced it — a new session (e.g. tomorrow) cannot resume
+  yesterday's `runId`. This is why cross-session resume is explicitly out of
+  scope here (see below).
+- **A cached result can itself be empty.** If the crashed agent produced
+  nothing before dying, resuming replays that emptiness, not a usable
+  result — read the run's `journal.jsonl` before assuming there is anything
+  worth recovering.
+- **Conservative prefix.** Resume replays only the LONGEST UNCHANGED PREFIX
+  of the call sequence: the first edited-or-new call, and every call after
+  it, all run live — not only the one that crashed. Savings depend entirely
+  on where in the sequence the failure or edit sits, and should never be
+  planned around as guaranteed.
+
+Why this matters: autopilot run `wf_974e3812-817` died mid-flight against
+this repo's own `workflow-token-reduction` roadmap having spent roughly 3.2M
+subagent tokens. Its journal recorded 41 `started` entries against 32
+`result` entries — 32 completed agents had a cached result available, and
+only the 9 API-failed agents lacked one — yet the review was re-run from
+scratch because nothing in the lane knew `resumeFromRunId` existed.
+
+(The determinism this depends on — the reason `.claude/workflows/*.js`
+scripts never call `Date.now()`/`Math.random()` — is explained in
+[`docs/workflow-schemas.md`](workflow-schemas.md) § "The
+`.claude/workflows/` convention".)
+
+**Cross-session resume and persisted plans are out of scope here.**
+`approvedPlanText` is a plain JS local inside `rdm-wf-dispatch-phase.js`,
+never written to the plan repo, so it survives only in the run journal and
+the `plan:author` transcripts for the life of one session. Because
+`resumeFromRunId` is same-session only, a fresh dispatch tomorrow still
+re-authors the plan and re-runs the whole plan-review fan-out regardless.
+The designed home for a persisted plan is a field on the `Run` artifact in
+`autopilot-run-accounting/phase-3-run-artifact` — not built here.
+
 ## Run modes
 
 - `--max-phases N` — bounded run: dispatch at most `N` phases, then stop.
