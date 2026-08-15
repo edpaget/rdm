@@ -99,7 +99,7 @@ reviewed work is left on the roadmap/<slug> branch; main is never touched.
 
 ## Recovering a crashed dispatch
 
-This skill's drive loop is itself prose, driven by plain Bash — it has no Workflow run of its own to resume. But the `rdm-wf-dispatch-phase` Workflow call in step 3.4 is a real `Workflow` run, and it can crash mid-flight. If it does, relaunch that same call with an added `resumeFromRunId: '<prior runId>'` argument instead of re-invoking it fresh. Any `agent()` call inside that run whose `(prompt, opts)` are byte-unchanged from the crashed attempt replays its cached result instead of re-dispatching. Four caveats apply every time:
+This skill's drive loop is itself prose, driven by plain Bash — it has no Workflow run of its own to resume. But the `rdm-wf-dispatch-phase` Workflow call in step 3.4 (`.claude/workflows/rdm-wf-dispatch-phase.js`) is a real `Workflow` run, and it can crash mid-flight. If it does, relaunch that same script — same file, with an added `resumeFromRunId: '<prior runId>'` argument — instead of re-invoking it fresh. Any `agent()` call inside that run whose `(prompt, opts)` are byte-unchanged from the crashed attempt replays its cached result instead of re-dispatching. Four caveats apply every time:
 
 - **Stop the prior run first** — a still-running run cannot be resumed.
 - **Same-session only** — this only resumes within the current Claude Code session; a later session cannot resume a `runId` from an earlier one.

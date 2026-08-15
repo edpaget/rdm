@@ -55,7 +55,7 @@ Run **one** rdm phase (or task) to completion by invoking the **`rdm-wf-dispatch
 
 ## Recovering a crashed dispatch
 
-If the `rdm-wf-dispatch-phase` Workflow call in step 3 crashes mid-run, relaunch the same call with an added `resumeFromRunId: '<prior runId>'` argument instead of invoking it fresh. Any `agent()` call inside that run whose `(prompt, opts)` are byte-unchanged from the crashed attempt replays its cached result instead of re-dispatching. Four caveats apply every time:
+If the `rdm-wf-dispatch-phase` Workflow call in step 3 (`.claude/workflows/rdm-wf-dispatch-phase.js`) crashes mid-run, relaunch the same script with an added `resumeFromRunId: '<prior runId>'` argument instead of invoking it fresh. Any `agent()` call inside that run whose `(prompt, opts)` are byte-unchanged from the crashed attempt replays its cached result instead of re-dispatching. Four caveats apply every time:
 
 - **Stop the prior run first** — a still-running run cannot be resumed.
 - **Same-session only** — this only resumes within the current Claude Code session; a later session cannot resume a `runId` from an earlier one.
