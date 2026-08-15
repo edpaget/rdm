@@ -150,6 +150,13 @@ function parsePlanArgs(rawArgs) {
   const wontFixedTexts = Array.isArray(a.wontFixedTexts) ? a.wontFixedTexts : null
   const mechanicalModel =
     typeof a.mechanicalModel === 'string' && a.mechanicalModel.trim() !== '' ? a.mechanicalModel.trim() : null
+  // The judgment-site siblings of mechanicalModel above: the resolved
+  // `review-find`/`review-verify` model ids, threaded into the finder/refuter
+  // agent() calls inside buildReviewPipeline (see docs/refuter-model-tiering.md
+  // § "The rdm-wf-plan-review.js model-omission question" — this was an adjudicated
+  // oversight, not a policy choice, and is fixed by this hoist).
+  const findModel = typeof a.findModel === 'string' && a.findModel.trim() !== '' ? a.findModel.trim() : null
+  const verifyModel = typeof a.verifyModel === 'string' && a.verifyModel.trim() !== '' ? a.verifyModel.trim() : null
   // Per-unit REFUTATION budget, threaded into every review context below.
   // Read from a STRUCTURED key only (like every other hoist here) and RESOLVED
   // HERE, at parse time — before any agent() call — by the review core's single
@@ -167,6 +174,8 @@ function parsePlanArgs(rawArgs) {
     fetched: fetched,
     wontFixedTexts: wontFixedTexts,
     mechanicalModel: mechanicalModel,
+    findModel: findModel,
+    verifyModel: verifyModel,
     maxRefutations: maxRefutations,
   }
 }
@@ -694,6 +703,11 @@ async function runPlanReviewDriver(args, deps) {
   // precedence over the injected dep, so the local shim can skip the whole
   // model:mechanical bootstrap agent.
   let _mechanicalModel = d.mechanicalModel
+  // Same deps-then-parsePlanArgs-override precedence as _mechanicalModel above,
+  // for the judgment-site (finder/refuter) model ids — see parsePlanArgs' note
+  // on findModel/verifyModel.
+  let _findModel = d.findModel
+  let _verifyModel = d.verifyModel
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
   // the review core, with NO independent review logic in this driver. Passing NO
   // signals is deliberate (see the header note); phase-only unit-of-work scoping
@@ -703,6 +717,8 @@ async function runPlanReviewDriver(args, deps) {
   const parsed = parsePlanArgs(args)
   const kind = parsed.kind
   if (parsed.mechanicalModel) _mechanicalModel = parsed.mechanicalModel
+  if (parsed.findModel) _findModel = parsed.findModel
+  if (parsed.verifyModel) _verifyModel = parsed.verifyModel
   // Already validated by parsePlanArgs via the review core's single validator.
   const maxRefutations = parsed.maxRefutations
 
@@ -723,10 +739,7 @@ async function runPlanReviewDriver(args, deps) {
     // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
     // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
     // may drop a survivor that consumed budget.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
-      target: unit.target,
-      maxRefutations: maxRefutations,
-    })
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
     const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
     const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
     const prior = parseRoundNotes(unit.body)
@@ -759,10 +772,7 @@ async function runPlanReviewDriver(args, deps) {
     const planText = parsed.planText || '(the implementation plan provided in context)'
     // See reviewUnit's identical notes: acTable is always null in plan mode, and
     // `budget` describes the pipeline, not the post-strip survivor set.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
-      target: planText,
-      maxRefutations: maxRefutations,
-    })
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
     const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
     const outcome = classifyPlanOutcome(survivors)
     // Same summary treatment as reviewUnit: reduced coverage is named in the

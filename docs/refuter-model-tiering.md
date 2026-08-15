@@ -420,7 +420,12 @@ it belongs in its own unit of work rather than in this decision.
 ## DECISION
 
 <!-- DECISION-BEGIN -->
-**`keep-opus` — change nothing.** No model binding is altered by this phase.
+**`keep-opus` — change nothing.** This decision is about refuter *tier* and is
+untouched by anything below: no `keep-opus` number, table, or verdict is
+altered. Binding *presence* is a separate question — `thread-plan-review-judgment-models`
+has since threaded `findModel`/`verifyModel` into plan-review's finders and
+refuters (see "Disposition" below); that landing changes which model a
+judgment site is told to run on, never the tier this decision picked for it.
 
 The decision rule was stated before the numbers. Applying it:
 
@@ -460,20 +465,34 @@ and the answer may change; that is the point of building it rather than assertin
 the answer. The phase body states this explicitly: *"an outcome of 'keep Opus' is
 a legitimate, successful result."*
 
-Consequently **no `verify-workflow-*.sh` acceptance criterion required an
-update** — no model binding changed. `scripts/verify-workflow-review.sh` instead
-carries a pointer comment near §5b-mechanical recording that judgment-site model
-binding was evaluated and deliberately left as-is, and
-`scripts/verify-refuter-agreement.sh` §11 enforces that as an XOR: the moment
-`lib/plan-review.mjs` gains a `findModel`, the gate starts demanding a matching
-`5b-models` criterion.
+At the time this decision was recorded, no `verify-workflow-*.sh` acceptance
+criterion needed an update — no model binding had changed yet.
+`scripts/verify-workflow-review.sh` carried a pointer comment near
+§5b-mechanical recording that judgment-site model binding was evaluated and
+left as-is, and `scripts/verify-refuter-agreement.sh` §11 enforced that as an
+XOR: the moment `lib/plan-review.mjs` gained a `findModel`, the gate would
+start demanding a matching `5b-models` criterion.
 
-**What is NOT closed by this decision.** The `rdm-wf-plan-review.js` model omission is a
-separate question with a separate answer — it is an oversight, and it is filed as
-`thread-plan-review-judgment-models`. That fix is about aligning plan-review with
-the configured `[models]` policy (which would move its *finders* to Sonnet, since
-`review-find` resolves there), not about moving *refuters* off Opus. This
-decision says nothing against it.
+That moment has now happened. `thread-plan-review-judgment-models` landed the
+omission fix described below, `lib/plan-review.mjs` (and its byte-identical
+`rdm-wf-plan-review.js` copy) now thread `findModel`/`verifyModel` into both
+`runPlanReview({...})` call sites, and `scripts/verify-workflow-review.sh`
+gained the `5b-models` criterion §11's XOR was waiting on — its
+§5b-mechanical pointer comment now points at §5b-models instead of claiming
+no binding changed. `scripts/verify-refuter-agreement.sh` §11 takes the
+`BINDING_CHANGED=1` branch and passes on the "gated" side of the XOR, not the
+"pointer" side.
+
+**What is NOT closed by this decision — and has since landed separately.** The
+`rdm-wf-plan-review.js` model omission was a separate question with a separate
+answer — it was an oversight, and it has been fixed by
+`thread-plan-review-judgment-models`. That fix aligned plan-review with the
+configured `[models]` policy (moving its *finders* to Sonnet, since
+`review-find` resolves there, while its refuters stayed on `review-verify` →
+Opus), not moving *refuters* off Opus. This decision — the refuter *tier*
+being Opus — is unaffected and unrevisited by that landing: `keep-opus` above
+is still the `refuterModelTiering.decision` in `docs/token-baseline.json`,
+byte-unchanged.
 <!-- DECISION-END -->
 
 ## Sibling question: refuter *shape*

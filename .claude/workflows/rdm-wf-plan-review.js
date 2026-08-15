@@ -2140,6 +2140,13 @@ function parsePlanArgs(rawArgs) {
   const wontFixedTexts = Array.isArray(a.wontFixedTexts) ? a.wontFixedTexts : null
   const mechanicalModel =
     typeof a.mechanicalModel === 'string' && a.mechanicalModel.trim() !== '' ? a.mechanicalModel.trim() : null
+  // The judgment-site siblings of mechanicalModel above: the resolved
+  // `review-find`/`review-verify` model ids, threaded into the finder/refuter
+  // agent() calls inside buildReviewPipeline (see docs/refuter-model-tiering.md
+  // § "The rdm-wf-plan-review.js model-omission question" — this was an adjudicated
+  // oversight, not a policy choice, and is fixed by this hoist).
+  const findModel = typeof a.findModel === 'string' && a.findModel.trim() !== '' ? a.findModel.trim() : null
+  const verifyModel = typeof a.verifyModel === 'string' && a.verifyModel.trim() !== '' ? a.verifyModel.trim() : null
   // Per-unit REFUTATION budget, threaded into every review context below.
   // Read from a STRUCTURED key only (like every other hoist here) and RESOLVED
   // HERE, at parse time — before any agent() call — by the review core's single
@@ -2157,6 +2164,8 @@ function parsePlanArgs(rawArgs) {
     fetched: fetched,
     wontFixedTexts: wontFixedTexts,
     mechanicalModel: mechanicalModel,
+    findModel: findModel,
+    verifyModel: verifyModel,
     maxRefutations: maxRefutations,
   }
 }
@@ -2684,6 +2693,11 @@ async function runPlanReviewDriver(args, deps) {
   // precedence over the injected dep, so the local shim can skip the whole
   // model:mechanical bootstrap agent.
   let _mechanicalModel = d.mechanicalModel
+  // Same deps-then-parsePlanArgs-override precedence as _mechanicalModel above,
+  // for the judgment-site (finder/refuter) model ids — see parsePlanArgs' note
+  // on findModel/verifyModel.
+  let _findModel = d.findModel
+  let _verifyModel = d.verifyModel
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
   // the review core, with NO independent review logic in this driver. Passing NO
   // signals is deliberate (see the header note); phase-only unit-of-work scoping
@@ -2693,6 +2707,8 @@ async function runPlanReviewDriver(args, deps) {
   const parsed = parsePlanArgs(args)
   const kind = parsed.kind
   if (parsed.mechanicalModel) _mechanicalModel = parsed.mechanicalModel
+  if (parsed.findModel) _findModel = parsed.findModel
+  if (parsed.verifyModel) _verifyModel = parsed.verifyModel
   // Already validated by parsePlanArgs via the review core's single validator.
   const maxRefutations = parsed.maxRefutations
 
@@ -2713,10 +2729,7 @@ async function runPlanReviewDriver(args, deps) {
     // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
     // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
     // may drop a survivor that consumed budget.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
-      target: unit.target,
-      maxRefutations: maxRefutations,
-    })
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
     const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
     const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
     const prior = parseRoundNotes(unit.body)
@@ -2749,10 +2762,7 @@ async function runPlanReviewDriver(args, deps) {
     const planText = parsed.planText || '(the implementation plan provided in context)'
     // See reviewUnit's identical notes: acTable is always null in plan mode, and
     // `budget` describes the pipeline, not the post-strip survivor set.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
-      target: planText,
-      maxRefutations: maxRefutations,
-    })
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
     const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
     const outcome = classifyPlanOutcome(survivors)
     // Same summary treatment as reviewUnit: reduced coverage is named in the
@@ -2958,74 +2968,119 @@ async function runPlanReviewDriver(args, deps) {
 // review core here so buildReviewPipeline probes the same ambient agent/pipeline/
 // parallel it always has.
 
-// buildMechanicalModelPrompt() — a mechanical Bash agent that resolves the
-// mechanical dispatch step to a concrete model id, ONCE per run, before any
-// other mechanical agent fires (fetch:roadmap, fetch:<kind>,
-// gate:clear-tag:*). This is deliberately the one call in the whole run left
-// UNSIZED (mirrors dispatch-phase's Stage-0 fetch:phase-meta/fetch:task-meta
-// exemption and autopilot's own model:mechanical bootstrap, both recorded in
-// their respective verify-workflow-*.sh AC-MODEL bootstrap whitelists): it is
-// the call that produces the model id every other mechanical agent below runs
-// on, so it cannot know its own model before running.
-function buildMechanicalModelPrompt() {
+// buildModelsPrompt() — a mechanical Bash agent that resolves the mechanical
+// dispatch step AND the two judgment-site (finder/refuter) model ids, ONCE
+// per run, before any other mechanical agent fires (fetch:roadmap,
+// fetch:<kind>, gate:clear-tag:*). This is deliberately the one call in the
+// whole run left UNSIZED (mirrors dispatch-phase's Stage-0
+// fetch:phase-meta/fetch:task-meta exemption and autopilot's own
+// model:mechanical bootstrap, both recorded in their respective
+// verify-workflow-*.sh AC-MODEL bootstrap whitelists): it is the call that
+// produces the model id every other mechanical agent below runs on, so it
+// cannot know its own model before running.
+//
+// This single call resolves all three ids (mechanical, review-find,
+// review-verify) rather than adding two new bootstrap agent calls — a second
+// bootstrap would push MECH_BOOTSTRAPS in scripts/verify-workflow-review.sh
+// §2c from 4 to 6 and require edits across docs/mechanical-agent-inventory.md's
+// hand-tracked per-site/per-count tables, which this fix does not need: one
+// call can resolve all three ids. See docs/refuter-model-tiering.md §
+// "The rdm-wf-plan-review.js model-omission question" for why
+// findModel/verifyModel were previously omitted (an adjudicated oversight,
+// not policy) and this file's own driver block above for how they are
+// threaded into runPlanReview.
+function buildModelsPrompt() {
   return [
     'You are a mechanical fetch agent. Do not plan or implement anything.',
-    'Run exactly this command in the repo root and read its printed output:',
+    'Run exactly these three commands in the repo root and read their printed output:',
     '  ./target/debug/rdm model resolve mechanical',
-    'Return the printed model id verbatim as JSON { "model": "<id>" }.',
-    'If the command fails or prints nothing, return { "model": "" }.',
+    '  ./target/debug/rdm model resolve review-find',
+    '  ./target/debug/rdm model resolve review-verify',
+    'Return the three printed model ids verbatim as JSON',
+    '{ "mechanical": "<id>", "reviewFind": "<id>", "reviewVerify": "<id>" }.',
+    'If a command fails or prints nothing, return "" for that field.',
   ].join('\n')
 }
 
-// MECHANICAL_MODEL — the resolved `rdm model resolve mechanical` id, from the
-// one bootstrap call made before the driver runs.
-const MECHANICAL_MODEL_SCHEMA = {
+// MODELS_SCHEMA — the resolved `rdm model resolve {mechanical,review-find,
+// review-verify}` ids, from the one bootstrap call made before the driver
+// runs.
+const MODELS_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['model'],
+  required: ['mechanical', 'reviewFind', 'reviewVerify'],
   properties: {
-    model: { type: 'string' },
+    mechanical: { type: 'string' },
+    reviewFind: { type: 'string' },
+    reviewVerify: { type: 'string' },
   },
 }
 
 // HOIST (see docs/mechanical-agent-inventory.md): the caller — already a running
-// agent with the repo in context — may run `rdm model resolve mechanical` itself
-// and pass the id as `args.mechanicalModel`. OPTIONAL: absent or malformed falls
-// through to the bootstrap agent below, which is left byte-unchanged and is what
-// a direct `Workflow` invocation always does. The unresolved-model fail-closed
-// abort applies identically to both paths.
+// agent with the repo in context — may run the three `rdm model resolve`
+// commands itself and pass the ids as `args.mechanicalModel`/`args.findModel`/
+// `args.verifyModel`. OPTIONAL and ALL-OR-NOTHING: a partial hoist (e.g.
+// mechanicalModel + findModel but no verifyModel) still needs a
+// model-resolving agent, so it is discarded and the bootstrap agent below
+// resolves all three — mirrors dispatch-phase's documented
+// hoistedMetaComplete all-or-nothing rationale. Absent or incomplete falls
+// through to the bootstrap agent below, which is what a direct `Workflow`
+// invocation always does. The unresolved-model fail-closed abort applies
+// identically to both paths.
 let mechanicalModel = ''
+let findModel = ''
+let verifyModel = ''
 let mechanicalErr = ''
 const hoistedMechanicalModel =
   args && typeof args === 'object' && typeof args.mechanicalModel === 'string' ? args.mechanicalModel.trim() : ''
-if (hoistedMechanicalModel) {
+const hoistedFindModel =
+  args && typeof args === 'object' && typeof args.findModel === 'string' ? args.findModel.trim() : ''
+const hoistedVerifyModel =
+  args && typeof args === 'object' && typeof args.verifyModel === 'string' ? args.verifyModel.trim() : ''
+if (hoistedMechanicalModel && hoistedFindModel && hoistedVerifyModel) {
   mechanicalModel = hoistedMechanicalModel
-  if (typeof log !== 'undefined') log('plan-review: mechanical model hoisted from caller args')
+  findModel = hoistedFindModel
+  verifyModel = hoistedVerifyModel
+  if (typeof log !== 'undefined') log('plan-review: models hoisted from caller args')
 } else if (typeof agent !== 'undefined') {
   try {
-    const mechanicalModelResult = await agent(buildMechanicalModelPrompt(), {
+    const modelsResult = await agent(buildModelsPrompt(), {
       label: 'model:mechanical',
       phase: 'Read',
       agentType: 'rdm-mechanical',
-      schema: MECHANICAL_MODEL_SCHEMA,
+      schema: MODELS_SCHEMA,
     })
-    mechanicalModel = mechanicalModelResult && typeof mechanicalModelResult.model === 'string' ? mechanicalModelResult.model.trim() : ''
+    mechanicalModel = modelsResult && typeof modelsResult.mechanical === 'string' ? modelsResult.mechanical.trim() : ''
+    findModel = modelsResult && typeof modelsResult.reviewFind === 'string' ? modelsResult.reviewFind.trim() : ''
+    verifyModel = modelsResult && typeof modelsResult.reviewVerify === 'string' ? modelsResult.reviewVerify.trim() : ''
   } catch (e) {
     mechanicalModel = ''
+    findModel = ''
+    verifyModel = ''
     mechanicalErr = String((e && e.message) || e)
   }
 }
 
-// An unresolved mechanical model stops the run before any mechanical agent
-// fires (fetch:roadmap, fetch:<kind>, gate:clear-tag:*), rather than silently
-// falling through to an unpinned call — mirrors autopilot's/backlog's/
-// estimate's/document's own model:mechanical empty-string guard. Fail-closed:
-// no tag is cleared, no status is persisted.
-if (!mechanicalModel) {
+// An unresolved model stops the run before any mechanical or judgment agent
+// fires (fetch:roadmap, fetch:<kind>, gate:clear-tag:*, the review find/verify
+// agents), rather than silently falling through to an unpinned call — mirrors
+// autopilot's/backlog's/estimate's/document's own model:mechanical
+// empty-string guard. Fail-closed: no tag is cleared, no status is persisted.
+// Widened from the mechanical-only check to require all three, since the
+// single-line runPlanReview({...}) calls below thread findModel/verifyModel
+// unconditionally — an empty string reaching agent() as `model:` risks
+// rejection rather than the graceful degrade an omitted/undefined key gets
+// (see docs/workflow-schemas.md's agent() options spike).
+if (!mechanicalModel || !findModel || !verifyModel) {
   const safeLog = typeof log !== 'undefined' ? log : function () {}
+  const missing = []
+  if (!mechanicalModel) missing.push('mechanical')
+  if (!findModel) missing.push('review-find')
+  if (!verifyModel) missing.push('review-verify')
   safeLog(
-    'plan-review: mechanical model could not be resolved (' +
-      (mechanicalErr || 'rdm model resolve mechanical returned nothing') +
+    'plan-review: model(s) could not be resolved (' +
+      missing.join(', ') +
+      (mechanicalErr ? ' — ' + mechanicalErr : ' — rdm model resolve returned nothing') +
       ') — stopping before any mechanical agent runs'
   )
   const parsedForAbort = parsePlanArgs(args)
@@ -3033,7 +3088,7 @@ if (!mechanicalModel) {
     kind: parsedForAbort.kind,
     outcome: 'escalated',
     fetchError: true,
-    summary: 'plan-review: mechanical model unresolved',
+    summary: 'plan-review: model(s) unresolved (' + missing.join(', ') + ')',
     units: [],
   }
 }
@@ -3044,4 +3099,6 @@ return await runPlanReviewDriver(args, {
   log: typeof log !== 'undefined' ? log : function () {},
   runPlanReview: buildReviewPipeline('plan'),
   mechanicalModel: mechanicalModel,
+  findModel: findModel,
+  verifyModel: verifyModel,
 })

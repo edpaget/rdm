@@ -3666,15 +3666,17 @@ pass "rdm-wf-plan-review.js parses four targets, fans out, reuses the core, and 
 
 # --- 5b-mechanical. Mechanical-tier pin: fetch/gate agents pinned, act:* is not.
 #
-# JUDGMENT-SITE MODEL BINDING WAS EVALUATED AND DELIBERATELY LEFT AS-IS.
-# This section pins the MECHANICAL tier only. The separate questions — whether
-# plan-review's finders/refuters should carry an explicit model (today they
-# inherit the session model, because lib/plan-review.mjs passes no
-# findModel/verifyModel), and whether refuters can move off Opus at all — were
-# measured against an adjudicated finding corpus. The decision, its numbers and
-# the follow-up task live in docs/refuter-model-tiering.md. No model binding
-# changed, so no criterion here needed updating; read that doc before
-# re-litigating it.
+# JUDGMENT-SITE MODEL BINDING WAS EVALUATED. This section pins the MECHANICAL
+# tier only. The separate question — whether refuters can move off Opus at
+# all — was measured against an adjudicated finding corpus; that decision,
+# its numbers, and the follow-up task live in docs/refuter-model-tiering.md
+# and is UNCHANGED by this phase. The sibling question — whether
+# plan-review's finders/refuters carry an explicit model at all, rather than
+# silently inheriting the session model — WAS an oversight (lib/plan-review.mjs
+# used to pass no findModel/verifyModel) and has since been fixed; see
+# §5b-models below for the criterion that gates the fix, and
+# docs/refuter-model-tiering.md § "The rdm-wf-plan-review.js model-omission
+# question" for the record of what changed and what did not.
 say "5b-mechanical. Mechanical-tier pin: fetch:roadmap, fetch:<kind>, gate:clear-tag:* resolve to the mechanical model"
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
@@ -3708,6 +3710,64 @@ if assert_label_model "$TMP/mech-blocks-mutant" 'fetch:roadmap' '_mechanicalMode
     fail "AC-MECHANICAL-TIER: detector missed a fetch:roadmap repoint away from _mechanicalModel"
 fi
 pass "AC-MECHANICAL-TIER: detector fires when fetch:roadmap is repointed away from _mechanicalModel"
+
+# --- 5b-models. Judgment-site model threading: findModel/verifyModel reach ---
+#     runPlanReview() on the same line, and the bootstrap resolves them. ------
+#
+# Fixes the oversight named in §5b-mechanical above: lib/plan-review.mjs (and
+# its byte-identical rdm-wf-plan-review.js copy) now thread the configured
+# review-find/review-verify model ids into both runPlanReview({...}) call
+# sites, mirroring dispatch-phase.js's existing reviewModels threading. The
+# refuter-TIER decision (keep-opus) in docs/refuter-model-tiering.md is
+# untouched by this — this section gates BINDING PRESENCE only.
+say "5b-models. Judgment-site model threading: findModel/verifyModel reach runPlanReview() and the bootstrap resolves review-find/review-verify"
+
+# Static check 1: both runPlanReview({...}) call sites in the workflow copy
+# carry findModel AND verifyModel on the SAME PHYSICAL LINE as the call —
+# mirrors scripts/verify-refuter-agreement.sh AC7's
+# `grep -cE 'runPlanReview\(\{[^}]*findModel'` so the two checks stay in
+# lockstep: a POSIX `grep -E`'s `[^}]*` never crosses a newline, so a
+# reformatted multi-line object literal would false-negative both.
+assert_same_line_model() {
+    key=$1
+    file=$2
+    count=$(grep -cE "runPlanReview\(\{[^}]*${key}" "$file" || true)
+    [ "$count" -ge 2 ] ||
+        fail "5b-models: expected >=2 runPlanReview({...}) call sites carrying ${key} on the same line, found $count in $file"
+}
+assert_same_line_model 'findModel' "$PLAN_REVIEW"
+assert_same_line_model 'verifyModel' "$PLAN_REVIEW"
+assert_same_line_model 'findModel' "$PLAN_LIB"
+assert_same_line_model 'verifyModel' "$PLAN_LIB"
+pass "5b-models: both runPlanReview({...}) call sites thread findModel and verifyModel on the same physical line, in lib and workflow"
+
+# Static check 2: the bootstrap prompt resolves review-find/review-verify
+# alongside mechanical, in the SAME agent call (label: 'model:mechanical') —
+# not two new bootstrap calls, which would perturb MECH_BOOTSTRAPS above.
+grep -q "model resolve review-find" "$PLAN_REVIEW" ||
+    fail "5b-models: bootstrap prompt must run 'rdm model resolve review-find'"
+grep -q "model resolve review-verify" "$PLAN_REVIEW" ||
+    fail "5b-models: bootstrap prompt must run 'rdm model resolve review-verify'"
+BOOTSTRAP_LABELS=$(grep -c "label: 'model:mechanical'" "$PLAN_REVIEW" || true)
+[ "$BOOTSTRAP_LABELS" -eq 1 ] ||
+    fail "5b-models: expected exactly one 'model:mechanical' bootstrap agent call, found $BOOTSTRAP_LABELS — a second bootstrap would perturb MECH_BOOTSTRAPS"
+pass "5b-models: the single model:mechanical bootstrap resolves mechanical, review-find, and review-verify in one call"
+
+# Self-test: strip findModel from the runPlanReview call site(s) in a scratch
+# copy and prove the same-line check now fails; restore and prove it passes
+# again — same pattern as 5b-mechanical's mutant test above. (Plain `sed`,
+# without a GNU-only `0,/regex/` line range, matches once per line — since
+# each call site is its own line, this strips every occurrence, which still
+# exercises the detector.)
+sed 's/findModel: _findModel, verifyModel: _verifyModel/verifyModel: _verifyModel/' \
+    "$PLAN_REVIEW" >"$TMP/pr.models-mutant"
+if cmp -s "$PLAN_REVIEW" "$TMP/pr.models-mutant"; then
+    fail "5b-models: planted mutation was a no-op — the sed pattern did not match"
+fi
+MUTANT_COUNT=$(grep -cE "runPlanReview\(\{[^}]*findModel" "$TMP/pr.models-mutant" || true)
+[ "$MUTANT_COUNT" -lt 2 ] ||
+    fail "5b-models: planted mutation (stripped findModel from one call site) did not reduce the same-line count — detector is vacuous"
+pass "5b-models: detector fires when a call site's findModel is stripped"
 
 # --- 5b-drift. PLAN-REVIEW DRIVER BLOCK: byte-identical (lib vs workflow) ------
 # The plan-review DRIVER (parsePlanArgs + the fetch/act/gate orchestration in
@@ -4233,16 +4293,20 @@ plan_mutate_and_expect_fail() {
 
 # (i) Stop threading maxRefutations into the per-unit review context: every unit
 #     silently falls back to the pipeline default and a caller override is lost.
+# Both call sites are single physical lines (load-bearing for
+# scripts/verify-refuter-agreement.sh AC7's same-line detector — see
+# §5b-models above), so the mutation and its check operate within one line
+# rather than across a `\n`.
 pmut_thread_unit() {
-    perl -0pi -e "s/(target: unit\.target,\n)(\s*)maxRefutations: maxRefutations,\n/\$1/" "$PMUT/plan-review.mjs"
-    ! grep -A2 'target: unit.target,' "$PMUT/plan-review.mjs" | grep -q 'maxRefutations'
+    perl -pi -e "s/(target: unit\.target,) maxRefutations: maxRefutations,/\$1/" "$PMUT/plan-review.mjs"
+    ! grep 'target: unit.target,' "$PMUT/plan-review.mjs" | grep -q 'maxRefutations'
 }
 plan_mutate_and_expect_fail i 'dropping the maxRefutations thread into reviewUnit' pmut_thread_unit
 
 # (ii) Same, on the --implementation-plan branch.
 pmut_thread_impl() {
-    perl -0pi -e "s/(target: planText,\n)(\s*)maxRefutations: maxRefutations,\n/\$1/" "$PMUT/plan-review.mjs"
-    ! grep -A2 'target: planText,' "$PMUT/plan-review.mjs" | grep -q 'maxRefutations'
+    perl -pi -e "s/(target: planText,) maxRefutations: maxRefutations,/\$1/" "$PMUT/plan-review.mjs"
+    ! grep 'target: planText,' "$PMUT/plan-review.mjs" | grep -q 'maxRefutations'
 }
 plan_mutate_and_expect_fail ii 'dropping the maxRefutations thread into the implementation-plan branch' pmut_thread_impl
 
@@ -4846,6 +4910,102 @@ for (const [name, bad] of [
   assert.equal(parsed.kind, 'task', '7d: ... while the pre-existing flag-string parsing is unchanged');
 }
 console.log('7d OK: every plan-review hoist is optional and falls back on anything malformed');
+
+// ============================================================================
+// 5b-models (Node half). findModel/verifyModel: parsePlanArgs trims/rejects
+// like every other hoist, and runPlanReviewDriver threads the resolved values
+// onto the context passed to runPlanReview — for BOTH the persisted-unit path
+// (reviewUnit) and the implementation-plan path — with the same
+// deps-then-parsed-override precedence as mechanicalModel.
+// ============================================================================
+{
+  // parsePlanArgs: trims a caller-supplied value; blank resolves to null.
+  const parsed = parsePlanArgs({ task: 'hoist-target', findModel: '  sonnet-x  ', verifyModel: '  opus-x  ' });
+  assert.equal(parsed.findModel, 'sonnet-x', '5b-models: parsePlanArgs trims and surfaces findModel');
+  assert.equal(parsed.verifyModel, 'opus-x', '5b-models: parsePlanArgs trims and surfaces verifyModel');
+  assert.equal(
+    parsePlanArgs({ task: 't', findModel: '   ' }).findModel,
+    null,
+    '5b-models: a blank findModel is rejected'
+  );
+  assert.equal(
+    parsePlanArgs({ task: 't', verifyModel: '   ' }).verifyModel,
+    null,
+    '5b-models: a blank verifyModel is rejected'
+  );
+}
+function makeCapturingDeps(o) {
+  o = o || {};
+  const contexts = [];
+  return {
+    contexts,
+    deps: {
+      agent: async () => ({ ok: true }),
+      parallel: async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t))),
+      log: () => {},
+      runPlanReview: async (context) => {
+        contexts.push(context);
+        return { survivors: [], acTable: null };
+      },
+      mechanicalModel: o.mechanicalModel,
+      findModel: o.findModel,
+      verifyModel: o.verifyModel,
+    },
+  };
+}
+{
+  // Persisted-unit path (reviewUnit): the resolved findModel/verifyModel reach
+  // the context runPlanReview is called with.
+  const h = makeCapturingDeps({});
+  await runPlanReviewDriver(
+    { task: 'hoist-target', fetched: TASK_FETCHED, findModel: 'sonnet-x', verifyModel: 'opus-x' },
+    h.deps
+  );
+  assert.equal(h.contexts.length, 1, '5b-models: persisted-unit path calls runPlanReview exactly once');
+  assert.equal(h.contexts[0].findModel, 'sonnet-x', '5b-models: persisted-unit path threads findModel onto the context');
+  assert.equal(h.contexts[0].verifyModel, 'opus-x', '5b-models: persisted-unit path threads verifyModel onto the context');
+}
+{
+  // Implementation-plan path: same threading, the other call site.
+  const h = makeCapturingDeps({});
+  const out = await runPlanReviewDriver(
+    { implementationPlan: true, planText: 'a plan', findModel: 'sonnet-x', verifyModel: 'opus-x' },
+    h.deps
+  );
+  assert.equal(out.kind, 'implementation-plan', '5b-models: sanity — the implementation-plan path was taken');
+  assert.equal(h.contexts.length, 1, '5b-models: implementation-plan path calls runPlanReview exactly once');
+  assert.equal(h.contexts[0].findModel, 'sonnet-x', '5b-models: implementation-plan path threads findModel onto the context');
+  assert.equal(h.contexts[0].verifyModel, 'opus-x', '5b-models: implementation-plan path threads verifyModel onto the context');
+}
+{
+  // Precedence: a caller-supplied parsePlanArgs override (read directly via
+  // args) wins over an injected deps.findModel/verifyModel — same override
+  // test as mechanicalModel's above.
+  const h = makeCapturingDeps({ findModel: 'dep-find', verifyModel: 'dep-verify' });
+  await runPlanReviewDriver(
+    { task: 'hoist-target', fetched: TASK_FETCHED, findModel: 'override-find', verifyModel: 'override-verify' },
+    h.deps
+  );
+  assert.equal(h.contexts[0].findModel, 'override-find', '5b-models: parsed.findModel overrides an injected deps.findModel');
+  assert.equal(h.contexts[0].verifyModel, 'override-verify', '5b-models: parsed.verifyModel overrides an injected deps.verifyModel');
+}
+{
+  // Fallback: no findModel/verifyModel anywhere -> undefined on the context
+  // (the same inert value mechanicalModel falls back to), not a thrown error.
+  const h = makeCapturingDeps({});
+  await runPlanReviewDriver({ task: 'hoist-target', fetched: TASK_FETCHED }, h.deps);
+  assert.equal(h.contexts[0].findModel, undefined, '5b-models: findModel absent everywhere -> undefined on the context');
+  assert.equal(h.contexts[0].verifyModel, undefined, '5b-models: verifyModel absent everywhere -> undefined on the context');
+}
+{
+  // `findModel`/`verifyModel` must come from STRUCTURED object keys only —
+  // never parsed out of the $ARGUMENTS flag string, mirroring every other
+  // hoist's 7d assertion.
+  const parsed = parsePlanArgs('--task hoist-target');
+  assert.equal(parsed.findModel, null, '5b-models: a raw $ARGUMENTS string never yields a findModel');
+  assert.equal(parsed.verifyModel, null, '5b-models: nor a verifyModel');
+}
+console.log('5b-models OK: findModel/verifyModel are trimmed, threaded onto both runPlanReview call sites, and overridable');
 
 console.log('ALL PLAN-REVIEW HOIST CHECKS PASSED');
 NODE_PLAN_HOIST

@@ -211,18 +211,26 @@ Three consequences the dispatch path depends on:
    so the guard converts it to a thrown stage — the only thing `pipeline()` turns
    into a `null` element.
 
-**`rdm-wf-plan-review.js` omits `findModel`/`verifyModel` — that omission is an
-OVERSIGHT, not policy.** `.claude/workflows/lib/plan-review.mjs` calls
-`runPlanReview({ target })` at both call sites, so `buildReviewPipeline` sees no
-`ctx.findModel`/`ctx.verifyModel` and its finders and refuters inherit the
-ambient session model (see the "key omitted" row above), while the sibling
-`rdm-wf-dispatch-phase.js` threads
+**`rdm-wf-plan-review.js` used to omit `findModel`/`verifyModel` — that omission
+was an OVERSIGHT, not policy, and has been fixed by
+`thread-plan-review-judgment-models`.** `.claude/workflows/lib/plan-review.mjs`
+used to call `runPlanReview({ target })` at both call sites with no model keys,
+so `buildReviewPipeline` saw no `ctx.findModel`/`ctx.verifyModel` and its
+finders and refuters inherited the ambient session model (see the "key
+omitted" row above), while the sibling `rdm-wf-dispatch-phase.js` threaded
 `{ findModel: models.review_find, verifyModel: models.review_verify }`. The
-counter-argument that judgment sites are deliberately unpinned does not cover
+counter-argument that judgment sites are deliberately unpinned did not cover
 this case: `f4e89d7` and `scripts/verify-workflow-review.sh` §5b-mechanical both
-govern only the MECHANICAL pin, and no artifact says a judgment site should
-carry no model at all. Evidence, citations and the follow-up task are in
-[`docs/refuter-model-tiering.md`](refuter-model-tiering.md) — not restated here.
+govern only the MECHANICAL pin, and no artifact said a judgment site should
+carry no model at all. Both call sites in `lib/plan-review.mjs` (and the
+byte-identical `rdm-wf-plan-review.js` copy) now pass `findModel`/`verifyModel`
+inline on the same physical line as the `runPlanReview({...})` call, resolved
+by extending the file's existing single `model:mechanical` bootstrap agent to
+also resolve `review-find`/`review-verify` in one call (see the
+`rdm-wf-plan-review` hoist-census rows below) rather than adding a second
+bootstrap. Evidence, citations, and the still-unchanged refuter-*tier* decision
+(`keep-opus`) are in [`docs/refuter-model-tiering.md`](refuter-model-tiering.md)
+— not restated here.
 
 Tier→model resolution itself belongs to `rdm-core` (`rdm model resolve <step>
 [--tier <t>]`). The hint is forwarded **only** for `plan`/`implement`, and only
@@ -1301,10 +1309,14 @@ before this contract existed.
 The wholesale-failure guard — EVERY selected dimension resolving null — throws
 rather than reporting a clean review, and is **model-INDEPENDENT**: only its
 message branches, keeping the recognisable `check the [models] tier bindings`
-text on the model path. This matters because `lib/plan-review.mjs` calls
-`runPlanReview({ target })` with NO `findModel`/`verifyModel` at either call
-site, so a model-conditional guard was inert in plan mode and `GATE_POLICY.plan`
-would have cleared `needs-plan-review` off a review that never ran.
+text on the model path. This mattered because `lib/plan-review.mjs` used to
+call `runPlanReview({ target })` with NO `findModel`/`verifyModel` at either
+call site, so a model-conditional guard would have been inert in plan mode and
+`GATE_POLICY.plan` would have cleared `needs-plan-review` off a review that
+never ran. `thread-plan-review-judgment-models` has since threaded both keys
+into plan-review's context (see the model-omission paragraph above), but the
+guard stays model-independent regardless — it must hold for any caller,
+threaded or not.
 
 An **absent** AC table is distinct from a **clean** one. `acTableHasGap`'s
 contract is unchanged and deliberately not widened (`acTableHasGap(null) ===
@@ -2201,6 +2213,8 @@ classification rule behind them, and the measured delta live in
 | `rdm-wf-plan-review` | `fetched` | `fetch:roadmap` / `fetch:<kind>` | object with a non-empty `body` **and** a `tags` array of strings (roadmap kind additionally: an array `phases` whose every entry carries a non-empty `stem`, a string `body`, and its own `tags` array) |
 | `rdm-wf-plan-review` | `wontFixedTexts` | `fetch:wontfix` | array |
 | `rdm-wf-plan-review` | `mechanicalModel` | `model:mechanical` | non-empty string |
+| `rdm-wf-plan-review` | `findModel` | `model:mechanical` | non-empty string |
+| `rdm-wf-plan-review` | `verifyModel` | `model:mechanical` | non-empty string |
 | `rdm-wf-backlog` | `mechanicalModel` | `model:mechanical` | non-empty string |
 | `rdm-wf-backlog` | `report` | `fetch:report` | object carrying all four signal arrays |
 | `rdm-wf-document` | `mechanicalModel` | `model:mechanical` | non-empty string |
