@@ -4356,6 +4356,14 @@ mod tests {
         assert!(content.contains("linear history"));
         assert!(content.contains("reviewed"));
         assert!(content.contains("Done:"));
+        // CI-equivalent checks are discovered from the consuming repo, not hardcoded to rdm's
+        // own Rust toolchain (rdm's cargo triad appears only as an illustrative parenthetical).
+        assert!(content.contains("CI config"));
+        assert!(content.contains("docs/principles.md"));
+        assert!(content.contains("CLAUDE.md"));
+        assert!(content.contains("AGENTS.md"));
+        assert!(content.contains("abort and escalate"));
+        assert!(content.contains("no CI-equivalent checks determinable"));
         assert!(content.contains("reviewed → done"));
         assert!(content.contains("git rebase --abort"));
         assert!(content.contains("docs/escalation-protocol.md"));
