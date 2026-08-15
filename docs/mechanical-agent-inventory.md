@@ -441,11 +441,16 @@ effort options spike"; the operative outcomes are:
   unresolvable `agentType` is a *raised* error in the runtime, not the silent `null` an unknown
   `model` id produces. This was previously inferred from a runtime string table; the spike
   observed it four times (cases B, C, F and the retry probe), and the script distinguishes a
-  throw from a null return explicitly, so the shape is unambiguous. Since `rdm agent-config`
-  emits no `.claude/agents/` definitions, threading `agentType` into the two distributed
-  workflow templates would **hard-break** every downstream lane on first dispatch rather than
-  degrade it. §2b of the review harness gates that. This phase therefore does not introduce a
-  distributed dangling reference — it declines to.
+  throw from a null return explicitly, so the shape is unambiguous. At the time this phase
+  landed, `rdm agent-config` emitted no `.claude/agents/` definitions, so threading `agentType`
+  into the two distributed workflow templates would have **hard-broken** every downstream lane
+  on first dispatch rather than degrading it; `scripts/verify-workflow-review.sh` §2b gated
+  that, and this phase declined to introduce a distributed dangling reference. **That gap is
+  now closed:** `ship-mechanical-agent-type-downstream` landed `generate_agents()`, which ships
+  `.claude/agents/rdm-mechanical.md` into every downstream tree, and
+  `scripts/verify-agent-config-distribution.sh` § 3c is the reference-resolution gate that
+  replaced §2b's blanket prohibition. Neither distributed template threads `agentType` yet —
+  that remains separate follow-up work — but a reference could now resolve if one were added.
 
 ### The threaded surface, enumerated
 

@@ -250,6 +250,20 @@ pub struct WorkflowFile {
     pub content: &'static str,
 }
 
+/// A generated Claude Code custom-agent definition, with its relative path
+/// and content.
+///
+/// Modeled on [`WorkflowFile`]: agent definitions are emitted verbatim, with
+/// no project/principles substitution pass, since a `name`/`tools`
+/// frontmatter definition has no per-project or per-executable content to
+/// substitute.
+pub struct AgentFile {
+    /// Relative path within `.claude/agents/` (e.g., "rdm-mechanical.md").
+    pub relative_path: &'static str,
+    /// The full, unmodified content of the agent definition.
+    pub content: &'static str,
+}
+
 /// Options for generating skill definition files.
 pub struct SkillOptions {
     /// Project name to embed in skill CLI invocations.
@@ -390,6 +404,51 @@ pub fn generate_workflows() -> Vec<WorkflowFile> {
     SHIPPED_WORKFLOWS
         .iter()
         .map(|(relative_path, content)| WorkflowFile {
+            relative_path,
+            content,
+        })
+        .collect()
+}
+
+/// The single canonical list of shipped Claude Code custom-agent
+/// definitions, mirroring [`SHIPPED_WORKFLOWS`]'s "named in exactly one
+/// place" shape.
+///
+/// Currently one entry: `rdm-mechanical`, the mechanical-transcription agent
+/// definition the four local-only Workflow scripts (`rdm-wf-backlog.js`,
+/// `rdm-wf-document.js`, `rdm-wf-estimate.js`, `rdm-wf-plan-review.js`)
+/// resolve against via `agentType`. None of the three *distributed*
+/// workflows (`rdm-wf-dispatch-phase.js`, `rdm-wf-review-refute-fix.js`)
+/// reference it yet — this table exists so a downstream tree has somewhere
+/// for such a reference to resolve, in advance of one being added. See
+/// `docs/workflow-schemas.md` § "agentType / effort options spike".
+const SHIPPED_AGENTS: [(&str, &str); 1] = [(
+    "rdm-mechanical.md",
+    include_str!("templates/agents/rdm-mechanical.md"),
+)];
+
+/// Returns the Claude Code custom-agent definitions that ship alongside the
+/// skills and Workflow-tool scripts.
+///
+/// This is a separate emission surface from [`generate_skills`] and
+/// [`generate_workflows`] — its own count should not be summed with either.
+/// Agent definitions are embedded verbatim via `include_str!` and returned
+/// unmodified, with no project/principles substitution, exactly like
+/// [`generate_workflows`].
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_agents;
+///
+/// let agents = generate_agents();
+/// assert_eq!(agents.len(), 1);
+/// assert_eq!(agents[0].relative_path, "rdm-mechanical.md");
+/// ```
+pub fn generate_agents() -> Vec<AgentFile> {
+    SHIPPED_AGENTS
+        .iter()
+        .map(|(relative_path, content)| AgentFile {
             relative_path,
             content,
         })
@@ -2027,6 +2086,37 @@ mod tests {
                 workflow.content, source,
                 "{} drifted from the embedded template",
                 workflow.relative_path
+            );
+        }
+    }
+
+    // --- Agent-definition generation tests ---
+
+    #[test]
+    fn generate_agents_returns_one_file() {
+        let agents = generate_agents();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].relative_path, "rdm-mechanical.md");
+    }
+
+    #[test]
+    fn generate_agents_byte_identical_to_source() {
+        // Same rationale as `generate_workflows_are_byte_identical_to_source`:
+        // a live comparison against the checked-in `.claude/agents/*.md`
+        // files, not a hardcoded fixture, so a future hand-edit to either the
+        // template or the dogfood copy that isn't mirrored to the other
+        // fails CI immediately.
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("rdm-core manifest dir has a parent");
+        for agent in generate_agents() {
+            let source_path = repo_root.join(".claude/agents").join(agent.relative_path);
+            let source = std::fs::read_to_string(&source_path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", source_path.display()));
+            assert_eq!(
+                agent.content, source,
+                "{} drifted from the embedded template",
+                agent.relative_path
             );
         }
     }

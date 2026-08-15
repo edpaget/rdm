@@ -106,22 +106,25 @@ fn write_mcp_json(base_dir: &Path, root: &Path) -> Result<()> {
 ///
 /// When the target is `Platform::Claude` and the output is a project
 /// directory (`--out`, not `--user`), this also emits the autonomous-lane
-/// Workflow-tool scripts under `<base_dir>/.claude/workflows/`, then runs
-/// superseded-workflow cleanup over that same directory
+/// Workflow-tool scripts under `<base_dir>/.claude/workflows/` and the
+/// custom-agent definitions they resolve `agentType` references against
+/// under `<base_dir>/.claude/agents/`, then runs superseded-workflow cleanup
+/// over the workflows directory
 /// (`agent_config::resolve_superseded_workflows` against the shipped
 /// `agent_config::SUPERSEDED_WORKFLOWS` table) and reports one line per
 /// removed or skipped-as-modified file. This is intentionally narrower than
 /// the skills surface:
 ///
 /// - **Claude-only**: Pi has no Workflow-tool runtime, so `--skills` against
-///   `Platform::Pi` writes only `.pi/skills`, never a workflows directory,
-///   and never runs cleanup.
+///   `Platform::Pi` writes only `.pi/skills`, never a workflows or agents
+///   directory, and never runs cleanup.
 /// - **`--out`-only, not `--user`**: the shipped scripts are project-scoped —
 ///   they drive one checked-out repo and its worktrees, using the rdm
 ///   executable and plan project supplied to them at run time (`rdmBin` /
 ///   `project`). That only makes sense relative to a specific checkout, so
 ///   they are never written to a user-global location like
 ///   `~/.claude/workflows`, and cleanup never runs against `--user` either.
+///   The same reasoning applies to `.claude/agents/`.
 ///
 /// # Errors
 ///
@@ -172,13 +175,19 @@ fn write_skills(
         let path = skills_root.join(skill.relative_path);
         write_output(&path, skill.content.as_bytes())?;
     }
-    // Workflow-tool scripts are Claude-only (Pi has no Workflow-tool runtime)
-    // and --out-only (not --user; see the doc comment above for why).
+    // Workflow-tool scripts (and their custom-agent definitions) are
+    // Claude-only (Pi has no Workflow-tool runtime) and --out-only (not
+    // --user; see the doc comment above for why).
     if platform == Platform::Claude && !user {
         let workflows_dir = base_dir.join(".claude/workflows");
         for workflow in agent_config::generate_workflows() {
             let path = workflows_dir.join(workflow.relative_path);
             write_output(&path, workflow.content.as_bytes())?;
+        }
+        let agents_dir = base_dir.join(".claude/agents");
+        for agent in agent_config::generate_agents() {
+            let path = agents_dir.join(agent.relative_path);
+            write_output(&path, agent.content.as_bytes())?;
         }
         // Clean up files superseded by an earlier emission of this same
         // lane. Reported, never fatal: a removal failure must not abort an
@@ -418,6 +427,48 @@ mod tests {
         write_output(&path, b"first").unwrap();
         write_output(&path, b"second").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+    }
+
+    /// `write_skills` must emit `.claude/agents/rdm-mechanical.md`
+    /// byte-identical to `generate_agents()`'s content, for both the plain
+    /// CLI (`mcp: false`) and `--mcp` variants — mirroring the workflow
+    /// scripts' emission, which both variants already share.
+    #[test]
+    fn write_skills_emits_agent_definitions_plain_and_mcp() {
+        let agent_content = agent_config::generate_agents()
+            .into_iter()
+            .find(|a| a.relative_path == "rdm-mechanical.md")
+            .expect("rdm-mechanical.md must be a shipped agent definition")
+            .content
+            .to_string();
+
+        for mcp in [false, true] {
+            let out_dir = tempfile::tempdir().unwrap();
+            let out = out_dir.path().to_path_buf();
+            write_skills(
+                Platform::Claude,
+                Some("distro-check".to_string()),
+                None,
+                mcp,
+                false,
+                &Some(out.clone()),
+                Path::new("."),
+                &[],
+            )
+            .unwrap();
+
+            let agent_path = out.join(".claude/agents/rdm-mechanical.md");
+            let written = std::fs::read_to_string(&agent_path).unwrap_or_else(|e| {
+                panic!(
+                    "expected {} to be written (mcp={mcp}): {e}",
+                    agent_path.display()
+                )
+            });
+            assert_eq!(
+                written, agent_content,
+                "emitted rdm-mechanical.md must be byte-identical to generate_agents() (mcp={mcp})"
+            );
+        }
     }
 
     #[test]

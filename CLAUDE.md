@@ -227,7 +227,7 @@ The autonomous do/autopilot lane has migrated from prose-orchestrated skills to 
 - Backlog-workflow harness: `bash scripts/verify-workflow-backlog.sh` — hermetic regression for the headless `rdm-wf-backlog` Workflow (the propose-only grooming pass over `rdm backlog report`'s four signal arrays): pure-helper and driven-pipeline behavior fed fakes (empty-report short-circuit with zero analyzer calls, a fully-populated report producing all four batch subsections, a fetch error propagating rather than being laundered into "Nothing to groom", a single analyzer crash degrading gracefully), a ZERO-MUTATION section against a real seeded plan repo (git HEAD/status/file-checksum identity before and after a run), the byte-identical-copy drift gate against `lib/backlog.mjs` (with a planted-mutation self-test), and static invariants (exactly one Bash-executing agent directive whose command template is provably read-only, no `Date.now(`/`Math.random(`, `meta.phases` parity). Run it after touching `.claude/workflows/lib/backlog.mjs`, `rdm-wf-backlog.js`, or the `rdm-backlog` skill shim.
 - Document-workflow harness: `bash scripts/verify-workflow-document.sh` — hermetic regression for the headless `rdm-wf-document` Workflow (the all-done validation, per-phase `parallel()` git-gather with has-SHA/body-only fallback, synthesis, and disk-write pipeline behind `rdm-document`): static invariants (the `parallel()` fan-out, `rdm roadmap show`/`rdm phase show --format json` wiring, the abort-on-incomplete and has-SHA/body-only branches, no `--status` mutation or plan-mode call, no `Date.now(`/`Math.random(`, and that the skill shim retains its terminal "not done until reviewed and approved" human-approval language while dropping the old step-by-step git-gather prose), the byte-identical-copy drift gate against `lib/document.mjs` (with a planted-mutation self-test), Node-driven pure-logic behavior tests (`parseDocumentArgs`, `defaultOutPath`/`resolveOutPath`, `computeIncompletePhases`, `buildGitRangeCommands`), and a hermetic seed against a real temp plan repo plus a real temp source repo (a fully-done roadmap with real commit SHAs, a roadmap with an incomplete phase, and a done phase with no recorded commit) feeding real `rdm roadmap show`/`phase show --format json` output through the same pure functions. Run it after touching `.claude/workflows/lib/document.mjs`, `rdm-wf-document.js`, or the `rdm-document` skill shim.
 
-#### `.claude/agents/` — a new LOCAL-ONLY surface (not distributed)
+#### `.claude/agents/` — the custom-agent registry, now a shipped emission surface
 
 `.claude/agents/` is the custom-agent registry `agent()`'s `opts.agentType` resolves against. It
 holds one definition, `rdm-mechanical.md`. The **four local-only workflows** (`rdm-wf-document.js`,
@@ -235,9 +235,13 @@ holds one definition, `rdm-mechanical.md`. The **four local-only workflows** (`r
 two distributed workflows and every judgment site must not. `scripts/verify-workflow-review.sh`
 §2c asserts both directions with planted-mutation self-tests. Resolution is confirmed on the
 Workflow path and the trim measured at **8907 tokens/agent (−23 %)** — roughly half the 19894
-the `claude -p` 2×2 predicts, so quote 8907 for these sites. It is **not distributed**.
-Evidence, measurements and disposition live in
-`docs/workflow-schemas.md` § "agentType / effort options spike" — that section is canonical; do
+the `claude -p` 2×2 predicts, so quote 8907 for these sites.
+`rdm-core/src/agent_config.rs`'s `generate_agents()` now ships `rdm-mechanical.md` into every
+`rdm agent-config claude --skills`-produced downstream tree (`ship-mechanical-agent-type-downstream`),
+so a distributed workflow template CAN reference it — none does yet, since threading a distributed
+site is a separate, not-yet-landed follow-up. `scripts/verify-agent-config-distribution.sh` § 3c
+resolves any such reference against the emitted set. Evidence, measurements and disposition live
+in `docs/workflow-schemas.md` § "agentType / effort options spike" — that section is canonical; do
 not restate its tables here.
 
 Note when adding an agent definition: Claude Code watches `.claude/agents/`, but the watcher
@@ -246,17 +250,12 @@ file in a new `agents` directory needs a restart before it resolves. Project def
 also discovered by walking up from the cwd, so a session rooted outside this repo will not see
 this one.
 
-Two rules follow, both gated by `scripts/verify-workflow-review.sh` §2b with planted-mutation
-self-tests:
+One rule remains, gated by `scripts/verify-workflow-review.sh` §2b with a planted-mutation
+self-test:
 
 - **No workflow script may pass `effort:`.** The reason is *scope*, not mechanism —
   `effort: 'low'` at a call site **is** honored. Lifting this is owned by
   `finish-agent-type-effort-spike-and-thread-mechanical-sites`.
-- **No *distributed* workflow template (`rdm-core/src/templates/workflows/*.js`) may reference
-  `agentType`.** A downstream repo receives no `.claude/agents/` definitions at all, and an
-  `agentType` the registry lacks *raises* rather than degrading silently, so a shipped reference
-  hard-breaks every downstream lane on first dispatch. Lift only with
-  `ship-mechanical-agent-type-downstream`.
 
 **When editing this file:** the project `CLAUDE.md` is loaded into every subagent, including a
 custom-`agentType` one, and cannot be suppressed per agent type — it was measured at 19320

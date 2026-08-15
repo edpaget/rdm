@@ -704,28 +704,36 @@ is unambiguous. (Cases B and F raised the same error, but for the setup reason i
 designed to test exactly this.) `agentType` and `model` are handled by different
 code paths and only `model` has the silent-null hazard.
 
-This remains a **distribution-scoped** hazard, as originally framed. A downstream
-repo receives no `.claude/agents/` definitions at all, so an `agentType` in a
-shipped template resolves against a registry that provably cannot contain it. That
-is not the situation for the four local-only workflows, whose definition sits in
-the same repo at the path the runtime searches.
+This remained a **distribution-scoped** hazard, as originally framed, for as
+long as a downstream repo received no `.claude/agents/` definitions at all —
+that gap has since closed (see below): a downstream repo now receives
+`.claude/agents/rdm-mechanical.md`, so an `agentType: 'rdm-mechanical'`
+reference in a shipped template WOULD resolve there if one were added. Neither
+distributed template carries one yet.
 
-The consequence is material. `rdm-core/src/agent_config.rs` exposes exactly
-`generate_skills` and `generate_workflows`; there is **no** emission surface for
-`.claude/agents/`, and adding one is out of scope for this phase by decision. Had
+The consequence was material at the time this section was written.
+`rdm-core/src/agent_config.rs` exposed exactly `generate_skills` and
+`generate_workflows`; there was **no** emission surface for `.claude/agents/`,
+and adding one was out of scope for this phase by decision. Had
 `agentType: 'mechanical'` been threaded into `rdm-wf-dispatch-phase.js`
 and `rdm-wf-review-refute-fix.js` and re-synced into
 `rdm-core/src/templates/workflows/`, every downstream repo running
-`rdm agent-config claude --skills --out <dir>` would receive workflows that
-**hard-fail on first dispatch** — not a "known-degraded surface", a broken lane.
-`scripts/verify-agent-config-distribution.sh`'s semantic check greps only for
-literal `.claude/workflows/<name>.js` references and would not catch it.
+`rdm agent-config claude --skills --out <dir>` would have received workflows
+that **hard-fail on first dispatch** — not a "known-degraded surface", a broken
+lane. `scripts/verify-agent-config-distribution.sh`'s semantic check greps only
+for literal `.claude/workflows/<name>.js` references and would not have caught
+it.
 
-This is a blocking reason not to thread the two distributed files until the
-follow-up task `ship-mechanical-agent-type-downstream` lands an emission
-surface plus a reference-resolution gate. **This phase does not claim
-distribution self-consistency, and it does not introduce a distributed dangling
-reference either — it declines to create one.**
+This was a blocking reason not to thread the two distributed files until the
+follow-up task `ship-mechanical-agent-type-downstream` landed an emission
+surface plus a reference-resolution gate. **This phase did not claim
+distribution self-consistency, and did not introduce a distributed dangling
+reference either — it declined to create one.** `ship-mechanical-agent-type-downstream`
+has since landed that surface (`generate_agents()`, shipping
+`.claude/agents/rdm-mechanical.md` into every downstream tree) and its
+reference-resolution gate (`scripts/verify-agent-config-distribution.sh` § 3c) —
+see the follow-up bullet below. Neither distributed template threads
+`agentType` yet; that remains separate, not-yet-landed work.
 
 #### Disposition
 
@@ -781,9 +789,16 @@ measured one.
 
 **Not threaded, and each for its own reason:**
 
-1. **The two distributed workflows** — blocked outright by the missing emission
-   surface (§ Distribution). A downstream tree receives no `.claude/agents/` at
-   all, so the reference could never resolve there. §2b(ii) gates this.
+1. **The two distributed workflows** — `ship-mechanical-agent-type-downstream` has
+   since landed the missing emission surface (§ Distribution):
+   `generate_agents()` now ships `.claude/agents/rdm-mechanical.md` into every
+   downstream tree, and `scripts/verify-agent-config-distribution.sh` § 3c
+   resolves any emitted `agentType` reference against it — the successor to the
+   removed `scripts/verify-workflow-review.sh` §2b(ii). Neither distributed
+   template threads `agentType` yet; that remains a separate follow-up. The
+   distributed reference count is zero at landing time, so § 3c's non-vacuity
+   comes from an emitted-definition floor plus planted-corruption self-tests,
+   not a real-reference occurrence floor.
 2. **Every judgment site** — finders, refuters, planners, implementers,
    `synthesize:draft`, `analyze:*`, `estimate:rate:*` and plan-review's `act:*`.
    `rdm-mechanical` is a transcribe-only agent with a two-tool allowlist; giving
@@ -824,10 +839,14 @@ and it is 42 % of a mechanical agent's floor. What remains is carried by two tas
   `rdm-wf-document` dispatches whose twelve fan-out agents all resolved. The
   `effort` half ran its fidelity study and came back a **negative** — threaded
   nowhere, §2b(i) unchanged.
-- `ship-mechanical-agent-type-downstream` — the `.claude/agents/` emission surface
-  and its reference-resolution gate, which unblocks the two distributed
-  workflows and lifts §2b(ii). Its "hard failure on first dispatch" premise is now
-  observed rather than inferred.
+- `ship-mechanical-agent-type-downstream` — **DONE.** Landed the `.claude/agents/`
+  emission surface (`generate_agents()`) and its reference-resolution gate
+  (`scripts/verify-agent-config-distribution.sh` § 3c), which lifted the
+  now-removed §2b(ii). Its "hard failure on first dispatch" premise was
+  observed rather than inferred (§ Distribution above). The emission surface
+  ships the definition into every downstream tree; threading an `agentType`
+  into either distributed workflow template remains separate, not-yet-landed
+  follow-up work — the distributed reference count is zero.
 
 <a id="regularize-followup"></a>
 

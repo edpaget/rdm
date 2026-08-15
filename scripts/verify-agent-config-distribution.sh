@@ -14,12 +14,23 @@
 #      own dogfood project ("rdm"), and asserts the whole run never touches
 #      this repo's working tree (`git status --porcelain` before/after).
 #   2. STRUCTURAL: asserts all 11 skills land at their conventional paths
-#      with minimally-valid frontmatter, and both workflow scripts land
-#      under `.claude/workflows/`.
-#   3. BYTE-IDENTITY: asserts the 2 emitted workflow scripts are byte-for-byte
-#      identical to this repo's own `.claude/workflows/*.js` — the one
-#      surface `generate_workflows` promises to emit verbatim (see its doc
-#      comment in `rdm-core/src/agent_config.rs`).
+#      with minimally-valid frontmatter, both workflow scripts land under
+#      `.claude/workflows/`, and the `rdm-mechanical` agent definition lands
+#      under `.claude/agents/` with minimally-valid frontmatter.
+#   3. BYTE-IDENTITY: asserts the 2 emitted workflow scripts AND the 1 emitted
+#      agent definition are byte-for-byte identical to this repo's own
+#      `.claude/workflows/*.js` and `.claude/agents/*.md` — the surfaces
+#      `generate_workflows`/`generate_agents` promise to emit verbatim (see
+#      their doc comments in `rdm-core/src/agent_config.rs`).
+#   3c. AGENT REFERENCE RESOLUTION: sweeps every emitted workflow script for an
+#      `agentType: '<name>'` literal and asserts each resolves to a `name:`
+#      frontmatter line in the EMITTED `.claude/agents/*.md` set (modeled on
+#      `scripts/verify-workflow-review.sh` §2c(iv), but resolved against the
+#      DOWNSTREAM tree, not this repo's own copy). The emitted reference set
+#      is empty at landing time — no distributed template threads `agentType`
+#      yet — so non-vacuity comes from an emitted-agent-definition-count floor
+#      (>= 1) plus three planted-corruption self-tests, not an occurrence
+#      floor over real references (see the section itself for why).
 #   3b. CLEANUP (nothing superseded present): re-emitting into a tree that
 #      holds only current files is idempotent and non-destructive —
 #      re-emission prints no `Removed` line, the two current engine scripts
@@ -64,13 +75,13 @@
 #      catches both an unfamiliar Workflow name and a skill other than
 #      rdm-autopilot.
 #   6. NEGATIVE / PLAN-REPO INDEPENDENCE: Pi emission never writes
-#      `.claude/workflows` (no Workflow-tool runtime) and never prints a
-#      cleanup-report line; `--user` emission never writes
-#      `.claude/workflows` either (the scripts are project-scoped to a specific
-#      checked-out repo, so they're `--out`-only) and never prints a
-#      cleanup-report line; and emission succeeds even when `RDM_ROOT` points
-#      at a path that does not exist, since `--skills` emission never needs
-#      the plan repo.
+#      `.claude/workflows` or `.claude/agents` (no Workflow-tool runtime) and
+#      never prints a cleanup-report line; `--user` emission never writes
+#      `.claude/workflows` or `.claude/agents` either (the scripts are
+#      project-scoped to a specific checked-out repo, so they're `--out`-only)
+#      and never prints a cleanup-report line; and emission succeeds even when
+#      `RDM_ROOT` points at a path that does not exist, since `--skills`
+#      emission never needs the plan repo.
 #   7. DOWNSTREAM EXECUTION: byte-identity is NECESSARY but not SUFFICIENT —
 #      it says nothing about whether the emitted lane WORKS anywhere else. So
 #      sections 7a-7f stand up a hermetic non-rdm, NON-RUST fixture (a
@@ -132,6 +143,8 @@ SKILLS="rdm-roadmap rdm-do rdm-document rdm-review rdm-estimate rdm-dispatch-pha
 DISPATCH_WF="rdm-wf-dispatch-phase.js"
 REVIEW_WF="rdm-wf-review-refute-fix.js"
 WORKFLOWS="$DISPATCH_WF $REVIEW_WF"
+# The single shipped agent definition (`generate_agents()`'s sole entry).
+AGENTS="rdm-mechanical.md"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
@@ -161,6 +174,21 @@ check_workflows_byte_identical() {
     for name in $WORKFLOWS; do
         if ! diff -q "$REPO_ROOT/.claude/workflows/$name" "$dir/.claude/workflows/$name" >/dev/null 2>&1; then
             echo "  drift: $dir/.claude/workflows/$name differs from $REPO_ROOT/.claude/workflows/$name" >&2
+            drifted=1
+        fi
+    done
+    [ "$drifted" -eq 0 ]
+}
+
+# Asserts every $AGENTS definition under <emitted_dir>/.claude/agents is
+# byte-identical to this repo's own .claude/agents/*.md. Prints a diagnostic
+# per drifted file and returns nonzero if any differ.
+check_agents_byte_identical() {
+    dir=$1
+    drifted=0
+    for name in $AGENTS; do
+        if ! diff -q "$REPO_ROOT/.claude/agents/$name" "$dir/.claude/agents/$name" >/dev/null 2>&1; then
+            echo "  drift: $dir/.claude/agents/$name differs from $REPO_ROOT/.claude/agents/$name" >&2
             drifted=1
         fi
     done
@@ -280,8 +308,8 @@ say "1. Emitting 'agent-config claude --skills' (cli and --mcp variants)"
 "$RDM_BIN" agent-config claude --skills --mcp --project distro-check --out "$TMP/mcp" >/dev/null
 pass "emitted into $TMP/cli and $TMP/mcp"
 
-# --- 2. structural: skills + workflows land at conventional paths ----------
-say "2. Structural: all 11 skills + 2 workflow scripts present with valid frontmatter"
+# --- 2. structural: skills + workflows + agents land at conventional paths -
+say "2. Structural: all 11 skills + 2 workflow scripts + 1 agent definition present with valid frontmatter"
 for variant in cli mcp; do
     for skill in $SKILLS; do
         md="$TMP/$variant/.claude/skills/$skill/SKILL.md"
@@ -291,7 +319,12 @@ for variant in cli mcp; do
     for wf in $WORKFLOWS; do
         [ -f "$TMP/$variant/.claude/workflows/$wf" ] || fail "$variant: missing .claude/workflows/$wf"
     done
-    pass "$variant: 11 skills (valid frontmatter) + 2 workflow scripts present"
+    for agent in $AGENTS; do
+        agent_md="$TMP/$variant/.claude/agents/$agent"
+        [ -f "$agent_md" ] || fail "$variant: missing .claude/agents/$agent"
+        assert_valid_frontmatter "$agent_md"
+    done
+    pass "$variant: 11 skills (valid frontmatter) + 2 workflow scripts + 1 agent definition (valid frontmatter) present"
 done
 
 # --- 2b. every {t_*} tool placeholder is substituted in the emitted skills --
@@ -304,7 +337,7 @@ for variant in cli mcp; do
     fi
 done
 
-# --- 3. byte-identity: emitted workflows match this repo's own copies -------
+# --- 3. byte-identity: emitted workflows + agents match this repo's own copies
 say "3. Byte-identity: emitted workflow scripts vs $REPO_ROOT/.claude/workflows"
 for variant in cli mcp; do
     if check_workflows_byte_identical "$TMP/$variant"; then
@@ -313,6 +346,121 @@ for variant in cli mcp; do
         fail "$variant: workflow scripts drifted from $REPO_ROOT/.claude/workflows (see drift lines above)"
     fi
 done
+
+say "3a. Byte-identity: emitted agent definitions vs $REPO_ROOT/.claude/agents"
+for variant in cli mcp; do
+    if check_agents_byte_identical "$TMP/$variant"; then
+        pass "$variant: agent definitions byte-identical to source"
+    else
+        fail "$variant: agent definitions drifted from $REPO_ROOT/.claude/agents (see drift lines above)"
+    fi
+done
+
+# --- 3c. AGENT REFERENCE RESOLUTION -----------------------------------------
+# The successor to the removed `scripts/verify-workflow-review.sh` §2b
+# distributed-agentType guard: that guard existed only because there was no
+# `.claude/agents/` emission surface, so a distributed `agentType` reference
+# would raise on first dispatch in every downstream repo with nothing to
+# resolve against. Now that `generate_agents()` ships `.claude/agents/`
+# alongside `.claude/workflows/`, THIS check catches the same failure the
+# moment a real reference exists: it sweeps every emitted workflow script for
+# an `agentType: '<name>'` literal and asserts each resolves to a `name:`
+# frontmatter line in the EMITTED `.claude/agents/*.md` set (not this repo's
+# own copy — a downstream consumer only has what was actually emitted into
+# its tree). Modeled on `scripts/verify-workflow-review.sh` §2c(iv)'s
+# resolution shape.
+#
+# The emitted reference set is empty today: none of the two distributed
+# workflow scripts threads `agentType` yet (that is a deliberate follow-up,
+# not this phase's scope — see `docs/mechanical-agent-inventory.md`). An
+# occurrence floor over real references (mirroring the shim-reference `>= 4`
+# floor a few sections up) would therefore fail on a correct implementation,
+# so non-vacuity instead comes from (a) an emitted-agent-definition-count
+# floor (>= 1: proves a real, non-empty definition set exists to resolve
+# against even with zero references today) and (b) three planted-corruption
+# self-tests below, which are the primary evidence this check has teeth.
+say "3c. Agent reference resolution: every emitted agentType literal resolves to an emitted agent definition"
+resolve_agent_refs() {
+    # $1 = emitted tree root (contains .claude/workflows and .claude/agents).
+    tree=$1
+    wf_dir="$tree/.claude/workflows"
+    agents_dir="$tree/.claude/agents"
+    refs_scratch="$TMP/.agent-refs-scratch.txt"
+    AGENT_REF_COUNT=0
+    AGENT_REF_UNRESOLVED=0
+    grep -rhoE "agentType: *'[^']*'" "$wf_dir"/*.js 2>/dev/null |
+        sed "s/.*'\(.*\)'/\1/" | sort -u >"$refs_scratch" || : >"$refs_scratch"
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        AGENT_REF_COUNT=$((AGENT_REF_COUNT + 1))
+        found=""
+        for def in "$agents_dir"/*.md; do
+            [ -f "$def" ] || continue
+            defname=$(sed -n '/^name:[[:space:]]*/{s/^name:[[:space:]]*//p;q;}' "$def")
+            [ "$defname" = "$name" ] && found="$def" && break
+        done
+        [ -n "$found" ] ||
+            {
+                echo "  unresolved: $wf_dir references agentType '$name' but no file in $agents_dir declares 'name: $name'" >&2
+                AGENT_REF_UNRESOLVED=$((AGENT_REF_UNRESOLVED + 1))
+            }
+    done <"$refs_scratch"
+    rm -f "$refs_scratch"
+    [ "$AGENT_REF_UNRESOLVED" -eq 0 ]
+}
+for variant in cli mcp; do
+    if resolve_agent_refs "$TMP/$variant"; then
+        pass "$variant: all $AGENT_REF_COUNT emitted agentType reference(s) resolve (0 expected today)"
+    else
+        fail "$variant: $AGENT_REF_UNRESOLVED unresolved agentType reference(s) (see lines above)"
+    fi
+    AGENTS_COUNT=$(find "$TMP/$variant/.claude/agents" -name '*.md' -type f | wc -l | tr -d ' ')
+    [ "$AGENTS_COUNT" -ge 1 ] ||
+        fail "$variant: expected >= 1 emitted agent definition, found $AGENTS_COUNT — the resolution check has nothing real to resolve against"
+    pass "$variant: $AGENTS_COUNT emitted agent definition(s) present (non-vacuity floor)"
+done
+
+# --- 3c self-tests: prove the resolution check actually has teeth ----------
+# Each scratch copy is made from $TMP/cli AFTER the main 3c assertions above
+# have already run and passed against the real (uncorrupted) emission, so a
+# planted corruption here can never contaminate this run's primary pass/fail
+# signal (same discipline as every other planted-mutation self-test in this
+# script, e.g. 5j's).
+say "3c-i. Self-test: an unresolvable planted agentType reference must turn the check red"
+SCRATCH_AGENT_UNRESOLVED="$TMP/scratch-agent-unresolved"
+rm -rf "$SCRATCH_AGENT_UNRESOLVED"
+cp -R "$TMP/cli" "$SCRATCH_AGENT_UNRESOLVED"
+# shellcheck disable=SC2016
+printf "\nawait agent(P, { agentType: 'does-not-exist' })\n" \
+    >>"$SCRATCH_AGENT_UNRESOLVED/.claude/workflows/$DISPATCH_WF"
+if resolve_agent_refs "$SCRATCH_AGENT_UNRESOLVED" >/dev/null 2>&1; then
+    fail "self-test 3c-i: a planted unresolvable agentType 'does-not-exist' was NOT detected — the resolution check is vacuous"
+fi
+pass "self-test 3c-i: a planted unresolvable agentType reference correctly turned the resolution check red"
+
+say "3c-ii. Self-test: a resolvable planted agentType reference must stay green"
+SCRATCH_AGENT_RESOLVED="$TMP/scratch-agent-resolved"
+rm -rf "$SCRATCH_AGENT_RESOLVED"
+cp -R "$TMP/cli" "$SCRATCH_AGENT_RESOLVED"
+# shellcheck disable=SC2016
+printf "\nawait agent(P, { agentType: 'rdm-mechanical' })\n" \
+    >>"$SCRATCH_AGENT_RESOLVED/.claude/workflows/$DISPATCH_WF"
+if ! resolve_agent_refs "$SCRATCH_AGENT_RESOLVED" >/dev/null 2>&1; then
+    fail "self-test 3c-ii: a planted RESOLVABLE agentType 'rdm-mechanical' incorrectly turned the resolution check red — it is failing on any injected literal, not on unresolvability"
+fi
+[ "$AGENT_REF_COUNT" -ge 1 ] ||
+    fail "self-test 3c-ii: the planted reference was not counted — the check did not actually sweep the corrupted file"
+pass "self-test 3c-ii: a planted resolvable agentType reference correctly stayed green ($AGENT_REF_COUNT reference(s) swept)"
+
+say "3c-iii. Self-test: deleting the emitted agent definition must turn a resolvable reference red"
+# Starting from 3c-ii's copy (which already carries a resolvable
+# 'rdm-mechanical' reference), remove the emitted definition it resolves
+# against.
+rm -f "$SCRATCH_AGENT_RESOLVED/.claude/agents/rdm-mechanical.md"
+if resolve_agent_refs "$SCRATCH_AGENT_RESOLVED" >/dev/null 2>&1; then
+    fail "self-test 3c-iii: deleting the emitted rdm-mechanical.md did NOT turn a previously-resolvable reference red — the check is resolving against something other than the emitted tree"
+fi
+pass "self-test 3c-iii: deleting the emitted agent definition correctly turned a previously-resolvable reference red"
 
 # --- 3b. cleanup mechanism (empty table): re-emission is idempotent --------
 # --- and non-destructive ----------------------------------------------------
@@ -614,26 +762,32 @@ rm -f "$STALE_WF/dispatch-phase.js"
 pass "5j self-test: a re-planted superseded file correctly turns the removal assertion red"
 
 # --- 6. negative checks: platform/scope boundaries + plan-repo independence -
-say "6a. Negative: Pi emission never writes .claude/workflows or prints a cleanup report"
+say "6a. Negative: Pi emission never writes .claude/workflows, .claude/agents, or prints a cleanup report"
 "$RDM_BIN" agent-config pi --skills --project distro-check --out "$TMP/pi" >"$TMP/pi-emit.log"
 if [ -d "$TMP/pi/.claude/workflows" ]; then
     fail "Pi emission must not write .claude/workflows (Pi has no Workflow-tool runtime)"
 fi
+if [ -d "$TMP/pi/.claude/agents" ]; then
+    fail "Pi emission must not write .claude/agents (agent definitions are Workflow-tool-only, same gate as .claude/workflows)"
+fi
 if grep -qE '^(Removed |Skipped |Failed to remove )' "$TMP/pi-emit.log"; then
     fail "Pi emission printed a cleanup-report line — cleanup must never run outside Platform::Claude && !user:\n$(cat "$TMP/pi-emit.log")"
 fi
-pass "Pi emission has no .claude/workflows directory and prints no cleanup-report line"
+pass "Pi emission has no .claude/workflows or .claude/agents directory and prints no cleanup-report line"
 
-say "6b. Negative: --user emission never writes .claude/workflows or prints a cleanup report"
+say "6b. Negative: --user emission never writes .claude/workflows, .claude/agents, or prints a cleanup report"
 mkdir -p "$TMP/user-home"
 if HOME="$TMP/user-home" "$RDM_BIN" agent-config claude --skills --user >"$TMP/user-emit.log" 2>&1; then
     if [ -d "$TMP/user-home/.claude/workflows" ]; then
         fail "--user emission must not write .claude/workflows (scripts are --out-only, not user-global)"
     fi
+    if [ -d "$TMP/user-home/.claude/agents" ]; then
+        fail "--user emission must not write .claude/agents (agent definitions are --out-only, same gate as .claude/workflows)"
+    fi
     if grep -qE '^(Removed |Skipped |Failed to remove )' "$TMP/user-emit.log"; then
         fail "--user emission printed a cleanup-report line — cleanup must never run against --user:\n$(cat "$TMP/user-emit.log")"
     fi
-    pass "--user emission has no .claude/workflows directory and prints no cleanup-report line"
+    pass "--user emission has no .claude/workflows or .claude/agents directory and prints no cleanup-report line"
 else
     cat "$TMP/user-emit.log" >&2
     fail "--user emission failed unexpectedly"

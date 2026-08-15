@@ -841,16 +841,23 @@ fi
 pass "2a: no repo/language literal in any deriveSignals region, the retired path lists are gone, and both greps catch planted violations"
 
 # --- 2b. AGENT-CONTEXT-TRIM GUARDS -------------------------------------------
-# Two guards recording decisions from the agentType/effort options spike
-# (docs/workflow-schemas.md § "agentType / effort options spike"). The spike has
-# now been RUN via the Workflow tool (wf_2bea58b9-38f), and it moved both guards'
-# rationales without moving either verdict:
-#   (i)  effort IS honored at the call site (reversing the earlier
-#        definition-side negative), so this guard is now a SCOPE boundary, not a
-#        statement that the option is inert.
-#   (ii) agentType did not resolve from inside a Workflow run AT ALL, and an
-#        unresolvable one RAISES (now observed, not inferred).
-# No call site was edited, so both guards stay live.
+# One remaining guard recording a decision from the agentType/effort options
+# spike (docs/workflow-schemas.md § "agentType / effort options spike"). The
+# spike has now been RUN via the Workflow tool (wf_2bea58b9-38f): effort IS
+# honored at the call site (reversing the earlier definition-side negative),
+# so this guard is now a SCOPE boundary, not a statement that the option is
+# inert. No call site was edited, so the guard stays live.
+#
+# The sibling guard that used to live here — "no DISTRIBUTED workflow copy may
+# reference an agentType" — is REMOVED as of `ship-mechanical-agent-type-downstream`:
+# `rdm-core/src/agent_config.rs`'s `generate_agents()` now ships
+# `.claude/agents/rdm-mechanical.md` into every downstream tree, so the
+# precondition for that guard (no emission surface to resolve against) no
+# longer holds. Its successor is `scripts/verify-agent-config-distribution.sh`
+# § 3c, which resolves every emitted `agentType:` literal against the EMITTED
+# `.claude/agents/*.md` set — the same failure this guard used to prevent,
+# caught the moment a real reference exists instead of by a blanket
+# prohibition.
 say "2b. Agent-context-trim guards (agentType / effort options spike)"
 
 # (i) No call site may pass `effort:`. READ THIS BEFORE "FIXING" IT: the option
@@ -880,37 +887,6 @@ if ! grep -nE '(^|[^A-Za-z-])effort:' "$SCRATCH/planted-effort.js" >/dev/null 2>
     fail "effort guard did NOT catch a planted effort: key — the detector is broken"
 fi
 pass "no workflow call site passes effort:; detector catches a planted one"
-
-# (ii) No DISTRIBUTED workflow copy may reference an agentType. `agent_config.rs`
-#      emits skills and workflows only — there is no `.claude/agents/` emission
-#      surface — and an unresolvable agentType is a RAISED error in the runtime
-#      (`agent({agentType}): agent type '...' not found`), not the silent null
-#      an unknown `model` id produces. That raise is now OBSERVED, not inferred:
-#      spike cases B, C and F plus a retry probe all threw it. Threading one into
-#      a shipped template would hard-fail every downstream lane on first
-#      dispatch. Lift this guard only together with
-#      `ship-mechanical-agent-type-downstream`.
-#
-#      SCOPE, deliberate: this greps only "$TEMPLATES", not $WF_DIR. The local
-#      workflows DO carry agentType — see §2c, which asserts exactly which of
-#      their call sites carry it. Their definition lives in this same repo at
-#      the path the runtime searches, so a local agentType resolves; a
-#      downstream tree receives no .claude/agents/ at all, which is what makes
-#      the distributed case different in kind rather than in degree.
-if grep -nE 'agentType' "$TEMPLATES"/workflows/*.js 2>/dev/null; then
-    fail "a distributed workflow template references agentType, but rdm agent-config emits no .claude/agents/ definitions — an unresolvable agentType RAISES in the runtime and would break every downstream lane"
-fi
-mkdir -p "$SCRATCH/planted-tpl"
-printf 'await agent(P, { label: "x", agentType: %s })\n' "'rdm-mechanical'" >"$SCRATCH/planted-tpl/x.js"
-if ! grep -nE 'agentType' "$SCRATCH/planted-tpl"/*.js >/dev/null 2>&1; then
-    fail "distributed-agentType guard did NOT catch a planted agentType — the detector is broken"
-fi
-# Anti-vacuity: the real glob must match at least one file, or the guard above
-# passes for the wrong reason.
-TPL_WF_COUNT=$(find "$TEMPLATES/workflows" -name '*.js' | wc -l | tr -d ' ')
-[ "$TPL_WF_COUNT" -ge 1 ] ||
-    fail "no distributed workflow templates matched — the agentType guard would pass vacuously"
-pass "no distributed workflow template references agentType ($TPL_WF_COUNT scanned); detector catches a planted one"
 
 # --- 2b-fid. THE effort FIDELITY INSTRUMENT ----------------------------------
 # §2b(i) above keeps `effort:` off every call site until a fidelity study shows

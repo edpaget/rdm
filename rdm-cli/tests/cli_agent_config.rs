@@ -413,11 +413,13 @@ fn agent_config_skills_generates_ten_files() {
         .assert()
         .success()
         // 11 skill files + 2 workflow files ("rdm-wf-dispatch-phase.js",
-        // "rdm-wf-review-refute-fix.js") emitted for Claude + --out. This is a
+        // "rdm-wf-review-refute-fix.js") + 1 agent definition
+        // ("rdm-mechanical.md") emitted for Claude + --out. This is a
         // deliberate, accounted-for change from the prior 11 (skills only) —
-        // see agent_config_workflows_written_under_out and
-        // agent_config_workflows_are_byte_identical_to_source below.
-        .stdout(predicate::str::contains("Wrote").count(13));
+        // see agent_config_workflows_written_under_out,
+        // agent_config_workflows_are_byte_identical_to_source, and
+        // agent_config_agents_written_under_out below.
+        .stdout(predicate::str::contains("Wrote").count(14));
 
     let skills_dir = dir.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -478,9 +480,55 @@ fn agent_config_workflows_are_byte_identical_to_source() {
 }
 
 #[test]
+fn agent_config_agents_written_under_out() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    let agents_dir = dir.path().join(".claude/agents");
+    assert!(agents_dir.join("rdm-mechanical.md").exists());
+}
+
+#[test]
+fn agent_config_agents_are_byte_identical_to_source() {
+    // Intentionally a live comparison against the checked-in
+    // `.claude/agents/*.md` files (not a hardcoded fixture), so a future
+    // hand-edit to either side that isn't mirrored to the other fails CI
+    // immediately.
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    // rdm-cli's manifest dir's parent is the repo root.
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    for agent in rdm_core::agent_config::generate_agents() {
+        let name = agent.relative_path;
+        let emitted = std::fs::read(dir.path().join(".claude/agents").join(name)).unwrap();
+        let source = std::fs::read(repo_root.join(".claude/agents").join(name)).unwrap();
+        assert_eq!(emitted, source, "{name} drifted from the emitted template");
+    }
+}
+
+#[test]
 fn agent_config_pi_skills_does_not_write_workflows() {
     // Pi has no Workflow-tool runtime, so --skills against Pi must not emit
-    // a workflows directory at all.
+    // a workflows directory at all. The same gate covers .claude/agents/,
+    // which exists only to resolve agentType references from the
+    // Workflow-tool scripts.
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("agent-config")
@@ -493,13 +541,16 @@ fn agent_config_pi_skills_does_not_write_workflows() {
 
     assert!(!dir.path().join(".claude/workflows").exists());
     assert!(!dir.path().join(".pi/workflows").exists());
+    assert!(!dir.path().join(".claude/agents").exists());
+    assert!(!dir.path().join(".pi/agents").exists());
 }
 
 #[test]
 fn agent_config_user_skills_does_not_write_workflows() {
     // Workflows are project/repo-scoped (they hardcode a target repo's own
     // ./target/debug/rdm and --project rdm), so --user must not emit them
-    // to a user-global location even for Claude.
+    // to a user-global location even for Claude. The same gate covers
+    // .claude/agents/.
     let home = TempDir::new().unwrap();
     rdm()
         .env("HOME", home.path())
@@ -511,6 +562,7 @@ fn agent_config_user_skills_does_not_write_workflows() {
         .success();
 
     assert!(!home.path().join(".claude/workflows").exists());
+    assert!(!home.path().join(".claude/agents").exists());
 }
 
 #[test]
@@ -781,10 +833,12 @@ fn agent_config_mcp_skills_generates_eleven_files_including_backlog() {
         .arg(dir.path())
         .assert()
         .success()
-        // 11 skill files + 2 workflow files + .mcp.json (only written when
-        // --mcp) = 14. Was 10 + 2 + 1 = 13 before `rdm-backlog` gained an
-        // MCP twin — cli/mcp skill-set parity now includes it on both sides.
-        .stdout(predicate::str::contains("Wrote").count(14));
+        // 11 skill files + 2 workflow files + 1 agent definition +
+        // .mcp.json (only written when --mcp) = 15. Was 10 + 2 + 1 = 13
+        // before `rdm-backlog` gained an MCP twin, then 14 before
+        // `generate_agents()` shipped `rdm-mechanical.md` alongside the
+        // workflow scripts.
+        .stdout(predicate::str::contains("Wrote").count(15));
 
     let skills_dir = dir.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
