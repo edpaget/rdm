@@ -322,10 +322,16 @@ context: autopilot is no longer a headless `.claude/workflows/autopilot.js` Work
 skill, which is already a live agent with Bash access and invokes `rdm-wf-dispatch-phase` directly
 via the `Workflow` tool. On the CLI surface it now runs the same `phase show` + five
 `model resolve` calls `buildFetchPrompt` would have delegated to a Stage-0 agent, and forwards the
-result as `phaseMeta` — eliminating that Opus-tier call per dispatched phase entirely, the same way
-`fetch:next`/`estimate:list`/`model:mechanical` above already do. The MCP surface is unaffected by
+result as `phaseMeta` — eliminating that Opus-tier call per dispatched phase **on the success
+path**, the same way `fetch:next`/`estimate:list`/`model:mechanical` above already do. This is
+deliberately not unconditional: `hoistedMetaComplete` is all-or-nothing, and a cold direct
+`Workflow` invocation must keep resolving models via the unsized bootstrap fetch (nothing about
+that path changed), so if the skill's own `phase show` or any of the five `model resolve` calls
+fails, it forwards no `phaseMeta` at all and the same unsized Stage-0 agent runs for that one
+dispatch — an accepted, documented residual, not a closed gap. The MCP surface is unaffected by
 design (`skill-autopilot-mcp.md` has no Bash or MCP model-resolve tool to run the procedure with),
-so this elimination is CLI-lane only; see `skill-autopilot-mcp.md`'s explanatory note. The
+so this elimination is CLI-lane only, and even there is bounded to the pre-fetch's own success;
+see `skill-autopilot-mcp.md`'s explanatory note. The
 `observed`/`eliminated`/`remaining` numbers on that row are unchanged: they are artifacts of one
 specific pre-migration instrumented run (`wf_133bc5a5-ce3`, predating both the prose migration and
 this fix) and are not re-measured here absent a fresh post-fix run — this is a mechanism and
