@@ -19,7 +19,17 @@ bare `<roadmap>`) and runs:
    there is no upstream this step is skipped — `main` is already the rebase base.
 3. **Rebase the item's branch onto `main`** — from inside the item's worktree,
    `git rebase main` (no `git checkout main` — see the worktree note below).
-4. **Re-run the CI-equivalent checks** on the rebased branch:
+4. **Re-run the CI-equivalent checks** on the rebased branch. There is no
+   universal command — `rdm-land` discovers what "CI-equivalent" means for the
+   consuming repo, in order: (a) its CI config (e.g. `.github/workflows/`,
+   `.circleci/config.yml`, `.gitlab-ci.yml`); failing that, (b)
+   `docs/principles.md`; failing that, (c) `CLAUDE.md` / `AGENTS.md` in the
+   project root. Whatever checks that source names are what get run. If none
+   of the three sources name any checks, `rdm-land` does not skip this step —
+   it aborts and escalates instead (see "Abort and escalate" below).
+
+   This repo's own concrete instance of that rule, discovered from
+   `.github/workflows/ci.yml`, is:
    ```bash
    cargo fmt --check
    cargo clippy -- -D warnings
@@ -75,7 +85,8 @@ Landing is the one step that **writes to `main`**, so it is gated:
 
 ## Abort and escalate (never force-merge)
 
-On a **rebase conflict** or **failing checks**, `rdm-land`:
+On a **rebase conflict**, **failing checks**, or **no CI-equivalent checks
+determinable**, `rdm-land`:
 
 - runs `git rebase --abort` (or `git merge --abort`) to restore the branch's
   pre-landing state;

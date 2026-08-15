@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- `rdm-land`'s step 4 ("Re-run the CI-equivalent checks") no longer hardcodes rdm's own `cargo fmt` / `cargo clippy` / `cargo nextest` commands as the operative gate. A downstream consumer in any other language had those three commands fail outright on every landing attempt, since failing checks are an abort condition. The step now instructs discovery of the consuming repo's actual checks, in order: its CI config, else `docs/principles.md`, else `CLAUDE.md`/`AGENTS.md`, keeping rdm's cargo triad only as an illustrative example; when none of those sources name any checks, the skill aborts and escalates rather than silently skipping the gate. Applied to `rdm-core/src/templates/skill-land-{cli,mcp}.md` (and therefore `rdm agent-config claude --skills`/`--plugin` output and the checked-in `plugins/rdm/skills/land/SKILL.md`), `.claude/skills/rdm-land/SKILL.md`, and `docs/landing.md`.
 
 ## [0.19.0] - 2026-08-10
 ### Added

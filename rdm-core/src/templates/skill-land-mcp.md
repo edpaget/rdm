@@ -63,13 +63,11 @@ Before touching `main`, confirm all of:
 2–5. **Delegate the git landing to a Bash-capable subagent** (the `Agent` tool). rdm uses **one worktree per roadmap**: the item's branch is checked out in a *linked* worktree while `main` stays in the **primary** worktree, so `git checkout main` from the item worktree is refused by git. Instruct the subagent to find the primary worktree (`git worktree list`, first entry — call it `<primary>`) and then:
    1. Update `main` in the primary worktree, only if it tracks an upstream: if `git -C <primary> rev-parse --abbrev-ref main@{u}` succeeds, run `git -C <primary> pull --ff-only`; in a local-only repo with no upstream, skip it (`main` is already the rebase base; `git pull` would error "no tracking information").
    2. From inside the item's worktree, `git rebase main` (no checkout of `main` needed — it is a readable ref). On conflict → `git rebase --abort` and report failure (do not continue).
-   3. Re-run the CI-equivalent checks on the rebased branch:
-      ```
-      cargo fmt --check
-      cargo clippy -- -D warnings
-      cargo nextest run
-      ```
-      If any fail → `git rebase --abort` and report failure.
+   3. Re-run the CI-equivalent checks on the rebased branch. There is no universal command for this — determine it from the consuming repo itself, in order: (a) its CI config (e.g. `.github/workflows/`, `.circleci/config.yml`, `.gitlab-ci.yml`); failing that, (b) `docs/principles.md`; failing that, (c) `CLAUDE.md` / `AGENTS.md` in the project root. Run whatever checks that source names. If any fail → `git rebase --abort` and report failure.
+
+      If none of the three sources name any checks, do not skip this step — report failure and let the calling skill abort and escalate: landing without a verified rebase is worse than landing late.
+
+      (For illustration only — not an instruction to run here — this repo's own instance of that rule, discovered from its `.github/workflows/` CI config, is `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo nextest run`; see `docs/landing.md`.)
    4. Fast-forward `main` from the primary worktree: `git -C <primary> merge --ff-only <branch>`, asserting **no merge commit**. If `--ff-only` is refused → report failure (never retry without it).
    The subagent reports back the merged commit SHA on success, or which step failed (with conflicting files / failing check) on failure.
 6. **Confirm the item flipped `reviewed → done`.** The fast-forward onto the default branch fires `rdm hook post-commit`, which reads the `Done:` line and marks the item done. Verify with `{t_phase_show}` / `{t_task_show}`. If the hook did not run, apply the idempotent fallback via `{t_phase_update}` (`project: {proj_param}, roadmap: "<slug>", phase: "<phase>", status: "done", commit: "<sha>"`) or `{t_task_update}` (`status: "done", commit: "<sha>"`).
@@ -77,7 +75,7 @@ Before touching `main`, confirm all of:
 
 ## Abort / escalation
 
-On **rebase conflict** or **failing checks**, the subagent must:
+On **rebase conflict**, **failing checks**, or **no CI-equivalent checks determinable**, the subagent must:
 
 - `git rebase --abort` (or `git merge --abort` if a merge was in flight) to restore the branch's pre-landing state.
 - **Leave the worktree intact** — never `git reset --hard`, force-push, force-merge, or discard the work.

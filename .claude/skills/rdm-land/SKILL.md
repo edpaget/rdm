@@ -52,13 +52,11 @@ Before touching `main`, confirm all of:
 1. **Read item status** and verify it is `reviewed` (precondition 1). Determine its branch: `roadmap/<slug>`, `task/<slug>`, or the phase's branch.
 2. **Update `main`** (in the primary worktree, only if it tracks an upstream): if `git -C <primary> rev-parse --abbrev-ref main@{u}` succeeds, refresh it with `git -C <primary> pull --ff-only`. In a local-only repo with no upstream, **skip this** — `main` is already the rebase base, and `git pull` would error with "no tracking information."
 3. **Rebase the item's branch onto `main`:** from inside the item's worktree, `git rebase main` (`main` is a ref readable from any worktree — no checkout needed). On conflict → **abort** (see below).
-4. **Re-run the CI-equivalent checks on the rebased branch:**
-   ```bash
-   cargo fmt --check
-   cargo clippy -- -D warnings
-   cargo nextest run
-   ```
-   These mirror the project's CI gate. If any fail → **abort** (see below): the rebase may have surfaced a semantic conflict the checks catch.
+4. **Re-run the CI-equivalent checks on the rebased branch.** There is no universal command for this — determine it from the consuming repo itself, in order: (a) its CI config (e.g. `.github/workflows/`, `.circleci/config.yml`, `.gitlab-ci.yml`); failing that, (b) `docs/principles.md`; failing that, (c) `CLAUDE.md` / `AGENTS.md` in the project root. Run whatever checks that source names. These mirror the project's CI gate. If any fail → **abort** (see below): the rebase may have surfaced a semantic conflict the checks catch.
+
+   If none of the three sources name any checks, do not skip this step — **abort and escalate** instead (see "Abort / escalation" below): landing without a verified rebase is worse than landing late.
+
+   (For illustration only — not an instruction to run here — this repo's own instance of that rule, discovered from `.github/workflows/ci.yml`, is `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo nextest run`; see `docs/landing.md`.)
 5. **Fast-forward `main`:** advance `main` from the primary worktree where it is checked out — `git -C <primary> merge --ff-only <branch>` (do **not** `git checkout main` inside the item worktree). Assert this produces **no merge commit** (a true fast-forward). If `--ff-only` is refused, abort — do **not** retry without it.
 6. **Confirm the item flipped `reviewed → done`.** The fast-forward onto the default branch fires `rdm hook post-commit`, which reads the `Done:` line and marks the item done. Verify with `./target/debug/rdm phase show <phase> --roadmap <slug> --project rdm`. If the hook did not run (e.g. hooks not installed), apply the idempotent fallback:
    ```bash
@@ -70,7 +68,7 @@ Before touching `main`, confirm all of:
 
 ## Abort / escalation
 
-On **rebase conflict** or **failing checks**:
+On **rebase conflict**, **failing checks**, or **no CI-equivalent checks determinable**:
 
 - `git rebase --abort` (or `git merge --abort` if a merge was in flight) to return the branch to its pre-landing state.
 - **Leave the worktree intact** — never `git reset --hard`, force-push, force-merge, or discard the work.
