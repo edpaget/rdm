@@ -40,6 +40,8 @@ import {
   DEFAULT_MAX_REFUTATIONS,
   buildReviewBudget,
   budgetSummaryClause,
+  buildReviewCoverage,
+  coverageSummaryClause,
 } from './review.mjs';
 
 // >>> dispatch-outcome:begin <<<
@@ -53,10 +55,10 @@ import {
 //
 // `hasBlocking`, `summarizeFindings`, `codeReviewRounds`, `classifyOutcome`,
 // `statusFor`, `writesCompletion`, `DEFAULT_MAX_CODE_REWORK`,
-// `DEFAULT_MAX_REFUTATIONS`, `buildReviewBudget`, and `budgetSummaryClause` are
-// NOT declared here: they belong to the canonical review source
-// (lib/review.mjs) and reach this block from the stamped review block that
-// precedes it in the workflow consumer.
+// `DEFAULT_MAX_REFUTATIONS`, `buildReviewBudget`, `budgetSummaryClause`,
+// `buildReviewCoverage`, and `coverageSummaryClause` are NOT declared here: they
+// belong to the canonical review source (lib/review.mjs) and reach this block
+// from the stamped review block that precedes it in the workflow consumer.
 
 // DEFAULT_MAX_PLAN_REVISE — the in-run plan-revision budget. It is counted
 // INDEPENDENTLY of the code-rework budget (DEFAULT_MAX_CODE_REWORK, which lives
@@ -313,6 +315,10 @@ async function runPlanGate(config, deps) {
   // its third field. Captured per round so a plan gate that hit its bound is
   // visible even when a later round did not.
   const budgetRounds = [reviewResult.budget || null];
+  // The per-round DIMENSION-PARTICIPATION accounting the review pipeline returns
+  // as its fourth field, captured exactly like budgetRounds so a round that lost
+  // a dimension stays visible even when a later round ran clean.
+  const coverageRounds = [reviewResult.coverage || null];
   let reviewCount = 1;
   let reviseCount = 0;
   for (let i = 0; i < maxRevise; i++) {
@@ -327,6 +333,8 @@ async function runPlanGate(config, deps) {
         findings: findings,
         budgetRounds: budgetRounds,
         budget: budgetRounds[budgetRounds.length - 1],
+        coverageRounds: coverageRounds,
+        coverage: coverageRounds[coverageRounds.length - 1],
         reviewCount: reviewCount,
         reviseCount: reviseCount,
       };
@@ -335,6 +343,7 @@ async function runPlanGate(config, deps) {
     reviewResult = (await d.review(planDoc)) || {};
     findings = reviewResult.survivors || [];
     budgetRounds.push(reviewResult.budget || null);
+    coverageRounds.push(reviewResult.coverage || null);
     reviewCount++;
   }
   return {
@@ -344,6 +353,8 @@ async function runPlanGate(config, deps) {
     findings: findings,
     budgetRounds: budgetRounds,
     budget: budgetRounds[budgetRounds.length - 1],
+    coverageRounds: coverageRounds,
+    coverage: coverageRounds[coverageRounds.length - 1],
     reviewCount: reviewCount,
     reviseCount: reviseCount,
   };
@@ -398,6 +409,11 @@ async function runCodeGate(config, deps) {
   // budget re-applies per round, so a round-1 hit that was resolved by round 2
   // stays visible via `everHit` in the OUTCOME.
   const budgetRounds = [reviewResult.budget || null];
+  // Per-round dimension-participation accounting, parallel to budgetRounds. A
+  // dimension that failed in round 1 stays visible even if round 2 ran complete.
+  // It is RECORDED ONLY — the rework-loop continuation below deliberately does
+  // NOT consult it, so an incomplete round never consumes an extra rework.
+  const coverageRounds = [reviewResult.coverage || null];
   let reworkCount = 0;
   for (let i = 0; i < maxRework; i++) {
     if (!hasBlocking(findings, tier) && !acTableHasGap(acTable)) break;
@@ -409,6 +425,7 @@ async function runCodeGate(config, deps) {
     rounds.push(findings);
     acRounds.push(acTable);
     budgetRounds.push(reviewResult.budget || null);
+    coverageRounds.push(reviewResult.coverage || null);
   }
   let actResult = null;
   const isClean = !hasBlocking(findings, tier) && !acTableHasGap(acTable);
@@ -420,6 +437,8 @@ async function runCodeGate(config, deps) {
     rounds: rounds,
     acRounds: acRounds,
     budgetRounds: budgetRounds,
+    coverageRounds: coverageRounds,
+    coverage: coverageRounds[coverageRounds.length - 1],
     reworkCount: reworkCount,
     reviewCount: rounds.length,
     actResult: actResult,
@@ -581,6 +600,7 @@ function buildOutcome(input) {
       summary: failSummary,
       reason: failPolicy.reason,
       reviewBudget: buildReviewBudget(i.budgetRounds, i.planBudget),
+      reviewCoverage: buildReviewCoverage(i.coverageRounds, i.planCoverage),
       findings: [],
     };
   }
@@ -626,6 +646,17 @@ function buildOutcome(input) {
   // `rdm review blocked` queue for free.
   const reviewBudget = buildReviewBudget(i.budgetRounds, i.planBudget);
   summary = summary + budgetSummaryClause(reviewBudget);
+  // The coverage clause is appended in ALL THREE branches too, immediately AFTER
+  // the budget clause so the ordering is fixed and deterministic for a run that
+  // hit both. It is EMPTY when every round ran every dimension, so a healthy
+  // run's summary stays byte-unchanged. Because outcomePolicy derives `reason`
+  // from `summary`, a parked/escalated unit whose review lost a dimension
+  // surfaces that in the `rdm review blocked` queue for free.
+  //
+  // This is the ONLY thing coverage does here: it never reaches classifyOutcome's
+  // input, and no branch gates on it. Recorded, never gated on.
+  const reviewCoverage = buildReviewCoverage(i.coverageRounds, i.planCoverage);
+  summary = summary + coverageSummaryClause(reviewCoverage);
   const policy = outcomePolicy(outcome, 'phase', summary);
   return {
     roadmap: roadmap,
@@ -636,6 +667,7 @@ function buildOutcome(input) {
     summary: summary,
     reason: policy.reason,
     reviewBudget: reviewBudget,
+    reviewCoverage: reviewCoverage,
     findings: findings,
   };
 }
@@ -664,6 +696,7 @@ function buildTaskOutcome(input) {
       summary: failSummary,
       reason: failPolicy.reason,
       reviewBudget: buildReviewBudget(i.budgetRounds, i.planBudget),
+      reviewCoverage: buildReviewCoverage(i.coverageRounds, i.planCoverage),
       findings: [],
     };
   }
@@ -703,6 +736,17 @@ function buildTaskOutcome(input) {
   // an actual hit.
   const reviewBudget = buildReviewBudget(i.budgetRounds, i.planBudget);
   summary = summary + budgetSummaryClause(reviewBudget);
+  // The coverage clause is appended in ALL THREE branches too, immediately AFTER
+  // the budget clause so the ordering is fixed and deterministic for a run that
+  // hit both. It is EMPTY when every round ran every dimension, so a healthy
+  // run's summary stays byte-unchanged. Because outcomePolicy derives `reason`
+  // from `summary`, a parked/escalated unit whose review lost a dimension
+  // surfaces that in the `rdm review blocked` queue for free.
+  //
+  // This is the ONLY thing coverage does here: it never reaches classifyOutcome's
+  // input, and no branch gates on it. Recorded, never gated on.
+  const reviewCoverage = buildReviewCoverage(i.coverageRounds, i.planCoverage);
+  summary = summary + coverageSummaryClause(reviewCoverage);
   const policy = outcomePolicy(outcome, 'task', summary);
   return {
     task: task,
@@ -712,6 +756,7 @@ function buildTaskOutcome(input) {
     summary: summary,
     reason: policy.reason,
     reviewBudget: reviewBudget,
+    reviewCoverage: reviewCoverage,
     findings: findings,
   };
 }
@@ -725,6 +770,8 @@ export {
   DEFAULT_MAX_REFUTATIONS,
   buildReviewBudget,
   budgetSummaryClause,
+  buildReviewCoverage,
+  coverageSummaryClause,
   parseBudget,
   projectFlag,
   resolveRdmBin,

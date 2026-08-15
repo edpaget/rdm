@@ -1127,6 +1127,13 @@ silently defeated by a refuter or the confidence floor. The AC table and any
 channels, never deduplicated against each other. `plan` mode has no `ac`
 dimension, so it never populates this table.
 
+A `null` `acTable` is **ambiguous on its own** — it means both "the table is
+clean/empty" and "the `ac` dimension never ran". Do not read it as either. The
+channel that distinguishes them is `coverage.acTableAbsent` (see `OUTCOME`
+(review pipeline) below): true iff `ac` was selected in `code` mode and its
+finder still resolved nothing after its one retry. It is recorded and named in
+the summary, and it does NOT count as an AC gap.
+
 ### `VERDICT`
 
 A refuter agent's grade of a single `FINDING`. A **fresh** refuter grades each
@@ -1156,12 +1163,14 @@ anything other than `ship-batched`.
 ### `OUTCOME` (review pipeline)
 
 The value `buildReviewPipeline(mode)(context)` resolves to
-`{ survivors, acTable, budget }`: `survivors` is a **ranked** array of the
-surviving `FINDING`s, `budget` is the refutation-budget accounting (below), and
+`{ survivors, acTable, budget, coverage }`: `survivors` is a **ranked** array of
+the surviving `FINDING`s, `budget` is the refutation-budget accounting (below),
+`coverage` is the dimension-participation accounting (below), and
 `acTable` is the captured `AC_ENTRY[]` from the `ac`
 dimension's finder in `code` mode (`null` in `plan` mode, and `null` whenever
-the `ac` dimension didn't run or its finder failed to resolve a table — see
-`AC_ENTRY` / `AC_REVIEW_SCHEMA` above). The dispatch-phase keystone (below)
+the `ac` dimension didn't run or its finder failed to resolve a table — the two
+readings of that `null` are told apart by `coverage.acTableAbsent`, never by
+`acTable` itself; see `AC_ENTRY` / `AC_REVIEW_SCHEMA` above). The dispatch-phase keystone (below)
 consumes both fields at each of its two review gates and folds them into its
 own, differently-shaped `OUTCOME`; `classifyOutcome` (see "Verdict and status
 mapping" below) checks `acTable` directly via `acTableHasGap`, independent of
@@ -1192,18 +1201,63 @@ gate runs to completion before the code gate starts; consequently, when both
 gates hit, `hit` — and therefore the summary clause — reports the later code
 round, not the earlier plan one.
 
+The fourth field, **`coverage`**, records which dimensions actually PARTICIPATED:
+`{ mode, total, selected, ran, failed, retried, complete, acDimensionRan,
+acTableAbsent }`. Every array is in `dims` **selection** order — written into an
+index-keyed `attempts` record inside each finder thunk, never accumulated in
+agent-completion order — so the field is as deterministic as the rest of the
+`OUTCOME`. `total` is the number of dimensions `selectDimensions` returned for
+this run (which, with no `signals`, is the fail-open full set), so it must never
+be compared against a hard-coded dimension count. A dimension lands in `failed`
+only when its finder resolved `null`/`undefined` on BOTH attempts (see **Failure
+handling** below); a valid-but-empty payload (`{ findings: [] }`) PARTICIPATED
+and is never a failure. `acDimensionRan` is `null` in `plan` mode and whenever
+`ac` was not selected, which forces `acTableAbsent` false there.
+
+It is projected exactly like `budget`, by the sibling pair in the same stamped
+block — a second accounting FIELD, not a second mechanism:
+`buildReviewCoverage(coverageRounds, planCoverage)` yields the `reviewCoverage`
+field (the reported round's counts, `complete`, `everIncomplete`, `rounds`,
+`planRounds`, `incomplete`, `last`), and `coverageSummaryClause(reviewCoverage)`
+yields the visible ` [review coverage: N/M dimensions ran; failed: a,b]` marker
+— with `; NO AC TABLE` appended when the `ac` dimension did not run — **empty**
+when every round ran every dimension, so a complete run's summary is
+byte-unchanged. Like `buildReviewBudget`, both parameters take the FULL
+per-round array and are merged plan-first in temporal order; unlike it, the
+REPORTED counts come from the chronologically last INCOMPLETE round, so the
+clause names the real gap rather than a later healthy round's full numbers.
+
+The clause is deliberately free of quotes, `$` and backticks: it is interpolated
+into mechanical Bash prompts (plan-review's round-note write, the optional gate's
+`--reason` flag). Its position is fixed — budget clause first, coverage clause
+second — in every branch of `buildOutcome` / `buildTaskOutcome`, in
+`plan-review`'s `reviewUnit`, and in `rdm-wf-review-refute-fix.js`'s driver, so a
+run that hits both produces a deterministic string.
+
+Non-participation is **recorded, never gated on**. A transient API blip must not
+stall the autonomous lane, while the record keeps the reduced coverage auditable
+after the fact. `coverage` therefore reaches exactly three places — the returned
+`coverage`/`reviewCoverage` field, the `summary` string (and via it the derived
+`reason`), and log lines — and nothing else: it is never an input to
+`classifyOutcome`, `acTableHasGap`, `hasBlocking`, `survives`, `GATE_POLICY`, or
+any rework/revise loop predicate. The trade this accepts is that an incomplete
+review can still yield `reviewed`; that is tolerable only because the clause is
+in the human-visible text, which is why it is a `summary` append rather than a
+machine-readable key alone.
+
 The standalone `rdm-wf-review-refute-fix.js` consumer has three invocation shapes: (a)
 `mode: 'plan'`, and (b) `mode: 'code'` with no `roadmap`+`phase` or `task`
 identifier, both keep returning the legacy survivors-only `{ mode, survivors }`
-shape (plus an additive `budget` field) for backward compatibility with ad
-hoc/document-less reviews;
+shape (plus the additive `budget` and `coverage` fields) for backward
+compatibility with ad hoc/document-less reviews;
 (c) `mode: 'code'` with `{ roadmap, phase }` or `{ task }` runs the SAME
 `buildReviewPipeline('code')` pass, then additionally derives real diff signals
 from the item's worktree (mirroring dispatch-phase's code gate — see below) and
 composes the survivors through `classifyOutcome` plus `statusFor` /
 `writesCompletion` / `summarizeFindings` / `gateFor` into the dispatch-shaped
 `OUTCOME` contract: `{ roadmap, phase, outcome, status, writesCompletion,
-summary, reason, reviewBudget, findings }` (or the `{ task, ... }` shape). An optional
+summary, reason, reviewBudget, reviewCoverage, findings }` (or the
+`{ task, ... }` shape). An optional
 `gate: true` persists the mapped rdm status via a mechanical Bash agent, for
 headless/ad hoc callers of the workflow only. The interactive `rdm-review`
 skill invokes shape (c) with `gate: false` and performs its own gate step
@@ -1222,11 +1276,40 @@ finding. `verdict.confidence` is recorded but does not gate.
 `agent()` errors, its finding is kept as **un-refuted** (`verdict = null`,
 marked `refuterError: true`) and survives on the confidence floor alone, rather
 than being silently dropped as if refuted — the pipeline logs how many findings
-were kept this way. A finder crash instead drops only its own dimension to
-`null` (the runtime's `parallel` sends a thrown thunk to null), so the other
-dimensions still contribute and the review degrades rather than failing; a
-crashed dimension contributes no candidates, so it never inflates
-`budget.produced` with coverage it did not provide.
+were kept this way.
+
+A **finder** that resolves `null`/`undefined` is **retried exactly once** (same
+prompt, same options, label suffixed `:retry`). `agent()` resolves null only
+AFTER the runtime has exhausted its own internal retries, so this second-order
+retry is the first one lane code controls; finders are read-only and idempotent,
+so re-dispatching one is safe. A `null` **cannot be attributed to a cause** — it
+means either a transient API death or an unknown/unavailable model id (the
+`model` spike's silent-null consequence) — and nothing distinguishes them at the
+call site, so no attempt is made to classify it: one retry handles a transient
+failure, and a misconfigured model fails twice and is recorded loudly. There is
+no loop and no backoff. A finder that THROWS is recorded and rethrown WITHOUT a
+retry.
+
+Only after the retry does the dimension drop to `null` (the runtime's `parallel`
+sends a thrown thunk to null): the other dimensions still contribute, the review
+degrades rather than failing, the dead dimension contributes no candidates (so it
+never inflates `budget.produced` with coverage it did not provide), and it is
+recorded in `coverage.failed`. Because the record is surfaced in the summary, a
+3-of-7 review can never be mistaken for a clean 7-of-7 — which it silently was
+before this contract existed.
+
+The wholesale-failure guard — EVERY selected dimension resolving null — throws
+rather than reporting a clean review, and is **model-INDEPENDENT**: only its
+message branches, keeping the recognisable `check the [models] tier bindings`
+text on the model path. This matters because `lib/plan-review.mjs` calls
+`runPlanReview({ target })` with NO `findModel`/`verifyModel` at either call
+site, so a model-conditional guard was inert in plan mode and `GATE_POLICY.plan`
+would have cleared `needs-plan-review` off a review that never ran.
+
+An **absent** AC table is distinct from a **clean** one. `acTableHasGap`'s
+contract is unchanged and deliberately not widened (`acTableHasGap(null) ===
+false` for both readings); `coverage.acTableAbsent` is the channel that tells
+them apart, and it is recorded and named in the summary but never gates.
 
 **Ranking (`rankFindings`).** A total order, so `OUTCOME` is deterministic across
 runs (the convention bans `Date.now()`/`Math.random()`, see § "The
@@ -1720,6 +1803,7 @@ prose-only self-test of the distributed template).
 | `summary` | string                                    | deterministic one-liner from outcome + top finding |
 | `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
 | `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `planRounds`, `everHit`, the last `hit` object, and the plan gate's own `plan` budget. `null` when no review reported one. |
+| `reviewCoverage` | object \| `null`                   | `buildReviewCoverage(...)` — which review dimensions PARTICIPATED: the reported round's `total`/`selected`/`ran`/`failed`/`retried`/`acDimensionRan`/`acTableAbsent`, plus `complete`, `everIncomplete`, `rounds`, `planRounds`, `incomplete`, `last`. `null` when no review reported one — including the `fetchError` short-circuit, which never ran a review and must not read as full coverage. |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
 
 **Task mode** emits this structure keyed by `task` instead of `roadmap`/`phase`:
@@ -1733,6 +1817,7 @@ prose-only self-test of the distributed template).
 | `summary` | string                                    | deterministic one-liner from outcome + top finding |
 | `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
 | `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `planRounds`, `everHit`, the last `hit` object, and the plan gate's own `plan` budget. `null` when no review reported one. |
+| `reviewCoverage` | object \| `null`                   | `buildReviewCoverage(...)` — which review dimensions PARTICIPATED: the reported round's `total`/`selected`/`ran`/`failed`/`retried`/`acDimensionRan`/`acTableAbsent`, plus `complete`, `everIncomplete`, `rounds`, `planRounds`, `incomplete`, `last`. `null` when no review reported one — including the `fetchError` short-circuit, which never ran a review and must not read as full coverage. |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
 
 The `rdm-do --auto --task` wiring into this task-mode contract is regression-tested by `scripts/verify-workflow-do-auto-task.sh` (SKILL.md static invariants, the OUTCOME→status contract against the real binary, and a prose-only self-test of the distributed template).
@@ -1756,6 +1841,23 @@ all three outcome branches — and because `outcomePolicy` derives `reason` from
 ` [budget]` tag (`budgetHitTag`) onto that phase's stem in `buildSummary`'s
 `phases completed (...)` line, so a *reviewed* budget-hit phase is visible too.
 A run that stayed under budget keeps a byte-unchanged summary.
+
+**`reviewCoverage` makes an INCOMPLETE review legible.** When any round lost a
+dimension (its finder resolved null on both its attempt and its one retry),
+`coverageSummaryClause` appends
+` [review coverage: N/M dimensions ran; failed: a,b]` — plus `; NO AC TABLE`
+when the `ac` dimension is the one that died — to `summary` in all three outcome
+branches, immediately AFTER the budget clause so a run that hit both produces a
+deterministic string. Because `outcomePolicy` derives `reason` from `summary`, a
+parked or escalated unit whose review was incomplete surfaces that in the
+`rdm review blocked` queue for free. A run in which every dimension ran keeps a
+byte-unchanged summary — the clause is empty.
+
+Non-participation is **recorded, never gated on**: an incomplete review can still
+yield `reviewed`, and `classifyOutcome` receives nothing new (a `coverage` key
+never enters any `classifierInput`, and the rework/revise loop predicates never
+consult it), so a transient API blip cannot stall the lane. What it can no longer
+do is pass unnoticed.
 
 **`reason` tags the gate, not the module.** dispatch's `escalated` is tagged
 `[plan]` because `classifyOutcome` only escalates from the plan gate, while

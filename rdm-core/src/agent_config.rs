@@ -5565,7 +5565,10 @@ mod tests {
         // CLI surface counts, then MCP. `rdm-side` appears only in the CLI
         // prose, so the pair is deliberately asymmetric.
         let expected: [(&str, usize, usize); 5] = [
-            ("rdm-wf-dispatch-phase", 20, 19),
+            // Bumped 20/19 -> 22/21 when the `resumeFromRunId` recovery sections
+            // began naming the real dispatch-phase file. Deliberate, as the
+            // assertion message below instructs.
+            ("rdm-wf-dispatch-phase", 22, 21),
             ("rdm-wf-estimate", 2, 2),
             ("rdm-mechanical", 1, 1),
             ("rdm-next", 1, 1),

@@ -295,6 +295,10 @@ function makeAgent(opts) {
     const parts = label.split(':');
     if (parts[0] === 'find') {
       const dim = parts[2];
+      // `deadDims` simulates a finder that resolves null after the runtime has
+      // exhausted its own retries — on the first attempt AND on the lane's one
+      // retry — so the dimension is recorded as non-participating.
+      if ((o.deadDims || []).indexOf(dim) !== -1) return null;
       // The `ac` dimension in code mode returns the AC_REVIEW_SCHEMA shape
       // ({ ac, findings }), not a bare findings array — o.acTable seeds it.
       if (dim === 'ac' && o.acTable) return { ac: o.acTable, findings: (o.findings || {})[dim] || [] };
@@ -317,7 +321,7 @@ function makeAgent(opts) {
   const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: false }, a.agent, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
-    ['findings', 'outcome', 'phase', 'reason', 'reviewBudget', 'roadmap', 'status', 'summary', 'writesCompletion'].sort(),
+    ['findings', 'outcome', 'phase', 'reason', 'reviewBudget', 'reviewCoverage', 'roadmap', 'status', 'summary', 'writesCompletion'].sort(),
     'reviewed OUTCOME has exactly the dispatch-shaped keys'
   );
   assert.equal(out.outcome, 'reviewed');
@@ -339,7 +343,7 @@ function makeAgent(opts) {
   const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, task: 'my-task', gate: false }, a.agent, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
-    ['findings', 'outcome', 'reason', 'reviewBudget', 'status', 'summary', 'task', 'writesCompletion'].sort(),
+    ['findings', 'outcome', 'reason', 'reviewBudget', 'reviewCoverage', 'status', 'summary', 'task', 'writesCompletion'].sort(),
     'rework OUTCOME (task shape) has exactly the dispatch-shaped keys'
   );
   assert.equal(out.task, 'my-task');
@@ -381,6 +385,52 @@ function makeAgent(opts) {
   const refuteCalls = a.calls.filter((c) => c.label && c.label.startsWith('refute:'));
   assert.equal(refuteCalls.length, 1, 'only one refuter was dispatched');
 }
+{
+  // DIMENSION COVERAGE on the standalone path. `deadDims` makes the fake agent
+  // resolve null for those dimensions on BOTH attempts, so the pipeline records
+  // them as non-participating and the driver projects that onto the OUTCOME.
+  const a = makeAgent({
+    diffResult: { changedFiles: ['src/api/index.ts'], diffText: '' },
+    findings: CLEAN,
+    verdicts: {},
+    deadDims: ['ac', 'correctness'],
+  });
+  const out = await run(
+    { mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: false },
+    a.agent,
+    refPipeline,
+    refParallel,
+    () => {}
+  );
+  assert.equal(out.outcome, 'reviewed', 'a dead dimension does NOT gate — recorded, never gated on');
+  assert.equal(out.reviewCoverage.complete, false, 'the standalone OUTCOME reports incomplete coverage');
+  assert.deepEqual(out.reviewCoverage.failed, ['ac', 'correctness'], 'and names both dead dimensions');
+  assert.equal(out.reviewCoverage.acTableAbsent, true, 'a dead ac finder is recorded as an ABSENT table');
+  assert.ok(
+    out.summary.includes('[review coverage:') && out.summary.includes('NO AC TABLE'),
+    'reduced coverage reaches the human-visible summary string, not just the machine-readable key'
+  );
+  // Each dead dimension made exactly two attempts: one plus ONE retry.
+  assert.equal(a.calls.filter((c) => c.label === 'find:code:ac').length, 1, 'ac first attempt');
+  assert.equal(a.calls.filter((c) => c.label === 'find:code:ac:retry').length, 1, 'ac retried exactly once');
+  // A healthy dimension is never retried.
+  assert.equal(a.calls.filter((c) => /^find:code:tests:retry$/.test(c.label)).length, 0, 'a live dimension is not retried');
+}
+{
+  // The task shape carries it too, and a COMPLETE run leaves the summary
+  // byte-unchanged — no clause at all.
+  const dead = makeAgent({ diffResult: { changedFiles: ['src/x.ts'], diffText: '' }, findings: CLEAN, verdicts: {}, deadDims: ['tests'] });
+  const outDead = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, task: 'my-task', gate: false }, dead.agent, refPipeline, refParallel, () => {});
+  const live = makeAgent({ diffResult: { changedFiles: ['src/x.ts'], diffText: '' }, findings: CLEAN, verdicts: {} });
+  const outLive = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, task: 'my-task', gate: false }, live.agent, refPipeline, refParallel, () => {});
+  assert.equal(outDead.outcome, outLive.outcome, 'the outcome is identical with and without a dead dimension');
+  assert.ok(outDead.summary.includes('[review coverage:'), 'the task-shaped summary names reduced coverage');
+  assert.ok(!outDead.summary.includes('NO AC TABLE'), 'a live ac dimension never claims an absent table');
+  assert.equal(outLive.reviewCoverage.complete, true, 'a complete run reports complete coverage');
+  assert.ok(!outLive.summary.includes('review coverage'), 'and its summary is BYTE-UNCHANGED');
+}
+console.log('3a-cov OK: standalone OUTCOME carries reviewCoverage and names it in the summary');
+
 console.log('3a OK: reviewed / rework OUTCOME shapes and the refutation budget verified');
 
 // ============================================================================
@@ -437,8 +487,8 @@ console.log('3c OK: mutual-exclusion guard throws');
   const out = await run({ mode: 'plan' }, a.agent, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
-    ['budget', 'mode', 'survivors'].sort(),
-    'mode=plan keeps the legacy {mode, survivors} shape plus the additive budget'
+    ['budget', 'coverage', 'mode', 'survivors'].sort(),
+    'mode=plan keeps the legacy {mode, survivors} shape plus the additive budget and coverage'
   );
   assert.equal(typeof out.budget, 'object', 'the legacy plan shape carries the budget accounting');
   assert.equal(out.budget.max, 5, 'the legacy plan shape reports the default refutation budget');
@@ -449,8 +499,8 @@ console.log('3c OK: mutual-exclusion guard throws');
   const out = await run({ mode: 'code' }, a.agent, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
-    ['budget', 'mode', 'survivors'].sort(),
-    'mode=code with no identifiers keeps the legacy {mode, survivors} shape plus the additive budget'
+    ['budget', 'coverage', 'mode', 'survivors'].sort(),
+    'mode=code with no identifiers keeps the legacy {mode, survivors} shape plus the additive budget and coverage'
   );
   assert.equal(out.budget.max, 5, 'the legacy code shape reports the default refutation budget');
   const diffCalls = a.calls.filter((c) => c.label === 'diff:signals');
@@ -1036,14 +1086,14 @@ try {
 // (2) THE CARVE-OUT, UNCHANGED and deliberately preserved through the contract
 // reversal: BOTH legacy survivors-only shapes emit ZERO rdm invocations and
 // never call resolveRdmBin at all. They must still succeed with NO rdmBin, and
-// still return the exact legacy { mode, survivors, budget } shape — with no
+// still return the exact legacy { mode, survivors, budget, coverage } shape — with no
 // rdmBin key smuggled in by the new defaulting branch.
 for (const legacy of [{ mode: 'plan' }, { mode: 'code' }]) {
   const out = await run(legacy, spy, refPipeline, refParallel, () => {});
   assert.deepEqual(
     Object.keys(out).sort(),
-    ['budget', 'mode', 'survivors'].sort(),
-    JSON.stringify(legacy) + ' must still return the legacy { mode, survivors, budget } shape with no rdmBin'
+    ['budget', 'coverage', 'mode', 'survivors'].sort(),
+    JSON.stringify(legacy) + ' must still return the legacy { mode, survivors, budget, coverage } shape with no rdmBin'
   );
   assert.equal(out.mode, legacy.mode, 'the legacy shape echoes its mode');
 }

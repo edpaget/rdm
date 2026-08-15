@@ -2120,11 +2120,24 @@ assert.ok(
   'findModel is threaded onto every finder agent() call'
 );
 
-// (c) WITHOUT a model (the standalone consumer), today's behavior is preserved:
-//     null finders degrade to an empty review rather than throwing.
+// (c) WITHOUT a model (plan mode's REAL configuration — lib/plan-review.mjs
+//     passes no findModel/verifyModel at either call site), the guard is equally
+//     live: it is no longer conditioned on findModel, so an all-null sweep
+//     rejects here too rather than laundering itself into a clean review. Only
+//     the MESSAGE differs — the `[models]` misconfiguration text belongs to the
+//     model path alone.
 const nspy2 = nullAgent();
-const { survivors: degraded } = await buildReviewPipeline('code', deps(nspy2))(CTX);
-assert.deepEqual(degraded, [], 'no-model callers keep the pre-existing lenient behavior');
+const noModelErr = await buildReviewPipeline('code', deps(nspy2))(CTX).then(
+  () => null,
+  (e) => e.message
+);
+assert.ok(noModelErr, 'the all-null guard fires with NO model passed — plan mode is covered');
+assert.match(
+  noModelErr,
+  /every code dimension finder failed after one retry each/,
+  'the no-model wholesale-failure message names the retry, not a model'
+);
+assert.ok(!/\[models\]/.test(noModelErr), 'the no-model failure message does not name the [models] bindings');
 assert.ok(
   nspy2.calls.every((c) => c.model === undefined),
   'no model key is invented when the caller supplies none'
@@ -2756,6 +2769,355 @@ if run_node "$TMP/test.mjs" "$LIB"; then
 else
     fail "review-refute-fix behavior assertions failed"
 fi
+
+# --- 3c. FINDER RETRY, PARTICIPATION, AND THE ABSENT AC TABLE ----------------
+# The correctness gap this section gates: a dimension finder that dies used to
+# be dropped silently, so a review that ran 3 of 7 dimensions was
+# indistinguishable from one that ran all 7 and found little — and a dead `ac`
+# finder read as a CLEAN acceptance-criteria table. Both guards were also inert
+# in plan mode, which passes no models at all.
+say "3c. Finder retry, dimension participation, and the absent-vs-clean AC table"
+
+cat >"$TMP/coverage-test.mjs" <<'NODE_TEST'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const mod = await import(pathToFileURL(process.argv[2]).href);
+const {
+  buildReviewPipeline,
+  buildReviewCoverage,
+  coverageSummaryClause,
+  classifyOutcome,
+  acTableHasGap,
+  selectDimensions,
+} = mod;
+
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+const CTX = { target: 'phase widget/phase-1-foo' };
+
+// A scriptable fake: `plan[dimKey]` is an ARRAY of per-attempt results consumed
+// in order (so attempt 1 and the retry can differ); anything else defaults to a
+// clean, PARTICIPATING payload.
+function scriptedAgent(plan) {
+  const calls = [];
+  const cursor = {};
+  async function agent(prompt, opts) {
+    const label = (opts && opts.label) || '';
+    calls.push(label);
+    const parts = label.split(':');
+    if (parts[0] === 'find') {
+      const key = parts[2];
+      const script = plan[key];
+      if (!script) return { findings: [] };
+      const i = cursor[key] || 0;
+      cursor[key] = i + 1;
+      return i < script.length ? script[i] : script[script.length - 1];
+    }
+    if (parts[0] === 'refute') return { refuted: false, confidence: 95 };
+    throw new Error('unexpected label: ' + label);
+  }
+  return { agent, calls };
+}
+const deps = (spy) => ({ agent: spy.agent, pipeline: refPipeline, parallel: refParallel, log: () => {} });
+const labelsFor = (calls, mode, key) => calls.filter((l) => l === 'find:' + mode + ':' + key);
+
+const CODE_DIMS = selectDimensions('code').map((d) => d.key);
+const PLAN_DIMS = selectDimensions('plan').map((d) => d.key);
+
+// ===========================================================================
+// AC1 — RETRY: a finder that resolves null is retried EXACTLY ONCE, and the
+// retry does not depend on a model having been passed (none is passed here).
+// ===========================================================================
+{
+  const F = { id: 'flaky-1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'x' };
+  const spy = scriptedAgent({ correctness: [null, { findings: [F] }] });
+  const out = await buildReviewPipeline('code', deps(spy))(CTX);
+  assert.ok(
+    out.survivors.some((f) => f.id === 'flaky-1'),
+    'the retry result reaches the survivors — a transient null does not lose the dimension'
+  );
+  assert.deepEqual(out.coverage.retried, ['correctness'], 'the retried dimension is recorded');
+  assert.deepEqual(out.coverage.failed, [], 'a dimension that succeeded on retry is NOT a failure');
+  assert.equal(out.coverage.complete, true, 'a retried-then-succeeded run is complete coverage');
+  assert.equal(coverageSummaryClause(out.coverage), '', 'a complete run appends NO summary clause');
+  // Exactly two attempts for the flaky dimension, exactly one for every other.
+  assert.equal(labelsFor(spy.calls, 'code', 'correctness').length, 1, 'one first attempt');
+  assert.equal(
+    spy.calls.filter((l) => l === 'find:code:correctness:retry').length,
+    1,
+    'exactly ONE retry — no loop, no third attempt'
+  );
+  for (const k of CODE_DIMS.filter((k) => k !== 'correctness')) {
+    assert.equal(labelsFor(spy.calls, 'code', k).length, 1, 'healthy dimension ' + k + ' ran once');
+    assert.equal(spy.calls.filter((l) => l === 'find:code:' + k + ':retry').length, 0, k + ' was not retried');
+  }
+}
+
+// A finder that resolves a valid-but-EMPTY payload PARTICIPATED: no retry.
+{
+  const spy = scriptedAgent({ correctness: [{ findings: [] }] });
+  const out = await buildReviewPipeline('code', deps(spy))(CTX);
+  assert.equal(spy.calls.filter((l) => /:retry$/.test(l)).length, 0, 'an empty payload is not retried');
+  assert.equal(out.coverage.complete, true, 'an empty-but-present payload counts as participation');
+  assert.deepEqual(out.coverage.failed, [], 'an empty payload is never recorded as a failure');
+}
+
+// ===========================================================================
+// AC2 — PARTICIPATION: a dimension null on BOTH attempts is recorded, in
+// `dims` selection order, and the live dimensions are unaffected.
+// ===========================================================================
+{
+  const F = { id: 'live-1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'x' };
+  const dead = [CODE_DIMS[0], CODE_DIMS[3]];
+  const plan = { correctness: [{ findings: [F] }] };
+  for (const k of dead) plan[k] = [null, null];
+  const spy = scriptedAgent(plan);
+  const out = await buildReviewPipeline('code', deps(spy))(CTX);
+  assert.deepEqual(out.coverage.failed, dead, 'both dead dimensions are recorded, in selection order');
+  assert.equal(out.coverage.total, CODE_DIMS.length, 'total is the SELECTED dimension count');
+  assert.equal(out.coverage.ran.length, CODE_DIMS.length - 2, 'the rest ran');
+  assert.deepEqual(out.coverage.ran, CODE_DIMS.filter((k) => dead.indexOf(k) === -1), 'ran is in selection order');
+  assert.equal(out.coverage.complete, false, 'a run missing a dimension is NOT complete');
+  assert.ok(
+    out.survivors.some((f) => f.id === 'live-1'),
+    'the live dimensions still contribute their findings'
+  );
+  // Each dead dimension made exactly two attempts and no more.
+  for (const k of dead) {
+    assert.equal(labelsFor(spy.calls, 'code', k).length, 1, k + ' first attempt');
+    assert.equal(spy.calls.filter((l) => l === 'find:code:' + k + ':retry').length, 1, k + ' retried exactly once');
+  }
+  // The pre-existing three keys are untouched in meaning.
+  assert.ok(Array.isArray(out.survivors) && out.budget && 'acTable' in out, 'survivors/acTable/budget still returned');
+  // A caller can tell reduced coverage from full coverage — in the STRING.
+  const clause = coverageSummaryClause(buildReviewCoverage([out.coverage], null));
+  assert.match(clause, /\[review coverage: \d+\/\d+ dimensions ran; failed: /, 'the clause names the coverage');
+  for (const k of dead) assert.ok(clause.indexOf(k) !== -1, 'the clause names the failed dimension ' + k);
+  // Bash-prompt safety: no quotes, no $, no backticks.
+  assert.ok(!/["'$`]/.test(clause), 'the clause is free of shell-quoting hazards');
+}
+
+// ===========================================================================
+// AC3 — ABSENT vs CLEAN AC table. This PAIR is the whole point: `acTable` is
+// null in both cases, and only `coverage.acTableAbsent` tells them apart.
+// ===========================================================================
+{
+  // Case A: the `ac` finder is dead on both attempts.
+  const spyA = scriptedAgent({ ac: [null, null] });
+  const a = await buildReviewPipeline('code', deps(spyA))(CTX);
+  assert.equal(a.acTable, null, 'a dead ac finder leaves acTable null');
+  assert.equal(a.coverage.acDimensionRan, false, 'the ac dimension is recorded as not having run');
+  assert.equal(a.coverage.acTableAbsent, true, 'ABSENT is recorded explicitly');
+  assert.match(coverageSummaryClause(a.coverage), /NO AC TABLE/, 'the absent table is NAMED in the clause');
+
+  // Case B: the `ac` finder runs and reports a table with no FAIL/PARTIAL rows.
+  const spyB = scriptedAgent({ ac: [{ ac: [], findings: [] }] });
+  const b = await buildReviewPipeline('code', deps(spyB))(CTX);
+  assert.deepEqual(b.acTable, [], 'a clean run reports an empty table');
+  assert.equal(b.coverage.acDimensionRan, true, 'the ac dimension ran');
+  assert.equal(b.coverage.acTableAbsent, false, 'a CLEAN table is not an absent one');
+  assert.equal(coverageSummaryClause(b.coverage), '', 'a clean complete run appends nothing');
+
+  // Case C: plan mode has no `ac` dimension at all — never a spurious clause.
+  const spyC = scriptedAgent({});
+  const c = await buildReviewPipeline('plan', deps(spyC))(CTX);
+  assert.equal(c.coverage.acDimensionRan, null, 'plan mode reports no ac participation at all');
+  assert.equal(c.coverage.acTableAbsent, false, 'plan mode is never AC-table-absent');
+  assert.equal(coverageSummaryClause(c.coverage), '', 'a complete plan run appends nothing');
+
+  // And the classifier contract is UNCHANGED: an absent table is not a gap.
+  assert.equal(acTableHasGap(null), false, 'acTableHasGap(null) is still false — the contract is not widened');
+  assert.equal(acTableHasGap([]), false, 'an empty table is still not a gap');
+}
+
+// ===========================================================================
+// AC4 — NO MODELS PASSED (plan mode's real configuration).
+// ===========================================================================
+for (const [mode, dimKeys] of [['code', CODE_DIMS], ['plan', PLAN_DIMS]]) {
+  // One dead finder: RESOLVES, recorded, does not throw.
+  const one = scriptedAgent({ [dimKeys[0]]: [null, null] });
+  const out = await buildReviewPipeline(mode, deps(one))({ target: CTX.target });
+  assert.deepEqual(out.coverage.failed, [dimKeys[0]], mode + ': one dead finder is recorded, not fatal');
+  assert.equal(out.coverage.complete, false, mode + ': and the run is marked incomplete');
+
+  // EVERY dead finder: REJECTS loudly, even with no model in play.
+  const allPlan = {};
+  for (const k of dimKeys) allPlan[k] = [null, null];
+  const all = scriptedAgent(allPlan);
+  await assert.rejects(
+    buildReviewPipeline(mode, deps(all))({ target: CTX.target }),
+    new RegExp('every ' + mode + ' dimension finder failed'),
+    mode + ': a wholesale failure with NO model still fails loudly'
+  );
+}
+// With a model, the recognisable [models] misconfiguration text survives.
+{
+  const allPlan = {};
+  for (const k of CODE_DIMS) allPlan[k] = [null, null];
+  const spy = scriptedAgent(allPlan);
+  const msg = await buildReviewPipeline('code', deps(spy))({ ...CTX, findModel: 'bogus' }).then(
+    () => '',
+    (e) => e.message
+  );
+  assert.match(msg, /every code dimension finder failed/, 'the shared prefix is stable across both configurations');
+  assert.match(msg, /\[models\] tier bindings/, 'the misconfiguration message still names the [models] bindings');
+}
+
+// ===========================================================================
+// AC6 — NO GATING. A dead dimension must not move the outcome.
+// ===========================================================================
+{
+  const F = { id: 'blk', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'x' };
+  for (const seed of [{}, { correctness: [{ findings: [F] }] }]) {
+    const healthy = await buildReviewPipeline('code', deps(scriptedAgent(seed)))(CTX);
+    const withDead = await buildReviewPipeline(
+      'code',
+      deps(scriptedAgent({ ...seed, [CODE_DIMS[2]]: [null, null] }))
+    )(CTX);
+    const base = { planFindings: [], tier: undefined, acTable: null };
+    assert.equal(
+      classifyOutcome({ ...base, codeReviews: [withDead.survivors] }),
+      classifyOutcome({ ...base, codeReviews: [healthy.survivors] }),
+      'a dead dimension yields the SAME outcome it would have without the feature'
+    );
+    assert.notDeepEqual(withDead.coverage.failed, healthy.coverage.failed, 'they differ ONLY in recorded coverage');
+  }
+  // classifyOutcome is unchanged for a frozen table of legacy inputs that carry
+  // no participation key at all.
+  const FROZEN = [
+    [{ planFindings: [{ severity: 'blocking' }] }, 'escalated'],
+    [{ planFindings: [], acTable: [{ status: 'FAIL' }] }, 'rework'],
+    [{ planFindings: [], acTable: [{ status: 'PASS' }], codeReviews: [[]] }, 'reviewed'],
+    [{ planFindings: [], acTable: null, codeReviews: [[{ severity: 'blocking' }]] }, 'rework'],
+    [{ planFindings: [], acTable: null, codeReviews: [[{ severity: 'concern' }]] }, 'reviewed'],
+    [{ planFindings: [], acTable: null, codeReviews: [[{ severity: 'concern' }]], tier: 'large' }, 'rework'],
+    [{}, 'reviewed'],
+  ];
+  for (const [input, want] of FROZEN) {
+    assert.equal(classifyOutcome(input), want, 'frozen legacy classifyOutcome input: ' + JSON.stringify(input));
+  }
+}
+
+// ===========================================================================
+// The projection helpers, on their own.
+// ===========================================================================
+{
+  assert.equal(buildReviewCoverage([], null), null, 'nothing reported -> null, never a fabricated complete object');
+  assert.equal(buildReviewCoverage(null, null), null, 'an older caller reporting nothing -> null');
+  assert.equal(coverageSummaryClause(null), '', 'a null projection appends nothing');
+  const bad = { total: 3, selected: ['a', 'b', 'c'], ran: ['a', 'b'], failed: ['c'], retried: ['c'], complete: false, acTableAbsent: false };
+  const good = { total: 3, selected: ['a', 'b', 'c'], ran: ['a', 'b', 'c'], failed: [], retried: [], complete: true, acTableAbsent: false };
+  // A round-1 gap resolved by round 2 stays visible, and the REPORTED numbers
+  // are the incomplete round's, not the later healthy round's.
+  const p = buildReviewCoverage([bad, good], null);
+  assert.equal(p.complete, false, 'a run with any incomplete round is not complete');
+  assert.equal(p.everIncomplete, true, 'everIncomplete mirrors it');
+  assert.deepEqual(p.failed, ['c'], 'the reported failure is the incomplete round, not the healthy one');
+  assert.equal(p.rounds, 2, 'both rounds are counted');
+  assert.match(coverageSummaryClause(p), /\[review coverage: 2\/3 dimensions ran; failed: c\]/, 'exact clause text');
+  // An all-healthy projection is byte-silent.
+  assert.equal(coverageSummaryClause(buildReviewCoverage([good, good], null)), '', 'all-complete -> empty clause');
+  // Plan rounds precede code rounds (temporal order).
+  const merged = buildReviewCoverage([good], [bad]);
+  assert.equal(merged.planRounds, 1, 'plan rounds are counted separately');
+  assert.deepEqual(merged.failed, ['c'], 'the plan round gap is still reported');
+  // A single plan-coverage OBJECT (not an array) is still accepted.
+  assert.equal(buildReviewCoverage([], bad).everIncomplete, true, 'a single coverage object is accepted');
+}
+
+console.log('all coverage/retry/participation assertions passed');
+NODE_TEST
+
+if run_node "$TMP/coverage-test.mjs" "$LIB"; then
+    pass "finder retry, participation record, absent-vs-clean AC table, model-independent guards, no gating"
+else
+    fail "3c: coverage/retry/participation assertions failed"
+fi
+
+# --- 3c-mut. PLANTED-MUTATION SELF-TESTS FOR 3c ------------------------------
+# Prove section 3c is not vacuous: each mutation disables exactly one of the
+# three new behaviors on a hermetic SCRATCH copy, and 3c must go RED.
+say "3c-mut. Retry / participation / absent-AC mutation self-tests (prove 3c is not vacuous)"
+CMUT="$TMP/cov-mut"
+mkdir -p "$CMUT"
+
+cp "$LIB" "$CMUT/review.mjs"
+if run_node "$TMP/coverage-test.mjs" "$CMUT/review.mjs" >/dev/null 2>&1; then
+    pass "3c-mut-control: the unmutated copy passes section 3c"
+else
+    fail "3c-mut-control: the unmutated copy FAILS section 3c — every mutation below is vacuous"
+fi
+
+cov_mutate_and_expect_fail() {
+    ctag="$1"
+    cdesc="$2"
+    cfn="$3"
+    cp "$LIB" "$CMUT/review.mjs"
+    "$cfn" || fail "3c-mut-$ctag: could not plant the mutation ($cdesc)"
+    if run_node "$TMP/coverage-test.mjs" "$CMUT/review.mjs" >/dev/null 2>&1; then
+        fail "3c-mut-$ctag: 3c still passed after $cdesc — that assertion group is vacuous"
+    fi
+    pass "3c-mut-$ctag: $cdesc flips a 3c assertion"
+    cp "$LIB" "$CMUT/review.mjs"
+}
+
+# (1) The retry dispatch is deleted: a transient null loses its dimension.
+cmut_no_retry() {
+    # Whole-statement rewrite: the thunk bails out where the retry dispatch would
+    # have gone, so the copy still parses and the dimension drops exactly as it
+    # did before this phase.
+    sed "s|^          rec.retried = true;\$|          rec.error = 'null'; throw new Error('MUTANT: retry dispatch deleted');|" \
+        "$LIB" >"$CMUT/review.mjs"
+    grep -q 'MUTANT' "$CMUT/review.mjs"
+}
+cov_mutate_and_expect_fail retry 'deleting the retry dispatch' cmut_no_retry
+
+# (2) `complete` is hard-coded true: a partial review reports full coverage.
+cmut_complete_true() {
+    sed 's|^      complete: attempts.every((a) => a.ran),$|      complete: true, // MUTANT|' "$LIB" >"$CMUT/review.mjs"
+    grep -q 'MUTANT' "$CMUT/review.mjs"
+}
+cov_mutate_and_expect_fail complete 'hard-coding coverage.complete to true' cmut_complete_true
+
+# (3) `acTableAbsent` is hard-coded false: a dead ac finder reads as a clean table.
+cmut_ac_absent_false() {
+    sed 's|^      acTableAbsent: acDimensionRan === false,$|      acTableAbsent: false, // MUTANT|' "$LIB" >"$CMUT/review.mjs"
+    grep -q 'MUTANT' "$CMUT/review.mjs"
+}
+cov_mutate_and_expect_fail acabsent 'hard-coding coverage.acTableAbsent to false' cmut_ac_absent_false
+
+# (4) The all-null guard regains its `findModel &&` conjunct: plan mode, which
+#     passes no models, goes back to reporting a review that never ran as clean.
+cmut_model_conditional_guard() {
+    sed 's|^    if (dims.length > 0 \&\& perDimension.every((d) => d === null \|\| d === undefined)) {$|    if (findModel \&\& dims.length > 0 \&\& perDimension.every((d) => d === null \|\| d === undefined)) { // MUTANT|' \
+        "$LIB" >"$CMUT/review.mjs"
+    grep -q 'MUTANT' "$CMUT/review.mjs"
+}
+cov_mutate_and_expect_fail modelguard 'making the all-null guard model-conditional again' cmut_model_conditional_guard
+
+# (5) The summary clause is silenced: participation is recorded but invisible.
+cmut_silent_clause() {
+    sed "s|^  if (!c \|\| c.complete === true) return '';\$|  if (c \|\| !c) return ''; // MUTANT|" "$LIB" >"$CMUT/review.mjs"
+    grep -q 'MUTANT' "$CMUT/review.mjs"
+}
+cov_mutate_and_expect_fail clause 'silencing coverageSummaryClause' cmut_silent_clause
 
 # --- 3b. CONTENT-SIGNAL MUTATION SELF-TESTS (non-vacuity) --------------------
 # Prove the content-derivation assertion groups in section 3 are not vacuous.
@@ -3476,11 +3838,12 @@ assert.equal(buildReviewUnits({ kind: 'phase', roadmap: 'r', phase: 'p' }, { bod
 // driver builds is recorded in `reviewCtxs` (which is how the `maxRefutations`
 // thread from parsePlanArgs into runPlanReview is checked), and every log line
 // in `logs`.
-function makeHarness(findingsByTarget, fetchResults, budgetByTarget) {
+function makeHarness(findingsByTarget, fetchResults, budgetByTarget, coverageByTarget) {
   const calls = [];
   const reviewCtxs = [];
   const logs = [];
   const budgets = budgetByTarget || {};
+  const coverages = coverageByTarget || {};
   const agent = async (prompt, opts) => {
     calls.push({ label: opts && opts.label, phase: opts && opts.phase, prompt });
     const label = (opts && opts.label) || '';
@@ -3490,8 +3853,9 @@ function makeHarness(findingsByTarget, fetchResults, budgetByTarget) {
   };
   const parallel = (thunks) => Promise.all(thunks.map((t) => t()));
   // runPlanReview is a `runReview` from the canonical review source and
-  // resolves { survivors, acTable, budget } — acTable is always null in plan
-  // mode; `budget` is the per-unit refutation-budget accounting.
+  // resolves { survivors, acTable, budget, coverage } — acTable is always null
+  // in plan mode; `budget` is the per-unit refutation-budget accounting and
+  // `coverage` the per-unit dimension-participation accounting.
   const runPlanReview = async (ctx) => {
     reviewCtxs.push(ctx);
     const target = (ctx && ctx.target) || '';
@@ -3501,12 +3865,18 @@ function makeHarness(findingsByTarget, fetchResults, budgetByTarget) {
       }
       return null;
     };
+    const coverageFor = () => {
+      for (const key of Object.keys(coverages)) {
+        if (target.indexOf(key) !== -1) return coverages[key];
+      }
+      return null;
+    };
     for (const key of Object.keys(findingsByTarget)) {
       if (target.indexOf(key) !== -1) {
-        return { survivors: findingsByTarget[key], acTable: null, budget: budgetFor() };
+        return { survivors: findingsByTarget[key], acTable: null, budget: budgetFor(), coverage: coverageFor() };
       }
     }
-    return { survivors: [], acTable: null, budget: budgetFor() };
+    return { survivors: [], acTable: null, budget: budgetFor(), coverage: coverageFor() };
   };
   const log = (line) => logs.push(String(line));
   return { deps: { agent, parallel, runPlanReview, log }, calls, reviewCtxs, logs };
@@ -3703,6 +4073,121 @@ assert.equal(formatUnitBudget(null), '', 'a budget-less unit logs a byte-unchang
   assert.ok(line && line.indexOf('review budget hit') === -1, 'and logs a byte-unchanged line');
 }
 
+// ---- (6) DIMENSION-COVERAGE threading through the plan-review driver --------
+// AC5: a plan review with a NON-PARTICIPATING dimension must still clear
+// `needs-plan-review` (recorded, never gated on) AND the non-participation must
+// appear in the OUTCOME's `summary` STRING — asserted on the string, not on the
+// machine-readable key, so the gate fails if participation stops short of the
+// human-visible text.
+const PARTIAL_COVERAGE = {
+  mode: 'plan',
+  total: 3,
+  selected: ['coherence', 'architectural-fit', 'restraint'],
+  ran: ['coherence', 'architectural-fit'],
+  failed: ['restraint'],
+  retried: ['restraint'],
+  complete: false,
+  acDimensionRan: null,
+  acTableAbsent: false,
+};
+const FULL_COVERAGE = {
+  mode: 'plan',
+  total: 3,
+  selected: ['coherence', 'architectural-fit', 'restraint'],
+  ran: ['coherence', 'architectural-fit', 'restraint'],
+  failed: [],
+  retried: [],
+  complete: true,
+  acDimensionRan: null,
+  acTableAbsent: false,
+};
+
+// (6a) A clean review whose `restraint` dimension never ran: still `reviewed`,
+//      still clears the tag, and the clause is in the SUMMARY STRING.
+{
+  const h = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review', 'bug'] } }, {},
+    { 'TB': PARTIAL_COVERAGE });
+  const res = await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  const u = res.units[0];
+  assert.equal(u.outcome, 'reviewed', '6a: a dead dimension does NOT change the outcome — recorded, never gated on');
+  assert.equal(u.clearsPlanReviewTag, true, '6a: a reviewed unit still clears needs-plan-review');
+  assert.equal(u.tagCleared, true, '6a: and the tag write actually ran');
+  assert.ok(
+    h.calls.some((c) => c.label === 'gate:clear-tag:task:fix-bug'),
+    '6a: the gate:clear-tag agent WAS dispatched'
+  );
+  // THE AC5 ASSERTION: on `summary`, the string — not on `coverage`.
+  assert.match(
+    u.summary,
+    /\[review coverage: 2\/3 dimensions ran; failed: restraint\]/,
+    '6a: the non-participation is named in the OUTCOME summary STRING'
+  );
+  assert.match(res.summary, /review coverage/, '6a: and on the flattened top-level summary too');
+  // `reason` derives from `summary`, so it carries the clause for free. A
+  // `reviewed` unit has no reason prefix, so assert that on a rework unit below.
+  assert.ok(u.coverage && u.coverage.complete === false, '6a: the machine-readable key rides along as well');
+  assert.equal(res.coverage && res.coverage.complete, false, '6a: the flatten carries coverage to the top level');
+}
+
+// (6b) A healthy run's summary is BYTE-UNCHANGED — the clause is empty when
+//      every dimension ran, so no existing summary assertion can be disturbed.
+{
+  const full = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } }, {},
+    { 'TB': FULL_COVERAGE });
+  const none = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } }, {}, {});
+  const a = await runPlanReviewDriver({ task: 'fix-bug' }, full.deps);
+  const b = await runPlanReviewDriver({ task: 'fix-bug' }, none.deps);
+  assert.equal(a.units[0].summary, b.units[0].summary, '6b: complete coverage leaves the summary byte-unchanged');
+  assert.ok(a.units[0].summary.indexOf('review coverage') === -1, '6b: and appends no clause at all');
+  assert.equal(b.units[0].coverage, null, '6b: a coverage-less run reports null, never undefined');
+}
+
+// (6c) A non-`reviewed` unit: the clause reaches the derived `reason` too — the
+//      string that lands in the rdm queue. Only `escalated` carries a
+//      reasonPrefix in plan mode, so a blocking architectural-fit finding is the
+//      seed that exercises the reason path.
+{
+  const blockingArchFit = [
+    { id: 'af', concern: 'architectural-fit', severity: 'blocking', confidence: 95, what_fails: 'violates a constraint' },
+  ];
+  const h = makeHarness({ 'PB': blockingArchFit },
+    { 'fetch:phase': { body: 'PB', tags: ['needs-plan-review'] } }, {}, { 'PB': PARTIAL_COVERAGE });
+  const res = await runPlanReviewDriver({ roadmap: 'big-thing', phase: 'phase-1-a' }, h.deps);
+  const u = res.units[0];
+  assert.equal(u.outcome, 'escalated', '6c: the blocking finding still drives the outcome, coverage does not');
+  assert.equal(u.clearsPlanReviewTag, false, '6c: and a non-reviewed unit still keeps the tag');
+  assert.match(u.reason, /review coverage: 2\/3 dimensions ran/, '6c: the derived reason carries the clause');
+  const line = h.logs.find((l) => l.indexOf('phase/phase-1-a') !== -1);
+  assert.ok(line && line.indexOf('review coverage') !== -1, '6c: and the per-unit log line names it');
+}
+
+// (6c2) The rework path: coverage still does not gate — a blocking coherence
+//       finding yields `rework` with or without a dead dimension.
+{
+  const withDead = makeHarness({ 'PB': blockingCoherence },
+    { 'fetch:phase': { body: 'PB', tags: ['needs-plan-review'] } }, {}, { 'PB': PARTIAL_COVERAGE });
+  const healthy = makeHarness({ 'PB': blockingCoherence },
+    { 'fetch:phase': { body: 'PB', tags: ['needs-plan-review'] } }, {}, { 'PB': FULL_COVERAGE });
+  const a = await runPlanReviewDriver({ roadmap: 'big-thing', phase: 'phase-1-a' }, withDead.deps);
+  const b = await runPlanReviewDriver({ roadmap: 'big-thing', phase: 'phase-1-a' }, healthy.deps);
+  assert.equal(a.units[0].outcome, b.units[0].outcome, '6c2: a dead dimension yields the SAME outcome');
+  assert.equal(
+    a.units[0].clearsPlanReviewTag,
+    b.units[0].clearsPlanReviewTag,
+    '6c2: and the SAME tag disposition — they differ only in the recorded coverage and the summary'
+  );
+}
+
+// (6d) The --implementation-plan branch, which has no persisted item to gate,
+//      still names reduced coverage in its summary.
+{
+  const h = makeHarness({}, {}, {}, { 'PLAN TEXT': PARTIAL_COVERAGE });
+  const res = await runPlanReviewDriver({ implementationPlan: true, planText: 'PLAN TEXT here' }, h.deps);
+  assert.match(res.summary, /review coverage: 2\/3 dimensions ran; failed: restraint/,
+    '6d: the impl-plan summary names the non-participating dimension');
+  assert.ok(res.coverage && res.coverage.complete === false, '6d: and carries the machine-readable key');
+}
+
 console.log('plan-review driver execution assertions passed');
 NODE_DRIVER_TEST
 if run_node "$TMP/plan-driver-test.mjs" "$PLAN_LIB"; then
@@ -3778,7 +4263,36 @@ pmut_format() {
 }
 plan_mutate_and_expect_fail iv 'silencing formatUnitBudget so a budget hit never shows in the log' pmut_format
 
-pass "5b-mut: all four driver mutations flip a 5b-exec assertion, and the control passes"
+# (v) Stop appending coverageSummaryClause to the per-unit summary: a
+#     non-participating dimension is still RECORDED in `coverage`, but it never
+#     reaches the human-visible text — which is exactly the failure mode step 5b
+#     of this phase exists to prevent (a machine-readable key alone is not
+#     enough). Only the `summary`/`reason` assertions may fire; the outcome and
+#     tag-gate assertions must stay green, proving the gate tests human-visible
+#     text rather than the key.
+pmut_summary_clause() {
+    perl -0pi -e "s/summary: summarizeFindings\(survivors\) \+ coverageSummaryClause\(buildReviewCoverage\(\[coverage\], null\)\),/summary: summarizeFindings(survivors), \/\/ MUTANT/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail v 'dropping the coverage clause from the per-unit summary string' pmut_summary_clause
+
+# (vi) Same, on the --implementation-plan branch's summary.
+pmut_impl_summary_clause() {
+    perl -0pi -e "s/      summarizeFindings\(survivors\) \+ coverageSummaryClause\(buildReviewCoverage\(\[coverage\], null\)\)/      summarizeFindings(survivors) \/\/ MUTANT/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail vi 'dropping the coverage clause from the implementation-plan summary' pmut_impl_summary_clause
+
+# (vii) Drop the `coverage` field from the reported per-unit result.
+pmut_coverage_field() {
+    perl -0pi -e "s/\n(\s*)coverage: r\.coverage \|\| null,//" "$PMUT/plan-review.mjs"
+    ! grep -q 'coverage: r.coverage || null,' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail vii 'dropping the coverage field from the per-unit result' pmut_coverage_field
+
+pass "5b-mut: all seven driver mutations flip a 5b-exec assertion, and the control passes"
 
 # --- 5c. SKILL SHIM (AC-5) ---------------------------------------------------
 # The local dogfood SKILL.md is a thin shim over rdm-wf-plan-review.js. Its hand-authored
@@ -5854,7 +6368,7 @@ dim_mutate_and_expect_fail c2 'disabling the consumer-side unit-of-work scoping'
 #     never be produced, and the acceptance-criteria channel would collapse into
 #     ordinary findings.
 dmut_ac_schema() {
-    sed 's|^          schema: isAcDimension ? AC_REVIEW_SCHEMA : FINDINGS_SCHEMA,$|          schema: FINDINGS_SCHEMA, // MUTANT|' \
+    sed 's|^        const findSchema = isAcDimension ? AC_REVIEW_SCHEMA : FINDINGS_SCHEMA;$|        const findSchema = FINDINGS_SCHEMA; // MUTANT|' \
         "$LIB" >"$DMUT/review.mjs"
     grep -q 'MUTANT' "$DMUT/review.mjs"
 }
@@ -5863,7 +6377,7 @@ dim_mutate_and_expect_fail d 'making the ac dimension resolve FINDINGS_SCHEMA' d
 # (e) the acTable capture is dropped: classifyOutcome's step-2 channel goes dark
 #     and an unmet acceptance criterion stops forcing rework.
 dmut_ac_capture() {
-    sed 's|^            acTable = found.ac;$|            void found; // MUTANT|' "$LIB" >"$DMUT/review.mjs"
+    sed 's|^          acTable = found.ac;$|          void found; // MUTANT|' "$LIB" >"$DMUT/review.mjs"
     grep -q 'MUTANT' "$DMUT/review.mjs"
 }
 dim_mutate_and_expect_fail e 'dropping the acTable capture' dmut_ac_capture
@@ -5877,5 +6391,109 @@ dmut_empty_guard() {
 dim_mutate_and_expect_fail f 'removing the non-empty always-on guard from selectDimensions' dmut_empty_guard
 
 pass "10f: all five mutations flip a 10c/10d/10e assertion, and the control passes"
+
+# --- 11. FINDER-CRASH PROSE COVERAGE (both `//|` spans, target x mode) --------
+# `lib/review.mjs` carries TWO `//| ### Filter & consolidate` spans: the default
+# one, and the `find-refute-verdict:local-code-override` one that
+# gen-skill-review.sh's extract_region swaps in ONLY for --target local --mode
+# code. Both must state the finder-crash rule, or one rendered surface ships
+# without it.
+#
+# `gen-skill-review.sh --check` gates render-vs-committed EQUALITY, never prose
+# COVERAGE — it stays fully green on a span you forgot to edit. This explicit
+# six-surface grep is therefore the only real gate, and the planted-mutation
+# self-test below proves exactly that: it deletes the sentence from the OVERRIDE
+# span only, regenerates so `--check` would be green again, and asserts this
+# section still goes red.
+say "11. The finder-crash rule renders into all six surfaces, from BOTH //| spans"
+
+FINDER_CRASH_RE='A \*\*finder\*\* that returns nothing is retried \*\*once\*\*'
+ABSENT_AC_RE='does \*\*not\*\* count as an AC gap'
+
+for doc in $CODE_RENDERS $PLAN_RENDERS; do
+    grep -qE "$FINDER_CRASH_RE" "$doc" ||
+        fail "11: $doc does not state the finder-crash rule — one of the two //| Filter & consolidate spans was missed"
+    # It must state the recorded-never-gated policy and the reduced-coverage
+    # visibility, not merely mention a retry.
+    grep -q 'non-participating' "$doc" ||
+        fail "11: $doc states the retry but never names non-participation"
+    grep -q 'recorded, never gated on' "$doc" ||
+        fail "11: $doc does not state the recorded-never-gated policy"
+done
+pass "11: all six rendered surfaces state the finder-crash rule and the recorded-never-gated policy"
+
+# Mode isolation, BOTH directions: the absent-AC-table sentence is code-only.
+for doc in $CODE_RENDERS; do
+    grep -qE "$ABSENT_AC_RE" "$doc" || fail "11: code render $doc is missing the absent-AC-table rule"
+done
+for doc in $PLAN_RENDERS; do
+    if grep -nE "$ABSENT_AC_RE" "$doc" >&2; then
+        fail "11: plan render $doc carries the code-only absent-AC-table rule (mode isolation broken)"
+    fi
+done
+pass "11: the absent-AC-table rule is code-only — present in all three code renders, absent from all three plan renders"
+
+# --- 11b. ONE-SPAN DELETION SELF-TEST -----------------------------------------
+# Delete the sentence from the OVERRIDE span only, in a scratch tree, regenerate
+# every target x mode combination there (so --check would be green), and prove
+# section 11's grep still fires on .claude/skills/rdm-review/SKILL.md — the ONE
+# consumer rendered from that span.
+say "11b. One-span deletion self-test (proves the grep catches what --check cannot)"
+PROSE="$TMP/prose-mut"
+rm -rf "$PROSE"
+mkdir -p "$PROSE/.claude/workflows/lib" "$PROSE/.claude/skills/rdm-review" \
+    "$PROSE/.claude/skills/rdm-plan-review" "$PROSE/rdm-core/src/templates" "$PROSE/scripts"
+cp "$LIB" "$PROSE/.claude/workflows/lib/review.mjs"
+cp "$REPO_ROOT/scripts/gen-skill-review.sh" "$PROSE/scripts/"
+cp "$REPO_ROOT/.claude/skills/rdm-review/SKILL.md" "$PROSE/.claude/skills/rdm-review/"
+cp "$REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md" "$PROSE/.claude/skills/rdm-plan-review/"
+for t in skill-review-cli skill-review-mcp skill-plan-review-cli skill-plan-review-mcp; do
+    cp "$TEMPLATES/$t.md" "$PROSE/rdm-core/src/templates/"
+done
+
+# Delete the finder-crash bullet from the OVERRIDE span only: everything from the
+# override span's begin marker to its end marker.
+awk '
+    index($0, "find-refute-verdict:local-code-override:begin") { inov = 1 }
+    index($0, "find-refute-verdict:local-code-override:end")   { inov = 0 }
+    inov && index($0, "A **finder** that returns nothing is retried **once**") { drop = 1; next }
+    inov && drop && index($0, "//| - ") { drop = 0 }
+    inov && drop { next }
+    { print }
+' "$LIB" >"$PROSE/.claude/workflows/lib/review.mjs.new"
+mv "$PROSE/.claude/workflows/lib/review.mjs.new" "$PROSE/.claude/workflows/lib/review.mjs"
+if diff -q "$LIB" "$PROSE/.claude/workflows/lib/review.mjs" >/dev/null 2>&1; then
+    fail "11b: the planted one-span deletion did not apply — the anchor text moved"
+fi
+# The DEFAULT span must be untouched: the deletion is deliberately one-sided.
+DEFAULT_HITS=$(awk '
+    index($0, "find-refute-verdict:local-code-override:begin") { inov = 1 }
+    index($0, "find-refute-verdict:local-code-override:end")   { inov = 0; next }
+    !inov { print }
+' "$PROSE/.claude/workflows/lib/review.mjs" | grep -c 'A \*\*finder\*\* that returns nothing' || true)
+[ "$DEFAULT_HITS" -ge 1 ] || fail "11b: the deletion removed the DEFAULT span too — the self-test is not one-sided"
+
+for combo in shipped:code shipped:plan local:code local:plan; do
+    ctarget=${combo%%:*}
+    cmode=${combo##*:}
+    (cd "$PROSE" && sh scripts/gen-skill-review.sh --target "$ctarget" --mode "$cmode" >/dev/null) ||
+        fail "11b: could not regenerate --target $ctarget --mode $cmode in the scratch tree"
+done
+# --check would now be GREEN in the scratch tree (render == committed there)...
+(cd "$PROSE" && sh scripts/gen-skill-review.sh --check --target local --mode code >/dev/null 2>&1) ||
+    fail "11b: --check is NOT green after regenerating the mutated tree — the premise of this self-test is wrong"
+# ...but the prose grep must still catch it, on exactly the one affected surface.
+if grep -qE "$FINDER_CRASH_RE" "$PROSE/.claude/skills/rdm-review/SKILL.md"; then
+    fail "11b: the one-span deletion did NOT reach the local rdm-review render — section 11's grep would be vacuous"
+fi
+# And the surfaces rendered from the DEFAULT span are unaffected, proving the
+# self-test isolates the override span rather than blanking every render.
+for doc in "$PROSE/rdm-core/src/templates/skill-review-cli.md" \
+    "$PROSE/rdm-core/src/templates/skill-plan-review-cli.md" \
+    "$PROSE/.claude/skills/rdm-plan-review/SKILL.md"; do
+    grep -qE "$FINDER_CRASH_RE" "$doc" ||
+        fail "11b: the default-span renders lost the rule too — the deletion was not override-scoped"
+done
+pass "11b: a one-span deletion leaves --check green but is caught by the six-surface grep"
 
 say "verify-workflow-review.sh: ALL GREEN"

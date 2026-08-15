@@ -288,6 +288,16 @@ can explain a result:
   un-refuted rather than silently dropping it. It is **not** marked
   `unrefuted: true` — that marker means "deliberately never graded", not
   "grading failed".
+- A **finder** that returns nothing is retried **once**. If the retry also
+  returns nothing, that dimension is recorded as **non-participating**: it
+  contributes no findings, and the reduced coverage is reported in the result
+  *and named in the summary*, so a 3-of-7 review never reads as a clean
+  7-of-7. Non-participation is **recorded, never gated on** — a transient API
+  blip must not stall the run, but it must never pass as complete coverage. If
+  **every** dimension fails, the review throws rather than reporting a clean
+  result. A dimension that did not run produces **no AC table**, which is not
+  the same as a table with no FAIL/PARTIAL rows: the absent case is recorded
+  and named in the summary, and does **not** count as an AC gap.
 - A finding passed through un-refuted carries `unrefuted: true` and faces the
   **same confidence floor** as everything else: the refuter is skipped, the
   floor is not.

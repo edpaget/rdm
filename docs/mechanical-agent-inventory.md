@@ -21,17 +21,17 @@ accepts), [`docs/autonomous-loop.md`](autonomous-loop.md).
 grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 ```
 
-**37 labelled `agent()` call sites** across the six workflow scripts:
+**40 labelled `agent()` call sites** across the six workflow scripts:
 
 | file | call sites |
 |---|---|
 | `rdm-wf-backlog.js` | 3 |
-| `rdm-wf-dispatch-phase.js` | 11 |
+| `rdm-wf-dispatch-phase.js` | 12 |
 | `rdm-wf-document.js` | 5 |
 | `rdm-wf-estimate.js` | 5 |
-| `rdm-wf-plan-review.js` | 9 |
-| `rdm-wf-review-refute-fix.js` | 4 |
-| **total** | **37** |
+| `rdm-wf-plan-review.js` | 10 |
+| `rdm-wf-review-refute-fix.js` | 5 |
+| **total** | **40** |
 
 (`autopilot.js` carried 7 of the original 44 call sites; it was retired in favor of the prose
 `rdm-autopilot` skill by the `workflow-orchestration` roadmap's phase 3 — see
@@ -40,12 +40,15 @@ that still cite `autopilot.js`/`advance:*`/`park:*`/`fetch:next` describe the me
 while it was still a workflow script and are left as a dated record rather than rewritten; they
 are not live-checked the way the totals above are.)
 
-Adding `.claude/workflows/lib/*.mjs` to the glob raises the count to **46**. That is *not* nine
+Adding `.claude/workflows/lib/*.mjs` to the glob raises the count to **50**. That is *not* ten
 extra call sites: the libs hold the single-source originals of blocks that are stamped or
 byte-copied into the `.js` consumers, so the same site is counted twice. **The six `.js`
 files are the authoritative surface** — they are what the Workflow runtime executes.
 
-Of the 37, **22 are mechanical** and **15 are judgment** agents. The judgment set is out of
+Of the 40, **22 are mechanical** and **18 are judgment** agents. (Three of the eighteen are the
+canonical finder's `find:<mode>:<dim>:retry` site — the ONE bounded retry a finder that resolved
+null gets before its dimension is recorded as non-participating — counted once per stamped
+consumer.) The judgment set is out of
 scope for this phase and is listed here only so the split is checkable: `find:*`, `refute:*`,
 `plan:author`, `plan:revise`, `implement:worktree`, `implement:rework`, `act:code`,
 `act:<kind>:<ident>`, `estimate:<stem>` / `estimate:rate:*`, `analyze:*`, `synthesize:draft`.

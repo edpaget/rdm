@@ -220,7 +220,7 @@ const mod = await import(pathToFileURL(process.argv[2]).href);
 const { buildTaskOutcome } = mod;
 assert.equal(typeof buildTaskOutcome, 'function', 'buildTaskOutcome is exported');
 
-const SHAPE = ['findings', 'outcome', 'reason', 'reviewBudget', 'status', 'summary', 'task', 'writesCompletion'];
+const SHAPE = ['findings', 'outcome', 'reason', 'reviewBudget', 'reviewCoverage', 'status', 'summary', 'task', 'writesCompletion'];
 const B = (id) => ({ id, concern: 'x', severity: 'blocking', confidence: 90, what_fails: id });
 
 const clean = buildTaskOutcome({ task: 't', planFindings: [], codeFindings: [], tier: 'medium' });

@@ -532,6 +532,17 @@ function findPrompt(mode, dim, context) {
 //|   un-refuted rather than silently dropping it. It is **not** marked
 //|   `unrefuted: true`: that marker means "deliberately never graded", not
 //|   "grading failed".
+//| - A **finder** that returns nothing is retried **once**. If the retry also
+//|   returns nothing, that dimension is recorded as **non-participating**: it
+//|   contributes no findings, and the reduced coverage is reported in the result
+//|   *and named in the summary*, so a 3-of-7 review never reads as a clean
+//|   7-of-7. Non-participation is **recorded, never gated on** — a transient API
+//|   blip must not stall the run, but it must never pass as complete coverage. If
+//|   **every** dimension fails, the review throws rather than reporting a clean
+//|   result.
+//|code| - A dimension that did not run produces **no AC table**, which is not the
+//|code|   same as a table with no FAIL/PARTIAL rows. The absent case is recorded and
+//|code|   named in the summary, and it does **not** count as an AC gap.
 //| - A finding passed through un-refuted carries `unrefuted: true` and faces the
 //|   **same confidence floor** as everything else: the refuter is skipped, the
 //|   floor is not.
@@ -641,6 +652,16 @@ function refutePrompt(mode, dim, finding, context) {
 //|   un-refuted rather than silently dropping it. It is **not** marked
 //|   `unrefuted: true` — that marker means "deliberately never graded", not
 //|   "grading failed".
+//| - A **finder** that returns nothing is retried **once**. If the retry also
+//|   returns nothing, that dimension is recorded as **non-participating**: it
+//|   contributes no findings, and the reduced coverage is reported in the result
+//|   *and named in the summary*, so a 3-of-7 review never reads as a clean
+//|   7-of-7. Non-participation is **recorded, never gated on** — a transient API
+//|   blip must not stall the run, but it must never pass as complete coverage. If
+//|   **every** dimension fails, the review throws rather than reporting a clean
+//|   result. A dimension that did not run produces **no AC table**, which is not
+//|   the same as a table with no FAIL/PARTIAL rows: the absent case is recorded
+//|   and named in the summary, and does **not** count as an AC gap.
 //| - A finding passed through un-refuted carries `unrefuted: true` and faces the
 //|   **same confidence floor** as everything else: the refuter is skipped, the
 //|   floor is not.
@@ -1067,6 +1088,105 @@ function budgetSummaryClause(reviewBudget) {
   );
 }
 
+// buildReviewCoverage(coverageRounds, planCoverage) — project the per-round
+// DIMENSION-PARTICIPATION accounting `runReview` returned onto a consumer's
+// `reviewCoverage` field. The exact sibling of buildReviewBudget above, and
+// deliberately so: participation is a second per-round accounting field, not a
+// second MECHANISM. Lives HERE, in the canonical review source, because the same
+// three consumers project it (dispatch-phase's buildOutcome/buildTaskOutcome,
+// plan-review's reviewUnit, and review-refute-fix's standalone OUTCOME).
+//
+// Pure; returns null when nothing reported coverage (an older caller, or a
+// fetch-failure short circuit that never ran a review) — a fetch failure must
+// never read as full coverage.
+//
+// BOTH parameters accept the gate's FULL per-round array; `planCoverage` also
+// still accepts a single round object.
+//
+//   total / selected / ran / failed / retried / acDimensionRan — the counts of
+//     the round being REPORTED: the chronologically LAST INCOMPLETE round when
+//     any round was incomplete (so the clause names the real gap rather than the
+//     degenerate full-coverage numbers of a later healthy round), else the last
+//     round. Plan rounds precede code rounds — the plan gate runs to completion
+//     before the code gate starts.
+//   complete   — did EVERY round run every selected dimension?
+//   everIncomplete — the inverse, named for symmetry with the budget's everHit.
+//   acTableAbsent  — did ANY round lose its `ac` dimension? (Always false in
+//                    plan mode, which has no `ac` dimension at all.)
+//   rounds / planRounds — how many code / plan rounds reported coverage.
+//   incomplete — the reported incomplete round object, or null.
+//   last       — the chronologically last round, incomplete or not.
+//
+// The projection re-exposes `total`/`ran`/`failed`/`complete`/`acTableAbsent` at
+// the TOP level on purpose: coverageSummaryClause then reads a raw per-round
+// coverage object and a projection identically, so a caller with one round need
+// not decide which shape to pass.
+function buildReviewCoverage(coverageRounds, planCoverage) {
+  const rounds = Array.isArray(coverageRounds) ? coverageRounds.filter(Boolean) : [];
+  const planRounds = Array.isArray(planCoverage)
+    ? planCoverage.filter(Boolean)
+    : planCoverage && typeof planCoverage === 'object'
+      ? [planCoverage]
+      : [];
+  if (rounds.length === 0 && planRounds.length === 0) return null;
+  // TEMPORAL order, not source order — same merge rule as buildReviewBudget.
+  const merged = planRounds.concat(rounds);
+  const last = merged[merged.length - 1];
+  const incompletes = merged.filter((c) => c.complete !== true);
+  const reported = incompletes.length ? incompletes[incompletes.length - 1] : last;
+  return {
+    total: reported.total,
+    selected: Array.isArray(reported.selected) ? reported.selected : [],
+    ran: Array.isArray(reported.ran) ? reported.ran : [],
+    failed: Array.isArray(reported.failed) ? reported.failed : [],
+    retried: Array.isArray(reported.retried) ? reported.retried : [],
+    acDimensionRan: reported.acDimensionRan != null ? reported.acDimensionRan : null,
+    acTableAbsent: merged.some((c) => c.acTableAbsent === true),
+    complete: incompletes.length === 0,
+    everIncomplete: incompletes.length > 0,
+    rounds: rounds.length,
+    planRounds: planRounds.length,
+    incomplete: incompletes.length ? reported : null,
+    last: last,
+  };
+}
+
+// coverageSummaryClause(reviewCoverage) — the visible marker that makes a review
+// with a NON-PARTICIPATING dimension distinguishable in a run summary (and,
+// because dispatch's `outcomePolicy` derives `reason` from `summary`, in the
+// `rdm review blocked` queue for a parked/escalated unit). Empty string when
+// every round ran every dimension, so a healthy run's summary is byte-unchanged.
+//
+// This is the whole point of recording participation: a dimension that silently
+// failed and is then silently recorded is no better than today. A 3-of-7 review
+// must never read as a clean 7-of-7 — so the reduced coverage is named in the
+// human-visible text, not merely in a machine-readable key.
+//
+// Deliberately short and free of quotes, `$` and backticks — the same
+// constraint budgetSummaryClause documents, because the string is interpolated
+// into mechanical Bash prompts (plan-review's round-note write, the gate's
+// `--reason` flag).
+//
+// Accepts either a buildReviewCoverage projection or a single raw per-round
+// coverage object; both carry the fields read here.
+function coverageSummaryClause(reviewCoverage) {
+  const c = reviewCoverage;
+  if (!c || c.complete === true) return '';
+  const ran = Array.isArray(c.ran) ? c.ran : [];
+  const failed = Array.isArray(c.failed) ? c.failed : [];
+  const total = c.total != null ? c.total : ran.length + failed.length;
+  return (
+    ' [review coverage: ' +
+    ran.length +
+    '/' +
+    total +
+    ' dimensions ran; failed: ' +
+    failed.join(',') +
+    (c.acTableAbsent === true ? '; NO AC TABLE' : '') +
+    ']'
+  );
+}
+
 // The boolean signal keys deriveSignals always populates explicitly.
 // `targetType` (string|null) and `changedFiles` (array) ride alongside them.
 const SIGNAL_KEYS = [
@@ -1371,6 +1491,13 @@ function hasBlocking(findings, tier) {
 // criterion? An empty or absent table is NOT a gap — plan mode never sets one,
 // and a code review whose `ac` dimension didn't run or whose finder failed to
 // resolve a table must not be treated as if it found a defect.
+//
+// This contract is correct FOR A TABLE THAT EXISTS and is deliberately NOT
+// widened: `acTableHasGap(null) === false` both when the table is genuinely
+// clean and when the `ac` dimension never ran. Telling ABSENT from CLEAN is the
+// job of a different channel — `coverage.acTableAbsent` (see
+// buildReviewPipeline), which is recorded and named in the summary but never
+// gates. Do not re-conflate the two here.
 function acTableHasGap(acTable) {
   const list = Array.isArray(acTable) ? acTable : [];
   return list.some((entry) => entry && (entry.status === 'FAIL' || entry.status === 'PARTIAL'));
@@ -1506,9 +1633,10 @@ function classifyOutcome(input) {
 // Returns an async `runReview(context)` that:
 //   1. selects the applicable dimensions from `context.signals` (see
 //      selectDimensions' three-way fail-open contract),
-//   2. runs one finder agent per selected dimension IN PARALLEL (stage 1) — in
-//      `code` mode the `ac` dimension's finder returns the AC_REVIEW_SCHEMA
-//      shape instead of a bare findings array, and its `ac` table is captured,
+//   2. runs one finder agent per selected dimension IN PARALLEL (stage 1),
+//      RETRYING a finder that resolves null exactly once — in `code` mode the
+//      `ac` dimension's finder returns the AC_REVIEW_SCHEMA shape instead of a
+//      bare findings array, and its `ac` table is captured,
 //   3. BARRIERS on stage 1, flattens every dimension's findings into ONE
 //      unit-wide candidate list, partitions it with `needsRefutation`, ranks the
 //      gating half with `rankBudgetCandidates`, and cuts it at the refutation
@@ -1516,10 +1644,15 @@ function classifyOutcome(input) {
 //   4. runs a FRESH refuter agent per finding in the top-N, in parallel (stage
 //      2); the overflow and the non-gating findings pass through un-refuted,
 //   5. drops any finding that was refuted or scored below CONFIDENCE_FLOOR,
-//   6. returns `{ survivors, acTable, budget }` — survivors ranked
+//   6. returns `{ survivors, acTable, budget, coverage }` — survivors ranked
 //      most-severe-first, the captured AC table (`null` in `plan` mode, or if
 //      the `ac` dimension didn't run or its finder failed to resolve a table),
-//      and the budget accounting (see the `budget` object below).
+//      the budget accounting (see the `budget` object below), and the
+//      per-dimension PARTICIPATION accounting (see the `coverage` object below,
+//      and buildReviewCoverage / coverageSummaryClause for its projections).
+//
+// The first three keys' meanings are unchanged; `coverage` is purely additive,
+// so every pre-existing consumer keeps working untouched.
 //
 // COMPOSITION NOTE: stage 1 is a `parallel()` fan-out of per-dimension thunks,
 // NOT a single-stage `pipeline()`. The budget must rank a unit's WHOLE candidate
@@ -1572,52 +1705,157 @@ function buildReviewPipeline(mode, deps) {
     // finder failed to resolve a table. This is the STRUCTURED side-channel
     // classifyOutcome consumes directly — never through finding severity or
     // refutation.
+    //
+    // `null` here is AMBIGUOUS by design and always was: it means both "the
+    // table is clean" and "there is no table". The channel that tells those two
+    // apart is `coverage.acTableAbsent` below — NOT this variable, and not
+    // acTableHasGap, whose existing contract stays byte-unchanged.
     let acTable = null;
+    // Per-dimension PARTICIPATION record, allocated BEFORE the fan-out and keyed
+    // by dimension INDEX — never by agent-completion order, or the returned
+    // coverage would be nondeterministic, exactly the thing the runtime forbids
+    // alongside the wall-clock and randomness globals. Each thunk writes only
+    // its own `attempts[di]`, so the arrays derived from it are total-ordered.
+    const attempts = dims.map((d) => ({ dimension: d.key, ran: false, retried: false, error: null }));
     // Stage 1 (the BARRIER): every selected dimension's finder runs in parallel
     // and ALL of them settle before a single refuter is dispatched. See the
     // composition note above for why this is `parallel()` rather than a
     // single-stage `pipeline()`.
     const perDimension = await _parallel(
-      dims.map((dim) => () => {
+      dims.map((dim, di) => async () => {
+        const rec = attempts[di];
         const isAcDimension = mode === 'code' && dim.key === 'ac';
-        return _agent(findPrompt(mode, dim, ctx), {
-          label: 'find:' + mode + ':' + dim.key,
-          phase: 'Find',
-          schema: isAcDimension ? AC_REVIEW_SCHEMA : FINDINGS_SCHEMA,
-          model: findModel,
-        }).then((found) => {
+        // The schema is hoisted because the RETRY below reuses it; the LABEL is
+        // written out literally at each call site (they must differ — the retry
+        // suffixes `:retry` so the runtime can never collide the two attempts),
+        // and so is the options object, so every dispatch carries its own
+        // explicit `model:` and stays visible to a labelled-call-site sweep.
+        const findSchema = isAcDimension ? AC_REVIEW_SCHEMA : FINDINGS_SCHEMA;
+        let found;
+        try {
+          found = await _agent(findPrompt(mode, dim, ctx), {
+            label: 'find:' + mode + ':' + dim.key,
+            phase: 'Find',
+            schema: findSchema,
+            model: findModel,
+          });
+        } catch (e) {
+          // A finder that THREW (as opposed to resolving null) is recorded as
+          // non-participation and rethrown WITHOUT a retry — the rethrow is what
+          // the runtime's parallel turns into the `null` element the flattening
+          // loop and the all-null guard both key on. Without the catch the throw
+          // would escape before anything was recorded and the dimension would
+          // vanish from `coverage` entirely.
+          rec.error = 'threw';
+          throw e;
+        }
+        if (found === null || found === undefined) {
+          // RETRY EXACTLY ONCE. `agent()` resolves null only AFTER the runtime
+          // has exhausted its OWN internal retries, so this second-order retry is
+          // the first one lane code controls. Finders are read-only and
+          // idempotent, so re-dispatching one is safe. A null cannot be
+          // attributed to a cause — it means either a transient API death after
+          // retries or an unknown/unavailable model id (the model spike's
+          // silent-null consequence) — and nothing at this call site
+          // distinguishes them, so do NOT attempt to classify it: one retry
+          // handles both (a transient failure usually succeeds; a misconfigured
+          // model fails twice and is then recorded loudly as non-participation).
+          // One extra attempt only — no loop, no backoff — and UNCONDITIONAL on
+          // findModel, because plan mode passes no models at all.
+          rec.retried = true;
+          try {
+            found = await _agent(findPrompt(mode, dim, ctx), {
+              label: 'find:' + mode + ':' + dim.key + ':retry',
+              phase: 'Find',
+              schema: findSchema,
+              model: findModel,
+            });
+          } catch (e) {
+            rec.error = 'threw';
+            throw e;
+          }
+        }
+        if (found === null || found === undefined) {
           // An UNKNOWN model id makes agent() RESOLVE to null rather than throw
-          // (spike consequence 3). A resolved null would sail through as
-          // `(null && …) || []` → [], i.e. a silently clean review. Convert it to
-          // a thrown thunk here — the only thing the runtime's parallel turns
-          // into a null element — so the all-null check below can actually fire.
-          if (findModel && (found === null || found === undefined)) {
-            throw new Error(
-              'review-refute-fix: finder for dimension "' + dim.key + '" returned null with model "' +
-                findModel + '" — an unknown/unavailable model id yields null instead of throwing'
-            );
-          }
-          if (isAcDimension && found && Array.isArray(found.ac)) {
-            acTable = found.ac;
-          }
-          return found;
-        });
+          // (spike consequence 3), and so does a transient API death. A resolved
+          // null would sail through as `(null && …) || []` → [], i.e. a silently
+          // clean review. Convert it to a thrown thunk here — the only thing the
+          // runtime's parallel turns into a null element — so the flattening loop
+          // drops the dimension and the all-null check below can actually fire.
+          // The conversion is model-INDEPENDENT (only the message branches), so
+          // it is live on plan mode's real no-model configuration.
+          rec.error = 'null';
+          throw new Error(
+            findModel
+              ? 'review-refute-fix: finder for dimension "' + dim.key + '" returned null with model "' +
+                  findModel + '" — an unknown/unavailable model id yields null instead of throwing'
+              : 'review-refute-fix: finder for dimension "' + dim.key + '" returned null after one retry'
+          );
+        }
+        // PARTICIPATED. A valid-but-EMPTY payload (`{ findings: [] }`, or
+        // `{ ac: [], findings: [] }`) counts as participation: the dimension ran
+        // and found nothing. Only null/undefined is non-participation.
+        rec.ran = true;
+        if (isAcDimension && found && Array.isArray(found.ac)) {
+          acTable = found.ac;
+        }
+        return found;
       })
     );
 
-    // Loud failure on a wholesale model misconfiguration. One dimension dropping
-    // to null is tolerated resilience (a single finder crashed); EVERY dimension
-    // dropping to null while an explicit model was in play means no review
-    // actually ran — e.g. an `[models]` binding this runtime does not know. That
+    // Loud failure on a wholesale review failure. One dimension dropping to null
+    // is tolerated (recorded in `coverage.failed` below, never gated on); EVERY
+    // dimension dropping to null means no review actually ran — e.g. an
+    // `[models]` binding this runtime does not know, or a total API outage. That
     // must not be reported as a clean review. This fires BEFORE any budget
-    // accounting, so a wholesale misconfiguration is never reported as
-    // "budget-bounded but clean".
-    if (findModel && dims.length > 0 && perDimension.every((d) => d === null || d === undefined)) {
+    // accounting, so a wholesale failure is never reported as "budget-bounded but
+    // clean".
+    //
+    // The guard is NOT conditioned on `findModel`. lib/plan-review.mjs calls
+    // `runPlanReview({ target })` with NO findModel/verifyModel at BOTH call
+    // sites (reviewUnit and the implementation-plan branch), so a
+    // model-conditional guard is inert in plan mode — and `GATE_POLICY.plan`
+    // would then clear `needs-plan-review` off a review that never ran. Only the
+    // MESSAGE branches, so the misconfiguration text naming the `[models]`
+    // bindings stays recognisable.
+    if (dims.length > 0 && perDimension.every((d) => d === null || d === undefined)) {
       throw new Error(
-        'review-refute-fix: every ' + mode + ' dimension finder failed with model "' + findModel +
-          '" — refusing to report a clean review; check the [models] tier bindings'
+        'review-refute-fix: every ' + mode + ' dimension finder failed' +
+          (findModel
+            ? ' with model "' + findModel +
+              '" — refusing to report a clean review; check the [models] tier bindings'
+            : ' after one retry each — refusing to report a clean review')
       );
     }
+
+    // The PARTICIPATION accounting, returned AND logged AND threaded into the
+    // OUTCOME by every consumer, so a run transcript or a run summary can never
+    // read as complete coverage when a dimension did not run. Every array is in
+    // `dims` selection order (see the `attempts` note above).
+    //
+    // DECIDED POLICY: non-participation is RECORDED, NEVER GATED ON — a
+    // transient API blip must not stall the autonomous lane, while the record
+    // keeps the reduced coverage auditable after the fact. Coverage may only
+    // ever influence (a) this returned field, (b) the `summary` string (and
+    // therefore the derived `reason`), and (c) log lines. There is no gating
+    // branch for it in either mode, and there must never be one.
+    //
+    // `acDimensionRan` is `null` in plan mode (there is no `ac` dimension) and
+    // whenever `ac` was not selected, so `acTableAbsent` is forced false there —
+    // otherwise every plan review's summary would gain a spurious clause.
+    const acAttempt = mode === 'code' ? attempts.filter((a) => a.dimension === 'ac')[0] : null;
+    const acDimensionRan = acAttempt ? acAttempt.ran : null;
+    const coverage = {
+      mode: mode,
+      total: dims.length,
+      selected: dims.map((d) => d.key),
+      ran: attempts.filter((a) => a.ran).map((a) => a.dimension),
+      failed: attempts.filter((a) => !a.ran).map((a) => a.dimension),
+      retried: attempts.filter((a) => a.retried).map((a) => a.dimension),
+      complete: attempts.every((a) => a.ran),
+      acDimensionRan: acDimensionRan,
+      acTableAbsent: acDimensionRan === false,
+    };
 
     // Flatten per-dimension → ONE unit-wide candidate list. A finder whose whole
     // dimension errored is dropped to null by the runtime's parallel (a thrown
@@ -1772,9 +2010,10 @@ function buildReviewPipeline(mode, deps) {
             ' passed through for budget, cap ' +
             budget.max +
             ')'
-          : '')
+          : '') +
+        coverageSummaryClause(coverage)
     );
-    return { survivors: rankFindings(survivors), acTable: acTable, budget: budget };
+    return { survivors: rankFindings(survivors), acTable: acTable, budget: budget, coverage: coverage };
   };
 }
 // >>> review-refute-fix:end <<<
@@ -2465,15 +2704,16 @@ async function runPlanReviewDriver(args, deps) {
   // (one search covers the whole run, not one per unit).
   async function reviewUnit(unit, wontFixedTexts) {
     // runPlanReview is a `runReview` from the canonical review source and
-    // resolves `{ survivors, acTable, budget }`; `acTable` is always `null` in
-    // plan mode (the `ac` dimension does not exist there) and is intentionally
-    // discarded here. `budget` is the per-unit refutation-budget accounting and
-    // is carried through to the reported result.
+    // resolves `{ survivors, acTable, budget, coverage }`; `acTable` is always
+    // `null` in plan mode (the `ac` dimension does not exist there) and is
+    // intentionally discarded here. `budget` is the per-unit refutation-budget
+    // accounting and `coverage` the per-unit dimension-participation accounting;
+    // both are carried through to the reported result.
     //
     // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
     // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
     // may drop a survivor that consumed budget.
-    const { survivors: rawSurvivors, budget } = await runPlanReview({
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
       target: unit.target,
       maxRefutations: maxRefutations,
     })
@@ -2491,7 +2731,13 @@ async function runPlanReviewDriver(args, deps) {
       newlyReported: partition.fresh,
       repeats: partition.repeats,
       budget: budget || null,
-      summary: summarizeFindings(survivors),
+      coverage: coverage || null,
+      // A dimension that did not participate is named in the SUMMARY STRING, not
+      // only in the machine-readable `coverage` key — the gate below derives
+      // `reason` from this same string, so a plan review that ran 2 of 3
+      // dimensions can never read like a complete one. The clause is empty on a
+      // complete run, so a healthy unit's summary is byte-unchanged.
+      summary: summarizeFindings(survivors) + coverageSummaryClause(buildReviewCoverage([coverage], null)),
     }
   }
 
@@ -2503,24 +2749,29 @@ async function runPlanReviewDriver(args, deps) {
     const planText = parsed.planText || '(the implementation plan provided in context)'
     // See reviewUnit's identical notes: acTable is always null in plan mode, and
     // `budget` describes the pipeline, not the post-strip survivor set.
-    const { survivors: rawSurvivors, budget } = await runPlanReview({
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
       target: planText,
       maxRefutations: maxRefutations,
     })
     const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
     const outcome = classifyPlanOutcome(survivors)
+    // Same summary treatment as reviewUnit: reduced coverage is named in the
+    // human-visible string, empty on a complete run.
+    const planSummary =
+      summarizeFindings(survivors) + coverageSummaryClause(buildReviewCoverage([coverage], null))
     _log(
       'plan-review (implementation-plan): ' +
         outcome +
         ' — ' +
-        summarizeFindings(survivors) +
+        planSummary +
         formatUnitBudget(budget)
     )
     return {
       kind: 'implementation-plan',
       outcome: outcome,
-      summary: summarizeFindings(survivors),
+      summary: planSummary,
       budget: budget || null,
+      coverage: coverage || null,
       findings: survivors,
     }
   }
@@ -2680,6 +2931,7 @@ async function runPlanReviewDriver(args, deps) {
       reason: reason,
       summary: r.summary,
       budget: r.budget || null,
+      coverage: r.coverage || null,
       findings: r.survivors,
     })
     _log('plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + r.summary + formatUnitBudget(r.budget))
@@ -2691,6 +2943,7 @@ async function runPlanReviewDriver(args, deps) {
     result.outcome = reported[0].outcome
     result.summary = reported[0].summary
     result.budget = reported[0].budget
+    result.coverage = reported[0].coverage
     result.findings = reported[0].findings
   }
   _log('plan-review (' + kind + '): ' + reported.length + ' unit(s) gated')

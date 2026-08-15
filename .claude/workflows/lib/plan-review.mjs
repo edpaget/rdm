@@ -35,6 +35,8 @@ import {
   gateFor,
   summarizeFindings,
   resolveRefutationBudget,
+  buildReviewCoverage,
+  coverageSummaryClause,
 } from './review.mjs';
 
 // >>> plan-review-driver:begin <<<
@@ -712,15 +714,16 @@ async function runPlanReviewDriver(args, deps) {
   // (one search covers the whole run, not one per unit).
   async function reviewUnit(unit, wontFixedTexts) {
     // runPlanReview is a `runReview` from the canonical review source and
-    // resolves `{ survivors, acTable, budget }`; `acTable` is always `null` in
-    // plan mode (the `ac` dimension does not exist there) and is intentionally
-    // discarded here. `budget` is the per-unit refutation-budget accounting and
-    // is carried through to the reported result.
+    // resolves `{ survivors, acTable, budget, coverage }`; `acTable` is always
+    // `null` in plan mode (the `ac` dimension does not exist there) and is
+    // intentionally discarded here. `budget` is the per-unit refutation-budget
+    // accounting and `coverage` the per-unit dimension-participation accounting;
+    // both are carried through to the reported result.
     //
     // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
     // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
     // may drop a survivor that consumed budget.
-    const { survivors: rawSurvivors, budget } = await runPlanReview({
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
       target: unit.target,
       maxRefutations: maxRefutations,
     })
@@ -738,7 +741,13 @@ async function runPlanReviewDriver(args, deps) {
       newlyReported: partition.fresh,
       repeats: partition.repeats,
       budget: budget || null,
-      summary: summarizeFindings(survivors),
+      coverage: coverage || null,
+      // A dimension that did not participate is named in the SUMMARY STRING, not
+      // only in the machine-readable `coverage` key — the gate below derives
+      // `reason` from this same string, so a plan review that ran 2 of 3
+      // dimensions can never read like a complete one. The clause is empty on a
+      // complete run, so a healthy unit's summary is byte-unchanged.
+      summary: summarizeFindings(survivors) + coverageSummaryClause(buildReviewCoverage([coverage], null)),
     }
   }
 
@@ -750,24 +759,29 @@ async function runPlanReviewDriver(args, deps) {
     const planText = parsed.planText || '(the implementation plan provided in context)'
     // See reviewUnit's identical notes: acTable is always null in plan mode, and
     // `budget` describes the pipeline, not the post-strip survivor set.
-    const { survivors: rawSurvivors, budget } = await runPlanReview({
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
       target: planText,
       maxRefutations: maxRefutations,
     })
     const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
     const outcome = classifyPlanOutcome(survivors)
+    // Same summary treatment as reviewUnit: reduced coverage is named in the
+    // human-visible string, empty on a complete run.
+    const planSummary =
+      summarizeFindings(survivors) + coverageSummaryClause(buildReviewCoverage([coverage], null))
     _log(
       'plan-review (implementation-plan): ' +
         outcome +
         ' — ' +
-        summarizeFindings(survivors) +
+        planSummary +
         formatUnitBudget(budget)
     )
     return {
       kind: 'implementation-plan',
       outcome: outcome,
-      summary: summarizeFindings(survivors),
+      summary: planSummary,
       budget: budget || null,
+      coverage: coverage || null,
       findings: survivors,
     }
   }
@@ -927,6 +941,7 @@ async function runPlanReviewDriver(args, deps) {
       reason: reason,
       summary: r.summary,
       budget: r.budget || null,
+      coverage: r.coverage || null,
       findings: r.survivors,
     })
     _log('plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + r.summary + formatUnitBudget(r.budget))
@@ -938,6 +953,7 @@ async function runPlanReviewDriver(args, deps) {
     result.outcome = reported[0].outcome
     result.summary = reported[0].summary
     result.budget = reported[0].budget
+    result.coverage = reported[0].coverage
     result.findings = reported[0].findings
   }
   _log('plan-review (' + kind + '): ' + reported.length + ' unit(s) gated')

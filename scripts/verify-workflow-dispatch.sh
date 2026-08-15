@@ -155,7 +155,7 @@ const { hasBlocking, summarizeFindings, classifyOutcome, buildOutcome } = mod;
 const B = (id) => ({ id, concern: 'x', severity: 'blocking', confidence: 90, what_fails: id });
 const C = (id) => ({ id, concern: 'x', severity: 'concern', confidence: 90, what_fails: id });
 
-const SHAPE = ['findings', 'outcome', 'phase', 'reason', 'reviewBudget', 'roadmap', 'status', 'summary', 'writesCompletion'];
+const SHAPE = ['findings', 'outcome', 'phase', 'reason', 'reviewBudget', 'reviewCoverage', 'roadmap', 'status', 'summary', 'writesCompletion'];
 
 // ============================================================================
 // Happy path FIRST — clean plan + clean code → reviewed, full OUTCOME shape.
@@ -293,7 +293,7 @@ assert.ok(summarizeFindings([B('bug')]).includes('blocking'), 'summary names the
 const { buildTaskOutcome } = mod;
 assert.equal(typeof buildTaskOutcome, 'function', 'buildTaskOutcome is exported from the lib');
 
-const TASK_SHAPE = ['findings', 'outcome', 'reason', 'reviewBudget', 'status', 'summary', 'task', 'writesCompletion'];
+const TASK_SHAPE = ['findings', 'outcome', 'reason', 'reviewBudget', 'reviewCoverage', 'status', 'summary', 'task', 'writesCompletion'];
 
 // reviewed — clean code review on the first pass.
 const tRev = buildTaskOutcome({
@@ -1180,6 +1180,145 @@ try {
   });
   assert.equal(tOut.reviewBudget.everHit, true, 'task OUTCOME carries reviewBudget');
   assert.ok(tOut.summary.includes('[review budget hit:'), 'task OUTCOME summary carries the clause');
+}
+
+
+// (h) DIMENSION COVERAGE — the sibling per-round accounting. A gate whose review
+// round lost a dimension must surface it on the OUTCOME (`reviewCoverage`) AND,
+// visibly, in the `summary` string; a complete run must leave the summary
+// BYTE-UNCHANGED so no existing assertion is disturbed.
+{
+  const BUDGET_HIT = { max: 5, produced: 13, gating: 13, graded: 5, passedThroughNonGating: 0, passedThroughBudget: 8, refuterErrors: 0, hit: true };
+  const COV_PARTIAL = {
+    mode: 'code',
+    total: 7,
+    selected: ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'],
+    ran: ['tests', 'api-docs', 'changelog'],
+    failed: ['ac', 'correctness', 'architecture', 'security'],
+    retried: ['ac', 'correctness', 'architecture', 'security'],
+    complete: false,
+    acDimensionRan: false,
+    acTableAbsent: true,
+  };
+  const COV_FULL = {
+    mode: 'code',
+    total: 7,
+    selected: ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'],
+    ran: ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'],
+    failed: [],
+    retried: [],
+    complete: true,
+    acDimensionRan: true,
+    acTableAbsent: false,
+  };
+
+  // runCodeGate collects one coverage entry PER ROUND, exactly like budgetRounds.
+  const h = makeCodeFakes({ reviewScript: [[B('bug')], []] });
+  const inner = h.deps.review;
+  let round = 0;
+  h.deps.review = async () => {
+    const r = await inner();
+    round++;
+    return { ...r, coverage: round === 1 ? COV_PARTIAL : COV_FULL };
+  };
+  const codeGate = await runCodeGate({ maxRework: 2, tier: 'medium' }, h.deps);
+  assert.equal(codeGate.coverageRounds.length, 2, 'runCodeGate records one coverage entry PER ROUND');
+  assert.equal(codeGate.coverageRounds[0].complete, false, 'round 1 lost four dimensions');
+  assert.equal(codeGate.coverageRounds[1].complete, true, 'round 2 ran them all');
+
+  const out = buildOutcome({
+    roadmap: 'rm',
+    phase: 'p',
+    planFindings: [],
+    codeReviews: codeGate.rounds,
+    acRounds: codeGate.acRounds,
+    budgetRounds: codeGate.budgetRounds,
+    coverageRounds: codeGate.coverageRounds,
+    maxRework: 2,
+    tier: 'medium',
+  });
+  assert.equal(out.outcome, 'reviewed', 'coverage does NOT gate — the outcome is unchanged');
+  assert.equal(out.reviewCoverage.complete, false, 'a round-1 gap stays visible even after a clean round 2');
+  assert.deepEqual(
+    out.reviewCoverage.failed,
+    ['ac', 'correctness', 'architecture', 'security'],
+    'a caller can tell 3-of-7 coverage from 7-of-7'
+  );
+  assert.equal(out.reviewCoverage.total, 7, 'and how many dimensions were selected');
+  assert.equal(out.reviewCoverage.acTableAbsent, true, 'an absent AC table is recorded distinctly from a clean one');
+  assert.ok(
+    out.summary.includes('[review coverage: 3/7 dimensions ran; failed: ac,correctness,architecture,security; NO AC TABLE]'),
+    'reduced coverage is VISIBLE in the OUTCOME summary, not just in the machine-readable key'
+  );
+
+  // A complete run: no clause at all, summary byte-unchanged.
+  const clean = buildOutcome({
+    roadmap: 'rm',
+    phase: 'p',
+    planFindings: [],
+    codeReviews: [[]],
+    acRounds: [null],
+    coverageRounds: [COV_FULL],
+    tier: 'medium',
+  });
+  assert.equal(clean.reviewCoverage.complete, true, 'a complete run reports complete coverage');
+  assert.equal(clean.summary, 'phase reviewed clean: no surviving findings', 'and its summary is BYTE-UNCHANGED');
+
+  // An older caller reporting no coverage at all.
+  const legacy = buildOutcome({ roadmap: 'rm', phase: 'p', planFindings: [], codeFindings: [], tier: 'medium' });
+  assert.equal(legacy.reviewCoverage, null, 'no coverage reported -> null, never a fabricated complete object');
+  assert.ok(!legacy.summary.includes('review coverage'), 'and no clause');
+
+  // fetchError never ran a review: it must NOT read as full coverage.
+  const fe = buildOutcome({ roadmap: 'rm', phase: 'p', fetchError: true });
+  assert.equal(fe.reviewCoverage, null, 'a fetch failure reports null coverage, never a complete one');
+
+  // ORDERING is fixed and deterministic: budget clause first, coverage second.
+  const both = buildOutcome({
+    roadmap: 'rm',
+    phase: 'p',
+    planFindings: [],
+    codeReviews: [[]],
+    acRounds: [null],
+    budgetRounds: [BUDGET_HIT],
+    coverageRounds: [COV_PARTIAL],
+    tier: 'medium',
+  });
+  assert.ok(
+    both.summary.indexOf('[review budget hit:') < both.summary.indexOf('[review coverage:'),
+    'the budget clause always precedes the coverage clause'
+  );
+
+  // The task shape carries it too.
+  const tOut = buildTaskOutcome({
+    task: 'slug',
+    planFindings: [],
+    codeReviews: [[]],
+    acRounds: [null],
+    coverageRounds: [COV_PARTIAL],
+    tier: 'medium',
+  });
+  assert.equal(tOut.reviewCoverage.complete, false, 'task OUTCOME carries reviewCoverage');
+  assert.ok(tOut.summary.includes('[review coverage:'), 'task OUTCOME summary carries the clause');
+
+  // The PLAN gate's own coverage is counted independently and still surfaces.
+  const ph = makePlanFakes({ reviewScript: [[]] });
+  const planReviewInner = ph.deps.review;
+  ph.deps.review = async (doc) => ({ ...(await planReviewInner(doc)), coverage: { ...COV_PARTIAL, mode: 'plan', acTableAbsent: false } });
+  const planGate = await runPlanGate({ maxRevise: 0, tier: 'medium' }, ph.deps);
+  assert.equal(planGate.coverageRounds.length, 1, 'runPlanGate records a coverage entry per review round');
+  const withPlan = buildOutcome({
+    roadmap: 'rm',
+    phase: 'p',
+    planFindings: [],
+    codeReviews: [[]],
+    acRounds: [null],
+    planCoverage: planGate.coverageRounds,
+    tier: 'medium',
+  });
+  assert.equal(withPlan.reviewCoverage.planRounds, 1, 'the plan gate is counted separately');
+  assert.ok(withPlan.summary.includes('[review coverage:'), 'a plan-gate coverage gap is visible on the OUTCOME');
+  assert.ok(!withPlan.summary.includes('NO AC TABLE'), 'plan mode never claims an absent AC table');
 }
 
 // (g) parseDispatchArgs validates maxRefutations at PARSE time, before any agent
