@@ -35,7 +35,7 @@ Run the reads yourself and pass the parsed JSON through the workflow `args`. Eve
   - **Never summarize, paraphrase, or describe what you did.** `body` is the document's own text and `tags` is the exact array the binary printed — not a description of the fetch, not words from this prompt. If you cannot read the target, omit `fetched` entirely and let the workflow's fetch agent run; do not pass a placeholder.
   - **`tags` is required, all-or-nothing.** The workflow rejects a `fetched` payload that omits `tags` (or any phase entry that omits `stem`/`body`/`tags`) and runs the fetch agent instead, because the gate writes the tag list back with `--tags`, which replaces the whole list — an absent `tags` defaulted to `[]` would wipe every real tag the item carries. Pass the array exactly as printed, `[]` only when the binary really printed an empty one.
 - **`wontFixedTexts`** — the array of prior wont-fix finding texts from `./target/debug/rdm search "" --type review --project rdm` (or omit it).
-- **`mechanicalModel`** — the id printed by `./target/debug/rdm model resolve mechanical`, verbatim (or omit it).
+- **`mechanicalModel`**, **`findModel`**, **`verifyModel`** — the ids printed by `./target/debug/rdm model resolve mechanical`, `./target/debug/rdm model resolve review-find`, and `./target/debug/rdm model resolve review-verify`, verbatim. **All-or-nothing**: the workflow only skips its own model-resolving bootstrap agent when all three are present; supply all three or omit all three (a partial hoist is discarded and the bootstrap agent still runs).
 
 `fetched` is read from the structured `args` object only — never parsed out of the `$ARGUMENTS` flag string.
 

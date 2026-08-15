@@ -2212,9 +2212,9 @@ classification rule behind them, and the measured delta live in
 | `rdm-wf-estimate` | `phaseList` | `estimate:list` | array |
 | `rdm-wf-plan-review` | `fetched` | `fetch:roadmap` / `fetch:<kind>` | object with a non-empty `body` **and** a `tags` array of strings (roadmap kind additionally: an array `phases` whose every entry carries a non-empty `stem`, a string `body`, and its own `tags` array) |
 | `rdm-wf-plan-review` | `wontFixedTexts` | `fetch:wontfix` | array |
-| `rdm-wf-plan-review` | `mechanicalModel` | `model:mechanical` | non-empty string |
-| `rdm-wf-plan-review` | `findModel` | `model:mechanical` | non-empty string |
-| `rdm-wf-plan-review` | `verifyModel` | `model:mechanical` | non-empty string |
+| `rdm-wf-plan-review` | `mechanicalModel` | `model:mechanical` | non-empty string, **all-or-nothing with `findModel`/`verifyModel`** — see below |
+| `rdm-wf-plan-review` | `findModel` | `model:mechanical` | non-empty string, **all-or-nothing with `mechanicalModel`/`verifyModel`** — see below |
+| `rdm-wf-plan-review` | `verifyModel` | `model:mechanical` | non-empty string, **all-or-nothing with `mechanicalModel`/`findModel`** — see below |
 | `rdm-wf-backlog` | `mechanicalModel` | `model:mechanical` | non-empty string |
 | `rdm-wf-backlog` | `report` | `fetch:report` | object carrying all four signal arrays |
 | `rdm-wf-document` | `mechanicalModel` | `model:mechanical` | non-empty string |
@@ -2269,6 +2269,18 @@ requirement. `scripts/verify-workflow-dispatch.sh` §6a covers both directions: 
 negative cases (absent / empty / blank / non-string tier) fall back to the agent,
 and a positive pair proves a hoisted `large` and a hoisted `medium` produce
 *different* outcomes from one identical concern seed.
+
+### `rdm-wf-plan-review`'s `mechanicalModel` / `findModel` / `verifyModel` are all-or-nothing
+
+The runtime-entry bootstrap in `rdm-wf-plan-review.js` accepts a hoisted model
+trio only when `mechanicalModel`, `findModel`, **and** `verifyModel` are all
+non-empty strings; a partial hoist (e.g. `mechanicalModel` alone) is discarded
+wholesale and the bootstrap `model:mechanical` agent resolves all three from
+scratch — the same rationale as `phaseMeta`/`taskMeta` above: the fetch agent
+it replaces resolves all three ids in one call, so a partial hoist would still
+need a model-resolving agent and saves nothing. The local
+`.claude/skills/rdm-plan-review/SKILL.md` shim hoists all three together (see
+its `mechanicalModel`/`findModel`/`verifyModel` bullet).
 
 ### `rdm-wf-plan-review`'s `fetched` is structured-keys-only
 
