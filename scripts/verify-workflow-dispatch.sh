@@ -1556,6 +1556,35 @@ if grep -q "no agent() call uses it" "$TMP/agent-blocks"; then
 fi
 pass "AC-MODEL: extractor skips prose comments mentioning agent()"
 
+# AC-MODEL MINIMALITY (regularize-mechanical-agents): the bootstrap-fetch
+# whitelist above (`label: .fetch:(phase|task)-meta.`) is meant to exempt
+# EXACTLY the two Stage-0 metadata fetches from the explicit-`model:`
+# requirement — no more. `rdm-wf-dispatch-phase.js`'s own Stage-0 mechanism is
+# unchanged by the `regularize-mechanical-agents` phase (the CLI-lane fix
+# lives one level up, in the `rdm-autopilot` skill, which now hoists a
+# complete `phaseMeta` so the Stage-0 agent never runs at all on that path) —
+# so the whitelist that remains here must still cover exactly these two
+# labels and nothing else. A whitelist that silently widened to cover a third
+# label would let AC-MODEL pass vacuously for whatever new unsized call rode
+# in on the broadened pattern.
+count_whitelisted_labels() {
+    pattern="$1"
+    grep -oE "label: '[a-zA-Z0-9:_-]+'" "$TMP/agent-blocks" | sort -u | grep -cE "$pattern"
+}
+WL_COUNT=$(count_whitelisted_labels "label: .fetch:(phase|task)-meta.")
+[ "$WL_COUNT" -eq 2 ] ||
+    fail "AC-MODEL minimality: the bootstrap-fetch whitelist must cover exactly 2 distinct labels (fetch:phase-meta, fetch:task-meta), matched $WL_COUNT"
+pass "AC-MODEL minimality: bootstrap-fetch whitelist covers exactly fetch:phase-meta/fetch:task-meta ($WL_COUNT labels)"
+
+# Self-test: broaden the whitelist pattern as if a bogus third label had been
+# added to it, and confirm the minimality check turns red — the broadened
+# pattern now over-matches a real, non-bootstrap label already present in the
+# file (`stamp:in-progress`), proving the count assertion above is load-bearing.
+WL_COUNT_MUTANT=$(count_whitelisted_labels "label: .(fetch:(phase|task)-meta|stamp:in-progress).")
+[ "$WL_COUNT_MUTANT" -eq 2 ] &&
+    fail "AC-MODEL minimality self-test: broadening the whitelist pattern with a bogus third label did not change the matched count — the self-test is vacuous"
+pass "AC-MODEL minimality self-test: a broadened (bogus-third-label) whitelist pattern is correctly detected (would fail the real check)"
+
 # AC-MECHANICAL-TIER: the two mechanical Bash agents dispatch-phase runs after
 # Stage 0 (stamp:in-progress, diff:signals) must resolve to `models.mechanical`
 # — the small/mechanical tier Stage 0 resolves via `rdm model resolve

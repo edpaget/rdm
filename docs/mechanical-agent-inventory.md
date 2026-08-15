@@ -128,7 +128,7 @@ can supply the hoist today.
 
 | label | file | route | dist copy | caller | class | reasoning | phase 4? |
 |---|---|---|---|---|---|---|---|
-| `fetch:phase-meta` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | distributed shim (`rdm-dispatch-phase`, `rdm-do --auto`) — CLI only | **hoistable** | Read-only Stage-0 read, fires before any judgment agent, and the caller already ran `rdm phase show`. Accepted only when the payload carries a non-empty body, all five resolved model ids, **and** the `model` difficulty tier (`hoistedMetaComplete`) — the tier is the driver's sole source for gate strictness and its `'medium'` default would silently loosen a `large` phase's gate. | no (direct/shim path) |
+| `fetch:phase-meta` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | distributed shim (`rdm-dispatch-phase`, `rdm-do --auto`, `rdm-autopilot` CLI) — CLI only | **hoistable** | Read-only Stage-0 read, fires before any judgment agent, and the caller already ran `rdm phase show`. Accepted only when the payload carries a non-empty body, all five resolved model ids, **and** the `model` difficulty tier (`hoistedMetaComplete`) — the tier is the driver's sole source for gate strictness and its `'medium'` default would silently loosen a `large` phase's gate. | no (direct/shim path) |
 | `fetch:task-meta` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI only | **hoistable** | Task-mode twin of the above, same body+models guard. No tier requirement: `TASK_META` carries none and the driver hard-codes a task to `medium`, so there is nothing to lose. | no (direct/shim path) |
 | `stamp:in-progress` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI **and** MCP | **redundant** | Interactive `rdm-do`, `rdm-do --auto` and the `rdm-dispatch-phase` shim all write `--status in-progress` before invoking the workflow. Suppressed by an explicit `alreadyInProgress` flag set **only** when that write exited 0, and **never** for a `--plan-only` run. | **yes** (autopilot-nested + direct-`Workflow` paths) |
 | `diff:signals` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | n/a — absorbed, no caller needed | **absorbable** | `runCodeGate` calls `d.implement(...)` immediately before every `d.review()` with nothing in between, so the implementer — already in the worktree it just wrote to — reports the same two `git diff` commands. One-shot handoff (`pendingDiff` read-and-cleared) preserves per-round freshness. Works on **every** path, including autopilot-nested. | no |
@@ -287,8 +287,8 @@ the `rdm-wf-estimate` class **mixes mechanical (`estimate:list`/`write`/`tier`) 
 
 | workflow | label | observed | eliminated | remaining | depends on |
 |---|---|---|---|---|---|
-| autopilot | `fetch:phase-meta` (nested dispatch) | 39 | 0 | 39 | irreducible — autopilot cannot shell out |
-| autopilot | `stamp:in-progress` (nested) | 20 | 0 | 20 | irreducible — same |
+| autopilot | `fetch:phase-meta` (nested dispatch, CLI lane) | 39 | 0 | 39 | eliminated via direct Bash — `rdm-autopilot` skill (CLI), see note below |
+| autopilot | `stamp:in-progress` (nested) | 20 | 0 | 20 | irreducible for elimination — this is a *write*, not a read, so autopilot still cannot produce it without a live call; already on the mechanical tier, so nothing to size |
 | autopilot | `diff:signals` (nested) | 27 | **27** | 0 | absorbed into `implement:*` — works on every path |
 | autopilot | `model:mechanical` | 9 | **9** | 0 | `rdm-autopilot` CLI shim |
 | autopilot | `estimate:list` | 14 | **14** | 0 | `rdm-autopilot` shim (CLI + MCP) |
@@ -310,6 +310,26 @@ the `rdm-wf-estimate` class **mixes mechanical (`estimate:list`/`write`/`tier`) 
 
 **115 of 304 mechanical agents (37.8%) would not have been spawned** had this phase's code been
 live across the same corpus.
+
+**Correction (`regularize-mechanical-agents`):** the `fetch:phase-meta` (nested dispatch) row
+above previously read "irreducible — autopilot cannot shell out". That framing was already
+false by the time it was written and is corrected here: "cannot be hoisted" (true — a headless
+Workflow script cannot shell out to build the payload itself) does not imply "cannot be sized"
+(false — the caller that *invokes* the nested dispatch can build and forward it). Architecture
+context: autopilot is no longer a headless `.claude/workflows/autopilot.js` Workflow that reaches
+`rdm-wf-dispatch-phase` through a nested, JS-mediated `agent()` call (that file was retired by the
+`prose-autopilot-orchestration` roadmap); it is the prose `.claude/skills/rdm-autopilot/SKILL.md`
+skill, which is already a live agent with Bash access and invokes `rdm-wf-dispatch-phase` directly
+via the `Workflow` tool. On the CLI surface it now runs the same `phase show` + five
+`model resolve` calls `buildFetchPrompt` would have delegated to a Stage-0 agent, and forwards the
+result as `phaseMeta` — eliminating that Opus-tier call per dispatched phase entirely, the same way
+`fetch:next`/`estimate:list`/`model:mechanical` above already do. The MCP surface is unaffected by
+design (`skill-autopilot-mcp.md` has no Bash or MCP model-resolve tool to run the procedure with),
+so this elimination is CLI-lane only; see `skill-autopilot-mcp.md`'s explanatory note. The
+`observed`/`eliminated`/`remaining` numbers on that row are unchanged: they are artifacts of one
+specific pre-migration instrumented run (`wf_133bc5a5-ce3`, predating both the prose migration and
+this fix) and are not re-measured here absent a fresh post-fix run — this is a mechanism and
+classification correction only, not a new measurement.
 
 ### Rolled up to the baseline's `byAgentClass` keys
 

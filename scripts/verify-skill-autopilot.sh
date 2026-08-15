@@ -155,6 +155,26 @@ pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 [ -x "$RDM_BIN" ] || fail "$RDM_BIN not found or not executable — run 'cargo build' first."
 [ -f "$SKILL" ] || fail "skill file not found: $SKILL"
 
+# Resolve a node command: prefer PATH, fall back to the mise-pinned toolchain.
+# Fail hard if node is genuinely unavailable (matches the sibling harnesses'
+# tool-guard convention — a silent skip would turn this gate into a no-op).
+NODE_VIA_MISE=0
+if command -v node >/dev/null 2>&1; then
+    NODE_VIA_MISE=0
+elif command -v mise >/dev/null 2>&1 && mise exec node -- node --version >/dev/null 2>&1; then
+    NODE_VIA_MISE=1
+else
+    fail "node not found on PATH or via 'mise exec node --'. node is pinned in .mise.toml; run 'mise install'."
+fi
+
+run_node() {
+    if [ "$NODE_VIA_MISE" -eq 1 ]; then
+        mise exec node -- node "$@"
+    else
+        node "$@"
+    fi
+}
+
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 
@@ -558,6 +578,197 @@ for f in $SHIPPED_TEMPLATES; do
 done
 pass "agentType-on-dispatch-phase-line detector fires when planted (self-test, both files)"
 
+# --- 1e. Phase-meta fetch hoist (regularize-mechanical-agents) ----------------
+# `rdm-wf-dispatch-phase.js`'s Stage-0 `fetch:phase-meta` agent is the one
+# call in the whole lane with no explicit `model:` key (see
+# docs/mechanical-agent-inventory.md). The CLI-flavored skills now fetch that
+# metadata themselves via Bash, mirroring dispatch-phase's own
+# `buildFetchPrompt`, and forward it as `phaseMeta` — skipping that agent
+# entirely on this path. The MCP template has no Bash or MCP model-resolve
+# tool, so it deliberately does NOT do this (matching the established
+# `skill-dispatch-phase-mcp.md`/`skill-do-mcp.md` precedent) and instead
+# documents why. This section pins both halves.
+say "1e. Phase-meta fetch hoist: local SKILL.md and shipped CLI/MCP templates"
+
+# Local dogfood SKILL.md: the fetch sub-step must mirror buildFetchPrompt's
+# five model-resolve calls plus the phase-show read, all scoped to the one
+# line that introduces the sub-step (not a whole-file grep, so a fragment
+# appearing elsewhere in the file for an unrelated reason can't satisfy this
+# vacuously) — and the dispatch-phase invocation line must carry the new
+# `phaseMeta` key.
+assert_local_phasemeta_fetch() {
+    file="$1"
+    grep -F 'fetch phase-meta **yourself**' "$file" >"$TMP/local-fetch-line" 2>/dev/null || return 1
+    [ -s "$TMP/local-fetch-line" ] || return 1
+    grep -qF 'phase show --roadmap' "$TMP/local-fetch-line" || return 1
+
+    grep -F 'resolve the five per-step model ids per' "$file" >"$TMP/local-modelresolve-line" 2>/dev/null || return 1
+    [ -s "$TMP/local-modelresolve-line" ] || return 1
+    for frag in 'model resolve plan' 'model resolve implement' \
+        'model resolve review-find' 'model resolve review-verify' 'model resolve mechanical'; do
+        grep -qF "$frag" "$TMP/local-modelresolve-line" || return 1
+    done
+
+    grep -F 'dispatch-phase` Workflow**' "$file" >"$TMP/local-dispatch-line" 2>/dev/null || return 1
+    [ -s "$TMP/local-dispatch-line" ] || return 1
+    grep -qF 'phaseMeta' "$TMP/local-dispatch-line" || return 1
+    return 0
+}
+assert_local_phasemeta_fetch "$SKILL" ||
+    fail "SKILL.md's phase-meta fetch sub-step must mirror buildFetchPrompt's five model-resolve calls and phase-show read, and the dispatch-phase invocation line must carry phaseMeta"
+pass "local SKILL.md: phase-meta fetch sub-step mirrors buildFetchPrompt, and phaseMeta is on the dispatch-phase invocation line"
+
+# Self-test: strip one command fragment from a scratch copy and confirm detection.
+sed 's/model resolve review-verify/model resolve review-vrfy/' "$SKILL" >"$TMP/local-phasemeta-mutant.md"
+if assert_local_phasemeta_fetch "$TMP/local-phasemeta-mutant.md"; then
+    fail "local phase-meta fetch detector missed a mangled command fragment — the check is vacuous"
+fi
+pass "local phase-meta fetch detector fires when a command fragment is mangled"
+
+# Self-test: drop phaseMeta from the dispatch line and confirm detection.
+sed '/dispatch-phase` Workflow\*\*/ s/phaseMeta//g' "$SKILL" >"$TMP/local-phasemeta-key-mutant.md"
+if assert_local_phasemeta_fetch "$TMP/local-phasemeta-key-mutant.md"; then
+    fail "local phase-meta fetch detector missed phaseMeta dropped from the dispatch line — the check is vacuous"
+fi
+pass "local phase-meta fetch detector fires when phaseMeta is dropped from the dispatch line"
+
+# Shipped CLI template: same shape as the local skill.
+CLI_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md"
+[ -f "$CLI_TEMPLATE" ] || fail "shipped CLI template not found: $CLI_TEMPLATE"
+assert_local_phasemeta_fetch "$CLI_TEMPLATE" ||
+    fail "$CLI_TEMPLATE: the phase-meta fetch sub-step must mirror buildFetchPrompt, and phaseMeta must be on the dispatch-phase invocation line"
+pass "shipped skill-autopilot-cli.md: phase-meta fetch sub-step mirrors buildFetchPrompt, and phaseMeta is on the dispatch-phase invocation line"
+
+sed 's/model resolve review-verify/model resolve review-vrfy/' "$CLI_TEMPLATE" >"$TMP/cli-phasemeta-mutant.md"
+if assert_local_phasemeta_fetch "$TMP/cli-phasemeta-mutant.md"; then
+    fail "shipped CLI template phase-meta fetch detector missed a mangled command fragment — the check is vacuous"
+fi
+pass "shipped CLI template phase-meta fetch detector fires when a command fragment is mangled"
+
+# Shipped MCP template: the OPPOSITE expectation — no phaseMeta key on the
+# dispatch line, plus the deliberate-non-hoist explanatory note.
+MCP_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/skill-autopilot-mcp.md"
+[ -f "$MCP_TEMPLATE" ] || fail "shipped MCP template not found: $MCP_TEMPLATE"
+
+assert_mcp_no_phasemeta() {
+    file="$1"
+    grep -F 'dispatch-phase` Workflow**' "$file" >"$TMP/mcp-dispatch-line" 2>/dev/null || return 1
+    [ -s "$TMP/mcp-dispatch-line" ] || return 1
+    grep -qF 'phaseMeta' "$TMP/mcp-dispatch-line" && return 1
+    return 0
+}
+assert_mcp_no_phasemeta "$MCP_TEMPLATE" ||
+    fail "$MCP_TEMPLATE: the dispatch-phase invocation line must NOT carry phaseMeta — MCP has no Bash or model-resolve tool to fetch it with"
+pass "shipped skill-autopilot-mcp.md: dispatch-phase invocation line carries no phaseMeta key"
+
+# Self-test: inject a bogus phaseMeta into a scratch copy's dispatch line and confirm detection.
+sed '/dispatch-phase` Workflow\*\*/ s/rdmBin/rdmBin, phaseMeta/' "$MCP_TEMPLATE" >"$TMP/mcp-phasemeta-mutant.md"
+if assert_mcp_no_phasemeta "$TMP/mcp-phasemeta-mutant.md"; then
+    fail "MCP no-phaseMeta detector missed an injected phaseMeta key — the check is vacuous"
+fi
+pass "MCP no-phaseMeta detector fires when phaseMeta is injected onto the dispatch line"
+
+grep -qF 'deliberately not done here' "$MCP_TEMPLATE" ||
+    fail "$MCP_TEMPLATE: missing the deliberate-non-hoist explanatory note (modeled on skill-dispatch-phase-mcp.md / skill-do-mcp.md)"
+grep -qF 'no MCP model-resolve tool' "$MCP_TEMPLATE" ||
+    fail "$MCP_TEMPLATE: the deliberate-non-hoist note must state the no-MCP-model-resolve-tool reason"
+pass "shipped skill-autopilot-mcp.md carries the deliberate-non-hoist explanatory note"
+
+# Self-test: strip the note from a scratch copy and confirm detection.
+sed '/deliberately not done here/d' "$MCP_TEMPLATE" >"$TMP/mcp-note-mutant.md"
+if grep -qF 'deliberately not done here' "$TMP/mcp-note-mutant.md"; then
+    fail "the deliberate-non-hoist note self-test mutation did not remove the note — self-test is broken"
+fi
+pass "deliberate-non-hoist-note detector correctly rejects a scratch copy missing the note (self-test)"
+
+# --- 1f. hoistedMetaComplete cross-file contract (Node) ------------------------
+# The CLI-flavored skills assemble a phaseMeta object by hand, in prose. This
+# section proves the exact shape they assemble is one
+# `.claude/workflows/lib/dispatch-phase.mjs`'s exported `hoistedMetaComplete`
+# actually accepts — the guard the Stage-0 hoist lives or dies by — with two
+# planted-mutation self-tests proving the guard is not vacuous.
+say "1f. hoistedMetaComplete cross-file contract: the CLI phaseMeta shape is accepted"
+
+DP_LIB="$REPO_ROOT/.claude/workflows/lib/dispatch-phase.mjs"
+[ -f "$DP_LIB" ] || fail "missing $DP_LIB"
+
+cat >"$TMP/hoisted-meta-complete.mjs" <<'NODE_HMC'
+import { pathToFileURL } from 'node:url'
+import assert from 'node:assert/strict'
+
+const libPath = process.argv[2]
+const mod = await import(pathToFileURL(libPath).href)
+const { hoistedMetaComplete } = mod
+
+// Exactly the object shape the CLI SKILL.md fetch sub-step assembles: all six
+// top-level PHASE_META_SCHEMA keys, all five model ids present and non-empty.
+const payload = {
+  roadmap: 'rm',
+  phase: 'phase-1-x',
+  stem: 'phase-1-x',
+  model: 'medium',
+  body: 'PHASE BODY TEXT',
+  models: {
+    plan: 'm-plan',
+    implement: 'm-impl',
+    review_find: 'm-find',
+    review_verify: 'm-verify',
+    mechanical: 'm-mech',
+  },
+}
+
+assert.equal(hoistedMetaComplete(payload, false), true, 'a complete CLI-shaped phaseMeta payload must be accepted')
+
+// Planted-mutation self-test 1: drop the difficulty tier.
+const noTier = { ...payload, model: '' }
+assert.equal(hoistedMetaComplete(noTier, false), false, 'a payload with an empty difficulty tier must be rejected')
+
+// Planted-mutation self-test 2: drop one of the five models.* keys.
+const { mechanical, ...restModels } = payload.models
+const noMechanical = { ...payload, models: restModels }
+assert.equal(hoistedMetaComplete(noMechanical, false), false, 'a payload missing one of the five model ids must be rejected')
+
+console.log('hoistedMetaComplete cross-file contract OK: accepted complete, rejected both planted mutations')
+NODE_HMC
+
+if run_node "$TMP/hoisted-meta-complete.mjs" "$DP_LIB"; then
+    pass "hoistedMetaComplete accepts the CLI-shaped payload and rejects both planted-mutation variants"
+else
+    fail "hoistedMetaComplete cross-file contract check failed"
+fi
+
+# --- 1g. docs/mechanical-agent-inventory.md: the stale 'irreducible' framing --
+# is corrected -------------------------------------------------------------
+say "1g. docs/mechanical-agent-inventory.md: fetch:phase-meta (nested dispatch) row no longer claims irreducibility"
+
+INV="$REPO_ROOT/docs/mechanical-agent-inventory.md"
+[ -f "$INV" ] || fail "missing $INV"
+
+assert_inventory_row_corrected() {
+    file="$1"
+    grep -F 'fetch:phase-meta' "$file" | grep -F '(nested dispatch' >"$TMP/inv-row" 2>/dev/null || return 1
+    [ -s "$TMP/inv-row" ] || return 1
+    grep -qi 'autopilot cannot shell out' "$TMP/inv-row" && return 1
+    return 0
+}
+assert_inventory_row_corrected "$INV" ||
+    fail "docs/mechanical-agent-inventory.md's fetch:phase-meta (nested dispatch) row must no longer read 'irreducible — autopilot cannot shell out'"
+grep -qF 'eliminated via direct Bash' "$INV" ||
+    fail "docs/mechanical-agent-inventory.md must reclassify fetch:phase-meta (nested dispatch) as eliminated via direct Bash"
+pass "the fetch:phase-meta (nested dispatch) row no longer claims irreducibility, and states the direct-Bash elimination"
+
+# Self-test: revert the row text and confirm the detector turns red.
+# shellcheck disable=SC2016
+sed 's/eliminated via direct Bash — `rdm-autopilot` skill (CLI), see note below/irreducible — autopilot cannot shell out/' \
+    "$INV" >"$TMP/inv-mutant.md"
+if cmp -s "$INV" "$TMP/inv-mutant.md"; then
+    fail "inventory-row self-test mutation was a no-op — the mutation did not apply"
+fi
+if assert_inventory_row_corrected "$TMP/inv-mutant.md"; then
+    fail "inventory-row detector missed a reverted 'irreducible — autopilot cannot shell out' row — the check is vacuous"
+fi
+pass "inventory-row detector fires when the stale 'irreducible — autopilot cannot shell out' framing is reinstated"
+
 # --- 2. DYNAMIC OUTCOME CONTRACT ----------------------------------------------
 say "2. Dynamic advance/park write+read-back contract against the real binary"
 
@@ -609,6 +820,82 @@ printf '%s' "$OUT_B" | grep -qF '"blocked_reason": "[code] rework budget exhaust
 pass "park's write+read-back contract holds: --status blocked with a [code]-tagged reason lands and reads back"
 
 rdm_plan commit -m "chore(plan): land advance/park OUTCOME contract regression" >/dev/null
+
+say "2d. Real CLI phase-meta fetch procedure (phase show + five model resolve calls) against the real binary"
+
+# Extends the hoistedMetaComplete cross-file contract (section 1f) from a
+# hand-built fake payload to the REAL sequence the CLI SKILL.md fetch
+# sub-step documents: `rdm phase show ... --format json`, then the five
+# `rdm model resolve <step> [--tier T]` calls per buildFetchPrompt's exact
+# rule, assembled into a phaseMeta object. `--model large` on this phase
+# exercises the non-empty-T branch (plan/implement DO get `--tier`).
+rdm_plan phase create c --title "Phase C" --number 3 \
+    --body "Phase C, seeded for the phase-meta fetch procedure regression." \
+    --model large --no-edit --roadmap rm --project verify >/dev/null
+rdm_plan commit -m "chore(plan): seed rm/phase-3-c for the phase-meta fetch procedure regression" >/dev/null
+
+cat >"$TMP/real-fetch-procedure.mjs" <<'NODE_FETCH'
+import { execFileSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
+import assert from 'node:assert/strict'
+
+const [, , libPath, rdmBin, planRoot, roadmap, phaseArg, project] = process.argv
+const mod = await import(pathToFileURL(libPath).href)
+const { hoistedMetaComplete } = mod
+
+function run(args) {
+  return execFileSync(rdmBin, args, { env: { ...process.env, RDM_ROOT: planRoot }, encoding: 'utf8' }).trim()
+}
+
+// Step 1: `rdm phase show --roadmap <roadmap> <phase> --project <project>
+// --format json`, mirroring buildFetchPrompt / the CLI SKILL.md sub-step.
+const showOut = run(['phase', 'show', '--roadmap', roadmap, phaseArg, '--project', project, '--format', 'json'])
+const showJson = JSON.parse(showOut)
+const stem = showJson.stem
+const T = showJson.model || ''
+const body = showJson.body || ''
+assert.ok(stem, 'real phase show must return a stem')
+assert.ok(body, 'real phase show must return a non-empty body')
+assert.equal(T, 'large', 'the seeded phase must report the large difficulty tier (exercises the --tier branch)')
+
+// Step 2: resolve the five per-step model ids per buildFetchPrompt's exact
+// tier rule — plan/implement get --tier T only when T is non-empty; the
+// other three never do, whatever T is.
+function resolve(step, withTier) {
+  const args = ['model', 'resolve', step]
+  if (withTier && T) args.push('--tier', T)
+  return run(args)
+}
+const models = {
+  plan: resolve('plan', true),
+  implement: resolve('implement', true),
+  review_find: resolve('review-find', false),
+  review_verify: resolve('review-verify', false),
+  mechanical: resolve('mechanical', false),
+}
+for (const [k, v] of Object.entries(models)) {
+  assert.ok(v, `model resolve ${k} must print a non-empty id`)
+}
+
+// Step 3: assemble exactly the phaseMeta shape the CLI SKILL.md procedure
+// documents, and feed it through the same hoistedMetaComplete guard the
+// Stage-0 fetch agent it replaces is judged by — end to end against real
+// binary output, not a hand-built fake.
+const phaseMeta = { roadmap, phase: phaseArg, stem, model: T, body, models }
+assert.equal(
+  hoistedMetaComplete(phaseMeta, false),
+  true,
+  'the real CLI fetch procedure output must be accepted by hoistedMetaComplete'
+)
+
+console.log('real CLI fetch procedure OK: phase show + five model resolve calls assembled a phaseMeta accepted by hoistedMetaComplete')
+NODE_FETCH
+
+if run_node "$TMP/real-fetch-procedure.mjs" "$DP_LIB" "$RDM_BIN" "$PLAN" rm phase-3-c verify; then
+    pass "the real CLI phase-meta fetch procedure is accepted end-to-end by hoistedMetaComplete"
+else
+    fail "the real CLI phase-meta fetch procedure did not produce output hoistedMetaComplete accepts"
+fi
 
 # --- 3. SIBLING GATE -----------------------------------------------------------
 say "3. Sibling gate: the two Workflows this skill nests stay green"
