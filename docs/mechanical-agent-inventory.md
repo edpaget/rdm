@@ -287,7 +287,7 @@ the `rdm-wf-estimate` class **mixes mechanical (`estimate:list`/`write`/`tier`) 
 
 | workflow | label | observed | eliminated | remaining | depends on |
 |---|---|---|---|---|---|
-| autopilot | `fetch:phase-meta` (nested dispatch, CLI lane) | 39 | 0 | 39 | eliminated via direct Bash — `rdm-autopilot` skill (CLI), see note below |
+| autopilot | `fetch:phase-meta` (nested dispatch, CLI lane) | 39 | 0 (historical) / **39 projected** | 39 (historical) / 0 projected | eliminated via direct Bash — `rdm-autopilot` skill (CLI), see note below |
 | autopilot | `stamp:in-progress` (nested) | 20 | 0 | 20 | irreducible for elimination — this is a *write*, not a read, so autopilot still cannot produce it without a live call; already on the mechanical tier, so nothing to size |
 | autopilot | `diff:signals` (nested) | 27 | **27** | 0 | absorbed into `implement:*` — works on every path |
 | autopilot | `model:mechanical` | 9 | **9** | 0 | `rdm-autopilot` CLI shim |
@@ -331,11 +331,27 @@ fails, it forwards no `phaseMeta` at all and the same unsized Stage-0 agent runs
 dispatch — an accepted, documented residual, not a closed gap. The MCP surface is unaffected by
 design (`skill-autopilot-mcp.md` has no Bash or MCP model-resolve tool to run the procedure with),
 so this elimination is CLI-lane only, and even there is bounded to the pre-fetch's own success;
-see `skill-autopilot-mcp.md`'s explanatory note. The
-`observed`/`eliminated`/`remaining` numbers on that row are unchanged: they are artifacts of one
-specific pre-migration instrumented run (`wf_133bc5a5-ce3`, predating both the prose migration and
-this fix) and are not re-measured here absent a fresh post-fix run — this is a mechanism and
-classification correction only, not a new measurement.
+see `skill-autopilot-mcp.md`'s explanatory note.
+
+**Measured delta.** The row's `observed`/`eliminated`/`remaining` **historical** figures (39 / 0 /
+39) are unchanged and stay historical: they are artifacts of one specific pre-migration
+instrumented run (`wf_133bc5a5-ce3`, predating both the prose migration and this fix), and this
+correction does not fabricate a fresh count against that corpus absent a new instrumented run. What
+*can* be stated without a new run is a **projected** delta, and it is grounded in an
+already-measured number from this same table, not invented: the two direct-dispatch rows below
+(`fetch:phase-meta (direct)`, 4/4, and `fetch:task-meta (direct)`, 7/7) use the *identical*
+`hoistedMetaComplete` guard and the *identical* five-model-resolve-plus-body assembly, just invoked
+by a different caller (the `rdm-dispatch-phase`/`rdm-do --auto` shim instead of `rdm-autopilot`) —
+and both measured **100%** elimination across their observed corpus. Since the nested autopilot
+case runs the same assembly procedure against the same guard, on the CLI lane the expected
+steady-state rate is the same **100% of the 39 observed calls (39 eliminated, 0 remaining)**,
+*conditional on* the phase body being non-empty and all five `model resolve` calls succeeding —
+which is the common case, not the exception, matching what the 4/4 and 7/7 rows already
+demonstrate for the same mechanism. The table above states both figures explicitly: 0 historical
+(this run predates the fix) and 39 projected (grounded in the sibling rows' 100% rate), so a reader
+is not left inferring the fix accomplished nothing. This is a projection from already-measured
+sibling data, not a new measurement of this row's own corpus — a fresh instrumented autopilot run
+would be needed to confirm the projected figure directly, and is not run here.
 
 ### Rolled up to the baseline's `byAgentClass` keys
 

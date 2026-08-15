@@ -681,6 +681,53 @@ if grep -qF 'deliberately not done here' "$TMP/mcp-note-mutant.md"; then
 fi
 pass "deliberate-non-hoist-note detector correctly rejects a scratch copy missing the note (self-test)"
 
+# --- 1e-bis. Byte-identical-copy drift gate (local SKILL.md vs. shipped ------
+#     skill-autopilot-cli.md) -------------------------------------------------
+# There is no shared `lib/*.mjs` module for these two prose files to stamp
+# from (see the file-header note under "2. BLOCK DRIFT" — that MOOT entry is
+# about the retired `lib/autopilot.mjs`, not this). Section 1e above proves
+# each copy independently mirrors `buildFetchPrompt`, but two independent
+# greps can each pass while the copies still say materially different
+# things. This section is the actual drift gate for the new fetch procedure:
+# it extracts the two bullets this phase introduced from both files, replaces
+# the only known-legitimate difference — `<rdmBin>`/`rdm` and
+# `<proj-flag>`/`{proj_flag}` placeholder syntax — with shared tokens, and
+# then requires the normalized text to be byte-identical.
+say "1e-bis. Byte-identical-copy drift gate: SKILL.md vs. skill-autopilot-cli.md's fetch procedure"
+
+normalize_phasemeta_block() {
+    file="$1"
+    {
+        grep -F 'fetch phase-meta **yourself**' "$file"
+        grep -F 'resolve the five per-step model ids per' "$file"
+    } | sed \
+        -e 's/<rdmBin> phase show/RDMBIN phase show/g' \
+        -e 's/<rdmBin> model resolve/RDMBIN model resolve/g' \
+        -e 's/S<proj-flag>/S PROJFLAG/g' \
+        -e 's/rdm phase show/RDMBIN phase show/g' \
+        -e 's/rdm model resolve/RDMBIN model resolve/g' \
+        -e 's/S {proj_flag}/S PROJFLAG/g'
+}
+
+normalize_phasemeta_block "$SKILL" >"$TMP/local-phasemeta-block.norm"
+normalize_phasemeta_block "$CLI_TEMPLATE" >"$TMP/cli-phasemeta-block.norm"
+
+if ! diff -u "$TMP/local-phasemeta-block.norm" "$TMP/cli-phasemeta-block.norm" >"$TMP/phasemeta-block.diff"; then
+    cat "$TMP/phasemeta-block.diff"
+    fail "local SKILL.md and shipped skill-autopilot-cli.md's phase-meta fetch procedure diverges beyond the known <rdmBin>/rdm and <proj-flag>/{proj_flag} placeholder syntax"
+fi
+pass "local SKILL.md and shipped skill-autopilot-cli.md: phase-meta fetch procedure is byte-identical modulo placeholder syntax"
+
+# Self-test: mangle wording in a scratch copy of one side (a change that is
+# NOT one of the two known placeholder substitutions) and confirm the drift
+# gate fires rather than passing vacuously.
+sed '/resolve the five per-step model ids per/ s/exact rule/exact ruleset/' "$CLI_TEMPLATE" >"$TMP/cli-phasemeta-drift-mutant.md"
+normalize_phasemeta_block "$TMP/cli-phasemeta-drift-mutant.md" >"$TMP/cli-phasemeta-drift-mutant.norm"
+if diff -q "$TMP/local-phasemeta-block.norm" "$TMP/cli-phasemeta-drift-mutant.norm" >/dev/null; then
+    fail "byte-identical-copy drift gate missed a mangled wording difference — the check is vacuous"
+fi
+pass "byte-identical-copy drift gate fires when one copy's wording drifts beyond placeholder syntax (self-test)"
+
 # --- 1f. hoistedMetaComplete cross-file contract (Node) ------------------------
 # The CLI-flavored skills assemble a phaseMeta object by hand, in prose. This
 # section proves the exact shape they assemble is one
