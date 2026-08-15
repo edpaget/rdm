@@ -788,13 +788,11 @@ measured one.
    `synthesize:draft`, `analyze:*`, `estimate:rate:*` and plan-review's `act:*`.
    `rdm-mechanical` is a transcribe-only agent with a two-tool allowlist; giving
    it work that requires reasoning would break it. §2c(ii) gates this.
-3. **`effort:` anywhere** — even though Q2a is positive. The phase body forbids it,
-   and lifting a gated invariant on the back of a result the plan did not
-   anticipate is a scope decision, carried by
-   `finish-agent-type-effort-spike-and-thread-mechanical-sites`. Its real
-   remaining risk is fidelity: the run showed the request *ran* at low effort, not
-   that low effort preserves mechanical transcription accuracy — and a degraded
-   schema return is a silent corruption, unlike a raise.
+3. **`effort:` anywhere** — even though Q2a is positive. The fidelity question
+   this bullet named as the remaining risk has since been **run**, and the answer
+   is a recorded negative: fidelity passes, but there is no output-token drop and
+   the option is unobservable on the mechanical tier's model. See
+   [the 2026-08-15 follow-up](#regularize-followup) § 3. §2b(i) stays.
 
 **A methodological note, since this phase's whole discipline is about evidence.**
 The Q1a error was not a subtle one: an experiment was run in an environment that
@@ -820,10 +818,165 @@ and it is 42 % of a mechanical agent's floor. What remains is carried by two tas
   `{ schema }` structured-return path survive the restricted `tools:` list; is
   `agentType` honored through `parallel()`) is untested for the same reason: in
   the invalid run, nothing ever ran under the definition.
+  **Both halves have since been settled — see [the follow-up](#regularize-followup).**
+  Scope item 3 is answered in full: the structured-return question by 138 schema'd
+  `rdm-mechanical` returns across 28 runs, and the `parallel()` question by two
+  `rdm-wf-document` dispatches whose twelve fan-out agents all resolved. The
+  `effort` half ran its fidelity study and came back a **negative** — threaded
+  nowhere, §2b(i) unchanged.
 - `ship-mechanical-agent-type-downstream` — the `.claude/agents/` emission surface
   and its reference-resolution gate, which unblocks the two distributed
   workflows and lifts §2b(ii). Its "hard failure on first dispatch" premise is now
   observed rather than inferred.
+
+<a id="regularize-followup"></a>
+
+#### Follow-up: `regularize-mechanical-agents` (2026-08-14 / 2026-08-15)
+
+Three things moved. Machine-readable twins live in `docs/token-baseline.json`
+§ `mechanicalContextTrim` (`laneDeltaBroadened`, `parallelDispatchConfirmed`,
+`effortFidelity`) — those are canonical for the figures; this section is the
+narrative.
+
+**1. The lane measurement is broadened, and it needed no fresh dispatch.** The
+n=1 `laneDelta` above is now joined by a read of the corpus that accumulated on
+its own between 2026-07-28 and 2026-08-11 — 28 runs, 138 `rdm-mechanical` agent
+records:
+
+| Class | Post-change median | n | Pinned pre-change | Delta |
+|---|---|---|---|---|
+| `fetch` | 25690.5 | 16 | 30098 (n=112) | −4407.5 (−14.6 %) |
+| `gate` | 25664 | 25 | 29901 (n=9) | −4237 (−14.2 %) |
+| `model` | 31782.5 | 22 | 36877 (n=16) | −5094.5 (−13.8 %) |
+
+`--since` is `2026-07-28T17:37:00Z`, not a bare date: six runs earlier that same
+day carry zero mechanical agents, so a day-granular boundary would have averaged
+pre-change records in. `preChangeMedianTokens` is untouched — it is the pinned
+comparator. These three are the *only* classes with both a clean pre-change row
+and a threaded site; `stamp`/`advance`/`park`/`diff` have rows but occur only in
+the unthreaded distributed workflows.
+
+The trim is real and reproduces at n=16–25, but at **13.8–14.6 %**, below the
+controlled pair's 23 %. That is expected rather than contradictory: the
+controlled pair holds the prompt fixed, so it is an upper bound; these span real
+prompts of differing length. Quote 8907 / 23 % for a *per-agent* claim and the
+lane figures for a *lane* claim.
+
+`estimate` stays out of any class-level claim, and the corpus now shows why
+quantitatively instead of by assertion: in the same runs its mechanical
+sub-labels sit at a 25592.5 median (n=64) while the judgment `estimate:rate:*`
+sits at 41096 (n=32). Two incidental findings from those runs: `estimate:list`
+and estimate's own `model:mechanical` bootstrap have **never** dispatched — every
+estimate run took the caller-hoist path — so two threaded sites remain entirely
+unmeasured. `gather`/`write` are reportable in ONE direction only. There is no
+pre-change row for either — the corpus contains no pre-change standalone
+document-workflow run — so no delta or percent may ever be quoted for them. The
+two `rdm-wf-document` dispatches made for point 2 below do supply post-change
+**absolutes**: `gather` 26923 (n=12), `write` 31595.5 (n=2), both on
+`claude-haiku-4-5`. Absolutes, not deltas, and not comparable to another class's
+pre-change median.
+
+**2. `agentType` resolves through `parallel()` — confirmed, after correcting the
+instrument everyone named for it.** The `regularize-mechanical-agents` phase body
+and its approved plan both described plan-review's per-phase fan-out as carrying
+its `gate:clear-tag:*` agent "inside the parallel thunk". It does not.
+`lib/plan-review.mjs:849` fans out `reviewUnit`, which dispatches only judgment
+agents; the act/gate half runs in a plain sequential `for` loop *after* that
+barrier (`gate:clear-tag` at `:902`). `rdm-wf-estimate.js` has the same shape —
+`parallel()` fans out the judgment `estimate:rate:*`, while the mechanical
+`estimate:write:*`/`tier:*` follow sequentially. The corpus corroborates it
+independently: across the eight multi-gate plan-review runs, **zero** of the 54
+possible gate-agent pairs have overlapping execution windows.
+
+So exactly one mechanical call site in the tree is dispatched through
+`parallel()`: `gather:<stem>` in `rdm-wf-document.js`, via
+`parallel(phases.map((p) => () => gatherPhase(p)))`. That set is now
+machine-checked — `scripts/verify-workflow-review.sh` §2c(v) pins it and fails if
+it changes, so a future refactor cannot silently move a mechanical site into a
+fan-out, and the next reader cannot repeat the mis-selection.
+
+Dispatching *that* lane answers the question. Two `rdm-wf-document` runs against
+the fully-done `plugin-distribution` roadmap (6 done phases, `--out` pointed at a
+scratch path, both returning `aborted:false`):
+
+| Run | `gather:*` agents | all `agentType:'rdm-mechanical'` | `not found` raises | one `parallel()` batch | `startedAt` spread |
+|---|---|---|---|---|---|
+| `wf_762e3030-762` | 6 | yes | 0 | yes (single `queuedAt`) | 359 ms |
+| `wf_e6452cce-cf7` | 6 | yes | 0 | yes (single `queuedAt`) | 390 ms |
+
+All twelve fan-out agents resolved. Their `firstRequestTokens` median is 26923
+(min 26920, max 26928) — on the trimmed side of the controlled pair's 29782 vs
+38689, not the untrimmed one. The same two runs carry their own negative control:
+`synthesize:draft`, the lane's one judgment agent, has no `agentType` and sits at
+a 63188 median. **The revert branch was armed and not taken.** With this, every
+threaded site's dispatch path — sequential and fanned-out — has been observed to
+resolve.
+
+**3. The `effort` fidelity study has been RUN, and the answer is a negative:
+`effort: 'low'` is threaded nowhere.**
+
+`spike-agent-type.js` gained a `mode: 'fidelity'` branch — 15 paired dispatches
+(3 per schema shape across `STAMP_ACK`, `ACK`, `TIER`, `ESTIMATE`,
+`DIFF_SIGNALS`), control = `effort` absent, treatment = `effort: 'low'`,
+identical in everything else including `agentType` and the model pin, against a
+throwaway plan repo and a throwaway 4-commit source repo seeded so every correct
+answer is known independently of what an agent says. It was added to the existing
+spike rather than as a new `spike-*.js`, which would have cost six separate
+harness-exemption edits.
+
+**The fidelity half passes.** Run `wf_0e8e31e2-415`, 30 dispatches: 15/15 pairs,
+every `low` arm non-throwing, schema-valid, and semantically identical to its
+`high` pair on the consumed fields — and in every case equal to the seeded
+known-correct answer (`STAMP_ACK`/`ACK` true, true, false; `TIER` small, large,
+medium; `ESTIMATE` easy, moderate, hard; `DIFF_SIGNALS` the three distinct
+base-dependent file sets). Low effort did not degrade transcription here.
+
+**Threading is still refused, on two independent grounds.**
+
+*No output-token drop.* `effort` moves output/reasoning tokens, so that is the
+axis to read (`byLabel`'s output columns — never `floorByAgentClass`, which
+`effort` does not move). Over the same 15 pairs the treatment arm spent **more**:
+11831 output tokens against 9819 (+20.5 %), median 798 vs 600, paired signs 8 up
+/ 7 down. That is noise with, if anything, an adverse net. The plan's own rule is
+to revert rather than keep the threading on faith when the drop fails to appear;
+here it never appeared, so it is never applied.
+
+*The treatment is unobservable at the tier these sites run on.* `effort` is
+verified through the top-level `effort` field on each assistant transcript
+record. Every mechanical site pins the mechanical tier, which resolves to haiku —
+and across 9948 agent transcripts in the whole local corpus that field is absent
+on **9914 of 9914** haiku assistant records. It has never once been emitted
+there. The seven `"low"` records that exist corpus-wide are all opus, which is
+where spike case E observed it. Combined with Q2b (an invalid `effort` value
+degrades silently rather than throwing), threading `effort: 'low'` at a
+mechanical site would be unfalsifiable at that site: no success channel, no error
+channel. A fidelity pass on an unobservable treatment does not license shipping
+it. Anyone revisiting this must first find a channel that exists on the
+mechanical tier, or pin a model where the field is emitted.
+
+**The negative-branch discipline therefore holds exactly.** No call site was
+edited, and none of the four coupled artifacts was touched — §2b's `effort:` ban,
+the `CLAUDE.md` rule, `effortDecision` and `CHANGELOG.md` all stand unchanged, so
+the repo does not assert a prohibition its code violates in either direction.
+
+**One discarded run, recorded so it is not mistaken for evidence.** The first
+fidelity dispatch (`wf_8da984c5-f57`) is void. Its prompts appended `--root`
+*after* the subcommand's arguments; `--root` is a global rdm flag, so every rdm
+command in the study was rejected outright, both write shapes collapsed to a
+constant `ok: false`, and some agents silently repaired the command while others
+did not — leaving the arms uncomparable. Its one apparent divergence is an
+artifact of that and is counted nowhere. Two fixes preceded the re-run: the flag
+moved between binary and subcommand, and every shape gained the same explicit
+"do not repair, reorder, or re-run a failing command with different arguments"
+instruction. §2b-fid check (7) now gates the flag placement, with its own
+planted-mutation self-test, so this class of instrument bug cannot recur silently.
+
+`scripts/verify-workflow-review.sh` §2b-fid gates that the instrument stays
+correctly *built* — coverage, pairing, discrimination (each write shape carries
+an instance whose correct answer is `ok: false`, so a constant-answer guess
+cannot score a false pass), throwaway roots required rather than defaulted since
+two shapes write to a plan repo, and command validity. Each of the four has a
+planted-mutation self-test.
 
 ## Schema contracts
 

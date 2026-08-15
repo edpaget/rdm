@@ -859,16 +859,21 @@ say "2b. Agent-context-trim guards (agentType / effort options spike)"
 #       - DECLARED in an agent definition -> ran at "high" (not honored)
 #       - agent(prompt, {effort:'low'}) from a Workflow run -> recorded "low"
 #         (spike case E: the first "low" record in a 156384-record corpus)
-#     So this guard encodes the phase body's scope rule ("do not thread effort:
-#     anywhere"), written before that reversal was known — not a claim that the
-#     key does nothing. Lifting it is owned by
-#     `finish-agent-type-effort-spike-and-thread-mechanical-sites` scope item 5,
-#     which must also establish that low effort does not degrade mechanical
-#     transcription fidelity. `spike-agent-type.js` is the one file allowed to
-#     contain it — probing the option is its entire purpose.
+#     So this guard is not a claim that the key does nothing. It now rests on a
+#     RUN result rather than on the phase body's original scope rule: the
+#     fidelity study dispatched (`wf_0e8e31e2-415`, 15 pairs / 30 dispatches) and
+#     came back a NEGATIVE. Its transcription half passed 15/15, but (a) the same
+#     pairs show no output-token drop — 11831 at low vs 9819 control, 8 pairs up
+#     and 7 down — and (b) every mechanical site pins the mechanical tier, which
+#     resolves to haiku, and haiku emits no top-level `effort` field at all
+#     (0 of 9914 corpus records), so the option is unfalsifiable exactly where it
+#     would be threaded. With Q2b (an invalid value degrades silently rather than
+#     throwing) there is no error channel either. See docs/token-baseline.json
+#     § mechanicalContextTrim.effortFidelity. `spike-agent-type.js` is the one
+#     file allowed to contain it — probing the option is its entire purpose.
 if grep -nE '(^|[^A-Za-z-])effort:' "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null |
     grep -v '/spike-agent-type\.js:'; then
-    fail "a workflow script passes effort: — threading it is out of scope until finish-agent-type-effort-spike-and-thread-mechanical-sites lands (NB: effort:'low' IS honored at the call site; this guard is a scope boundary, not an inertness claim — see docs/workflow-schemas.md § agentType / effort options spike)"
+    fail "a workflow script passes effort: — the fidelity study RAN and returned a negative (no output-token drop, and the option is unobservable on the mechanical tier's model), so no mechanical site may carry it; NB effort:'low' IS honored at the call site on models that report it — this guard is an evidence-backed refusal, not an inertness claim — see docs/token-baseline.json § mechanicalContextTrim.effortFidelity"
 fi
 printf 'await agent(P, { label: "x", effort: %s })\n' "'low'" >"$SCRATCH/planted-effort.js"
 if ! grep -nE '(^|[^A-Za-z-])effort:' "$SCRATCH/planted-effort.js" >/dev/null 2>&1; then
@@ -906,6 +911,196 @@ TPL_WF_COUNT=$(find "$TEMPLATES/workflows" -name '*.js' | wc -l | tr -d ' ')
 [ "$TPL_WF_COUNT" -ge 1 ] ||
     fail "no distributed workflow templates matched — the agentType guard would pass vacuously"
 pass "no distributed workflow template references agentType ($TPL_WF_COUNT scanned); detector catches a planted one"
+
+# --- 2b-fid. THE effort FIDELITY INSTRUMENT ----------------------------------
+# §2b(i) above keeps `effort:` off every call site until a fidelity study shows
+# low effort does not degrade mechanical transcription. That study's instrument
+# is `spike-agent-type.js`'s `mode: 'fidelity'` branch — extended into the file
+# that is ALREADY §2b/§2c/§2d's exemption rather than added as a new
+# `spike-*.js`, which would have required editing six separate exemptions.
+#
+# The instrument HAS been run — `wf_0e8e31e2-415`, 15 pairs / 30 dispatches — and
+# returned the negative §2b(i) now rests on. What this section gates is that it
+# stays CORRECTLY BUILT, so that result remains reproducible and a future re-run
+# cannot get a false pass out of a broken A/B. A paired study is worthless if the
+# two arms differ in anything but the axis under test, if the prompts are
+# answerable without doing the work, if it writes to the real plan repo, or if
+# the commands it tells the agent to run are not commands the CLI accepts — the
+# FIRST run (`wf_8da984c5-f57`) is void for exactly that last reason and is why
+# check (7) exists. All four are asserted here, each with a planted mutation.
+say "2b-fid. The effort fidelity instrument (built, run, negative recorded)"
+
+SPIKE_JS="$WF_DIR/spike-agent-type.js"
+[ -f "$SPIKE_JS" ] || fail "2b-fid: $SPIKE_JS is missing — the fidelity instrument has no host"
+
+cat >"$TMP/fidelity-test.mjs" <<'FID_TEST'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+
+// The Workflow runtime evaluates a script with top-level `return`/`await` and
+// ambient globals. Reproduce that here rather than importing: the file is not
+// an importable module (it top-level-returns), and `export const meta` is the
+// only ESM syntax in it.
+const raw = fs.readFileSync(process.argv[2], 'utf8');
+const src = raw.replace(/^export const meta/m, 'const meta');
+const make = () =>
+  new Function('agent', 'log', 'args', 'parallel', 'pipeline', 'workflow',
+    'return (async () => {' + src + '})()');
+
+const ARGS = {
+  mode: 'fidelity', runRoot: '/tmp/throwaway-plan', sourceRoot: '/tmp/throwaway-src',
+  project: 'probe', roadmap: 'fid',
+  phaseStems: ['phase-1-a', 'phase-2-b', 'phase-3-c'],
+  diffBases: ['HEAD~3', 'HEAD~2', 'HEAD~1'],
+};
+
+async function driveFidelity() {
+  const calls = [];
+  const out = await make()(async (prompt, opts) => { calls.push({ prompt, opts }); return { ok: true }; },
+    () => {}, ARGS, null, null, null);
+  return { out, calls };
+}
+
+const { out, calls } = await driveFidelity();
+assert.equal(out.mode, 'fidelity', 'fidelity mode did not select its branch');
+
+// (1) COVERAGE — >= 3 pairs for every schema shape the mechanical sites use.
+const perSchema = {};
+for (const p of out.pairs) perSchema[p.schema] = (perSchema[p.schema] || 0) + 1;
+for (const shape of ['STAMP_ACK', 'ACK', 'TIER', 'ESTIMATE', 'DIFF_SIGNALS']) {
+  assert.ok((perSchema[shape] || 0) >= 3,
+    `schema shape ${shape} has ${perSchema[shape] || 0} pairs, the recorded method requires >= 3`);
+}
+assert.equal(calls.length, out.pairs.length * 2, 'every pair must dispatch exactly two arms');
+
+// (2) PAIRING — within a pair the ONLY difference is the axis under test.
+//     A study whose arms differ in prompt, model, agentType or schema measures
+//     the wrong thing while still producing a confident-looking verdict.
+function checkPairing(callList) {
+  for (let i = 0; i < callList.length; i += 2) {
+    const [a, b] = [callList[i], callList[i + 1]];
+    assert.equal(a.prompt, b.prompt, `prompt differs within pair ${i / 2}`);
+    assert.equal(a.opts.effort, undefined, `control arm ${i / 2} carries an effort key`);
+    assert.equal(b.opts.effort, 'low', `treatment arm ${i / 2} is not effort:'low'`);
+    assert.equal(a.opts.agentType, 'rdm-mechanical');
+    assert.equal(b.opts.agentType, 'rdm-mechanical');
+    assert.equal(a.opts.model, b.opts.model, `model pin differs within pair ${i / 2}`);
+    assert.equal(a.opts.schema, b.opts.schema, `schema differs within pair ${i / 2}`);
+    const ka = Object.keys(a.opts).filter((k) => k !== 'label').sort().join(',');
+    const kb = Object.keys(b.opts).filter((k) => k !== 'label' && k !== 'effort').sort().join(',');
+    assert.equal(ka, kb, `opts keys differ beyond effort within pair ${i / 2}`);
+  }
+}
+checkPairing(calls);
+
+// (3) DISCRIMINATION — a prompt whose correct answer is constant cannot detect
+//     degradation, so each WRITE shape must include an instance whose correct
+//     answer is the negative one.
+for (const shape of ['STAMP_ACK', 'ACK']) {
+  assert.ok(out.pairs.some((p) => p.schema === shape && /no-such-phase/.test(p.prompt)),
+    `${shape} has no instance whose correct answer is a failure — a constant-answer probe cannot detect degradation`);
+}
+
+// (4) PLAN-REPO SAFETY — every prompt is scoped to the caller's throwaway roots,
+//     and the roots are REQUIRED rather than defaulted (two shapes write).
+for (const c of calls) {
+  assert.ok(/\/tmp\/throwaway-(plan|src)/.test(c.prompt),
+    'a fidelity prompt is not scoped to the throwaway roots: ' + c.prompt.slice(0, 120));
+}
+let threw = '';
+try { await make()(async () => ({}), () => {}, { mode: 'fidelity' }, null, null, null); }
+catch (e) { threw = String(e.message || e); }
+assert.match(threw, /THROWAWAY/i, 'fidelity mode did not refuse to run without explicit throwaway roots');
+
+// (7) COMMAND VALIDITY — `--root` is a GLOBAL rdm flag and must sit between the
+//     binary and the subcommand. The FIRST build of this instrument appended it
+//     after the subcommand's own arguments; rdm rejects that outright with
+//     `error: unexpected argument '--root' found`, which collapsed both write
+//     shapes to a constant `ok: false` — a study that still looks perfectly
+//     paired while measuring nothing at all. Run wf_8da984c5-f57 is the recorded
+//     instance, and it is why this check exists rather than being assumed.
+function badRootPlacement(prompt) {
+  for (const line of prompt.split('\n')) {
+    if (!line.includes('--root')) continue;
+    if (!/rdm --root \S+ \S/.test(line)) return line;
+  }
+  return '';
+}
+for (const c of calls) {
+  const bad = badRootPlacement(c.prompt);
+  assert.equal(bad, '',
+    'a fidelity prompt does not place --root directly after the rdm binary; rdm rejects it: ' + bad.trim());
+}
+
+// (5) NON-REGRESSION — the historical 8-case matrix is still the default branch.
+const labels = [];
+const dflt = await make()(async (p, o) => { labels.push(o.label); return { version: '', toolNames: [], claudeMdFact: '' }; },
+  () => {}, {}, null, null, null);
+assert.equal(dflt.results.length, 8, 'the default 8-case spike matrix was disturbed');
+assert.ok(labels.every((l) => l.startsWith('spike:')), 'default-mode labels changed');
+
+// (6) SELF-TESTS — each of the four real assertions must FIRE on a mutation,
+//     or it is decoration. Mutations are applied to a scratch copy of the source.
+function mutatedMany(pairs) {
+  let m = src;
+  for (const [find, replace] of pairs) {
+    const next = m.replace(find, replace);
+    assert.notEqual(next, m, 'planted mutation did not apply: ' + find);
+    m = next;
+  }
+  return new Function('agent', 'log', 'args', 'parallel', 'pipeline', 'workflow',
+    'return (async () => {' + m + '})()');
+}
+function mutated(find, replace) {
+  return mutatedMany([[find, replace]]);
+}
+async function fires(label, fn) {
+  let caught = null;
+  try { await fn(); } catch (e) { caught = e; }
+  assert.ok(caught, `self-test "${label}": the assertion did NOT fire on a planted mutation — it is vacuous`);
+}
+// (a) pairing: give the control arm effort too, so the arms no longer differ.
+await fires('pairing', async () => {
+  const c = [];
+  await mutated("const high = await arm('control', {})", "const high = await arm('control', { effort: 'low' })")(
+    async (p, o) => { c.push({ prompt: p, opts: o }); return {}; }, () => {}, ARGS, null, null, null);
+  checkPairing(c);
+});
+// (b) safety: drop the required-throwaway-roots guard.
+await fires('throwaway-roots', async () => {
+  let t = '';
+  try { await mutated('if (!spikeArgs.runRoot || !spikeArgs.sourceRoot) {', 'if (false) {')(
+    async () => ({}), () => {}, { mode: 'fidelity' }, null, null, null); } catch (e) { t = String(e.message || e); }
+  assert.match(t, /THROWAWAY/i, 'guard still fired');
+});
+// (c) discrimination: make every STAMP_ACK instance target a real stem.
+await fires('discrimination', async () => {
+  const o = await mutated("const bogus = 'phase-99-no-such-phase-xyz'", 'const bogus = good[0]')(
+    async () => ({}), () => {}, ARGS, null, null, null);
+  assert.ok(o.pairs.some((p) => p.schema === 'STAMP_ACK' && /no-such-phase/.test(p.prompt)), 'still discriminating');
+});
+
+// (d) command validity: reinstate the original appended-`--root` shape and
+//     confirm the placement check fires on it.
+await fires('root-placement', async () => {
+  const c = [];
+  await mutatedMany([
+    ["const rdm = cfg.rdmBin + ' --root ' + cfg.runRoot",
+      "const rdm = cfg.rdmBin\n  const rootFlag = ' --root ' + cfg.runRoot"],
+    ["' --format json' + projFlag,", "' --format json' + rootFlag + projFlag,"],
+  ])(async (p, o) => { c.push({ prompt: p, opts: o }); return {}; }, () => {}, ARGS, null, null, null);
+  for (const call of c) {
+    assert.equal(badRootPlacement(call.prompt), '', 'still well-placed');
+  }
+});
+
+console.log('FIDELITY-INSTRUMENT OK: ' + out.pairs.length + ' pairs / ' + calls.length + ' dispatches across '
+  + Object.keys(perSchema).length + ' schema shapes');
+FID_TEST
+
+run_node "$TMP/fidelity-test.mjs" "$SPIKE_JS" ||
+    fail "2b-fid: the effort fidelity instrument in spike-agent-type.js is not correctly built"
+pass "fidelity instrument: >=3 paired dispatches per schema shape, arms differ only in effort, write shapes carry a negative-answer instance, throwaway roots required, --root placed where rdm accepts it; all four checks fire on a planted mutation"
 
 # --- 2c. MECHANICAL agentType THREADING (bidirectional) ----------------------
 # The local-only workflows thread `agentType: 'rdm-mechanical'` at their
@@ -1103,6 +1298,140 @@ done
 [ -z "$corrupted_hit" ] ||
     fail "2c(iv): referent detector still resolved 'rdm-mechanical' after the frontmatter name was corrupted — it is vacuous"
 pass "all $REF_COUNT referenced agentType name(s) resolve to a .claude/agents/ definition; detector catches a corrupted name"
+
+# --- 2c(v). WHICH mechanical sites dispatch through parallel() ---------------
+# `agentType` resolution through a `parallel()` thunk was the last unanswered
+# question about the threaded surface. It is now CLOSED: two rdm-wf-document
+# dispatches (wf_762e3030-762, wf_e6452cce-cf7) fanned out twelve `gather:*`
+# agents, all of which resolved with agentType 'rdm-mechanical', none of which
+# raised, each run's six sharing a single queuedAt and starting within ~0.4 s
+# (docs/token-baseline.json § mechanicalContextTrim.parallelDispatchConfirmed).
+# This check remains because the ANSWER is scoped to the set it pins: a future
+# refactor that moves some OTHER mechanical site into a fan-out has not been
+# observed to resolve, and must re-open the question deliberately.
+#
+# Answering it requires dispatching the RIGHT lane, and the obvious guess is
+# wrong. Both this roadmap's phase body and its approved plan asserted that
+# plan-review's per-phase fan-out carries `gate:clear-tag:*` "inside the parallel
+# thunk". It does not: `_parallel(units.map(...))` fans out `reviewUnit`, which
+# dispatches only JUDGMENT agents, and the act/gate half runs in a plain
+# sequential `for` loop AFTER that barrier. The live corpus agrees — across
+# eight multi-gate plan-review runs, ZERO pairs of gate agents have overlapping
+# execution windows. Estimate is the same shape: `parallel()` fans out the
+# judgment `estimate:rate:*`, while the mechanical `estimate:write:*`/`tier:*`
+# follow sequentially.
+#
+# So exactly ONE mechanical call site is dispatched through `parallel()`:
+# `gather:<stem>` in rdm-wf-document.js — which is why that is the lane that was
+# dispatched to close the question. This check pins that set, so nobody spends a
+# lane dispatch on a workflow that cannot produce the evidence, and so a future
+# refactor that moves a mechanical site into a fan-out has to re-open the
+# question deliberately rather than silently.
+say "2c(v). The sole parallel()-dispatched mechanical site"
+
+cat >"$TMP/parallel-sites.mjs" <<'PAR_TEST'
+import fs from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+
+const wfDir = process.argv[2];
+const MECH = "agentType: 'rdm-mechanical'";
+
+// Extract a brace-balanced body starting at the first `{` at or after `from`.
+function bodyAt(src, from) {
+  const start = src.indexOf('{', from);
+  if (start === -1) return '';
+  let depth = 0;
+  for (let i = start; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
+  }
+  return src.slice(start);
+}
+
+// Locate a function definition by name across the declaration shapes these
+// workflows actually use: `function f(`, `async function f(`, `f: function (`,
+// `f: async function (`, `const f = (…) =>`.
+function findBody(src, name) {
+  const pats = [
+    new RegExp('(?:async\\s+)?function\\s+' + name + '\\s*\\('),
+    new RegExp('\\b' + name + '\\s*:\\s*(?:async\\s+)?function\\s*\\('),
+    new RegExp('\\b(?:const|let|var)\\s+' + name + '\\s*=\\s*(?:async\\s*)?\\('),
+  ];
+  for (const p of pats) {
+    const m = p.exec(src);
+    if (m) return bodyAt(src, m.index + m[0].length);
+  }
+  return null;
+}
+
+// For every `parallel(` fan-out, collect the identifiers its thunk invokes, and
+// report whether the resulting reachable code dispatches a mechanical agent.
+function parallelMechanicalSites(src) {
+  const hits = [];
+  const re = /\b_?parallel\s*\(/g;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    // The whole `parallel(...)` argument list, brace/paren-balanced.
+    let depth = 0, end = m.index + m[0].length - 1;
+    for (let i = end; i < src.length; i++) {
+      if (src[i] === '(') depth++;
+      else if (src[i] === ')' && --depth === 0) { end = i; break; }
+    }
+    const argText = src.slice(m.index, end + 1);
+    // Inline mechanical dispatch directly inside the fan-out expression.
+    if (argText.includes(MECH)) { hits.push('<inline>'); continue; }
+    // Otherwise follow every identifier the thunk calls.
+    for (const c of argText.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+      const name = c[1];
+      if (['parallel', '_parallel', 'map', 'agent', '_agent', 'if', 'for', 'return'].includes(name)) continue;
+      const body = findBody(src, name);
+      if (body && body.includes(MECH)) hits.push(name);
+    }
+  }
+  return [...new Set(hits)];
+}
+
+const files = fs.readdirSync(wfDir).filter((f) => f.endsWith('.js') && f !== 'spike-agent-type.js')
+  .map((f) => path.join(wfDir, f))
+  .concat(fs.readdirSync(path.join(wfDir, 'lib')).filter((f) => f.endsWith('.mjs')).map((f) => path.join(wfDir, 'lib', f)));
+
+const found = {};
+for (const f of files) {
+  const hits = parallelMechanicalSites(fs.readFileSync(f, 'utf8'));
+  if (hits.length) found[path.basename(f)] = hits;
+}
+
+// THE PINNED ANSWER. Exactly one file, exactly one thunk.
+assert.deepEqual(found, { 'rdm-wf-document.js': ['gatherPhase'] },
+  'the set of parallel()-dispatched mechanical sites changed: ' + JSON.stringify(found) +
+  '\n  Only rdm-wf-document.js\'s gather:<stem> is dispatched through parallel(). If this list grew, ' +
+  'docs/token-baseline.json § mechanicalContextTrim.parallelDispatchConfirmed and ' +
+  'docs/workflow-schemas.md § "agentType / effort options spike" must be updated: agentType resolution ' +
+  'through parallel() is still UNCONFIRMED, and a new fan-out site inherits that open risk.');
+
+// Self-test (a): the detector must FIND a mechanical site moved into a fan-out.
+const planted = "await parallel(items.map((u) => () => agent(P, { label: 'x', " + MECH + " })))";
+assert.deepEqual(parallelMechanicalSites(planted), ['<inline>'],
+  'detector missed a mechanical agent planted directly inside a parallel() fan-out');
+// Self-test (b): and through one level of indirection, the shape it must follow.
+const planted2 = "async function doIt(u) { return agent(P, { label: 'y', " + MECH + " }) }\n"
+  + 'const r = await parallel(units.map((u) => () => doIt(u)))';
+assert.deepEqual(parallelMechanicalSites(planted2), ['doIt'],
+  'detector missed a mechanical agent reachable through a named parallel() thunk');
+// Self-test (c): and must NOT fire on the real sequential-after-barrier shape.
+const seq = "async function reviewUnit(u) { return agent(P, { label: 'find:' }) }\n"
+  + 'const r = await _parallel(units.map((u) => () => reviewUnit(u)))\n'
+  + "for (const x of r) { await agent(P, { label: 'gate:', " + MECH + ' }) }';
+assert.deepEqual(parallelMechanicalSites(seq), [],
+  'detector fired on a mechanical agent that runs sequentially AFTER the parallel barrier');
+
+console.log('PARALLEL-SITES OK: ' + JSON.stringify(found));
+PAR_TEST
+
+run_node "$TMP/parallel-sites.mjs" "$WF_DIR" ||
+    fail "2c(v): the set of parallel()-dispatched mechanical call sites is not what the open agentType-through-parallel() question assumes"
+pass "gather:<stem> in rdm-wf-document.js is the sole parallel()-dispatched mechanical site; detector finds a planted one (inline and via a named thunk) and ignores the sequential-after-barrier shape"
 
 # --- 3. BEHAVIOR -------------------------------------------------------------
 say "3. Behavior: find -> refute -> filter, both modes, deterministic"

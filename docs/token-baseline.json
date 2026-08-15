@@ -664,6 +664,138 @@
         "overstatementFactor": 2.23,
         "explanation": "Both ends of the comparison compress on the Workflow path. A Workflow subagent's DEFAULT floor is much cheaper than a CLI session's (38689 vs 47084) -- fewer tools, no skill listing, leaner harness -- while the TRIMMED agent is slightly more expensive (29782 vs 27190). The margin between them therefore roughly halves. The claude -p 2x2 remains internally valid; it simply measures a different call path than the call sites use.",
         "lesson": "This is precisely what AC5 exists to catch: the per-agent figure was recorded as a prediction and labelled as such everywhere, and measuring it on the real path cut it by more than half. Never quote measuredTrim2x2's 19894 as the saving these call sites deliver."
+      },
+      "laneDeltaBroadened": {
+        "description": "Broadens laneDelta (n=1 per class, one backlog dispatch) across every agent class that has BOTH a pinned pre-change row and a threaded call site. Measured on 2026-08-14 from the corpus that accumulated on its own between 2026-07-28 and 2026-08-11 -- no fresh dispatch was needed, which is why n is 16-25 per class rather than the single-digit the protocol anticipated.",
+        "measuredOn": "2026-08-14",
+        "basis": "measured",
+        "instrument": "scripts/lib/token-report.mjs -> floorByAgentClass (firstRequestTokens = input + cache_creation + cache_read on the agent's first assistant record), the same definition preChangeMedianTokens uses.",
+        "scoping": {
+          "since": "2026-07-28T17:37:00Z",
+          "sinceRationale": "The first run whose sidecar records any agentType:'rdm-mechanical' agent is wf_5fffc6ee-ced at 2026-07-28T17:37:51Z. Six runs earlier the SAME DAY carry zero mechanical agents, so a bare `--since 2026-07-28` would have averaged pre-change records into the post-change figure. The sub-day boundary is load-bearing.",
+          "workflows": [
+            "plan-review",
+            "rdm-wf-plan-review",
+            "backlog",
+            "rdm-wf-backlog",
+            "estimate",
+            "rdm-wf-estimate",
+            "document",
+            "rdm-wf-document"
+          ],
+          "workflowsRationale": "Only the four LOCAL workflows are threaded, and each appears under both its pre-rename and `rdm-wf-`-prefixed name. Scoping is required, not cosmetic: the distributed dispatch-phase/review-refute-fix lanes also emit `fetch`/`model` agents, and they are unthreaded, so an unscoped class median would blend trimmed and untrimmed agents.",
+          "additionalFilter": "Records were further restricted to agents whose sidecar entry literally carries agentType:'rdm-mechanical'. This is direct evidence the agent ran threaded code, and is strictly stronger than the date proxy alone.",
+          "runsInScope": 32,
+          "distinctRunsContributing": 28
+        },
+        "byClass": {
+          "fetch": {
+            "postChangeMedianTokens": 25690.5,
+            "n": 16,
+            "preChangeMedianTokens": 30098,
+            "preChangeN": 112,
+            "deltaTokens": 4407.5,
+            "percent": 14.6,
+            "minTokens": 24190,
+            "maxTokens": 26810,
+            "model": "claude-haiku-4-5-20251001",
+            "subLabels": [
+              "fetch:report",
+              "fetch:roadmap",
+              "fetch:wontfix"
+            ]
+          },
+          "model": {
+            "postChangeMedianTokens": 31782.5,
+            "n": 22,
+            "preChangeMedianTokens": 36877,
+            "preChangeN": 16,
+            "deltaTokens": 5094.5,
+            "percent": 13.8,
+            "minTokens": 29460,
+            "maxTokens": 33566,
+            "model": "claude-opus-5[1m]",
+            "subLabels": [
+              "model:mechanical"
+            ],
+            "note": "unpinned by design -- this is the bootstrap that RESOLVES the mechanical tier, so it runs on the session model."
+          },
+          "gate": {
+            "postChangeMedianTokens": 25664,
+            "n": 25,
+            "preChangeMedianTokens": 29901,
+            "preChangeN": 9,
+            "deltaTokens": 4237,
+            "percent": 14.2,
+            "minTokens": 24204,
+            "maxTokens": 26846,
+            "model": "claude-haiku-4-5-20251001",
+            "subLabels": [
+              "gate:clear-tag"
+            ]
+          }
+        },
+        "estimate": {
+          "eligibility": "sub-label-scoped (DIRECTIONAL)",
+          "reason": "excludedFromAnyMechanicalClaim records `estimate` as a MIXED bucket, and the post-change corpus now demonstrates that quantitatively rather than by assertion: the mechanical sub-labels sit at a 25592.5 median while the judgment estimate:rate:* sits at 41096 in the SAME runs. A class-level median blends the two and is uninterpretable.",
+          "mechanicalSubLabels": {
+            "labels": [
+              "estimate:write",
+              "estimate:tier"
+            ],
+            "medianTokens": 25592.5,
+            "n": 64
+          },
+          "judgmentSubLabels": {
+            "labels": [
+              "estimate:rate"
+            ],
+            "medianTokens": 41096,
+            "n": 32
+          },
+          "comparator": "NONE. The only pinned pre-change row is the class-level `estimate`, which is itself mixed, so no honest delta can be computed. The figure above is a post-change ABSOLUTE, recorded to substantiate the mixed-bucket caveat -- not a delta.",
+          "estimateListNeverDispatched": "`estimate:list` and estimate's own `model:mechanical` bootstrap produced ZERO records: every estimate run in the corpus took the caller-hoist path, where the rdm-estimate shim supplies the phase list and resolved model itself. Both remain threaded and unmeasured."
+        },
+        "gatherAndWrite": {
+          "eligibility": "post-change ABSOLUTES only -- never a delta",
+          "noPreChangeRow": true,
+          "reason": "excludedFromAnyMechanicalClaim records that the corpus contains zero PRE-change standalone document-workflow runs, so there is no comparator and no honest delta or percent can be computed for these two classes. As of 2026-08-15 there are post-change records -- the two rdm-wf-document dispatches made for parallelDispatchConfirmed -- so the absolutes below are reportable where they previously were not.",
+          "measuredOn": "2026-08-15",
+          "runIds": [
+            "wf_762e3030-762",
+            "wf_e6452cce-cf7"
+          ],
+          "instrument": "firstRequestTokens = input + cache_creation + cache_read on the agent's first assistant record -- the same definition preChangeMedianTokens uses.",
+          "classes": {
+            "gather": {
+              "postChangeMedianTokens": 26923,
+              "n": 12,
+              "minTokens": 26920,
+              "maxTokens": 26928,
+              "model": "claude-haiku-4-5-20251001"
+            },
+            "write": {
+              "postChangeMedianTokens": 31595.5,
+              "n": 2,
+              "minTokens": 30899,
+              "maxTokens": 32292,
+              "model": "claude-haiku-4-5-20251001"
+            }
+          },
+          "records": 14,
+          "doNotDeriveADelta": "There is no pinned pre-change row for either class. Do not compare these against another class's pre-change median, against the controlled pair's 38689, or against each other."
+        },
+        "notMeasurable": {
+          "classes": [
+            "stamp",
+            "advance",
+            "park",
+            "diff"
+          ],
+          "reason": "These have clean pre-change rows but occur ONLY in the distributed rdm-wf-dispatch-phase.js / rdm-wf-review-refute-fix.js, which threadedSites.notThreaded records as unthreaded until ship-mechanical-agent-type-downstream lands. Dispatching them would measure nothing, and no delta may be reported for them."
+        },
+        "caveats": "DIRECTIONAL, not a re-baseline: preChangeMedianTokens is the pinned comparator and was NOT modified. Not perfectly like-for-like either -- model:mechanical runs unpinned on opus (it is the bootstrap that RESOLVES the tier) while fetch/gate run pinned on haiku, and the pinned medians aggregate mixed models over different prompts. The three classes nonetheless move together at 13.8-14.6 %.",
+        "relationToControlledPair": "The controlled pair measured 8907 tokens / 23 % on an IDENTICAL prompt. These lane figures are 4237-5094 tokens / 13.8-14.6 % across differing real prompts, and the earlier n=1 laneDelta read 18.9-19.9 %. The trim is real and reproduced at n=16-25 per class; the controlled 23 % remains the upper bound, obtained by holding the prompt fixed, and should not be quoted as the lane-level saving."
       }
     },
     "measuredTrim2x2": {
@@ -783,7 +915,409 @@
     "followUpTasks": [
       "finish-agent-type-effort-spike-and-thread-mechanical-sites",
       "ship-mechanical-agent-type-downstream"
-    ]
+    ],
+    "effortFidelity": {
+      "description": "The fidelity study that gates threading `effort: 'low'` at the mechanical call sites. effortDecision above records that low effort is HONORED at the call site; it does NOT record that low effort preserves mechanical transcription fidelity, and that is the question threading turns on. A mechanical agent runs one command and transcribes its output into a fixed schema, so degradation there is silent data corruption -- a wrong `ok: true`, a mis-read difficulty, an inverted signal boolean -- not a visible failure.",
+      "outcome": "NEGATIVE -- `effort: 'low'` is threaded at ZERO call sites, and the study has been RUN, not deferred.",
+      "executed": true,
+      "runId": "wf_0e8e31e2-415",
+      "dispatchedOn": "2026-08-15T04:05Z",
+      "dispatches": 30,
+      "pairsRun": 15,
+      "fidelityVerdict": "pass",
+      "fidelityVerdictDetail": "15/15 pairs. Every `low` arm returned a non-null, non-throwing, schema-valid object that is semantically IDENTICAL to its `high` pair on the consumed fields, and in every case the value is the independently-known-correct one seeded into the throwaway repo (STAMP_ACK/ACK true,true,false; TIER small,large,medium; ESTIMATE easy,moderate,hard; DIFF_SIGNALS the three distinct base-dependent file sets). Low effort did not degrade mechanical transcription in this study.",
+      "decision": "DO NOT THREAD",
+      "whyNegativeDespiteAFidelityPass": "The phase's threading branch is CONJUNCTIVE: it requires a fidelity pass AND a measured output-token drop. Neither of the two remaining conditions holds. (1) NO OUTPUT-TOKEN DROP. Over the same 15 pairs the treatment arm spent MORE, not less: 11831 output tokens against the control's 9819 (+20.5 %), median 798 vs 600, and the paired signs split 8 up / 7 down -- noise with, if anything, an upward net. The plan's own step 4 says to revert rather than keep the threading on faith when the drop does not materialise; here it never appeared, so it is never applied. (2) THE TREATMENT IS UNOBSERVABLE AT THE TIER THESE SITES RUN ON. `effort` is verified through the top-level `effort` field on each assistant transcript record. Every mechanical call site pins the mechanical tier, which resolves to haiku, and across 9948 agent transcripts in the whole local corpus that field is ABSENT on 9914/9914 haiku assistant records -- it has never once been emitted there. The 7 `low` records that exist corpus-wide are all opus, which is where spike case E observed it. So at the mechanical sites there is no channel that could distinguish honored from silently ignored, and a fidelity pass on an unobservable treatment cannot license shipping it.",
+      "negativeBranchDisciplineHeld": "Per the phase's negative branch: zero call sites edited, and none of the four coupled artifacts touched -- scripts/verify-workflow-review.sh 2b(i)'s `effort:` ban is intact, CLAUDE.md's 'No workflow script may pass effort:' rule is unchanged, `effortDecision` above is unchanged, and CHANGELOG.md has no entry (there is no user-facing change to describe). The repo does not assert a prohibition its code violates in either direction.",
+      "outputTokens": {
+        "instrument": "sum of message.usage.output_tokens over every assistant record in the agent's transcript. This is the RIGHT instrument for the effort axis; floorByAgentClass measures first-request context, which effort does not move.",
+        "controlSum": 9819,
+        "lowSum": 11831,
+        "controlMedian": 600,
+        "lowMedian": 798,
+        "pairedSigns": {
+          "lowHigher": 8,
+          "lowLower": 7,
+          "tied": 0
+        },
+        "netDelta": 2012,
+        "reading": "no drop; direction is if anything against the treatment, magnitude within pair-to-pair noise"
+      },
+      "observabilityAtTheMechanicalTier": {
+        "channel": "top-level `effort` field on each `assistant` transcript record",
+        "corpusScan": "9948 agent-*.jsonl transcripts under ~/.claude/projects",
+        "byModelFamily": {
+          "haiku": {
+            "high": 0,
+            "low": 0,
+            "absent": 9914
+          },
+          "sonnet": {
+            "high": 147833,
+            "low": 0,
+            "absent": 7586
+          },
+          "opus": {
+            "high": 105570,
+            "low": 7,
+            "absent": 4381
+          }
+        },
+        "conclusion": "The mechanical tier resolves to haiku (`rdm model resolve mechanical`), and haiku emits no `effort` field at all. Threading `effort: 'low'` at a mechanical site would therefore be unfalsifiable at that site -- and spike case H already showed an invalid effort value degrades silently rather than throwing, so there is no error channel either.",
+        "consequenceForAnyFutureAttempt": "Whoever revisits this must first find a verification channel that exists on the mechanical tier, or pin a model where the field is emitted. Re-running this same study on haiku will reproduce this same unfalsifiable pass."
+      },
+      "instrument": {
+        "path": ".claude/workflows/spike-agent-type.js",
+        "invoke": "Workflow({ name: 'spike-agent-type', args: { mode: 'fidelity', rdmBin: '<abs path to a built rdm>', runRoot: '<throwaway plan repo>', sourceRoot: '<throwaway source repo>', project: '<proj>', roadmap: '<slug>', phaseStems: ['<a>','<b>','<c>'], diffBases: ['HEAD~3','HEAD~2','HEAD~1'], model: 'haiku' } })",
+        "hostedInTheExistingSpike": "Added as a `mode: 'fidelity'` branch of the EXISTING spike rather than as a new `spike-*.js`, which would have required editing six separate harness exemptions (2b's grep -v, 2c's four exclusions, 2d's pinned EXPECTED_ENGINES, verify-workflow-dispatch.sh 7's inventory). The historical 8-case matrix remains the default branch, unchanged.",
+        "gate": "scripts/verify-workflow-review.sh 2b-fid drives the branch under an injected fake agent and asserts coverage (>=3 pairs per schema shape), pairing (arms differ ONLY in `effort`: same prompt string, same agentType, same model pin, same schema), discrimination (each write shape carries an instance whose CORRECT answer is `ok: false`, so a constant-answer guess cannot score a false pass), plan-repo safety (throwaway roots are REQUIRED, not defaulted, because two of the five shapes write), and command validity (`--root` is placed where rdm accepts it). Each of the four has a planted-mutation self-test.",
+        "discardedFirstRun": {
+          "runId": "wf_8da984c5-f57",
+          "dispatchedOn": "2026-08-15T03:54Z",
+          "whyDiscarded": "The first build appended `--root` AFTER the subcommand's own arguments. `--root` is a GLOBAL rdm flag, so every rdm command in the study was rejected with `error: unexpected argument '--root' found`. Both write shapes collapsed to a constant `ok: false` -- perfectly paired and completely uninformative -- while some agents silently REPAIRED the command and others did not, so the surviving pairs were not comparable either. The one apparent divergence it produced (TIER#3 high `medium` vs low `{\"model\": \"\"}` re-wrapped as a string) is an artifact of that, not a fidelity signal, and is not counted anywhere.",
+          "fixes": "Two, both applied before the re-run: `--root` moved between the binary and the subcommand, and every shape's prompt gained the same explicit 'Do NOT repair, reorder, or re-run a failing command with different arguments' instruction so an agent deviating from the script cannot silently decouple the arms. verify-workflow-review.sh 2b-fid check (7) now gates the flag placement with its own planted-mutation self-test, so this class of instrument bug cannot recur silently."
+        }
+      },
+      "method": {
+        "design": "Paired A/B, dispatched sequentially. Control = `effort` absent (production's current shape); treatment = `effort: 'low'`. Both arms carry agentType: 'rdm-mechanical' and the same model pin, so the study isolates the effort axis against the already-shipped trimmed definition rather than moving two variables at once.",
+        "n": "3 pairs per schema shape x 5 shapes = 15 pairs / 30 dispatches.",
+        "fixture": "A throwaway git-backed plan repo seeded with the REAL ./target/debug/rdm (roadmap fidelity-probe, phases phase-1-alpha/beta/gamma carrying known `## Estimate <difficulty>` lines, phase-3-gamma pre-set to moderate) plus a throwaway 4-commit source repo whose HEAD~3/~2/~1 diffs touch different file sets. Every correct answer is therefore known independently of what any agent says.",
+        "schemaShapes": {
+          "STAMP_ACK": "lib/plan-review.mjs, gate:clear-tag",
+          "ACK": "rdm-wf-estimate.js, estimate:write",
+          "TIER": "rdm-wf-estimate.js, estimate:tier",
+          "ESTIMATE": "rdm-wf-estimate.js, estimate:rate -- shape only; that site is JUDGMENT and is never threaded, so the probe is a TRANSCRIPTION of a seeded `## Estimate <difficulty>` line, not a rating",
+          "DIFF_SIGNALS": "rdm-wf-dispatch-phase.js, diff:signals -- shape only; that workflow is DISTRIBUTED and may carry neither agentType nor effort until ship-mechanical-agent-type-downstream lands. Schema coverage is not threading authorization."
+        },
+        "passBar": "Every `low` output must be (a) non-throwing, non-null and schema-valid, and (b) semantically identical to its `high` pair on the CONSUMED fields only. Any divergence on a consumed field, any schema violation, or any throw fails the whole study.",
+        "consumedFields": {
+          "STAMP_ACK": [
+            "ok"
+          ],
+          "ACK": [
+            "ok"
+          ],
+          "TIER": [
+            "model"
+          ],
+          "ESTIMATE": [
+            "stem",
+            "difficulty"
+          ],
+          "DIFF_SIGNALS": [
+            "changedFiles"
+          ]
+        },
+        "consumedFieldsRationale": "Free-prose fields (`justification`, `detail`, `diffText`) legitimately differ in wording between two dispatches of the same prompt. Diffing them would manufacture a failure the pass bar never intended, so only the fields a consumer branches on are compared.",
+        "preflight": "MANDATORY, and it was performed for wf_0e8e31e2-415: the run was driven from a session rooted at this worktree, which already contained .claude/agents/rdm-mechanical.md at session start. The registry watcher only covers directories present then; dispatching from a mid-session-created worktree reproduces the RETRACTED wf_2bea58b9-38f result, an invalid negative indistinguishable from a real one. Resolution is visible in this run's own sidecar: all 30 agents record agentType 'rdm-mechanical' and none raises the not-found error.",
+        "measureTheEffortAxisWith": "report.byLabel OUTPUT columns, NOT floorByAgentClass. `effort` moves output/reasoning tokens; it does not move the per-agent context floor, so reading the floor instrument for this axis shows ~zero delta and would trigger a false revert. floorByAgentClass is the right instrument for the agentType axis only.",
+        "invalidEffortDegradesSilently": "A typo such as `effort: 'lo'` runs at high with no throw (spike case H). Any harness needle must match the exact literal `effort: 'low'`, never a bare `effort:`, or a threading typo yields a green gate and a null measurement."
+      },
+      "rawPairs": [
+        {
+          "schema": "STAMP_ACK",
+          "i": 1,
+          "consumedFields": [
+            "ok"
+          ],
+          "high": {
+            "ok": true
+          },
+          "low": {
+            "ok": true
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "STAMP_ACK",
+          "i": 2,
+          "consumedFields": [
+            "ok"
+          ],
+          "high": {
+            "ok": true
+          },
+          "low": {
+            "ok": true
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "STAMP_ACK",
+          "i": 3,
+          "consumedFields": [
+            "ok"
+          ],
+          "high": {
+            "ok": false
+          },
+          "low": {
+            "ok": false
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "ACK",
+          "i": 1,
+          "consumedFields": [
+            "ok"
+          ],
+          "high": {
+            "ok": true
+          },
+          "low": {
+            "ok": true
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "ACK",
+          "i": 2,
+          "consumedFields": [
+            "ok"
+          ],
+          "high": {
+            "ok": true
+          },
+          "low": {
+            "ok": true
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "ACK",
+          "i": 3,
+          "consumedFields": [
+            "ok"
+          ],
+          "high": {
+            "ok": false
+          },
+          "low": {
+            "ok": false
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "TIER",
+          "i": 1,
+          "consumedFields": [
+            "model"
+          ],
+          "high": {
+            "model": "small"
+          },
+          "low": {
+            "model": "small"
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "TIER",
+          "i": 2,
+          "consumedFields": [
+            "model"
+          ],
+          "high": {
+            "model": "large"
+          },
+          "low": {
+            "model": "large"
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "TIER",
+          "i": 3,
+          "consumedFields": [
+            "model"
+          ],
+          "high": {
+            "model": "medium"
+          },
+          "low": {
+            "model": "medium"
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "ESTIMATE",
+          "i": 1,
+          "consumedFields": [
+            "stem",
+            "difficulty"
+          ],
+          "high": {
+            "stem": "phase-1-alpha",
+            "difficulty": "easy"
+          },
+          "low": {
+            "stem": "phase-1-alpha",
+            "difficulty": "easy"
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "ESTIMATE",
+          "i": 2,
+          "consumedFields": [
+            "stem",
+            "difficulty"
+          ],
+          "high": {
+            "stem": "phase-2-beta",
+            "difficulty": "moderate"
+          },
+          "low": {
+            "stem": "phase-2-beta",
+            "difficulty": "moderate"
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "ESTIMATE",
+          "i": 3,
+          "consumedFields": [
+            "stem",
+            "difficulty"
+          ],
+          "high": {
+            "stem": "phase-3-gamma",
+            "difficulty": "hard"
+          },
+          "low": {
+            "stem": "phase-3-gamma",
+            "difficulty": "hard"
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "DIFF_SIGNALS",
+          "i": 1,
+          "consumedFields": [
+            "changedFiles"
+          ],
+          "high": {
+            "changedFiles": [
+              "README.md",
+              "alpha.txt",
+              "beta.txt",
+              "gamma.txt"
+            ]
+          },
+          "low": {
+            "changedFiles": [
+              "README.md",
+              "alpha.txt",
+              "beta.txt",
+              "gamma.txt"
+            ]
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "DIFF_SIGNALS",
+          "i": 2,
+          "consumedFields": [
+            "changedFiles"
+          ],
+          "high": {
+            "changedFiles": [
+              "README.md",
+              "beta.txt",
+              "gamma.txt"
+            ]
+          },
+          "low": {
+            "changedFiles": [
+              "README.md",
+              "beta.txt",
+              "gamma.txt"
+            ]
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        },
+        {
+          "schema": "DIFF_SIGNALS",
+          "i": 3,
+          "consumedFields": [
+            "changedFiles"
+          ],
+          "high": {
+            "changedFiles": [
+              "gamma.txt"
+            ]
+          },
+          "low": {
+            "changedFiles": [
+              "gamma.txt"
+            ]
+          },
+          "highErr": "",
+          "lowErr": "",
+          "consumedFieldsEqual": true
+        }
+      ]
+    },
+    "parallelDispatchConfirmed": {
+      "confirmed": true,
+      "status": "CONFIRMED -- agentType resolves through a parallel() fan-out",
+      "description": "agentType resolution had only ever been observed on the SEQUENTIAL agent() path. This was the last open question about the threaded surface. It is a loud failure mode, not a corrupting one -- an unresolvable agentType RAISES -- but it would have taken the lane down on first dispatch.",
+      "runIds": [
+        "wf_762e3030-762",
+        "wf_e6452cce-cf7"
+      ],
+      "dispatchedOn": "2026-08-15T03:50Z and 2026-08-15T03:51Z",
+      "fanOut": "rdm-wf-document.js `gatherPhase`, dispatched as parallel(phases.map((p) => () => gatherPhase(p)))",
+      "target": "roadmap plugin-distribution (6/6 phases done), --out pointed at a scratch path so nothing was written into the repo; both runs returned aborted:false, so the fan-out really executed.",
+      "n": 12,
+      "evidence": {
+        "agentTypeRecorded": "All 12 gather:<stem> agent records across the two runs carry agentType 'rdm-mechanical'.",
+        "noNotFoundRaise": "Zero occurrences of the runtime's `agent type '...' not found` string in any of the 12 transcripts.",
+        "genuinelyConcurrent": "Within each run all six gather agents share a SINGLE queuedAt timestamp -- one parallel() batch, not six sequential calls -- and their startedAt values span 390 ms (wf_e6452cce-cf7) and 359 ms (wf_762e3030-762).",
+        "trimObserved": "firstRequestTokens median 26923 (min 26920, max 26928) against the controlled pair's trimmed 29782 and default-agent 38689 -- the fan-out agents are on the trimmed side by a wide margin.",
+        "negativeControlInTheSameRun": "synthesize:draft, the one judgment agent in the document lane, carries NO agentType in either run and sits at a 63188 median. The contrast is internal to the same two runs."
+      },
+      "soleInstrument": {
+        "file": ".claude/workflows/rdm-wf-document.js",
+        "thunk": "gatherPhase",
+        "label": "gather:<stem>",
+        "fanOut": "parallel(phases.map((p) => () => gatherPhase(p)))",
+        "note": "This is the ONLY mechanical call site in the tree dispatched through parallel(). Machine-checked by scripts/verify-workflow-review.sh 2c(v), which fails if that set ever changes."
+      },
+      "correctionToTheEarlierPremise": "This roadmap's phase body and its approved plan both named plan-review's per-phase fan-out as a second instrument, describing its `gate:clear-tag:*` agent as sitting 'inside the parallel thunk'. It does not. lib/plan-review.mjs:849 fans out `reviewUnit`, which dispatches only JUDGMENT agents, and the act/gate half runs in a plain sequential `for` loop AFTER that barrier (gate:clear-tag at :902). rdm-wf-estimate.js has the same shape -- parallel() fans out the judgment `estimate:rate:*`, while the mechanical `estimate:write:*`/`tier:*` follow sequentially. A plan-review or estimate dispatch therefore produces NO evidence for this question, which is why the document lane was the one dispatched.",
+      "corroboratingRunEvidence": "Independently visible in the corpus: across the eight multi-gate plan-review runs, ZERO of the 54 possible gate-agent pairs have overlapping [startedAt, lastProgressAt] windows. They are serialized, as the sequential-loop reading predicts.",
+      "whatWasAlreadyKnown": "On the sequential path resolution is solid at scale: 138 agentType:'rdm-mechanical' agent records across 28 runs and 2026-07-28..2026-08-11, and the ONLY `agent type '...' not found` raise anywhere in the post-change corpus is spike case C's deliberate `no-such-agent-xyz`.",
+      "revertBranch": "ARMED BUT NOT TAKEN -- resolution succeeded. Had a gather:* thunk raised, the fix was to strip agentType from that ONE site and update, together: MECHANICAL_SITES and MECH_EXPECTED in verify-workflow-review.sh 2c, the derived THREADED == PINNED + MECH_BOOTSTRAPS identity (RE-DERIVED, not decremented -- removing a threaded site while leaving its model pin makes the two sides disagree), threadedSites.totalRecords/uniqueCallSites/byFile here, the table in docs/mechanical-agent-inventory.md, and a CHANGELOG entry."
+    }
   },
   "confounds": [
     "roadmap size - a roadmap with more phases dispatches more dispatch-phase/plan-review/estimate agent invocations inside a single autopilot run; larger roadmap does not imply a more expensive phase",

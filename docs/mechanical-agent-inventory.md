@@ -451,10 +451,32 @@ effort options spike"; the operative outcomes are:
 
 These are the mechanical sites that now carry `agentType: 'rdm-mechanical'` — 15 call sites in
 the four local-only workflows, 4 of them duplicated into `lib/plan-review.mjs` as the
-byte-copied source of `rdm-wf-plan-review.js`'s driver block, for 19 records in total. The same table
-is the worklist for `effort:` if that is threaded later. Judgment sites are excluded by § The
-classification rule and must stay excluded; `scripts/verify-workflow-review.sh` §2c asserts
-both directions with planted-mutation self-tests.
+byte-copied source of `rdm-wf-plan-review.js`'s driver block, for 19 records in total. The same table was also
+the worklist for `effort:`, and that worklist is now **closed by a recorded negative, not
+consumed** (2026-08-15). The gating fidelity study ran — `spike-agent-type.js`'s
+`mode: 'fidelity'` branch, run `wf_0e8e31e2-415`, 15 pairs / 30 dispatches — and its transcription
+half passed 15/15. Threading was still refused, on two grounds: the same 15 pairs show no
+output-token drop (11831 low vs 9819 control, 8 pairs up / 7 down), and the mechanical tier
+resolves to haiku, which emits no `effort` field at all in 9914/9914 corpus records, so the
+option is unfalsifiable exactly where these sites run. No site carries `effort:`, §2b's ban
+stands, and `docs/workflow-schemas.md` § "agentType / effort options spike" → the follow-up
+carries the full record. Judgment sites are
+excluded by § The classification rule and must stay excluded;
+`scripts/verify-workflow-review.sh` §2c asserts both directions with planted-mutation
+self-tests.
+
+**One structural fact about this table that is easy to get wrong**, and which both this
+roadmap's phase body and its approved plan did get wrong: of these 19 records, exactly ONE is
+dispatched through a `parallel()` fan-out — `gather:<stem>` in `rdm-wf-document.js`. Plan-review's
+`gate:clear-tag:*` and estimate's `estimate:write:*`/`tier:*` run in sequential loops *after*
+their workflow's parallel barrier, not inside its thunk. It mattered because whether `agentType`
+resolves through `parallel()` was the last open question, and only a `rdm-wf-document` dispatch
+could answer it. Two such dispatches have since run (`wf_762e3030-762`, `wf_e6452cce-cf7`): all
+twelve `gather:*` fan-out agents resolved, none raised, each run's six share a single `queuedAt`
+and start within ~0.4 s, and their `firstRequestTokens` median is 26923 — the trimmed side.
+**Resolution through `parallel()` is confirmed.** `verify-workflow-review.sh` §2c(v) still pins
+the set so a future refactor cannot move a mechanical site into a fan-out unnoticed; see
+`docs/workflow-schemas.md` § "agentType / effort options spike" → the follow-up.
 
 | File | Mechanical sites now carrying `agentType` | Maintenance route |
 |---|---|---|
@@ -495,3 +517,16 @@ and actionable. `agentType` did **not** move: its cases were invalid, so it rema
 was, one valid dispatch away from an answer. The follow-up task carries both halves, and it
 must re-run the spike for the `agentType` half specifically — from a session that can see the
 definition at session start, a condition the invalid run did not meet.
+
+**Since then (2026-08-14 / 2026-08-15).** The `agentType` half is **closed**: it was re-run
+validly, threaded, its lane saving is measured across three agent classes at n=16–25 rather
+than n=1 (`fetch` −14.6 %, `gate` −14.2 %, `model` −13.8 % against the pinned pre-change
+medians), and its last open question — resolution through a `parallel()` fan-out — is now
+confirmed by two `rdm-wf-document` dispatches. Two threaded sites in this table,
+`estimate:list` and `rdm-wf-estimate.js`'s own `model:mechanical`, have **never dispatched** in
+the recorded corpus (every estimate run took the caller-hoist path), so they remain threaded but
+unmeasured. The `effort` half is **also closed, as a negative**: the fidelity study ran, its
+transcription half passed 15/15, and threading was still refused for want of an output-token
+drop and for want of any verification channel on the mechanical tier's model. Figures and method
+live in `docs/token-baseline.json` § `mechanicalContextTrim` (`laneDeltaBroadened`,
+`parallelDispatchConfirmed`, `effortFidelity`).
