@@ -244,6 +244,32 @@ prompt now states this explicitly.
    so a future prompt builder that starts quoting the summary is caught before it ships a
    broken command line.
 
+4. **The policy is stated on every plan surface; the driver's field names are not.**
+   `.claude/workflows/lib/review.mjs`'s `//|plan|` spec is stamped into **four** plan-review
+   consumers — the local dogfood shim `.claude/skills/rdm-plan-review/SKILL.md`, the two
+   shipped templates `rdm-core/src/templates/skill-plan-review-{cli,mcp}.md`, and
+   `plugins/rdm/skills/plan-review/SKILL.md` — and only the first of those is driven by
+   `rdm-wf-plan-review.js`. That workflow is **local-only**:
+   `rdm-core/src/templates/workflows/` ships `rdm-wf-dispatch-phase.js` and
+   `rdm-wf-review-refute-fix.js`, and nothing else. The shipped and plugin skills run the
+   gate themselves, in hand-authored prose that shells out to `rdm … update --tags …`
+   directly; they have no driver to pass `gateMode` to and no returned unit to read
+   `gateBlocked` off.
+
+   So the shared spec states the policy in terms of **the write** — state its evidence; be
+   loud if it did not land; do not perform it at all when you are too close to the plan, and
+   report the exact commands instead — which every plan surface can act on whatever
+   mechanism it uses. `gateMode`, `gateAction`, `gateBlocked` and `gateDeferred` appear only
+   in the local shim's **hand-authored** prose, above the generated marker. Stamping them
+   into the shared spec would emit an uninstructable instruction into every downstream tree,
+   which is the failure this point exists to prevent.
+
+   Both halves are gated. `verify-workflow-review.sh` § 1d-gate-policy requires the shared
+   spec and both shipped templates to be free of those four names *and* requires the local
+   shim to carry them — so the check cannot be satisfied by deleting the capability instead
+   of scoping it — and § 1g plants a field name in the `//|plan|` region, regenerates, and
+   requires the detector to fire.
+
 ---
 
 ## NON-GOAL

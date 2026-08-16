@@ -296,11 +296,24 @@ grep -q 'gate each phase \*\*individually\*\*' "$TMP/plan-spec-cli" ||
 # evidence-carrying, deferrable, and loud on failure. That decision must be
 # STATED on the rendered plan surfaces (not only in the JS), and must NOT leak
 # into the code render — the existing bidirectional mode-isolation discipline.
+#
+# DRIVER-AGNOSTIC BY CONSTRUCTION. The canonical spec is stamped into FOUR plan
+# consumers, and only one of them (`.claude/skills/rdm-plan-review/SKILL.md`) is
+# driven by `rdm-wf-plan-review.js` — a LOCAL-ONLY workflow. The shipped
+# cli/mcp templates and the plugin skill perform the gate write themselves, in
+# hand-authored Bash prose, with no JS driver to hand args to and no returned
+# object to read fields off. So the policy is stated here in terms of the
+# WRITE ("if the write fails … do not perform the write at all"), never in
+# terms of the local driver's argument or result field names. Those live in the
+# local shim's hand-authored prose, gated separately below.
 PLAN_GATE_ANCHORS=$(
     cat <<'ANCHORS'
 specified gate behavior
-gateMode: 'return'
-gateBlocked: true
+did not is LOUD
+never describe that unit as cleanly reviewed
+do not perform
+deliberate
+hand-off, not a failure
 docs/plan-review-gate-policy.md
 ANCHORS
 )
@@ -310,6 +323,38 @@ printf '%s\n' "$PLAN_GATE_ANCHORS" | while IFS= read -r anchor; do
         fail "1d-gate-policy: the rendered plan spec is missing the gate-policy anchor: $anchor"
 done || exit 1
 pass "1d-gate-policy: the rendered plan spec states the evidence-carrying/deferrable/loud gate policy"
+
+# ...and states it WITHOUT the local driver's internals. `gateMode`/`gateAction`/
+# `gateBlocked`/`gateDeferred` are `rdm-wf-plan-review.js` surface, and that
+# workflow is never shipped (`rdm-core/src/templates/workflows/` holds only
+# dispatch-phase and review-refute-fix). A consumer of the distributed skill has
+# nothing to pass `gateMode` TO and no object to read `gateBlocked` OFF, so
+# stamping those names into the shared spec would emit an uninstructable
+# instruction into every downstream tree. This grep is the regression detector.
+for driverfield in gateMode gateAction gateBlocked gateDeferred; do
+    if grep -nF "$driverfield" "$TMP/plan-spec-cli" >&2; then
+        fail "1d-gate-policy: local-workflow driver internals ($driverfield) leaked into the SHARED plan spec — the shipped/plugin plan-review skill has no JS driver to use them; keep them in the local shim's hand-authored prose"
+    fi
+done
+for shipped_plan in "$TEMPLATES/skill-plan-review-cli.md" "$TEMPLATES/skill-plan-review-mcp.md"; do
+    for driverfield in gateMode gateAction gateBlocked gateDeferred; do
+        if grep -nF "$driverfield" "$shipped_plan" >&2; then
+            fail "1d-gate-policy: $driverfield appears in $shipped_plan — the distributed plan-review skill never invokes rdm-wf-plan-review.js"
+        fi
+    done
+done
+pass "1d-gate-policy: the shared plan spec and both shipped templates are free of local-workflow driver internals"
+
+# The other half of the same contract: the LOCAL dogfood shim, which IS driven
+# by the workflow, must still carry them — otherwise the check above could be
+# satisfied by deleting the capability outright rather than by scoping it.
+PLAN_SHIM_MD="$REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
+awk 'index($0, "<!-- rdm:review-spec:begin") { exit } { print }' "$PLAN_SHIM_MD" >"$TMP/plan-shim-hand"
+for driverfield in "gateMode: 'return'" 'gateAction' 'gateBlocked: true' 'gateAction.commands' 'docs/plan-review-gate-policy.md'; do
+    grep -qF "$driverfield" "$TMP/plan-shim-hand" ||
+        fail "1d-gate-policy: the LOCAL rdm-plan-review shim's hand-authored prose must document $driverfield — it is the one plan consumer the workflow drives"
+done
+pass "1d-gate-policy: the local workflow-driven shim documents gateMode/gateAction/gateBlocked in its own hand-authored prose"
 
 # The policy DOC itself must exist and must not silently lose its recorded
 # evidence or its explicit non-goal — the phase body's own instruction was that
@@ -335,7 +380,7 @@ for bad in '\*\*ac\*\*' '\*\*changelog\*\*' '\*\*security\*\*' 'rdm hook done-li
         fail "code-only prose ($bad) leaked into the generated plan spec — tag it //|code|"
     fi
 done
-for bad in 'needs-plan-review' '\*\*unit-of-work\*\*' '\*\*restraint\*\*' 'gateMode' 'gateBlocked' 'plan-review-gate-policy'; do
+for bad in 'needs-plan-review' '\*\*unit-of-work\*\*' '\*\*restraint\*\*' 'specified gate behavior' 'plan-review-gate-policy'; do
     if grep -nE "$bad" "$TMP/spec-cli" >&2; then
         fail "plan-only prose ($bad) leaked into the generated code spec — tag it //|plan|"
     fi
@@ -508,6 +553,36 @@ sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode code >/de
 diff -u "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" "$LOCALSCRATCH/baseline-code-for-gate-policy.md" >/dev/null 2>&1 ||
     fail "1g: the //|plan| gate-policy prose LEAKED into the code render — mode isolation is broken"
 pass "1g: the gate-policy pointer is consumed by the plan render only, and its absence is detectable"
+reset_localscratch_source
+reset_localscratch_consumers
+
+# Non-vacuity for §1d-gate-policy's DRIVER-INTERNALS guard: plant a local-only
+# workflow field name into the //|plan| region of a scratch SOURCE copy,
+# regenerate the shipped plan template, and require the same grep that runs in
+# §1d to fire on it. Without this, the guard could pass simply because nobody
+# ever writes those names — it must be shown to actually catch the leak this
+# phase's review found (driver internals stamped into the distributed skill).
+reset_localscratch_source
+reset_localscratch_consumers
+awk '{
+    if (index($0, "//|plan| The decision this rests on") == 1) {
+        print "//|plan| Pass `gateMode` and read `gateBlocked` off the returned unit."
+    }
+    print
+}' "$LOCALSCRATCH/.claude/workflows/lib/review.mjs" >"$LOCALSCRATCH/mut-driverfield"
+mv "$LOCALSCRATCH/mut-driverfield" "$LOCALSCRATCH/.claude/workflows/lib/review.mjs"
+grep -qF 'gateMode' "$LOCALSCRATCH/.claude/workflows/lib/review.mjs" ||
+    fail "1g: the driver-internals mutation did not actually plant gateMode in the scratch source"
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode plan >/dev/null 2>&1
+DRIVERFIELD_LEAKED=0
+for driverfield in gateMode gateAction gateBlocked gateDeferred; do
+    if grep -qF "$driverfield" "$LOCALSCRATCH/rdm-core/src/templates/skill-plan-review-cli.md"; then
+        DRIVERFIELD_LEAKED=1
+    fi
+done
+[ "$DRIVERFIELD_LEAKED" -eq 1 ] ||
+    fail "1g: planting a local-workflow field name in the //|plan| region did NOT reach the shipped plan template — §1d-gate-policy's driver-internals grep is vacuous"
+pass "1g: the driver-internals guard demonstrably catches a local-workflow field name stamped into the shipped plan template"
 reset_localscratch_source
 reset_localscratch_consumers
 
@@ -4853,6 +4928,19 @@ const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking'
     '5b-gate-evidence: the prompt states how many were graded by an INDEPENDENT refuter');
   assert.ok(/0 at blocking severity/.test(p), '5b-gate-evidence: the prompt states the blocking-survivor count');
 
+  // (c2) ZERO SURVIVORS is its own claim, and it is the WEAKEST one the gate
+  //      can make honestly: nothing survived, so nothing went un-graded. Both
+  //      the two-party clause and the evidence block must say exactly that,
+  //      rather than the "all N were graded" phrasing (which would be a
+  //      vacuous truth about an empty set) or nothing at all. Asserted here
+  //      because this run really does reach the gate with zero survivors.
+  assert.ok(/no finding survived refutation, so nothing went un-graded/.test(p),
+    '5b-gate-evidence: with zero survivors the two-party clause says so, instead of claiming "all N graded"');
+  assert.ok(/none survived, so no un-graded finding is being waved through/.test(p),
+    '5b-gate-evidence: and the evidence block states the same, so the grading line is never silently absent');
+  assert.ok(!/all 0 were graded/.test(p),
+    '5b-gate-evidence: zero survivors never render as a vacuous "all 0 were graded" claim');
+
   // (d) the invoking skill/workflow + "specified behavior" clause — answers the
   //     recorded "no user request for this action" / "only asked a question".
   assert.ok(p.indexOf('rdm-plan-review') !== -1 && p.indexOf('rdm-wf-plan-review') !== -1,
@@ -4998,6 +5086,16 @@ const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking'
   // contradiction is exactly what a careful classifier would catch.
   assert.ok(/grading coverage of those survivors: 1 of 4 were graded by an independent refuter; 3 were NOT/.test(p),
     '5b-gate-evidence: the evidence block reports the same split as the clause');
+  // PARTIAL GRADING + ZERO BLOCKING is the one combination where the gate owes
+  // the reader an explicit reconciliation: three findings were not verified,
+  // yet the outcome is still `reviewed`. The clause must say WHY (nothing
+  // reached blocking severity) rather than leaving the reader to infer it —
+  // this is the sub-branch that carries the whole "reported, not verified" line
+  // from an admission into an argument.
+  assert.equal(res.units[0].findings.filter((f) => f.severity === 'blocking').length, 0,
+    '5b-gate-evidence: (setup) the mixed unit really does carry zero blocking survivors');
+  assert.ok(/No survivor of any kind reached blocking severity, which is why the outcome is `reviewed`/.test(p),
+    '5b-gate-evidence: partial grading with zero blocking survivors states why reviewed is still the right outcome');
   // Determinism survives the new conditional rendering.
   const second = await runOnce();
   assert.equal(p, second.p, '5b-gate-evidence: the mixed-grading prompt is byte-identical across runs');
@@ -5562,7 +5660,7 @@ plan_mutate_and_expect_fail x 'neutering the roadmapBodyVerified===false fail-cl
 pass "5b-mut: all ten driver mutations flip a 5b-exec assertion, and the control passes"
 
 # --- 5b-gate-mut. PLANTED MUTATIONS FOR THE GATE SECTIONS ---------------------
-# The four 5b-gate-* sections above are only worth having if they fire. Six
+# The four 5b-gate-* sections above are only worth having if they fire. Twelve
 # independent mutations of the gate half — each a regression a maintainer could
 # plausibly introduce — must flip one of their assertions, plus a control run
 # against the real file that must pass. Same scratch tree, same discipline as
@@ -5670,7 +5768,44 @@ gmut_raw_severity() {
 }
 gate_mutate_and_expect_fail xix 'interpolating the raw finder-authored severity into the authorization preamble' gmut_raw_severity
 
-pass "5b-gate-mut: all nine gate mutations flip a 5b-gate-* assertion, and the control passes"
+# (xx) Collapse the two-party clause's ZERO-SURVIVOR branch into the
+#      "all N graded" phrasing. A gate that survived with nothing to grade would
+#      then claim a grading it never performed — vacuously true about an empty
+#      set, and indistinguishable in the prompt from a run that really did grade
+#      every survivor. This is the branch AC1's "must not overclaim grading
+#      coverage it does not have" is about at the zero end.
+gmut_two_party_zero() {
+    perl -0pi -e "s/  if \(evidence\.findingCount === 0\) \{/  if (false) { \/\/ MUTANT: collapses the zero-survivor branch/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT: collapses the zero-survivor branch' "$PMUT/plan-review.mjs"
+}
+gate_mutate_and_expect_fail xx 'collapsing the two-party clause zero-survivor branch into the all-graded phrasing' gmut_two_party_zero
+
+# (xxi) Same, one layer down, in the EVIDENCE block's own grading-coverage line.
+#       The clause and the evidence block are rendered independently, so each
+#       needs its own zero-survivor branch and its own mutation — a
+#       contradiction between the two is exactly what a careful reader (or
+#       classifier) would catch.
+gmut_evidence_zero() {
+    perl -0pi -e "s/  if \(e\.findingCount === 0\) \{/  if (false) { \/\/ MUTANT: collapses the evidence-block zero-survivor line/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT: collapses the evidence-block zero-survivor line' "$PMUT/plan-review.mjs"
+}
+gate_mutate_and_expect_fail xxi 'collapsing the evidence block zero-survivor grading line into the all-graded phrasing' gmut_evidence_zero
+
+# (xxii) Delete the partial-grading reconciliation sentence. Un-graded survivors
+#        plus a `reviewed` outcome is the one combination that looks wrong
+#        without an explanation, and the sentence naming zero blocking severity
+#        is the explanation. Dropping it leaves the prompt admitting the gap and
+#        never answering it.
+gmut_blocking_reconcile() {
+    perl -0pi -e "s/    if \(evidence\.blockingCount === 0\) \{/    if (false) { \/\/ MUTANT: drops the zero-blocking reconciliation/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT: drops the zero-blocking reconciliation' "$PMUT/plan-review.mjs"
+}
+gate_mutate_and_expect_fail xxii 'dropping the zero-blocking reconciliation sentence from the partial-grading clause' gmut_blocking_reconcile
+
+pass "5b-gate-mut: all twelve gate mutations flip a 5b-gate-* assertion, and the control passes"
 
 # --- 5b-hoist-exec. RUNTIME-ENTRY model hoist fires on a stringified args ----
 # `5b-exec` above drives `runPlanReviewDriver` directly (imported from

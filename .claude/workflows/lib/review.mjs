@@ -2185,11 +2185,12 @@ function buildReviewPipeline(mode, deps) {
 //|plan| this review. Every finding comes from an independently dispatched finder, each
 //|plan| finding that can gate is sent to a separate refuter, and the gate itself is a
 //|plan| table lookup (`GATE_POLICY.plan`) over that verdict — the two-party property is
-//|plan| structural, not procedural. So the write is stated **with its evidence**: which
+//|plan| structural, not procedural. So state the write **with its evidence**: which
 //|plan| dimension finders ran, how many findings they produced, how many an independent
-//|plan| refuter graded, that none survived at blocking severity, the exact tag list about
-//|plan| to be written, and that the write touches one reversible metadata tag — no rdm
-//|plan| status, no code, no land-time completion directive.
+//|plan| refuter graded, how many survived and how many of those reached blocking
+//|plan| severity, the exact tag list about to be written, and that the write touches one
+//|plan| reversible metadata tag — no rdm status, no code, no land-time completion
+//|plan| directive.
 //|plan|
 //|plan| That grading claim is **computed, never assumed**. Refutation is deliberately not
 //|plan| total: a non-gating `suggestion` is never sent to a refuter, a gating finding past
@@ -2199,20 +2200,21 @@ function buildReviewPipeline(mode, deps) {
 //|plan| severity and reason, and states that an un-graded survivor was **reported, not
 //|plan| verified**. Do not restate it as blanket per-finding grading when you report.
 //|plan|
-//|plan| Two consequences for how you report and drive it:
+//|plan| Two rules follow, whatever mechanism your surface uses to perform the write —
+//|plan| whether you run the two commands yourself or a driver runs them for you:
 //|plan|
-//|plan| - **A gate that was supposed to clear the tag and did not is LOUD.** If a unit
-//|plan|   comes back with `gateBlocked: true` (a `reviewed` outcome whose tag write did
-//|plan|   not succeed), surface it at the **top** of your report, with the exact command
-//|plan|   to run — never bury it, and never report that unit as cleanly reviewed. The
-//|plan|   unit's own `summary` carries a `[GATE BLOCKED: …]` clause for exactly this
-//|plan|   reason.
+//|plan| - **A gate that was supposed to clear the tag and did not is LOUD.** If the tag
+//|plan|   write fails, is refused, or is skipped on a unit whose outcome was `reviewed`,
+//|plan|   say so at the **top** of your report, with the exact command to run — never
+//|plan|   bury it, and never describe that unit as cleanly reviewed. Its tag is still
+//|plan|   set, so the item still reads as un-plan-reviewed to every other surface.
 //|plan| - **You may defer the write.** When the session running the review is the same
-//|plan|   one that authored the plan, pass `gateMode: 'return'`; the gate is then
-//|plan|   computed and returned as `gateAction` (its `commands`, plus the
-//|plan|   sibling-preserved `remainingTags`) and **nothing is written**, so a human
-//|plan|   applies it. That is a deliberate hand-off, not a failure, and is reported
-//|plan|   separately as `gateDeferred: true`.
+//|plan|   one that authored the plan, or is otherwise too close to it, do not perform
+//|plan|   the write at all: report the exact commands the gate would have run, together
+//|plan|   with the complete sibling-preserved tag list they write, and let a human — or
+//|plan|   a session that did not author the plan — apply them. That is a deliberate
+//|plan|   hand-off, not a failure, and must be reported as a deferral rather than as a
+//|plan|   gate failure.
 //|plan|
 //|plan| The decision this rests on, its boundary, and the recorded evidence behind it
 //|plan| live in `docs/plan-review-gate-policy.md`.

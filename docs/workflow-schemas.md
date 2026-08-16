@@ -1756,6 +1756,19 @@ returned `clearsPlanReviewTag: true, tagCleared: false` and nothing else.
 The `--implementation-plan` branch has no persisted item, so it gains **none** of
 these keys.
 
+**Scope: these five fields and `gateMode` are `rdm-wf-plan-review.js` surface,
+and that workflow is local-only.** They are deliberately absent from the shared
+`//|plan|` review spec, and therefore from the shipped
+`skill-plan-review-{cli,mcp}.md` templates and `plugins/rdm/skills/plan-review/`
+— those skills perform the gate write themselves, in hand-authored prose that
+shells out to `rdm … update --tags …`, and have no driver to pass `gateMode` to
+or returned unit to read `gateBlocked` off. The shared spec states the same
+*policy* in terms of the write instead; the field names live only in the
+hand-authored half of `.claude/skills/rdm-plan-review/SKILL.md`.
+`verify-workflow-review.sh` § 1d-gate-policy gates both directions and § 1g
+proves the detector fires. See
+[`plan-review-gate-policy.md`](plan-review-gate-policy.md) § "What changed" ¶ 4.
+
 Both gate clauses embed an exact rdm command containing double quotes
 (`--tags "a,b"`), so — unlike `coverageSummaryClause`, which is quote-free
 precisely *because* it is interpolated into Bash prompts — `summary`/`reason` in

@@ -425,11 +425,12 @@ not self-approval**: the verdict is never authored by the orchestrator running
 this review. Every finding comes from an independently dispatched finder, each
 finding that can gate is sent to a separate refuter, and the gate itself is a
 table lookup (`GATE_POLICY.plan`) over that verdict — the two-party property is
-structural, not procedural. So the write is stated **with its evidence**: which
+structural, not procedural. So state the write **with its evidence**: which
 dimension finders ran, how many findings they produced, how many an independent
-refuter graded, that none survived at blocking severity, the exact tag list about
-to be written, and that the write touches one reversible metadata tag — no rdm
-status, no code, no land-time completion directive.
+refuter graded, how many survived and how many of those reached blocking
+severity, the exact tag list about to be written, and that the write touches one
+reversible metadata tag — no rdm status, no code, no land-time completion
+directive.
 
 That grading claim is **computed, never assumed**. Refutation is deliberately not
 total: a non-gating `suggestion` is never sent to a refuter, a gating finding past
@@ -439,20 +440,21 @@ gate therefore reports this unit's real graded/un-graded split, itemised by
 severity and reason, and states that an un-graded survivor was **reported, not
 verified**. Do not restate it as blanket per-finding grading when you report.
 
-Two consequences for how you report and drive it:
+Two rules follow, whatever mechanism your surface uses to perform the write —
+whether you run the two commands yourself or a driver runs them for you:
 
-- **A gate that was supposed to clear the tag and did not is LOUD.** If a unit
-  comes back with `gateBlocked: true` (a `reviewed` outcome whose tag write did
-  not succeed), surface it at the **top** of your report, with the exact command
-  to run — never bury it, and never report that unit as cleanly reviewed. The
-  unit's own `summary` carries a `[GATE BLOCKED: …]` clause for exactly this
-  reason.
+- **A gate that was supposed to clear the tag and did not is LOUD.** If the tag
+  write fails, is refused, or is skipped on a unit whose outcome was `reviewed`,
+  say so at the **top** of your report, with the exact command to run — never
+  bury it, and never describe that unit as cleanly reviewed. Its tag is still
+  set, so the item still reads as un-plan-reviewed to every other surface.
 - **You may defer the write.** When the session running the review is the same
-  one that authored the plan, pass `gateMode: 'return'`; the gate is then
-  computed and returned as `gateAction` (its `commands`, plus the
-  sibling-preserved `remainingTags`) and **nothing is written**, so a human
-  applies it. That is a deliberate hand-off, not a failure, and is reported
-  separately as `gateDeferred: true`.
+  one that authored the plan, or is otherwise too close to it, do not perform
+  the write at all: report the exact commands the gate would have run, together
+  with the complete sibling-preserved tag list they write, and let a human — or
+  a session that did not author the plan — apply them. That is a deliberate
+  hand-off, not a failure, and must be reported as a deferral rather than as a
+  gate failure.
 
 The decision this rests on, its boundary, and the recorded evidence behind it
 live in `docs/plan-review-gate-policy.md`.
