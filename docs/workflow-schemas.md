@@ -1738,6 +1738,33 @@ clearsPlanReviewTag, reasonPrefix }`, and `STATUS_MAPPING` *is*
 plan review never persists an rdm status; it clears `needs-plan-review` on
 `reviewed` and leaves it on `rework`/`escalated`.
 
+### `rdm-wf-plan-review`'s gate disposition: `gateAction` / `gateBlocked` / `gateDeferred`
+
+`GATE_POLICY.plan` above says what the gate *should* do. These four result fields,
+added by `phase-4-plan-review-gate-blocked-by-safety-classifier`, say what it
+actually did — the two used to be silently conflated, so a refused tag write
+returned `clearsPlanReviewTag: true, tagCleared: false` and nothing else.
+
+| field | where | meaning |
+|---|---|---|
+| `gateAction` | every gated unit, plus the single-target flatten | The declarative action: `{ kind, ident, roadmap, clearsPlanReviewTag, commands, remainingTags, removedTags, applied, deferred, blocked, blockedReason }`. `commands` is `[updateCmd, commitCmd]` built by the same `planGateCommands` helper the gate PROMPT prints, so a caller applying it by hand issues byte-identical writes; it is `[]` on a `rework`/`escalated` unit, which still gets an action so callers can iterate `units[].gateAction` without special-casing. `blockedReason` is `'ack-not-ok'` (a refusal) or `'agent-error: <message>'` (a crash). |
+| `gateBlocked` | every gated unit, plus the flatten | `true` when a `reviewed` unit's tag write was attempted and did not succeed. Also drives a ` [GATE BLOCKED: …]` clause on the unit's `summary` and a dedicated log line on BOTH failure paths. |
+| `gateDeferred` | every gated unit, plus the flatten | `true` when `gateMode: 'return'` made the driver compute the action and write nothing. A hand-off, DISTINCT from `gateBlocked` — the loud clause must not fire on it. |
+| `gateBlockedCount` | run-level result (and the fetch-failure / model-abort early returns, as an explicit `0`) | How many units are blocked. Appended to the final `N unit(s) gated` log line when non-zero. |
+
+The `--implementation-plan` branch has no persisted item, so it gains **none** of
+these keys.
+
+**`gateMode` arg.** `'apply'` (default) | `'return'`, read from the STRUCTURED
+`args` object only — never parsed out of the `$ARGUMENTS` flag string, the same
+rule as `fetched`/`wontFixedTexts` — and validated at PARSE time, before any
+`agent()` call, the `resolveRefutationBudget` precedent. Under `'return'` the
+`gate:clear-tag` agent is not dispatched at all. The gate prompt itself is now
+evidence-carrying (a four-clause authorization preamble plus the rendered review
+evidence); the decision behind both, its boundary, and the recorded classifier
+blocks that forced it live in
+[`plan-review-gate-policy.md`](plan-review-gate-policy.md).
+
 Everything else inside the stamped block is **machinery** (JSON schemas,
 `survives`/`rankFindings`/`selectDimensions`/`deriveSignals`, the classifier and
 the gate policy) and is never rendered into a skill. Both generators are

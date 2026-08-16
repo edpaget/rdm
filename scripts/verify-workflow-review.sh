@@ -291,6 +291,43 @@ grep -q 'no gate at all' "$TMP/plan-spec-cli" ||
 grep -q 'gate each phase \*\*individually\*\*' "$TMP/plan-spec-cli" ||
     fail "the rendered plan spec must carry per-phase --roadmap gating"
 
+# --- 1d-gate-policy. THE SELF-REVIEW POLICY PROSE (AC3) -----------------------
+# phase-4-plan-review-gate-blocked-by-safety-classifier: the gate is now
+# evidence-carrying, deferrable, and loud on failure. That decision must be
+# STATED on the rendered plan surfaces (not only in the JS), and must NOT leak
+# into the code render — the existing bidirectional mode-isolation discipline.
+PLAN_GATE_ANCHORS=$(
+    cat <<'ANCHORS'
+specified gate behavior
+gateMode: 'return'
+gateBlocked: true
+docs/plan-review-gate-policy.md
+ANCHORS
+)
+printf '%s\n' "$PLAN_GATE_ANCHORS" | while IFS= read -r anchor; do
+    [ -n "$anchor" ] || continue
+    grep -qF "$anchor" "$TMP/plan-spec-cli" ||
+        fail "1d-gate-policy: the rendered plan spec is missing the gate-policy anchor: $anchor"
+done || exit 1
+pass "1d-gate-policy: the rendered plan spec states the evidence-carrying/deferrable/loud gate policy"
+
+# The policy DOC itself must exist and must not silently lose its recorded
+# evidence or its explicit non-goal — the phase body's own instruction was that
+# this not be resolved by quieting the classifier.
+GATE_POLICY_DOC="$REPO_ROOT/docs/plan-review-gate-policy.md"
+[ -f "$GATE_POLICY_DOC" ] ||
+    fail "1d-gate-policy: docs/plan-review-gate-policy.md is missing — the self-review decision must be written down"
+grep -q 'NON-GOAL' "$GATE_POLICY_DOC" ||
+    fail "1d-gate-policy: docs/plan-review-gate-policy.md must carry an explicit NON-GOAL section"
+grep -qF 'wf_1ee517c8-ec2' "$GATE_POLICY_DOC" ||
+    fail "1d-gate-policy: docs/plan-review-gate-policy.md must record the wf_1ee517c8-ec2 classifier block"
+RECORDED_7E=$(grep -cF 'wf_7e7d554d-452' "$GATE_POLICY_DOC" || true)
+[ "$RECORDED_7E" -ge 2 ] ||
+    fail "1d-gate-policy: docs/plan-review-gate-policy.md must record BOTH wf_7e7d554d-452 blocks, found $RECORDED_7E"
+grep -qF 'review-gate-intent' "$GATE_POLICY_DOC" ||
+    fail "1d-gate-policy: docs/plan-review-gate-policy.md must name review-gate-intent as the owner of the broader question"
+pass "1d-gate-policy: the policy doc records all three blocked runs, the non-goal, and the review-gate-intent deferral"
+
 # Mode isolation, both directions. A code-only line left untagged would ship
 # into the plan skill (and vice versa); these greps are the detector.
 for bad in '\*\*ac\*\*' '\*\*changelog\*\*' '\*\*security\*\*' 'rdm hook done-line' 'AC table' 'AC FAIL'; do
@@ -298,7 +335,7 @@ for bad in '\*\*ac\*\*' '\*\*changelog\*\*' '\*\*security\*\*' 'rdm hook done-li
         fail "code-only prose ($bad) leaked into the generated plan spec — tag it //|code|"
     fi
 done
-for bad in 'needs-plan-review' '\*\*unit-of-work\*\*' '\*\*restraint\*\*'; do
+for bad in 'needs-plan-review' '\*\*unit-of-work\*\*' '\*\*restraint\*\*' 'gateMode' 'gateBlocked' 'plan-review-gate-policy'; do
     if grep -nE "$bad" "$TMP/spec-cli" >&2; then
         fail "plan-only prose ($bad) leaked into the generated code spec — tag it //|plan|"
     fi
@@ -445,6 +482,34 @@ sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode plan >/dev/
 sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --check --target local --mode plan >/dev/null 2>&1 ||
     fail "regeneration did not restore sync in the local rdm-plan-review scratch copy"
 pass "local rdm-plan-review (target=local mode=plan) drift detector fires on a consumer-side edit and heals"
+
+# Non-vacuity for §1d-gate-policy's anchor greps: strip the
+# docs/plan-review-gate-policy.md pointer from the //|plan| region in a scratch
+# SOURCE copy, regenerate, and require the anchor to disappear from the plan
+# render while the CODE render stays byte-unchanged (the same
+# mutate-source/assert-isolation shape used for the local-code-override below).
+reset_localscratch_source
+reset_localscratch_consumers
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode code >/dev/null 2>&1
+cp "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" "$LOCALSCRATCH/baseline-code-for-gate-policy.md"
+grep -v 'docs/plan-review-gate-policy.md' "$LOCALSCRATCH/.claude/workflows/lib/review.mjs" >"$LOCALSCRATCH/mut-gate-src" &&
+    mv "$LOCALSCRATCH/mut-gate-src" "$LOCALSCRATCH/.claude/workflows/lib/review.mjs"
+if grep -q 'docs/plan-review-gate-policy.md' "$LOCALSCRATCH/.claude/workflows/lib/review.mjs"; then
+    fail "1g: the gate-policy pointer mutation did not actually strip the line"
+fi
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode plan >/dev/null 2>&1
+# Scoped to the GENERATED region: the hand-authored shim prose above it also
+# names the policy doc (deliberately), so a whole-file grep would false-pass.
+extract_spec_region "$LOCALSCRATCH/.claude/skills/rdm-plan-review/SKILL.md" >"$LOCALSCRATCH/mutated-plan-spec"
+if grep -q 'docs/plan-review-gate-policy.md' "$LOCALSCRATCH/mutated-plan-spec"; then
+    fail "1g: stripping the //|plan| gate-policy pointer did NOT change the plan render — §1d-gate-policy's grep is vacuous"
+fi
+sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode code >/dev/null 2>&1
+diff -u "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" "$LOCALSCRATCH/baseline-code-for-gate-policy.md" >/dev/null 2>&1 ||
+    fail "1g: the //|plan| gate-policy prose LEAKED into the code render — mode isolation is broken"
+pass "1g: the gate-policy pointer is consumed by the plan render only, and its absence is detectable"
+reset_localscratch_source
+reset_localscratch_consumers
 
 reset_localscratch_consumers
 
@@ -4619,6 +4684,556 @@ else
     fail "plan-review driver execution assertions failed"
 fi
 
+# --- 5b-gate-*. THE EVIDENCE-CARRYING / DEFERRABLE / LOUD GATE ----------------
+# phase-4-plan-review-gate-blocked-by-safety-classifier. Three recorded safety-
+# classifier blocks across two runs left units that legitimately reached
+# `reviewed` still carrying `needs-plan-review`, reported only as the silent
+# mismatch `clearsPlanReviewTag: true, tagCleared: false`. The fix has three
+# halves, each gated below against the real driver under a fake agent/parallel:
+#
+#   5b-gate-evidence — the gate prompt carries its authorization AND the review
+#                      evidence that justifies the write, deterministically.
+#   5b-gate-action   — every gated unit returns a declarative gateAction whose
+#                      commands are byte-identical to the prompt's.
+#   5b-gate-return   — `gateMode: 'return'` computes the action and dispatches
+#                      NO agent; the value is structured-key-only and validated.
+#   5b-gate-loud     — a blocked gate is visible in the summary, the log, and a
+#                      run-level count; a healthy run is byte-unchanged.
+#
+# The one thing no hermetic harness can assert — that a non-deterministic
+# classifier stops blocking — is an explicit NON-GOAL, recorded in
+# docs/plan-review-gate-policy.md and gated as prose by §1d-gate-policy.
+say "5b-gate-*. gate evidence, returned action, return-mode, and loud failure"
+cat >"$TMP/plan-gate-test.mjs" <<'NODE_GATE_TEST'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const libUrl = pathToFileURL(process.argv[2]);
+const mod = await import(libUrl.href);
+// filterPlanReviewTag lives in the review CORE, which sits beside the driver lib.
+const core = await import(new URL('./review.mjs', libUrl).href);
+const {
+  parsePlanArgs,
+  runPlanReviewDriver,
+  planGateCommands,
+  buildGateEvidence,
+  renderGateEvidence,
+  buildGateAction,
+  gateFailureClause,
+  gateDeferredClause,
+  buildTagWritePrompt,
+} = mod;
+for (const name of [
+  'planGateCommands', 'buildGateEvidence', 'renderGateEvidence', 'buildGateAction',
+  'gateFailureClause', 'gateDeferredClause',
+]) {
+  assert.equal(typeof mod[name], 'function', name + ' must be exported from lib/plan-review.mjs');
+}
+
+// ---- shared fake harness (mirrors 5b-exec's, plus gate-ack control) ---------
+// gateAck: 'ok' | 'not-ok' | 'throw' — how the fake gate:clear-tag agent
+// responds, which is what drives the loud-failure section below.
+function wrapFetch(label, raw, prompt) {
+  if (raw === undefined || raw === null) return null;
+  if (label === 'fetch:wontfix') return raw;
+  if (label === 'fetch:task') {
+    const m = /rdm task show (\S+)/.exec(prompt);
+    return { transcript: JSON.stringify({ slug: m ? m[1] : 'x', body: raw.body, tags: raw.tags }) };
+  }
+  if (label === 'fetch:phase') {
+    const m = /rdm phase show (\S+) --roadmap (\S+)/.exec(prompt);
+    return { transcript: JSON.stringify({ stem: m ? m[1] : 'x', roadmap: m ? m[2] : 'y', body: raw.body, tags: raw.tags }) };
+  }
+  if (label === 'fetch:roadmap') {
+    const m = /rdm roadmap show (\S+)/.exec(prompt);
+    const slug = m ? m[1] : 'r';
+    const phases = Array.isArray(raw.phases) ? raw.phases : [];
+    const lines = ['===CMD: roadmap show ' + slug + '==='];
+    lines.push(JSON.stringify({ slug, body: raw.body, tags: raw.tags, phases: phases.map((p) => ({ stem: p.stem, tags: p.tags })) }));
+    for (const p of phases) {
+      lines.push('===CMD: phase show ' + p.stem + '===');
+      lines.push(JSON.stringify({ stem: p.stem, roadmap: slug, body: p.body, tags: p.tags }));
+    }
+    return { transcript: lines.join('\n') };
+  }
+  return raw;
+}
+function makeGateHarness(opts) {
+  const o = opts || {};
+  const findings = o.findings || {};
+  const fetchResults = o.fetch || {};
+  const budgets = o.budgets || {};
+  const coverages = o.coverages || {};
+  const gateAck = o.gateAck || 'ok';
+  const calls = [];
+  const logs = [];
+  const agent = async (prompt, agentOpts) => {
+    const label = (agentOpts && agentOpts.label) || '';
+    calls.push({ label, phase: agentOpts && agentOpts.phase, prompt, opts: agentOpts });
+    if (label.indexOf('fetch:') === 0) {
+      const raw = fetchResults[label] !== undefined ? fetchResults[label] : null;
+      return wrapFetch(label, raw, prompt);
+    }
+    if (label.indexOf('gate:clear-tag:') === 0) {
+      if (gateAck === 'throw') throw new Error('classifier refused this write');
+      return { ok: gateAck === 'ok' };
+    }
+    return { ok: true };
+  };
+  const parallel = (thunks) => Promise.all(thunks.map((t) => t()));
+  const pick = (map, target) => {
+    for (const key of Object.keys(map)) if (target.indexOf(key) !== -1) return map[key];
+    return null;
+  };
+  const runPlanReview = async (ctx) => {
+    const target = (ctx && ctx.target) || '';
+    return {
+      survivors: pick(findings, target) || [],
+      acTable: null,
+      budget: pick(budgets, target),
+      coverage: pick(coverages, target),
+    };
+  };
+  const log = (line) => logs.push(String(line));
+  return { deps: { agent, parallel, runPlanReview, log }, calls, logs };
+}
+const FULL_COVERAGE_3 = {
+  mode: 'plan', total: 3,
+  selected: ['coherence', 'architectural-fit', 'restraint'],
+  ran: ['coherence', 'architectural-fit', 'restraint'],
+  failed: [], retried: [], complete: true, acDimensionRan: null, acTableAbsent: false,
+};
+const PARTIAL_COVERAGE_3 = {
+  mode: 'plan', total: 3,
+  selected: ['coherence', 'architectural-fit', 'restraint'],
+  ran: ['coherence', 'architectural-fit'],
+  failed: ['restraint'], retried: ['restraint'], complete: false, acDimensionRan: null, acTableAbsent: false,
+};
+const GRADED_BUDGET = {
+  max: 5, produced: 3, gating: 3, graded: 2, passedThroughNonGating: 0,
+  passedThroughBudget: 1, refuterErrors: 0, hit: true,
+};
+const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking', confidence: 90, what_fails: 'ambiguous' }];
+
+// =============================================================== 5b-gate-evidence
+// The gate prompt is no longer a bare two-command instruction: it carries the
+// authorization and the evidence. Each assertion below maps to one of the three
+// recorded classifier objections (see docs/plan-review-gate-policy.md).
+{
+  const runOnce = async () => {
+    const h = makeGateHarness({
+      fetch: { 'fetch:phase': { body: 'PB real phase body', tags: ['needs-plan-review', 'depends-unlanded'] } },
+      budgets: { 'PB': GRADED_BUDGET },
+      coverages: { 'PB': FULL_COVERAGE_3 },
+    });
+    await runPlanReviewDriver({ roadmap: 'big-thing', phase: 'phase-1-a' }, h.deps);
+    return h;
+  };
+  const h = await runOnce();
+  const gateCall = h.calls.find((c) => c.label === 'gate:clear-tag:phase:phase-1-a');
+  assert.ok(gateCall, '5b-gate-evidence: the reviewed phase got its gate:clear-tag call');
+  const p = gateCall.prompt;
+
+  // (a) the outcome word and the round number.
+  assert.ok(p.indexOf('reviewed') !== -1, '5b-gate-evidence: the prompt names the outcome');
+  assert.ok(/plan-review round 1/.test(p), '5b-gate-evidence: the prompt names the review round');
+
+  // (b) every dimension that ran, by name, from `coverage`.
+  for (const dim of FULL_COVERAGE_3.ran) {
+    assert.ok(p.indexOf(dim) !== -1, '5b-gate-evidence: the prompt names the ' + dim + ' dimension finder');
+  }
+
+  // (c) the refutation counts, from `budget`.
+  assert.ok(/findings produced by those finders: 3/.test(p), '5b-gate-evidence: the prompt states how many findings were produced');
+  assert.ok(/2 were graded by a separate, independent refuter agent/.test(p),
+    '5b-gate-evidence: the prompt states how many were graded by an INDEPENDENT refuter');
+  assert.ok(/0 at blocking severity/.test(p), '5b-gate-evidence: the prompt states the blocking-survivor count');
+
+  // (d) the invoking skill/workflow + "specified behavior" clause — answers the
+  //     recorded "no user request for this action" / "only asked a question".
+  assert.ok(p.indexOf('rdm-plan-review') !== -1 && p.indexOf('rdm-wf-plan-review') !== -1,
+    '5b-gate-evidence: the prompt names the skill/workflow the operator invoked');
+  assert.ok(/specified gate behavior/.test(p),
+    '5b-gate-evidence: the prompt states that clearing on reviewed is SPECIFIED behavior');
+  assert.ok(/not an unrequested mutation/.test(p),
+    '5b-gate-evidence: the prompt answers the "never requested" objection head-on');
+
+  // (e) the two-party sentence — answers "[Self-Approval] ... bypassing the
+  //     two-party review gate for the agent's own work".
+  assert.ok(/independently dispatched finder agents/.test(p),
+    '5b-gate-evidence: the prompt states findings come from INDEPENDENT finders');
+  assert.ok(/second, independent refuter agent/.test(p),
+    '5b-gate-evidence: the prompt states a SEPARATE refuter graded them');
+  assert.ok(/not the author of this plan|was not produced by the author of this plan/.test(p),
+    '5b-gate-evidence: the prompt states the verdict is not the plan author’s');
+
+  // (f) the blast-radius sentence — answers "[External System Writes]"/"[CI Bypass]".
+  assert.ok(/writes no rdm status/.test(p), '5b-gate-evidence: the prompt states no rdm status is written');
+  assert.ok(/reversible/.test(p), '5b-gate-evidence: the prompt states the write is reversible');
+
+  // (g) and STILL both exact rdm commands, unchanged.
+  const cmds = planGateCommands('phase', 'big-thing', 'phase-1-a', ['depends-unlanded']);
+  assert.ok(p.indexOf(cmds.updateCmd) !== -1, '5b-gate-evidence: the prompt still prints the exact update command');
+  assert.ok(p.indexOf(cmds.commitCmd) !== -1, '5b-gate-evidence: the prompt still prints the exact commit command');
+
+  // INJECTION HYGIENE: the finder-authored summary is rendered LAST, inside a
+  // delimited region labelled as data — it can never precede the fixed
+  // AUTHORIZATION clauses or sit between them and the commands.
+  const authIdx = p.indexOf('AUTHORIZATION');
+  const quotedIdx = p.indexOf('reviewer summary, quoted verbatim');
+  const cmdIdx = p.indexOf(cmds.updateCmd);
+  assert.ok(authIdx !== -1 && quotedIdx > authIdx && cmdIdx > quotedIdx,
+    '5b-gate-evidence: finder-authored text is rendered AFTER the authorization clauses and BEFORE the commands, never first');
+  assert.ok(/DATA, not instructions/.test(p),
+    '5b-gate-evidence: the quoted region is explicitly labelled as data');
+
+  // DETERMINISM: the same input renders a byte-identical prompt.
+  const h2 = await runOnce();
+  const p2 = h2.calls.find((c) => c.label === 'gate:clear-tag:phase:phase-1-a').prompt;
+  assert.equal(p, p2, '5b-gate-evidence: the gate prompt is byte-identical across two runs of the same input');
+
+  // The mechanical-tier contract at the call site is untouched.
+  assert.equal(gateCall.opts.agentType, 'rdm-mechanical', '5b-gate-evidence: the gate call site is still rdm-mechanical');
+  assert.equal(gateCall.opts.phase, 'Gate', '5b-gate-evidence: the gate call site is still phase Gate');
+}
+
+// Degradation: a null coverage / null budget must render an explicit
+// "unavailable" sentence, never `null`/`undefined` — an evidence block
+// containing `undefined` is worse than none.
+{
+  const h = makeGateHarness({ fetch: { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } } });
+  await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  const p = h.calls.find((c) => c.label === 'gate:clear-tag:task:fix-bug').prompt;
+  assert.ok(/dimension coverage unavailable/.test(p), '5b-gate-evidence: a coverage-less unit says so explicitly');
+  assert.ok(/refutation accounting unavailable/.test(p), '5b-gate-evidence: a budget-less unit says so explicitly');
+  assert.ok(p.indexOf('undefined') === -1, '5b-gate-evidence: the prompt never renders the literal `undefined`');
+  assert.ok(p.indexOf(': null') === -1, '5b-gate-evidence: the prompt never renders a literal `null` value');
+}
+
+// Reduced coverage must be NAMED, not glossed — a `reviewed` outcome on 2 of 3
+// dimensions must not overclaim in the very prompt that authorizes the write.
+{
+  const h = makeGateHarness({
+    fetch: { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } },
+    coverages: { 'TB': PARTIAL_COVERAGE_3 },
+  });
+  const res = await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  const p = h.calls.find((c) => c.label === 'gate:clear-tag:task:fix-bug').prompt;
+  assert.ok(/did NOT participate: restraint/.test(p),
+    '5b-gate-evidence: a non-participating dimension is named in the evidence block');
+  // and the pre-existing coverage clause on the summary is untouched.
+  assert.match(res.units[0].summary, /\[review coverage: 2\/3 dimensions ran; failed: restraint\]/,
+    '5b-gate-evidence: coverageSummaryClause is preserved alongside the new gate evidence');
+}
+
+// Tag-shape edge cases the evidence must state honestly, since both are exactly
+// the shape a reviewer would flag as data loss.
+{
+  // (a) `needs-plan-review` was the item's ONLY tag => `--tags ""`.
+  const h = makeGateHarness({ fetch: { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } } });
+  await runPlanReviewDriver({ task: 'lonely' }, h.deps);
+  const p = h.calls.find((c) => c.label === 'gate:clear-tag:task:lonely').prompt;
+  assert.ok(/only tag/.test(p), '5b-gate-evidence: an empty remaining list is explained, not printed as a bare blank');
+  assert.ok(p.indexOf('--tags ""') !== -1, '5b-gate-evidence: and the command really does write an empty list');
+}
+{
+  // (b) the item never carried `needs-plan-review` at all: an idempotent no-op,
+  //     which the prompt must say rather than claiming a removal.
+  const h = makeGateHarness({ fetch: { 'fetch:task': { body: 'TB', tags: ['bug'] } } });
+  const res = await runPlanReviewDriver({ task: 'untagged' }, h.deps);
+  const p = h.calls.find((c) => c.label === 'gate:clear-tag:task:untagged').prompt;
+  assert.ok(/idempotent no-op/.test(p), '5b-gate-evidence: an already-clear item is described as an idempotent no-op');
+  assert.deepEqual(res.units[0].gateAction.removedTags, [],
+    '5b-gate-evidence: and removedTags is empty, never a fabricated removal');
+}
+
+// =============================================================== 5b-gate-action
+// Every gated unit returns a declarative action whose commands are the SAME
+// strings the prompt prints.
+{
+  const h = makeGateHarness({
+    findings: { 'PA': blockingCoherence },
+    fetch: {
+      'fetch:roadmap': {
+        body: 'RB', tags: ['needs-plan-review', 'infra'],
+        phases: [
+          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] },
+          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review', 'depends-unlanded'] },
+        ],
+      },
+    },
+  });
+  const res = await runPlanReviewDriver({ roadmap: 'big-thing' }, h.deps);
+  const byIdent = Object.fromEntries(res.units.map((u) => [u.ident, u]));
+  const originalTags = {
+    'big-thing': ['needs-plan-review', 'infra'],
+    'phase-1-a': ['needs-plan-review'],
+    'phase-2-b': ['needs-plan-review', 'depends-unlanded'],
+  };
+
+  for (const ident of Object.keys(originalTags)) {
+    const u = byIdent[ident];
+    assert.ok(u.gateAction, '5b-gate-action: every gated unit carries a gateAction (' + ident + ')');
+    assert.deepEqual(u.gateAction.remainingTags, core.filterPlanReviewTag(originalTags[ident]),
+      '5b-gate-action: gateAction.remainingTags is exactly filterPlanReviewTag(tags) for ' + ident);
+  }
+  // The sibling tag really is preserved (not a vacuous equality on two empties).
+  assert.deepEqual(byIdent['phase-2-b'].gateAction.remainingTags, ['depends-unlanded'],
+    '5b-gate-action: a sibling tag survives the gate action');
+  assert.deepEqual(byIdent['phase-2-b'].gateAction.removedTags, ['needs-plan-review'],
+    '5b-gate-action: removedTags names exactly what is dropped');
+
+  // applied:true ONLY for the two reviewed units; the reworked one has NO commands.
+  assert.equal(byIdent['big-thing'].gateAction.applied, true, '5b-gate-action: reviewed roadmap body applied');
+  assert.equal(byIdent['phase-2-b'].gateAction.applied, true, '5b-gate-action: reviewed phase applied');
+  assert.equal(byIdent['phase-1-a'].outcome, 'rework', '5b-gate-action: sanity — phase-1-a really reworked');
+  assert.equal(byIdent['phase-1-a'].gateAction.applied, false, '5b-gate-action: a reworked unit is never applied');
+  assert.equal(byIdent['phase-1-a'].gateAction.clearsPlanReviewTag, false,
+    '5b-gate-action: a reworked unit reports clearsPlanReviewTag:false');
+  assert.deepEqual(byIdent['phase-1-a'].gateAction.commands, [],
+    '5b-gate-action: a reworked unit carries an EMPTY commands array, so callers need no special case');
+
+  // COMMAND PARITY: byte-identical to the two commands printed in the prompt.
+  for (const ident of ['big-thing', 'phase-2-b']) {
+    const call = h.calls.find((c) => c.label.indexOf('gate:clear-tag:') === 0 && c.label.indexOf(ident) !== -1);
+    assert.ok(call, '5b-gate-action: found the gate call for ' + ident);
+    const cmds = byIdent[ident].gateAction.commands;
+    assert.equal(cmds.length, 2, '5b-gate-action: two commands for ' + ident);
+    for (const cmd of cmds) {
+      assert.ok(call.prompt.indexOf(cmd) !== -1,
+        '5b-gate-action: gateAction command is byte-identical to the one the prompt printed (' + ident + '): ' + cmd);
+    }
+  }
+  assert.equal(res.gateBlockedCount, 0, '5b-gate-action: a healthy run reports zero blocked gates');
+}
+// The single-target flatten exposes gateAction (and its two sibling flags) too.
+{
+  const h = makeGateHarness({ fetch: { 'fetch:task': { body: 'TB', tags: ['needs-plan-review', 'bug'] } } });
+  const res = await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  assert.ok(res.gateAction, '5b-gate-action: the single-target flatten exposes gateAction');
+  assert.deepEqual(res.gateAction.remainingTags, ['bug'], '5b-gate-action: and its sibling-preserved tag list');
+  assert.equal(res.gateAction, res.units[0].gateAction, '5b-gate-action: the flatten mirrors the unit, never a copy that can drift');
+  assert.equal(res.gateDeferred, false, '5b-gate-action: the flatten carries gateDeferred');
+  assert.equal(res.gateBlocked, false, '5b-gate-action: the flatten carries gateBlocked');
+}
+// buildGateAction as a pure function: the three states never collapse.
+{
+  const unit = { kind: 'task', ident: 't', roadmap: '' };
+  const clears = { clearsPlanReviewTag: true, status: null };
+  const a = buildGateAction(unit, clears, ['needs-plan-review', 'x'], ['x'],
+    { applied: false, deferred: true, blocked: false, blockedReason: null });
+  assert.equal(a.deferred, true, 'buildGateAction: deferred is its own field');
+  assert.equal(a.blocked, false, 'buildGateAction: deferral is NOT blockage');
+  assert.equal(a.applied, false, 'buildGateAction: deferral is NOT application');
+  assert.deepEqual(a.removedTags, ['needs-plan-review'], 'buildGateAction: removedTags is cached minus remaining');
+}
+
+// =============================================================== 5b-gate-return
+// `gateMode: 'return'`: compute the action, dispatch NO agent, write nothing.
+{
+  const h = makeGateHarness({
+    findings: { 'PA': blockingCoherence },
+    fetch: {
+      'fetch:roadmap': {
+        body: 'RB', tags: ['needs-plan-review', 'infra'],
+        phases: [
+          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] },
+          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review', 'depends-unlanded'] },
+        ],
+      },
+    },
+  });
+  const res = await runPlanReviewDriver({ roadmap: 'big-thing', gateMode: 'return' }, h.deps);
+  assert.equal(h.calls.filter((c) => c.label.indexOf('gate:clear-tag:') === 0).length, 0,
+    '5b-gate-return: ZERO gate:clear-tag agent calls are dispatched in return mode');
+  const byIdent = Object.fromEntries(res.units.map((u) => [u.ident, u]));
+  const reviewed = byIdent['phase-2-b'];
+  assert.equal(reviewed.outcome, 'reviewed', '5b-gate-return: the outcome is unchanged by deferral');
+  assert.equal(reviewed.tagCleared, false, '5b-gate-return: nothing was written');
+  assert.equal(reviewed.gateDeferred, true, '5b-gate-return: the deferral is reported');
+  assert.notEqual(reviewed.gateBlocked, true, '5b-gate-return: a deferral is NOT a blocked gate');
+  assert.ok(reviewed.gateAction.commands.length === 2, '5b-gate-return: the action still carries the commands to apply');
+  assert.equal(reviewed.gateAction.deferred, true, '5b-gate-return: and the action says so');
+  assert.equal(reviewed.gateAction.applied, false, '5b-gate-return: and was not applied');
+  assert.equal(res.gateBlockedCount, 0, '5b-gate-return: a deferred run reports zero blocked gates');
+  assert.match(reviewed.summary, /\[gate deferred: apply gateAction\.commands to clear needs-plan-review\]/,
+    '5b-gate-return: the deferral is self-describing in the summary');
+  assert.ok(reviewed.summary.indexOf('GATE BLOCKED') === -1,
+    '5b-gate-return: and is NEVER reported as a failure');
+
+  // A reworked unit under return mode: deferral is meaningless when there is
+  // nothing to apply, so it must not claim one.
+  const reworked = byIdent['phase-1-a'];
+  assert.equal(reworked.gateDeferred, false, '5b-gate-return: a reworked unit is not "deferred" — there is nothing to defer');
+  assert.deepEqual(reworked.gateAction.commands, [], '5b-gate-return: and it carries no commands');
+  assert.ok(reworked.summary.indexOf('gate deferred') === -1,
+    '5b-gate-return: and gets no misleading "apply gateAction.commands" clause');
+}
+// The default is 'apply' — an omitted gateMode still dispatches the agent.
+{
+  const h = makeGateHarness({ fetch: { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } } });
+  const res = await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  assert.equal(h.calls.filter((c) => c.label.indexOf('gate:clear-tag:') === 0).length, 1,
+    '5b-gate-return: the DEFAULT (no gateMode) still dispatches the gate agent');
+  assert.equal(res.units[0].gateDeferred, false, '5b-gate-return: and reports no deferral');
+  assert.equal(res.units[0].tagCleared, true, '5b-gate-return: and clears the tag');
+}
+// parsePlanArgs: legal values, the default, and an actionable throw.
+assert.equal(parsePlanArgs({ task: 't' }).gateMode, 'apply', '5b-gate-return: absent gateMode defaults to apply');
+assert.equal(parsePlanArgs({ task: 't', gateMode: '' }).gateMode, 'apply', '5b-gate-return: empty gateMode defaults to apply');
+assert.equal(parsePlanArgs({ task: 't', gateMode: 'return' }).gateMode, 'return', '5b-gate-return: return is accepted');
+assert.equal(parsePlanArgs('{"task":"t","gateMode":"return"}').gateMode, 'return',
+  '5b-gate-return: a JSON-stringified args payload carries gateMode too');
+assert.throws(
+  () => parsePlanArgs({ task: 't', gateMode: 'bogus' }),
+  (e) => /gateMode/.test(e.message) && /'apply'/.test(e.message) && /'return'/.test(e.message),
+  '5b-gate-return: an illegal gateMode throws an actionable error NAMING BOTH legal values'
+);
+assert.throws(() => parsePlanArgs({ task: 't', gateMode: 'returned' }), /gateMode/,
+  '5b-gate-return: a near-miss typo is rejected, never silently coerced');
+// STRUCTURED-KEY-ONLY: never parsed out of the $ARGUMENTS flag string. A target
+// slug named `return`, or a prose target containing `--gate-mode`, must not
+// suppress the gate.
+assert.equal(parsePlanArgs('big-thing --gate-mode return').gateMode, 'apply',
+  '5b-gate-return: --gate-mode in the flag string is IGNORED (structured-key-only)');
+assert.equal(parsePlanArgs('big-thing return').gateMode, 'apply',
+  '5b-gate-return: a positional token `return` never becomes a gate mode');
+{
+  const h = makeGateHarness({ fetch: { 'fetch:phase': { body: 'PB', tags: ['needs-plan-review'] } } });
+  await runPlanReviewDriver('big-thing --gate-mode return', h.deps);
+  assert.equal(h.calls.filter((c) => c.label.indexOf('gate:clear-tag:') === 0).length, 1,
+    '5b-gate-return: end-to-end, a flag-string --gate-mode does NOT suppress the gate agent');
+}
+
+// =============================================================== 5b-gate-loud
+// (i) the gate agent REFUSES (ok:false) — previously entirely silent.
+{
+  const h = makeGateHarness({
+    fetch: { 'fetch:task': { body: 'TB', tags: ['needs-plan-review', 'bug'] } },
+    gateAck: 'not-ok',
+  });
+  const res = await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  const u = res.units[0];
+  const cmds = planGateCommands('task', '', 'fix-bug', ['bug']);
+  assert.equal(u.outcome, 'reviewed', '5b-gate-loud(i): the unit really did reach reviewed');
+  assert.equal(u.clearsPlanReviewTag, true, '5b-gate-loud(i): and was supposed to clear the tag');
+  assert.equal(u.tagCleared, false, '5b-gate-loud(i): but did not');
+  assert.equal(u.gateBlocked, true, '5b-gate-loud(i): which is reported as gateBlocked');
+  assert.ok(u.summary.indexOf('GATE BLOCKED') !== -1, '5b-gate-loud(i): LOUD in the unit summary');
+  assert.ok(u.summary.indexOf(cmds.updateCmd) !== -1, '5b-gate-loud(i): with the literal command to run');
+  assert.ok(u.summary.indexOf(cmds.commitCmd) !== -1, '5b-gate-loud(i): and its commit half');
+  assert.equal(u.gateAction.blockedReason, 'ack-not-ok', '5b-gate-loud(i): a refusal is distinguishable from a crash');
+  assert.equal(u.gateAction.blocked, true, '5b-gate-loud(i): and the action says blocked');
+  assert.ok(res.summary.indexOf('GATE BLOCKED') !== -1, '5b-gate-loud(i): the FLATTENED top-level summary carries it too');
+  assert.equal(res.gateBlockedCount, 1, '5b-gate-loud(i): the run-level count sees it');
+  assert.ok(h.logs.some((l) => /GATE BLOCKED/.test(l)), '5b-gate-loud(i): a dedicated log line is emitted');
+  assert.ok(h.logs.some((l) => /GATE BLOCKED/.test(l) && l.indexOf(cmds.updateCmd) !== -1),
+    '5b-gate-loud(i): and the log line names the command to run');
+  assert.ok(h.logs.some((l) => /unit\(s\) gated/.test(l) && /GATE BLOCKED/.test(l)),
+    '5b-gate-loud(i): the run-level log line reports the blocked count');
+}
+// (ii) the gate agent THROWS.
+{
+  const h = makeGateHarness({
+    fetch: { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } },
+    gateAck: 'throw',
+  });
+  const res = await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  const u = res.units[0];
+  assert.equal(u.gateBlocked, true, '5b-gate-loud(ii): a thrown gate agent is a blocked gate');
+  assert.ok(u.summary.indexOf('GATE BLOCKED') !== -1, '5b-gate-loud(ii): LOUD in the summary');
+  assert.ok(/^agent-error: /.test(u.gateAction.blockedReason),
+    '5b-gate-loud(ii): blockedReason is prefixed agent-error:, distinguishing a crash from a refusal');
+  assert.ok(/classifier refused this write/.test(u.gateAction.blockedReason),
+    '5b-gate-loud(ii): and carries the underlying message');
+  assert.equal(res.gateBlockedCount, 1, '5b-gate-loud(ii): counted at the run level');
+  assert.ok(h.logs.some((l) => /GATE BLOCKED/.test(l)), '5b-gate-loud(ii): a dedicated log line is emitted on the throw path too');
+}
+// (iii) the healthy path is BYTE-UNCHANGED — the clause is empty, following the
+//       formatUnitBudget / coverageSummaryClause discipline.
+{
+  const mk = (ack) => makeGateHarness({
+    fetch: { 'fetch:task': { body: 'TB', tags: ['needs-plan-review', 'bug'] } },
+    coverages: { 'TB': FULL_COVERAGE_3 },
+    gateAck: ack,
+  });
+  const okRes = await runPlanReviewDriver({ task: 'fix-bug' }, mk('ok').deps);
+  const u = okRes.units[0];
+  assert.notEqual(u.gateBlocked, true, '5b-gate-loud(iii): a healthy gate is not blocked');
+  assert.equal(gateFailureClause(u), '', '5b-gate-loud(iii): gateFailureClause is empty on a healthy unit');
+  assert.equal(gateDeferredClause(u), '', '5b-gate-loud(iii): gateDeferredClause is empty on a healthy unit');
+  assert.equal(u.summary, 'no surviving findings',
+    '5b-gate-loud(iii): a healthy run’s summary is byte-identical to the pre-change one');
+  assert.equal(okRes.gateBlockedCount, 0, '5b-gate-loud(iii): and the run reports zero blocked gates');
+}
+// The single most likely false positive: a rework/escalated unit's tagCleared
+// is legitimately false, and must NEVER produce the loud clause.
+{
+  const h = makeGateHarness({
+    findings: { 'PB': blockingCoherence },
+    fetch: { 'fetch:phase': { body: 'PB', tags: ['needs-plan-review'] } },
+    gateAck: 'not-ok',
+  });
+  const res = await runPlanReviewDriver({ roadmap: 'big-thing', phase: 'phase-1-a' }, h.deps);
+  const u = res.units[0];
+  assert.equal(u.outcome, 'rework', '5b-gate-loud: sanity — the seeded unit reworked');
+  assert.equal(u.tagCleared, false, '5b-gate-loud: a reworked unit legitimately has tagCleared:false');
+  assert.notEqual(u.gateBlocked, true, '5b-gate-loud: but it is NOT a blocked gate');
+  assert.equal(gateFailureClause(u), '', '5b-gate-loud: and gateFailureClause stays empty for it');
+  assert.ok(u.summary.indexOf('GATE BLOCKED') === -1, '5b-gate-loud: no false-positive clause on a reworked unit');
+  assert.equal(res.gateBlockedCount, 0, '5b-gate-loud: and it is not counted');
+}
+// Clause CONCATENATION ORDER, asserted so the summary stays parseable when
+// reduced coverage and a blocked gate apply to the same unit.
+{
+  const h = makeGateHarness({
+    fetch: { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } },
+    coverages: { 'TB': PARTIAL_COVERAGE_3 },
+    gateAck: 'not-ok',
+  });
+  const res = await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  assert.match(
+    res.units[0].summary,
+    /^no surviving findings \[review coverage: 2\/3 dimensions ran; failed: restraint\] \[GATE BLOCKED: /,
+    '5b-gate-loud: clause order is findings -> coverage -> gate, and stays parseable'
+  );
+}
+// Fail-closed and impl-plan carve-outs must not be dragged into the gate model.
+{
+  const h = makeGateHarness({ fetch: { 'fetch:task': { body: '', tags: ['needs-plan-review'] } } });
+  const res = await runPlanReviewDriver({ task: 'ghost' }, h.deps);
+  assert.equal(res.fetchError, true, '5b-gate-loud: sanity — the unread plan failed closed');
+  assert.equal(res.gateBlockedCount, 0,
+    '5b-gate-loud: a fail-closed run reports gateBlockedCount 0, never undefined — it is not a blocked gate');
+}
+{
+  const h = makeGateHarness({ findings: { 'PLAN TEXT': blockingCoherence } });
+  const res = await runPlanReviewDriver({ implementationPlan: true, planText: 'PLAN TEXT here' }, h.deps);
+  assert.ok(!('gateAction' in res), '5b-gate-loud: --implementation-plan gains NO gateAction key');
+  assert.ok(!('gateBlocked' in res), '5b-gate-loud: --implementation-plan gains NO gateBlocked key');
+  assert.ok(!('gateDeferred' in res), '5b-gate-loud: --implementation-plan gains NO gateDeferred key');
+  assert.equal(h.calls.length, 0, '5b-gate-loud: and still makes no agent calls at all');
+}
+// gateFailureClause / gateDeferredClause as pure functions.
+assert.equal(gateFailureClause({ clearsPlanReviewTag: false, tagCleared: false }), '',
+  'gateFailureClause: never fires when the tag was not to be cleared');
+assert.equal(gateFailureClause({ clearsPlanReviewTag: true, tagCleared: true }), '',
+  'gateFailureClause: never fires on a successful write');
+assert.equal(gateFailureClause({ clearsPlanReviewTag: true, tagCleared: false, gateDeferred: true }), '',
+  'gateFailureClause: never fires on a deliberate deferral');
+assert.match(gateFailureClause({ clearsPlanReviewTag: true, tagCleared: false, gateAction: { commands: ['U', 'C'] } }),
+  /GATE BLOCKED.*apply manually: U && C/, 'gateFailureClause: fires with the joined commands');
+assert.equal(gateDeferredClause({ gateDeferred: false }), '', 'gateDeferredClause: empty unless deferred');
+assert.match(gateDeferredClause({ gateDeferred: true }), /gate deferred/, 'gateDeferredClause: fires on a deferral');
+
+console.log('plan-review gate evidence/action/return/loud assertions passed');
+NODE_GATE_TEST
+if run_node "$TMP/plan-gate-test.mjs" "$PLAN_LIB"; then
+    pass "5b-gate-*: the gate carries its evidence, returns a declarative action, honors gateMode:'return', and fails loudly"
+else
+    fail "5b-gate-*: gate evidence/action/return/loud assertions failed"
+fi
+
 # --- 5b-mut. PLANTED-MUTATION SELF-TESTS FOR THE PLAN-REVIEW DRIVER -----------
 # Section 5b-exec's budget assertions (5a–5e) are only worth having if they
 # actually fire. Four independent mutations of the DRIVER — each one a regression
@@ -4756,6 +5371,87 @@ pmut_body_check_failclosed() {
 plan_mutate_and_expect_fail x 'neutering the roadmapBodyVerified===false fail-closed branch' pmut_body_check_failclosed
 
 pass "5b-mut: all ten driver mutations flip a 5b-exec assertion, and the control passes"
+
+# --- 5b-gate-mut. PLANTED MUTATIONS FOR THE GATE SECTIONS ---------------------
+# The four 5b-gate-* sections above are only worth having if they fire. Six
+# independent mutations of the gate half — each a regression a maintainer could
+# plausibly introduce — must flip one of their assertions, plus a control run
+# against the real file that must pass. Same scratch tree, same discipline as
+# the ten budget/coverage mutations above.
+reset_pmut
+if run_node "$TMP/plan-gate-test.mjs" "$PMUT/plan-review.mjs" >/dev/null 2>&1; then
+    pass "5b-gate-mut(control): 5b-gate-* passes against an unmutated copy — the mutations below are discriminating"
+else
+    fail "5b-gate-mut(control): 5b-gate-* FAILED against an unmutated copy — the mutation self-tests would be meaningless"
+fi
+
+gate_mutate_and_expect_fail() {
+    label="$1"
+    desc="$2"
+    reset_pmut
+    shift 2
+    "$@" || fail "5b-gate-mut($label): mutation setup failed"
+    if run_node "$TMP/plan-gate-test.mjs" "$PMUT/plan-review.mjs" >/dev/null 2>&1; then
+        fail "5b-gate-mut($label): $desc did NOT flip a 5b-gate-* assertion — the check is vacuous"
+    fi
+    pass "5b-gate-mut($label): $desc flips a 5b-gate-* assertion"
+}
+
+# (xi) Drop the evidence argument from the gate prompt's call site: the prompt
+#      reverts to a bare two-command instruction, which is EXACTLY the shape the
+#      three recorded classifier blocks refused.
+gmut_evidence_arg() {
+    perl -0pi -e "s/, buildGateEvidence\(u, r, cached, remaining\)//" "$PMUT/plan-review.mjs"
+    ! grep -q 'buildGateEvidence(u, r, cached, remaining)' "$PMUT/plan-review.mjs"
+}
+gate_mutate_and_expect_fail xi 'dropping the evidence argument from the gate prompt call site' gmut_evidence_arg
+
+# (xii) Silence gateFailureClause entirely: a blocked gate becomes invisible in
+#       the summary again — the original defect.
+gmut_failure_silent() {
+    perl -0pi -e "s/function gateFailureClause\(reportedUnit\) \{/function gateFailureClause(reportedUnit) { return '' \/\/ MUTANT/" \
+        "$PMUT/plan-review.mjs"
+    grep -q "return '' // MUTANT" "$PMUT/plan-review.mjs"
+}
+gate_mutate_and_expect_fail xii 'silencing gateFailureClause so a blocked gate never shows in the summary' gmut_failure_silent
+
+# (xiii) Make gateFailureClause fire on a DEFERRAL too: a deliberate
+#        `gateMode: 'return'` hand-off would be misreported as a failure.
+gmut_failure_on_deferral() {
+    perl -0pi -e "s/  if \(u\.gateDeferred === true\) return ''\n/  \/\/ MUTANT: deferral guard removed\n/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT: deferral guard removed' "$PMUT/plan-review.mjs"
+}
+gate_mutate_and_expect_fail xiii 'making gateFailureClause fire on a deliberate deferral' gmut_failure_on_deferral
+
+# (xiv) Emit commands on a non-clearing unit: a caller iterating
+#       units[].gateAction would apply a write for a REWORKED unit.
+gmut_action_commands() {
+    perl -0pi -e "s/    commands: clears \? \[cmds\.updateCmd, cmds\.commitCmd\] : \[\],/    commands: [cmds.updateCmd, cmds.commitCmd], \/\/ MUTANT/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'commands: \[cmds.updateCmd, cmds.commitCmd\], // MUTANT' "$PMUT/plan-review.mjs"
+}
+gate_mutate_and_expect_fail xiv 'emitting gate commands on a unit whose outcome does not clear the tag' gmut_action_commands
+
+# (xv) Write the UNFILTERED cached tag list into the returned action: the
+#      caller-applied write would put `needs-plan-review` straight back.
+gmut_action_tags() {
+    perl -0pi -e "s/    remainingTags: remaining,\n    removedTags:/    remainingTags: cached, \/\/ MUTANT\n    removedTags:/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'remainingTags: cached, // MUTANT' "$PMUT/plan-review.mjs"
+}
+gate_mutate_and_expect_fail xv 'returning the unfiltered tag list in gateAction.remainingTags' gmut_action_tags
+
+# (xvi) Neuter the gateMode:'return' branch: the driver dispatches the gate
+#       agent anyway, so the documented escalation path silently writes.
+gmut_return_guard() {
+    perl -pi -e "s/\} else if \(_gateMode === 'return'\) \{/} else if (false) { \/\/ MUTANT: neuters the gateMode:'return' branch/" \
+        "$PMUT/plan-review.mjs"
+    grep -q "MUTANT: neuters the gateMode:'return' branch" "$PMUT/plan-review.mjs"
+}
+gate_mutate_and_expect_fail xvi "neutering the gateMode:'return' deferral branch" gmut_return_guard
+
+pass "5b-gate-mut: all six gate mutations flip a 5b-gate-* assertion, and the control passes"
 
 # --- 5b-hoist-exec. RUNTIME-ENTRY model hoist fires on a stringified args ----
 # `5b-exec` above drives `runPlanReviewDriver` directly (imported from
@@ -5154,6 +5850,32 @@ console.log('parsePlanArgs precedence mutation self-test passed');
 NODE_ARGS_MUT
 run_node "$TMP/plan-args-mut-test.mjs" "$PLANMUT/.claude/workflows/lib/plan-review.mjs" ||
     fail "parsePlanArgs precedence mutation self-test did not behave as expected"
+
+# (d) resolvePlanGateMode's validation -> permissive: accepting an unknown
+#     gateMode instead of throwing would turn a typo (`gateMode: 'returned'`)
+#     into an unannounced tag write — the precise failure the returned mode
+#     exists to prevent. Same scratch-tree discipline as (c) above.
+cp "$LIB" "$PLANMUT/.claude/workflows/lib/review.mjs"
+perl -0pe "s/  throw new Error\(\n    \"plan-review: invalid gateMode \"/  return 'apply' \/\/ MUTANT\n  throw new Error(\n    \"plan-review: invalid gateMode \"/" \
+    "$PLAN_LIB" >"$PLANMUT/.claude/workflows/lib/plan-review.mjs"
+grep -q "return 'apply' // MUTANT" "$PLANMUT/.claude/workflows/lib/plan-review.mjs" ||
+    fail "gateMode validation mutation setup did not inject the permissive fallback"
+
+cat >"$TMP/plan-gatemode-mut-test.mjs" <<'NODE_GATEMODE_MUT'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const mod = await import(pathToFileURL(process.argv[2]).href); // must still import
+// The real lib THROWS on an illegal gateMode; the mutant silently returns
+// 'apply'. If the 5b-gate-return negative were vacuous, this assert.throws
+// would not fire.
+assert.throws(
+  () => assert.throws(() => mod.parsePlanArgs({ task: 't', gateMode: 'bogus' }), /gateMode/),
+  'a permissive resolvePlanGateMode must FAIL the illegal-gateMode check — else it is vacuous'
+);
+console.log('gateMode validation mutation self-test passed');
+NODE_GATEMODE_MUT
+run_node "$TMP/plan-gatemode-mut-test.mjs" "$PLANMUT/.claude/workflows/lib/plan-review.mjs" ||
+    fail "gateMode validation mutation self-test did not behave as expected"
 
 pass "plan helper + driver checks fire on planted mutations (proven non-vacuous)"
 

@@ -418,6 +418,37 @@ Scope of the gate by target type:
   item, so there is no tag to clear and nothing to mutate; report the outcome
   and findings only.
 
+#### The gate carries its own justification
+
+A `reviewed` outcome clearing `needs-plan-review` is **specified gate behavior,
+not self-approval**: the verdict is never authored by the orchestrator running
+this review. Every finding comes from an independently dispatched finder and is
+graded by a separate refuter, and the gate itself is a table lookup
+(`GATE_POLICY.plan`) over that verdict — the two-party property is structural,
+not procedural. So the write is stated **with its evidence**: which dimension
+finders ran, how many findings they produced, how many an independent refuter
+graded, that none survived at blocking severity, the exact tag list about to be
+written, and that the write touches one reversible metadata tag — no rdm status,
+no code, no land-time completion directive.
+
+Two consequences for how you report and drive it:
+
+- **A gate that was supposed to clear the tag and did not is LOUD.** If a unit
+  comes back with `gateBlocked: true` (a `reviewed` outcome whose tag write did
+  not succeed), surface it at the **top** of your report, with the exact command
+  to run — never bury it, and never report that unit as cleanly reviewed. The
+  unit's own `summary` carries a `[GATE BLOCKED: …]` clause for exactly this
+  reason.
+- **You may defer the write.** When the session running the review is the same
+  one that authored the plan, pass `gateMode: 'return'`; the gate is then
+  computed and returned as `gateAction` (its `commands`, plus the
+  sibling-preserved `remainingTags`) and **nothing is written**, so a human
+  applies it. That is a deliberate hand-off, not a failure, and is reported
+  separately as `gateDeferred: true`.
+
+The decision this rests on, its boundary, and the recorded evidence behind it
+live in `docs/plan-review-gate-policy.md`.
+
 ### Guidelines
 
 - Be objective — evaluate against the stated acceptance criteria, not personal

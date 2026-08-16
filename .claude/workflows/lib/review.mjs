@@ -2177,6 +2177,37 @@ function buildReviewPipeline(mode, deps) {
 //|plan| - **`--implementation-plan`** — **no gate at all.** There is no persisted rdm
 //|plan|   item, so there is no tag to clear and nothing to mutate; report the outcome
 //|plan|   and findings only.
+//|plan|
+//|plan| #### The gate carries its own justification
+//|plan|
+//|plan| A `reviewed` outcome clearing `needs-plan-review` is **specified gate behavior,
+//|plan| not self-approval**: the verdict is never authored by the orchestrator running
+//|plan| this review. Every finding comes from an independently dispatched finder and is
+//|plan| graded by a separate refuter, and the gate itself is a table lookup
+//|plan| (`GATE_POLICY.plan`) over that verdict — the two-party property is structural,
+//|plan| not procedural. So the write is stated **with its evidence**: which dimension
+//|plan| finders ran, how many findings they produced, how many an independent refuter
+//|plan| graded, that none survived at blocking severity, the exact tag list about to be
+//|plan| written, and that the write touches one reversible metadata tag — no rdm status,
+//|plan| no code, no land-time completion directive.
+//|plan|
+//|plan| Two consequences for how you report and drive it:
+//|plan|
+//|plan| - **A gate that was supposed to clear the tag and did not is LOUD.** If a unit
+//|plan|   comes back with `gateBlocked: true` (a `reviewed` outcome whose tag write did
+//|plan|   not succeed), surface it at the **top** of your report, with the exact command
+//|plan|   to run — never bury it, and never report that unit as cleanly reviewed. The
+//|plan|   unit's own `summary` carries a `[GATE BLOCKED: …]` clause for exactly this
+//|plan|   reason.
+//|plan| - **You may defer the write.** When the session running the review is the same
+//|plan|   one that authored the plan, pass `gateMode: 'return'`; the gate is then
+//|plan|   computed and returned as `gateAction` (its `commands`, plus the
+//|plan|   sibling-preserved `remainingTags`) and **nothing is written**, so a human
+//|plan|   applies it. That is a deliberate hand-off, not a failure, and is reported
+//|plan|   separately as `gateDeferred: true`.
+//|plan|
+//|plan| The decision this rests on, its boundary, and the recorded evidence behind it
+//|plan| live in `docs/plan-review-gate-policy.md`.
 //|
 //| ### Guidelines
 //|

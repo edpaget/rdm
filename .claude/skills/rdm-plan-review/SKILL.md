@@ -39,6 +39,22 @@ Run the reads yourself and pass the parsed JSON through the workflow `args`. Eve
 
 `fetched` is read from the structured `args` object only — never parsed out of the `$ARGUMENTS` flag string.
 
+### Applying the gate yourself
+
+The workflow normally clears `needs-plan-review` itself on a `reviewed` unit. When **this session authored the plan under review**, or the operator wants a checkpoint before any plan state changes, pass `gateMode: 'return'` in the workflow `args` instead. The workflow then computes the gate but writes nothing: every unit comes back with
+
+```
+gateAction: { clearsPlanReviewTag, commands: [<update>, <commit>], remainingTags, removedTags, applied, deferred, blocked, blockedReason }
+```
+
+Show the operator the outcome and the finding count first, then run `units[].gateAction.commands` yourself, in order. `gateAction.remainingTags` is the exact sibling-preserved list that will be written — `--tags` replaces the whole list, so do not retype it by hand. A unit that did not reach `reviewed` carries `commands: []`; there is nothing to apply for it.
+
+`gateMode` is read from the structured `args` object only — never from the `$ARGUMENTS` flag string — and accepts only `'apply'` (the default) or `'return'`; anything else is rejected at parse time, before any agent runs. Why deferral is an escape hatch rather than the default is recorded in `docs/plan-review-gate-policy.md`.
+
+### Report a blocked gate first
+
+If any unit comes back with `gateBlocked: true` — a `reviewed` outcome whose tag write did not succeed — surface it at the **top** of your report, with the exact command from `gateAction.commands`, before anything else. Never bury it, and never describe that unit as cleanly reviewed: its tag is still set, so the item still reads as un-plan-reviewed to every other surface. `gateAction.blockedReason` distinguishes a refusal (`ack-not-ok`) from a crashed agent (`agent-error: …`), and the run-level `gateBlockedCount` says how many units are affected.
+
 ## What the workflow does (domain intent)
 
 The pipeline runs `find → refute → filter → verdict → act → gate`; no finding of a gating severity is surfaced, fixed, or acted on until a *separate* refuter agent has failed to refute it (a non-gating `suggestion` passes through marked `unrefuted: true`). Its full specification — which dimensions run, how findings are graded, what each outcome means — is **generated from the canonical review source** (shared with `rdm-review`, which reviews the diff after implementation) and appears under "Review specification" below.
@@ -373,6 +389,37 @@ Scope of the gate by target type:
 - **`--implementation-plan`** — **no gate at all.** There is no persisted rdm
   item, so there is no tag to clear and nothing to mutate; report the outcome
   and findings only.
+
+#### The gate carries its own justification
+
+A `reviewed` outcome clearing `needs-plan-review` is **specified gate behavior,
+not self-approval**: the verdict is never authored by the orchestrator running
+this review. Every finding comes from an independently dispatched finder and is
+graded by a separate refuter, and the gate itself is a table lookup
+(`GATE_POLICY.plan`) over that verdict — the two-party property is structural,
+not procedural. So the write is stated **with its evidence**: which dimension
+finders ran, how many findings they produced, how many an independent refuter
+graded, that none survived at blocking severity, the exact tag list about to be
+written, and that the write touches one reversible metadata tag — no rdm status,
+no code, no land-time completion directive.
+
+Two consequences for how you report and drive it:
+
+- **A gate that was supposed to clear the tag and did not is LOUD.** If a unit
+  comes back with `gateBlocked: true` (a `reviewed` outcome whose tag write did
+  not succeed), surface it at the **top** of your report, with the exact command
+  to run — never bury it, and never report that unit as cleanly reviewed. The
+  unit's own `summary` carries a `[GATE BLOCKED: …]` clause for exactly this
+  reason.
+- **You may defer the write.** When the session running the review is the same
+  one that authored the plan, pass `gateMode: 'return'`; the gate is then
+  computed and returned as `gateAction` (its `commands`, plus the
+  sibling-preserved `remainingTags`) and **nothing is written**, so a human
+  applies it. That is a deliberate hand-off, not a failure, and is reported
+  separately as `gateDeferred: true`.
+
+The decision this rests on, its boundary, and the recorded evidence behind it
+live in `docs/plan-review-gate-policy.md`.
 
 ### Guidelines
 
