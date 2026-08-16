@@ -2291,18 +2291,47 @@ the one in the set that is not a pure cost question: the agents it replaces have
 twice transcribed junk over real plan tags in production, and `agent(..., { schema })`
 provably cannot catch it (both corrupt returns were schema-valid). See
 [`docs/mechanical-agent-inventory.md`](mechanical-agent-inventory.md) §
-"The hoist with a recorded correctness failure". Driver-side validation of a hoisted
-payload's *content* is deliberately out of scope there and owned by task
-`fix-plan-review-gate-tag-clobber`.
+"The hoist with a recorded correctness failure". Driver-side validation of a
+*hoisted* payload's content is still out of scope for `fetched` specifically —
+that path bypasses the agent entirely, so there is nothing for the fetch-side
+guards below to run against. What task `fix-plan-review-gate-tag-clobber`
+landed instead is identity/collision validation of the **fetch agent path** —
+see "The fetch stage is now raw-transcript-capture + driver-side parse" below.
 
-`hoistedFetchedOk` is nonetheless held to be **no weaker than the schema it stands
-in for**: `PLAN_TARGET_SCHEMA` / `ROADMAP_TARGET_SCHEMA` both list `tags` as
-`required`, so the guard requires it too, all-or-nothing, per phase entry as well.
-That is not shape pedantry — the gate writes the list back with `rdm ... update
---tags "<list>"`, and `--tags` **replaces** the whole list. A payload accepted with
+`hoistedFetchedOk` is nonetheless held to be **no weaker than the shape
+`buildReviewUnits` requires**: a `body`, and a `tags` array of strings —
+`required`, all-or-nothing, per phase entry as well. That is not shape
+pedantry — the gate writes the list back with `rdm ... update --tags
+"<list>"`, and `--tags` **replaces** the whole list. A payload accepted with
 no `tags` would be defaulted to `[]` by `buildReviewUnits` and issued as
 `--tags ""`, wiping every real tag the item carried. Rejecting it costs one fetch
 agent; accepting it costs the item's tags.
+
+### The fetch stage is now raw-transcript-capture + driver-side parse
+
+The `fetch:roadmap` / `fetch:<kind>` mechanical agents used to be handed a
+composed-JSON schema (`PLAN_TARGET_SCHEMA` / `ROADMAP_TARGET_SCHEMA`, since
+removed) and asked to fill it in from `rdm ... show --format json` — which is
+exactly the shape that let an agent fabricate a schema-valid but unrelated
+response (the two corruptions above). `PLAN_TARGET_SCHEMA` /
+`ROADMAP_TARGET_SCHEMA` are gone; every fetch agent now satisfies a single
+`RAW_STDOUT_SCHEMA` (one `transcript` string field) and is instructed to
+transcribe the command's raw stdout verbatim — copy, not compose. This is the
+closest achievable equivalent to a literal headless Bash call while staying at
+**one agent per target**: the Workflow runtime has no `process`/`child_process`
+(see "Import spike" above), so the agent stays in the loop as the thing that
+actually runs the command, but it is reduced to a mechanical transcriber with
+no JSON-composition step left to fail at. All parsing, field extraction, and —
+new — identity/collision validation (a phase stem colliding with the roadmap's
+own slug, a duplicate stem, or a phase block's own `roadmap` field disagreeing
+with the one under review) happen driver-side, in
+`.claude/workflows/lib/plan-review.mjs`'s `parseTranscriptBlocks` /
+`parseJsonStdout` / `extractRoadmapFromJson` / `extractPhaseFromJson` /
+`extractTaskFromJson`. The roadmap fetch keeps its existing single-turn,
+multi-command shape (one `roadmap show` call, then one `phase show` call per
+phase found) — it does **not** become a `parallel()` fan-out of one agent per
+phase; see `docs/mechanical-agent-inventory.md`'s "must not be reintroduced"
+note, which this design is held to.
 
 ### `rdm-wf-dispatch-phase` absorbs its diff instead of hoisting it
 

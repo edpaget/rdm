@@ -3711,6 +3711,64 @@ if assert_label_model "$TMP/mech-blocks-mutant" 'fetch:roadmap' '_mechanicalMode
 fi
 pass "AC-MECHANICAL-TIER: detector fires when fetch:roadmap is repointed away from _mechanicalModel"
 
+# Extended for the raw-transcript redesign (task fix-plan-review-gate-tag-clobber):
+# fetch:roadmap / fetch:<kind> must carry `schema: RAW_STDOUT_SCHEMA` — the ONE
+# schema every fetch agent is now held to (PLAN_TARGET_SCHEMA / ROADMAP_TARGET_SCHEMA
+# no longer exist — an agent asked to satisfy either would fail to load).
+assert_label_schema() {
+    blocks_file="$1"
+    label_re="$2"
+    expected="$3"
+    awk -v label_re="$label_re" -v expected="$expected" '
+      BEGIN { RS = "---END---"; matched = 0; bad = 0; violating = "" }
+      $0 ~ ("label: .*" label_re) {
+        matched++
+        if (index($0, "schema: " expected) == 0) {
+          bad++
+          if (violating == "") {
+            n = split($0, lines, "\n")
+            for (i = 1; i <= n; i++) {
+              if (lines[i] ~ /label:/) { violating = lines[i]; break }
+            }
+          }
+        }
+      }
+      END {
+        if (matched == 0) {
+          print "assert_label_schema: no block matched label /" label_re "/" > "/dev/stderr"
+          exit 1
+        }
+        if (bad > 0) {
+          print "assert_label_schema: missing \"schema: " expected "\" on " violating > "/dev/stderr"
+          exit 1
+        }
+        exit 0
+      }
+    ' "$blocks_file"
+}
+# label_re is scoped precisely to 'fetch:roadmap' and the dynamic 'fetch:' +
+# kind label — deliberately NOT the broad 'fetch:' prefix assert_label_model
+# uses above, because fetch:wontfix ALSO matches that prefix and (correctly,
+# out of scope — WONTFIX_LIST_SCHEMA is untouched by this phase) does NOT
+# carry RAW_STDOUT_SCHEMA.
+assert_label_schema "$TMP/mech-blocks" "fetch:roadmap'" 'RAW_STDOUT_SCHEMA' ||
+    fail "AC-MECHANICAL-TIER: fetch:roadmap must carry schema: RAW_STDOUT_SCHEMA (verbatim-transcription contract)"
+# A bracket expression ([+]), not a backslash-escaped +: awk's -v assignment
+# strips an unrecognized \-escape (\+ silently becomes +, a quantifier) before
+# the pattern is ever compiled, so \+ here would silently corrupt the regex.
+assert_label_schema "$TMP/mech-blocks" "fetch:' [+] kind" 'RAW_STDOUT_SCHEMA' ||
+    fail "AC-MECHANICAL-TIER: fetch:<kind> (task/phase) must carry schema: RAW_STDOUT_SCHEMA (verbatim-transcription contract)"
+pass "AC-MECHANICAL-TIER: fetch:roadmap and fetch:<kind> carry schema: RAW_STDOUT_SCHEMA"
+
+# Self-test: repoint fetch:roadmap's schema away from RAW_STDOUT_SCHEMA and
+# prove the check now fails.
+sed "/label: 'fetch:roadmap'/,/^      })/ s/schema: RAW_STDOUT_SCHEMA,/schema: STAMP_ACK_SCHEMA,/" "$PLAN_REVIEW" >"$TMP/pr.schema-mutant"
+agent_option_blocks "$TMP/pr.schema-mutant" >"$TMP/schema-blocks-mutant"
+if assert_label_schema "$TMP/schema-blocks-mutant" "fetch:roadmap'" 'RAW_STDOUT_SCHEMA'; then
+    fail "AC-MECHANICAL-TIER: detector missed a fetch:roadmap schema repoint away from RAW_STDOUT_SCHEMA"
+fi
+pass "AC-MECHANICAL-TIER: detector fires when fetch:roadmap's schema is repointed away from RAW_STDOUT_SCHEMA"
+
 # --- 5b-models. Judgment-site model threading: findModel/verifyModel reach ---
 #     runPlanReview() on the same line, and the bootstrap resolves them. ------
 #
@@ -3898,6 +3956,57 @@ assert.equal(buildReviewUnits({ kind: 'phase', roadmap: 'r', phase: 'p' }, { bod
 // driver builds is recorded in `reviewCtxs` (which is how the `maxRefutations`
 // thread from parsePlanArgs into runPlanReview is checked), and every log line
 // in `logs`.
+// wrapFetchResultAsTranscript(label, raw, prompt) — the fake fetch:* agent's
+// return shape now matches the REAL redesigned contract: a `transcript`
+// string, never a pre-parsed object (see RAW_STDOUT_SCHEMA / the
+// parseTranscriptBlocks+extract*FromJson path in lib/plan-review.mjs). This
+// adapts every test fixture below — still written in the pre-parsed
+// { body, tags, phases } shape used throughout this whole scenario matrix —
+// into that raw contract, so runPlanReviewDriver's real parsing/extraction/
+// identity-validation code is genuinely exercised end to end rather than
+// bypassed by a fake that hands back an already-composed object.
+// fetch:wontfix is untouched (WONTFIX_LIST_SCHEMA did not change). The
+// identity fields (`slug`/`stem`/`roadmap`) the new extract*FromJson
+// validators require are read back out of the ACTUAL PROMPT TEXT the driver
+// generated — the same text a real agent would see — so a fixture never
+// needs to duplicate the target identifier by hand.
+function wrapFetchResultAsTranscript(label, raw, prompt) {
+  if (raw === undefined || raw === null) return null;
+  if (label === 'fetch:wontfix') return raw;
+  if (label === 'fetch:task') {
+    const m = /rdm task show (\S+)/.exec(prompt);
+    const slug = m ? m[1] : 'unknown-task';
+    return { transcript: JSON.stringify({ slug: slug, body: raw.body, tags: raw.tags }) };
+  }
+  if (label === 'fetch:phase') {
+    const m = /rdm phase show (\S+) --roadmap (\S+)/.exec(prompt);
+    const stem = m ? m[1] : 'unknown-phase';
+    const roadmap = m ? m[2] : 'unknown-roadmap';
+    return { transcript: JSON.stringify({ stem: stem, roadmap: roadmap, body: raw.body, tags: raw.tags }) };
+  }
+  if (label === 'fetch:roadmap') {
+    const m = /rdm roadmap show (\S+)/.exec(prompt);
+    const slug = m ? m[1] : 'unknown-roadmap';
+    const phases = Array.isArray(raw.phases) ? raw.phases : [];
+    const lines = [];
+    lines.push('===CMD: roadmap show ' + slug + '===');
+    lines.push(
+      JSON.stringify({
+        slug: slug,
+        body: raw.body,
+        tags: raw.tags,
+        phases: phases.map((p) => ({ stem: p.stem, tags: p.tags })),
+      })
+    );
+    for (const p of phases) {
+      lines.push('===CMD: phase show ' + p.stem + '===');
+      lines.push(JSON.stringify({ stem: p.stem, roadmap: slug, body: p.body, tags: p.tags }));
+    }
+    return { transcript: lines.join('\n') };
+  }
+  return raw;
+}
+
 function makeHarness(findingsByTarget, fetchResults, budgetByTarget, coverageByTarget) {
   const calls = [];
   const reviewCtxs = [];
@@ -3907,7 +4016,10 @@ function makeHarness(findingsByTarget, fetchResults, budgetByTarget, coverageByT
   const agent = async (prompt, opts) => {
     calls.push({ label: opts && opts.label, phase: opts && opts.phase, prompt });
     const label = (opts && opts.label) || '';
-    if (label.indexOf('fetch:') === 0) return fetchResults[label] !== undefined ? fetchResults[label] : null;
+    if (label.indexOf('fetch:') === 0) {
+      const raw = fetchResults[label] !== undefined ? fetchResults[label] : null;
+      return wrapFetchResultAsTranscript(label, raw, prompt);
+    }
     // act / gate:clear-tag agents just acknowledge.
     return { ok: true };
   };
@@ -4248,6 +4360,35 @@ const FULL_COVERAGE = {
   assert.ok(res.coverage && res.coverage.complete === false, '6d: and carries the machine-readable key');
 }
 
+// ---- (7) Agent-count discipline: a --roadmap fetch NEVER exceeds ONE agent --
+//      call, regardless of phase count — the harness-level enforcement of the
+//      coherence finding recorded in docs/mechanical-agent-inventory.md's
+//      "must not be reintroduced" note (task fix-plan-review-gate-tag-clobber).
+{
+  const { deps, calls } = makeHarness(
+    {},
+    {
+      'fetch:roadmap': {
+        body: 'RB',
+        tags: ['needs-plan-review'],
+        phases: [
+          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] },
+          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review'] },
+          { stem: 'phase-3-c', body: 'PC', tags: ['needs-plan-review'] },
+        ],
+      },
+    }
+  );
+  const res = await runPlanReviewDriver({ roadmap: 'big-thing' }, deps);
+  assert.equal(res.units.length, 4, '7: sanity — the 3-phase roadmap really did fan out to 4 review units');
+  const fetchRoadmapCalls = calls.filter((c) => c.label === 'fetch:roadmap');
+  assert.equal(
+    fetchRoadmapCalls.length,
+    1,
+    '7: a multi-phase --roadmap run issues EXACTLY ONE fetch:roadmap agent call, never one per phase'
+  );
+}
+
 console.log('plan-review driver execution assertions passed');
 NODE_DRIVER_TEST
 if run_node "$TMP/plan-driver-test.mjs" "$PLAN_LIB"; then
@@ -4356,6 +4497,18 @@ pmut_coverage_field() {
 }
 plan_mutate_and_expect_fail vii 'dropping the coverage field from the per-unit result' pmut_coverage_field
 
+# (viii) Reintroduce a second fetch:roadmap agent call — a stand-in for the
+#        deferred, explicitly-rejected per-phase fan-out (see the
+#        "must not be reintroduced" comment on buildRoadmapFetchPrompt and
+#        docs/mechanical-agent-inventory.md). Proves 5b-exec's new
+#        "exactly one fetch:roadmap call" assertion is not vacuous.
+pmut_roadmap_fanout() {
+    perl -pi -e "s/^(\s*)(fetched = assembleRoadmapFetchFromTranscript\(raw && raw\.transcript, parsed\.roadmap\))\$/\$1await _agent(buildRoadmapFetchPrompt(parsed.roadmap), { label: 'fetch:roadmap', phase: 'Read', agentType: 'rdm-mechanical', schema: RAW_STDOUT_SCHEMA, model: _mechanicalModel }) \/\/ MUTANT: reintroduces a second fetch:roadmap call\n\$1\$2/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT: reintroduces a second fetch:roadmap call' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail viii 'reintroducing a second fetch:roadmap agent call (a stand-in fan-out)' pmut_roadmap_fanout
+
 pass "5b-mut: all seven driver mutations flip a 5b-exec assertion, and the control passes"
 
 # --- 5b-hoist-exec. RUNTIME-ENTRY model hoist fires on a stringified args ----
@@ -4421,7 +4574,16 @@ function makeAgent() {
       return { mechanical: 'fallback-mechanical', reviewFind: 'fallback-find', reviewVerify: 'fallback-verify' };
     }
     if (label === 'fetch:task') {
-      return { body: 'Body describing the hoist-target task in enough detail to review.', tags: ['needs-plan-review'] };
+      // Raw-transcript contract (RAW_STDOUT_SCHEMA): the agent transcribes the
+      // real `rdm task show hoist-target --format json` stdout verbatim; the
+      // driver's own extractTaskFromJson parses and identity-validates it.
+      return {
+        transcript: JSON.stringify({
+          slug: 'hoist-target',
+          body: 'Body describing the hoist-target task in enough detail to review.',
+          tags: ['needs-plan-review'],
+        }),
+      };
     }
     if (label === 'fetch:wontfix') {
       return { texts: [] };
@@ -4567,7 +4729,14 @@ function makeStatefulHarness(initialBody, tags, findings, wontfixTexts) {
     const label = (opts && opts.label) || '';
     calls.push({ label, prompt });
     if (label.indexOf('fetch:wontfix') === 0) return { texts: wontfixTexts || [] };
-    if (label.indexOf('fetch:') === 0) return { body, tags };
+    if (label.indexOf('fetch:') === 0) {
+      // Raw-transcript contract: this harness only drives --task targets, so
+      // the slug is read back out of the generated prompt text, exactly like
+      // wrapFetchResultAsTranscript above.
+      const m = /rdm task show (\S+)/.exec(prompt);
+      const slug = m ? m[1] : 'unknown-task';
+      return { transcript: JSON.stringify({ slug, body, tags }) };
+    }
     if (label.indexOf('act:round-note:') === 0) {
       const m = /2\. Append exactly this block[^\n]*\n\n([\s\S]*?)\n\n3\. Write/.exec(prompt);
       assert.ok(m, 'round-note prompt must contain the appendable block between markers');
@@ -4752,11 +4921,18 @@ pass "plan helper + driver checks fire on planted mutations (proven non-vacuous)
 # real `./target/debug/rdm` binary, and then replays the recorded corruption
 # payload as a NEGATIVE, proving a shape-only/schema check would have passed it.
 #
-# Driver-side validation of a hoisted payload is deliberately NOT this phase's
-# job (it is task fix-plan-review-gate-tag-clobber's) — this section gates the
-# hoist itself: that the shim's real values survive intact through
-# buildReviewUnits, filterPlanReviewTag and the gate prompt.
-say "7. Plan-review hoist: REAL field values from the real binary, plus the recorded-corruption negative"
+# Driver-side validation of a hoisted payload's CONTENT is deliberately still
+# NOT this section's job — it is out of scope for the hoist path specifically
+# (see 7c's sanity check) and stays that way. What HAS landed, by task
+# fix-plan-review-gate-tag-clobber, is identity/collision validation of the
+# FETCH path (7c / 7c2 below): the agent that used to compose body/tags/phases
+# from a schema now only transcribes raw stdout, and parseTranscriptBlocks +
+# extractRoadmapFromJson/extractPhaseFromJson/extractTaskFromJson do the real
+# parsing and validation, driver-side, after the agent returns. The rest of
+# this section (7a/7b/7d–7f) is unchanged: it gates the HOIST itself — that
+# the shim's real values survive intact through buildReviewUnits,
+# filterPlanReviewTag and the gate prompt.
+say "7. Plan-review hoist + fetch: REAL field values from the real binary, plus the recorded-corruption negative"
 
 RDM_BIN="$REPO_ROOT/target/debug/rdm"
 if [ ! -x "$RDM_BIN" ]; then
@@ -4829,8 +5005,17 @@ assert.deepEqual(phase2Json.tags, ['needs-plan-review', 'beta-tag'], 'seed phase
 function makeDeps(o) {
   o = o || {};
   const calls = [];
+  // o.fetchResponses (optional): a label -> agent-return map, so a test can
+  // drive the FETCH AGENT PATH (not just the hoist) with a specific raw
+  // response — used by 7c's corruption replay and 7c2's real-stdout replay
+  // below. Absent labels fall back to the pre-existing unconditional
+  // { ok: true } acknowledgement.
   const agent = async (prompt, opts) => {
-    calls.push({ label: (opts && opts.label) || '', prompt, opts });
+    const label = (opts && opts.label) || '';
+    calls.push({ label, prompt, opts });
+    if (o.fetchResponses && Object.prototype.hasOwnProperty.call(o.fetchResponses, label)) {
+      return o.fetchResponses[label];
+    }
     return { ok: true };
   };
   const parallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t)));
@@ -4899,10 +5084,19 @@ console.log('7a OK: task hoist carries the binary\'s real tags into the gate');
 console.log('7b OK: roadmap hoist yields one unit per real phase, each with its own real tags');
 
 // ============================================================================
-// 7c. NEGATIVE — the recorded wf_e3402021-0af corruption payload. It is
-// SCHEMA-VALID (a string body, an array of strings for tags, an array of
-// well-shaped phase objects), so a shape-only check passes it. The REAL-VALUE
-// assertions above must fail on it.
+// 7c. NEGATIVE — the recorded wf_e3402021-0af corruption, replayed through the
+// FETCH AGENT PATH. This is where the corruption actually originated in
+// production: the fetch:roadmap agent itself fabricated body/tags/phases, not
+// a caller-supplied hoist. The redesigned driver's identity/collision guards
+// (extractRoadmapFromJson, reached via parseTranscriptBlocks) must now reject
+// it outright: fetchFailed surfaces, the outcome is 'escalated', ZERO
+// gate:clear-tag calls occur, and needs-plan-review is left in place (no
+// mutation at all — nothing is written).
+//
+// Driver-side validation of a caller-supplied HOIST's content remains a
+// separate, still out-of-scope concern (unchanged by this phase — see
+// docs/mechanical-agent-inventory.md); the sanity check below proves that
+// boundary did not silently move.
 // ============================================================================
 const CORRUPTION = {
   body: 'Fetched roadmap and phase data for workflow-token-reduction',
@@ -4910,7 +5104,9 @@ const CORRUPTION = {
   phases: [{ stem: 'workflow-token-reduction', body: roadmapJson.body, tags: roadmapJson.tags }],
 };
 {
-  // Shape-only / schema-shaped check: PASSES. This is the false assurance.
+  // Shape-only / schema-shaped check: PASSES. This is the false assurance a
+  // shape-only defence would have offered — the reason this phase validates
+  // IDENTITY, not just shape.
   const shapeOk =
     typeof CORRUPTION.body === 'string' &&
     Array.isArray(CORRUPTION.tags) &&
@@ -4918,26 +5114,86 @@ const CORRUPTION = {
     Array.isArray(CORRUPTION.phases) &&
     CORRUPTION.phases.every((p) => typeof p.stem === 'string' && typeof p.body === 'string' && Array.isArray(p.tags));
   assert.equal(shapeOk, true, '7c: the recorded corruption payload IS schema-valid — a shape-only check passes it');
-  assert.equal(hoistedFetchedOk(CORRUPTION, 'roadmap'), true, '7c: even the driver\'s own shape guard accepts it (shape is not the defence)');
-
-  const h = makeDeps({});
-  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', fetched: CORRUPTION, wontFixedTexts: [] }, h.deps);
-
-  // ... and every REAL-VALUE assertion fails on it.
-  assert.notEqual(out.units.length, 3, '7c: the corruption payload does NOT produce one unit per real phase (five of six vanished, in the real incident)');
-  assert.notDeepEqual(
-    out.units.map((u) => u.ident),
-    ['hoist-rm', phase1Json.stem, phase2Json.stem],
-    '7c: the corruption payload does NOT carry the real phase stems'
-  );
-  const rm = promptFor(h, 'gate:clear-tag:roadmap:hoist-rm');
-  assert.ok(!rm.includes('--tags "infra"'), '7c: the corruption payload does NOT write the roadmap\'s real sibling tags');
-  assert.ok(
-    rm.includes('fetch') || rm.includes('workflow-token-reduction'),
-    '7c: it writes the junk transcribed from the agent\'s own prompt instead — exactly the recorded incident'
+  // Sanity, unchanged scope: the HOIST path's shape guard alone still accepts
+  // it — content validation of a *hoisted* payload is a separate concern this
+  // phase does not touch. This is a boundary check, not a regression: the fix
+  // below lands on the FETCH path, which is where the incident happened.
+  assert.equal(
+    hoistedFetchedOk(CORRUPTION, 'roadmap'),
+    true,
+    '7c: the hoist path\'s shape guard is untouched by this phase and still accepts it (out of scope, unchanged)'
   );
 }
-console.log('7c OK: the recorded corruption payload passes a shape-only check and FAILS every real-value assertion');
+
+// The recorded incident's exact shape, reformatted as the raw transcript a
+// fetch:roadmap agent would now return: one roadmap block whose `phases`
+// summary names a stem equal to the roadmap's OWN slug.
+const CORRUPTION_TRANSCRIPT =
+  '===CMD: roadmap show hoist-rm===\n' +
+  JSON.stringify({
+    slug: 'hoist-rm',
+    body: CORRUPTION.body,
+    tags: CORRUPTION.tags,
+    phases: [{ stem: 'hoist-rm' }],
+  });
+{
+  const h = makeDeps({ fetchResponses: { 'fetch:roadmap': { transcript: CORRUPTION_TRANSCRIPT } } });
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', wontFixedTexts: [] }, h.deps);
+  assert.equal(out.fetchError, true, '7c: the redesigned fetch path surfaces a fetch error on the recorded corruption shape');
+  assert.equal(out.outcome, 'escalated', '7c: ...and fails closed to escalated');
+  assert.ok(
+    !labels(h).some((l) => l.indexOf('gate:clear-tag') === 0),
+    '7c: zero gate:clear-tag calls — needs-plan-review is left in place, nothing is written'
+  );
+}
+console.log('7c OK: the recorded corruption, replayed through the fetch agent path, is now rejected fail-closed (fetchFailed, escalated, no writes)');
+
+// ============================================================================
+// 7c2. POSITIVE companion — the redesigned single-agent fetch:roadmap path
+// replays the REAL raw stdout of the hermetic seed's own three commands
+// (captured verbatim via the real binary in this section's setup), delimited
+// exactly as buildRoadmapFetchPrompt instructs an agent to, and reaches the
+// SAME one-unit-per-real-phase, correct-sibling-tags result 7a/7b prove via
+// the hoist path — while making exactly ONE fetch:roadmap agent call for the
+// whole roadmap. Mirrors 7a/7b but exercises the FETCH path this phase
+// redesigned, not the hoist path (which is untouched — see 7d below).
+// ============================================================================
+{
+  const roadmapRaw = fs.readFileSync(path.join(seedDir, 'seed-roadmap.json'), 'utf8').trim();
+  const phase1Raw = fs.readFileSync(path.join(seedDir, 'seed-phase-1.json'), 'utf8').trim();
+  const phase2Raw = fs.readFileSync(path.join(seedDir, 'seed-phase-2.json'), 'utf8').trim();
+  const REAL_TRANSCRIPT =
+    '===CMD: roadmap show hoist-rm===\n' +
+    roadmapRaw +
+    '\n===CMD: phase show ' +
+    phase1Json.stem +
+    '===\n' +
+    phase1Raw +
+    '\n===CMD: phase show ' +
+    phase2Json.stem +
+    '===\n' +
+    phase2Raw;
+  const h = makeDeps({ fetchResponses: { 'fetch:roadmap': { transcript: REAL_TRANSCRIPT } } });
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', wontFixedTexts: [] }, h.deps);
+  assert.equal(
+    labels(h).filter((l) => l === 'fetch:roadmap').length,
+    1,
+    '7c2: exactly one fetch:roadmap agent call for the whole roadmap'
+  );
+  assert.equal(out.units.length, 3, '7c2: one unit for the roadmap body plus one per REAL phase (2)');
+  assert.deepEqual(
+    out.units.map((u) => u.ident),
+    ['hoist-rm', phase1Json.stem, phase2Json.stem],
+    '7c2: the units carry the REAL phase stems read from the replayed raw stdout'
+  );
+  const p1 = promptFor(h, 'gate:clear-tag:phase:' + phase1Json.stem);
+  const p2 = promptFor(h, 'gate:clear-tag:phase:' + phase2Json.stem);
+  const rm = promptFor(h, 'gate:clear-tag:roadmap:hoist-rm');
+  assert.ok(p1.includes('--tags "alpha-tag"'), '7c2: phase 1 gate writes its OWN real sibling tag');
+  assert.ok(p2.includes('--tags "beta-tag"'), '7c2: phase 2 gate writes its OWN real sibling tag');
+  assert.ok(rm.includes('--tags "infra"'), '7c2: the roadmap gate writes the roadmap\'s OWN real sibling tag');
+}
+console.log('7c2 OK: the fetch path replays real raw stdout and reaches the same real-value result as the hoist path, at exactly 1 agent call');
 
 // ============================================================================
 // 7d. FALLBACK — every hoist is optional. Absent / malformed reaches the agent.

@@ -213,10 +213,23 @@ of the fetched payload — is deliberately **not** this phase's job: it is scope
 originally-preferred mechanism (a `parallel()` per-phase fan-out) was rejected precisely because
 it would multiply this phase's mechanical agents, and must not be reintroduced.
 
+**Since then (`fix-plan-review-gate-tag-clobber` landed).** The guard named above as
+that task's job has now landed — as raw-stdout-capture + driver-side parse/identity-validate
+(`.claude/workflows/lib/plan-review.mjs`'s `parseTranscriptBlocks` / `extractRoadmapFromJson` /
+`extractPhaseFromJson` / `extractTaskFromJson`), still at the fixed 1-agent-per-target cost this
+document holds `fetch:roadmap` to, never a per-phase fan-out. This paragraph is not left
+still-open by that landing; see `docs/workflow-schemas.md` § "The fetch stage is now
+raw-transcript-capture + driver-side parse" for the design. Content validation of a
+caller-supplied `fetched` *hoist* (as opposed to the fetch agent path) remains a separate,
+still out-of-scope concern — that path bypasses the agent entirely, so there is nothing for
+these driver-side guards to run against.
+
 One consequence is worth stating on its own, because the hoist's shape guard replaces a
-`required`-bearing schema: `hoistedFetchedOk` is held to be **no weaker** than
-`PLAN_TARGET_SCHEMA` / `ROADMAP_TARGET_SCHEMA`. Both list `tags` as `required`, so the guard
-requires a `tags` array of strings — on the payload *and* on every roadmap phase entry
+`required`-bearing schema: `hoistedFetchedOk` is held to be **no weaker** than the
+`{ body, tags, phases }` shape `buildReviewUnits` requires (formerly enforced by the fetch
+agent's own `PLAN_TARGET_SCHEMA` / `ROADMAP_TARGET_SCHEMA`, since replaced — see above — by a
+single `RAW_STDOUT_SCHEMA` the agent satisfies and the driver parses). `tags` is required, so
+the guard requires a `tags` array of strings — on the payload *and* on every roadmap phase entry
 (alongside a non-empty `stem` and a string `body`) — and rejects the payload outright otherwise.
 The reason is the write-back: the gate issues `rdm ... update --tags "<list>"`, and `--tags`
 **replaces** the whole list. A tags-less payload accepted here would be defaulted to `[]` by

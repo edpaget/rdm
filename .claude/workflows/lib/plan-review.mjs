@@ -181,11 +181,12 @@ function parsePlanArgs(rawArgs) {
 }
 
 // hoistedFetchedOk(fetched, kind) — the shape guard on a caller-supplied target
-// payload. It stands in for the schema the fetch agent it replaces was forced to
-// satisfy (PLAN_TARGET_SCHEMA / ROADMAP_TARGET_SCHEMA), so it must be no weaker
-// than that schema: a non-empty `body` (buildReviewUnits' own fail-closed
-// condition) AND a `tags` array of strings, plus — for the roadmap kind — an
-// array `phases` whose every entry carries a non-empty string `stem`, a string
+// payload. It stands in for the { body, tags, phases } shape buildReviewUnits
+// consumes (the same shape the fetch agents below now ASSEMBLE, driver-side,
+// from a raw transcript — see RAW_STDOUT_SCHEMA), so it must be no weaker than
+// that shape: a non-empty `body` (buildReviewUnits' own fail-closed condition)
+// AND a `tags` array of strings, plus — for the roadmap kind — an array
+// `phases` whose every entry carries a non-empty string `stem`, a string
 // `body`, and its own `tags` array of strings.
 //
 // `tags` is required, not optional-with-a-default, because it is WRITTEN BACK:
@@ -222,39 +223,6 @@ function hoistedFetchedOk(fetched, kind) {
   return true
 }
 
-// Schemas the mechanical Bash fetch agents are forced to satisfy. Plumbing, not
-// review logic.
-const PLAN_TARGET_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['body', 'tags'],
-  properties: {
-    body: { type: 'string' },
-    tags: { type: 'array', items: { type: 'string' } },
-  },
-}
-const ROADMAP_TARGET_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['body', 'tags', 'phases'],
-  properties: {
-    body: { type: 'string' },
-    tags: { type: 'array', items: { type: 'string' } },
-    phases: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['stem', 'body', 'tags'],
-        properties: {
-          stem: { type: 'string' },
-          body: { type: 'string' },
-          tags: { type: 'array', items: { type: 'string' } },
-        },
-      },
-    },
-  },
-}
 const STAMP_ACK_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -262,40 +230,200 @@ const STAMP_ACK_SCHEMA = {
   properties: { ok: { type: 'boolean' } },
 }
 
-// Fetch prompts — mechanical Bash agents (the runtime cannot shell out itself).
+// RAW_STDOUT_SCHEMA — the ONLY schema the mechanical fetch agents below are
+// forced to satisfy. One string field, deliberately not a nested object: there
+// is nothing here for an agent to interpret, rename, or compose. This replaces
+// the former PLAN_TARGET_SCHEMA / ROADMAP_TARGET_SCHEMA, which asked the agent
+// to hand back an already-composed { body, tags, phases } object — the exact
+// shape that let a fetch agent transcribe junk over real plan data in
+// production (see the fetch-prompt comment below). Parsing, field extraction,
+// and identity validation now live entirely in this driver (parseJsonStdout /
+// parseTranscriptBlocks / extractRoadmapFromJson / extractPhaseFromJson /
+// extractTaskFromJson below) — the agent's only job is verbatim transcription.
+const RAW_STDOUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['transcript'],
+  properties: {
+    transcript: { type: 'string' },
+  },
+}
+
+// stringArrayOk / stemDup / etc. are shared by hoistedFetchedOk above and the
+// extract*FromJson validators below.
+
+// parseTranscriptBlocks(transcript) — pure, never throws. Splits a raw
+// transcript into the `===CMD: <command>===`-delimited blocks a fetch agent
+// was instructed to emit (see buildRoadmapFetchPrompt below); a transcript
+// with no recognizable marker returns []. Each block's `stdout` is the raw
+// text between its marker and the next marker (or end of transcript).
+const TRANSCRIPT_MARKER_RE = /^===CMD: (.*)===\s*$/
+function parseTranscriptBlocks(transcript) {
+  const text = typeof transcript === 'string' ? transcript : ''
+  const lines = text.split('\n')
+  const blocks = []
+  let current = null
+  for (let i = 0; i < lines.length; i++) {
+    const m = TRANSCRIPT_MARKER_RE.exec(lines[i])
+    if (m) {
+      if (current) blocks.push(current)
+      current = { command: m[1], stdoutLines: [] }
+      continue
+    }
+    if (current) current.stdoutLines.push(lines[i])
+  }
+  if (current) blocks.push(current)
+  return blocks.map((b) => ({ command: b.command, stdout: b.stdoutLines.join('\n') }))
+}
+
+// parseJsonStdout(stdout) — pure, never throws. JSON.parse()s the given text
+// and requires the result to be a plain (non-array) object — anything else
+// (a parse error, an array, a primitive, null) reports { ok:false }, which is
+// this module's uniform fail-closed signal.
+function parseJsonStdout(stdout) {
+  try {
+    const value = JSON.parse(String(stdout))
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false }
+    return { ok: true, value: value }
+  } catch (e) {
+    return { ok: false }
+  }
+}
+
+// extractRoadmapFromJson(json, expectedSlug) — pure identity/collision
+// validator for the roadmap-level block of a fetch:roadmap transcript. Rejects
+// (ok:false) on anything that does not match `rdm roadmap show <expectedSlug>
+// --format json`'s real contract: json.slug must equal expectedSlug, `body`
+// must be a non-empty (trimmed) string, `tags` a string array. `phases` — the
+// roadmap's own per-phase SUMMARY array (stem + whatever else `rdm roadmap
+// show` reports; never a full body) — is optional; when present, every entry
+// needs a non-empty string `stem`, AND the summary must clear two collision
+// guards that reject the exact wf_e3402021-0af corruption shape: no stem may
+// equal the roadmap's own slug (a lone phase entry mislabeled with the
+// roadmap slug), and no two stems may be identical (phases collapsed into
+// fewer, duplicated entries). A legitimately EMPTY phases array is not a
+// collision and is accepted. `phaseSummaries` is returned as the authoritative
+// phase-stem list the driver fans out over — never the phase blocks' own
+// self-reported existence.
+function extractRoadmapFromJson(json, expectedSlug) {
+  if (!json || typeof json !== 'object') return { ok: false }
+  if (json.slug !== expectedSlug) return { ok: false }
+  const body = typeof json.body === 'string' ? json.body : ''
+  if (body.trim() === '') return { ok: false }
+  if (!stringArrayOk(json.tags)) return { ok: false }
+  let phaseSummaries = []
+  if (json.phases !== undefined) {
+    if (!Array.isArray(json.phases)) return { ok: false }
+    const shapeOk = json.phases.every(
+      (p) => p && typeof p === 'object' && typeof p.stem === 'string' && p.stem.trim() !== ''
+    )
+    if (!shapeOk) return { ok: false }
+    phaseSummaries = json.phases
+    const stems = phaseSummaries.map((p) => p.stem)
+    if (stems.indexOf(expectedSlug) !== -1) return { ok: false } // stem === roadmap slug
+    if (new Set(stems).size !== stems.length) return { ok: false } // duplicate stems
+  }
+  return { ok: true, body: body, tags: json.tags, phaseSummaries: phaseSummaries }
+}
+
+// extractPhaseFromJson(json, expectedRoadmap, expectedStem) — pure
+// identity validator for one phase block (either inside a roadmap transcript
+// or the sole block of a fetch:phase transcript). Rejects on a stem mismatch
+// or a `roadmap` field that disagrees with the roadmap actually being
+// reviewed (cross-roadmap contamination of one block inside a shared
+// transcript). `body` follows the SAME precedent buildReviewUnits already
+// applied to a phase entry: an empty phase body is accepted here (only the
+// roadmap-level body is fail-closed on emptiness) — string-typed, defaulting
+// to '' when absent or non-string, never rejected for being blank.
+function extractPhaseFromJson(json, expectedRoadmap, expectedStem) {
+  if (!json || typeof json !== 'object') return { ok: false }
+  if (json.stem !== expectedStem) return { ok: false }
+  if (json.roadmap !== expectedRoadmap) return { ok: false }
+  if (!stringArrayOk(json.tags)) return { ok: false }
+  const body = typeof json.body === 'string' ? json.body : ''
+  return { ok: true, body: body, tags: json.tags }
+}
+
+// extractTaskFromJson(json, expectedSlug) — pure identity validator for a
+// fetch:task transcript. Same shape as extractPhaseFromJson; a task has no
+// containing roadmap, so there is no cross-roadmap check.
+function extractTaskFromJson(json, expectedSlug) {
+  if (!json || typeof json !== 'object') return { ok: false }
+  if (json.slug !== expectedSlug) return { ok: false }
+  if (!stringArrayOk(json.tags)) return { ok: false }
+  const body = typeof json.body === 'string' ? json.body : ''
+  return { ok: true, body: body, tags: json.tags }
+}
+
+// Fetch prompts — mechanical Bash agents (the runtime cannot shell out
+// itself). Their output contract is deliberately reduced to VERBATIM
+// TRANSCRIPTION ONLY: run the command(s), print the raw stdout unmodified,
+// return it under `transcript`. No field extraction, no renaming, no
+// summarizing, no JSON composition — that step, which used to live in the
+// agent's own judgment, is where a fetch agent twice fabricated a response
+// that was schema-valid but had nothing to do with the real document (runs
+// wf_e3402021-0af and wf_f4be8027-dbb, recorded on task
+// fix-plan-review-gate-tag-clobber). All parsing, extraction, and identity
+// validation now happen deterministically in THIS FILE, after the agent
+// returns (see the extract*FromJson / parse* functions above).
 function buildPhaseFetchPrompt(roadmap, phase) {
   return [
     'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
+    'Run exactly this command in the repo root:',
     '  ./target/debug/rdm phase show ' + phase + ' --roadmap ' + roadmap + ' --project rdm --format json',
-    'Return a PLAN_TARGET object: `body` (the phase JSON `body` verbatim) and `tags` (the phase JSON',
-    '`tags` array verbatim, one element each — an empty array if there are none).',
-    'If the command fails or the body is empty, return an empty `body` and an empty `tags` array.',
+    'Return a RAW_STDOUT object: `transcript` — the ENTIRE raw stdout of that command, character for',
+    'character, exactly as printed. Do not summarize, reformat, extract fields, rename anything, or',
+    'comment on it — copy it verbatim.',
+    'If the command fails or prints nothing, return an empty string for `transcript`.',
   ].join('\n')
 }
 function buildTaskFetchPrompt(slug) {
   return [
     'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
+    'Run exactly this command in the repo root:',
     '  ./target/debug/rdm task show ' + slug + ' --project rdm --format json',
-    'Return a PLAN_TARGET object: `body` (the task JSON `body` verbatim) and `tags` (the task JSON',
-    '`tags` array verbatim, one element each — an empty array if there are none).',
-    'If the command fails or the body is empty, return an empty `body` and an empty `tags` array.',
+    'Return a RAW_STDOUT object: `transcript` — the ENTIRE raw stdout of that command, character for',
+    'character, exactly as printed. Do not summarize, reformat, extract fields, rename anything, or',
+    'comment on it — copy it verbatim.',
+    'If the command fails or prints nothing, return an empty string for `transcript`.',
   ].join('\n')
 }
+// buildRoadmapFetchPrompt(slug) — this fetch stays at exactly ONE mechanical
+// agent invocation per roadmap target, regardless of phase count. It is
+// tempting to fix fetch corruption by splitting this into a cheap `roadmap
+// show` fetch plus a driver-side parallel() fan-out of one `phase show` agent
+// per stem (reusing buildPhaseFetchPrompt) — do NOT reach for that here. Both
+// docs/mechanical-agent-inventory.md (§ "The hoist with a recorded correctness
+// failure" / "must not be reintroduced") and task
+// fix-plan-review-gate-tag-clobber's body (§ "Deferred option (do NOT reach
+// for it first)") record why: for a 7-phase roadmap, 1 fetch:roadmap agent
+// becoming 8 would inflate the very docs/token-baseline.json baseline the
+// (now done) workflow-token-reduction roadmap phase 3 measures against. If
+// phase-BODY corruption is ever separately proven (this incident was body/
+// tags/phases-count corruption, not per-phase-body corruption), the fan-out
+// remains available only after explicit coordination with that roadmap — not
+// as a default reached for here. This function keeps the existing single-turn,
+// multi-command shape (one `roadmap show` call, then one `phase show` call per
+// phase the agent just read) and changes ONLY the output contract: verbatim,
+// delimited transcription instead of composed JSON.
 function buildRoadmapFetchPrompt(slug) {
   return [
     'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
+    'Run this command in the repo root:',
     '  ./target/debug/rdm roadmap show ' + slug + ' --project rdm --format json',
-    'That JSON carries the roadmap body, the roadmap tags, and a summary of every phase.',
-    'For each phase, ALSO run and read:',
+    'Before its output, print a line by itself: ===CMD: roadmap show ' + slug + '===',
+    'Then print that command\'s raw stdout, character for character, exactly as printed — do not',
+    'summarize, reformat, extract fields, rename anything, or comment on it.',
+    'That JSON carries a `phases` array. For EACH entry in it, using the exact `stem` value you just',
+    'read (copy it verbatim — do not invent, rename, or reorder it), run:',
     '  ./target/debug/rdm phase show <stem> --roadmap ' + slug + ' --project rdm --format json',
-    'to get that phase\'s full `body` and `tags`.',
-    'Return a ROADMAP_TARGET object: `body` (the roadmap JSON `body` verbatim), `tags` (the roadmap JSON',
-    '`tags` array verbatim), and `phases` — one entry per phase with `stem` (the phase JSON `stem`), `body`',
-    '(the phase JSON `body` verbatim), and `tags` (the phase JSON `tags` array verbatim).',
-    'If the command fails or the roadmap body is empty, return an empty `body`, an empty `tags` array, and an empty `phases` array.',
+    'Before each of those outputs, print a line by itself: ===CMD: phase show <stem>=== (substituting',
+    'the real stem value you read), then print that command\'s raw stdout verbatim, exactly as with the',
+    'roadmap command above.',
+    'Return a RAW_STDOUT object: `transcript` — the concatenation of every ===CMD: ...=== marker line',
+    'and the raw stdout that follows it, one block per command, in the order the commands were run.',
+    'If the roadmap command fails or prints nothing, still print its marker line followed by an empty',
+    'body, and run no phase commands.',
   ].join('\n')
 }
 
@@ -592,6 +720,41 @@ function buildRoundNoteWritePrompt(kind, roadmap, ident, round, outcome, finding
   ].join('\n')
 }
 
+// assembleRoadmapFetchFromTranscript(transcript, expectedSlug) — pure: turn a
+// fetch:roadmap agent's raw transcript into the { body, tags, phases } shape
+// buildReviewUnits consumes. ALL-OR-NOTHING (same contract the former
+// ROADMAP_TARGET_SCHEMA agent held): the roadmap block must parse and pass
+// extractRoadmapFromJson, AND every phase its own phaseSummaries names must
+// have a matching, validating phase block in the SAME transcript — one
+// mismatch (a missing block, a JSON parse failure, a stem/roadmap disagreement)
+// fails the WHOLE roadmap fetch, exactly as an empty roadmap body always has.
+// Matching a phase block to a summary stem is done by the stem's presence in
+// the block's own recorded `command` (the marker text the agent was told to
+// print), never by transcript ORDER. Never throws — returns null on any
+// failure, which the caller treats identically to `fetched === null`.
+function assembleRoadmapFetchFromTranscript(transcript, expectedSlug) {
+  const blocks = parseTranscriptBlocks(transcript)
+  const roadmapBlock = blocks.find((b) => b.command.indexOf('roadmap show') === 0)
+  if (!roadmapBlock) return null
+  const rmParsed = parseJsonStdout(roadmapBlock.stdout)
+  if (!rmParsed.ok) return null
+  const rm = extractRoadmapFromJson(rmParsed.value, expectedSlug)
+  if (!rm.ok) return null
+  const phaseBlocks = blocks.filter((b) => b.command.indexOf('phase show') === 0)
+  const phases = []
+  for (let i = 0; i < rm.phaseSummaries.length; i++) {
+    const stem = rm.phaseSummaries[i].stem
+    const block = phaseBlocks.find((b) => b.command.indexOf(stem) !== -1)
+    if (!block) return null
+    const pj = parseJsonStdout(block.stdout)
+    if (!pj.ok) return null
+    const pext = extractPhaseFromJson(pj.value, expectedSlug, stem)
+    if (!pext.ok) return null
+    phases.push({ stem: stem, body: pext.body, tags: pext.tags })
+  }
+  return { body: rm.body, tags: rm.tags, phases: phases }
+}
+
 const WONTFIX_LIST_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -604,11 +767,26 @@ const WONTFIX_LIST_SCHEMA = {
 // target is a single unit; a `roadmap` target is the roadmap body plus one unit
 // per phase, each gated independently. Returns { units, fetchFailed }. FAIL-CLOSED
 // on an empty/unread body: an unread plan must NEVER be silently marked reviewed.
+//
+// Defense-in-depth: a `fetched.phases` stem-collision/duplication guard runs
+// here too, using ONLY the `stem` field the documented hoist contract already
+// requires (see hoistedFetchedOk) — so it catches a corrupt payload arriving
+// from EITHER path, the now-hardened fetch (extractRoadmapFromJson already
+// rejects this shape before it reaches here) or a caller-supplied `fetched`
+// hoist (whose content validation is out of this phase's scope — see
+// docs/mechanical-agent-inventory.md). A trip returns the SAME fail-closed
+// shape as an empty body, so the rest of the driver needs no new branch.
 function buildReviewUnits(parsed, fetched) {
   const kind = parsed.kind
   if (kind === 'roadmap') {
     const rm = fetched
     if (!rm || !rm.body || String(rm.body).trim() === '') return { units: [], fetchFailed: true }
+    const phaseStems = (Array.isArray(rm.phases) ? rm.phases : [])
+      .map((p) => p && p.stem)
+      .filter((s) => typeof s === 'string')
+    if (phaseStems.indexOf(parsed.roadmap) !== -1 || new Set(phaseStems).size !== phaseStems.length) {
+      return { units: [], fetchFailed: true }
+    }
     const units = []
     units.push({
       kind: 'roadmap',
@@ -809,14 +987,19 @@ async function runPlanReviewDriver(args, deps) {
     fetched = parsed.fetched
     _log('plan-review: ' + kind + ' payload hoisted from caller args (no fetch agent)')
   } else if (kind === 'roadmap') {
+    // ONE agent call regardless of phase count — see the "must not be
+    // reintroduced" comment on buildRoadmapFetchPrompt above. The agent
+    // transcribes raw stdout only; assembleRoadmapFetchFromTranscript does
+    // every bit of parsing, extraction, and identity/collision validation.
     try {
-      fetched = await _agent(buildRoadmapFetchPrompt(parsed.roadmap), {
+      const raw = await _agent(buildRoadmapFetchPrompt(parsed.roadmap), {
         label: 'fetch:roadmap',
         phase: 'Read',
         agentType: 'rdm-mechanical',
-        schema: ROADMAP_TARGET_SCHEMA,
+        schema: RAW_STDOUT_SCHEMA,
         model: _mechanicalModel,
       })
+      fetched = assembleRoadmapFetchFromTranscript(raw && raw.transcript, parsed.roadmap)
     } catch (e) {
       fetched = null
     }
@@ -824,13 +1007,20 @@ async function runPlanReviewDriver(args, deps) {
     const fetchPrompt =
       kind === 'task' ? buildTaskFetchPrompt(parsed.task) : buildPhaseFetchPrompt(parsed.roadmap, parsed.phase)
     try {
-      fetched = await _agent(fetchPrompt, {
+      const raw = await _agent(fetchPrompt, {
         label: 'fetch:' + kind,
         phase: 'Read',
         agentType: 'rdm-mechanical',
-        schema: PLAN_TARGET_SCHEMA,
+        schema: RAW_STDOUT_SCHEMA,
         model: _mechanicalModel,
       })
+      const parsedStdout = parseJsonStdout(raw && raw.transcript)
+      const extracted = parsedStdout.ok
+        ? kind === 'task'
+          ? extractTaskFromJson(parsedStdout.value, parsed.task)
+          : extractPhaseFromJson(parsedStdout.value, parsed.roadmap, parsed.phase)
+        : { ok: false }
+      fetched = extracted.ok ? { body: extracted.body, tags: extracted.tags } : null
     } catch (e) {
       fetched = null
     }
@@ -920,6 +1110,13 @@ async function runPlanReviewDriver(args, deps) {
     let tagCleared = false
     if (kind !== 'implementation-plan') {
       if (gate.clearsPlanReviewTag) {
+        // u.tags comes from the AC1/AC2-validated fetch (or the caller's
+        // shape-guarded hoist), not a fresh re-fetch here — a second gate-time
+        // fetch agent was considered and DECLINED: there is now only ONE
+        // trustworthy fetch per unit, so a re-fetch would only re-inflate the
+        // mechanical-agent count this file's design is held to (see
+        // docs/mechanical-agent-inventory.md's agent-count-discipline note on
+        // this file) for a live-race scenario nothing in this phase asked for.
         const remaining = filterPlanReviewTag(u.tags)
         try {
           const ack = await _agent(buildTagWritePrompt(u.kind, u.roadmap, u.ident, remaining), {
@@ -983,9 +1180,14 @@ export {
   buildRoadmapFetchPrompt,
   buildTagWritePrompt,
   buildActPrompt,
-  PLAN_TARGET_SCHEMA,
-  ROADMAP_TARGET_SCHEMA,
+  RAW_STDOUT_SCHEMA,
   STAMP_ACK_SCHEMA,
+  parseTranscriptBlocks,
+  parseJsonStdout,
+  extractRoadmapFromJson,
+  extractPhaseFromJson,
+  extractTaskFromJson,
+  assembleRoadmapFetchFromTranscript,
   parseRoundNotes,
   formatRoundNote,
   findingSignature,
