@@ -292,14 +292,23 @@ One consequence is worth stating on its own, because the hoist's shape guard rep
 `required`-bearing schema: `hoistedFetchedOk` is held to be **no weaker** than the
 `{ body, tags, phases }` shape `buildReviewUnits` requires (formerly enforced by the fetch
 agent's own `PLAN_TARGET_SCHEMA` / `ROADMAP_TARGET_SCHEMA`, since replaced — see above — by a
-single `RAW_STDOUT_SCHEMA` the agent satisfies and the driver parses). `tags` is required, so
-the guard requires a `tags` array of strings — on the payload *and* on every roadmap phase entry
-(alongside a non-empty `stem` and a string `body`) — and rejects the payload outright otherwise.
-The reason is the write-back: the gate issues `rdm ... update --tags "<list>"`, and `--tags`
-**replaces** the whole list. A tags-less payload accepted here would be defaulted to `[]` by
-`buildReviewUnits` and written as `--tags ""`, wiping every real tag the item carried — the same
-outcome as the recorded incidents, reached by omission rather than by transcription. Rejecting
-costs one fetch agent on the fallback path; accepting costs the item's tags.
+single `RAW_STDOUT_SCHEMA` the agent satisfies and the driver parses). `tags` is required in the
+sense that a *present* value must be a string array — on the payload *and* on every roadmap phase
+entry (alongside a non-empty `stem` and a string `body`) — and the payload is rejected outright
+if it is present but malformed. **Update (`fix-plan-review-gate-tag-clobber`, "the one blocking
+defect that remains").** An *omitted* `tags` key is a distinct case from a malformed one:
+`rdm ... show --format json` never prints `tags: []` for an untagged item — rdm-core's
+`Option<Vec<String>>` / `skip_serializing_if(Option::is_none)` wire contract omits the key
+entirely — so a strict "always require a real array" guard misclassified every untagged item's
+fetch as corrupted and it could never be plan-reviewed. `tagsOk(v)`/`normalizeTags(v)` narrow the
+guard to tolerate exactly the omission case (`undefined`), mapping it to a real `[]` for every
+downstream consumer, while still rejecting a present-but-malformed value exactly as before. The
+reason the write-back still requires *some* validation is unchanged: the gate issues
+`rdm ... update --tags "<list>"`, and `--tags` **replaces** the whole list. A malformed-but-present
+tags value accepted here could be written verbatim and corrupt the item's real tags — the same
+outcome as the recorded incidents, reached by content rather than omission. Rejecting a malformed
+value costs one fetch agent on the fallback path; accepting it costs the item's tags. An omitted
+value costs nothing — it is not malformed, just absent.
 
 `scripts/verify-workflow-review.sh` § 6 asserts the hoisted path carries the target's **real**
 field values — `tags` deep-equal to what `./target/debug/rdm ... show --format json` reports,

@@ -2352,13 +2352,22 @@ section, bottom) — content validation of the caller-hoisted path above remains
 the one deliberately-untouched exception.
 
 `hoistedFetchedOk` is nonetheless held to be **no weaker than the shape
-`buildReviewUnits` requires**: a `body`, and a `tags` array of strings —
-`required`, all-or-nothing, per phase entry as well. That is not shape
-pedantry — the gate writes the list back with `rdm ... update --tags
-"<list>"`, and `--tags` **replaces** the whole list. A payload accepted with
-no `tags` would be defaulted to `[]` by `buildReviewUnits` and issued as
-`--tags ""`, wiping every real tag the item carried. Rejecting it costs one fetch
-agent; accepting it costs the item's tags.
+`buildReviewUnits` requires**: a `body`, and a `tags` value that is either a
+real string array or (task `fix-plan-review-gate-tag-clobber`, "the one
+blocking defect that remains") entirely absent — per phase entry as well.
+The absent case is not laxity: `rdm ... show --format json` never prints
+`tags: []` for an untagged item, it omits the key outright
+(`Option<Vec<String>>` / `skip_serializing_if(Option::is_none)` in
+`rdm-core/src/json.rs`), so treating omission as corruption meant an
+untagged item could never be plan-reviewed. `tagsOk`/`normalizeTags` accept
+the omission and normalize it to a real `[]`; a `tags` key that IS present
+but malformed (not a string array) is still rejected outright — that is not
+shape pedantry, since the gate writes the list back with `rdm ... update
+--tags "<list>"`, and `--tags` **replaces** the whole list. A payload
+accepted with a malformed `tags` value could be written verbatim and
+corrupt the item's real tags. Rejecting a malformed value costs one fetch
+agent; accepting it costs the item's tags. Accepting a merely-absent value
+costs nothing.
 
 ### The fetch stage is now raw-transcript-capture + driver-side parse
 

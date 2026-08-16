@@ -2388,6 +2388,9 @@ const RESERVED_FETCH_TOKENS = ['fetch', 'plan-target']
 //       legitimately phase-less roadmap is never rejected.
 //   (c) none of `fetched.tags` (and, for a roadmap, none of any phase's
 //       `tags`) may equal a literal entry in RESERVED_FETCH_TOKENS above.
+//       `fetched.tags` may legitimately be `undefined` post-tagsOk (an
+//       omitted tags key), so this check is `Array.isArray`-guarded rather
+//       than assuming a real array — see the fix below.
 //
 // This function NEVER reads, pattern-matches, or predicates on `fetched.body`
 // text beyond hoistedFetchedOk's existing non-empty-after-trim check — it is
@@ -2409,7 +2412,10 @@ const RESERVED_FETCH_TOKENS = ['fetch', 'plan-target']
 // than being closed wont-fix.
 function fetchTranscriptionOk(fetched, kind) {
   if (!hoistedFetchedOk(fetched, kind)) return false
-  if (fetched.tags.some((t) => RESERVED_FETCH_TOKENS.indexOf(t) !== -1)) return false
+  // fetched.tags may be undefined here (hoistedFetchedOk's tagsOk guard
+  // tolerates an omitted tags key) — guard the array before calling .some,
+  // mirroring the phase-level check three lines below, which already does.
+  if (Array.isArray(fetched.tags) && fetched.tags.some((t) => RESERVED_FETCH_TOKENS.indexOf(t) !== -1)) return false
   if (kind === 'roadmap') {
     const phases = Array.isArray(fetched.phases) ? fetched.phases : []
     const stemsOk = phases.every((p) => typeof p.stem === 'string' && /^phase-\d+-/.test(p.stem))

@@ -7224,6 +7224,17 @@ seed_rdm phase create tagged --title "Tagged phase" --number 1 --body "Tagged ph
 seed_rdm phase create untagged --title "Untagged phase" --number 2 --body "Untagged phase body." \
     --no-edit --roadmap hoist-rm-mixed --project "$SEED_PROJ" >/dev/null 2>&1 ||
     fail "7: seed mixed-roadmap untagged phase create failed"
+# A wholly untagged roadmap (the roadmap's OWN tags key omitted, not just a
+# child phase's) — code-review finding f1 / AC1 "roadmap case": neither
+# hoist-rm nor hoist-rm-mixed above omits --tags on the roadmap itself, so
+# extractRoadmapFromJson's own tagsOk(json.tags) branch was never exercised
+# against a genuinely tags-omitted top-level roadmap fetch.
+seed_rdm roadmap create hoist-rm-untagged --title "Untagged roadmap" \
+    --body "Roadmap body with no tags at all." --no-edit --project "$SEED_PROJ" >/dev/null 2>&1 ||
+    fail "7: seed untagged roadmap create failed"
+seed_rdm phase create solo --title "Solo phase" --number 1 --body "Solo phase body." \
+    --no-edit --roadmap hoist-rm-untagged --project "$SEED_PROJ" >/dev/null 2>&1 ||
+    fail "7: seed untagged-roadmap phase create failed"
 seed_rdm commit -m "chore(plan): seed" >/dev/null 2>&1 || fail "7: seed commit failed"
 
 seed_rdm task show hoist-target --project "$SEED_PROJ" --format json 2>/dev/null >"$TMP/seed-task.json" ||
@@ -7242,7 +7253,11 @@ seed_rdm phase show phase-1-tagged --roadmap hoist-rm-mixed --project "$SEED_PRO
     fail "7: seed mixed roadmap phase 1 show --format json failed"
 seed_rdm phase show phase-2-untagged --roadmap hoist-rm-mixed --project "$SEED_PROJ" --format json 2>/dev/null >"$TMP/seed-mixed-phase-2.json" ||
     fail "7: seed mixed roadmap phase 2 show --format json failed"
-pass "7: hermetic plan repo seeded with the REAL binary (task + roadmap + 2 phases with distinct tags, plus an untagged task and a mixed-tag roadmap with one tagged and one untagged phase)"
+seed_rdm roadmap show hoist-rm-untagged --project "$SEED_PROJ" --format json 2>/dev/null >"$TMP/seed-untagged-roadmap.json" ||
+    fail "7: seed untagged roadmap show --format json failed"
+seed_rdm phase show phase-1-solo --roadmap hoist-rm-untagged --project "$SEED_PROJ" --format json 2>/dev/null >"$TMP/seed-untagged-roadmap-phase.json" ||
+    fail "7: seed untagged roadmap phase show --format json failed"
+pass "7: hermetic plan repo seeded with the REAL binary (task + roadmap + 2 phases with distinct tags, plus an untagged task, a mixed-tag roadmap with one tagged and one untagged phase, and a wholly untagged roadmap)"
 
 cat >"$TMP/plan-hoist.mjs" <<'NODE_PLAN_HOIST'
 import assert from 'node:assert/strict';
@@ -7274,6 +7289,10 @@ const mixedPhase1Raw = fs.readFileSync(path.join(seedDir, 'seed-mixed-phase-1.js
 const mixedPhase1Json = JSON.parse(mixedPhase1Raw);
 const mixedPhase2Raw = fs.readFileSync(path.join(seedDir, 'seed-mixed-phase-2.json'), 'utf8').trim();
 const mixedPhase2Json = JSON.parse(mixedPhase2Raw);
+const untaggedRoadmapRaw = fs.readFileSync(path.join(seedDir, 'seed-untagged-roadmap.json'), 'utf8').trim();
+const untaggedRoadmapJson = JSON.parse(untaggedRoadmapRaw);
+const untaggedRoadmapPhaseRaw = fs.readFileSync(path.join(seedDir, 'seed-untagged-roadmap-phase.json'), 'utf8').trim();
+const untaggedRoadmapPhaseJson = JSON.parse(untaggedRoadmapPhaseRaw);
 
 // The payload the local rdm-plan-review shim is instructed to assemble: the
 // binary's OWN body/tags copied verbatim, never summarized.
@@ -7300,6 +7319,10 @@ assert.ok(!untaggedTaskRaw.includes('"tags"'), '7i: the real binary omits the ta
 assert.ok(!mixedPhase2Raw.includes('"tags"'), '7i: same for the untagged phase');
 assert.equal(untaggedTaskJson.tags, undefined, '7i: the parsed untagged task JSON has no tags key');
 assert.equal(mixedPhase2Json.tags, undefined, '7i: the parsed untagged phase JSON has no tags key');
+// code-review finding f1 / AC1 "roadmap case": the roadmap's OWN tags key
+// (not just a child phase's) is genuinely omitted too.
+assert.ok(!untaggedRoadmapRaw.includes('"tags"'), '7i: the real binary omits the tags key entirely for an untagged roadmap');
+assert.equal(untaggedRoadmapJson.tags, undefined, '7i: the parsed untagged roadmap JSON has no tags key');
 
 function makeDeps(o) {
   o = o || {};
@@ -7716,7 +7739,15 @@ for (const [name, bad] of [
 }
 for (const [name, bad] of [
   ['no phases array', { body: 'b', tags: [] }],
-  ['phase entry missing tags', { body: 'b', tags: [], phases: [{ stem: 'phase-1-alpha', body: 'x' }] }],
+  // NOTE (code-review finding tests-1): this row is missing BOTH tags and
+  // status on its one phase entry, so it is really testing the (separately
+  // covered, below) missing-status requirement, not a missing-tags-alone
+  // case — a phase entry missing ONLY tags (stem/body/status all present) is
+  // no longer malformed at all (see the tagsOk/normalizeTags fix above) and
+  // is instead covered as a POSITIVE case by 7i(6) below, via the
+  // caller-hoisted `fetched.phases[]` path (hoistedFetchedOk's
+  // phase-summary predicate) rather than this "still falls back" table.
+  ['phase entry missing tags and status', { body: 'b', tags: [], phases: [{ stem: 'phase-1-alpha', body: 'x' }] }],
   ['phase entry non-array tags', { body: 'b', tags: [], phases: [{ stem: 'phase-1-alpha', body: 'x', tags: 'alpha' }] }],
   ['phase entry missing stem', { body: 'b', tags: [], phases: [{ body: 'x', tags: ['alpha'] }] }],
   ['phase entry blank stem', { body: 'b', tags: [], phases: [{ stem: '  ', body: 'x', tags: ['alpha'] }] }],
@@ -7866,9 +7897,31 @@ console.log('7d OK: every plan-review hoist is optional and falls back on anythi
     ['fetch', 'plan-target'],
     '7g: RESERVED_FETCH_TOKENS is the exact closed, evidence-grounded list'
   );
+  // code-review finding fetchTranscriptionOk-unguarded-tags-some: an omitted
+  // `tags` key now passes hoistedFetchedOk (tagsOk tolerates undefined), so
+  // fetchTranscriptionOk's own reserved-token check must not assume
+  // fetched.tags is a real array — it must return false, not throw.
+  assert.doesNotThrow(
+    () => fetchTranscriptionOk({ body: 'real body', phases: [] }, 'roadmap'),
+    '7g: fetchTranscriptionOk does not throw on a roadmap payload with an omitted tags key'
+  );
+  assert.equal(
+    fetchTranscriptionOk({ body: 'real body', phases: [] }, 'roadmap'),
+    true,
+    '7g: fetchTranscriptionOk accepts a roadmap payload with an omitted tags key'
+  );
+  assert.doesNotThrow(
+    () => fetchTranscriptionOk({ body: 'real body' }, 'task'),
+    '7g: fetchTranscriptionOk does not throw on a task payload with an omitted tags key'
+  );
+  assert.equal(
+    fetchTranscriptionOk({ body: 'real body' }, 'task'),
+    true,
+    '7g: fetchTranscriptionOk accepts a task payload with an omitted tags key'
+  );
 }
 console.log(
-  '7g OK: fetchTranscriptionOk discriminates both recorded incident payloads from real seeded data, and never trips on body text or an empty phases array'
+  '7g OK: fetchTranscriptionOk discriminates both recorded incident payloads from real seeded data, never trips on body text or an empty phases array, and does not throw on an omitted tags key'
 );
 
 // ============================================================================
@@ -8099,7 +8152,69 @@ console.log('7h(4) OK: an empty-phases roadmap and an incident-flavored-but-stru
   assert.ok(untaggedPrompt && untaggedPrompt.includes('--tags ""'), '7i(4): the untagged phase writes a real empty tag list, --tags ""');
   assert.ok(rmPrompt && rmPrompt.includes('--tags "mixed"'), "7i(4): the roadmap's own gate write is unaffected");
 }
-console.log('7i OK: untagged roadmap/phase/task fetches succeed and are reviewed (AC1/AC2); malformed-but-present tags are still rejected (AC3); the gate writes a real empty list, never a fabricated one (AC4)');
+{
+  // (5) AC1 "roadmap case" (code-review finding f1): a WHOLLY untagged
+  // roadmap — the roadmap's OWN tags key omitted, not just a child phase's —
+  // fetches successfully and reviews, with the roadmap unit's own gate write
+  // carrying a real empty list. Neither hoist-rm nor hoist-rm-mixed exercises
+  // this: both are created WITH --tags on the roadmap itself.
+  const extractedRoadmap = extractRoadmapFromJson(JSON.parse(untaggedRoadmapRaw), 'hoist-rm-untagged');
+  assert.equal(extractedRoadmap.ok, true, '7i(5): extractRoadmapFromJson accepts a real tags-key-omitted roadmap fetch');
+  assert.deepEqual(extractedRoadmap.tags, [], '7i(5): the omitted roadmap-level tags key normalizes to []');
+
+  const untaggedRoadmapTranscript =
+    '===CMD: roadmap show hoist-rm-untagged===\n' +
+    untaggedRoadmapRaw +
+    '\n===CMD: phase show ' +
+    untaggedRoadmapPhaseJson.stem +
+    '===\n' +
+    untaggedRoadmapPhaseRaw;
+  const h5 = makeDeps({ fetchResponses: { 'fetch:roadmap': { transcript: untaggedRoadmapTranscript } } });
+  const out5 = await runPlanReviewDriver({ roadmap: 'hoist-rm-untagged', wontFixedTexts: [] }, h5.deps);
+  assert.equal(out5.fetchError, undefined, '7i(5): a wholly untagged roadmap fetch is NOT reported as a fetch error');
+  assert.notEqual(out5.outcome, 'escalated', '7i(5): a wholly untagged roadmap is actually reviewed, not escalated');
+  const rmPrompt5 = promptFor(h5, 'gate:clear-tag:roadmap:hoist-rm-untagged');
+  assert.ok(rmPrompt5, '7i(5): the gate:clear-tag agent ran for the untagged roadmap');
+  assert.ok(rmPrompt5.includes('--tags ""'), '7i(5): the untagged roadmap writes a real empty tag list, --tags ""');
+}
+{
+  // (6) code-review finding tests-1: `hoistedFetchedOk`'s per-phase-summary
+  // predicate (call site #2 of the 5 the phase body names) has no dedicated
+  // test proving the fix works there specifically — 7i(4) above only reaches
+  // extractRoadmapFromJson/extractPhaseFromJson (the fetch-agent-transcript
+  // path, since its driver args carry no `fetched` key). This exercises the
+  // CALLER-HOISTED `fetched.phases[]` path instead: a roadmap fetched object
+  // with one phase entry that omits `tags` but carries a valid stem/body/
+  // status must be accepted directly (zero fetch:roadmap agent calls) and
+  // that phase's gate write must still be a real `--tags ""`.
+  const roadmapFetchedOnePhaseMissingTags = {
+    body: roadmapJson.body,
+    tags: roadmapJson.tags,
+    phases: [
+      { stem: phase1Json.stem, body: phase1Json.body, tags: phase1Json.tags, status: phase1Json.status },
+      // phase2 entry deliberately omits `tags` — the exact call site tests-1
+      // flagged as untested.
+      { stem: phase2Json.stem, body: phase2Json.body, status: phase2Json.status },
+    ],
+  };
+  assert.equal(
+    hoistedFetchedOk(roadmapFetchedOnePhaseMissingTags, 'roadmap'),
+    true,
+    '7i(6): hoistedFetchedOk accepts a roadmap payload whose phase-summary entry omits tags (call site #2)'
+  );
+  const h6 = makeDeps({});
+  const out6 = await runPlanReviewDriver({ roadmap: 'hoist-rm', fetched: roadmapFetchedOnePhaseMissingTags, wontFixedTexts: [] }, h6.deps);
+  assert.equal(
+    labels(h6).filter((l) => l === 'fetch:roadmap').length,
+    0,
+    '7i(6): a caller-hoisted roadmap with one phase missing tags is accepted directly — no fetch:roadmap call'
+  );
+  assert.notEqual(out6.outcome, 'escalated', '7i(6): the roadmap is actually reviewed, not escalated');
+  const gate6 = promptFor(h6, 'gate:clear-tag:phase:' + phase2Json.stem);
+  assert.ok(gate6, '7i(6): the gate:clear-tag agent ran for the phase whose hoisted entry omitted tags');
+  assert.ok(gate6.includes('--tags ""'), '7i(6): the phase-summary tags-omission call site writes a real empty tag list, --tags ""');
+}
+console.log('7i OK: untagged roadmap/phase/task fetches succeed and are reviewed (AC1/AC2, including a wholly untagged roadmap and a caller-hoisted phase-summary entry missing tags); malformed-but-present tags are still rejected (AC3); the gate writes a real empty list, never a fabricated one (AC4)');
 
 {
   // (5) SWEEP — task / phase / roadmap / implementation-plan, confirming the
@@ -8388,6 +8503,17 @@ if assert_plan_shim_gathers "$TMP/plan-shim-key-typo.md"; then
     fail "7f: detector missed a typo'd arg key in the shim"
 fi
 pass "7f: detector fires on a typo'd gathering command AND a typo'd arg key"
+
+# code-review finding arch-1: the shim's `tags` contract prose must not regress
+# to the pre-fix "omission is rejected, all-or-nothing" claim (task
+# fix-plan-review-gate-tag-clobber narrowed that to "a MALFORMED, present
+# value is rejected; an omitted key is tolerated").
+# shellcheck disable=SC2016  # a literal prose fragment, backticks included
+if grep -qF 'The workflow rejects a `fetched` payload that omits `tags`' "$SKILL_MD"; then
+    fail "7f: $SKILL_MD still claims an omitted tags key is rejected — stale post fix-plan-review-gate-tag-clobber"
+fi
+grep -qiF 'omitted' "$SKILL_MD" || fail "7f: $SKILL_MD should describe the tags-omission-tolerant contract"
+pass "7f: the shim's tags-contract prose matches the omission-tolerant fix, not the stale all-or-nothing claim"
 
 # --- 8. NON-GATING REFUTATION SKIP (workflow-token-reduction phase 6) ---------
 # A refuter is dispatched only where its verdict could change the outcome. The
