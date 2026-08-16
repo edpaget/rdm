@@ -249,14 +249,26 @@ substitute for it.
 
 **Status: not yet observed.** The change landed with the hermetic gates green
 (`scripts/verify-workflow-review.sh` §§ 5b-gate-evidence / 5b-gate-action / 5b-gate-return /
-5b-gate-loud, plus the existing 5b-drift, 5b-mechanical, 5b-exec, 5b-mut). The next real
-`rdm-wf-plan-review` run over a unit that reaches `reviewed` should be recorded below with
-its run id and whether the `gate:clear-tag` agent was blocked.
+5b-gate-loud, plus the existing 5b-drift, 5b-mechanical, 5b-exec, 5b-mut).
+
+The reason it is still pending is structural, not an oversight: the observation requires
+dispatching the real `rdm-wf-plan-review` Workflow, and the implementing session had no
+`Workflow` tool in its surface — a sub-agent cannot invoke one. It has to be run from a
+session that can, against a unit that actually reaches `reviewed` (a plan-only rehearsal
+proves nothing, because the gate half only executes on a real `reviewed` outcome). Tracked
+as task `observe-plan-review-gate-after-evidence-change`.
+
+Record the run in this table, whichever way it goes:
 
 | run id | target | outcome | `gate:clear-tag` blocked? | notes |
 |---|---|---|---|---|
 | _(pending)_ | | | | |
 
-If a run IS still blocked, record it here too and use `gateMode: 'return'` as the supported
-path — the AC is the contract (evidence-carrying, skippable, loud), not the classifier's
-behavior.
+Alongside the row, note whether the unit's `tagCleared` matched its `clearsPlanReviewTag`,
+and — if it did not — whether the run's `summary` carried the `[GATE BLOCKED: …]` clause and
+`gateBlockedCount` was non-zero, since that loud path is the half of the change a blocked
+run actually exercises.
+
+If a run IS still blocked, that is a recordable outcome, not a failed phase: record it here
+and use `gateMode: 'return'` as the supported path. The AC is the contract
+(evidence-carrying, skippable, loud), not the classifier's behavior — see NON-GOAL above.
