@@ -266,6 +266,19 @@ const RESERVED_FETCH_TOKENS = ['fetch', 'plan-target']
 // deliberately body-content-blind, so a fetch whose body superficially
 // resembles either recorded incident's synthetic phrasing, but whose
 // stems/tags are structurally clean, is still accepted.
+//
+// DECISION (roadmap plan-review-engine-hardening, "Known overlap to resolve at
+// phase 3"): the roadmap body flagged phase 3 (task
+// plan-review-roadmap-body-fetch-status-line) as a possible duplicate of
+// phase 2's tag-clobber fix and asked phase 3 to either collapse into phase 2's
+// validation or justify its own check. It does NOT collapse: this function is,
+// by the paragraph above, body-content-blind by design — it validates stem
+// convention and reserved tag tokens, never body text — so it cannot catch (and
+// was never meant to catch) a fetch whose BODY is a fabricated fetch-status
+// sentence with otherwise-clean stems/tags, which is exactly phase 3's
+// evidence. Phase 3 therefore adds its own, independent body-correspondence
+// check — see ROADMAP_BODY_CHECK_SCHEMA and roadmapBodyVerified below — rather
+// than being closed wont-fix.
 function fetchTranscriptionOk(fetched, kind) {
   if (!hoistedFetchedOk(fetched, kind)) return false
   if (fetched.tags.some((t) => RESERVED_FETCH_TOKENS.indexOf(t) !== -1)) return false
@@ -316,6 +329,11 @@ const RAW_STDOUT_SCHEMA = {
 // agent is asked for two small, checkable facts about the body it reads —
 // never the body text itself — so there is nothing here for it to summarize
 // or transcribe wrong in a way that would agree with a summarized `body`.
+//
+// Does NOT collapse into fetchTranscriptionOk's checks above — see the
+// "DECISION" note on that function's doc comment for why the two are
+// independent rather than redundant (fetchTranscriptionOk is deliberately
+// body-content-blind).
 const ROADMAP_BODY_CHECK_SCHEMA = {
   type: 'object',
   additionalProperties: false,
