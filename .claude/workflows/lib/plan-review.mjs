@@ -198,8 +198,12 @@ function parsePlanArgs(rawArgs) {
 //
 // This is a SHAPE guard only: it cannot tell a real tag list from a transcribed
 // one (see parsePlanArgs' note on the two recorded corruptions, both of which
-// are schema-valid and are accepted here by design). Content validation is task
-// fix-plan-review-gate-tag-clobber's scope.
+// are schema-valid and are accepted here by design). Content validation of the
+// AGENT-RETURNED fetch (the only path a fabrication has ever actually reached
+// production through) now lives in the adjacent `fetchTranscriptionOk` below;
+// `hoistedFetchedOk` itself stays a shape-only guard for the caller-hoisted
+// path by design — validating a caller-supplied payload's content remains out
+// of scope (see fetchTranscriptionOk's own doc comment).
 function stringArrayOk(v) {
   return Array.isArray(v) && v.every((s) => typeof s === 'string')
 }
@@ -219,6 +223,56 @@ function hoistedFetchedOk(fetched, kind) {
         stringArrayOk(p.tags)
     )
     if (!phasesOk) return false
+  }
+  return true
+}
+
+// RESERVED_FETCH_TOKENS — a small, CLOSED, evidence-grounded list, not a
+// fuzzy/heuristic blocklist. Grown only from the two recorded production
+// incidents' own fabricated tags (task fix-plan-review-gate-tag-clobber):
+// wf_e3402021-0af transcribed `tags: ["fetch","roadmap",
+// "workflow-token-reduction"]` (the `workflow-token-reduction" token is
+// separately caught by fetchTranscriptionOk's phase-stem check below, since
+// it collides with the roadmap slug used as a fabricated phase stem — only
+// "fetch" is needed from that payload); wf_f4be8027-dbb transcribed
+// `tags: ["plan-target"]`, lifted verbatim from that era's prompt's own
+// "Return a PLAN_TARGET object" phrasing. Do not casually grow this list — a
+// real project tag that happens to resemble a scaffolding word is exactly the
+// false-positive risk a fuzzy match would invite.
+const RESERVED_FETCH_TOKENS = ['fetch', 'plan-target']
+
+// fetchTranscriptionOk(fetched, kind) — an ADDITIONAL guard applied ONLY to a
+// payload assembled from the mechanical fetch agent's own transcription (the
+// `fetch:roadmap` / `fetch:task` / `fetch:phase` call sites below) — NEVER to
+// a caller-hoisted `fetched` (see hoistedFetchedOk's doc comment: validating
+// hoisted content stays out of scope). Three checks ANDed together:
+//   (a) hoistedFetchedOk(fetched, kind) — the same shape floor the hoist path
+//       uses, reused rather than duplicated.
+//   (b) for kind === 'roadmap' only: every fetched.phases[i].stem must match
+//       rdm's own auto-prefix convention (`phase-<number>-`; CLAUDE.md: "rdm
+//       prepends `phase-<number>-` automatically" — `phase create` is the
+//       only sanctioned path to a phase stem). An EMPTY `phases` array
+//       vacuously passes (Array.prototype.every on [] is true) — a
+//       legitimately phase-less roadmap is never rejected.
+//   (c) none of `fetched.tags` (and, for a roadmap, none of any phase's
+//       `tags`) may equal a literal entry in RESERVED_FETCH_TOKENS above.
+//
+// This function NEVER reads, pattern-matches, or predicates on `fetched.body`
+// text beyond hoistedFetchedOk's existing non-empty-after-trim check — it is
+// deliberately body-content-blind, so a fetch whose body superficially
+// resembles either recorded incident's synthetic phrasing, but whose
+// stems/tags are structurally clean, is still accepted.
+function fetchTranscriptionOk(fetched, kind) {
+  if (!hoistedFetchedOk(fetched, kind)) return false
+  if (fetched.tags.some((t) => RESERVED_FETCH_TOKENS.indexOf(t) !== -1)) return false
+  if (kind === 'roadmap') {
+    const phases = Array.isArray(fetched.phases) ? fetched.phases : []
+    const stemsOk = phases.every((p) => typeof p.stem === 'string' && /^phase-\d+-/.test(p.stem))
+    if (!stemsOk) return false
+    const phaseTagsOk = phases.every(
+      (p) => !Array.isArray(p.tags) || !p.tags.some((t) => RESERVED_FETCH_TOKENS.indexOf(t) !== -1)
+    )
+    if (!phaseTagsOk) return false
   }
   return true
 }
@@ -1001,39 +1055,69 @@ async function runPlanReviewDriver(args, deps) {
     // reintroduced" comment on buildRoadmapFetchPrompt above. The agent
     // transcribes raw stdout only; assembleRoadmapFetchFromTranscript does
     // every bit of parsing, extraction, and identity/collision validation.
-    try {
-      const raw = await _agent(buildRoadmapFetchPrompt(parsed.roadmap), {
-        label: 'fetch:roadmap',
-        phase: 'Read',
-        agentType: 'rdm-mechanical',
-        schema: RAW_STDOUT_SCHEMA,
-        model: _mechanicalModel,
-      })
-      fetched = assembleRoadmapFetchFromTranscript(raw && raw.transcript, parsed.roadmap)
-    } catch (e) {
-      fetched = null
+    // fetchTranscriptionOk is a further, body-content-blind check applied to
+    // that result, with ONE bounded retry (a fresh, independent agent call —
+    // never a re-use of the first attempt's result) before falling through to
+    // the existing fail-closed `fetched = null` / `built.fetchFailed` path.
+    const attemptRoadmapFetch = async () => {
+      try {
+        const raw = await _agent(buildRoadmapFetchPrompt(parsed.roadmap), {
+          label: 'fetch:roadmap',
+          phase: 'Read',
+          agentType: 'rdm-mechanical',
+          schema: RAW_STDOUT_SCHEMA,
+          model: _mechanicalModel,
+        })
+        return assembleRoadmapFetchFromTranscript(raw && raw.transcript, parsed.roadmap)
+      } catch (e) {
+        return null
+      }
     }
+    let candidate = await attemptRoadmapFetch()
+    if (!fetchTranscriptionOk(candidate, 'roadmap')) {
+      _log('plan-review: fetch:roadmap returned an untrustworthy payload — retrying once')
+      candidate = await attemptRoadmapFetch()
+      if (!fetchTranscriptionOk(candidate, 'roadmap')) {
+        _log('plan-review: fetch:roadmap returned an untrustworthy payload on retry — failing closed')
+        candidate = null
+      }
+    }
+    fetched = candidate
   } else {
     const fetchPrompt =
       kind === 'task' ? buildTaskFetchPrompt(parsed.task) : buildPhaseFetchPrompt(parsed.roadmap, parsed.phase)
-    try {
-      const raw = await _agent(fetchPrompt, {
-        label: 'fetch:' + kind,
-        phase: 'Read',
-        agentType: 'rdm-mechanical',
-        schema: RAW_STDOUT_SCHEMA,
-        model: _mechanicalModel,
-      })
-      const parsedStdout = parseJsonStdout(raw && raw.transcript)
-      const extracted = parsedStdout.ok
-        ? kind === 'task'
-          ? extractTaskFromJson(parsedStdout.value, parsed.task)
-          : extractPhaseFromJson(parsedStdout.value, parsed.roadmap, parsed.phase)
-        : { ok: false }
-      fetched = extracted.ok ? { body: extracted.body, tags: extracted.tags } : null
-    } catch (e) {
-      fetched = null
+    // Same fetchTranscriptionOk + one-bounded-retry treatment as the roadmap
+    // branch above, applied to the task/phase shape.
+    const attemptUnitFetch = async () => {
+      try {
+        const raw = await _agent(fetchPrompt, {
+          label: 'fetch:' + kind,
+          phase: 'Read',
+          agentType: 'rdm-mechanical',
+          schema: RAW_STDOUT_SCHEMA,
+          model: _mechanicalModel,
+        })
+        const parsedStdout = parseJsonStdout(raw && raw.transcript)
+        const extracted = parsedStdout.ok
+          ? kind === 'task'
+            ? extractTaskFromJson(parsedStdout.value, parsed.task)
+            : extractPhaseFromJson(parsedStdout.value, parsed.roadmap, parsed.phase)
+          : { ok: false }
+        return extracted.ok ? { body: extracted.body, tags: extracted.tags } : null
+      } catch (e) {
+        return null
+      }
     }
+    let candidate = await attemptUnitFetch()
+    if (!fetchTranscriptionOk(candidate, kind)) {
+      _log('plan-review: fetch:' + kind + ' returned an untrustworthy payload — retrying once')
+      candidate = await attemptUnitFetch()
+      if (!fetchTranscriptionOk(candidate, kind)) {
+        _log('plan-review: fetch:' + kind + ' returned an untrustworthy payload on retry — failing closed')
+        candidate = null
+      }
+    }
+    fetched = candidate
   }
 
   const built = buildReviewUnits(parsed, fetched)
@@ -1183,6 +1267,8 @@ async function runPlanReviewDriver(args, deps) {
 export {
   parsePlanArgs,
   hoistedFetchedOk,
+  fetchTranscriptionOk,
+  RESERVED_FETCH_TOKENS,
   buildReviewUnits,
   runPlanReviewDriver,
   buildPhaseFetchPrompt,

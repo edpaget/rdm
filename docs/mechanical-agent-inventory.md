@@ -224,6 +224,28 @@ caller-supplied `fetched` *hoist* (as opposed to the fetch agent path) remains a
 still out-of-scope concern — that path bypasses the agent entirely, so there is nothing for
 these driver-side guards to run against.
 
+**Update (`fix-plan-review-gate-tag-clobber` continued — the agent-transcription validation gap is
+closed).** Even after the identity-based extraction above landed, the agent-transcription
+fallback trusted its own `agent()` return the moment it satisfied the identity checks, with no
+further content check. `fetchTranscriptionOk` (`.claude/workflows/lib/plan-review.mjs`, placed
+immediately after `hoistedFetchedOk`) adds a further, body-content-blind guard applied ONLY to
+that agent-transcribed fetch — never to a caller-hoisted payload, which stays governed by
+`hoistedFetchedOk` alone, per the paragraph above. It checks (a) rdm's own `phase-<N>-`
+stem-naming convention for every roadmap phase, and (b) that no tag — roadmap-level or
+phase-level — equals a literal entry in a small closed `RESERVED_FETCH_TOKENS` list
+(`['fetch', 'plan-target']`, lifted verbatim from both recorded incidents' own fabricated tags).
+It never reads `fetched.body`'s text beyond `hoistedFetchedOk`'s existing non-empty check. On
+failure, ONE bounded retry (a fresh, independent `agent()` call — never a reuse of the rejected
+attempt) runs before falling into the existing fail-closed `fetchFailed` path. Both recorded
+corruption payloads are replayed as negative regression tests in
+`scripts/verify-workflow-review.sh` §7g (direct `fetchTranscriptionOk` assertions) and §7h
+(driven through `runPlanReviewDriver`: corruption-replay fail-closed for both incidents, a
+retry-recovery positive test proving no field from a rejected first attempt leaks into the
+gate write, the empty-phases and body-text-mimicry non-tripping edge cases, and a
+task/phase/roadmap/implementation-plan sweep), plus two mutation self-tests in §7e proving the
+checks are not vacuous. The caller-hoisted path's content validation remains explicitly out of
+scope, unchanged.
+
 One consequence is worth stating on its own, because the hoist's shape guard replaces a
 `required`-bearing schema: `hoistedFetchedOk` is held to be **no weaker** than the
 `{ body, tags, phases }` shape `buildReviewUnits` requires (formerly enforced by the fetch

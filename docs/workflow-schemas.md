@@ -2296,7 +2296,10 @@ provably cannot catch it (both corrupt returns were schema-valid). See
 that path bypasses the agent entirely, so there is nothing for the fetch-side
 guards below to run against. What task `fix-plan-review-gate-tag-clobber`
 landed instead is identity/collision validation of the **fetch agent path** —
-see "The fetch stage is now raw-transcript-capture + driver-side parse" below.
+see "The fetch stage is now raw-transcript-capture + driver-side parse" below,
+now further hardened by `fetchTranscriptionOk`'s body-content-blind check (same
+section, bottom) — content validation of the caller-hoisted path above remains
+the one deliberately-untouched exception.
 
 `hoistedFetchedOk` is nonetheless held to be **no weaker than the shape
 `buildReviewUnits` requires**: a `body`, and a `tags` array of strings —
@@ -2332,6 +2335,23 @@ multi-command shape (one `roadmap show` call, then one `phase show` call per
 phase found) — it does **not** become a `parallel()` fan-out of one agent per
 phase; see `docs/mechanical-agent-inventory.md`'s "must not be reintroduced"
 note, which this design is held to.
+
+**Update (`fix-plan-review-gate-tag-clobber` continued).** The identity/collision
+checks above still leave one gap: they trust the agent's transcription the
+moment it satisfies them, with no further content check. `fetchTranscriptionOk`
+(`.claude/workflows/lib/plan-review.mjs`, next to `hoistedFetchedOk`) closes it
+with a further, body-content-blind guard — rdm's own `phase-<N>-` phase-stem
+convention plus a small closed `RESERVED_FETCH_TOKENS` list drawn verbatim from
+both recorded incidents' own fabricated tags — applied ONLY to this
+agent-transcribed fetch path, never to the caller-hoisted `fetched` payload
+discussed above. A failing check triggers ONE bounded retry (a fresh,
+independent `agent()` call) before falling into the existing fail-closed
+`fetchFailed` path; see `docs/mechanical-agent-inventory.md` § "The hoist with
+a recorded correctness failure" for the full account and
+`scripts/verify-workflow-review.sh` §7g/§7h for the regression coverage
+(both recorded corruption payloads replayed as negatives, a retry-recovery
+positive, the empty-phases/body-text-mimicry non-tripping cases, and a
+four-target-type sweep).
 
 ### `rdm-wf-dispatch-phase` absorbs its diff instead of hoisting it
 

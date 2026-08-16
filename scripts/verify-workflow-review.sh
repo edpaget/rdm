@@ -3855,7 +3855,8 @@ fi
 # The driver's load-bearing symbols must be present in BOTH copies (guards against
 # a partial mirror the byte-diff above would also catch, but names the gap).
 for sym in 'function parsePlanArgs' 'function buildReviewUnits' 'async function runPlanReviewDriver' \
-    "buildReviewPipeline('plan')" 'stripNonPhaseUnitOfWork' 'filterPlanReviewTag' 'classifyPlanOutcome'; do
+    "buildReviewPipeline('plan')" 'stripNonPhaseUnitOfWork' 'filterPlanReviewTag' 'classifyPlanOutcome' \
+    'function fetchTranscriptionOk' 'RESERVED_FETCH_TOKENS'; do
     grep -q "$sym" "$TMP/plan-driver-lib" || fail "plan-review-driver block in the LIB is missing $sym"
     grep -q "$sym" "$TMP/plan-driver-wf" || fail "plan-review-driver block in the WORKFLOW is missing $sym (partial mirror?)"
 done
@@ -4524,7 +4525,7 @@ plan_mutate_and_expect_fail vii 'dropping the coverage field from the per-unit r
 #        docs/mechanical-agent-inventory.md). Proves 5b-exec's new
 #        "exactly one fetch:roadmap call" assertion is not vacuous.
 pmut_roadmap_fanout() {
-    perl -pi -e "s/^(\s*)(fetched = assembleRoadmapFetchFromTranscript\(raw && raw\.transcript, parsed\.roadmap\))\$/\$1await _agent(buildRoadmapFetchPrompt(parsed.roadmap), { label: 'fetch:roadmap', phase: 'Read', agentType: 'rdm-mechanical', schema: RAW_STDOUT_SCHEMA, model: _mechanicalModel }) \/\/ MUTANT: reintroduces a second fetch:roadmap call\n\$1\$2/" \
+    perl -pi -e "s/^(\s*)(let candidate = await attemptRoadmapFetch\(\))\$/\$1await _agent(buildRoadmapFetchPrompt(parsed.roadmap), { label: 'fetch:roadmap', phase: 'Read', agentType: 'rdm-mechanical', schema: RAW_STDOUT_SCHEMA, model: _mechanicalModel }) \/\/ MUTANT: reintroduces a second fetch:roadmap call\n\$1\$2/" \
         "$PMUT/plan-review.mjs"
     grep -q 'MUTANT: reintroduces a second fetch:roadmap call' "$PMUT/plan-review.mjs"
 }
@@ -5000,7 +5001,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const [libPath, seedDir] = process.argv.slice(2);
-const { runPlanReviewDriver, parsePlanArgs, hoistedFetchedOk } = await import('file://' + libPath);
+const { runPlanReviewDriver, parsePlanArgs, hoistedFetchedOk, fetchTranscriptionOk, RESERVED_FETCH_TOKENS } =
+  await import('file://' + libPath);
 
 const readJson = (f) => JSON.parse(fs.readFileSync(path.join(seedDir, f), 'utf8'));
 const taskJson = readJson('seed-task.json');
@@ -5031,9 +5033,19 @@ function makeDeps(o) {
   // response — used by 7c's corruption replay and 7c2's real-stdout replay
   // below. Absent labels fall back to the pre-existing unconditional
   // { ok: true } acknowledgement.
+  //
+  // o.fetchSequence (optional): a label -> ARRAY-of-responses map, consumed
+  // FIFO one response per call to that label — used by 7h's retry-recovery
+  // test, where the FIRST fetch:roadmap call must return an invalid payload
+  // and the SECOND (independent, not cached/reused) call must return a valid
+  // one. Once a label's sequence is exhausted, later calls to it fall through
+  // to fetchResponses / the default { ok: true } exactly as today.
   const agent = async (prompt, opts) => {
     const label = (opts && opts.label) || '';
     calls.push({ label, prompt, opts });
+    if (o.fetchSequence && Object.prototype.hasOwnProperty.call(o.fetchSequence, label) && o.fetchSequence[label].length > 0) {
+      return o.fetchSequence[label].shift();
+    }
     if (o.fetchResponses && Object.prototype.hasOwnProperty.call(o.fetchResponses, label)) {
       return o.fetchResponses[label];
     }
@@ -5362,11 +5374,20 @@ console.log('7c4 OK: a numeric `<roadmap> [phase-number]` target matches a real 
 
 // ============================================================================
 // 7d. FALLBACK — every hoist is optional. Absent / malformed reaches the agent.
+//
+// NOTE on the call counts below: makeDeps' default agent stub returns
+// `{ ok: true }` for any label with no `fetchResponses` override — no
+// `transcript` field at all — so every fetch:task/fetch:roadmap call in this
+// section fails fetchTranscriptionOk on its first attempt and the bounded
+// retry (task fix-plan-review-gate-tag-clobber) fires, producing exactly TWO
+// calls per fallback, not one. This is the expected, asserted shape of the
+// retry — see 7g below for the retry firing on a genuinely INVALID payload and
+// recovering on a genuinely VALID one.
 // ============================================================================
 {
   const h = makeDeps({});
   await runPlanReviewDriver({ task: 'hoist-target' }, h.deps).catch(() => {});
-  assert.equal(labels(h).filter((l) => l === 'fetch:task').length, 1, '7d: fetched absent -> exactly one fetch:task agent call');
+  assert.equal(labels(h).filter((l) => l === 'fetch:task').length, 2, '7d: fetched absent -> exactly two fetch:task agent calls (initial + bounded retry, both invalid)');
   assert.equal(labels(h).filter((l) => l === 'fetch:wontfix').length, 0, '7d: the fetch failed closed before the wont-fix search (fail-closed preserved)');
 }
 for (const [name, bad] of [
@@ -5385,7 +5406,7 @@ for (const [name, bad] of [
 ]) {
   const h = makeDeps({});
   await runPlanReviewDriver({ task: 'hoist-target', fetched: bad }, h.deps).catch(() => {});
-  assert.equal(labels(h).filter((l) => l === 'fetch:task').length, 1, '7d: malformed fetched (' + name + ') falls back to the fetch agent');
+  assert.equal(labels(h).filter((l) => l === 'fetch:task').length, 2, '7d: malformed fetched (' + name + ') falls back to the fetch agent (initial + bounded retry)');
 }
 {
   // The consequence the tags requirement exists to prevent: a hoisted payload
@@ -5415,8 +5436,8 @@ for (const [name, bad] of [
   await runPlanReviewDriver({ roadmap: 'hoist-rm', fetched: bad }, h.deps).catch(() => {});
   assert.equal(
     labels(h).filter((l) => l === 'fetch:roadmap').length,
-    1,
-    '7d: malformed roadmap fetched (' + name + ') falls back to the fetch agent'
+    2,
+    '7d: malformed roadmap fetched (' + name + ') falls back to the fetch agent (initial + bounded retry, both invalid)'
   );
   assert.ok(
     !labels(h).some((l) => l.startsWith('gate:clear-tag')),
@@ -5456,6 +5477,285 @@ for (const [name, bad] of [
   assert.equal(parsed.kind, 'task', '7d: ... while the pre-existing flag-string parsing is unchanged');
 }
 console.log('7d OK: every plan-review hoist is optional and falls back on anything malformed');
+
+// ============================================================================
+// 7g. fetchTranscriptionOk / RESERVED_FETCH_TOKENS (AC1, task
+// fix-plan-review-gate-tag-clobber) — the NEW, body-content-blind validator
+// applied only to the agent-transcribed fetch path (never the hoist path —
+// see hoistedFetchedOk's doc comment). Both recorded production corruptions
+// are schema-valid (7c already proved hoistedFetchedOk(CORRUPTION, 'roadmap')
+// is true) but fail THIS check — the exact inverse of that assertion, proving
+// this new function discriminates what the shape-only guard cannot.
+// ============================================================================
+{
+  assert.equal(
+    fetchTranscriptionOk(CORRUPTION, 'roadmap'),
+    false,
+    '7g: fetchTranscriptionOk rejects the recorded wf_e3402021-0af corruption payload'
+  );
+  const WF_F4BE8027_DBB_PAYLOAD = {
+    body: 'A task body the plan-target prompt might have produced.',
+    tags: ['plan-target'],
+  };
+  assert.equal(
+    fetchTranscriptionOk(WF_F4BE8027_DBB_PAYLOAD, 'task'),
+    false,
+    '7g: fetchTranscriptionOk rejects the recorded wf_f4be8027-dbb corruption payload'
+  );
+  assert.equal(
+    fetchTranscriptionOk(ROADMAP_FETCHED, 'roadmap'),
+    true,
+    '7g: fetchTranscriptionOk accepts a real seeded roadmap payload (phase-<N>- stems, no reserved tags)'
+  );
+  assert.equal(
+    fetchTranscriptionOk(TASK_FETCHED, 'task'),
+    true,
+    '7g: fetchTranscriptionOk accepts a real seeded task payload'
+  );
+  // AC6 edge case 1: an empty `phases` array is accepted, not rejected — the
+  // vacuous-true `.every()` on an empty array must never be mistaken for a
+  // validation failure.
+  assert.equal(
+    fetchTranscriptionOk({ body: 'real body', tags: ['infra'], phases: [] }, 'roadmap'),
+    true,
+    '7g: an empty phases array vacuously passes the stem-convention check'
+  );
+  // AC6 edge case 2: body text that superficially resembles either incident's
+  // synthetic phrasing, but whose stems/tags are structurally clean, is still
+  // accepted — this function never predicates on body content beyond the
+  // pre-existing non-empty check inherited from hoistedFetchedOk.
+  assert.equal(
+    fetchTranscriptionOk(
+      {
+        body: 'Fetched roadmap and phase data for hoist-rm',
+        tags: ['infra'],
+        phases: [{ stem: 'phase-1-alpha', body: 'x', tags: ['alpha-tag'] }],
+      },
+      'roadmap'
+    ),
+    true,
+    '7g: incident-flavored body text alone never trips the validator'
+  );
+  // A roadmap phase stem that is really the roadmap slug (the recorded
+  // wf_e3402021-0af shape) is rejected even when body/tags are otherwise clean.
+  assert.equal(
+    fetchTranscriptionOk(
+      { body: 'real body', tags: ['infra'], phases: [{ stem: 'workflow-token-reduction', body: 'x', tags: [] }] },
+      'roadmap'
+    ),
+    false,
+    '7g: a phase stem that does not follow the phase-<N>- convention is rejected'
+  );
+  // A reserved token on a PHASE-level tag list (not just the roadmap-level
+  // list) is rejected too.
+  assert.equal(
+    fetchTranscriptionOk(
+      { body: 'real body', tags: ['infra'], phases: [{ stem: 'phase-1-alpha', body: 'x', tags: ['fetch'] }] },
+      'roadmap'
+    ),
+    false,
+    '7g: a reserved token on a PHASE tag list is rejected, not just the roadmap-level list'
+  );
+  assert.deepEqual(
+    RESERVED_FETCH_TOKENS,
+    ['fetch', 'plan-target'],
+    '7g: RESERVED_FETCH_TOKENS is the exact closed, evidence-grounded list'
+  );
+}
+console.log(
+  '7g OK: fetchTranscriptionOk discriminates both recorded incident payloads from real seeded data, and never trips on body text or an empty phases array'
+);
+
+// ============================================================================
+// 7h. Driven-pipeline coverage (AC2, AC4, AC5, AC8): the bounded one-retry
+// loop wired around both fetch:roadmap and fetch:task/fetch:phase, exercised
+// through runPlanReviewDriver end to end — not just fetchTranscriptionOk in
+// isolation (7g above).
+// ============================================================================
+{
+  // (1) NEGATIVE — the recorded wf_e3402021-0af corruption (reusing 7c's own
+  // CORRUPTION_TRANSCRIPT, which is ALSO rejected upstream by the pre-existing
+  // identity/collision guard) is replayed on EVERY call, so both the initial
+  // attempt and the bounded retry fail, and the driver falls closed.
+  const h = makeDeps({ fetchResponses: { 'fetch:roadmap': { transcript: CORRUPTION_TRANSCRIPT } } });
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', wontFixedTexts: [] }, h.deps);
+  assert.equal(
+    labels(h).filter((l) => l === 'fetch:roadmap').length,
+    2,
+    '7h(1): exactly 2 fetch:roadmap calls (initial + one bounded retry) on the recorded corruption'
+  );
+  assert.equal(out.fetchError, true, '7h(1): fetchError surfaces on the recorded corruption replayed twice');
+  assert.equal(out.outcome, 'escalated', '7h(1): outcome is escalated');
+  assert.equal(out.units.length, 0, '7h(1): zero units — nothing to gate');
+  assert.ok(
+    !labels(h).some((l) => l.indexOf('gate:clear-tag') === 0 || l.indexOf('act:') === 0),
+    '7h(1): zero gate:clear-tag / act: calls anywhere in the transcript'
+  );
+}
+console.log(
+  '7h(1) OK: the recorded wf_e3402021-0af corruption is rejected with exactly one bounded retry, then fails closed'
+);
+{
+  // (2) NEGATIVE — the recorded wf_f4be8027-dbb corruption, against fetch:task.
+  const wfF4be8027Transcript = JSON.stringify({ slug: 'hoist-target', body: 'A task body.', tags: ['plan-target'] });
+  const h = makeDeps({ fetchResponses: { 'fetch:task': { transcript: wfF4be8027Transcript } } });
+  const out = await runPlanReviewDriver({ task: 'hoist-target', wontFixedTexts: [] }, h.deps);
+  assert.equal(
+    labels(h).filter((l) => l === 'fetch:task').length,
+    2,
+    '7h(2): exactly 2 fetch:task calls (initial + one bounded retry) on the recorded corruption'
+  );
+  assert.equal(out.fetchError, true, '7h(2): fetchError surfaces on the recorded wf_f4be8027-dbb corruption replayed twice');
+  assert.equal(out.outcome, 'escalated', '7h(2): outcome is escalated');
+  assert.equal(out.units.length, 0, '7h(2): zero units — nothing to gate');
+  assert.ok(
+    !labels(h).some((l) => l.indexOf('gate:clear-tag') === 0 || l.indexOf('act:') === 0),
+    '7h(2): zero gate:clear-tag / act: calls anywhere in the transcript'
+  );
+}
+console.log(
+  '7h(2) OK: the recorded wf_f4be8027-dbb corruption is rejected with exactly one bounded retry, then fails closed'
+);
+{
+  // (3) POSITIVE — retry recovery. The FIRST fetch:roadmap call returns the
+  // recorded corruption; the SECOND (independent, freshly-dispatched) call
+  // returns the real seeded transcript. Only the ACCEPTED (second) attempt's
+  // values may reach the units/gate (AC4) — nothing from the rejected first
+  // attempt may leak.
+  const roadmapRaw = fs.readFileSync(path.join(seedDir, 'seed-roadmap.json'), 'utf8').trim();
+  const phase1Raw = fs.readFileSync(path.join(seedDir, 'seed-phase-1.json'), 'utf8').trim();
+  const phase2Raw = fs.readFileSync(path.join(seedDir, 'seed-phase-2.json'), 'utf8').trim();
+  const REAL_ROADMAP_TRANSCRIPT =
+    '===CMD: roadmap show hoist-rm===\n' +
+    roadmapRaw +
+    '\n===CMD: phase show ' +
+    phase1Json.stem +
+    '===\n' +
+    phase1Raw +
+    '\n===CMD: phase show ' +
+    phase2Json.stem +
+    '===\n' +
+    phase2Raw;
+  const h = makeDeps({
+    fetchSequence: { 'fetch:roadmap': [{ transcript: CORRUPTION_TRANSCRIPT }] },
+    fetchResponses: { 'fetch:roadmap': { transcript: REAL_ROADMAP_TRANSCRIPT } },
+  });
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', wontFixedTexts: [] }, h.deps);
+  assert.equal(
+    labels(h).filter((l) => l === 'fetch:roadmap').length,
+    2,
+    '7h(3): exactly 2 fetch:roadmap calls — the rejected first attempt plus the accepted second (retry)'
+  );
+  assert.equal(out.units.length, 3, '7h(3): one unit for the roadmap body plus one per REAL phase (2) — AC5 fan-out preserved');
+  const p1 = promptFor(h, 'gate:clear-tag:phase:' + phase1Json.stem);
+  const p2 = promptFor(h, 'gate:clear-tag:phase:' + phase2Json.stem);
+  const rm = promptFor(h, 'gate:clear-tag:roadmap:hoist-rm');
+  assert.ok(p1 && p1.includes('--tags "alpha-tag"'), '7h(3): phase 1 gate writes its OWN real sibling tag from the ACCEPTED attempt');
+  assert.ok(p2 && p2.includes('--tags "beta-tag"'), '7h(3): phase 2 gate writes its OWN real sibling tag from the ACCEPTED attempt');
+  assert.ok(rm && rm.includes('--tags "infra"'), '7h(3): the roadmap gate writes the roadmap\'s OWN real sibling tag from the ACCEPTED attempt');
+  for (const invented of ['plan-target', '"fetch', '"roadmap', 'workflow-token-reduction']) {
+    assert.ok(
+      !rm.includes(invented) && !p1.includes(invented) && !p2.includes(invented),
+      '7h(3): no gate write leaks any token from the REJECTED first attempt (' + invented + ')'
+    );
+  }
+}
+console.log('7h(3) OK: retry recovery — a corrupt first attempt is discarded entirely; the accepted second attempt\'s real values reach the gate (AC4)');
+{
+  // (4a) AC6 edge case, driven: a legitimately phase-less roadmap is accepted
+  // on the FIRST attempt — zero retries.
+  const emptyPhasesTranscript =
+    '===CMD: roadmap show hoist-rm===\n' +
+    JSON.stringify({ slug: 'hoist-rm', body: 'real body', tags: ['infra'], phases: [] });
+  const h = makeDeps({ fetchResponses: { 'fetch:roadmap': { transcript: emptyPhasesTranscript } } });
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', wontFixedTexts: [] }, h.deps);
+  assert.equal(
+    labels(h).filter((l) => l === 'fetch:roadmap').length,
+    1,
+    '7h(4a): a legitimately phase-less roadmap is accepted on the FIRST attempt — zero retries'
+  );
+  assert.equal(out.units.length, 1, '7h(4a): exactly one unit (the roadmap body; zero phase units)');
+  assert.equal(out.fetchError, undefined, '7h(4a): no fetch error');
+}
+{
+  // (4b) AC6 edge case, driven: incident-flavored body text with structurally
+  // clean stems/tags triggers no retry — the validator never reads body text.
+  const mimicryTranscript =
+    '===CMD: roadmap show hoist-rm===\n' +
+    JSON.stringify({
+      slug: 'hoist-rm',
+      body: 'Fetched roadmap and phase data for hoist-rm',
+      tags: ['infra'],
+      phases: [{ stem: phase1Json.stem }],
+    }) +
+    '\n===CMD: phase show ' +
+    phase1Json.stem +
+    '===\n' +
+    JSON.stringify({ stem: phase1Json.stem, roadmap: 'hoist-rm', body: 'Phase body.', tags: ['alpha-tag'] });
+  const h = makeDeps({ fetchResponses: { 'fetch:roadmap': { transcript: mimicryTranscript } } });
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', wontFixedTexts: [] }, h.deps);
+  assert.equal(
+    labels(h).filter((l) => l === 'fetch:roadmap').length,
+    1,
+    '7h(4b): incident-flavored body text alone triggers no retry — the validator never reads body content'
+  );
+  assert.equal(out.units.length, 2, '7h(4b): normal unit construction (roadmap + 1 phase)');
+}
+console.log('7h(4) OK: an empty-phases roadmap and an incident-flavored-but-structurally-clean roadmap are both accepted with zero retries');
+{
+  // (5) SWEEP — task / phase / roadmap / implementation-plan, confirming the
+  // three untouched result paths (persisted act+gate; persisted per-unit
+  // act+gate under --roadmap; implementation-plan's no-act/no-gate) still
+  // complete with the new validation wired in, and that a CLEAN stub triggers
+  // zero unintended retries on any of the three fetch-performing paths.
+  const taskTranscript = JSON.stringify({ slug: 'hoist-target', body: taskJson.body, tags: taskJson.tags });
+  const ht = makeDeps({ fetchResponses: { 'fetch:task': { transcript: taskTranscript } } });
+  const outTask = await runPlanReviewDriver({ task: 'hoist-target', wontFixedTexts: [] }, ht.deps);
+  assert.equal(labels(ht).filter((l) => l === 'fetch:task').length, 1, '7h(5): task path — exactly 1 fetch:task call on a clean stub');
+  assert.equal(outTask.outcome, 'reviewed', '7h(5): task path completes reviewed');
+
+  const phaseTranscript = JSON.stringify({
+    stem: phase1Json.stem,
+    roadmap: 'hoist-rm',
+    body: phase1Json.body,
+    tags: phase1Json.tags,
+  });
+  const hp = makeDeps({ fetchResponses: { 'fetch:phase': { transcript: phaseTranscript } } });
+  const outPhase = await runPlanReviewDriver({ roadmap: 'hoist-rm', phase: phase1Json.stem, wontFixedTexts: [] }, hp.deps);
+  assert.equal(labels(hp).filter((l) => l === 'fetch:phase').length, 1, '7h(5): phase path — exactly 1 fetch:phase call on a clean stub');
+  assert.equal(outPhase.outcome, 'reviewed', '7h(5): phase path completes reviewed');
+
+  const roadmapRaw2 = fs.readFileSync(path.join(seedDir, 'seed-roadmap.json'), 'utf8').trim();
+  const phase1Raw2 = fs.readFileSync(path.join(seedDir, 'seed-phase-1.json'), 'utf8').trim();
+  const phase2Raw2 = fs.readFileSync(path.join(seedDir, 'seed-phase-2.json'), 'utf8').trim();
+  const cleanRoadmapTranscript =
+    '===CMD: roadmap show hoist-rm===\n' +
+    roadmapRaw2 +
+    '\n===CMD: phase show ' +
+    phase1Json.stem +
+    '===\n' +
+    phase1Raw2 +
+    '\n===CMD: phase show ' +
+    phase2Json.stem +
+    '===\n' +
+    phase2Raw2;
+  const hr = makeDeps({ fetchResponses: { 'fetch:roadmap': { transcript: cleanRoadmapTranscript } } });
+  const outRoadmap = await runPlanReviewDriver({ roadmap: 'hoist-rm', wontFixedTexts: [] }, hr.deps);
+  assert.equal(labels(hr).filter((l) => l === 'fetch:roadmap').length, 1, '7h(5): roadmap path — exactly 1 fetch:roadmap call on a clean stub');
+  assert.equal(outRoadmap.units.length, 3, '7h(5): roadmap path fans out to 3 units (roadmap + 2 phases)');
+  assert.ok(
+    outRoadmap.units.every((u) => u.outcome === 'reviewed'),
+    '7h(5): every roadmap unit completes reviewed independently'
+  );
+
+  const hi = makeDeps({});
+  const outImpl = await runPlanReviewDriver({ implementationPlan: true, planText: 'A plan.' }, hi.deps);
+  assert.equal(outImpl.kind, 'implementation-plan', '7h(5): implementation-plan path taken');
+  assert.ok(!labels(hi).some((l) => l.startsWith('fetch:')), '7h(5): implementation-plan performs NO fetch at all — unaffected by this change');
+}
+console.log(
+  '7h(5) OK: task/phase/roadmap/implementation-plan sweep — all three fetch-performing result paths complete with zero unintended retries on a clean stub, and implementation-plan remains fetch-free'
+);
 
 // ============================================================================
 // 5b-models (Node half). findModel/verifyModel: parsePlanArgs trims/rejects
@@ -5605,6 +5905,21 @@ assert_plan_mutant_fails "$TMP/plan-mutant-no-tags-requirement.mjs" "drops the h
 # phase entry with no tags of its own is accepted and gated with an empty list.
 sed "s/^    if (!phasesOk) return false\$//" "$PLAN_LIB" >"$TMP/plan-mutant-no-phase-entry-checks.mjs"
 assert_plan_mutant_fails "$TMP/plan-mutant-no-phase-entry-checks.mjs" "drops the per-phase-entry shape checks"
+
+# (7) Short-circuit fetchTranscriptionOk (task fix-plan-review-gate-tag-clobber,
+#     AC1/AC8) to always accept — proves 7g's direct assertions and 7h's
+#     corruption-replay/retry-count assertions are not vacuous.
+sed 's/^function fetchTranscriptionOk(fetched, kind) {$/function fetchTranscriptionOk(fetched, kind) { return true \/\/ MUTANT: fetchTranscriptionOk short-circuited to always pass/' \
+    "$PLAN_LIB" >"$TMP/plan-mutant-fetchtranscriptionok-shortcircuit.mjs"
+assert_plan_mutant_fails "$TMP/plan-mutant-fetchtranscriptionok-shortcircuit.mjs" \
+    "short-circuits fetchTranscriptionOk to always return true (both recorded corruptions would then be accepted)"
+
+# (8) Disable the bounded retry on the fetch:roadmap path (AC2/AC8) — the
+#     second, independent agent call becomes a no-op. Proves 7h(3)'s
+#     retry-recovery assertions are not vacuous.
+sed 's/^      candidate = await attemptRoadmapFetch()$/      candidate = null \/\/ MUTANT: retry disabled, no second agent call/' \
+    "$PLAN_LIB" >"$TMP/plan-mutant-no-roadmap-retry.mjs"
+assert_plan_mutant_fails "$TMP/plan-mutant-no-roadmap-retry.mjs" "disables the bounded retry on the fetch:roadmap path"
 
 # --- 7f. SHIM: the LOCAL rdm-plan-review shim gathers the payload verbatim -----
 # `.claude/skills/rdm-plan-review/SKILL.md` is a LOCAL dogfood shim; its
