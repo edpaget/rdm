@@ -1740,7 +1740,7 @@ plan review never persists an rdm status; it clears `needs-plan-review` on
 
 ### `rdm-wf-plan-review`'s gate disposition: `gateAction` / `gateBlocked` / `gateDeferred`
 
-`GATE_POLICY.plan` above says what the gate *should* do. These four result fields,
+`GATE_POLICY.plan` above says what the gate *should* do. These five result fields,
 added by `phase-4-plan-review-gate-blocked-by-safety-classifier`, say what it
 actually did — the two used to be silently conflated, so a refused tag write
 returned `clearsPlanReviewTag: true, tagCleared: false` and nothing else.
@@ -1749,11 +1749,19 @@ returned `clearsPlanReviewTag: true, tagCleared: false` and nothing else.
 |---|---|---|
 | `gateAction` | every gated unit, plus the single-target flatten | The declarative action: `{ kind, ident, roadmap, clearsPlanReviewTag, commands, remainingTags, removedTags, applied, deferred, blocked, blockedReason }`. `commands` is `[updateCmd, commitCmd]` built by the same `planGateCommands` helper the gate PROMPT prints, so a caller applying it by hand issues byte-identical writes; it is `[]` on a `rework`/`escalated` unit, which still gets an action so callers can iterate `units[].gateAction` without special-casing. `blockedReason` is `'ack-not-ok'` (a refusal) or `'agent-error: <message>'` (a crash). |
 | `gateBlocked` | every gated unit, plus the flatten | `true` when a `reviewed` unit's tag write was attempted and did not succeed. Also drives a ` [GATE BLOCKED: …]` clause on the unit's `summary` and a dedicated log line on BOTH failure paths. |
-| `gateDeferred` | every gated unit, plus the flatten | `true` when `gateMode: 'return'` made the driver compute the action and write nothing. A hand-off, DISTINCT from `gateBlocked` — the loud clause must not fire on it. |
+| `gateDeferred` | every gated unit, plus the flatten | `true` when `gateMode: 'return'` made the driver compute the action and write nothing. A hand-off, DISTINCT from `gateBlocked` — the loud clause must not fire on it. Drives a lowercase ` [gate deferred: … — apply: <update> && <commit>]` clause carrying the commands verbatim, so a surface that reports only `summary` is already reporting the escalation. |
 | `gateBlockedCount` | run-level result (and the fetch-failure / model-abort early returns, as an explicit `0`) | How many units are blocked. Appended to the final `N unit(s) gated` log line when non-zero. |
+| `gateDeferredCount` | same places, same explicit `0` | How many units were deferred. A SEPARATE count — a deferral is never folded into `gateBlockedCount`, so a caller alerting on "the gate did not land" and a caller that must go apply commands read different fields. Appended to the same log line, with the lowercase `gate deferred` marker rather than the uppercase `GATE BLOCKED` one, so the two stay greppable apart. |
 
 The `--implementation-plan` branch has no persisted item, so it gains **none** of
 these keys.
+
+Both gate clauses embed an exact rdm command containing double quotes
+(`--tags "a,b"`), so — unlike `coverageSummaryClause`, which is quote-free
+precisely *because* it is interpolated into Bash prompts — `summary`/`reason` in
+plan mode are returned **data** and must never reach a prompt builder.
+`verify-workflow-review.sh` § 5b-gate-quoting pins that with a grep over every
+`build*Prompt` body plus a planted-leak self-test.
 
 **`gateMode` arg.** `'apply'` (default) | `'return'`, read from the STRUCTURED
 `args` object only — never parsed out of the `$ARGUMENTS` flag string, the same

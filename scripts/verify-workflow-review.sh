@@ -3955,7 +3955,9 @@ fi
 # a partial mirror the byte-diff above would also catch, but names the gap).
 for sym in 'function parsePlanArgs' 'function buildReviewUnits' 'async function runPlanReviewDriver' \
     "buildReviewPipeline('plan')" 'stripNonPhaseUnitOfWork' 'filterPlanReviewTag' 'classifyPlanOutcome' \
-    'function fetchTranscriptionOk' 'RESERVED_FETCH_TOKENS' 'function snapshotOriginalTags'; do
+    'function fetchTranscriptionOk' 'RESERVED_FETCH_TOKENS' 'function snapshotOriginalTags' \
+    'function planGateCommands' 'function buildGateEvidence' 'function resolvePlanGateMode' \
+    'function buildGateAction' 'function gateFailureClause' 'function gateDeferredClause'; do
     grep -q "$sym" "$TMP/plan-driver-lib" || fail "plan-review-driver block in the LIB is missing $sym"
     grep -q "$sym" "$TMP/plan-driver-wf" || fail "plan-review-driver block in the WORKFLOW is missing $sym (partial mirror?)"
 done
@@ -5178,10 +5180,22 @@ const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking'
   assert.equal(reviewed.gateAction.deferred, true, '5b-gate-return: and the action says so');
   assert.equal(reviewed.gateAction.applied, false, '5b-gate-return: and was not applied');
   assert.equal(res.gateBlockedCount, 0, '5b-gate-return: a deferred run reports zero blocked gates');
-  assert.match(reviewed.summary, /\[gate deferred: apply gateAction\.commands to clear needs-plan-review\]/,
+  assert.equal(res.gateDeferredCount, res.units.filter((x) => x.gateDeferred === true).length,
+    '5b-gate-return: the run-level deferral count agrees with the per-unit flags');
+  assert.equal(res.gateDeferredCount, 2,
+    '5b-gate-return: and counts BOTH reviewed units (the roadmap and phase-2-b), separately from blockage');
+  assert.match(reviewed.summary, /\[gate deferred: needs-plan-review NOT cleared by this run \(gateMode='return'\) — apply: /,
     '5b-gate-return: the deferral is self-describing in the summary');
+  // The escalation path in docs/plan-review-gate-policy.md is "report the
+  // commands verbatim": a caller reading ONLY the summary must be able to act.
+  assert.ok(reviewed.summary.indexOf(reviewed.gateAction.commands.join(' && ')) !== -1,
+    '5b-gate-return: and carries the EXACT commands to apply, not just a pointer at the JSON');
   assert.ok(reviewed.summary.indexOf('GATE BLOCKED') === -1,
     '5b-gate-return: and is NEVER reported as a failure');
+  // Lowercase 'gate deferred' vs uppercase 'GATE BLOCKED' keeps the two
+  // distinguishable by a plain grep over logs or summaries.
+  assert.ok(h.logs.some((l) => /unit\(s\) gated/.test(l) && /gate deferred/.test(l) && !/GATE BLOCKED/.test(l)),
+    '5b-gate-return: the run-level log line reports the deferral and does NOT call it a blockage');
 
   // A reworked unit under return mode: deferral is meaningless when there is
   // nothing to apply, so it must not claim one.
@@ -5248,6 +5262,10 @@ assert.equal(parsePlanArgs('big-thing return').gateMode, 'apply',
   assert.equal(u.gateAction.blocked, true, '5b-gate-loud(i): and the action says blocked');
   assert.ok(res.summary.indexOf('GATE BLOCKED') !== -1, '5b-gate-loud(i): the FLATTENED top-level summary carries it too');
   assert.equal(res.gateBlockedCount, 1, '5b-gate-loud(i): the run-level count sees it');
+  assert.equal(res.gateDeferredCount, 0,
+    '5b-gate-loud(i): a BLOCKED gate is never miscounted as a deferral — the two counts are disjoint');
+  assert.ok(u.summary.indexOf('gate deferred') === -1,
+    '5b-gate-loud(i): and the lowercase deferral marker never appears on a blocked unit');
   assert.ok(h.logs.some((l) => /GATE BLOCKED/.test(l)), '5b-gate-loud(i): a dedicated log line is emitted');
   assert.ok(h.logs.some((l) => /GATE BLOCKED/.test(l) && l.indexOf(cmds.updateCmd) !== -1),
     '5b-gate-loud(i): and the log line names the command to run');
@@ -5287,6 +5305,8 @@ assert.equal(parsePlanArgs('big-thing return').gateMode, 'apply',
   assert.equal(u.summary, 'no surviving findings',
     '5b-gate-loud(iii): a healthy run’s summary is byte-identical to the pre-change one');
   assert.equal(okRes.gateBlockedCount, 0, '5b-gate-loud(iii): and the run reports zero blocked gates');
+  assert.equal(okRes.gateDeferredCount, 0,
+    '5b-gate-loud(iii): and zero deferrals — both counts are an explicit 0, never undefined');
 }
 // The single most likely false positive: a rework/escalated unit's tagCleared
 // is legitimately false, and must NEVER produce the loud clause.
@@ -5327,6 +5347,8 @@ assert.equal(parsePlanArgs('big-thing return').gateMode, 'apply',
   assert.equal(res.fetchError, true, '5b-gate-loud: sanity — the unread plan failed closed');
   assert.equal(res.gateBlockedCount, 0,
     '5b-gate-loud: a fail-closed run reports gateBlockedCount 0, never undefined — it is not a blocked gate');
+  assert.equal(res.gateDeferredCount, 0,
+    '5b-gate-loud: and gateDeferredCount 0, never undefined — nor is it a deferral');
 }
 {
   const h = makeGateHarness({ findings: { 'PLAN TEXT': blockingCoherence } });
@@ -5346,7 +5368,11 @@ assert.equal(gateFailureClause({ clearsPlanReviewTag: true, tagCleared: false, g
 assert.match(gateFailureClause({ clearsPlanReviewTag: true, tagCleared: false, gateAction: { commands: ['U', 'C'] } }),
   /GATE BLOCKED.*apply manually: U && C/, 'gateFailureClause: fires with the joined commands');
 assert.equal(gateDeferredClause({ gateDeferred: false }), '', 'gateDeferredClause: empty unless deferred');
-assert.match(gateDeferredClause({ gateDeferred: true }), /gate deferred/, 'gateDeferredClause: fires on a deferral');
+assert.match(gateDeferredClause({ gateDeferred: true, gateAction: { commands: ['U', 'C'] } }),
+  /gate deferred: needs-plan-review NOT cleared by this run \(gateMode='return'\) — apply: U && C/,
+  'gateDeferredClause: fires with the joined commands, exactly as gateFailureClause does');
+assert.ok(gateDeferredClause({ gateDeferred: true, gateAction: { commands: ['U'] } }).indexOf('GATE BLOCKED') === -1,
+  'gateDeferredClause: never borrows the uppercase failure marker — a plain grep must separate the two');
 
 console.log('plan-review gate evidence/action/return/loud assertions passed');
 NODE_GATE_TEST
@@ -5354,6 +5380,47 @@ if run_node "$TMP/plan-gate-test.mjs" "$PLAN_LIB"; then
     pass "5b-gate-*: the gate carries its evidence, returns a declarative action, honors gateMode:'return', and fails loudly"
 else
     fail "5b-gate-*: gate evidence/action/return/loud assertions failed"
+fi
+
+# --- 5b-gate-quoting. THE GATE CLAUSES MUST NEVER REACH A PROMPT --------------
+# The AC4 quoting hazard, pinned mechanically. `gateFailureClause` /
+# `gateDeferredClause` embed an exact rdm command containing DOUBLE QUOTES
+# (`--tags "a,b"`) — unlike `coverageSummaryClause`, which is documented as
+# quote-free precisely BECAUSE it is interpolated into Bash prompts. In plan mode
+# `summary` and `reason` are returned DATA, never prompt inputs, so the hazard is
+# latent; this grep keeps it latent by failing the moment a prompt builder starts
+# reading either. See docs/plan-review-gate-policy.md § Non-goals for the half of
+# this change no hermetic harness can prove (classifier behavior); THIS half is
+# fully mechanical, so it is asserted rather than deferred.
+say "5b-gate-quoting. no prompt builder interpolates the summary/reason (AC4 quoting hazard)"
+extract_prompt_builders() {
+    awk '
+      /^function [A-Za-z0-9_]*Prompt\(/ { inb = 1 }
+      inb { print }
+      inb && /^\}$/ { inb = 0 }
+    ' "$1"
+}
+extract_prompt_builders "$PLAN_LIB" >"$TMP/plan-prompt-builders"
+[ -s "$TMP/plan-prompt-builders" ] ||
+    fail "5b-gate-quoting: extracted NO prompt builders from $PLAN_LIB — the detector would be vacuous"
+if grep -nE '(^|[^A-Za-z0-9_.])(summary|reason)([^A-Za-z0-9_]|$)' "$TMP/plan-prompt-builders" >&2 ||
+    grep -nE '\.(summary|reason)\b' "$TMP/plan-prompt-builders" >&2; then
+    fail "5b-gate-quoting: a prompt builder in $PLAN_LIB reads summary/reason — those carry the gate clause's quoted command and must never be interpolated into a Bash prompt"
+fi
+pass "5b-gate-quoting: no prompt builder reads summary/reason, so the quoted gate command can never reach a shell"
+
+# Self-test: plant exactly the regression the grep exists to catch.
+mkdir -p "$TMP/quotmut"
+cp "$PLAN_LIB" "$TMP/quotmut/plan-review.mjs"
+perl -0pi -e "s/function buildTagWritePrompt\(kind, roadmap, ident, remainingTags, evidence\) \{/function buildTagWritePrompt(kind, roadmap, ident, remainingTags, evidence) {\n  const leaked = 'context: ' + evidence.summary \/\/ MUTANT/" \
+    "$TMP/quotmut/plan-review.mjs"
+grep -q 'MUTANT' "$TMP/quotmut/plan-review.mjs" ||
+    fail "5b-gate-quoting: the self-test mutation did not apply"
+extract_prompt_builders "$TMP/quotmut/plan-review.mjs" >"$TMP/quotmut/builders"
+if grep -qE '\.(summary|reason)\b' "$TMP/quotmut/builders"; then
+    pass "5b-gate-quoting: the detector fires on a planted summary-into-a-prompt leak — it is not vacuous"
+else
+    fail "5b-gate-quoting: a planted summary-into-a-prompt leak was NOT detected — the grep is vacuous"
 fi
 
 # --- 5b-mut. PLANTED-MUTATION SELF-TESTS FOR THE PLAN-REVIEW DRIVER -----------

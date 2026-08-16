@@ -951,6 +951,16 @@ function buildGateAction(unit, gate, cachedTags, remainingTags, appliedState) {
 // `tagCleared` is legitimately false because `clearsPlanReviewTag` is false —
 // hence the first guard. The second guard excludes a deliberate
 // `gateMode: 'return'` deferral, which is a hand-off, not a failure.
+//
+// QUOTING HAZARD — read before reusing this clause anywhere. Unlike
+// `coverageSummaryClause`, which is documented as quote-free precisely BECAUSE it
+// is interpolated into Bash prompts, this clause embeds an exact rdm command
+// containing double quotes (`--tags "a,b"`). It must therefore NEVER be
+// interpolated into a prompt: in plan mode `summary`/`reason` are RETURNED DATA,
+// not prompt inputs, and no prompt builder in this file reads either. A hygiene
+// grep in scripts/verify-workflow-review.sh (with its own planted-mutation
+// self-test) pins that, so a future prompt builder that starts quoting the
+// summary is caught before it ships a broken command line.
 function gateFailureClause(reportedUnit) {
   const u = reportedUnit || {}
   if (u.clearsPlanReviewTag !== true) return ''
@@ -968,10 +978,23 @@ function gateFailureClause(reportedUnit) {
 // gateDeferredClause(reportedUnit) — the sibling marker for a deliberate
 // `gateMode: 'return'` deferral, so a returned-mode run is self-describing
 // without being reported as a failure. Empty on every other unit.
+//
+// It carries the SAME literal commands as gateFailureClause rather than only
+// pointing at `gateAction.commands`: the escalation path in
+// docs/plan-review-gate-policy.md is "report the commands verbatim to the
+// operator", and a caller that only ever reads `summary` (a log line, a chat
+// message) would otherwise have to go find the JSON to act. The lowercase
+// 'gate deferred' marker is deliberately NOT the uppercase 'GATE BLOCKED' one,
+// so the two remain distinguishable by a plain grep. The same QUOTING HAZARD
+// noted on gateFailureClause applies verbatim.
 function gateDeferredClause(reportedUnit) {
   const u = reportedUnit || {}
   if (u.gateDeferred !== true) return ''
-  return ' [gate deferred: apply gateAction.commands to clear needs-plan-review]'
+  const action = u.gateAction || {}
+  const cmds = Array.isArray(action.commands) ? action.commands : []
+  return (
+    " [gate deferred: needs-plan-review NOT cleared by this run (gateMode='return') — apply: " + cmds.join(' && ') + ']'
+  )
 }
 
 // buildActPrompt — orchestrator-only act step: apply small plan-body fixes by
@@ -1688,9 +1711,10 @@ async function runPlanReviewDriver(args, deps) {
   // tag cleared. Report the failure and mutate nothing.
   if (built.fetchFailed) {
     _log('plan-review: artifact fetch failed for ' + kind + ' — leaving needs-plan-review in place (fail-closed)')
-    // gateBlockedCount is an explicit 0, never omitted: a fail-closed run left
-    // the tag in place BY DESIGN and must not read like a blocked gate, and a
-    // caller summing `res.gateBlockedCount` must not get `undefined` here.
+    // gateBlockedCount / gateDeferredCount are explicit 0s, never omitted: a
+    // fail-closed run left the tag in place BY DESIGN and must not read like a
+    // blocked gate OR a deferred one, and a caller summing either across runs
+    // must not get `undefined` here.
     return {
       kind: kind,
       outcome: 'escalated',
@@ -1698,6 +1722,7 @@ async function runPlanReviewDriver(args, deps) {
       summary: 'plan-review: artifact fetch failed',
       units: [],
       gateBlockedCount: 0,
+      gateDeferredCount: 0,
     }
   }
 
@@ -1900,8 +1925,19 @@ async function runPlanReviewDriver(args, deps) {
     )
   }
 
+  // Two SEPARATE run-level counts, both always present (0, never undefined). A
+  // deferral is a hand-off, not a failure, so it is never folded into
+  // gateBlockedCount — a caller alerting on "the gate did not land" reads
+  // gateBlockedCount, and a caller that must go apply commands reads
+  // gateDeferredCount. `deferred` never sets `blocked`, so the two are disjoint.
   const gateBlockedCount = reported.filter((x) => x.gateBlocked === true).length
-  const result = { kind: kind, units: reported, gateBlockedCount: gateBlockedCount }
+  const gateDeferredCount = reported.filter((x) => x.gateDeferred === true).length
+  const result = {
+    kind: kind,
+    units: reported,
+    gateBlockedCount: gateBlockedCount,
+    gateDeferredCount: gateDeferredCount,
+  }
   if (kind !== 'roadmap' && reported.length === 1) {
     // Flatten a single phase/task target onto the top-level result for convenience.
     result.outcome = reported[0].outcome
@@ -1919,7 +1955,10 @@ async function runPlanReviewDriver(args, deps) {
       '): ' +
       reported.length +
       ' unit(s) gated' +
-      (gateBlockedCount > 0 ? ' — ' + gateBlockedCount + ' GATE BLOCKED (needs-plan-review not cleared)' : '')
+      (gateBlockedCount > 0 ? ' — ' + gateBlockedCount + ' GATE BLOCKED (needs-plan-review not cleared)' : '') +
+      (gateDeferredCount > 0
+        ? ' — ' + gateDeferredCount + " gate deferred (gateMode='return'; apply units[].gateAction.commands)"
+        : '')
   )
   return result
 }

@@ -111,8 +111,26 @@ containing `--gate-mode`, must never silently suppress the gate. An illegal valu
 parse time, before any agent fires, naming both legal values.
 
 Deferral is a **deliberate hand-off, not a failure** — `deferred` and `blocked` are
-separate fields, and the deferred clause on the summary reads differently from the blocked
+separate fields, `gateDeferredCount` and `gateBlockedCount` are separate run-level counts
+(both always present as an explicit `0`, never `undefined`, including on the fail-closed
+early return), and the deferred clause on the summary reads differently from the blocked
 one, so a `'return'`-mode run is never reported as a broken gate.
+
+Because this hand-off *is* the escalation path, the deferred clause carries the **commands
+themselves**, not a pointer at the JSON:
+
+```
+ [gate deferred: needs-plan-review NOT cleared by this run (gateMode='return') — apply: <update> && <commit>]
+```
+
+A surface that reports only the `summary` — a log line, a chat message — is therefore
+already reporting the exact escalation. The marker is lowercase `gate deferred` against the
+blocked path's uppercase `GATE BLOCKED`, so the two stay separable by a plain grep over
+either summaries or logs.
+
+If nobody applies the commands, nothing is silently passed: the item simply keeps
+`needs-plan-review` and is picked up by the standing
+`rdm search "" --tag needs-plan-review --project rdm` sweep.
 
 ### What this does not decide
 
@@ -210,12 +228,21 @@ prompt now states this explicitly.
      `ack-not-ok` (a refusal) from `agent-error: <message>` (a crash);
    - a dedicated `GATE BLOCKED` log line is emitted on **both** failure paths;
    - the run-level `gateBlockedCount` counts them, and appears on the final log line when
-     non-zero;
+     non-zero — alongside, and never merged with, the sibling `gateDeferredCount`;
    - the skill prose requires a blocked unit to be surfaced at the TOP of the report.
 
    A healthy run's summary is **byte-unchanged** — the clause is empty, following the same
    discipline as `formatUnitBudget` and `coverageSummaryClause`. A `rework`/`escalated`
    unit, whose `tagCleared` is legitimately false, never trips it.
+
+   **Quoting hazard, deliberately contained.** Both gate clauses embed an exact rdm command
+   containing double quotes (`--tags "a,b"`) — unlike `coverageSummaryClause`, which is
+   documented as quote-free *because* it is interpolated into Bash prompts. In plan mode
+   `summary` and `reason` are returned data, never prompt inputs, and no prompt builder in
+   `lib/plan-review.mjs` reads either. `verify-workflow-review.sh` § 5b-gate-quoting pins
+   that with a grep over every extracted `build*Prompt` body plus a planted-leak self-test,
+   so a future prompt builder that starts quoting the summary is caught before it ships a
+   broken command line.
 
 ---
 
