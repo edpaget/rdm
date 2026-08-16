@@ -434,6 +434,28 @@ console.log('3a-cov OK: standalone OUTCOME carries reviewCoverage and names it i
 console.log('3a OK: reviewed / rework OUTCOME shapes and the refutation budget verified');
 
 // ============================================================================
+// 3a-str. STRINGIFIED args — the Workflow tool contract forbids stringified
+// args, but LLM callers deliver one anyway (see parseDispatchArgs's own
+// comment in rdm-wf-dispatch-phase.js). Without coercion, `rawArgs.roadmap`/
+// `rawArgs.phase` read as undefined and the driver silently falls into the
+// LEGACY `{ mode, survivors }` branch, discarding the AC table/outcome/status.
+// This asserts the full dispatch-shaped OUTCOME survives a JSON-string args.
+// ============================================================================
+{
+  const a = makeAgent({ diffResult: { changedFiles: ['src/api/index.ts'], diffText: '+export function foo() {}' }, findings: CLEAN, verdicts: {} });
+  const stringifiedArgs = JSON.stringify({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', gate: false });
+  const out = await run(stringifiedArgs, a.agent, refPipeline, refParallel, () => {});
+  assert.deepEqual(
+    Object.keys(out).sort(),
+    ['findings', 'outcome', 'phase', 'reason', 'reviewBudget', 'reviewCoverage', 'roadmap', 'status', 'summary', 'writesCompletion'].sort(),
+    'a stringified args payload still yields the full dispatch-shaped OUTCOME, not the legacy {mode, survivors} shape'
+  );
+  assert.equal(out.outcome, 'reviewed', 'stringified args -> coerced -> real review ran -> reviewed');
+  assert.equal(out.writesCompletion, true);
+}
+console.log('3a-str OK: a stringified args payload still yields the full dispatch-shaped OUTCOME');
+
+// ============================================================================
 // 3b. Fail-open: diff agent throws -> `signals` key OMITTED -> every dimension
 // runs. A populated diff -> deriveSignals output threaded through, so a
 // non-triggered dimension is skipped.

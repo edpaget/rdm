@@ -2084,7 +2084,21 @@ function parseProjectArg(value) {
 }
 
 // --- Driver -------------------------------------------------------------------
-const rawArgs = args || {}
+// Coerce a stringified `args` payload. The Workflow tool contract forbids it,
+// but LLM callers deliver one anyway (see parseDispatchArgs's identical
+// comment in rdm-wf-dispatch-phase.js) — without this, `rawArgs.roadmap`/
+// `rawArgs.phase`/`rawArgs.task` all read as undefined and the driver falls
+// silently into the legacy `{ mode, survivors }` branch below, discarding the
+// AC table/outcome/status with no error or warning.
+let rawArgs = args || {}
+if (typeof rawArgs === 'string') {
+  try {
+    rawArgs = JSON.parse(rawArgs) || {}
+  } catch (e) {
+    rawArgs = {}
+  }
+}
+if (!rawArgs || typeof rawArgs !== 'object') rawArgs = {}
 const mode = rawArgs.mode || 'code'
 const roadmap = rawArgs.roadmap || ''
 const phaseArg = rawArgs.phase || ''

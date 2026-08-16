@@ -4358,6 +4358,131 @@ plan_mutate_and_expect_fail vii 'dropping the coverage field from the per-unit r
 
 pass "5b-mut: all seven driver mutations flip a 5b-exec assertion, and the control passes"
 
+# --- 5b-hoist-exec. RUNTIME-ENTRY model hoist fires on a stringified args ----
+# `5b-exec` above drives `runPlanReviewDriver` directly (imported from
+# lib/plan-review.mjs) — it never touches the mechanical/find/verify MODEL
+# HOIST, which lives at rdm-wf-plan-review.js's runtime entry, OUTSIDE the
+# byte-gated plan-review-driver block (see plan-review-mechanical-model-hoist-
+# never-fires). This section wraps the WHOLE workflow file's top-level body —
+# hoist included — in an async function, the same technique
+# verify-workflow-review-outcome.sh's behavior.mjs uses for
+# rdm-wf-review-refute-fix.js, so the hoist code actually executes under test.
+say "5b-hoist-exec. rdm-wf-plan-review.js's runtime-entry model hoist fires on a stringified args payload"
+cat >"$TMP/plan-hoist-test.mjs" <<'NODE_HOIST_TEST'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const wfPath = process.argv[2];
+let src = fs.readFileSync(wfPath, 'utf8');
+src = src.replace(/^export /m, '');
+
+const wrapperPath = '/tmp/verify-workflow-review-plan-hoist-wrapped.mjs';
+fs.writeFileSync(
+  wrapperPath,
+  'export default async function(args, agent, pipeline, parallel, log) {\n' + src + '\n}\n'
+);
+const mod = await import('file://' + wrapperPath);
+const run = mod.default;
+
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+
+// A minimal fake covering every label a clean task-target run can hit:
+// model:mechanical (must NOT be called when the hoist fires), fetch:task,
+// fetch:wontfix, find:plan:* (all four always-on-with-no-signals dimensions —
+// coherence/architectural-fit/unit-of-work/restraint — plus their :retry
+// suffix), and gate:clear-tag:task:*. A clean (zero-finding) seed means no
+// gating candidates are ever produced, so no refute:plan:* call is reachable
+// and need not be handled. Anything else throws loudly rather than silently
+// returning a plausible-looking value, so an unhandled label fails the test
+// instead of masking a real gap.
+function makeAgent() {
+  const calls = [];
+  const agent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    calls.push({ label: label, model: opts && opts.model, prompt: prompt });
+    if (label === 'model:mechanical') {
+      return { mechanical: 'fallback-mechanical', reviewFind: 'fallback-find', reviewVerify: 'fallback-verify' };
+    }
+    if (label === 'fetch:task') {
+      return { body: 'Body describing the hoist-target task in enough detail to review.', tags: ['needs-plan-review'] };
+    }
+    if (label === 'fetch:wontfix') {
+      return { texts: [] };
+    }
+    if (label.indexOf('find:plan:') === 0) {
+      return { findings: [] };
+    }
+    if (label.indexOf('gate:clear-tag:') === 0) {
+      return { ok: true };
+    }
+    throw new Error('unexpected agent label: ' + label);
+  };
+  return { agent: agent, calls: calls };
+}
+
+const logs = [];
+const log = (line) => logs.push(String(line));
+
+const a = makeAgent();
+const stringifiedArgs = JSON.stringify({
+  task: 'hoist-target',
+  mechanicalModel: 'haiku-x',
+  findModel: 'find-x',
+  verifyModel: 'verify-x',
+});
+const out = await run(stringifiedArgs, a.agent, refPipeline, refParallel, log);
+
+const mechanicalCalls = a.calls.filter((c) => c.label === 'model:mechanical');
+assert.equal(mechanicalCalls.length, 0, 'a complete stringified model hoist must skip the model:mechanical bootstrap agent');
+
+assert.ok(
+  logs.some((l) => l.indexOf('plan-review: models hoisted from caller args') !== -1),
+  'the hoist log line must fire on a stringified args payload'
+);
+
+const fetchCalls = a.calls.filter((c) => c.label === 'fetch:task');
+assert.equal(fetchCalls.length, 1, 'the driver still ran (fetch:task fired) — the hoist did not short-circuit the whole run');
+assert.equal(fetchCalls[0].model, 'haiku-x', 'the hoisted mechanicalModel reaches the fetch:task mechanical agent call');
+
+const gateCalls = a.calls.filter((c) => c.label.indexOf('gate:clear-tag:') === 0);
+assert.equal(gateCalls.length, 1, 'a clean review clears the needs-plan-review tag exactly once');
+assert.equal(gateCalls[0].model, 'haiku-x', 'the hoisted mechanicalModel reaches the gate:clear-tag mechanical agent call');
+
+const findCalls = a.calls.filter((c) => c.label.indexOf('find:plan:') === 0);
+assert.ok(findCalls.length > 0, 'the find dimensions actually ran');
+for (const c of findCalls) {
+  assert.equal(c.model, 'find-x', 'the hoisted findModel reaches every find:plan:* agent call (' + c.label + ')');
+}
+
+assert.equal(out.outcome, 'reviewed', 'a clean task target with a complete hoist still completes the review');
+
+console.log('5b-hoist-exec OK: a stringified args payload still fires the runtime-entry model hoist');
+NODE_HOIST_TEST
+
+if run_node "$TMP/plan-hoist-test.mjs" "$PLAN_REVIEW" >"$TMP/plan-hoist-out.log" 2>&1; then
+    pass "5b-hoist-exec: stringified-args model hoist verified against the real runtime entry"
+else
+    cat "$TMP/plan-hoist-out.log"
+    fail "5b-hoist-exec failed against $PLAN_REVIEW"
+fi
+
 # --- 5c. SKILL SHIM (AC-5) ---------------------------------------------------
 # The local dogfood SKILL.md is a thin shim over rdm-wf-plan-review.js. Its hand-authored
 # prose (above the generated review-spec marker) must reference the workflow, keep

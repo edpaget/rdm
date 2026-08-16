@@ -3027,16 +3027,22 @@ const MODELS_SCHEMA = {
 // through to the bootstrap agent below, which is what a direct `Workflow`
 // invocation always does. The unresolved-model fail-closed abort applies
 // identically to both paths.
+// Parsed ONCE, here, and reused by the fail-closed abort branch below — a
+// stringified `args` (the Workflow tool contract forbids it, but LLM callers
+// deliver one anyway; see rdm-wf-review-refute-fix.js's identical rationale)
+// used to reach `args.mechanicalModel` directly, which reads as undefined on
+// a JSON string and silently wasted the bootstrap agent below. Reading these
+// three off `parsedArgs` instead routes through parsePlanArgs's own
+// string-coercion, so the hoist fires identically whether `args` arrives as
+// an object or as its JSON-stringified form.
+const parsedArgs = parsePlanArgs(args)
 let mechanicalModel = ''
 let findModel = ''
 let verifyModel = ''
 let mechanicalErr = ''
-const hoistedMechanicalModel =
-  args && typeof args === 'object' && typeof args.mechanicalModel === 'string' ? args.mechanicalModel.trim() : ''
-const hoistedFindModel =
-  args && typeof args === 'object' && typeof args.findModel === 'string' ? args.findModel.trim() : ''
-const hoistedVerifyModel =
-  args && typeof args === 'object' && typeof args.verifyModel === 'string' ? args.verifyModel.trim() : ''
+const hoistedMechanicalModel = parsedArgs.mechanicalModel || ''
+const hoistedFindModel = parsedArgs.findModel || ''
+const hoistedVerifyModel = parsedArgs.verifyModel || ''
 if (hoistedMechanicalModel && hoistedFindModel && hoistedVerifyModel) {
   mechanicalModel = hoistedMechanicalModel
   findModel = hoistedFindModel
@@ -3083,9 +3089,8 @@ if (!mechanicalModel || !findModel || !verifyModel) {
       (mechanicalErr ? ' — ' + mechanicalErr : ' — rdm model resolve returned nothing') +
       ') — stopping before any mechanical agent runs'
   )
-  const parsedForAbort = parsePlanArgs(args)
   return {
-    kind: parsedForAbort.kind,
+    kind: parsedArgs.kind,
     outcome: 'escalated',
     fetchError: true,
     summary: 'plan-review: model(s) unresolved (' + missing.join(', ') + ')',
