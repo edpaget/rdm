@@ -4089,8 +4089,16 @@ if (!mechanicalModel || !findModel || !verifyModel) {
     summary: 'plan-review: model(s) unresolved (' + missing.join(', ') + ')',
     units: [],
     // Same rationale as the driver's own fetch-failure return: an abort before
-    // any unit was gated is not a blocked gate, and must not read as one.
+    // any unit was gated is neither a blocked gate nor a deferred one, and must
+    // not read as either. BOTH counts are emitted as explicit 0s, for the same
+    // reason the driver's own fail-closed return emits both — a caller alerting
+    // on "the gate did not land" reads gateBlockedCount, and a caller that must
+    // go apply commands by hand reads gateDeferredCount. An omitted key reads as
+    // `undefined` at exactly the moment a caller is deciding whether a gate was
+    // left unapplied, which is the failure mode this run shape exists to avoid.
+    // Driven by verify-workflow-review.sh § 5b-hoist-fail.
     gateBlockedCount: 0,
+    gateDeferredCount: 0,
   }
 }
 

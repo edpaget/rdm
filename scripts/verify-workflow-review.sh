@@ -5806,6 +5806,144 @@ else
     fail "5b-hoist-exec failed against $PLAN_REVIEW"
 fi
 
+# --- 5b-hoist-fail. RUNTIME-ENTRY model-unresolved abort emits BOTH counts ---
+# The sibling of 5b-hoist-exec, covering the branch it deliberately never
+# reaches: 5b-hoist-exec supplies a COMPLETE hoisted model set, so the
+# model:mechanical bootstrap — and therefore the unresolved-model fail-closed
+# guard below it — never fires. That guard is a run-shape sibling of the
+# driver's own fetch-failure return, and like it must report an explicit `0`
+# for BOTH gate counts: an abort before any unit was gated is neither a blocked
+# gate nor a deferred one, and a caller reading `result.gateDeferredCount` to
+# decide whether commands are waiting to be applied by hand must never get
+# `undefined` there. This branch lives OUTSIDE the byte-gated
+# plan-review-driver block, so 5b-drift cannot catch a divergence here — only a
+# driven test can. It runs both ways into the guard (an incomplete bootstrap
+# shape and a throwing bootstrap) and is proven non-vacuous by a planted
+# deletion of the `gateDeferredCount: 0` key.
+#
+# Non-goal (docs/plan-review-gate-policy.md § NON-GOAL): nothing here claims a
+# real `rdm model resolve` failure is reproducible on demand — the guard is
+# driven through an injected fake, and the un-gatable half stays un-gated.
+say "5b-hoist-fail. rdm-wf-plan-review.js's model-unresolved abort reports gateBlockedCount AND gateDeferredCount as explicit 0s"
+cat >"$TMP/plan-hoist-fail-test.mjs" <<'NODE_HOIST_FAIL_TEST'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const wfPath = process.argv[2];
+const wrapperPath = process.argv[3];
+let src = fs.readFileSync(wfPath, 'utf8');
+src = src.replace(/^export /m, '');
+
+fs.writeFileSync(
+  wrapperPath,
+  'export default async function(args, agent, pipeline, parallel, log) {\n' + src + '\n}\n'
+);
+const mod = await import('file://' + wrapperPath);
+const run = mod.default;
+
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+
+// Two distinct ways the bootstrap can leave a model unresolved. `partial`
+// returns a well-formed object that is simply missing reviewVerify (the
+// `rdm model resolve returned nothing` wording); `throws` blows up (the
+// error-message wording). Both must land in the SAME fail-closed shape.
+function makeAgent(mode) {
+  const calls = [];
+  const agent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    calls.push({ label: label, model: opts && opts.model });
+    if (label === 'model:mechanical') {
+      if (mode === 'throws') throw new Error('rdm model resolve exploded');
+      return { mechanical: 'm-x', reviewFind: 'f-x' };
+    }
+    throw new Error('no agent beyond the model bootstrap may run once a model is unresolved: ' + label);
+  };
+  return { agent: agent, calls: calls };
+}
+
+for (const mode of ['partial', 'throws']) {
+  const a = makeAgent(mode);
+  const logs = [];
+  const out = await run({ task: 'hoist-target' }, a.agent, refPipeline, refParallel, (l) => logs.push(String(l)));
+
+  assert.equal(out.outcome, 'escalated', mode + ': an unresolved model fails closed rather than proceeding');
+  assert.equal(out.fetchError, true, mode + ': the fail-closed abort is flagged as a fetch-side error');
+  assert.deepEqual(out.units, [], mode + ': no unit was reviewed');
+
+  // The finding this section exists for: BOTH counts present, BOTH explicit 0.
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(out, 'gateBlockedCount'),
+    mode + ': the model-unresolved abort carries a gateBlockedCount key'
+  );
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(out, 'gateDeferredCount'),
+    mode + ': the model-unresolved abort carries a gateDeferredCount key — an omitted key reads as `undefined` to a caller deciding whether a gate was left unapplied'
+  );
+  assert.strictEqual(out.gateBlockedCount, 0, mode + ': gateBlockedCount is an explicit 0, not undefined');
+  assert.strictEqual(out.gateDeferredCount, 0, mode + ': gateDeferredCount is an explicit 0, not undefined');
+
+  // No gate ever ran, so neither count could be anything but 0 — assert the
+  // guard really did abort before any mechanical/judgment agent fired.
+  assert.deepEqual(
+    a.calls.map((c) => c.label),
+    ['model:mechanical'],
+    mode + ': the abort stops before fetch:*, find:plan:* and gate:clear-tag:*'
+  );
+  assert.ok(
+    logs.some((l) => l.indexOf('model(s) could not be resolved') !== -1),
+    mode + ': the abort logs why it stopped'
+  );
+}
+
+// The driver's OWN fail-closed return (inside the byte-gated block) is the
+// shape this one mirrors — 5b-gate-loud already pins both of its counts, so
+// this section only has to cover the runtime-entry sibling the drift gate and
+// 5b-hoist-exec both structurally miss.
+
+console.log('5b-hoist-fail OK: the model-unresolved abort reports both gate counts as explicit 0s');
+NODE_HOIST_FAIL_TEST
+
+if run_node "$TMP/plan-hoist-fail-test.mjs" "$PLAN_REVIEW" \
+    "$TMP/plan-hoist-fail-wrapped.mjs" >"$TMP/plan-hoist-fail-out.log" 2>&1; then
+    pass "5b-hoist-fail: the model-unresolved abort reports both gate counts as explicit 0s"
+else
+    cat "$TMP/plan-hoist-fail-out.log"
+    fail "5b-hoist-fail failed against $PLAN_REVIEW"
+fi
+
+# Non-vacuity: delete the `gateDeferredCount: 0` key from the abort's returned
+# object (the exact pre-fix state) and the section must go red.
+# The runtime-entry key is uniquely identified by its 4-space indent; the
+# driver block's own copy sits two levels deeper and must survive the plant.
+sed '/^    gateDeferredCount: 0,$/d' "$PLAN_REVIEW" >"$TMP/plan-review-nodeferred.js"
+if [ "$(grep -c 'gateDeferredCount: 0,' "$TMP/plan-review-nodeferred.js")" -ne \
+    "$(($(grep -c 'gateDeferredCount: 0,' "$PLAN_REVIEW") - 1))" ]; then
+    fail "5b-hoist-fail self-test: the planted deletion did not remove exactly one gateDeferredCount key"
+fi
+if run_node "$TMP/plan-hoist-fail-test.mjs" "$TMP/plan-review-nodeferred.js" \
+    "$TMP/plan-hoist-fail-mut-wrapped.mjs" >"$TMP/plan-hoist-fail-mut.log" 2>&1; then
+    fail "5b-hoist-fail self-test: deleting gateDeferredCount from the model-unresolved abort did NOT fail the section — it is vacuous"
+else
+    pass "5b-hoist-fail self-test: deleting gateDeferredCount from the abort flips the section red"
+fi
+
 # --- 5c. SKILL SHIM (AC-5) ---------------------------------------------------
 # The local dogfood SKILL.md is a thin shim over rdm-wf-plan-review.js. Its hand-authored
 # prose (above the generated review-spec marker) must reference the workflow, keep
