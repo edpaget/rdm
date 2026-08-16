@@ -1792,7 +1792,9 @@ function buildReviewPipeline(mode, deps) {
           // handles both (a transient failure usually succeeds; a misconfigured
           // model fails twice and is then recorded loudly as non-participation).
           // One extra attempt only — no loop, no backoff — and UNCONDITIONAL on
-          // findModel, because plan mode passes no models at all.
+          // findModel BY DESIGN: this retry must handle both transient API
+          // failures AND unknown/unavailable model IDs for ANY caller, whether
+          // models are threaded or not.
           rec.retried = true;
           try {
             found = await _agent(findPrompt(mode, dim, ctx), {
@@ -1842,13 +1844,11 @@ function buildReviewPipeline(mode, deps) {
     // accounting, so a wholesale failure is never reported as "budget-bounded but
     // clean".
     //
-    // The guard is NOT conditioned on `findModel`. lib/plan-review.mjs calls
-    // `runPlanReview({ target })` with NO findModel/verifyModel at BOTH call
-    // sites (reviewUnit and the implementation-plan branch), so a
-    // model-conditional guard is inert in plan mode — and `GATE_POLICY.plan`
-    // would then clear `needs-plan-review` off a review that never ran. Only the
-    // MESSAGE branches, so the misconfiguration text naming the `[models]`
-    // bindings stays recognisable.
+    // The guard is model-independent BY DESIGN. This check must fire for ANY
+    // caller to ensure no review is silently reported as clean when every
+    // dimension fails — regardless of whether models are configured — so a
+    // wholesale failure is never gated away. Only the MESSAGE branches, so the
+    // misconfiguration text naming the `[models]` bindings stays recognisable.
     if (dims.length > 0 && perDimension.every((d) => d === null || d === undefined)) {
       throw new Error(
         'review-refute-fix: every ' + mode + ' dimension finder failed' +

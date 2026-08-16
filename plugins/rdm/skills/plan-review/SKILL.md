@@ -95,7 +95,7 @@ Do **not** call `update --tags`. The `needs-plan-review` tag is left unchanged i
 
 **Per-phase gating** (`--roadmap <slug>` reviews):
 
-Under `--roadmap <slug>`, gate each reviewed phase **individually** — a phase whose own outcome is `rework` or `escalated` keeps its `needs-plan-review` tag even when every other phase in the roadmap reaches `reviewed`. The roadmap body itself is gated separately. A phase set aside as terminal in step 1 is **never gated** — it was never reviewed this run, so there is no tag disposition to make on it.
+Under `--roadmap <slug>`, gate each phase **individually** — a phase whose own outcome is `rework` or `escalated` keeps its `needs-plan-review` tag even when every other phase in the roadmap reaches `reviewed`. The roadmap body itself is gated separately. A phase set aside as terminal in step 1 is **never gated** — it was never reviewed this run, so there is no tag disposition to make on it.
 
 ## Guidelines
 
