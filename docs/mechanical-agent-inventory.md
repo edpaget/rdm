@@ -246,6 +246,18 @@ task/phase/roadmap/implementation-plan sweep), plus two mutation self-tests in �
 checks are not vacuous. The caller-hoisted path's content validation remains explicitly out of
 scope, unchanged.
 
+This also closes the task's own "Workflow-driven via Bash, to the extent the runtime allows"
+directive rather than merely approximating it: `docs/workflow-schemas.md` § "The fetch stage is
+now raw-transcript-capture + driver-side parse" (its "Why this closes the 'Workflow-driven via
+Bash' directive" paragraph) walks the Import spike's proof that no script-level Bash/process
+primitive exists in this runtime at all, so the only lever "to the extent allowed" can mean is
+narrowing what the dispatched agent may do — done by `agentType: 'rdm-mechanical'`'s hard
+`tools: Bash, StructuredOutput` restriction (confirmed enforced from inside a Workflow run) plus
+the single-field `RAW_STDOUT_SCHEMA` that leaves no room to compose anything but the one command's
+verbatim stdout — combined with the directive's own explicit fallback for that case, driver-side
+validation "as strictly as a genuine call would allow," which is exactly `fetchTranscriptionOk`
+plus the retry-then-fail-closed loop described above.
+
 One consequence is worth stating on its own, because the hoist's shape guard replaces a
 `required`-bearing schema: `hoistedFetchedOk` is held to be **no weaker** than the
 `{ body, tags, phases }` shape `buildReviewUnits` requires (formerly enforced by the fetch

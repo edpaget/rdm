@@ -2353,6 +2353,43 @@ a recorded correctness failure" for the full account and
 positive, the empty-phases/body-text-mimicry non-tripping cases, and a
 four-target-type sweep).
 
+**Why this closes the "Workflow-driven via Bash" directive, not merely
+approximates it.** `fix-plan-review-gate-tag-clobber`'s own follow-up
+directives asked for the fetch stage to become "Workflow-driven via Bash, not
+agent-driven, to the extent the Workflow runtime allows," with an explicit
+fallback: "if a literal Bash call from the Workflow script is infeasible —
+[the Workflow] should validate the agent's output as strictly as a genuine
+call would allow." A literal call is not a design choice to weigh — it is
+categorically unavailable. The "Import spike" table above tested every code
+and process-execution vector the runtime exposes (`import()`, `eval`, `new
+Function`, `require`, `process`, `Deno`, `Bun`, `fetch`) and the enumerated
+global scope (`log, phase, console, budget, setTimeout, clearTimeout, Date,
+agent, parallel, pipeline, workflow, args`, plus pure JS built-ins) contains no
+`Bash`, no `exec`, and no I/O primitive of any kind — `agent()` is the *only*
+channel from a Workflow script to any tool, including Bash. "To the extent the
+runtime allows" therefore bottoms out at: the Workflow script cannot invoke
+Bash itself, so the only remaining lever is *what the agent it dispatches is
+permitted to do*, and that lever is pulled all the way. `fetch:roadmap` /
+`fetch:<kind>` run under `agentType: 'rdm-mechanical'`
+(`.claude/agents/rdm-mechanical.md`), whose `tools:` frontmatter is hard-set to
+exactly `Bash, StructuredOutput` and confirmed enforced from inside a Workflow
+run (`docs/workflow-schemas.md` § "agentType / effort options spike": case B's
+recorded `toolNames` was exactly `["Bash", "StructuredOutput"]`, not the
+default agent's nine). The dispatched agent is thus not "an LLM composing plan
+data" but a sandboxed process with no capability except running the one
+command named verbatim in its prompt and copying stdout into a single
+`transcript` string (`RAW_STDOUT_SCHEMA` — no other field exists to compose
+into). Combined with the fallback the directive itself authorizes — driver-side
+validation "as strictly as a genuine call would allow," landed as
+`fetchTranscriptionOk` plus the identity/collision checks and the bounded
+retry-then-fail-closed loop above — every clause of the directive is satisfied
+by the mechanism actually available, not worked around. There is no further
+"more Bash-driven" state to move to inside this runtime; the remaining gap
+between this design and a literal shell call is the V8 isolate boundary
+itself, which is enforced host-side and cannot be crossed by any workflow
+script, present or future, short of a runtime change tracked outside this
+repo's control.
+
 ### `rdm-wf-dispatch-phase` absorbs its diff instead of hoisting it
 
 `diff:signals` is not hoisted — it is **absorbed**. `runCodeGate` calls
