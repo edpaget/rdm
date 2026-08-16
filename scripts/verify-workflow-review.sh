@@ -3946,6 +3946,27 @@ assert.equal(buildReviewUnits({ kind: 'phase', roadmap: 'r', phase: 'p' }, { bod
   assert.equal(b.units[1].ident, 'phase-1-a', 'phase unit ident is the stem');
 }
 
+// ---- buildReviewUnits: defense-in-depth stem-collision guard (direct) -------
+// Exercises the guard from the FUNCTION's own public surface (not indirectly
+// via the fetch-path replay in section 7c, which is caught upstream by
+// extractRoadmapFromJson before it ever reaches this second guard). Deleting
+// the guard block in buildReviewUnits must fail these two assertions.
+assert.equal(
+  buildReviewUnits({ kind: 'roadmap', roadmap: 'r' },
+    { body: 'RB', tags: [], phases: [{ stem: 'r', body: 'PA', tags: [] }] }).fetchFailed,
+  true,
+  'buildReviewUnits: a phase stem equal to the roadmap slug is rejected (self-slug collision)'
+);
+assert.equal(
+  buildReviewUnits({ kind: 'roadmap', roadmap: 'r' },
+    { body: 'RB', tags: [], phases: [
+      { stem: 'phase-1-a', body: 'PA', tags: [] },
+      { stem: 'phase-1-a', body: 'PB', tags: [] },
+    ] }).fetchFailed,
+  true,
+  'buildReviewUnits: two identical phase stems are rejected (duplicate collision)'
+);
+
 // ---- runPlanReviewDriver: a recording fake agent + a reference parallel ------
 // findingsByTarget maps a review-unit target substring to the survivors the fake
 // pipeline returns for it, so we can seed a rework on ONE phase and reviewed on
@@ -5194,6 +5215,85 @@ console.log('7c OK: the recorded corruption, replayed through the fetch agent pa
   assert.ok(rm.includes('--tags "infra"'), '7c2: the roadmap gate writes the roadmap\'s OWN real sibling tag');
 }
 console.log('7c2 OK: the fetch path replays real raw stdout and reaches the same real-value result as the hoist path, at exactly 1 agent call');
+
+// ============================================================================
+// 7c3. NEGATIVE — cross-item identity mismatch on the STANDALONE fetch:task /
+// fetch:phase paths. 7c/7c2 above only exercise the roadmap fetch's identity
+// guard (extractRoadmapFromJson). extractTaskFromJson's slug check and
+// extractPhaseFromJson's stem/roadmap checks have no coverage of their own
+// reject branch anywhere else in this suite: every OTHER fixture derives the
+// returned identity fields by regexing them straight out of the driver's own
+// prompt (see wrapFetchResultAsTranscript above), so the fetched identity can
+// never disagree with what was requested there. Feed a transcript naming a
+// DIFFERENT item than the one requested directly, via makeDeps'
+// fetchResponses override, mirroring 7c's approach for the roadmap path.
+// ============================================================================
+{
+  // fetch:task returns a transcript for a DIFFERENT task slug than requested.
+  const h = makeDeps({
+    fetchResponses: {
+      'fetch:task': {
+        transcript: JSON.stringify({ slug: 'some-other-task', body: 'Wrong task body.', tags: ['unrelated'] }),
+      },
+    },
+  });
+  const out = await runPlanReviewDriver({ task: 'hoist-target', wontFixedTexts: [] }, h.deps);
+  assert.equal(out.fetchError, true, '7c3: a fetch:task transcript naming a different slug is rejected');
+  assert.equal(out.outcome, 'escalated', '7c3: ...and fails closed to escalated');
+  assert.ok(
+    !labels(h).some((l) => l.indexOf('gate:clear-tag') === 0),
+    '7c3: zero gate:clear-tag calls on a task identity mismatch'
+  );
+}
+{
+  // fetch:phase returns a transcript for a DIFFERENT phase stem than requested.
+  const h = makeDeps({
+    fetchResponses: {
+      'fetch:phase': {
+        transcript: JSON.stringify({
+          stem: 'some-other-stem',
+          roadmap: 'hoist-rm',
+          body: 'Wrong phase body.',
+          tags: ['unrelated'],
+        }),
+      },
+    },
+  });
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', phase: 'phase-1-alpha', wontFixedTexts: [] }, h.deps);
+  assert.equal(out.fetchError, true, '7c3: a fetch:phase transcript naming a different stem is rejected');
+  assert.equal(out.outcome, 'escalated', '7c3: ...and fails closed to escalated');
+  assert.ok(
+    !labels(h).some((l) => l.indexOf('gate:clear-tag') === 0),
+    '7c3: zero gate:clear-tag calls on a phase stem mismatch'
+  );
+}
+{
+  // fetch:phase returns a transcript whose own `roadmap` field disagrees with
+  // the roadmap actually being reviewed (cross-roadmap contamination of a
+  // standalone phase fetch, the same class 7c2's cross-roadmap check covers
+  // for the roadmap-embedded case, but never for a standalone --roadmap/phase
+  // target).
+  const h = makeDeps({
+    fetchResponses: {
+      'fetch:phase': {
+        transcript: JSON.stringify({
+          stem: 'phase-1-alpha',
+          roadmap: 'some-other-roadmap',
+          body: 'Wrong phase body.',
+          tags: ['unrelated'],
+        }),
+      },
+    },
+  });
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', phase: 'phase-1-alpha', wontFixedTexts: [] }, h.deps);
+  assert.equal(out.fetchError, true, '7c3: a fetch:phase transcript naming a different roadmap is rejected');
+  assert.equal(out.outcome, 'escalated', '7c3: ...and fails closed to escalated');
+  assert.ok(
+    !labels(h).some((l) => l.indexOf('gate:clear-tag') === 0),
+    '7c3: zero gate:clear-tag calls on a phase cross-roadmap mismatch'
+  );
+}
+console.log('7c3 OK: standalone fetch:task/fetch:phase identity mismatches (slug, stem, cross-roadmap) are rejected fail-closed (fetchError, escalated, no writes)');
 
 // ============================================================================
 // 7d. FALLBACK — every hoist is optional. Absent / malformed reaches the agent.
