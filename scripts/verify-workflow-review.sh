@@ -3819,6 +3819,14 @@ if grep -nE 'Date\.now\(|Math\.random\(' "$PLAN_REVIEW" >&2; then
 fi
 pass "rdm-wf-plan-review.js parses four targets, fans out, reuses the core, and carves out implementation-plan"
 
+# The roadmap-wide sweep must exclude terminal (done/wont-fix) phases via the
+# fail-open isTerminalPhaseStatus filter (task plan-review-skips-terminal-phases).
+grep -q 'TERMINAL_PHASE_STATUSES' "$PLAN_REVIEW" ||
+    fail "rdm-wf-plan-review.js must declare TERMINAL_PHASE_STATUSES"
+grep -q 'function isTerminalPhaseStatus' "$PLAN_REVIEW" ||
+    fail "rdm-wf-plan-review.js must declare isTerminalPhaseStatus"
+pass "rdm-wf-plan-review.js: TERMINAL_PHASE_STATUSES / isTerminalPhaseStatus are present (terminal-phase sweep filter)"
+
 # --- 5b-cache. TAG GATE WRITE reads the pre-fetch originalTags snapshot -------
 # (task fix-plan-review-gate-tag-clobber, "cache real tags before the fetch
 # runs" criterion). The gate's `--tags` write must be sourced from
@@ -4127,6 +4135,8 @@ assert.equal(buildReviewUnits({ kind: 'task', task: 't' }, null).fetchFailed, tr
 assert.equal(buildReviewUnits({ kind: 'task', task: 't' }, { body: '', tags: [] }).fetchFailed, true, 'empty body => fetchFailed');
 assert.equal(buildReviewUnits({ kind: 'phase', roadmap: 'r', phase: 'p' }, { body: '   ', tags: [] }).fetchFailed, true,
   'whitespace-only body => fetchFailed');
+assert.deepEqual(buildReviewUnits({ kind: 'task', task: 't' }, null).skippedPhases, [],
+  'buildReviewUnits: skippedPhases is present ([]) even on a fail-closed null-fetch return');
 {
   const b = buildReviewUnits({ kind: 'roadmap', roadmap: 'r' },
     { body: 'RB', tags: ['needs-plan-review'], phases: [{ stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] }] });
@@ -4135,6 +4145,79 @@ assert.equal(buildReviewUnits({ kind: 'phase', roadmap: 'r', phase: 'p' }, { bod
   assert.equal(b.units[0].targetType, 'roadmap', 'first unit is the roadmap body');
   assert.equal(b.units[1].targetType, 'phase', 'second unit is a phase');
   assert.equal(b.units[1].ident, 'phase-1-a', 'phase unit ident is the stem');
+  assert.deepEqual(b.skippedPhases, [], 'a phase with no status field at all is kept, not skipped');
+}
+
+// ---- buildReviewUnits: terminal-phase filter (task plan-review-skips-terminal-phases) ----
+// AC1 — a mixed-status roadmap: exactly the done/wont-fix phases are excluded
+// from the fan-out and reported on skippedPhases; every other phase — INCLUDING
+// one with a missing, blank, or unrecognized status (AC2's fail-open default) —
+// stays in the fan-out.
+{
+  const b = buildReviewUnits(
+    { kind: 'roadmap', roadmap: 'r' },
+    {
+      body: 'RB',
+      tags: [],
+      phases: [
+        { stem: 'phase-1-a', body: 'PA', tags: [], status: 'not-started' },
+        { stem: 'phase-2-b', body: 'PB', tags: [], status: 'done' },
+        { stem: 'phase-3-c', body: 'PC', tags: [], status: 'wont-fix' },
+        { stem: 'phase-4-d', body: 'PD', tags: [] },
+        { stem: 'phase-5-e', body: 'PE', tags: [], status: '' },
+        { stem: 'phase-6-f', body: 'PF', tags: [], status: 'a-future-status' },
+      ],
+    }
+  );
+  assert.equal(b.fetchFailed, false, 'a mixed-status roadmap does not fail');
+  assert.deepEqual(
+    b.units.map((u) => u.ident),
+    ['r', 'phase-1-a', 'phase-4-d', 'phase-5-e', 'phase-6-f'],
+    'buildReviewUnits: only the exact done/wont-fix phases are excluded — a missing, blank, or unrecognized status stays IN, fail-open'
+  );
+  assert.deepEqual(
+    b.skippedPhases,
+    [
+      { stem: 'phase-2-b', status: 'done' },
+      { stem: 'phase-3-c', status: 'wont-fix' },
+    ],
+    'buildReviewUnits: skippedPhases lists exactly the excluded phases with their stem and status'
+  );
+}
+
+// AC2 — a roadmap where no phase carries a recognized terminal status at all
+// (missing on one, unrecognized on another): skippedPhases is [], never
+// inferred from absence.
+{
+  const b = buildReviewUnits(
+    { kind: 'roadmap', roadmap: 'r' },
+    {
+      body: 'RB',
+      tags: [],
+      phases: [
+        { stem: 'phase-1-a', body: 'PA', tags: [] },
+        { stem: 'phase-2-b', body: 'PB', tags: [], status: 'not-a-real-status' },
+      ],
+    }
+  );
+  assert.equal(b.units.length, 3, 'buildReviewUnits: a missing/unrecognized status never removes a phase from the fan-out');
+  assert.deepEqual(b.skippedPhases, [], 'buildReviewUnits: nothing is skipped when no phase status is exactly done/wont-fix');
+}
+
+// AC4 — a standalone phase/task target carrying a terminal status is NEVER
+// filtered: buildReviewUnits' phase/task branch never reads status at all, so
+// an explicit single-unit target is structurally exempt from the sweep filter.
+{
+  const bPhase = buildReviewUnits(
+    { kind: 'phase', roadmap: 'r', phase: 'phase-1-a' },
+    { body: 'PB', tags: ['needs-plan-review'], status: 'done' }
+  );
+  assert.equal(bPhase.fetchFailed, false, 'an explicitly-targeted terminal phase still builds a unit');
+  assert.equal(bPhase.units.length, 1, 'exactly one unit for the explicit phase target');
+  assert.deepEqual(bPhase.skippedPhases, [], 'a single phase target never populates skippedPhases');
+  const bTask = buildReviewUnits({ kind: 'task', task: 't' }, { body: 'TB', tags: [], status: 'wont-fix' });
+  assert.equal(bTask.units.length, 1, 'a task target ignores any status field entirely');
+  assert.deepEqual(bTask.skippedPhases, [], 'a task target never populates skippedPhases');
 }
 
 // ---- buildReviewUnits: defense-in-depth stem-collision guard (direct) -------
@@ -4282,7 +4365,17 @@ function wrapFetchResultAsTranscript(label, raw, prompt) {
         slug: slug,
         body: raw.body,
         tags: raw.tags,
-        phases: phases.map((p) => ({ stem: p.stem, tags: p.tags })),
+        // `status` defaults to a non-terminal 'not-started' when a fixture
+        // does not specify one, so the whole pre-existing scenario matrix
+        // below (none of which cares about the terminal-phase filter) keeps
+        // reviewing every phase exactly as before. A fixture testing the
+        // filter itself passes an explicit `status` on the phase it wants
+        // skipped (or fail-open-kept), which threads through verbatim.
+        phases: phases.map((p) => ({
+          stem: p.stem,
+          tags: p.tags,
+          status: p.status !== undefined ? p.status : 'not-started',
+        })),
       })
     );
     for (const p of phases) {
@@ -4507,7 +4600,7 @@ const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking'
   const res = await runPlanReviewDriver(
     {
       roadmap: 'big-thing',
-      fetched: { body: 'RB', tags: ['needs-plan-review'], phases: [{ stem: 'phase-1-a', body: 'PA', tags: [] }] },
+      fetched: { body: 'RB', tags: ['needs-plan-review'], phases: [{ stem: 'phase-1-a', body: 'PA', tags: [], status: 'not-started' }] },
     },
     deps
   );
@@ -4920,6 +5013,119 @@ const FULL_COVERAGE = {
   }
 }
 
+// ---- (9) TERMINAL-PHASE SWEEP FILTER, driven end to end (task
+//      plan-review-skips-terminal-phases): a roadmap-wide sweep excludes any
+//      phase whose fetched status is exactly `done`/`wont-fix`, reports the
+//      skip on BOTH res.skippedPhases and res.summary/the final log line, and
+//      never dispatches a single agent call naming a skipped phase's stem.
+{
+  // (9a) mixed statuses: one not-started (kept), one done, one wont-fix
+  // (both excluded and reported).
+  const { deps, calls, logs } = makeHarness(
+    {},
+    {
+      'fetch:roadmap': {
+        body: 'RB',
+        tags: ['needs-plan-review'],
+        phases: [
+          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'], status: 'not-started' },
+          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review'], status: 'done' },
+          { stem: 'phase-3-c', body: 'PC', tags: ['needs-plan-review'], status: 'wont-fix' },
+        ],
+      },
+    }
+  );
+  const res = await runPlanReviewDriver({ roadmap: 'sweep-rm' }, deps);
+  assert.deepEqual(
+    res.units.map((u) => u.ident),
+    ['sweep-rm', 'phase-1-a'],
+    '9a: the roadmap sweep excludes the done/wont-fix phases from its units — the not-started phase stays in'
+  );
+  assert.deepEqual(
+    res.skippedPhases,
+    [
+      { stem: 'phase-2-b', status: 'done' },
+      { stem: 'phase-3-c', status: 'wont-fix' },
+    ],
+    '9a: res.skippedPhases lists exactly the excluded phases with their stem and status'
+  );
+  assert.match(res.summary, /skipped 2 terminal phase\(s\)/, '9a: res.summary (roadmap aggregate) names the skip count');
+  assert.ok(res.summary.includes('phase-2-b (done)'), '9a: res.summary names phase-2-b and its status');
+  assert.ok(res.summary.includes('phase-3-c (wont-fix)'), '9a: res.summary names phase-3-c and its status');
+  const allLabels = calls.map((c) => c.label || '');
+  assert.ok(
+    !allLabels.some((l) => l.indexOf('phase-2-b') !== -1),
+    '9a: no agent call anywhere carries the skipped phase-2-b stem in its label'
+  );
+  assert.ok(
+    !allLabels.some((l) => l.indexOf('phase-3-c') !== -1),
+    '9a: no agent call anywhere carries the skipped phase-3-c stem in its label'
+  );
+  assert.ok(
+    logs.some((l) => l.indexOf('skipped 2 terminal phase(s)') !== -1),
+    '9a: the final log line also carries the skip clause, never silent'
+  );
+}
+{
+  // (9b) an explicitly-targeted single phase carrying status: 'wont-fix' (via
+  // the hoist, so the point cannot be attributed to fetch quirks) is STILL
+  // reviewed and gated normally — the terminal filter is structurally scoped
+  // to the roadmap-wide sweep only (buildReviewUnits' phase/task branch never
+  // reads a status field at all).
+  const { deps, calls } = makeHarness({}, {});
+  const res = await runPlanReviewDriver(
+    {
+      roadmap: 'sweep-rm',
+      phase: 'phase-9-terminal',
+      fetched: { body: 'Terminal phase body.', tags: ['needs-plan-review'], status: 'wont-fix' },
+    },
+    deps
+  );
+  assert.ok(
+    !calls.some((c) => c.label === 'fetch:phase' || c.label === 'fetch:task' || c.label === 'fetch:roadmap'),
+    '9b: the hoisted payload bypasses the artifact fetch agent entirely (fetch:wontfix, unrelated, may still fire)'
+  );
+  assert.equal(res.outcome, 'reviewed', "9b: an explicitly-targeted phase carrying status: 'wont-fix' is still reviewed, not skipped");
+  assert.deepEqual(res.skippedPhases, [], '9b: an explicit single-phase target never populates skippedPhases');
+  assert.ok(
+    calls.some((c) => c.label === 'gate:clear-tag:phase:phase-9-terminal'),
+    '9b: the explicit target still gates normally — needs-plan-review is cleared'
+  );
+}
+{
+  // (9c) every phase in the roadmap is terminal: only the roadmap-body unit
+  // survives, and every phase is reported skipped.
+  const { deps } = makeHarness(
+    {},
+    {
+      'fetch:roadmap': {
+        body: 'RB',
+        tags: ['needs-plan-review'],
+        phases: [
+          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'], status: 'done' },
+          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review'], status: 'wont-fix' },
+        ],
+      },
+    }
+  );
+  const res = await runPlanReviewDriver({ roadmap: 'all-terminal-rm' }, deps);
+  assert.deepEqual(
+    res.units.map((u) => u.ident),
+    ['all-terminal-rm'],
+    '9c: only the roadmap-body unit survives when every phase is terminal'
+  );
+  assert.equal(res.units[0].outcome, 'reviewed', '9c: the surviving roadmap-body unit still reviews normally');
+  assert.deepEqual(
+    res.skippedPhases,
+    [
+      { stem: 'phase-1-a', status: 'done' },
+      { stem: 'phase-2-b', status: 'wont-fix' },
+    ],
+    '9c: every phase in the roadmap is reported skipped'
+  );
+}
+console.log('9a/9b/9c OK: the terminal-phase sweep filter excludes done/wont-fix phases, reports every skip, and never filters an explicit single-unit target');
+
 console.log('plan-review driver execution assertions passed');
 NODE_DRIVER_TEST
 if run_node "$TMP/plan-driver-test.mjs" "$PLAN_LIB"; then
@@ -4995,7 +5201,16 @@ function wrapFetch(label, raw, prompt) {
     const slug = m ? m[1] : 'r';
     const phases = Array.isArray(raw.phases) ? raw.phases : [];
     const lines = ['===CMD: roadmap show ' + slug + '==='];
-    lines.push(JSON.stringify({ slug, body: raw.body, tags: raw.tags, phases: phases.map((p) => ({ stem: p.stem, tags: p.tags })) }));
+    // `status` defaults to non-terminal 'not-started' when a fixture omits it
+    // (mirrors wrapFetchResultAsTranscript above — see its comment).
+    lines.push(
+      JSON.stringify({
+        slug,
+        body: raw.body,
+        tags: raw.tags,
+        phases: phases.map((p) => ({ stem: p.stem, tags: p.tags, status: p.status !== undefined ? p.status : 'not-started' })),
+      })
+    );
     for (const p of phases) {
       lines.push('===CMD: phase show ' + p.stem + '===');
       lines.push(JSON.stringify({ stem: p.stem, roadmap: slug, body: p.body, tags: p.tags }));
@@ -5846,7 +6061,19 @@ pmut_drop_impl_signals() {
 }
 plan_mutate_and_expect_fail xii 'dropping the signals: { targetType } thread from the implementation-plan branch' pmut_drop_impl_signals
 
-pass "5b-mut: all twelve driver mutations flip a 5b-exec assertion, and the control passes"
+# (xiii) Neutralize isTerminalPhaseStatus so it always returns false — the
+#        roadmap-wide sweep filter (task plan-review-skips-terminal-phases)
+#        never excludes a phase, whatever its status. Flips section (9)'s 9a/9c
+#        assertions (a done/wont-fix phase now stays in res.units and
+#        res.skippedPhases is empty), proving the filter is load-bearing.
+pmut_neuter_terminal_filter() {
+    perl -0pi -e "s/function isTerminalPhaseStatus\(status\) \{\n  return typeof status === 'string' && TERMINAL_PHASE_STATUSES\.indexOf\(status\) !== -1\n\}/function isTerminalPhaseStatus(status) { return false } \/\/ MUTANT: never treats any status as terminal/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT: never treats any status as terminal' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail xiii 'neutering isTerminalPhaseStatus so it never excludes a phase' pmut_neuter_terminal_filter
+
+pass "5b-mut: all thirteen driver mutations flip a 5b-exec assertion, and the control passes"
 
 # --- 5b-gate-mut. PLANTED MUTATIONS FOR THE GATE SECTIONS ---------------------
 # The four 5b-gate-* sections above are only worth having if they fire. Twelve
@@ -6643,7 +6870,10 @@ const TASK_FETCHED = { body: taskJson.body, tags: taskJson.tags };
 const ROADMAP_FETCHED = {
   body: roadmapJson.body,
   tags: roadmapJson.tags,
-  phases: [phase1Json, phase2Json].map((p) => ({ stem: p.stem, body: p.body, tags: p.tags })),
+  // Both seed phases are freshly created and therefore `not-started` — a
+  // non-terminal status, so this addition does not change 7b's existing
+  // unit-count assertions below (task plan-review-skips-terminal-phases).
+  phases: [phase1Json, phase2Json].map((p) => ({ stem: p.stem, body: p.body, tags: p.tags, status: p.status })),
 };
 
 // Sanity: the seed really does carry the tags this section asserts on, so a
@@ -6761,7 +6991,11 @@ console.log('7b OK: roadmap hoist yields one unit per real phase, each with its 
 const CORRUPTION = {
   body: 'Fetched roadmap and phase data for workflow-token-reduction',
   tags: ['fetch', 'roadmap', 'workflow-token-reduction'],
-  phases: [{ stem: 'workflow-token-reduction', body: roadmapJson.body, tags: roadmapJson.tags }],
+  // A plausible, non-terminal `status` — task plan-review-skips-terminal-phases
+  // requires `status` at this same shape floor, and this fixture must stay
+  // schema/shape-valid to keep demonstrating "shape validity is not the
+  // defense" rather than accidentally becoming a filtered-out case.
+  phases: [{ stem: 'workflow-token-reduction', body: roadmapJson.body, tags: roadmapJson.tags, status: 'not-started' }],
 };
 {
   // Shape-only / schema-shaped check: PASSES. This is the false assurance a
@@ -6772,7 +7006,9 @@ const CORRUPTION = {
     Array.isArray(CORRUPTION.tags) &&
     CORRUPTION.tags.every((t) => typeof t === 'string') &&
     Array.isArray(CORRUPTION.phases) &&
-    CORRUPTION.phases.every((p) => typeof p.stem === 'string' && typeof p.body === 'string' && Array.isArray(p.tags));
+    CORRUPTION.phases.every(
+      (p) => typeof p.stem === 'string' && typeof p.body === 'string' && Array.isArray(p.tags) && typeof p.status === 'string'
+    );
   assert.equal(shapeOk, true, '7c: the recorded corruption payload IS schema-valid — a shape-only check passes it');
   // Sanity, unchanged scope: the HOIST path's shape guard alone still accepts
   // it — content validation of a *hoisted* payload is a separate concern this
@@ -6794,7 +7030,11 @@ const CORRUPTION_TRANSCRIPT =
     slug: 'hoist-rm',
     body: CORRUPTION.body,
     tags: CORRUPTION.tags,
-    phases: [{ stem: 'hoist-rm' }],
+    // `status: 'not-started'` keeps this fixture clearing extractRoadmapFromJson's
+    // shape guard (stem plausible non-terminal status now required, task
+    // plan-review-skips-terminal-phases) so it is really the SELF-SLUG
+    // COLLISION check below that trips it — not an incidental shape failure.
+    phases: [{ stem: 'hoist-rm', status: 'not-started' }],
   });
 {
   const h = makeDeps({ fetchResponses: { 'fetch:roadmap': { transcript: CORRUPTION_TRANSCRIPT } } });
@@ -7058,6 +7298,11 @@ for (const [name, bad] of [
   ['phase entry missing body', { body: 'b', tags: [], phases: [{ stem: 'phase-1-alpha', tags: ['alpha'] }] }],
   ['phase entry not an object', { body: 'b', tags: [], phases: ['phase-1-alpha'] }],
   ['roadmap no tags key', { body: 'b', phases: [] }],
+  // task plan-review-skips-terminal-phases (AC6): status is required with the
+  // SAME all-or-nothing discipline as stem/body/tags — every other field is
+  // otherwise valid so these two rows isolate the status requirement itself.
+  ['phase entry missing status', { body: 'b', tags: [], phases: [{ stem: 'phase-1-alpha', body: 'x', tags: ['alpha'] }] }],
+  ['phase entry blank status', { body: 'b', tags: [], phases: [{ stem: 'phase-1-alpha', body: 'x', tags: ['alpha'], status: '   ' }] }],
 ]) {
   const h = makeDeps({});
   await runPlanReviewDriver({ roadmap: 'hoist-rm', fetched: bad }, h.deps).catch(() => {});
@@ -7156,7 +7401,7 @@ console.log('7d OK: every plan-review hoist is optional and falls back on anythi
       {
         body: 'Fetched roadmap and phase data for hoist-rm',
         tags: ['infra'],
-        phases: [{ stem: 'phase-1-alpha', body: 'x', tags: ['alpha-tag'] }],
+        phases: [{ stem: 'phase-1-alpha', body: 'x', tags: ['alpha-tag'], status: 'not-started' }],
       },
       'roadmap'
     ),
@@ -7164,10 +7409,15 @@ console.log('7d OK: every plan-review hoist is optional and falls back on anythi
     '7g: incident-flavored body text alone never trips the validator'
   );
   // A roadmap phase stem that is really the roadmap slug (the recorded
-  // wf_e3402021-0af shape) is rejected even when body/tags are otherwise clean.
+  // wf_e3402021-0af shape) is rejected even when body/tags/status are otherwise
+  // clean.
   assert.equal(
     fetchTranscriptionOk(
-      { body: 'real body', tags: ['infra'], phases: [{ stem: 'workflow-token-reduction', body: 'x', tags: [] }] },
+      {
+        body: 'real body',
+        tags: ['infra'],
+        phases: [{ stem: 'workflow-token-reduction', body: 'x', tags: [], status: 'not-started' }],
+      },
       'roadmap'
     ),
     false,
@@ -7177,7 +7427,7 @@ console.log('7d OK: every plan-review hoist is optional and falls back on anythi
   // list) is rejected too.
   assert.equal(
     fetchTranscriptionOk(
-      { body: 'real body', tags: ['infra'], phases: [{ stem: 'phase-1-alpha', body: 'x', tags: ['fetch'] }] },
+      { body: 'real body', tags: ['infra'], phases: [{ stem: 'phase-1-alpha', body: 'x', tags: ['fetch'], status: 'not-started' }] },
       'roadmap'
     ),
     false,
@@ -7313,7 +7563,7 @@ console.log('7h(3) OK: retry recovery — a corrupt first attempt is discarded e
       slug: 'hoist-rm',
       body: 'Fetched roadmap and phase data for hoist-rm',
       tags: ['infra'],
-      phases: [{ stem: phase1Json.stem }],
+      phases: [{ stem: phase1Json.stem, status: 'not-started' }],
     }) +
     '\n===CMD: phase show ' +
     phase1Json.stem +
@@ -7548,6 +7798,16 @@ sed 's/^      candidate = await attemptRoadmapFetch()$/      candidate = null \/
     "$PLAN_LIB" >"$TMP/plan-mutant-no-roadmap-retry.mjs"
 assert_plan_mutant_fails "$TMP/plan-mutant-no-roadmap-retry.mjs" "disables the bounded retry on the fetch:roadmap path"
 
+# (9) Isolate the NEW status clause in hoistedFetchedOk's phasesOk predicate —
+#     distinct from mutation (6) above, which removes the whole phasesOk check.
+#     A payload with a missing/blank per-phase status must still be accepted
+#     under this narrower mutation (task plan-review-skips-terminal-phases,
+#     AC6), proving the status requirement itself is load-bearing, not merely
+#     riding along on the pre-existing stem/body/tags checks.
+perl -0pe "s/ &&\n        typeof p\.status === 'string' &&\n        p\.status\.trim\(\) !== ''\n(    \))/\n\$1/" \
+    "$PLAN_LIB" >"$TMP/plan-mutant-no-status-requirement.mjs"
+assert_plan_mutant_fails "$TMP/plan-mutant-no-status-requirement.mjs" "drops the hoisted-payload per-phase status requirement"
+
 # --- 7f. SHIM: the LOCAL rdm-plan-review shim gathers the payload verbatim -----
 # `.claude/skills/rdm-plan-review/SKILL.md` is a LOCAL dogfood shim; its
 # distributed template (rdm-core/src/templates/skill-plan-review-{cli,mcp}.md) is
@@ -7571,11 +7831,18 @@ assert_plan_shim_gathers() {
     grep -qiF 'verbatim' "$doc" || return 1
     grep -qF 'wf_e3402021-0af' "$doc" || return 1
     grep -qF 'wf_f4be8027-dbb' "$doc" || return 1
+    # ... and (task plan-review-skips-terminal-phases) the roadmap phase entry
+    # shape must literally include status, not just tags — a shim that still
+    # gathers the pre-status three-field shape would silently defeat the
+    # workflow's all-or-nothing status requirement (every hoist falls back to
+    # the fetch agent, but only the fetch agent's own JSON — never THIS prose —
+    # would then carry status, so an out-of-date shim is a real regression).
+    grep -qF 'phases: [{ stem, body, tags, status }' "$doc" || return 1
     return 0
 }
 assert_plan_shim_gathers "$SKILL_MD" ||
-    fail "7f: $SKILL_MD must gather task/phase/roadmap 'show --format json' itself, pass fetched/wontFixedTexts/mechanicalModel, and carry the verbatim instruction naming both recorded corruption runs"
-pass "7f: the local shim gathers the payload and passes it verbatim, citing both recorded corruption runs"
+    fail "7f: $SKILL_MD must gather task/phase/roadmap 'show --format json' itself, pass fetched/wontFixedTexts/mechanicalModel (with the roadmap phase shape carrying status), and carry the verbatim instruction naming both recorded corruption runs"
+pass "7f: the local shim gathers the payload and passes it verbatim, citing both recorded corruption runs, with status in the roadmap phase shape"
 
 sed 's/--format json/--format jsn/g' "$SKILL_MD" >"$TMP/plan-shim-typo.md"
 if assert_plan_shim_gathers "$TMP/plan-shim-typo.md"; then

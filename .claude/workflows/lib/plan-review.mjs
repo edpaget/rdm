@@ -224,7 +224,7 @@ function resolvePlanGateMode(value) {
 // that shape: a non-empty `body` (buildReviewUnits' own fail-closed condition)
 // AND a `tags` array of strings, plus — for the roadmap kind — an array
 // `phases` whose every entry carries a non-empty string `stem`, a string
-// `body`, and its own `tags` array of strings.
+// `body`, its own `tags` array of strings, and a non-empty string `status`.
 //
 // `tags` is required, not optional-with-a-default, because it is WRITTEN BACK:
 // on a `reviewed` outcome the gate issues `rdm ... update --tags "<list>"`, and
@@ -240,7 +240,22 @@ function resolvePlanGateMode(value) {
 // production through) now lives in the adjacent `fetchTranscriptionOk` below;
 // `hoistedFetchedOk` itself stays a shape-only guard for the caller-hoisted
 // path by design — validating a caller-supplied payload's content remains out
-// of scope (see fetchTranscriptionOk's own doc comment). Separately, the
+// of scope (see fetchTranscriptionOk's own doc comment).
+//
+// `status` is required (non-empty, same `stem`-style discipline) on every
+// phase entry with the SAME all-or-nothing rigor as `tags`/`stem`: it is what
+// buildReviewUnits' terminal-phase filter (see isTerminalPhaseStatus below)
+// reads to decide whether a phase belongs in the roadmap-wide sweep. A
+// payload missing it, or blanking it, on even one phase fails this shape
+// guard entirely and falls back to the mechanical fetch agent, which always
+// supplies a real value (the real `rdm roadmap show --format json` phase
+// summaries always carry a non-empty `status`). This guard checks only that
+// SOMETHING plausible was supplied, never which value — isTerminalPhaseStatus
+// is the one place a status VALUE is interpreted, and it is fail-open on
+// anything but an exact 'done'/'wont-fix' match, so a hoisted phase legitimately
+// carrying an unusual-but-non-empty status string (e.g. a future status this
+// file has not caught up to) still passes THIS guard and is simply kept in the
+// fan-out by that later, value-level check. Separately, the
 // GATE WRITE for either path never reads a unit's tags straight off this
 // validated `fetched` object — `snapshotOriginalTags` (below `buildReviewUnits`)
 // caches them into a dedicated map immediately once `fetched` is accepted,
@@ -261,7 +276,9 @@ function hoistedFetchedOk(fetched, kind) {
         typeof p.stem === 'string' &&
         p.stem.trim() !== '' &&
         typeof p.body === 'string' &&
-        stringArrayOk(p.tags)
+        stringArrayOk(p.tags) &&
+        typeof p.status === 'string' &&
+        p.status.trim() !== ''
     )
     if (!phasesOk) return false
   }
@@ -436,7 +453,12 @@ function parseJsonStdout(stdout) {
 // fewer, duplicated entries). A legitimately EMPTY phases array is not a
 // collision and is accepted. `phaseSummaries` is returned as the authoritative
 // phase-stem list the driver fans out over — never the phase blocks' own
-// self-reported existence.
+// self-reported existence. Each summary must also carry a non-empty string
+// `status` — the real `rdm roadmap show --format json` output always includes
+// one per phase, and it is what buildReviewUnits' terminal-phase filter reads
+// (see isTerminalPhaseStatus) to decide which phases enter the roadmap-wide
+// sweep; only that it is a plausible, non-empty value is checked here, never
+// WHICH value (isTerminalPhaseStatus is the sole interpreter of the value).
 function extractRoadmapFromJson(json, expectedSlug) {
   if (!json || typeof json !== 'object') return { ok: false }
   if (json.slug !== expectedSlug) return { ok: false }
@@ -447,7 +469,13 @@ function extractRoadmapFromJson(json, expectedSlug) {
   if (json.phases !== undefined) {
     if (!Array.isArray(json.phases)) return { ok: false }
     const shapeOk = json.phases.every(
-      (p) => p && typeof p === 'object' && typeof p.stem === 'string' && p.stem.trim() !== ''
+      (p) =>
+        p &&
+        typeof p === 'object' &&
+        typeof p.stem === 'string' &&
+        p.stem.trim() !== '' &&
+        typeof p.status === 'string' &&
+        p.status.trim() !== ''
     )
     if (!shapeOk) return { ok: false }
     phaseSummaries = json.phases
@@ -1296,7 +1324,11 @@ function assembleRoadmapFetchFromTranscript(transcript, expectedSlug) {
     if (!pj.ok) return null
     const pext = extractPhaseFromJson(pj.value, expectedSlug, stem)
     if (!pext.ok) return null
-    phases.push({ stem: stem, body: pext.body, tags: pext.tags })
+    // `status` comes from the roadmap-level phase SUMMARY (rm.phaseSummaries),
+    // not from the individual phase block's own JSON — extractRoadmapFromJson
+    // already requires it there (same all-or-nothing discipline as stem), so
+    // there is no need to also extract it from `pj.value` here.
+    phases.push({ stem: stem, body: pext.body, tags: pext.tags, status: rm.phaseSummaries[i].status })
   }
   return { body: rm.body, tags: rm.tags, phases: phases }
 }
@@ -1308,11 +1340,61 @@ const WONTFIX_LIST_SCHEMA = {
   properties: { texts: { type: 'array', items: { type: 'string' } } },
 }
 
+// TERMINAL_PHASE_STATUSES / isTerminalPhaseStatus(status) — the roadmap-wide
+// sweep (buildReviewUnits' roadmap branch below) excludes a phase whose
+// status is EXACTLY `done` or `wont-fix` from the review/act/gate pipeline
+// entirely: there is no implementation left to vet, and clearing
+// `needs-plan-review` on a retired phase would assert something untrue about
+// it (task plan-review-skips-terminal-phases, "Why it matters beyond cost").
+//
+// FAIL-OPEN by construction: `isTerminalPhaseStatus` is an exact string match
+// against a small, closed list. Anything else — a missing status, an empty
+// string, a typo, a future status value this list has not caught up to —
+// evaluates false, so the phase STAYS in the fan-out. A silently-narrowed
+// sweep is the same failure shape as a silently-skipped review dimension; this
+// filter is only ever allowed to add a skip when it is certain, never to
+// infer one from absence. No caller needs to special-case a missing
+// `p.status` separately — this one predicate covers it.
+//
+// DECISION (task plan-review-skips-terminal-phases, "Suggested direction" §3):
+// this filter applies ONLY to the roadmap-wide sweep. An explicitly-targeted
+// single phase (`--roadmap <slug> <phase>` / positional `<slug> <phase>`) or
+// task is always reviewed regardless of status — the phase/task branch of
+// buildReviewUnits below never reads a status field at all, so it is
+// structurally exempt rather than exempted by a conditional here.
+const TERMINAL_PHASE_STATUSES = ['done', 'wont-fix']
+function isTerminalPhaseStatus(status) {
+  return typeof status === 'string' && TERMINAL_PHASE_STATUSES.indexOf(status) !== -1
+}
+
+// formatSkippedPhasesClause(skippedPhases) — the human-visible terminal-phase-
+// skip clause, appended to the roadmap sweep's aggregate summary and final log
+// line by runPlanReviewDriver. Empty string when nothing was skipped, so a
+// sweep with no terminal phases renders byte-unchanged — following the same
+// discipline as formatUnitBudget/coverageSummaryClause. A skip must never be
+// silent: this is the one place the human-visible surfaces name it; the same
+// list is also returned machine-readably as `result.skippedPhases`.
+function formatSkippedPhasesClause(skippedPhases) {
+  const list = Array.isArray(skippedPhases) ? skippedPhases : []
+  if (list.length === 0) return ''
+  return (
+    ' — skipped ' +
+    list.length +
+    ' terminal phase(s) from the sweep: ' +
+    list.map((p) => p.stem + ' (' + p.status + ')').join(', ')
+  )
+}
+
 // buildReviewUnits(parsed, fetched) — pure: turn a parsed target plus the fetched
 // artifact JSON into the list of independent review units. A `phase`/`task`
 // target is a single unit; a `roadmap` target is the roadmap body plus one unit
-// per phase, each gated independently. Returns { units, fetchFailed }. FAIL-CLOSED
-// on an empty/unread body: an unread plan must NEVER be silently marked reviewed.
+// per NON-TERMINAL phase (see isTerminalPhaseStatus above — a phase whose
+// status is exactly `done` or `wont-fix` is excluded and reported instead, via
+// `skippedPhases`), each gated independently. Returns
+// { units, fetchFailed, skippedPhases }. FAIL-CLOSED on an empty/unread body:
+// an unread plan must NEVER be silently marked reviewed. `skippedPhases` is
+// present on every return path (an empty array where nothing was — or could
+// have been — skipped) for shape consistency.
 //
 // Defense-in-depth: a `fetched.phases` stem-collision/duplication guard runs
 // here too, using ONLY the `stem` field the documented hoist contract already
@@ -1326,12 +1408,12 @@ function buildReviewUnits(parsed, fetched) {
   const kind = parsed.kind
   if (kind === 'roadmap') {
     const rm = fetched
-    if (!rm || !rm.body || String(rm.body).trim() === '') return { units: [], fetchFailed: true }
+    if (!rm || !rm.body || String(rm.body).trim() === '') return { units: [], fetchFailed: true, skippedPhases: [] }
     const phaseStems = (Array.isArray(rm.phases) ? rm.phases : [])
       .map((p) => p && p.stem)
       .filter((s) => typeof s === 'string')
     if (phaseStems.indexOf(parsed.roadmap) !== -1 || new Set(phaseStems).size !== phaseStems.length) {
-      return { units: [], fetchFailed: true }
+      return { units: [], fetchFailed: true, skippedPhases: [] }
     }
     const units = []
     units.push({
@@ -1344,8 +1426,13 @@ function buildReviewUnits(parsed, fetched) {
       target: 'roadmap ' + parsed.roadmap + ' (body)\n\n' + String(rm.body),
     })
     const phases = Array.isArray(rm.phases) ? rm.phases : []
+    const skippedPhases = []
     for (let i = 0; i < phases.length; i++) {
       const p = phases[i]
+      if (isTerminalPhaseStatus(p.status)) {
+        skippedPhases.push({ stem: p.stem, status: p.status })
+        continue
+      }
       units.push({
         kind: 'phase',
         targetType: 'phase',
@@ -1356,14 +1443,17 @@ function buildReviewUnits(parsed, fetched) {
         target: 'phase ' + parsed.roadmap + '/' + p.stem + '\n\n' + String(p.body || ''),
       })
     }
-    return { units: units, fetchFailed: false }
+    return { units: units, fetchFailed: false, skippedPhases: skippedPhases }
   }
-  // phase or task — a single unit.
+  // phase or task — a single unit. Never reads a status field — see the
+  // DECISION note on isTerminalPhaseStatus above: an explicitly-targeted
+  // single phase/task is structurally exempt from the terminal-status filter.
   const meta = fetched
-  if (!meta || !meta.body || String(meta.body).trim() === '') return { units: [], fetchFailed: true }
+  if (!meta || !meta.body || String(meta.body).trim() === '') return { units: [], fetchFailed: true, skippedPhases: [] }
   const ident = kind === 'task' ? parsed.task : parsed.phase
   const label = kind === 'task' ? 'task/' + parsed.task : parsed.roadmap + '/' + parsed.phase
   return {
+    skippedPhases: [],
     units: [
       {
         kind: kind,
@@ -1710,6 +1800,12 @@ async function runPlanReviewDriver(args, deps) {
 
   const built = buildReviewUnits(parsed, fetched)
   const units = built.units
+  // The phases the roadmap-wide sweep excluded as terminal (done/wont-fix) —
+  // always an array, empty on the phase/task branch and on either fail-closed
+  // path above (buildReviewUnits' own doc comment). Reported below on
+  // `result.skippedPhases`, the aggregate `result.summary`, and the final log
+  // line — never dropped silently.
+  const skippedPhases = built.skippedPhases || []
 
   // FAIL-CLOSED: an unread plan must NOT be silently marked reviewed / have its
   // tag cleared. Report the failure and mutate nothing.
@@ -1718,7 +1814,9 @@ async function runPlanReviewDriver(args, deps) {
     // gateBlockedCount / gateDeferredCount are explicit 0s, never omitted: a
     // fail-closed run left the tag in place BY DESIGN and must not read like a
     // blocked gate OR a deferred one, and a caller summing either across runs
-    // must not get `undefined` here.
+    // must not get `undefined` here. skippedPhases is always [] here — the
+    // fail-closed paths in buildReviewUnits return before any phase is ever
+    // examined for a status.
     return {
       kind: kind,
       outcome: 'escalated',
@@ -1727,6 +1825,7 @@ async function runPlanReviewDriver(args, deps) {
       units: [],
       gateBlockedCount: 0,
       gateDeferredCount: 0,
+      skippedPhases: skippedPhases,
     }
   }
 
@@ -1936,11 +2035,20 @@ async function runPlanReviewDriver(args, deps) {
   // gateDeferredCount. `deferred` never sets `blocked`, so the two are disjoint.
   const gateBlockedCount = reported.filter((x) => x.gateBlocked === true).length
   const gateDeferredCount = reported.filter((x) => x.gateDeferred === true).length
+  // Named once, reused on both the roadmap `result.summary` aggregate below
+  // and the final log line, so a bounded/filtered run is visible in EVERY
+  // human-readable surface exactly like the existing refutation-budget and
+  // dimension-coverage clauses — never silently dropped.
+  const skippedClause = formatSkippedPhasesClause(skippedPhases)
   const result = {
     kind: kind,
     units: reported,
     gateBlockedCount: gateBlockedCount,
     gateDeferredCount: gateDeferredCount,
+    // Always present (empty array on a non-roadmap kind, or a roadmap sweep
+    // with nothing terminal) — the machine-readable half of AC3's "reported,
+    // never dropped silently".
+    skippedPhases: skippedPhases,
   }
   if (kind !== 'roadmap' && reported.length === 1) {
     // Flatten a single phase/task target onto the top-level result for convenience.
@@ -1953,6 +2061,14 @@ async function runPlanReviewDriver(args, deps) {
     result.gateBlocked = reported[0].gateBlocked
     result.gateDeferred = reported[0].gateDeferred
   }
+  if (kind === 'roadmap') {
+    // Previously unset for roadmap kind (there is no single unit to flatten
+    // onto it) — a caller reading result.summary on a roadmap target got
+    // `undefined`. This aggregate line is a pure addition, mirroring the
+    // final log line below, and is the one place the skip clause reaches a
+    // RETURNED (not merely logged) surface.
+    result.summary = 'plan-review (roadmap): ' + reported.length + ' unit(s) gated' + skippedClause
+  }
   _log(
     'plan-review (' +
       kind +
@@ -1962,7 +2078,8 @@ async function runPlanReviewDriver(args, deps) {
       (gateBlockedCount > 0 ? ' — ' + gateBlockedCount + ' GATE BLOCKED (needs-plan-review not cleared)' : '') +
       (gateDeferredCount > 0
         ? ' — ' + gateDeferredCount + " gate deferred (gateMode='return'; apply units[].gateAction.commands)"
-        : '')
+        : '') +
+      skippedClause
   )
   return result
 }
@@ -2015,4 +2132,7 @@ export {
   buildRoundNoteWritePrompt,
   formatUnitBudget,
   WONTFIX_LIST_SCHEMA,
+  TERMINAL_PHASE_STATUSES,
+  isTerminalPhaseStatus,
+  formatSkippedPhasesClause,
 };

@@ -21,18 +21,18 @@ The specification of that pipeline — which dimensions run, how findings are gr
 
 1. **Parse `$ARGUMENTS`**:
    - `--task <slug>` — review a task's plan.
-   - `--roadmap <slug>` — review the whole roadmap: its own body plus every phase, gated individually.
+   - `--roadmap <slug>` — review the whole roadmap: its own body plus every phase, gated individually. A phase whose status is exactly `done` or `wont-fix` is **excluded from this sweep** — there is no implementation left to vet — and the exclusion must be **reported, never silently dropped**: name every skipped phase (stem + status) in your report. A phase with a missing, blank, or unrecognized status stays **in** the sweep (fail-open). This exclusion applies only to the aggregate `--roadmap` sweep — the next bullet's single-phase target is always reviewed regardless of status.
    - `<roadmap-slug> [phase-number]` — review a single phase. If `phase-number` is omitted, review the roadmap the same as `--roadmap <slug>`.
    - `--implementation-plan` — review an `do` plan document handed to you directly in context, ahead of implementation. There is no persisted rdm item backing this mode, so it produces an outcome and findings report only — **no tag-gate step** (skip the Gate step entirely for this mode), and it skips the Act step's fix-application half the same way (see the carve-out there).
 2. **Read the target artifact** — this also establishes the **target type**, which is the trigger signal for the `unit-of-work` dimension in the Review specification:
    - Phase (target type `phase`): `rdm phase show <phase-number> --roadmap <slug> --project <PROJECT>` for the body, and `rdm phase show <phase-number> --roadmap <slug> --format json --project <PROJECT>` for its `tags`.
    - Task (target type `task`): `rdm task show <slug> --project <PROJECT>` for the body, and `rdm task show <slug> --format json --project <PROJECT>` for its `tags`.
-   - Roadmap (target type `roadmap`): `rdm roadmap show <slug> --format json --project <PROJECT>` returns the roadmap body plus every phase's summary (body, tags) in one call; also fetch each phase's full body with `rdm phase show <n> --roadmap <slug> --project <PROJECT>`, since each phase is reviewed as a `phase` target in its own right.
+   - Roadmap (target type `roadmap`): `rdm roadmap show <slug> --format json --project <PROJECT>` returns the roadmap body plus every phase's summary (body, tags, **status**) in one call — the roadmap-level summary already carries each phase's status, so no extra command is needed to check it. Before fetching each phase's full body, set aside any phase whose status is exactly `done` or `wont-fix`: record its stem and status for the report and do **not** fetch its body or dispatch a review fleet for it. For every remaining (non-terminal) phase, fetch its full body with `rdm phase show <n> --roadmap <slug> --project <PROJECT>`, since each is reviewed as a `phase` target in its own right.
    - `--implementation-plan` (target type `implementation-plan`): read the plan text already provided in context; no `rdm` command is needed.
 
 ### 2. Find — dispatch the review fleet (parallel)
 
-Dispatch one **read-only** `Agent` per applicable dimension, per **Review specification § Dimensions** below. Run the always-on dimensions unconditionally; add `unit-of-work` only when the target type from step 1 is a phase — including once per phase when reviewing `--roadmap <slug>`. State which dimensions you launched, and why, in the report.
+Dispatch one **read-only** `Agent` per applicable dimension, per **Review specification § Dimensions** below. Run the always-on dimensions unconditionally; add `unit-of-work` only when the target type from step 1 is a phase — including once per phase when reviewing `--roadmap <slug>`, except a phase set aside as terminal in step 1: dispatch **no agent at all** for it. State which dimensions you launched, and why, in the report.
 
 ### 3. Consolidate — refute findings, filter, and reach a verdict
 
@@ -40,7 +40,7 @@ Dispatch a **fresh** `Agent` per **gating** finding (`blocking` / `concern`), pe
 
 Then apply **Review specification § Filter & consolidate**, then **§ Verdict** to reach exactly one outcome: `reviewed`, `rework`, or `escalated`.
 
-For a `--roadmap <slug>` review, consolidate **per phase** as well as for the roadmap body as a whole — one phase's `rework` does not decide the outcome of a phase that came back clean (see the Gate step's per-phase handling).
+For a `--roadmap <slug>` review, consolidate **per phase** as well as for the roadmap body as a whole — one phase's `rework` does not decide the outcome of a phase that came back clean (see the Gate step's per-phase handling). List every phase set aside as terminal in step 1 (stem + status) in the report too, so the skip is visible, never silent.
 
 Present a single structured report:
 - Surviving findings grouped by severity (blocking → concern → suggestion), each with a location, confidence, and recommendation.
@@ -95,7 +95,7 @@ Do **not** call `update --tags`. The `needs-plan-review` tag is left unchanged i
 
 **Per-phase gating** (`--roadmap <slug>` reviews):
 
-Under `--roadmap <slug>`, gate each phase **individually** — a phase whose own outcome is `rework` or `escalated` keeps its `needs-plan-review` tag even when every other phase in the roadmap reaches `reviewed`. The roadmap body itself is gated separately.
+Under `--roadmap <slug>`, gate each reviewed phase **individually** — a phase whose own outcome is `rework` or `escalated` keeps its `needs-plan-review` tag even when every other phase in the roadmap reaches `reviewed`. The roadmap body itself is gated separately. A phase set aside as terminal in step 1 is **never gated** — it was never reviewed this run, so there is no tag disposition to make on it.
 
 ## Guidelines
 

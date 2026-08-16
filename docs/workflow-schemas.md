@@ -933,9 +933,11 @@ pre-change median.
 instrument everyone named for it.** The `regularize-mechanical-agents` phase body
 and its approved plan both described plan-review's per-phase fan-out as carrying
 its `gate:clear-tag:*` agent "inside the parallel thunk". It does not.
-`lib/plan-review.mjs:849` fans out `reviewUnit`, which dispatches only judgment
+`lib/plan-review.mjs:1856` fans out `reviewUnit`, which dispatches only judgment
 agents; the act/gate half runs in a plain sequential `for` loop *after* that
-barrier (`gate:clear-tag` at `:902`). `rdm-wf-estimate.js` has the same shape —
+barrier (`gate:clear-tag` at `:1960`; these two line numbers shift as the file
+grows — re-locate by content, not by number, if they drift again).
+`rdm-wf-estimate.js` has the same shape —
 `parallel()` fans out the judgment `estimate:rate:*`, while the mechanical
 `estimate:write:*`/`tier:*` follow sequentially. The corpus corroborates it
 independently: across the eight multi-gate plan-review runs, **zero** of the 54
