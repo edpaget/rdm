@@ -2182,14 +2182,22 @@ function buildReviewPipeline(mode, deps) {
 //|plan|
 //|plan| A `reviewed` outcome clearing `needs-plan-review` is **specified gate behavior,
 //|plan| not self-approval**: the verdict is never authored by the orchestrator running
-//|plan| this review. Every finding comes from an independently dispatched finder and is
-//|plan| graded by a separate refuter, and the gate itself is a table lookup
-//|plan| (`GATE_POLICY.plan`) over that verdict — the two-party property is structural,
-//|plan| not procedural. So the write is stated **with its evidence**: which dimension
-//|plan| finders ran, how many findings they produced, how many an independent refuter
-//|plan| graded, that none survived at blocking severity, the exact tag list about to be
-//|plan| written, and that the write touches one reversible metadata tag — no rdm status,
-//|plan| no code, no land-time completion directive.
+//|plan| this review. Every finding comes from an independently dispatched finder, each
+//|plan| finding that can gate is sent to a separate refuter, and the gate itself is a
+//|plan| table lookup (`GATE_POLICY.plan`) over that verdict — the two-party property is
+//|plan| structural, not procedural. So the write is stated **with its evidence**: which
+//|plan| dimension finders ran, how many findings they produced, how many an independent
+//|plan| refuter graded, that none survived at blocking severity, the exact tag list about
+//|plan| to be written, and that the write touches one reversible metadata tag — no rdm
+//|plan| status, no code, no land-time completion directive.
+//|plan|
+//|plan| That grading claim is **computed, never assumed**. Refutation is deliberately not
+//|plan| total: a non-gating `suggestion` is never sent to a refuter, a gating finding past
+//|plan| the per-unit refutation budget passes through un-refuted, and a crashed refuter
+//|plan| leaves its finding un-refuted — none of which prevents a `reviewed` outcome. The
+//|plan| gate therefore reports this unit's real graded/un-graded split, itemised by
+//|plan| severity and reason, and states that an un-graded survivor was **reported, not
+//|plan| verified**. Do not restate it as blanket per-finding grading when you report.
 //|plan|
 //|plan| Two consequences for how you report and drive it:
 //|plan|

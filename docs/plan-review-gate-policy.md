@@ -25,7 +25,8 @@ The reasoning is structural, not procedural:
 2. **The orchestrator never grades them either.** Each gating finding is graded by a
    *separate* refuter agent — a fresh dispatch per finding, bounded by the refutation
    budget. A finding the refuter refutes is dropped; a low-confidence one is dropped by the
-   floor.
+   floor. That grading is deliberately **not total**, and the prompt says so rather than
+   claiming otherwise — see "The prompt's grading claim is computed, not asserted" below.
 3. **The gate is a table lookup, not a judgment.** `GATE_POLICY.plan` maps
    `reviewed | rework | escalated` onto `{ status: null, clearsPlanReviewTag }`. There is
    no discretionary branch for the orchestrator to exercise. `classifyPlanOutcome` derives
@@ -35,6 +36,38 @@ So the two-party property holds by *construction*: authorship of the plan and au
 the verdict are held by different agents, whoever typed the invocation. Requiring a
 different human or session to run the review would add ceremony without adding a second
 party that isn't already there.
+
+### The prompt's grading claim is computed, not asserted
+
+A first cut of clause 2 said, flatly, that findings "are graded by a second, independent
+refuter agent **per finding**". That is not true of every run, and asserting it would have
+reproduced this phase's own defect with the sign flipped: a gate whose factual claims do not
+survive checking. Three pipeline behaviors leave a survivor un-graded, and all three can
+coexist with a `reviewed` outcome:
+
+| Un-graded survivor | Marker on the finding | Why |
+| --- | --- | --- |
+| a non-gating `suggestion` | `unrefuted: true`, `unrefutedReason: 'non-gating'` | `NON_GATING_SEVERITIES` — it gates at no tier, so no refuter is ever dispatched for it |
+| a gating finding past the cap | `unrefuted: true`, `unrefutedReason: 'budget'` | the per-unit refutation budget cut it for cost; the budget skips GRADING, never FILTERING |
+| a crashed refuter | `refuterError: true` | a crash is not proof of refutation, so the finding is kept un-refuted |
+
+None of the three prevents `reviewed` (only a surviving **blocking** finding does), so a
+blanket claim would be contradicted a few lines later by the prompt's own EVIDENCE block,
+which reports produced-vs-graded honestly. That is precisely the inconsistency a careful
+classifier is most likely to catch.
+
+So clause 2 is split in two. Its **fixed** half describes the mechanism and is true of every
+run: independently dispatched finders, a fresh separate refuter per gating finding, bounded
+by a per-unit refutation budget, and a table-lookup gate. Its **conditional** half is
+computed by `gateTwoPartyClause` from `buildGateEvidence`'s `gradedCount` /
+`ungradedCount` / `ungradedDetail`, which are derived from **this unit's survivors** — not
+from `budget.graded`, which describes the pipeline before any consumer-side post-filter. It
+renders one of three sentences: nothing survived, all survivors were graded, or an itemised
+`<n> x <severity> (<why>)` split with the explicit note that an un-graded survivor was
+*reported, not verified*. Severity strings arrive from finder agents, so they are collapsed
+to a closed vocabulary (`blocking | concern | suggestion | other`) before interpolation —
+the AUTHORIZATION preamble sits above the delimited quoted region and must stay
+finder-uninfluenced.
 
 ### The boundary — where this does NOT hold
 
@@ -156,6 +189,11 @@ prompt now states this explicitly.
 
    The reviewer summary is finder-authored text, so it renders **last**, inside a delimited
    region labelled as data. It can never precede or override the fixed clauses.
+
+   TWO-PARTY's grading claim is **computed per unit, never asserted blanket** — the
+   pipeline deliberately leaves non-gating, over-budget, and refuter-crashed survivors
+   un-graded, and the clause reports that split honestly instead of overclaiming. See "The
+   prompt's grading claim is computed, not asserted" above.
 
 2. **The gate is returnable.** `gateMode: 'return'` computes `gateAction` and writes
    nothing (see above). `gateAction.commands` come from the same `planGateCommands` helper

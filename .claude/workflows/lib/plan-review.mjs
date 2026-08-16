@@ -661,6 +661,18 @@ function planGateCommands(kind, roadmap, ident, remainingTags) {
 // Degrades explicitly rather than rendering `null`/`undefined`: a unit whose
 // pipeline reported no `coverage`/`budget` (both default to null in the driver)
 // renders an "unavailable" sentence instead of a bogus number.
+//
+// GRADING COVERAGE OF THE SURVIVORS is computed from the survivors themselves,
+// not from `budget`. The two are different questions and must not be conflated:
+// `budget.graded` describes the PIPELINE (review.mjs says so in as many words —
+// a consumer that post-filters survivors may drop one that consumed budget),
+// while the authorization clause makes a claim about the findings THIS unit is
+// being cleared over. review.mjs marks a survivor that was deliberately never
+// sent to a refuter `unrefuted: true` with an `unrefutedReason` discriminator
+// ('non-gating' — a `suggestion`, which gates at no tier and is never refuted
+// by design; or 'budget' — cut for cost by the per-unit refutation cap), and a
+// survivor whose refuter CRASHED `refuterError: true`. All three are un-graded,
+// and the clause has to say so rather than assert blanket per-finding grading.
 function buildGateEvidence(unit, result, cachedTags, remainingTags) {
   const u = unit || {}
   const r = result || {}
@@ -670,6 +682,7 @@ function buildGateEvidence(unit, result, cachedTags, remainingTags) {
   const cached = Array.isArray(cachedTags) ? cachedTags : []
   const remaining = Array.isArray(remainingTags) ? remainingTags : []
   const removed = cached.filter((t) => remaining.indexOf(t) === -1)
+  const ungraded = survivors.filter((f) => f && (f.unrefuted === true || f.refuterError === true))
   return {
     outcome: typeof r.outcome === 'string' ? r.outcome : 'unknown',
     round: typeof r.round === 'number' ? r.round : 0,
@@ -680,10 +693,51 @@ function buildGateEvidence(unit, result, cachedTags, remainingTags) {
     refutationsGraded: budget && typeof budget.graded === 'number' ? budget.graded : null,
     findingCount: survivors.length,
     blockingCount: survivors.filter((f) => f && f.severity === 'blocking').length,
+    ungradedCount: ungraded.length,
+    gradedCount: survivors.length - ungraded.length,
+    ungradedDetail: groupUngradedSurvivors(ungraded),
     removedTags: removed,
     remainingTags: remaining,
     summary: typeof r.summary === 'string' ? r.summary : '',
   }
+}
+
+// UNGRADED_SEVERITIES / UNGRADED_REASONS — the two closed vocabularies the
+// ungraded-survivor detail is rendered from. A `severity` string reaches here
+// from a FINDER agent, so it is never interpolated raw: anything outside the
+// known set collapses to 'other'. That keeps the clause injection-proof (a
+// finder cannot smuggle text into the AUTHORIZATION preamble, which sits ABOVE
+// the delimited quoted region) and keeps the rendering deterministic.
+const UNGRADED_SEVERITIES = ['blocking', 'concern', 'suggestion']
+// NOTE the field name: `why`, not `label`. `label:` is the agent() call-site
+// convention that docs/mechanical-agent-inventory.md's live grep counts, and
+// verify-workflow-dispatch.sh §7 fails when the doc's total drifts from it — a
+// plain data table using `label:` would inflate that count with three call
+// sites that do not exist.
+const UNGRADED_REASONS = [
+  { key: 'non-gating', why: 'non-gating, never eligible for refutation' },
+  { key: 'budget', why: 'passed over for the per-unit refutation budget' },
+  { key: 'refuter-error', why: 'its refuter crashed, so it was kept un-refuted' },
+]
+
+// groupUngradedSurvivors(findings) — collapse the un-graded survivors into a
+// sorted, deduplicated `<n> x <severity> (<why>)` list. Pure; sorted by the
+// fixed severity order then the fixed reason order, so the same input always
+// renders the same bytes.
+function groupUngradedSurvivors(findings) {
+  const list = Array.isArray(findings) ? findings : []
+  const out = []
+  for (const sev of UNGRADED_SEVERITIES.concat(['other'])) {
+    for (const reason of UNGRADED_REASONS) {
+      const n = list.filter((f) => {
+        const s = UNGRADED_SEVERITIES.indexOf(f && f.severity) === -1 ? 'other' : f.severity
+        const why = f && f.refuterError === true ? 'refuter-error' : f && f.unrefutedReason === 'budget' ? 'budget' : 'non-gating'
+        return s === sev && why === reason.key
+      }).length
+      if (n > 0) out.push(n + ' x ' + sev + ' (' + reason.why + ')')
+    }
+  }
+  return out
 }
 
 // renderGateEvidence(evidence) — the human-readable EVIDENCE block of the
@@ -719,6 +773,25 @@ function renderGateEvidence(e) {
   lines.push(
     '  - findings surviving refutation: ' + e.findingCount + ', of which ' + e.blockingCount + ' at blocking severity'
   )
+  // Grading coverage OF THOSE SURVIVORS — the claim AUTHORIZATION clause 2 is
+  // allowed to make. Never says "all graded" unless every survivor really was.
+  if (e.findingCount === 0) {
+    lines.push('  - grading coverage of those survivors: none survived, so no un-graded finding is being waved through')
+  } else if (e.ungradedCount === 0) {
+    lines.push('  - grading coverage of those survivors: all ' + e.findingCount + ' were graded by an independent refuter')
+  } else {
+    lines.push(
+      '  - grading coverage of those survivors: ' +
+        e.gradedCount +
+        ' of ' +
+        e.findingCount +
+        ' were graded by an independent refuter; ' +
+        e.ungradedCount +
+        ' were NOT — ' +
+        e.ungradedDetail.join('; '),
+      '    an un-graded survivor was REPORTED, not verified; this prompt does not claim otherwise'
+    )
+  }
   lines.push(
     e.removedTags.length === 0
       ? '  - tag removal: NOTHING is being removed — this item does not currently carry `needs-plan-review`, so the write is an idempotent no-op that rewrites the same list'
@@ -737,6 +810,55 @@ function renderGateEvidence(e) {
   return lines.join('\n')
 }
 
+// gateTwoPartyClause(evidence) — AUTHORIZATION clause 2, as lines.
+//
+// The clause has two halves, deliberately separated. The FIXED half describes
+// the MECHANISM and is true of every run: the orchestrator never authors the
+// verdict; findings come from independently dispatched finders; each finding
+// that can gate is sent to a fresh, separate refuter, bounded by a per-unit
+// refutation budget. The CONDITIONAL half describes THIS unit and is computed,
+// never assumed — because the pipeline deliberately leaves some survivors
+// un-graded (a non-gating `suggestion` is never refuted; a gating finding past
+// the refutation cap passes through un-refuted; a crashed refuter leaves its
+// finding un-refuted), and a `reviewed` unit can carry them.
+//
+// A blanket "graded per finding" would therefore be FALSE on exactly those
+// runs, and self-contradicted by the EVIDENCE block a few lines below it, which
+// reports produced-vs-graded honestly. Overclaiming here would reproduce, with
+// the sign flipped, the very defect this phase exists to fix: a gate assertion
+// whose factual claims do not survive checking.
+function gateTwoPartyClause(evidence) {
+  const lines = [
+    '  2. TWO-PARTY. The verdict was not produced by the author of this plan: findings come from',
+    '     independently dispatched finder agents, and each finding that can gate is sent to a',
+    '     second, independent refuter agent — one fresh refuter per finding, bounded by a per-unit',
+    '     refutation budget. This gate is a data-table lookup (`GATE_POLICY.plan`) over that verdict,',
+    '     not a judgment call by the plan\'s author.',
+  ]
+  if (!evidence) return lines
+  if (evidence.findingCount === 0) {
+    lines.push('     For this unit: no finding survived refutation, so nothing went un-graded.')
+  } else if (evidence.ungradedCount === 0) {
+    lines.push(
+      '     For this unit: all ' + evidence.findingCount + ' surviving finding(s) were graded by a refuter.'
+    )
+  } else {
+    lines.push(
+      '     For this unit that grading was NOT total: ' +
+        evidence.gradedCount +
+        ' of ' +
+        evidence.findingCount +
+        ' surviving finding(s)',
+      '     were graded; ' + evidence.ungradedCount + ' were not — ' + evidence.ungradedDetail.join('; ') + '.',
+      '     Those were reported, not verified, and the counts are itemised in EVIDENCE below.'
+    )
+    if (evidence.blockingCount === 0) {
+      lines.push('     No survivor of any kind reached blocking severity, which is why the outcome is `reviewed`.')
+    }
+  }
+  return lines
+}
+
 // buildTagWritePrompt — the read-filter-write half of the gate, as a mechanical
 // agent. Leaves the change staged for the caller's commit.
 //
@@ -746,7 +868,10 @@ function renderGateEvidence(e) {
 //   1. REQUESTED     — answers "no user request for this action" / "the user
 //                      only asked a question".
 //   2. TWO-PARTY     — answers "[Self-Approval] … bypassing the two-party
-//                      review gate for the agent's own work".
+//                      review gate for the agent's own work". Built by
+//                      gateTwoPartyClause, whose grading claim is COMPUTED from
+//                      this unit's survivors rather than asserted blanket — see
+//                      that helper for why a blanket claim would be false.
 //   3. BLAST RADIUS  — answers "[External System Writes]" / "[CI Bypass]".
 //   4. EVIDENCE      — answers "no visible evidence phase N individually passed
 //                      review" (rendered last; see renderGateEvidence).
@@ -759,15 +884,14 @@ function buildTagWritePrompt(kind, roadmap, ident, remainingTags, evidence) {
     '  1. REQUESTED. The operator invoked the `rdm-plan-review` skill / `rdm-wf-plan-review` workflow on',
     '     this target. Clearing `needs-plan-review` on a `reviewed` unit is that skill\'s documented,',
     '     specified gate behavior — not a discretionary judgment and not an unrequested mutation.',
-    '  2. TWO-PARTY. The verdict was not produced by the author of this plan: findings come from',
-    '     independently dispatched finder agents and are graded by a second, independent refuter agent',
-    '     per finding. This gate is a data-table lookup (`GATE_POLICY.plan`) over that verdict, not a',
-    '     judgment call by the plan\'s author.',
+  ]
+  for (const line of gateTwoPartyClause(evidence)) lines.push(line)
+  lines.push(
     '  3. BLAST RADIUS. This writes ONE plan-metadata tag list. It writes no rdm status, no code, and no',
     '     land-time completion directive, and it is reversible by re-adding the tag with the same',
     '     `--tags` command.',
-    '',
-  ]
+    ''
+  )
   if (evidence) lines.push(renderGateEvidence(evidence), '')
   lines.push(
     'Run exactly these two commands in the repo root:',
@@ -1819,6 +1943,8 @@ export {
   buildTagWritePrompt,
   planGateCommands,
   buildGateEvidence,
+  groupUngradedSurvivors,
+  gateTwoPartyClause,
   renderGateEvidence,
   buildGateAction,
   gateFailureClause,

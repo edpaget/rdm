@@ -422,14 +422,22 @@ Scope of the gate by target type:
 
 A `reviewed` outcome clearing `needs-plan-review` is **specified gate behavior,
 not self-approval**: the verdict is never authored by the orchestrator running
-this review. Every finding comes from an independently dispatched finder and is
-graded by a separate refuter, and the gate itself is a table lookup
-(`GATE_POLICY.plan`) over that verdict — the two-party property is structural,
-not procedural. So the write is stated **with its evidence**: which dimension
-finders ran, how many findings they produced, how many an independent refuter
-graded, that none survived at blocking severity, the exact tag list about to be
-written, and that the write touches one reversible metadata tag — no rdm status,
-no code, no land-time completion directive.
+this review. Every finding comes from an independently dispatched finder, each
+finding that can gate is sent to a separate refuter, and the gate itself is a
+table lookup (`GATE_POLICY.plan`) over that verdict — the two-party property is
+structural, not procedural. So the write is stated **with its evidence**: which
+dimension finders ran, how many findings they produced, how many an independent
+refuter graded, that none survived at blocking severity, the exact tag list about
+to be written, and that the write touches one reversible metadata tag — no rdm
+status, no code, no land-time completion directive.
+
+That grading claim is **computed, never assumed**. Refutation is deliberately not
+total: a non-gating `suggestion` is never sent to a refuter, a gating finding past
+the per-unit refutation budget passes through un-refuted, and a crashed refuter
+leaves its finding un-refuted — none of which prevents a `reviewed` outcome. The
+gate therefore reports this unit's real graded/un-graded split, itemised by
+severity and reason, and states that an un-graded survivor was **reported, not
+verified**. Do not restate it as blanket per-finding grading when you report.
 
 Two consequences for how you report and drive it:
 
