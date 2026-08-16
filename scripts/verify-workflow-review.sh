@@ -4053,7 +4053,8 @@ for sym in 'function parsePlanArgs' 'function buildReviewUnits' 'async function 
     "buildReviewPipeline('plan')" 'stripNonPhaseUnitOfWork' 'filterPlanReviewTag' 'classifyPlanOutcome' \
     'function fetchTranscriptionOk' 'RESERVED_FETCH_TOKENS' 'function snapshotOriginalTags' \
     'function planGateCommands' 'function buildGateEvidence' 'function resolvePlanGateMode' \
-    'function buildGateAction' 'function gateFailureClause' 'function gateDeferredClause'; do
+    'function buildGateAction' 'function gateFailureClause' 'function gateDeferredClause' \
+    'function hoistedModelsComplete' 'function computeMissingModels'; do
     grep -q "$sym" "$TMP/plan-driver-lib" || fail "plan-review-driver block in the LIB is missing $sym"
     grep -q "$sym" "$TMP/plan-driver-wf" || fail "plan-review-driver block in the WORKFLOW is missing $sym (partial mirror?)"
 done
@@ -6494,6 +6495,373 @@ if run_node "$TMP/plan-hoist-fail-test.mjs" "$TMP/plan-review-nodeferred.js" \
 else
     pass "5b-hoist-fail self-test: deleting gateDeferredCount from the abort flips the section red"
 fi
+
+# --- 5b-models-hoist. hoistedModelsComplete/computeMissingModels: pure -------
+# unit tests
+# The all-or-nothing guard (rewired at rdm-wf-plan-review.js's runtime entry
+# to call hoistedModelsComplete) and the fail-closed abort's missing-model
+# computation (rewired to call computeMissingModels) are mutually defensive,
+# not redundant: a weakened guard alone degrades gracefully into the abort
+# (see 5b-models-hoist-mut below), while a narrowed abort alone lets an empty
+# model id reach a downstream agent() call. This section drives the two pure
+# functions directly (imported from lib/plan-review.mjs, where they are the
+# single source of truth mirrored byte-identically into the workflow — see
+# 5b-drift) over every truthy/falsy combination.
+say "5b-models-hoist. hoistedModelsComplete/computeMissingModels: pure unit tests over all truthy/falsy combinations"
+cat >"$TMP/plan-models-hoist-unit-test.mjs" <<'NODE_MODELS_HOIST_UNIT'
+import assert from 'node:assert/strict';
+
+const libPath = process.argv[2];
+const { hoistedModelsComplete, computeMissingModels } = await import('file://' + libPath);
+
+// hoistedModelsComplete: true only when all three args are non-empty
+// strings; false when any ONE of the three is missing (each position tested
+// individually — the guard must be load-bearing per-position, not just in
+// aggregate) and when all three are missing.
+assert.equal(hoistedModelsComplete('m', 'f', 'v'), true, 'all three present -> true');
+assert.equal(hoistedModelsComplete('', 'f', 'v'), false, 'mechanical-only-missing -> false');
+assert.equal(hoistedModelsComplete('m', '', 'v'), false, 'find-only-missing -> false');
+assert.equal(hoistedModelsComplete('m', 'f', ''), false, 'verify-only-missing -> false');
+assert.equal(hoistedModelsComplete('', '', ''), false, 'all-missing -> false');
+
+// computeMissingModels: [] when all present; a single-element array for each
+// single-missing case; the full three-element array in FIXED
+// (mechanical, review-find, review-verify) order when all three are
+// missing; a mixed two-missing case locks in that same ordering.
+assert.deepEqual(computeMissingModels('m', 'f', 'v'), [], 'all present -> []');
+assert.deepEqual(computeMissingModels('', 'f', 'v'), ['mechanical'], 'mechanical-only-missing');
+assert.deepEqual(computeMissingModels('m', '', 'v'), ['review-find'], 'find-only-missing');
+assert.deepEqual(computeMissingModels('m', 'f', ''), ['review-verify'], 'verify-only-missing');
+assert.deepEqual(
+  computeMissingModels('', '', ''),
+  ['mechanical', 'review-find', 'review-verify'],
+  'all-missing, fixed push order'
+);
+assert.deepEqual(
+  computeMissingModels('', 'f', ''),
+  ['mechanical', 'review-verify'],
+  'mixed two-missing (mechanical + verify, find present) preserves fixed order'
+);
+
+// Boundary agreement: over all 8 truthy/falsy combinations, the accept check
+// and the abort's missing-list computation can never both fire or both stay
+// silent for the same input — the coverage claim the phase body makes is
+// that each check is INDEPENDENTLY load-bearing, and this is the direct
+// proof that they agree on what "complete" means.
+const vals = ['', 'x'];
+for (const m of vals) {
+  for (const f of vals) {
+    for (const v of vals) {
+      const complete = hoistedModelsComplete(m, f, v);
+      const missing = computeMissingModels(m, f, v);
+      assert.equal(
+        complete,
+        missing.length === 0,
+        'boundary agreement for (' + JSON.stringify(m) + ', ' + JSON.stringify(f) + ', ' + JSON.stringify(v) + ')'
+      );
+    }
+  }
+}
+
+console.log('5b-models-hoist OK: hoistedModelsComplete/computeMissingModels agree at the boundary and preserve missing-label order');
+NODE_MODELS_HOIST_UNIT
+
+if run_node "$TMP/plan-models-hoist-unit-test.mjs" "$PLAN_LIB"; then
+    pass "5b-models-hoist: pure unit tests for hoistedModelsComplete/computeMissingModels pass"
+else
+    fail "5b-models-hoist failed against $PLAN_LIB"
+fi
+
+# --- 5b-models-hoist-exec. RUNTIME-ENTRY discard/bootstrap-fallback ---------
+# scenarios, driven against the REAL rdm-wf-plan-review.js
+# 5b-hoist-exec/5b-hoist-fail above each supply a COMPLETE model set (a full
+# hoist, or no hoist at all). Neither exercises the branch this section
+# exists for: a PARTIAL hoist (2-of-3 present) must be DISCARDED — the
+# all-or-nothing guard must reject it and fall through to the bootstrap
+# agent, not accept it and leave the third value ''. Four scenarios, same
+# whole-file-wrap technique as 5b-hoist-exec:
+#   A. full hoist            -> bootstrap never called, run completes.
+#   B. partial hoist,
+#      bootstrap fully OK    -> bootstrap called exactly once (the partial
+#                                hoist was discarded), run completes — the
+#                                graceful degrade a partial hoist must get.
+#   C. partial hoist,
+#      bootstrap partial too -> bootstrap called exactly once, then the
+#                                fail-closed abort fires (review-verify still
+#                                missing) — proving the abort re-validates
+#                                independent of which path produced the
+#                                values.
+#   D. no hoist, bootstrap
+#      throws                -> bootstrap called exactly once, abort fires
+#                                listing all three ids as missing.
+say "5b-models-hoist-exec. rdm-wf-plan-review.js's runtime-entry discards a partial hoist and falls through to the bootstrap agent"
+cat >"$TMP/plan-models-hoist-exec-test.mjs" <<'NODE_MODELS_HOIST_EXEC'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const [wfPath, wrapperPath, scenarioArg] = process.argv.slice(2);
+let src = fs.readFileSync(wfPath, 'utf8');
+src = src.replace(/^export /m, '');
+fs.writeFileSync(wrapperPath, 'export default async function(args, agent, pipeline, parallel, log) {\n' + src + '\n}\n');
+const mod = await import('file://' + wrapperPath);
+const run = mod.default;
+
+async function refParallel(thunks) {
+  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+
+// bootstrapMode: 'never' (model:mechanical must not be called — used for the
+// full-hoist scenario), 'full' (resolves all three), 'partial' (resolves
+// mechanical + review-find only, mirroring an agent that answered two of the
+// three prompts), 'throws' (the whole call rejects). A `find:plan:coherence`
+// finding is `blocking` so a run that reaches the review stage produces a
+// gating candidate — this is what makes a refute:plan:* call reachable at
+// all, which mutant-2 below depends on to observe an empty model id.
+function makeAgent(bootstrapMode) {
+  const calls = [];
+  const agent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    calls.push({ label: label, model: opts && opts.model });
+    if (label === 'model:mechanical') {
+      if (bootstrapMode === 'never') {
+        throw new Error('model:mechanical must not be called — a complete hoist must skip the bootstrap agent entirely');
+      }
+      if (bootstrapMode === 'full') {
+        return { mechanical: 'boot-mech', reviewFind: 'boot-find', reviewVerify: 'boot-verify' };
+      }
+      if (bootstrapMode === 'partial') {
+        return { mechanical: 'boot-mech', reviewFind: 'boot-find' }; // reviewVerify omitted
+      }
+      if (bootstrapMode === 'throws') {
+        throw new Error('rdm model resolve exploded');
+      }
+      throw new Error('unknown bootstrapMode: ' + bootstrapMode);
+    }
+    if (label === 'fetch:task') {
+      return {
+        transcript: JSON.stringify({
+          slug: 'hoist-target',
+          body: 'Body describing the hoist-target task in enough detail to review.',
+          tags: ['needs-plan-review'],
+        }),
+      };
+    }
+    if (label === 'fetch:wontfix') return { texts: [] };
+    if (label === 'find:plan:coherence') {
+      return {
+        findings: [
+          {
+            id: 'coherence-1',
+            concern: 'coherence',
+            location: 'body',
+            severity: 'blocking',
+            confidence: 90,
+            what_fails: 'the plan contradicts itself',
+            why: 'planted for the harness',
+            recommendation: 'n/a',
+          },
+        ],
+      };
+    }
+    if (label.indexOf('find:plan:') === 0) return { findings: [] };
+    if (label.indexOf('refute:plan:') === 0) return { refuted: false, confidence: 90 };
+    if (label.indexOf('act:') === 0) return { ok: true };
+    if (label.indexOf('gate:clear-tag:') === 0) return { ok: true };
+    throw new Error('unexpected agent label: ' + label);
+  };
+  return { agent: agent, calls: calls };
+}
+
+async function scenarioA() {
+  const a = makeAgent('never');
+  const out = await run(
+    { task: 'hoist-target', mechanicalModel: 'haiku-x', findModel: 'find-x', verifyModel: 'verify-x' },
+    a.agent,
+    refPipeline,
+    refParallel,
+    () => {}
+  );
+  const mech = a.calls.filter((c) => c.label === 'model:mechanical');
+  assert.equal(mech.length, 0, 'Scenario A: a complete hoist must skip the model:mechanical bootstrap agent');
+  assert.notEqual(out.outcome, 'escalated', 'Scenario A: a complete hoist must not abort');
+  assert.equal(out.fetchError, undefined, 'Scenario A: a complete hoist must not carry fetchError');
+}
+
+async function scenarioB() {
+  const a = makeAgent('full');
+  const out = await run(
+    // verifyModel deliberately omitted: a 2-of-3 partial hoist.
+    { task: 'hoist-target', mechanicalModel: 'haiku-x', findModel: 'find-x' },
+    a.agent,
+    refPipeline,
+    refParallel,
+    () => {}
+  );
+  const mech = a.calls.filter((c) => c.label === 'model:mechanical');
+  assert.equal(
+    mech.length,
+    1,
+    'Scenario B: a 2-of-3 partial hoist must be DISCARDED, so the bootstrap agent runs exactly once'
+  );
+  assert.notEqual(
+    out.outcome,
+    'escalated',
+    'Scenario B: a partial hoist that the bootstrap fully resolves must gracefully complete, not abort'
+  );
+  assert.equal(out.fetchError, undefined, 'Scenario B: a partial hoist that the bootstrap fully resolves must not carry fetchError');
+}
+
+async function scenarioC() {
+  const a = makeAgent('partial');
+  const out = await run(
+    { task: 'hoist-target', mechanicalModel: 'haiku-x', findModel: 'find-x' },
+    a.agent,
+    refPipeline,
+    refParallel,
+    () => {}
+  );
+  // The invariant this scenario exists to protect, checked FIRST and
+  // unconditionally: an unresolved verifyModel must never reach a
+  // downstream agent() call as an empty-string `model:` — that is exactly
+  // what the fail-closed abort exists to prevent (see
+  // docs/workflow-schemas.md's agent() options spike). Vacuously true when
+  // the abort holds (no refute call is ever reachable); violated only if
+  // the abort has been defeated and execution proceeds past it.
+  const refuteCalls = a.calls.filter((c) => c.label.indexOf('refute:plan:') === 0);
+  for (const c of refuteCalls) {
+    assert.notEqual(
+      c.model,
+      '',
+      'Scenario C: a refute call must never receive an empty-string model (observed on ' + c.label + ')'
+    );
+  }
+  const mech = a.calls.filter((c) => c.label === 'model:mechanical');
+  assert.equal(mech.length, 1, 'Scenario C: the bootstrap agent must run exactly once (the partial hoist was discarded)');
+  assert.equal(out.outcome, 'escalated', 'Scenario C: a bootstrap result missing review-verify must fail closed');
+  assert.equal(out.fetchError, true, 'Scenario C: the fail-closed abort is flagged as a fetch-side error');
+  assert.deepEqual(out.units, [], 'Scenario C: no unit was reviewed');
+  assert.ok(
+    out.summary && out.summary.indexOf('review-verify') !== -1,
+    'Scenario C: the abort summary names review-verify as missing'
+  );
+  assert.deepEqual(
+    a.calls.map((c) => c.label),
+    ['model:mechanical'],
+    'Scenario C: the abort stops before any fetch/find/refute/gate agent runs'
+  );
+}
+
+async function scenarioD() {
+  const a = makeAgent('throws');
+  const out = await run({ task: 'hoist-target' }, a.agent, refPipeline, refParallel, () => {});
+  const mech = a.calls.filter((c) => c.label === 'model:mechanical');
+  assert.equal(mech.length, 1, 'Scenario D: the bootstrap agent must run exactly once');
+  assert.equal(out.outcome, 'escalated', 'Scenario D: a throwing bootstrap must fail closed');
+  assert.equal(out.fetchError, true, 'Scenario D: the fail-closed abort is flagged as a fetch-side error');
+  assert.deepEqual(out.units, [], 'Scenario D: no unit was reviewed');
+  for (const label of ['mechanical', 'review-find', 'review-verify']) {
+    assert.ok(out.summary && out.summary.indexOf(label) !== -1, 'Scenario D: the abort summary names ' + label + ' as missing');
+  }
+  assert.deepEqual(
+    a.calls.map((c) => c.label),
+    ['model:mechanical'],
+    'Scenario D: the abort stops before any fetch/find/refute/gate agent runs'
+  );
+}
+
+const SCENARIOS = { A: scenarioA, B: scenarioB, C: scenarioC, D: scenarioD };
+if (scenarioArg) {
+  if (!SCENARIOS[scenarioArg]) throw new Error('unknown scenario: ' + scenarioArg);
+  await SCENARIOS[scenarioArg]();
+} else {
+  for (const key of Object.keys(SCENARIOS)) {
+    await SCENARIOS[key]();
+  }
+}
+
+console.log('5b-models-hoist-exec OK: scenario ' + (scenarioArg || 'ALL') + ' passed');
+NODE_MODELS_HOIST_EXEC
+
+if run_node "$TMP/plan-models-hoist-exec-test.mjs" "$PLAN_REVIEW" "$TMP/plan-models-hoist-exec-wrapped.mjs" \
+    >"$TMP/plan-models-hoist-exec-out.log" 2>&1; then
+    pass "5b-models-hoist-exec: full-hoist / partial-hoist-discarded / partial-bootstrap-aborts / throwing-bootstrap all behave as designed against the real runtime entry"
+else
+    cat "$TMP/plan-models-hoist-exec-out.log"
+    fail "5b-models-hoist-exec failed against $PLAN_REVIEW"
+fi
+
+# --- 5b-models-hoist-mut. Planted-mutation self-tests ------------------------
+# Proves the guard and the abort are INDEPENDENTLY load-bearing — a single
+# mutation to either is partly masked by the other (see the phase body), so
+# each mutant must be checked against the ONE scenario it actually breaks.
+say "5b-models-hoist-mut. hoistedModelsComplete guard and computeMissingModels abort are independently load-bearing"
+
+assert_models_hoist_mutant_fails() {
+    mutant="$1"
+    scenario="$2"
+    desc="$3"
+    if cmp -s "$PLAN_REVIEW" "$mutant"; then
+        fail "5b-models-hoist-mut: planted mutation was a no-op — $desc"
+    fi
+    if run_node "$TMP/plan-models-hoist-exec-test.mjs" "$mutant" "$TMP/plan-models-hoist-mut-wrapped.mjs" "$scenario" \
+        >/dev/null 2>&1; then
+        fail "5b-models-hoist-mut: Scenario $scenario PASSED against a mutant that $desc — the assertions are vacuous"
+    fi
+    pass "5b-models-hoist-mut: Scenario $scenario fails when the runtime entry $desc"
+}
+
+# Control: the unmutated file passes every scenario individually too (not
+# just the combined run above) — otherwise the per-scenario mutant checks
+# below would not be comparing against a clean baseline.
+for scenario in A B C D; do
+    if ! run_node "$TMP/plan-models-hoist-exec-test.mjs" "$PLAN_REVIEW" "$TMP/plan-models-hoist-control-wrapped.mjs" "$scenario" \
+        >"$TMP/plan-models-hoist-control-$scenario.log" 2>&1; then
+        cat "$TMP/plan-models-hoist-control-$scenario.log"
+        fail "5b-models-hoist-mut(control): Scenario $scenario FAILED against an unmutated file — the mutation self-tests below would be meaningless"
+    fi
+done
+pass "5b-models-hoist-mut(control): all four scenarios pass individually against an unmutated file"
+
+# Mutant 1 (weak-guard): accept a 2-of-3 partial hoist (drop the verifyModel
+# leg). Scenario B must now FAIL — instead of the bootstrap agent resolving
+# the discarded third value, the partial hoist is wrongly accepted, the third
+# value stays '', and the (unmutated) abort fires: model:mechanical is called
+# ZERO times (not the expected 1) and the outcome is 'escalated' (not the
+# expected non-abort completion). This is the "regression: a caller that
+# should have degraded gracefully gets a hard escalated instead" failure mode
+# from the phase body.
+sed 's/^if (hoistedModelsComplete(hoistedMechanicalModel, hoistedFindModel, hoistedVerifyModel)) {$/if (hoistedModelsComplete(hoistedMechanicalModel, hoistedFindModel, hoistedVerifyModel) || (hoistedMechanicalModel \&\& hoistedFindModel)) {/' \
+    "$PLAN_REVIEW" >"$TMP/plan-review-mutant-weak-guard.js"
+assert_models_hoist_mutant_fails "$TMP/plan-review-mutant-weak-guard.js" B \
+    "accepts a 2-of-3 partial hoist (guard weakened to ignore verifyModel)"
+
+# Mutant 2 (narrow-abort): narrow the fail-closed check back to mechanicalModel
+# only. Scenario C must now FAIL — a bootstrap result missing review-verify no
+# longer aborts (mechanicalModel alone is truthy), so execution proceeds with
+# verifyModel = '' all the way to a refute:plan:* agent call, and Scenario C's
+# own empty-model invariant (checked first, unconditionally) catches the
+# empty string reaching agent() as `model: ''`. This is the "dangerous" failure
+# mode from the phase body: the guard alone cannot prevent it because the guard
+# only decides hoist-vs-bootstrap, not whether a bootstrap RESULT is complete.
+sed 's/^if (!mechanicalModel || !findModel || !verifyModel) {$/if (!mechanicalModel) {/' \
+    "$PLAN_REVIEW" >"$TMP/plan-review-mutant-narrow-abort.js"
+assert_models_hoist_mutant_fails "$TMP/plan-review-mutant-narrow-abort.js" C \
+    "narrows the fail-closed abort to check only mechanicalModel"
 
 # --- 5c. SKILL SHIM (AC-5) ---------------------------------------------------
 # The local dogfood SKILL.md is a thin shim over rdm-wf-plan-review.js. Its hand-authored

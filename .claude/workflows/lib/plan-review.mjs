@@ -56,6 +56,36 @@ import {
 // block that precedes it in the workflow consumer (and from the import above in
 // Node).
 
+// hoistedModelsComplete(mechanicalModel, findModel, verifyModel) — the
+// ALL-OR-NOTHING guard on the runtime entry's caller-supplied model-hoist
+// trio (rdm-wf-plan-review.js's args.mechanicalModel/findModel/verifyModel).
+// Mirrors hoistedMetaComplete in lib/dispatch-phase.mjs: a partial hoist
+// (e.g. mechanicalModel + findModel but no verifyModel) still needs a
+// model-resolving agent for the missing id, so accepting anything short of
+// all three would save nothing while risking an empty string reaching a
+// downstream agent() call as `model: ''` — see computeMissingModels below,
+// which the runtime entry's fail-closed abort uses to independently
+// re-validate the final three values regardless of which path (hoist or
+// bootstrap) produced them. Does NOT re-trim its inputs — the runtime entry
+// already trims/normalizes to '' before calling this.
+function hoistedModelsComplete(mechanicalModel, findModel, verifyModel) {
+  return Boolean(mechanicalModel) && Boolean(findModel) && Boolean(verifyModel)
+}
+
+// computeMissingModels(mechanicalModel, findModel, verifyModel) — the
+// runtime entry's fail-closed abort's missing-id list, independent of
+// hoistedModelsComplete above (see that function's doc comment: the two
+// checks are mutually defensive, not redundant). Fixed push order
+// (mechanical, review-find, review-verify) — existing abort message text
+// and tests depend on it. Does NOT re-trim its inputs.
+function computeMissingModels(mechanicalModel, findModel, verifyModel) {
+  const missing = []
+  if (!mechanicalModel) missing.push('mechanical')
+  if (!findModel) missing.push('review-find')
+  if (!verifyModel) missing.push('review-verify')
+  return missing
+}
+
 // parsePlanArgs(rawArgs) — resolve the four target types from a raw $ARGUMENTS
 // flag string, a JSON payload, or a structured object. Returns
 // { kind, roadmap, phase, task, planText } where kind is one of
@@ -2089,6 +2119,8 @@ async function runPlanReviewDriver(args, deps) {
 // marker END is above this line, so a copy never carries these.
 export {
   parsePlanArgs,
+  hoistedModelsComplete,
+  computeMissingModels,
   hoistedFetchedOk,
   fetchTranscriptionOk,
   RESERVED_FETCH_TOKENS,
