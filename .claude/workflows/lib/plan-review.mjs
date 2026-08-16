@@ -203,7 +203,11 @@ function parsePlanArgs(rawArgs) {
 // production through) now lives in the adjacent `fetchTranscriptionOk` below;
 // `hoistedFetchedOk` itself stays a shape-only guard for the caller-hoisted
 // path by design — validating a caller-supplied payload's content remains out
-// of scope (see fetchTranscriptionOk's own doc comment).
+// of scope (see fetchTranscriptionOk's own doc comment). Separately, the
+// GATE WRITE for either path never reads a unit's tags straight off this
+// validated `fetched` object — `snapshotOriginalTags` (below `buildReviewUnits`)
+// caches them into a dedicated map immediately once `fetched` is accepted,
+// and the gate writes only from that cache — see its own doc comment.
 function stringArrayOk(v) {
   return Array.isArray(v) && v.every((s) => typeof s === 'string')
 }
@@ -897,6 +901,51 @@ function buildReviewUnits(parsed, fetched) {
   }
 }
 
+// snapshotOriginalTags(kind, parsed, fetched) — cache the item's REAL tags,
+// keyed by unit ident (the roadmap slug itself plus every phase's own stem
+// for a roadmap target; the task slug or phase ident for a single-unit
+// target). Computed EXACTLY ONCE, immediately after `fetched` is finalized
+// (accepted via either the caller hoist or the validated agent-transcription
+// retry loop above) and BEFORE buildReviewUnits — or anything else in the
+// driver — runs. The gate's tag WRITE below reads ONLY from this map, never
+// from a review unit's own `.tags` field: `u.tags` (populated inside
+// buildReviewUnits, alongside the unit's `body`/`target` review-pipeline
+// plumbing) is for REVIEW purposes only and must never be threaded into the
+// write. This closes the literal gap task fix-plan-review-gate-tag-clobber's
+// phase body flagged: "cache the real tags before the fetch runs, then
+// filter and write back the filtered ORIGINAL tags — never the fetched
+// tags." A genuinely SECOND, independent verification read (re-running
+// `roadmap show`/`task show`/`phase show` a second time solely to
+// cross-check tags) was considered and explicitly rejected: it would double
+// the mechanical-agent cost of every plan-review target and violate this
+// same phase's own AC2 commitment that "the common case still issues
+// exactly one fetch:roadmap/fetch:task/fetch:phase call" (see
+// buildRoadmapFetchPrompt's "must not be reintroduced" note). What this
+// function guarantees instead is narrower but real: the tag write can never
+// observe a value that took ANY detour through buildReviewUnits, reviewUnit,
+// or the review/refutation pipeline itself — only fetchTranscriptionOk's
+// (or, for a hoist, hoistedFetchedOk's) validation stands between a
+// corrupted fetch and this snapshot, exactly as it always has, but nothing
+// downstream of that validation can further corrupt what gets written.
+function snapshotOriginalTags(kind, parsed, fetched) {
+  const map = {}
+  if (!fetched || typeof fetched !== 'object') return map
+  if (kind === 'roadmap') {
+    map[parsed.roadmap] = Array.isArray(fetched.tags) ? fetched.tags : []
+    const phases = Array.isArray(fetched.phases) ? fetched.phases : []
+    for (let i = 0; i < phases.length; i++) {
+      const p = phases[i]
+      if (p && typeof p === 'object' && typeof p.stem === 'string') {
+        map[p.stem] = Array.isArray(p.tags) ? p.tags : []
+      }
+    }
+  } else {
+    const ident = kind === 'task' ? parsed.task : parsed.phase
+    map[ident] = Array.isArray(fetched.tags) ? fetched.tags : []
+  }
+  return map
+}
+
 // formatUnitBudget(budget) — the visible per-unit refutation-budget clause,
 // appended to a unit's log line ONLY when the bound was actually hit. A unit
 // that stayed under budget logs a byte-unchanged line, so a bounded run can
@@ -1120,6 +1169,11 @@ async function runPlanReviewDriver(args, deps) {
     fetched = candidate
   }
 
+  // Cache the real tags NOW — before buildReviewUnits, reviewUnit, or the
+  // review pipeline touch `fetched` at all. See snapshotOriginalTags' own doc
+  // comment for what this does and does not guarantee.
+  const originalTags = snapshotOriginalTags(kind, parsed, fetched)
+
   const built = buildReviewUnits(parsed, fetched)
   const units = built.units
 
@@ -1204,14 +1258,19 @@ async function runPlanReviewDriver(args, deps) {
     let tagCleared = false
     if (kind !== 'implementation-plan') {
       if (gate.clearsPlanReviewTag) {
-        // u.tags comes from the AC1/AC2-validated fetch (or the caller's
-        // shape-guarded hoist), not a fresh re-fetch here — a second gate-time
-        // fetch agent was considered and DECLINED: there is now only ONE
-        // trustworthy fetch per unit, so a re-fetch would only re-inflate the
-        // mechanical-agent count this file's design is held to (see
-        // docs/mechanical-agent-inventory.md's agent-count-discipline note on
-        // this file) for a live-race scenario nothing in this phase asked for.
-        const remaining = filterPlanReviewTag(u.tags)
+        // Read from the originalTags SNAPSHOT cached above — right after
+        // `fetched` was accepted, before buildReviewUnits/reviewUnit/the
+        // review pipeline ever ran — never from u.tags (buildReviewUnits'
+        // own copy, threaded through the review machinery for an unrelated
+        // purpose). See snapshotOriginalTags' doc comment for what this
+        // does and does not guarantee, and why a second, independent
+        // verification fetch was considered and declined (it would re-
+        // inflate the mechanical-agent count this file's design is held to
+        // — see docs/mechanical-agent-inventory.md's agent-count-discipline
+        // note on this file — for a live-race scenario nothing here asked
+        // for).
+        const cached = Object.prototype.hasOwnProperty.call(originalTags, u.ident) ? originalTags[u.ident] : []
+        const remaining = filterPlanReviewTag(cached)
         try {
           const ack = await _agent(buildTagWritePrompt(u.kind, u.roadmap, u.ident, remaining), {
             label: 'gate:clear-tag:' + u.kind + ':' + u.ident,
@@ -1270,6 +1329,7 @@ export {
   fetchTranscriptionOk,
   RESERVED_FETCH_TOKENS,
   buildReviewUnits,
+  snapshotOriginalTags,
   runPlanReviewDriver,
   buildPhaseFetchPrompt,
   buildTaskFetchPrompt,

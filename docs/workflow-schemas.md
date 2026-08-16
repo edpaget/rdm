@@ -2390,6 +2390,28 @@ itself, which is enforced host-side and cannot be crossed by any workflow
 script, present or future, short of a runtime change tracked outside this
 repo's control.
 
+**Update (`fix-plan-review-gate-tag-clobber` continued — the gate writes from
+a pre-fetch cache).** A separate literal gap survived the closures above: the
+phase body's own "Implementation constraints" asked for the gate to "cache the
+item's real tags before the fetch runs, then filter and write back the
+filtered ORIGINAL tags — never the fetched tags," and the write instead read
+`u.tags`, `buildReviewUnits`' own copy of the fetched tags threaded through the
+review-unit object for the review pipeline's benefit. `snapshotOriginalTags`
+closes this: called once, immediately after `fetched` is accepted and before
+`buildReviewUnits` runs, it caches every unit's real tags into a dedicated
+map that the gate write reads exclusively. This is a structural fix, not a
+new trust source — it does not (and, while holding to the "one fetch call per
+target" cost commitment above, cannot) make the write independent of
+`fetchTranscriptionOk`'s own correctness, since the snapshot and the review
+units are still both built from the same validated `fetched`. What it removes
+is any dependency on `buildReviewUnits`/`reviewUnit`/the review pipeline
+themselves for what gets written. The still-accurate claim above stands
+unchanged: content validation of the **caller-hoisted** `fetched` payload
+remains explicitly out of scope — only the agent-fetch path's write mechanics
+changed. See `docs/mechanical-agent-inventory.md`'s matching update (same
+heading) for the full account and `scripts/verify-workflow-review.sh`
+§5b-cache / §5b-exec / §5b-mut(ix) for the regression coverage.
+
 ### `rdm-wf-dispatch-phase` absorbs its diff instead of hoisting it
 
 `diff:signals` is not hoisted — it is **absorbed**. `runCodeGate` calls

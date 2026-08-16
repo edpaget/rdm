@@ -3664,6 +3664,38 @@ if grep -nE 'Date\.now\(|Math\.random\(' "$PLAN_REVIEW" >&2; then
 fi
 pass "rdm-wf-plan-review.js parses four targets, fans out, reuses the core, and carves out implementation-plan"
 
+# --- 5b-cache. TAG GATE WRITE reads the pre-fetch originalTags snapshot -------
+# (task fix-plan-review-gate-tag-clobber, "cache real tags before the fetch
+# runs" criterion). The gate's `--tags` write must be sourced from
+# snapshotOriginalTags' cache (computed once, immediately after `fetched` is
+# accepted, before buildReviewUnits/reviewUnit/the review pipeline run) —
+# never from a review unit's own `u.tags` (buildReviewUnits' copy, threaded
+# through the review machinery for an unrelated purpose).
+say "5b-cache. the gate's tag write is sourced from snapshotOriginalTags, never from a review unit's u.tags"
+assert_plan_tag_write_uses_cache() {
+    doc=$1
+    grep -q 'function snapshotOriginalTags' "$doc" || return 1
+    grep -q 'const originalTags = snapshotOriginalTags(kind, parsed, fetched)' "$doc" || return 1
+    grep -q 'filterPlanReviewTag(cached)' "$doc" || return 1
+    grep -q 'filterPlanReviewTag(u.tags)' "$doc" && return 1
+    return 0
+}
+assert_plan_tag_write_uses_cache "$PLAN_REVIEW" ||
+    fail "rdm-wf-plan-review.js's gate must cache real tags via snapshotOriginalTags (computed before buildReviewUnits) and write filterPlanReviewTag(cached), never filterPlanReviewTag(u.tags)"
+pass "rdm-wf-plan-review.js: the tag gate write reads the pre-fetch originalTags snapshot"
+
+sed 's/filterPlanReviewTag(cached)/filterPlanReviewTag(u.tags)/' "$PLAN_REVIEW" >"$TMP/pr.tagwrite-mutant"
+if assert_plan_tag_write_uses_cache "$TMP/pr.tagwrite-mutant"; then
+    fail "5b-cache: detector missed a reversion of the gate write to filterPlanReviewTag(u.tags)"
+fi
+pass "5b-cache: detector fires when the gate write reverts to reading a review unit's own u.tags"
+
+sed '/const originalTags = snapshotOriginalTags(kind, parsed, fetched)/d' "$PLAN_REVIEW" >"$TMP/pr.nocache-mutant"
+if assert_plan_tag_write_uses_cache "$TMP/pr.nocache-mutant"; then
+    fail "5b-cache: detector missed the originalTags snapshot call being dropped entirely"
+fi
+pass "5b-cache: detector fires when the originalTags snapshot call is dropped"
+
 # --- 5b-mechanical. Mechanical-tier pin: fetch/gate agents pinned, act:* is not.
 #
 # JUDGMENT-SITE MODEL BINDING WAS EVALUATED. This section pins the MECHANICAL
@@ -3856,7 +3888,7 @@ fi
 # a partial mirror the byte-diff above would also catch, but names the gap).
 for sym in 'function parsePlanArgs' 'function buildReviewUnits' 'async function runPlanReviewDriver' \
     "buildReviewPipeline('plan')" 'stripNonPhaseUnitOfWork' 'filterPlanReviewTag' 'classifyPlanOutcome' \
-    'function fetchTranscriptionOk' 'RESERVED_FETCH_TOKENS'; do
+    'function fetchTranscriptionOk' 'RESERVED_FETCH_TOKENS' 'function snapshotOriginalTags'; do
     grep -q "$sym" "$TMP/plan-driver-lib" || fail "plan-review-driver block in the LIB is missing $sym"
     grep -q "$sym" "$TMP/plan-driver-wf" || fail "plan-review-driver block in the WORKFLOW is missing $sym (partial mirror?)"
 done
@@ -3884,8 +3916,8 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
 const mod = await import(pathToFileURL(process.argv[2]).href);
-const { parsePlanArgs, buildReviewUnits, runPlanReviewDriver, formatUnitBudget } = mod;
-for (const name of ['parsePlanArgs', 'buildReviewUnits', 'runPlanReviewDriver', 'formatUnitBudget']) {
+const { parsePlanArgs, buildReviewUnits, runPlanReviewDriver, formatUnitBudget, snapshotOriginalTags } = mod;
+for (const name of ['parsePlanArgs', 'buildReviewUnits', 'runPlanReviewDriver', 'formatUnitBudget', 'snapshotOriginalTags']) {
   assert.equal(typeof mod[name], 'function', name + ' must be exported from lib/plan-review.mjs');
 }
 
@@ -3966,6 +3998,48 @@ assert.equal(
     ] }).fetchFailed,
   true,
   'buildReviewUnits: two identical phase stems are rejected (duplicate collision)'
+);
+
+// ---- snapshotOriginalTags: the pre-fetch tag cache (task fix-plan-review-gate-tag-clobber) ----
+// Pure, keyed-by-ident mapping — exercised directly (not only through the
+// full driver) so a regression in the mapping itself is caught here, not only
+// via an end-to-end assertion that could not distinguish it from
+// buildReviewUnits' own (separate) tag copy.
+assert.deepEqual(snapshotOriginalTags('roadmap', { roadmap: 'r' }, null), {}, 'snapshotOriginalTags: a null fetch caches nothing');
+assert.deepEqual(
+  snapshotOriginalTags(
+    'roadmap',
+    { roadmap: 'big-thing' },
+    {
+      body: 'RB',
+      tags: ['needs-plan-review', 'infra'],
+      phases: [
+        { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review', 'alpha'] },
+        { stem: 'phase-2-b', body: 'PB', tags: ['beta'] },
+      ],
+    }
+  ),
+  {
+    'big-thing': ['needs-plan-review', 'infra'],
+    'phase-1-a': ['needs-plan-review', 'alpha'],
+    'phase-2-b': ['beta'],
+  },
+  'snapshotOriginalTags: a roadmap fetch caches the roadmap tags AND each phase\'s own tags, keyed by stem'
+);
+assert.deepEqual(
+  snapshotOriginalTags('roadmap', { roadmap: 'r' }, { body: 'RB', tags: [], phases: [{ stem: 'phase-1-a', body: 'PA' }] }),
+  { r: [], 'phase-1-a': [] },
+  'snapshotOriginalTags: a phase entry with no tags array caches [] for that stem, never undefined'
+);
+assert.deepEqual(
+  snapshotOriginalTags('task', { task: 'hoist-target' }, { body: 'TB', tags: ['bug', 'auth'] }),
+  { 'hoist-target': ['bug', 'auth'] },
+  'snapshotOriginalTags: a task fetch caches the task\'s own tags keyed by slug'
+);
+assert.deepEqual(
+  snapshotOriginalTags('phase', { roadmap: 'r', phase: 'phase-1-a' }, { body: 'PB', tags: ['alpha'] }),
+  { 'phase-1-a': ['alpha'] },
+  'snapshotOriginalTags: a standalone phase fetch caches the phase\'s own tags keyed by the phase ident'
 );
 
 // ---- runPlanReviewDriver: a recording fake agent + a reference parallel ------
@@ -4531,7 +4605,18 @@ pmut_roadmap_fanout() {
 }
 plan_mutate_and_expect_fail viii 'reintroducing a second fetch:roadmap agent call (a stand-in fan-out)' pmut_roadmap_fanout
 
-pass "5b-mut: all seven driver mutations flip a 5b-exec assertion, and the control passes"
+# (ix) Break snapshotOriginalTags so it caches nothing regardless of input —
+#      proves 5b-exec's direct pure-function assertions on snapshotOriginalTags
+#      are not vacuous (task fix-plan-review-gate-tag-clobber's "cache real
+#      tags before the fetch runs" criterion).
+pmut_snapshot_tags() {
+    perl -0pi -e "s/function snapshotOriginalTags\(kind, parsed, fetched\) \{/function snapshotOriginalTags(kind, parsed, fetched) { return {} \/\/ MUTANT/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'return {} // MUTANT' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail ix 'gutting snapshotOriginalTags to always cache nothing' pmut_snapshot_tags
+
+pass "5b-mut: all eight driver mutations flip a 5b-exec assertion, and the control passes"
 
 # --- 5b-hoist-exec. RUNTIME-ENTRY model hoist fires on a stringified args ----
 # `5b-exec` above drives `runPlanReviewDriver` directly (imported from

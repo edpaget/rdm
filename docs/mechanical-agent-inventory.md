@@ -258,6 +258,34 @@ verbatim stdout — combined with the directive's own explicit fallback for that
 validation "as strictly as a genuine call would allow," which is exactly `fetchTranscriptionOk`
 plus the retry-then-fail-closed loop described above.
 
+**Update (`fix-plan-review-gate-tag-clobber` continued — the gate now writes from a pre-fetch
+cache, not from the review unit's own copy).** An AC-review pass on this same task found one more
+literal gap: the phase body's "Implementation constraints" explicitly asked for the gate to
+"cache the item's real tags before the fetch runs, then filter and write back the filtered
+ORIGINAL tags — never the fetched tags," and no caching mechanism existed anywhere — the write
+read `u.tags`, a copy `buildReviewUnits` had already threaded through the review-unit object
+alongside `body`/`target` for the review pipeline's own purposes. `snapshotOriginalTags` (placed
+immediately after `buildReviewUnits` in `.claude/workflows/lib/plan-review.mjs`) closes this: it
+is called exactly once, right after `fetched` is accepted (via either the caller hoist or the
+validated agent-transcription retry loop) and *before* `buildReviewUnits` or anything downstream
+runs, and caches every unit's real tags — the roadmap's own plus each phase's own, keyed by
+stem — into a dedicated map. The gate's `--tags` write reads only from that map; `u.tags` is no
+longer read at the write site at all. A genuinely second, independent verification fetch (running
+`roadmap show`/`task show`/`phase show` a second time solely to cross-check tags) was considered
+and declined: it would double the mechanical-agent cost of every plan-review target and violate
+this same task's own prior commitment that "the common case still issues exactly one
+fetch:roadmap/fetch:task/fetch:phase call" (the `buildRoadmapFetchPrompt` "must not be
+reintroduced" note above). So this closes the *structural* half of the ask — the write can no
+longer be corrupted by a bug anywhere in `buildReviewUnits`, `reviewUnit`, or the review pipeline
+— without re-opening the per-target agent-count question; it does not, and by construction cannot,
+make the write independent of `fetchTranscriptionOk`'s own correctness, since both the snapshot
+and `buildReviewUnits`' units are still built from the same validated `fetched`.
+`scripts/verify-workflow-review.sh` §5b-cache asserts the write site by name (with two
+planted-mutation self-tests: reverting to `u.tags`, and dropping the snapshot call entirely) and
+§5b-exec drives `snapshotOriginalTags` directly (roadmap multi-phase keying, missing-tags
+defaulting to `[]`, task/phase single-unit keying, a null fetch caching nothing), backed by a
+5b-mut mutation self-test that guts the function to always cache nothing.
+
 One consequence is worth stating on its own, because the hoist's shape guard replaces a
 `required`-bearing schema: `hoistedFetchedOk` is held to be **no weaker** than the
 `{ body, tags, phases }` shape `buildReviewUnits` requires (formerly enforced by the fetch
