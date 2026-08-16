@@ -2030,7 +2030,6 @@ function buildReviewPipeline(mode, deps) {
 // verbatim copy. scripts/verify-workflow-review.sh gates the two for byte-drift.
 // Edit the lib, then re-copy; do NOT edit the block here.
 // >>> plan-review-driver:begin <<<
-// >>> plan-review-driver:begin <<<
 // Pure + dependency-injected driver logic for the standalone plan-review
 // workflow.
 //
@@ -3167,7 +3166,6 @@ async function runPlanReviewDriver(args, deps) {
   _log('plan-review (' + kind + '): ' + reported.length + ' unit(s) gated')
   return result
 }
-// >>> plan-review-driver:end <<<
 // >>> plan-review-driver:end <<<
 
 // --- Runtime entry ------------------------------------------------------------
