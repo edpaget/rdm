@@ -2277,12 +2277,18 @@ function resolvePlanGateMode(value) {
 // `phases` whose every entry carries a non-empty string `stem`, a string
 // `body`, its own `tags` array of strings, and a non-empty string `status`.
 //
-// `tags` is required, not optional-with-a-default, because it is WRITTEN BACK:
+// `tags`, when PRESENT, must be a string array, because it is WRITTEN BACK:
 // on a `reviewed` outcome the gate issues `rdm ... update --tags "<list>"`, and
-// `--tags` replaces the whole list. Accepting a payload with no `tags` would let
-// buildReviewUnits default it to `[]` and the gate would then clobber every real
-// tag the item carried. Anything this guard rejects runs the original
-// schema-enforced fetch agent instead — a cost, never a correctness loss.
+// `--tags` replaces the whole list. A MISSING `tags` key is tolerated and
+// normalized to `[]` — see `tagsOk`/`normalizeTags` below — because rdm-core's
+// wire contract (`Option<Vec<String>>` with `skip_serializing_if =
+// "Option::is_none"`, see rdm-core/src/json.rs) OMITS `tags` entirely for a
+// genuinely untagged item rather than emitting `[]`; treating that omission as
+// corruption misclassified every untagged roadmap/phase/task as an
+// unreviewable fetch failure (task fix-plan-review-gate-tag-clobber). A
+// present-but-malformed `tags` value (not a string array) is still rejected.
+// Anything this guard rejects runs the original schema-enforced fetch agent
+// instead — a cost, never a correctness loss.
 //
 // This is a SHAPE guard only: it cannot tell a real tag list from a transcribed
 // one (see parsePlanArgs' note on the two recorded corruptions, both of which
@@ -2314,10 +2320,27 @@ function resolvePlanGateMode(value) {
 function stringArrayOk(v) {
   return Array.isArray(v) && v.every((s) => typeof s === 'string')
 }
+// tagsOk(v) / normalizeTags(v) — the omission-tolerant sibling of
+// stringArrayOk for a `tags` field specifically. rdm-core's real wire
+// contract (Option<Vec<String>>, skip_serializing_if(Option::is_none) in
+// rdm-core/src/json.rs) omits `tags` entirely for an untagged item rather
+// than emitting `[]`; tagsOk accepts that omission (`undefined`) as well as
+// a real string array, so a genuinely untagged item is not misclassified as
+// a corrupted fetch. A present-but-malformed value is still rejected — this
+// narrows the guard to the omission case only, it does not remove it.
+// normalizeTags maps that tolerated `undefined` to `[]` so every downstream
+// consumer (the gate write, buildReviewUnits, snapshotOriginalTags) always
+// sees a real array.
+function tagsOk(v) {
+  return v === undefined || stringArrayOk(v)
+}
+function normalizeTags(v) {
+  return v === undefined ? [] : v
+}
 function hoistedFetchedOk(fetched, kind) {
   if (!fetched || typeof fetched !== 'object') return false
   if (typeof fetched.body !== 'string' || String(fetched.body).trim() === '') return false
-  if (!stringArrayOk(fetched.tags)) return false
+  if (!tagsOk(fetched.tags)) return false
   if (kind === 'roadmap') {
     if (!Array.isArray(fetched.phases)) return false
     const phasesOk = fetched.phases.every(
@@ -2327,7 +2350,7 @@ function hoistedFetchedOk(fetched, kind) {
         typeof p.stem === 'string' &&
         p.stem.trim() !== '' &&
         typeof p.body === 'string' &&
-        stringArrayOk(p.tags) &&
+        tagsOk(p.tags) &&
         typeof p.status === 'string' &&
         p.status.trim() !== ''
     )
@@ -2515,7 +2538,7 @@ function extractRoadmapFromJson(json, expectedSlug) {
   if (json.slug !== expectedSlug) return { ok: false }
   const body = typeof json.body === 'string' ? json.body : ''
   if (body.trim() === '') return { ok: false }
-  if (!stringArrayOk(json.tags)) return { ok: false }
+  if (!tagsOk(json.tags)) return { ok: false }
   let phaseSummaries = []
   if (json.phases !== undefined) {
     if (!Array.isArray(json.phases)) return { ok: false }
@@ -2534,7 +2557,7 @@ function extractRoadmapFromJson(json, expectedSlug) {
     if (stems.indexOf(expectedSlug) !== -1) return { ok: false } // stem === roadmap slug
     if (new Set(stems).size !== stems.length) return { ok: false } // duplicate stems
   }
-  return { ok: true, body: body, tags: json.tags, phaseSummaries: phaseSummaries }
+  return { ok: true, body: body, tags: normalizeTags(json.tags), phaseSummaries: phaseSummaries }
 }
 
 // extractPhaseFromJson(json, expectedRoadmap, expectedStem) — pure
@@ -2560,9 +2583,9 @@ function extractPhaseFromJson(json, expectedRoadmap, expectedStem) {
   const numericMatches =
     /^\d+$/.test(String(expectedStem)) && typeof json.phase === 'number' && String(json.phase) === String(expectedStem)
   if (!stemMatches && !numericMatches) return { ok: false }
-  if (!stringArrayOk(json.tags)) return { ok: false }
+  if (!tagsOk(json.tags)) return { ok: false }
   const body = typeof json.body === 'string' ? json.body : ''
-  return { ok: true, body: body, tags: json.tags }
+  return { ok: true, body: body, tags: normalizeTags(json.tags) }
 }
 
 // extractTaskFromJson(json, expectedSlug) — pure identity validator for a
@@ -2571,9 +2594,9 @@ function extractPhaseFromJson(json, expectedRoadmap, expectedStem) {
 function extractTaskFromJson(json, expectedSlug) {
   if (!json || typeof json !== 'object') return { ok: false }
   if (json.slug !== expectedSlug) return { ok: false }
-  if (!stringArrayOk(json.tags)) return { ok: false }
+  if (!tagsOk(json.tags)) return { ok: false }
   const body = typeof json.body === 'string' ? json.body : ''
-  return { ok: true, body: body, tags: json.tags }
+  return { ok: true, body: body, tags: normalizeTags(json.tags) }
 }
 
 // Fetch prompts — mechanical Bash agents (the runtime cannot shell out
